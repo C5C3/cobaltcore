@@ -2,8 +2,8 @@
   "feature_id": "CC-0004",
   "title": "B001: Add common types and pure function packages",
   "slug": "b001-add-common-types-and-pure-function-packages",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 🏗️ large\n**Category:** backend\n**Priority:** high\n\n## Resolved Decisions\n\n| # | Decision | Choice |\n|---|----------|--------|\n| 1 | `PipelinePosition` model | Struct with `Before` and `After` fields — `type PipelinePosition struct { Before string; After string }` |\n| 2 | `RenderPastePipeline` input | `PipelineSpec` struct — `{ Name, BasePipeline, Filters []FilterSpec, Middleware []MiddlewareSpec }` |\n| 3 | `ValidatePolicyRules` return | `field.ErrorList` — webhook-compatible from day one, avoids CC-0011 breaking change |\n| 4 | Kubebuilder markers | No markers on shared types — markers belong on CRD embedding sites in CC-0011 |\n\n## Summary\n\nCC-0004 implements the foundational shared type definitions and pure-function utility packages under `internal/common/`. This includes 11 reusable Go types (`ImageSpec`, `DatabaseSpec`, `MessagingSpec`, `CacheSpec`, `SecretRefSpec`, `PolicySpec`, `PluginSpec`, `MiddlewareSpec`, `PipelinePosition`, `PipelineSpec`, `FilterSpec`) and 4 utility packages (`conditions/`, `config/`, `plugins/`, `policy/`) containing pure functions that operate on Go maps, slices, and structs with no Kubernetes client interaction. All functions get table-driven unit tests using `gomega` + `testing.T` following existing codebase conventions.\n\n## Scope\n\n**Included:**\n- `internal/common/types/` — 11 shared type structs with JSON tags and godoc (9 original + `PipelineSpec` + `FilterSpec`)\n- `internal/common/conditions/` — `SetCondition`, `IsReady`, `GetCondition`, `AllTrue` operating on `[]metav1.Condition`\n- `internal/common/config/` — `RenderINI`, `MergeDefaults`, `InjectSecrets`, `InjectOsloPolicyConfig` operating on `map[string]map[string]string`\n- `internal/common/plugins/` — `RenderPastePipeline`, `RenderPluginConfig` producing INI text\n- `internal/common/policy/` — `RenderPolicyYAML`, `MergePolicies`, `ValidatePolicyRules` (returns `field.ErrorList`)\n- Table-driven unit tests for every exported function (`gomega` + `testing.T`, no build tags)\n\n**Excluded (with rationale):**\n- `CreateImmutableConfigMap` — requires K8s client, belongs in CC-0005\n- `LoadPolicyFromConfigMap` — requires K8s client, belongs in CC-0005\n- Kubebuilder CEL markers on types — belongs in CC-0011 (CRD embedding sites)\n- Webhook validation logic — belongs in CC-0011\n- `database/`, `deployment/`, `job/`, `secrets/`, `tls/` packages — all require K8s client, CC-0005\n- OpenStack release-specific default values — belong in operator-level code (YAGNI)\n\n## Visualization\n\n```mermaid\nflowchart TD\n    subgraph types[\"internal/common/types/\"]\n        IS[\"ImageSpec\"]\n        DS[\"DatabaseSpec\"]\n        MS[\"MessagingSpec\"]\n        CS[\"CacheSpec\"]\n        SRS[\"SecretRefSpec\"]\n        PS[\"PolicySpec\"]\n        PLS[\"PluginSpec\"]\n        MWS[\"MiddlewareSpec\"]\n        PP[\"PipelinePosition\"]\n        FS[\"FilterSpec\"]\n        PSP[\"PipelineSpec\"]\n    end\n\n    subgraph conditions[\"internal/common/conditions/\"]\n        SC[\"SetCondition\"]\n        IR[\"IsReady\"]\n        GC[\"GetCondition\"]\n        AT[\"AllTrue\"]\n    end\n\n    subgraph config[\"internal/common/config/\"]\n        RI[\"RenderINI\"]\n        MD[\"MergeDefaults\"]\n        ISec[\"InjectSecrets\"]\n        IOP[\"InjectOsloPolicyConfig\"]\n    end\n\n    subgraph plugins[\"internal/common/plugins/\"]\n        RPP[\"RenderPastePipeline\"]\n        RPC[\"RenderPluginConfig\"]\n    end\n\n    subgraph policy[\"internal/common/policy/\"]\n        RPY[\"RenderPolicyYAML\"]\n        MP[\"MergePolicies\"]\n        VPR[\"ValidatePolicyRules\"]\n    end\n\n    DS --> SRS\n    MS --> SRS\n    MWS --> PP\n    PSP --> MWS\n    PSP --> FS\n\n    RPP --> PSP\n    RPC --> PLS\n    RPY --> PS\n    MP --> PS\n    VPR --> PS\n    IOP --> RI\n```\n\n```mermaid\nflowchart LR\n    CRD[\"CRD Spec Fields\"] --> MD\n    Defaults[\"Operator Defaults\"] --> MD[\"MergeDefaults\"]\n    MD --> ISec[\"InjectSecrets\"]\n    Secrets[\"Resolved Secret Values\"] --> ISec\n    ISec --> IOP[\"InjectOsloPolicyConfig\"]\n    IOP --> RI[\"RenderINI\"]\n    RI --> INI[\"keystone.conf\"]\n\n    CRD2[\"CRD Spec Fields\"] --> RPC[\"RenderPluginConfig\"]\n    RPC --> ISec\n\n    CRD3[\"CRD Spec Fields\"] --> RPP[\"RenderPastePipeline\"]\n    RPP --> Paste[\"api-paste.ini\"]\n\n    CRD4[\"CRD Spec Fields\"] --> MP[\"MergePolicies\"]\n    MP --> VPR[\"ValidatePolicyRules\"]\n    VPR --> RPY[\"RenderPolicyYAML\"]\n    RPY --> PolicyYAML[\"policy.yaml\"]\n    IOP -.->|\"adds oslo_policy section\"| RI\n```\n\n## Key Components\n\n- **`types/`** — 11 shared structs. `DatabaseSpec`, `MessagingSpec`, `CacheSpec` follow managed/brownfield dual-mode with `ClusterRef` vs explicit host fields. `SecretRefSpec` is embedded in multiple specs. `PipelinePosition` has `Before`/`After` string fields. `PipelineSpec` aggregates `BasePipeline`, `[]FilterSpec`, and `[]MiddlewareSpec`. `FilterSpec` captures base filter name, factory, and config.\n- **`conditions/`** — 4 pure functions for `metav1.Condition` slice manipulation. `AllTrue` gates the aggregate `Ready` condition in reconcilers. Zero K8s client dependency.\n- **`config/`** — INI rendering pipeline. `RenderINI` sorts sections/keys deterministically for stable content hashes. `MergeDefaults` implements user-wins-over-operator-defaults precedence. `InjectSecrets` assembles connection strings. `InjectOsloPolicyConfig` conditionally adds `[oslo_policy]` section.\n- **`plugins/`** — `RenderPastePipeline` takes `PipelineSpec`, inserts middleware filters at specified `PipelinePosition`s, and emits `[filter:]` blocks as api-paste.ini text. `RenderPluginConfig` converts `[]PluginSpec` into INI section maps for merging into main config.\n- **`policy/`** — `MergePolicies` implements inline-wins-over-external precedence. `RenderPolicyYAML` serializes merged rules as YAML. `ValidatePolicyRules` returns `field.ErrorList` for webhook-compatible validation (non-empty keys/values, valid YAML syntax).",
   "stories": [
@@ -508,6 +508,7 @@
       "description": "Create internal/common/types/doc.go and internal/common/types/types.go. Define all 11 structs: ImageSpec, DatabaseSpec, MessagingSpec, CacheSpec, SecretRefSpec, PolicySpec, PluginSpec, MiddlewareSpec, PipelinePosition, PipelineSpec, FilterSpec. Each struct has exported fields with json tags and godoc comments. DatabaseSpec/MessagingSpec/CacheSpec follow managed/brownfield dual-mode. No kubebuilder markers. Import corev1 for LocalObjectReference. Verify go vet passes.",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -520,6 +521,7 @@
       "description": "Create internal/common/types/types_test.go with table-driven tests using gomega + testing.T. Test JSON marshaling/unmarshaling for each type: verify json tags produce correct keys, verify optional fields are omitted with omitempty, verify PipelineSpec correctly nests FilterSpec and MiddlewareSpec. Test DatabaseSpec dual-mode (ClusterRef set vs Host set). Grep types.go for +kubebuilder to verify none exist.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -532,6 +534,7 @@
       "description": "Create internal/common/conditions/doc.go and internal/common/conditions/conditions.go. Implement: SetCondition(*[]metav1.Condition, metav1.Condition) — inserts or updates by type, preserves LastTransitionTime when status unchanged. IsReady([]metav1.Condition) bool — checks Ready condition. GetCondition([]metav1.Condition, string) *metav1.Condition. AllTrue([]metav1.Condition, ...string) bool. All pure functions, zero K8s client imports.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-004",
@@ -544,6 +547,7 @@
       "description": "Create internal/common/conditions/conditions_test.go. Table-driven tests for: SetCondition (empty slice insert, update status, preserve LastTransitionTime), IsReady (nil slice, no Ready condition, Ready=True, Ready=False), GetCondition (nil, empty, found, not found), AllTrue (nil, empty types, all true, one false, missing type). Use gomega + testing.T pattern.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-004",
@@ -556,6 +560,7 @@
       "description": "Create internal/common/config/doc.go and internal/common/config/config.go. Implement RenderINI(map[string]map[string]string) string — sort sections and keys alphabetically, produce [section]\\nkey = value\\n format with blank lines between sections. Implement MergeDefaults(userConfig, defaults map[string]map[string]string) map[string]map[string]string — deep-merge where user values take precedence.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-006",
@@ -568,6 +573,7 @@
       "description": "Add to internal/common/config/config.go: InjectSecrets(config map[string]map[string]string, secrets map[string]string) map[string]map[string]string — assemble connection strings from secret values, URL-encode special characters in passwords. InjectOsloPolicyConfig(config map[string]map[string]string, policyFilePath string) — add [oslo_policy] section when policyFilePath is non-empty, no-op otherwise. Both depend on RenderINI existing from 3.1.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-007",
         "REQ-008"
@@ -579,6 +585,7 @@
       "description": "Create internal/common/config/config_test.go. Table-driven tests: RenderINI — single section, multiple sorted sections, empty map, keys sorted within section, idempotent output. MergeDefaults — user overrides default, default fills gap, user-only section preserved, both empty, default-only section preserved. gomega + testing.T.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-006",
@@ -591,6 +598,7 @@
       "description": "Add to internal/common/config/config_test.go: Table-driven tests for InjectSecrets — valid DB credentials produce connection string, empty secrets is no-op, special characters in password are URL-encoded. InjectOsloPolicyConfig — non-empty path adds oslo_policy section, empty path is no-op. gomega + testing.T.",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-007",
         "REQ-008",
@@ -603,6 +611,7 @@
       "description": "Create internal/common/plugins/doc.go and internal/common/plugins/plugins.go. Implement RenderPastePipeline(PipelineSpec) string — parse BasePipeline into filter names, insert middleware at Before/After positions, emit [composite:main] pipeline line and [filter:name] blocks with paste.filter_factory and config entries. Also emit [filter:name] blocks for FilterSpec entries. Imports types package from task 1.1.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-009",
         "REQ-015"
@@ -614,6 +623,7 @@
       "description": "Add to internal/common/plugins/plugins.go: RenderPluginConfig([]PluginSpec) map[string]map[string]string — iterate plugins, create a map entry per plugin using ConfigSection as key and Config as value. Return the combined map for merging into INI config via MergeDefaults.",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-010"
       ]
@@ -624,6 +634,7 @@
       "description": "Create internal/common/plugins/plugins_test.go. Table-driven tests for RenderPastePipeline: base pipeline only, single middleware after position, single middleware before position, multiple middleware, middleware with config, empty middleware list. RenderPluginConfig: single plugin, multiple plugins, empty list. gomega + testing.T.",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-009",
         "REQ-010",
@@ -636,6 +647,7 @@
       "description": "Create internal/common/policy/doc.go and internal/common/policy/policy.go. Implement MergePolicies(inline, external map[string]string) map[string]string — start from external (or empty map), overlay inline rules. Implement RenderPolicyYAML(rules map[string]string) (string, error) — marshal rules to YAML using gopkg.in/yaml.v3 (already in go.sum). Import types package for PolicySpec reference.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-011",
         "REQ-013",
@@ -648,6 +660,7 @@
       "description": "Add to internal/common/policy/policy.go: ValidatePolicyRules(rules map[string]string, fldPath *field.Path) field.ErrorList — iterate rules, check for empty keys (field.Invalid), check for empty values (field.Invalid). Return accumulated field.ErrorList. Import k8s.io/apimachinery/pkg/util/validation/field.",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-012"
       ]
@@ -658,6 +671,7 @@
       "description": "Create internal/common/policy/policy_test.go. Table-driven tests for MergePolicies: inline wins, non-colliding merged, nil inline, both nil. RenderPolicyYAML: valid rules produce parseable YAML, empty map, special characters. ValidatePolicyRules: valid rules pass, empty key error, empty value error, multiple errors. gomega + testing.T.",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-011",
         "REQ-012",
@@ -671,6 +685,7 @@
       "description": "Create docs/reference/internal-common-types.md documenting all 11 type structs with field tables (name, type, JSON tag, description, required/optional). Create docs/reference/internal-common-packages.md documenting all 4 utility packages with function signatures, parameters, return values, and brief descriptions. Cross-reference architecture/docs/09-implementation/02-shared-library.md.",
       "level": 4,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-015"
       ]
@@ -887,8 +902,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-03-01T21:05:41.417661"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-01T21:33:37.485467"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-01T22:26:54.049253"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/7",
+  "pr_number": 7,
   "execution_history": [
     {
       "run_id": "f941e161-f333-45de-bc42-2e062e5654d5",
@@ -900,6 +925,56 @@
           "name": "prepare",
           "duration": 309.21827149391174,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "8145e29d-d074-4218-bf05-53b924577cdd",
+      "timestamp": "2026-03-01T22:00:22.914161",
+      "total_duration": 1465.8437767028809,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (6 tasks)",
+          "duration": 514.3989868164062,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (6 tasks)",
+          "duration": 137.56722593307495,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (2 tasks)",
+          "duration": 31.218823432922363,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (1 tasks)",
+          "duration": 171.0960190296173,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0004] Code Review",
+          "duration": 149.70509338378906,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0004] Improvements",
+          "duration": 278.8772928714752,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0004] Simplify",
+          "duration": 182.9803352355957,
+          "type": "simplify",
           "status": "done"
         }
       ]

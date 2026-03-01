@@ -1,0 +1,171 @@
+{
+  "feature_id": "CC-0004",
+  "title": "B001: Add common types and pure function packages",
+  "date": "2026-03-01",
+  "summary": "CC-0004 implements 11 shared Go type structs in internal/common/types/ and 4 pure-function utility packages (conditions/, config/, plugins/, policy/) with 13 exported functions. All 86 tests pass. Coverage is 100% for conditions, config, and plugins; 96.9% for policy (yaml.Marshal error branch). go build, go vet, and golangci-lint all pass clean. All review-1 issues have been addressed. All sourcery-ai[bot] review issues have been addressed. Two plan-criteria discrepancies found: MessagingSpec missing ClusterRef field and PolicySpec missing SecretRefSpec embedding. One minor code robustness issue in escapePassword. One minor test pattern inconsistency in plugins package.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "All 86 tests pass (0 failures)", "checked": true},
+    {"item": "Every exported function has at least one test", "checked": true},
+    {"item": "Table-driven tests using gomega + testing.T (no ginkgo, no build tags)", "checked": true},
+    {"item": "Edge cases covered: nil slices, empty maps, nil pointers, boundary values", "checked": true},
+    {"item": "Immutability verified: does-not-mutate-inputs tests for MergeDefaults, InjectSecrets, InjectOsloPolicyConfig, MergePolicies", "checked": true},
+    {"item": "InjectSecrets generic section/key injection path tested (review-1 TE2-1 resolved)", "checked": true},
+    {"item": "assembleDatabaseConnection default port/name fallbacks tested (review-1 TE2-2 resolved)", "checked": true},
+    {"item": "Determinism tests: RenderINI idempotency, RenderPolicyYAML determinism, filter section sorting", "checked": true},
+    {"item": "GetCondition mutation test verifies pointer into original slice (sourcery-ai issue resolved)", "checked": true},
+    {"item": "InjectSecrets incomplete parts and connection-precedence tests (sourcery-ai issue resolved)", "checked": true},
+    {"item": "plugins/ tests use table-driven t.Run pattern consistent with other packages", "checked": false},
+    {"item": "TestRenderINI covers nil map input (consistent with other functions in same file)", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Functions do one thing (SRP)", "checked": true},
+    {"item": "Functions small (all under 40 lines)", "checked": true},
+    {"item": "No code duplication (copyConfig properly extracted)", "checked": true},
+    {"item": "Clear naming (intention-revealing)", "checked": true},
+    {"item": "Max nesting under 3 levels", "checked": true},
+    {"item": "No dead code in production files", "checked": true},
+    {"item": "No magic numbers/strings (review-1 Q6-1 resolved: defaultMySQLPort constant)", "checked": true},
+    {"item": "No unused test struct fields (review-1 D3-1 resolved: expectedJSON removed)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "No K8s client-go imports in pure function packages (conditions/, config/, plugins/, policy/)", "checked": true},
+    {"item": "Special characters in passwords URL-encoded via url.UserPassword (RFC 3986 userinfo)", "checked": true},
+    {"item": "No path traversal vulnerabilities", "checked": true},
+    {"item": "No sensitive data in logs or errors", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "All 11 type structs defined with correct fields, types, and JSON tags", "checked": true},
+    {"item": "No +kubebuilder markers in types package (Decision #4)", "checked": true},
+    {"item": "All 13 exported functions implemented", "checked": true},
+    {"item": "ValidatePolicyRules returns field.ErrorList (Decision #3)", "checked": true},
+    {"item": "PipelinePosition is struct with Before/After string fields (Decision #1)", "checked": true},
+    {"item": "RenderINI output deterministic (sections and keys sorted)", "checked": true},
+    {"item": "MergeDefaults implements user-wins precedence", "checked": true},
+    {"item": "InjectOsloPolicyConfig is no-op when policyFilePath is empty", "checked": true},
+    {"item": "Every package has doc.go with package-level godoc", "checked": true},
+    {"item": "Reference docs in docs/reference/ for types and utility packages", "checked": true},
+    {"item": "MessagingSpec follows managed/brownfield dual-mode (ClusterRef vs explicit host)", "checked": false},
+    {"item": "SecretRefSpec embedded in PolicySpec as per plan acceptance criteria", "checked": false},
+    {"item": "Solution is as simple as possible", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No over-engineering or unused abstractions", "checked": true},
+    {"item": "Excluded items (CreateImmutableConfigMap, LoadPolicyFromConfigMap, etc.) correctly deferred", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Nil pointer handled gracefully in SetCondition", "checked": true},
+    {"item": "Empty input handled gracefully in all functions", "checked": true},
+    {"item": "ValidatePolicyRules reports all errors with deterministic ordering", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All functions return new maps/slices (no input mutation)", "checked": true},
+    {"item": "Nil and empty inputs handled without panics", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [
+    {
+      "severity": "MEDIUM",
+      "description": "MessagingSpec missing ClusterRef field. Plan criteria (line 17, line 508) explicitly state 'DatabaseSpec, MessagingSpec, CacheSpec follow managed/brownfield dual-mode pattern (ClusterRef vs explicit host fields)'. Current implementation has Host as required (no omitempty) with no ClusterRef pointer field, making it brownfield-only. DatabaseSpec and CacheSpec correctly implement dual-mode. Either add ClusterRef to MessagingSpec and make Host optional, or formally update the plan criteria if this was an intentional design change.",
+      "location": "internal/common/types/types.go:30-35",
+      "fix": "Add ClusterRef *corev1.LocalObjectReference field with json:\"clusterRef,omitempty\" and change Host tag to json:\"host,omitempty\". Update docs/reference/internal-common-types.md and types_test.go accordingly. Alternatively, document the intentional deviation in the plan."
+    },
+    {
+      "severity": "LOW",
+      "description": "PolicySpec missing SecretRefSpec embedding. Plan acceptance criteria (line 18) state 'SecretRefSpec is embedded in DatabaseSpec, MessagingSpec, and PolicySpec via value/pointer as per architecture docs'. PolicySpec currently has ConfigMapRef and Inline only. This may be an intentional design simplification (policy sources don't naturally need secret references), but the plan criteria were not formally updated.",
+      "location": "internal/common/types/types.go:43-47",
+      "fix": "Either add SecretRefSpec to PolicySpec if the architecture docs require it, or formally update the plan acceptance criteria to remove this requirement. Given PolicySpec deals with policy rules (not credentials), dropping this requirement seems reasonable — but it should be explicit."
+    }
+  ],
+  "issues_found": [
+    {
+      "id": "FC1-1",
+      "severity": "major",
+      "check_id": "FC1",
+      "file": "internal/common/types/types.go:30-35",
+      "description": "MessagingSpec does not implement the managed/brownfield dual-mode pattern specified in plan criteria. Missing ClusterRef *corev1.LocalObjectReference field. Host field uses json:\"host\" (required) instead of json:\"host,omitempty\" (optional). DatabaseSpec and CacheSpec both correctly implement dual-mode. Plan references: task 1.1 description, user story criterion line 17.",
+      "fix": "Add 'ClusterRef *corev1.LocalObjectReference `json:\"clusterRef,omitempty\"`' field to MessagingSpec. Change Host tag to 'json:\"host,omitempty\"'. Update docs/reference/internal-common-types.md to reflect dual-mode. Add JSON round-trip test for MessagingSpec with ClusterRef set. OR: formally update plan criteria if this was intentional."
+    },
+    {
+      "id": "FC1-2",
+      "severity": "minor",
+      "check_id": "FC1",
+      "file": "internal/common/types/types.go:43-47",
+      "description": "PolicySpec missing SecretRefSpec embedding per plan acceptance criteria (line 18). Likely an intentional design simplification — policy sources don't need secret references. Docs and implementation are internally consistent. Plan criteria need formal update to match.",
+      "fix": "Update plan acceptance criteria to remove SecretRefSpec requirement from PolicySpec, or add the field if the architecture docs require it."
+    },
+    {
+      "id": "P1-1",
+      "severity": "minor",
+      "check_id": "P1",
+      "file": "internal/common/plugins/plugins_test.go",
+      "description": "plugins/ test file uses standalone top-level test functions (TestRenderPastePipeline_BasePipelineOnly, etc.) instead of the table-driven t.Run pattern used consistently in conditions/, config/, and policy/ test files. Functionally correct but inconsistent with project conventions.",
+      "fix": "Consolidate into table-driven TestRenderPastePipeline(t *testing.T) and TestRenderPluginConfig(t *testing.T) with t.Run subtests."
+    },
+    {
+      "id": "TE2-1",
+      "severity": "minor",
+      "check_id": "TE2",
+      "file": "internal/common/config/config_test.go",
+      "description": "TestRenderINI does not include a nil-map input test case. Every other function in the same file (MergeDefaults, InjectSecrets, InjectOsloPolicyConfig) has an explicit nil-input test. The code handles nil correctly (len(nil) == 0), but the contract is unverified by tests.",
+      "fix": "Add table case: {name: \"nil map returns empty string\", config: nil, expected: \"\"}."
+    },
+    {
+      "id": "Q4-1",
+      "severity": "minor",
+      "check_id": "Q4",
+      "file": "internal/common/config/config.go:189-193",
+      "description": "escapePassword uses fragile byte-index slicing (userinfo[2:]) to extract the encoded password from url.UserPassword(\"x\", password).String(). The offset depends on the placeholder \"x\" always encoding to exactly 1 byte. While correct today, strings.Cut would be more robust and self-documenting.",
+      "fix": "Replace 'return userinfo[2:]' with '_, encoded, _ := strings.Cut(userinfo, \":\"); return encoded'."
+    },
+    {
+      "id": "C3-1",
+      "severity": "minor",
+      "check_id": "C3",
+      "file": "internal/common/config/config.go:127-129",
+      "description": "InjectOsloPolicyConfig unconditionally replaces the entire oslo_policy section. If the caller's config already has oslo_policy keys (e.g. enforce_scope, enforce_new_defaults), they are silently dropped. This violates the user-wins principle established by MergeDefaults.",
+      "fix": "Merge into existing section instead of replacing: if result[\"oslo_policy\"] == nil { result[\"oslo_policy\"] = make(map[string]string) }; result[\"oslo_policy\"][\"policy_file\"] = policyFilePath."
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a test case for InjectOsloPolicyConfig where the input config already has an oslo_policy section with additional keys, to verify merge-vs-replace behavior.",
+    "ValidatePolicyRules uses fldPath.Key(\"\") when k is empty, producing a confusing webhook error path like 'spec.rules[\"\"]'. Consider using fldPath directly or field.Required for a clearer error message."
+  ],
+  "next_steps": [
+    "Resolve MessagingSpec dual-mode discrepancy (FC1-1): either add ClusterRef field or formally update plan criteria",
+    "Resolve PolicySpec SecretRefSpec discrepancy (FC1-2): formally update plan criteria to match implementation",
+    "Fix InjectOsloPolicyConfig section-replace behavior to merge instead (C3-1)",
+    "Optional: consolidate plugins/ tests into table-driven pattern (P1-1)",
+    "Optional: add nil-map test to TestRenderINI (TE2-1)",
+    "Optional: use strings.Cut in escapePassword (Q4-1)"
+  ],
+  "review_1_issues_resolved": [
+    "TE2-1: InjectSecrets generic section/key injection path — now tested with 'generic section/key secrets injected' and 'generic section/key merges into existing section' cases",
+    "TE2-2: assembleDatabaseConnection default port/name fallbacks — now tested with 'default port 3306' and 'default name equals user' cases",
+    "Q6-1: Magic string '3306' — extracted to const defaultMySQLPort",
+    "D3-1: Unused expectedJSON field in types_test.go — removed",
+    "Q3-1: indexOf helper reimplementing strings.Index — removed"
+  ],
+  "sourcery_ai_issues_resolved": [
+    "insertToken docstring expanded to document After>Before precedence and fallback-append behavior",
+    "GetCondition mutation test added (TestGetCondition_MutationUpdatesOriginalSlice)",
+    "InjectSecrets incomplete-parts and connection-precedence tests added",
+    "Typo 'Empty secrets is a no-op' corrected to 'Empty secrets are a no-op'",
+    "RenderPolicyYAML comment now correctly says '{}\n' not '{}'"
+  ],
+  "automated_verification": {
+    "go_build": "PASS — go build ./internal/common/... clean",
+    "go_test": "PASS — 86 tests, 0 failures",
+    "go_vet": "PASS — go vet ./internal/common/... clean",
+    "golangci_lint": "PASS — 0 issues",
+    "coverage": {
+      "conditions": "100.0%",
+      "config": "100.0%",
+      "plugins": "100.0%",
+      "policy": "96.9%",
+      "types": "no statements (struct definitions only)"
+    }
+  }
+}
