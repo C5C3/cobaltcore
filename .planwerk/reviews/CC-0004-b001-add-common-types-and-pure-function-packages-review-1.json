@@ -1,0 +1,112 @@
+{
+  "feature_id": "CC-0004",
+  "title": "B001: Add common types and pure function packages",
+  "date": "2026-03-01",
+  "summary": "CC-0004 implements 11 shared Go type structs in internal/common/types/ and 4 pure-function utility packages (conditions/, config/, plugins/, policy/) with 13 exported functions. All packages compile cleanly, pass go vet, golangci-lint, and 73 tests. Coverage is 100% for conditions, plugins, and types; 96.9% for policy; 88.9% for config. No kubebuilder markers on types (Decision #4). No K8s client-go imports in pure function packages. ValidatePolicyRules returns field.ErrorList (Decision #3). RenderINI output is deterministic. All doc.go files and reference documentation present.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "All tests pass (73 tests, 0 failures)", "checked": true},
+    {"item": "Table-driven tests using gomega + testing.T (no ginkgo, no build tags)", "checked": true},
+    {"item": "Every exported function has at least one test", "checked": true},
+    {"item": "Edge cases covered: nil slices, empty maps, nil pointers, boundary values", "checked": true},
+    {"item": "Immutability verified: does-not-mutate-inputs tests for MergeDefaults, InjectSecrets, InjectOsloPolicyConfig, MergePolicies", "checked": true},
+    {"item": "InjectSecrets generic section/key injection path tested", "checked": false},
+    {"item": "assembleDatabaseConnection default port/name fallbacks tested", "checked": false},
+    {"item": "Determinism tests: RenderINI idempotency, RenderPolicyYAML determinism, filter section sorting", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Functions do one thing (SRP)", "checked": true},
+    {"item": "Functions small (all under 40 lines)", "checked": true},
+    {"item": "No code duplication (copyConfig properly extracted)", "checked": true},
+    {"item": "Clear naming (intention-revealing)", "checked": true},
+    {"item": "Max nesting under 3 levels", "checked": true},
+    {"item": "No dead code in production files", "checked": true},
+    {"item": "No magic numbers/strings in production code", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "No K8s client-go imports in pure function packages", "checked": true},
+    {"item": "Special characters in passwords URL-encoded", "checked": true},
+    {"item": "No path traversal vulnerabilities", "checked": true},
+    {"item": "No sensitive data in logs or errors", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "All 11 type structs defined with correct fields, types, and JSON tags", "checked": true},
+    {"item": "No +kubebuilder markers in types package (Decision #4)", "checked": true},
+    {"item": "All 13 exported functions implemented", "checked": true},
+    {"item": "ValidatePolicyRules returns field.ErrorList (Decision #3)", "checked": true},
+    {"item": "RenderINI output deterministic (sections and keys sorted)", "checked": true},
+    {"item": "MergeDefaults implements user-wins precedence", "checked": true},
+    {"item": "InjectOsloPolicyConfig is no-op when policyFilePath is empty", "checked": true},
+    {"item": "Every package has doc.go with package-level godoc", "checked": true},
+    {"item": "Reference docs in docs/reference/ for types and utility packages", "checked": true},
+    {"item": "Solution is as simple as possible", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No over-engineering or unused abstractions", "checked": true},
+    {"item": "Excluded items (CreateImmutableConfigMap, LoadPolicyFromConfigMap, etc.) correctly deferred", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Nil pointer handled gracefully in SetCondition", "checked": true},
+    {"item": "Empty input handled gracefully in all functions", "checked": true},
+    {"item": "ValidatePolicyRules reports all errors (not just first)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All functions return new maps/slices (no input mutation)", "checked": true},
+    {"item": "Nil and empty inputs handled without panics", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "id": "TE2-1",
+      "severity": "major",
+      "check_id": "TE2",
+      "file": "internal/common/config/config_test.go",
+      "description": "InjectSecrets generic section/key injection path (config.go:100-113) is untested. The loop that handles arbitrary 'section/key' secrets (non-database parts) has zero test coverage. InjectSecrets is at 68.2% statement coverage.",
+      "fix": "Add test case to TestInjectSecrets: {name: 'generic section/key secrets injected', config: {}, secrets: {'keystone_authtoken/auth_url': 'https://keystone:5000'}, expected: {'keystone_authtoken': {'auth_url': 'https://keystone:5000'}}}. Also add a case mixing database and generic secrets."
+    },
+    {
+      "id": "TE2-2",
+      "severity": "major",
+      "check_id": "TE2",
+      "file": "internal/common/config/config_test.go",
+      "description": "assembleDatabaseConnection default fallbacks (config.go:172-178) untested. When 'database/port' or 'database/name' are omitted from secrets, the function defaults to '3306' and uses the username respectively. These branches have 0 test coverage (function at 80%).",
+      "fix": "Add test case to TestInjectSecrets: {name: 'default port and database name when omitted', config: {}, secrets: {'database/user': 'admin', 'database/password': 'pass', 'database/host': 'db.host'}, expected: {'database': {'connection': 'mysql+pymysql://admin:pass@db.host:3306/admin'}}}."
+    },
+    {
+      "id": "Q6-1",
+      "severity": "minor",
+      "check_id": "Q6",
+      "file": "internal/common/config/config.go:173",
+      "description": "Magic string '3306' as default port in assembleDatabaseConnection.",
+      "fix": "Extract to a named constant: const defaultDatabasePort = \"3306\"."
+    },
+    {
+      "id": "D3-1",
+      "severity": "minor",
+      "check_id": "Q7",
+      "file": "internal/common/types/types_test.go:328",
+      "description": "TestDatabaseSpec_DualMode test struct has an unused 'expectedJSON' field that is never set in any test case.",
+      "fix": "Remove the 'expectedJSON string' field from the test struct."
+    },
+    {
+      "id": "Q3-1",
+      "severity": "minor",
+      "check_id": "Q3",
+      "file": "internal/common/plugins/plugins_test.go:271-278",
+      "description": "Helper function 'indexOf' reimplements strings.Index from the standard library.",
+      "fix": "Replace with strings.Index(s, substr)."
+    }
+  ],
+  "suggested_improvements": [
+    "Consider using url.UserPassword() or url.URL{} for assembling database connection URIs instead of manual string formatting + escapePassword. This handles all RFC 3986 reserved characters in userinfo correctly, including $, +, ;, = which the current escapePassword misses.",
+    "The escapePassword function uses url.PathEscape which does not escape all URI-reserved characters for the userinfo component. Characters like +, $, ;, = are left unescaped. While unlikely in typical passwords, this could cause parsing issues with connection strings containing these characters."
+  ],
+  "next_steps": [
+    "Add missing test cases for InjectSecrets generic section/key injection path (TE2-1)",
+    "Add missing test cases for assembleDatabaseConnection default port/name fallbacks (TE2-2)",
+    "After test gaps are addressed, re-run coverage to confirm config package reaches >95%"
+  ]
+}
