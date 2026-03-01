@@ -1,0 +1,118 @@
+{
+  "feature_id": "CC-0003",
+  "title": "A003: Add minimal GitHub Actions CI workflow",
+  "date": "2026-03-01",
+  "verdict": "NEEDS_CHANGES",
+  "summary": "CI workflow (`.github/workflows/ci.yaml`) is well-structured with correct SPDX header, triggers, permissions, concurrency, and three parallel jobs (lint, test, test-integration). Reference docs are accurate. However, the Makefile modification to `test-integration` target is out of explicit plan scope and the new target will fail in CI without envtest binary setup — an unaddressed gap that makes the `test-integration` job non-functional on `ubuntu-latest`.",
+  "review_process": {
+    "step_1_intent": "Plan specifies a single ci.yaml with 3 parallel jobs (lint, test, test-integration) triggered on push-to-main and PR, plus reference documentation.",
+    "step_2_scope": "4 files changed: ci.yaml (new, in scope), docs/reference/ci-workflow.md (new, in scope), .planwerk progress JSON (tracking, expected), Makefile (modified, NOT in plan scope).",
+    "step_3_verification": "YAML syntax validated with Python yaml.safe_load — valid. `make test` passes. `make test-integration` fails locally (missing envtest binaries). No Go code to type-check or lint.",
+    "step_4_patterns": "ci.yaml is the first workflow file in the repo. Reference workflows cited in plan (deploy-docs.yaml, reuse.yaml, mega-linter.yml) do not exist — conventions cannot be verified against them but the patterns used are standard GitHub Actions best practices.",
+    "step_5_tests": "N/A — infrastructure YAML, no unit tests applicable.",
+    "step_6_security": "permissions: contents: read (least privilege). No secrets, no write permissions, no elevated scopes.",
+    "step_7_complexity": "Minimal implementation — 46 lines, 3 jobs, no unnecessary abstractions.",
+    "step_8_completeness": "All plan tasks (1.1-1.4, 2.1-2.6, 3.1-3.2) are addressed. ci.yaml matches all specified requirements. Reference docs are complete and accurate."
+  },
+  "tests_checklist": [
+    {"item": "YAML syntax validates without errors", "checked": true},
+    {"item": "make test passes locally", "checked": true},
+    {"item": "make test-integration passes locally", "checked": false, "note": "Fails: envtest binaries (etcd, kube-apiserver) not present. Same failure would occur in CI on ubuntu-latest."},
+    {"item": "No GitHub Actions-specific schema errors", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns", "checked": true, "note": "First workflow file; follows standard GitHub Actions conventions."},
+    {"item": "SPDX header matches plan specification exactly", "checked": true},
+    {"item": "Workflow name is 'CI'", "checked": true},
+    {"item": "Quoted 'on' key to avoid YAML boolean interpretation", "checked": true},
+    {"item": "No dead code or unnecessary configuration", "checked": true},
+    {"item": "Clean, minimal YAML structure (46 lines)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Top-level permissions: contents: read (least privilege)", "checked": true},
+    {"item": "No job-level permission overrides", "checked": true},
+    {"item": "No hardcoded secrets or tokens", "checked": true},
+    {"item": "No write permissions granted", "checked": true},
+    {"item": "Action versions pinned (checkout@v4, setup-go@v5, golangci-lint-action@v9)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "Three parallel jobs with no inter-job dependencies", "checked": true},
+    {"item": "Concurrency group scoped per-branch per-workflow", "checked": true},
+    {"item": "Go version sourced from go.work (single source of truth)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated configuration across jobs", "checked": true, "note": "setup-go config is repeated in test and test-integration but this is inherent to GitHub Actions job isolation."},
+    {"item": "No excluded scope items present (no docker, helm, e2e, coverage, matrix)", "checked": true},
+    {"item": "No workflow_dispatch, tag triggers, or other unplanned triggers", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Jobs fail independently (no needs: dependencies)", "checked": true},
+    {"item": "Concurrency cancel-in-progress prevents wasted CI time", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Permissions restricted to minimum required", "checked": true},
+    {"item": "Action versions pinned to major version tags", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [
+    {
+      "severity": "MEDIUM",
+      "id": "SCOPE-01",
+      "description": "Makefile `test-integration` target modified from error stub to real implementation. This change is NOT listed in any plan task item (1.1-1.4, 2.1-2.6, 3.1-3.2). The plan scope explicitly lists only `.github/workflows/ci.yaml` and reference documentation. While pragmatically necessary (the error stub would make the CI job always fail), this is scope creep.",
+      "location": "Makefile:72-77",
+      "fix": "Either (a) add a task item to the plan that covers the Makefile change, or (b) revert the Makefile change and document that the test-integration CI job depends on a future implementation of the Makefile target (e.g., CC-0002 or a follow-up task)."
+    },
+    {
+      "severity": "HIGH",
+      "id": "CI-01",
+      "description": "The CI `test-integration` job will fail on `ubuntu-latest` because envtest binaries (etcd, kube-apiserver) are not available. The Makefile `test-integration` target runs `go test -tags integration ./...` across all module dirs, including `internal/common/testutil/envtest` and `internal/common/testutil/simulators` which require envtest binaries. Confirmed locally: `make test-integration` fails with 'fork/exec /usr/local/kubebuilder/bin/etcd: no such file or directory'. There is no CI step to install envtest binaries, and `install-test-deps` remains a stub.",
+      "location": ".github/workflows/ci.yaml:43-46 + Makefile:73-77",
+      "fix": "Either (a) add a step in the test-integration job to install envtest binaries before running make test-integration (e.g., `go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest && setup-envtest use`), or (b) revert the Makefile change and keep the test-integration CI job as a placeholder that passes trivially until envtest setup is implemented, or (c) add a prerequisite `make install-test-deps` step once that target is implemented."
+    }
+  ],
+  "issues_found": [
+    {
+      "id": "CI-01",
+      "severity": "major",
+      "check_id": "FC4",
+      "description": "test-integration job is non-functional: will fail in CI due to missing envtest binaries on ubuntu-latest. Behavior described in feature spec ('integration tests run automatically via make test-integration') does not work end-to-end.",
+      "location": ".github/workflows/ci.yaml:38-46",
+      "fix": "Add envtest binary setup step before `make test-integration`, or document this as a known limitation with a follow-up task to add the setup step."
+    },
+    {
+      "id": "SCOPE-01",
+      "severity": "major",
+      "check_id": "C1",
+      "description": "Makefile modification (test-integration target replacement) is outside the explicit plan scope. Plan scope lists only .github/workflows/ci.yaml creation and reference documentation.",
+      "location": "Makefile:72-77",
+      "fix": "Either extend the plan to include this change or revert and handle in a separate task."
+    },
+    {
+      "id": "CONV-01",
+      "severity": "minor",
+      "check_id": "P1",
+      "description": "Plan claims to match conventions from deploy-docs.yaml, reuse.yaml, and mega-linter.yml, but none of these files exist in the repository. ci.yaml is the first and only workflow file. Convention claims are unverifiable — not an implementation defect, but the plan references are inaccurate.",
+      "location": ".github/workflows/ci.yaml",
+      "fix": "No action needed on the implementation. Note for plan accuracy in future features."
+    },
+    {
+      "id": "PIN-01",
+      "severity": "minor",
+      "check_id": "S3",
+      "description": "Actions are pinned to major version tags (v4, v5, v9) rather than full SHA hashes. Major version tags are mutable and could be force-pushed by upstream maintainers. SHA pinning is the GitHub-recommended security hardening practice.",
+      "location": ".github/workflows/ci.yaml:23-24,31-32,41-42",
+      "fix": "Consider pinning to full commit SHAs with version comments, e.g. `actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1`. This is a suggestion, not blocking."
+    }
+  ],
+  "suggested_improvements": [
+    "Pin GitHub Actions to full SHA hashes instead of mutable major version tags for supply-chain security hardening",
+    "Add actionlint to the CI pipeline (or as a pre-commit hook) to validate workflow YAML schema",
+    "Consider adding a timeout-minutes to each job to prevent runaway CI jobs from consuming unlimited minutes"
+  ],
+  "next_steps": [
+    "Resolve CI-01: decide on envtest binary setup strategy for the test-integration job (add setup step, revert Makefile, or defer to follow-up task)",
+    "Resolve SCOPE-01: either extend plan scope to include Makefile change or revert it",
+    "After resolving above: re-request review for final APPROVED verdict"
+  ]
+}
