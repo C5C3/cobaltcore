@@ -1,26 +1,31 @@
-run:
-  timeout: 5m
-
+version: "2"
 linters:
   enable:
-    - govet
-    - errcheck
-    - staticcheck
-    - unused
-    - gosimple
-    - ineffassign
-    - typecheck
     - gocritic
-
-issues:
-  exclude-rules:
-    - path: "zz_generated.*\\.go$"
-      linters:
-        - govet
-        - errcheck
-        - staticcheck
-        - unused
-        - gosimple
-        - ineffassign
-        - typecheck
-        - gocritic
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+          - gocritic
+          - govet
+          - ineffassign
+          - staticcheck
+          - unused
+        path: zz_generated.*\.go$
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
