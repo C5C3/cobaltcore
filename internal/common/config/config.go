@@ -1,11 +1,62 @@
 package config
 
 import (
+	"context"
+	"crypto/sha256"
 	"fmt"
 	"net/url"
 	"sort"
 	"strings"
+
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// CreateImmutableConfigMap creates a ConfigMap with name={name}-{sha256[:8]}, immutable=true,
+// and the provided data and owner references. Returns the generated name. (CC-0005, REQ-001)
+func CreateImmutableConfigMap(ctx context.Context, c client.Client, name, namespace string, data map[string]string, ownerRefs ...metav1.OwnerReference) (string, error) {
+	hash := hashData(data)
+	generatedName := fmt.Sprintf("%s-%s", name, hash)
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            generatedName,
+			Namespace:       namespace,
+			OwnerReferences: ownerRefs,
+		},
+		Immutable: ptr.To(true),
+		Data:      data,
+	}
+
+	if err := c.Create(ctx, cm); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			return generatedName, nil
+		}
+		return "", fmt.Errorf("creating immutable ConfigMap %s/%s: %w", namespace, generatedName, err)
+	}
+
+	return generatedName, nil
+}
+
+// hashData computes a deterministic SHA256 hash of the data map and returns
+// the first 8 hex characters. Keys are sorted to ensure determinism.
+func hashData(data map[string]string) string {
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	h := sha256.New()
+	for _, k := range keys {
+		fmt.Fprintf(h, "%s=%s\n", k, data[k])
+	}
+
+	return fmt.Sprintf("%x", h.Sum(nil))[:8]
+}
 
 // RenderINI produces a deterministic INI-format string from a nested config map.
 // Sections and keys are sorted alphabetically to ensure stable ConfigMap content hashes. (CC-0004, REQ-005)

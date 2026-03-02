@@ -69,6 +69,9 @@ deploy-infra:
 install-test-deps:
 	$(error install-test-deps target requires S002 implementation)
 
-## Run integration tests (stub - requires S002)
+## Run integration tests (requires envtest binaries via setup-envtest)
 test-integration:
-	$(error test-integration target requires S002 implementation)
+	@for dir in $(ALL_MODULE_DIRS); do \
+		echo "Integration-testing $$dir..."; \
+		(cd $$dir && go test -tags integration -count=1 ./...) || exit 1; \
+	done

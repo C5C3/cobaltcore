@@ -69,3 +69,41 @@ func simulateUnstructuredReady(ctx context.Context, c client.Client, gvk schema.
 
 	return nil
 }
+
+// simulateConditionsOnlyReady creates an unstructured custom resource with the
+// given GVK (if it does not already exist) and patches its status sub-resource
+// to set a "Ready" condition with status "True". Unlike simulateUnstructuredReady,
+// it does not set a status.ready boolean — only conditions. This is the shared
+// implementation for operators that use conditions-only status (e.g. cert-manager
+// Certificate, ESO PushSecret).
+func simulateConditionsOnlyReady(ctx context.Context, c client.Client, gvk schema.GroupVersionKind, name, namespace, condReason, condMessage string) error {
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(gvk)
+	obj.SetName(name)
+	obj.SetNamespace(namespace)
+
+	if err := createOrGet(ctx, c, obj, gvk.Kind); err != nil {
+		return err
+	}
+
+	patch := client.MergeFrom(obj.DeepCopy())
+
+	conditions := []interface{}{
+		map[string]interface{}{
+			"type":               "Ready",
+			"status":             "True",
+			"reason":             condReason,
+			"message":            condMessage,
+			"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+		},
+	}
+	if err := unstructured.SetNestedSlice(obj.Object, conditions, "status", "conditions"); err != nil {
+		return fmt.Errorf("setting %s status.conditions: %w", gvk.Kind, err)
+	}
+
+	if err := c.Status().Patch(ctx, obj, patch); err != nil {
+		return fmt.Errorf("patching %s status: %w", gvk.Kind, err)
+	}
+
+	return nil
+}

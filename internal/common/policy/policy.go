@@ -1,11 +1,36 @@
 package policy
 
 import (
+	"context"
+	"fmt"
 	"sort"
 
+	corev1 "k8s.io/api/core/v1"
 	"gopkg.in/yaml.v3"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// LoadPolicyFromConfigMap fetches a ConfigMap and parses the 'policy.yaml' key
+// into a map[string]string of policy rules. (CC-0005, REQ-008)
+func LoadPolicyFromConfigMap(ctx context.Context, c client.Client, namespace, name string) (map[string]string, error) {
+	var cm corev1.ConfigMap
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &cm); err != nil {
+		return nil, fmt.Errorf("fetching ConfigMap %s/%s: %w", namespace, name, err)
+	}
+
+	raw, ok := cm.Data["policy.yaml"]
+	if !ok {
+		return nil, fmt.Errorf("ConfigMap %s/%s does not contain key \"policy.yaml\"", namespace, name)
+	}
+
+	var rules map[string]string
+	if err := yaml.Unmarshal([]byte(raw), &rules); err != nil {
+		return nil, fmt.Errorf("parsing policy.yaml from ConfigMap %s/%s: %w", namespace, name, err)
+	}
+
+	return rules, nil
+}
 
 // MergePolicies merges inline policy rules over external rules with inline-wins precedence.
 // Returns a new map without mutating inputs. (CC-0004, REQ-011)

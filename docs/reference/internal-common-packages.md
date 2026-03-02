@@ -302,5 +302,5 @@ CRD Spec Fields ──→ MergePolicies ──→ ValidatePolicyRules ──→ 
 ## Dependencies
 
 - **CC-0004** — implements all packages
-- **CC-0005** — will add K8s-client-dependent functions (`CreateImmutableConfigMap`, `LoadPolicyFromConfigMap`)
+- **CC-0005** — adds K8s-client-dependent functions (see [Kubernetes-Interacting Packages](internal-common-k8s-packages.md))
 - **CC-0011** — will consume types in CRD definitions with kubebuilder markers

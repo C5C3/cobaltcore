@@ -1,0 +1,192 @@
+{
+  "summary": "Implements 7 Kubernetes-client-dependent packages (config extension, secrets, database, deployment, job, tls, policy extension) within internal/common/ with 2 new simulators and comprehensive envtest integration tests. All planned functions are present and working: idempotent CRUD via unstructured client for CRDs, server-side apply for core resources, pure-function readiness checks, and content-hashed immutable ConfigMaps. Unit tests pass. No new go.mod dependencies. Documentation is thorough and accurate.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Unit tests exist and pass (IsDeploymentReady, IsJobComplete)", "checked": true},
+    {"item": "Integration tests exist for all 7 packages with //go:build integration tag", "checked": true},
+    {"item": "Integration tests use TestMain with SetupEnvTest", "checked": true},
+    {"item": "Integration tests use GenerateName namespaces", "checked": false},
+    {"item": "Integration tests use t.Cleanup for teardown", "checked": true},
+    {"item": "All Ensure/Create functions have idempotency tests", "checked": true},
+    {"item": "Owner reference tests verify refs are set correctly", "checked": true},
+    {"item": "Pure functions have table-driven unit tests", "checked": true},
+    {"item": "Edge cases covered (not found, missing key, invalid YAML)", "checked": true},
+    {"item": "New simulators have ready + idempotent tests", "checked": true},
+    {"item": "Assertions are specific (exact values, not just no-error)", "checked": true},
+    {"item": "EnsureCertificate test verifies full issuerRef (name, kind, group)", "checked": false},
+    {"item": "EnsureDatabaseUser idempotency test verifies both User and Grant survive", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "All new packages have doc.go with (CC-0005) convention", "checked": true},
+    {"item": "Unstructured client used for CRD interactions (MariaDB, ESO, cert-manager)", "checked": true},
+    {"item": "Typed client used for core resources (ConfigMap, Secret, Deployment, Service, Job, CronJob)", "checked": true},
+    {"item": "Error wrapping consistent with fmt.Errorf(': %w', err) pattern", "checked": true},
+    {"item": "Function signatures consistent (ctx, client, params, ownerRefs variadic)", "checked": true},
+    {"item": "All functions <= 40 lines", "checked": false},
+    {"item": "No code duplication (simulators)", "checked": false},
+    {"item": "golangci-lint passes with no new warnings", "checked": false},
+    {"item": "go vet passes on all new packages", "checked": true},
+    {"item": "No new dependencies in go.mod", "checked": true},
+    {"item": "Parameter ordering consistent across package APIs", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded credentials or tokens", "checked": true},
+    {"item": "No sensitive data exposed in logs", "checked": true},
+    {"item": "Error messages do not leak internal details beyond K8s resource identifiers", "checked": true},
+    {"item": "Nil pointer guards on pure functions", "checked": true},
+    {"item": "Type assertions from unstructured safely guarded with ok checks", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "Follows existing patterns from simulators/helpers.go and CC-0004", "checked": true},
+    {"item": "Server-side apply uses field manager parameter (not hardcoded)", "checked": true},
+    {"item": "Owner references correctly propagated from variadic args", "checked": true},
+    {"item": "Idempotency via AlreadyExists for create-style, SSA for apply-style", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated production code", "checked": true},
+    {"item": "No duplicated test infrastructure (simulators)", "checked": false},
+    {"item": "No unnecessary abstractions", "checked": true},
+    {"item": "No scope creep beyond plan", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors returned early with context", "checked": true},
+    {"item": "NotFound handled gracefully where specified (false, nil)", "checked": true},
+    {"item": "AlreadyExists handled for idempotency", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Nil deployment/job handled in pure functions", "checked": true},
+    {"item": "Empty ownerRefs variadic handled (no empty slice set)", "checked": true},
+    {"item": "Missing YAML key in ConfigMap returns descriptive error", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [
+    {
+      "severity": "MINOR",
+      "description": "RunDBSyncJob accepts image as plain string instead of types.ImageSpec as specified in the plan. Simpler but deviates from documented API in Key Components and Task 3.3.",
+      "location": "internal/common/database/database.go:145",
+      "fix": "Change parameter to image types.ImageSpec and use fmt.Sprintf('%s:%s', image.Repository, image.Tag) for the container image, or update the plan documentation to reflect the simplified API."
+    }
+  ],
+  "issues_found": [
+    {
+      "id": "V3-1",
+      "severity": "critical",
+      "check_id": "V3",
+      "file": "internal/common/deployment/deployment.go",
+      "line": 45,
+      "description": "golangci-lint SA1019: client.Apply is deprecated. Use client.Client.Apply() instead of c.Patch(ctx, deploy, client.Apply, ...). Same issue at line 62 for EnsureService.",
+      "fix": "Replace c.Patch(ctx, deploy, client.Apply, client.FieldOwner(fieldManager), client.ForceOwnership) with the new client.Client.Apply() API. See controller-runtime migration guide."
+    },
+    {
+      "id": "V3-2",
+      "severity": "critical",
+      "check_id": "V3",
+      "file": "internal/common/job/job.go",
+      "line": 59,
+      "description": "golangci-lint SA1019: client.Apply is deprecated in EnsureCronJob. Same deprecated pattern as deployment package.",
+      "fix": "Replace c.Patch(ctx, cronJob, client.Apply, ...) with client.Client.Apply()."
+    },
+    {
+      "id": "P1-1",
+      "severity": "major",
+      "check_id": "P1",
+      "file": "internal/common/secrets/secrets.go",
+      "line": 18,
+      "description": "Parameter ordering inconsistency: IsExternalSecretReady(ctx, c, name, namespace) but IsSecretReady(ctx, c, namespace, name) and GetSecretValue(ctx, c, namespace, name, key). All other new CC-0005 packages use (name, namespace) ordering. This creates a latent bug risk — callers mixing these functions can silently swap name/namespace since both are strings.",
+      "fix": "Standardize IsSecretReady and GetSecretValue to (name, namespace) order to match IsExternalSecretReady and all other CC-0005 packages (database, deployment, job, tls, config). Update integration tests accordingly."
+    },
+    {
+      "id": "Q2-1",
+      "severity": "major",
+      "check_id": "Q2",
+      "file": "internal/common/database/database.go",
+      "line": "55-140",
+      "description": "EnsureDatabaseUser is 86 lines (guideline: <= 40). It handles two logically distinct operations (User CR + Grant CR) in a single function body with parallel structure.",
+      "fix": "Extract the Grant CR creation into a helper function ensureGrant(ctx, c, name, namespace, mariadbRefName, database, username string, privileges []string, ownerRefs ...metav1.OwnerReference) error, reducing EnsureDatabaseUser to ~45 lines."
+    },
+    {
+      "id": "Q3-1",
+      "severity": "major",
+      "check_id": "Q3",
+      "file": "internal/common/testutil/simulators/certificate.go",
+      "line": "20-54",
+      "description": "SimulateCertificateReady and SimulatePushSecretReady (pushsecret.go:20-54) are near-identical (~54 lines each), differing only in GVK and error message strings. Both manually implement what a conditions-only variant of simulateUnstructuredReady could provide.",
+      "fix": "Add a simulateConditionsOnlyReady(ctx, c, gvk, name, namespace, condReason, condMessage) helper to helpers.go (parallel to simulateUnstructuredReady but without the status.ready boolean), then reduce both simulators to one-liner calls matching the mariadb.go/memcached.go pattern."
+    },
+    {
+      "id": "TE4-1",
+      "severity": "major",
+      "check_id": "TE4",
+      "file": "internal/common/testutil/simulators/simulators_integration_test.go",
+      "line": "62-71",
+      "description": "TestMain creates a fixed namespace 'test-simulators' with hardcoded Name (not GenerateName). All 12 test functions share this namespace. Unlike all other CC-0005 test files which use GenerateName + t.Cleanup per test, this creates shared mutable state. Running tests in parallel or re-running without a fresh envtest could cause AlreadyExists failures.",
+      "fix": "Add a createTestNamespace helper using GenerateName: 'test-simulators-' and pass the generated namespace into each test. Register t.Cleanup to delete the namespace. Matches the pattern in database_integration_test.go, secrets_integration_test.go, etc."
+    },
+    {
+      "id": "TE7-1",
+      "severity": "major",
+      "check_id": "TE7",
+      "file": "internal/common/tls/tls_integration_test.go",
+      "line": "75-78",
+      "description": "TestEnsureCertificate_Creates checks issuerRef.name but not issuerRef.kind ('ClusterIssuer') or issuerRef.group ('cert-manager.io'). A regression that swaps kind or group would not be detected.",
+      "fix": "Add assertions for issuerRef.kind and issuerRef.group after line 78."
+    },
+    {
+      "id": "TE7-2",
+      "severity": "major",
+      "check_id": "TE7",
+      "file": "internal/common/database/database_integration_test.go",
+      "line": "227-246",
+      "description": "TestEnsureDatabaseUser_Idempotent only checks no-error on the second call. Does not verify that both User and Grant CRs still exist with correct spec after the second call. A regression that deletes the Grant on re-invocation would pass silently.",
+      "fix": "After the second call, fetch both User CR (name='idem-user') and Grant CR (name='idem-user-grant') and assert they still exist."
+    },
+    {
+      "id": "Q6-1",
+      "severity": "minor",
+      "check_id": "Q6",
+      "file": "internal/common/database/database.go",
+      "line": 119,
+      "description": "Magic string '*' for Grant wildcard table. This MariaDB-operator semantic value appears once with no constant or comment explaining it means 'all tables'.",
+      "fix": "Extract to a named constant: const grantAllTables = \"*\""
+    },
+    {
+      "id": "TE7-3",
+      "severity": "minor",
+      "check_id": "TE7",
+      "file": "internal/common/config/config_integration_test.go",
+      "line": "76-102",
+      "description": "TestCreateImmutableConfigMap_DeterministicHash is semantically equivalent to TestCreateImmutableConfigMap_Idempotent — both call the function twice with identical data and assert the same name is returned. Neither tests the hash computation independently.",
+      "fix": "Consider testing hashData determinism via a unit test on the unexported function, or remove the duplicate test."
+    }
+  ],
+  "suggested_improvements": [
+    "Extract createTestNamespace into testutil package as a shared helper to eliminate duplication across 5 integration test files",
+    "Add a package-level const DefaultFieldManager = 'cobaltcore-operator' (or similar) in deployment/ and job/ packages with a doc comment explaining the recommended SSA field manager value",
+    "Consider whether RunDBSyncJob should use types.ImageSpec as the plan specifies, or update the plan documentation to match the simpler string parameter"
+  ],
+  "next_steps": [
+    "Fix deprecated client.Apply usage in deployment/deployment.go and job/job.go — migrate to client.Client.Apply() API",
+    "Standardize parameter ordering in secrets/ package: change IsSecretReady and GetSecretValue to (name, namespace) order",
+    "Extract simulateConditionsOnlyReady helper in testutil/simulators/helpers.go to deduplicate certificate.go and pushsecret.go",
+    "Refactor EnsureDatabaseUser to extract Grant CR creation into a helper function",
+    "Fix simulators_integration_test.go to use GenerateName namespaces per test",
+    "Add missing issuerRef.kind and issuerRef.group assertions to TestEnsureCertificate_Creates",
+    "Add User+Grant existence assertions to TestEnsureDatabaseUser_Idempotent",
+    "Re-run golangci-lint to confirm zero warnings after fixes"
+  ],
+  "metadata": {
+    "feature_id": "CC-0005",
+    "title": "B002: Implement Kubernetes-interacting packages",
+    "date": "2026-03-02",
+    "verdict": "NEEDS_CHANGES",
+    "review_number": 1,
+    "blocking_checks_failed": ["V3"],
+    "major_checks_failed": ["P1", "Q2", "Q3", "TE4", "TE7"],
+    "unit_tests_pass": true,
+    "integration_tests_pass": "N/A (envtest binaries not available in review environment; tests compile successfully)",
+    "go_vet_pass": true,
+    "golangci_lint_clean": false,
+    "new_go_mod_dependencies": false
+  }
+}
