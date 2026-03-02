@@ -32,10 +32,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	k8sClient = c
-
-	testScheme = runtime.NewScheme()
-	_ = corev1.AddToScheme(testScheme)
-	_ = batchv1.AddToScheme(testScheme)
+	testScheme = c.Scheme()
 
 	ctx := context.Background()
 	ns := &corev1.Namespace{
@@ -53,7 +50,7 @@ func TestMain(m *testing.M) {
 }
 
 // newOwner creates a ConfigMap to act as the owner for owner-reference tests.
-func newOwner(ctx context.Context, t *testing.T, name string) *corev1.ConfigMap {
+func newOwner(t *testing.T, ctx context.Context, name string) *corev1.ConfigMap {
 	t.Helper()
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
@@ -116,7 +113,7 @@ func testCronJob(name string) *batchv1.CronJob {
 
 func TestRunJob_Creates(t *testing.T) {
 	ctx := context.Background()
-	owner := newOwner(ctx, t, "owner-runjob-creates")
+	owner := newOwner(t, ctx, "owner-runjob-creates")
 
 	j := testJob("runjob-creates")
 	name, err := job.RunJob(ctx, k8sClient, owner, testScheme, j)
@@ -141,7 +138,7 @@ func TestRunJob_Creates(t *testing.T) {
 
 func TestRunJob_Idempotent(t *testing.T) {
 	ctx := context.Background()
-	owner := newOwner(ctx, t, "owner-runjob-idempotent")
+	owner := newOwner(t, ctx, "owner-runjob-idempotent")
 
 	j1 := testJob("runjob-idempotent")
 	if _, err := job.RunJob(ctx, k8sClient, owner, testScheme, j1); err != nil {
@@ -156,11 +153,20 @@ func TestRunJob_Idempotent(t *testing.T) {
 	if name != "runjob-idempotent" {
 		t.Fatalf("second RunJob() returned name %q, want %q", name, "runjob-idempotent")
 	}
+
+	// Verify spec fields are unchanged after idempotent call.
+	fetched := &batchv1.Job{}
+	if err := k8sClient.Get(ctx, client.ObjectKey{Name: "runjob-idempotent", Namespace: testNamespace}, fetched); err != nil {
+		t.Fatalf("failed to get Job after idempotent call: %v", err)
+	}
+	if fetched.Spec.Template.Spec.Containers[0].Image != "busybox" {
+		t.Fatalf("Job image changed after idempotent call: expected %q, got %q", "busybox", fetched.Spec.Template.Spec.Containers[0].Image)
+	}
 }
 
 func TestRunJob_OwnerRef(t *testing.T) {
 	ctx := context.Background()
-	owner := newOwner(ctx, t, "owner-runjob-ownerref")
+	owner := newOwner(t, ctx, "owner-runjob-ownerref")
 
 	j := testJob("runjob-ownerref")
 	if _, err := job.RunJob(ctx, k8sClient, owner, testScheme, j); err != nil {
@@ -191,7 +197,7 @@ func TestRunJob_OwnerRef(t *testing.T) {
 
 func TestEnsureCronJob_Creates(t *testing.T) {
 	ctx := context.Background()
-	owner := newOwner(ctx, t, "owner-cronjob-creates")
+	owner := newOwner(t, ctx, "owner-cronjob-creates")
 
 	cj := testCronJob("cronjob-creates")
 	name, err := job.EnsureCronJob(ctx, k8sClient, owner, testScheme, cj)
@@ -213,7 +219,7 @@ func TestEnsureCronJob_Creates(t *testing.T) {
 
 func TestEnsureCronJob_Idempotent(t *testing.T) {
 	ctx := context.Background()
-	owner := newOwner(ctx, t, "owner-cronjob-idempotent")
+	owner := newOwner(t, ctx, "owner-cronjob-idempotent")
 
 	cj1 := testCronJob("cronjob-idempotent")
 	if _, err := job.EnsureCronJob(ctx, k8sClient, owner, testScheme, cj1); err != nil {
@@ -228,11 +234,20 @@ func TestEnsureCronJob_Idempotent(t *testing.T) {
 	if name != "cronjob-idempotent" {
 		t.Fatalf("second EnsureCronJob() returned name %q, want %q", name, "cronjob-idempotent")
 	}
+
+	// Verify spec fields are unchanged after idempotent call.
+	fetchedCJ := &batchv1.CronJob{}
+	if err := k8sClient.Get(ctx, client.ObjectKey{Name: "cronjob-idempotent", Namespace: testNamespace}, fetchedCJ); err != nil {
+		t.Fatalf("failed to get CronJob after idempotent call: %v", err)
+	}
+	if fetchedCJ.Spec.Schedule != "0 * * * *" {
+		t.Fatalf("CronJob schedule changed after idempotent call: expected %q, got %q", "0 * * * *", fetchedCJ.Spec.Schedule)
+	}
 }
 
 func TestEnsureCronJob_OwnerRef(t *testing.T) {
 	ctx := context.Background()
-	owner := newOwner(ctx, t, "owner-cronjob-ownerref")
+	owner := newOwner(t, ctx, "owner-cronjob-ownerref")
 
 	cj := testCronJob("cronjob-ownerref")
 	if _, err := job.EnsureCronJob(ctx, k8sClient, owner, testScheme, cj); err != nil {

@@ -29,16 +29,26 @@ type PushSecretOpts struct {
 	StoreRef      StoreRef // reference to ClusterSecretStore
 }
 
+// externalSecretGVK is the GroupVersionKind for ESO ExternalSecret resources.
+var externalSecretGVK = schema.GroupVersionKind{
+	Group:   "external-secrets.io",
+	Version: "v1beta1",
+	Kind:    "ExternalSecret",
+}
+
+// pushSecretGVK is the GroupVersionKind for ESO PushSecret resources.
+var pushSecretGVK = schema.GroupVersionKind{
+	Group:   "external-secrets.io",
+	Version: "v1alpha1",
+	Kind:    "PushSecret",
+}
+
 // IsExternalSecretReady checks if an ExternalSecret CR has a Ready=True condition
 // in its status. Uses unstructured access since ESO types are not imported.
 // (CC-0005 / REQ-002)
 func IsExternalSecretReady(ctx context.Context, c client.Client, name, namespace string) (bool, error) {
 	obj := &unstructured.Unstructured{}
-	obj.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "external-secrets.io",
-		Version: "v1beta1",
-		Kind:    "ExternalSecret",
-	})
+	obj.SetGroupVersionKind(externalSecretGVK)
 
 	if err := c.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, obj); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -55,8 +65,8 @@ func IsExternalSecretReady(ctx context.Context, c client.Client, name, namespace
 		return false, nil
 	}
 
-	for _, c := range conditions {
-		condMap, ok := c.(map[string]interface{})
+	for _, cond := range conditions {
+		condMap, ok := cond.(map[string]interface{})
 		if !ok {
 			continue
 		}
@@ -109,11 +119,7 @@ func EnsurePushSecret(ctx context.Context, c client.Client, owner client.Object,
 	}
 
 	existing := &unstructured.Unstructured{}
-	existing.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "external-secrets.io",
-		Version: "v1alpha1",
-		Kind:    "PushSecret",
-	})
+	existing.SetGroupVersionKind(pushSecretGVK)
 
 	err := c.Get(ctx, client.ObjectKey{Name: opts.Name, Namespace: opts.Namespace}, existing)
 	if apierrors.IsNotFound(err) {
@@ -150,36 +156,26 @@ func buildPushSecret(opts PushSecretOpts) *unstructured.Unstructured {
 		})
 	}
 
-	obj := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "external-secrets.io/v1alpha1",
-			"kind":       "PushSecret",
-			"metadata": map[string]interface{}{
-				"name":      opts.Name,
-				"namespace": opts.Namespace,
-			},
-			"spec": map[string]interface{}{
-				"secretStoreRefs": []interface{}{
-					map[string]interface{}{
-						"name": opts.StoreRef.Name,
-						"kind": opts.StoreRef.Kind,
-					},
-				},
-				"selector": map[string]interface{}{
-					"secret": map[string]interface{}{
-						"name": opts.SecretName,
-					},
-				},
-				"data": dataEntries,
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(pushSecretGVK)
+	obj.SetName(opts.Name)
+	obj.SetNamespace(opts.Namespace)
+
+	spec := map[string]interface{}{
+		"secretStoreRefs": []interface{}{
+			map[string]interface{}{
+				"name": opts.StoreRef.Name,
+				"kind": opts.StoreRef.Kind,
 			},
 		},
+		"selector": map[string]interface{}{
+			"secret": map[string]interface{}{
+				"name": opts.SecretName,
+			},
+		},
+		"data": dataEntries,
 	}
-
-	obj.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "external-secrets.io",
-		Version: "v1alpha1",
-		Kind:    "PushSecret",
-	})
+	obj.Object["spec"] = spec
 
 	return obj
 }

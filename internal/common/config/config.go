@@ -229,19 +229,14 @@ func CreateImmutableConfigMap(ctx context.Context, c client.Client, owner client
 		return "", fmt.Errorf("setting controller reference: %w", err)
 	}
 
-	// Check if the ConfigMap already exists.
-	existing := &corev1.ConfigMap{}
-	err := c.Get(ctx, client.ObjectKeyFromObject(cm), existing)
-	if err == nil {
-		// Already exists — immutable ConfigMaps are never updated.
+	// Create-then-check-AlreadyExists avoids a TOCTOU race between concurrent
+	// reconcilers that could both observe NotFound and then race on Create.
+	err := c.Create(ctx, cm)
+	if apierrors.IsAlreadyExists(err) {
 		return cmName, nil
 	}
-	if !apierrors.IsNotFound(err) {
-		return "", fmt.Errorf("checking for existing ConfigMap: %w", err)
-	}
-
-	if err := c.Create(ctx, cm); err != nil {
-		return "", fmt.Errorf("creating ConfigMap: %w", err)
+	if err != nil {
+		return "", fmt.Errorf("creating ConfigMap %s/%s: %w", namespace, cmName, err)
 	}
 
 	return cmName, nil

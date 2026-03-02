@@ -72,14 +72,11 @@ func EnsureDatabase(ctx context.Context, c client.Client, owner client.Object, s
 	}
 
 	if err := unstructured.SetNestedField(obj.Object, spec, "spec"); err != nil {
-		return "", fmt.Errorf("setting Database spec: %w", err)
+		return "", fmt.Errorf("setting Database %s/%s spec: %w", opts.Namespace, opts.Name, err)
 	}
 
-	obj.SetAPIVersion(databaseGVK.Group + "/" + databaseGVK.Version)
-	obj.SetKind(databaseGVK.Kind)
-
 	if err := controllerutil.SetControllerReference(owner, obj, scheme); err != nil {
-		return "", fmt.Errorf("setting controller reference: %w", err)
+		return "", fmt.Errorf("setting controller reference on Database %s/%s: %w", opts.Namespace, opts.Name, err)
 	}
 
 	existing := &unstructured.Unstructured{}
@@ -87,18 +84,18 @@ func EnsureDatabase(ctx context.Context, c client.Client, owner client.Object, s
 	err := c.Get(ctx, client.ObjectKeyFromObject(obj), existing)
 	if apierrors.IsNotFound(err) {
 		if err := c.Create(ctx, obj); err != nil {
-			return "", fmt.Errorf("creating Database: %w", err)
+			return "", fmt.Errorf("creating Database %s/%s: %w", opts.Namespace, opts.Name, err)
 		}
 		return opts.Name, nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("checking for existing Database: %w", err)
+		return "", fmt.Errorf("checking for existing Database %s/%s: %w", opts.Namespace, opts.Name, err)
 	}
 
 	existing.Object["spec"] = obj.Object["spec"]
 	existing.SetOwnerReferences(obj.GetOwnerReferences())
 	if err := c.Update(ctx, existing); err != nil {
-		return "", fmt.Errorf("updating Database: %w", err)
+		return "", fmt.Errorf("updating Database %s/%s: %w", opts.Namespace, opts.Name, err)
 	}
 
 	return opts.Name, nil
@@ -134,14 +131,11 @@ func ensureUser(ctx context.Context, c client.Client, owner client.Object, schem
 	}
 
 	if err := unstructured.SetNestedField(obj.Object, spec, "spec"); err != nil {
-		return fmt.Errorf("setting User spec: %w", err)
+		return fmt.Errorf("setting User %s/%s spec: %w", opts.Namespace, opts.Name, err)
 	}
 
-	obj.SetAPIVersion(userGVK.Group + "/" + userGVK.Version)
-	obj.SetKind(userGVK.Kind)
-
 	if err := controllerutil.SetControllerReference(owner, obj, scheme); err != nil {
-		return fmt.Errorf("setting controller reference on User: %w", err)
+		return fmt.Errorf("setting controller reference on User %s/%s: %w", opts.Namespace, opts.Name, err)
 	}
 
 	existing := &unstructured.Unstructured{}
@@ -149,18 +143,18 @@ func ensureUser(ctx context.Context, c client.Client, owner client.Object, schem
 	err := c.Get(ctx, client.ObjectKeyFromObject(obj), existing)
 	if apierrors.IsNotFound(err) {
 		if err := c.Create(ctx, obj); err != nil {
-			return fmt.Errorf("creating User: %w", err)
+			return fmt.Errorf("creating User %s/%s: %w", opts.Namespace, opts.Name, err)
 		}
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("checking for existing User: %w", err)
+		return fmt.Errorf("checking for existing User %s/%s: %w", opts.Namespace, opts.Name, err)
 	}
 
 	existing.Object["spec"] = obj.Object["spec"]
 	existing.SetOwnerReferences(obj.GetOwnerReferences())
 	if err := c.Update(ctx, existing); err != nil {
-		return fmt.Errorf("updating User: %w", err)
+		return fmt.Errorf("updating User %s/%s: %w", opts.Namespace, opts.Name, err)
 	}
 
 	return nil
@@ -190,14 +184,11 @@ func ensureGrant(ctx context.Context, c client.Client, owner client.Object, sche
 	}
 
 	if err := unstructured.SetNestedField(obj.Object, spec, "spec"); err != nil {
-		return fmt.Errorf("setting Grant spec: %w", err)
+		return fmt.Errorf("setting Grant %s/%s spec: %w", opts.Namespace, grantName, err)
 	}
 
-	obj.SetAPIVersion(grantGVK.Group + "/" + grantGVK.Version)
-	obj.SetKind(grantGVK.Kind)
-
 	if err := controllerutil.SetControllerReference(owner, obj, scheme); err != nil {
-		return fmt.Errorf("setting controller reference on Grant: %w", err)
+		return fmt.Errorf("setting controller reference on Grant %s/%s: %w", opts.Namespace, grantName, err)
 	}
 
 	existing := &unstructured.Unstructured{}
@@ -205,18 +196,18 @@ func ensureGrant(ctx context.Context, c client.Client, owner client.Object, sche
 	err := c.Get(ctx, client.ObjectKeyFromObject(obj), existing)
 	if apierrors.IsNotFound(err) {
 		if err := c.Create(ctx, obj); err != nil {
-			return fmt.Errorf("creating Grant: %w", err)
+			return fmt.Errorf("creating Grant %s/%s: %w", opts.Namespace, grantName, err)
 		}
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("checking for existing Grant: %w", err)
+		return fmt.Errorf("checking for existing Grant %s/%s: %w", opts.Namespace, grantName, err)
 	}
 
 	existing.Object["spec"] = obj.Object["spec"]
 	existing.SetOwnerReferences(obj.GetOwnerReferences())
 	if err := c.Update(ctx, existing); err != nil {
-		return fmt.Errorf("updating Grant: %w", err)
+		return fmt.Errorf("updating Grant %s/%s: %w", opts.Namespace, grantName, err)
 	}
 
 	return nil
@@ -248,7 +239,7 @@ func RunDBSyncJob(ctx context.Context, c client.Client, owner client.Object, sch
 	}
 
 	if err := controllerutil.SetControllerReference(owner, job, scheme); err != nil {
-		return "", fmt.Errorf("setting controller reference on Job: %w", err)
+		return "", fmt.Errorf("setting controller reference on Job %s/%s: %w", opts.Namespace, opts.Name, err)
 	}
 
 	err := c.Create(ctx, job)
@@ -256,7 +247,7 @@ func RunDBSyncJob(ctx context.Context, c client.Client, owner client.Object, sch
 		return opts.Name, nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("creating db-sync Job: %w", err)
+		return "", fmt.Errorf("creating db-sync Job %s/%s: %w", opts.Namespace, opts.Name, err)
 	}
 
 	return opts.Name, nil

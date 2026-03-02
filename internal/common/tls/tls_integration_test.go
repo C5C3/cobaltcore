@@ -33,14 +33,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	k8sClient = c
-
-	// Build a scheme that includes corev1 for owner reference resolution.
-	testScheme = runtime.NewScheme()
-	if err := corev1.AddToScheme(testScheme); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to add corev1 to scheme: %v\n", err)
-		teardown()
-		os.Exit(1)
-	}
+	testScheme = c.Scheme()
 
 	ctx := context.Background()
 	ns := &corev1.Namespace{
@@ -60,7 +53,7 @@ func TestMain(m *testing.M) {
 }
 
 // newOwner creates a ConfigMap to use as an owner object for controller references.
-func newOwner(ctx context.Context, t *testing.T, name string) *corev1.ConfigMap {
+func newOwner(t *testing.T, ctx context.Context, name string) *corev1.ConfigMap {
 	t.Helper()
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -80,7 +73,7 @@ func newOwner(ctx context.Context, t *testing.T, name string) *corev1.ConfigMap 
 
 func TestEnsureCertificate_Creates(t *testing.T) {
 	ctx := context.Background()
-	owner := newOwner(ctx, t, "owner-creates")
+	owner := newOwner(t, ctx, "owner-creates")
 
 	opts := tls.CertificateOpts{
 		Name:       "cert-creates",
@@ -146,7 +139,7 @@ func TestEnsureCertificate_Creates(t *testing.T) {
 
 func TestEnsureCertificate_Idempotent(t *testing.T) {
 	ctx := context.Background()
-	owner := newOwner(ctx, t, "owner-idempotent")
+	owner := newOwner(t, ctx, "owner-idempotent")
 
 	opts := tls.CertificateOpts{
 		Name:       "cert-idempotent",
@@ -167,11 +160,30 @@ func TestEnsureCertificate_Idempotent(t *testing.T) {
 	if _, err := tls.EnsureCertificate(ctx, k8sClient, owner, testScheme, opts); err != nil {
 		t.Fatalf("second call to EnsureCertificate returned error: %v", err)
 	}
+
+	// Verify spec fields are unchanged after idempotent call.
+	cert := &unstructured.Unstructured{}
+	cert.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "cert-manager.io",
+		Version: "v1",
+		Kind:    "Certificate",
+	})
+	if err := k8sClient.Get(ctx, client.ObjectKey{Name: opts.Name, Namespace: testNamespace}, cert); err != nil {
+		t.Fatalf("failed to get Certificate after idempotent call: %v", err)
+	}
+	secretName, _, _ := unstructured.NestedString(cert.Object, "spec", "secretName")
+	if secretName != opts.SecretName {
+		t.Fatalf("spec.secretName changed after idempotent call: expected %q, got %q", opts.SecretName, secretName)
+	}
+	issuerName, _, _ := unstructured.NestedString(cert.Object, "spec", "issuerRef", "name")
+	if issuerName != opts.IssuerRef.Name {
+		t.Fatalf("spec.issuerRef.name changed after idempotent call: expected %q, got %q", opts.IssuerRef.Name, issuerName)
+	}
 }
 
 func TestEnsureCertificate_OwnerRef(t *testing.T) {
 	ctx := context.Background()
-	owner := newOwner(ctx, t, "owner-ref")
+	owner := newOwner(t, ctx, "owner-ref")
 
 	opts := tls.CertificateOpts{
 		Name:       "cert-ownerref",

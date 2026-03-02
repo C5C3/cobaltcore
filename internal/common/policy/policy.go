@@ -116,10 +116,14 @@ func LoadPolicyFromConfigMap(ctx context.Context, c client.Client, configMapRef 
 }
 
 // parsePolicyYAML parses a YAML string into a flat map of policy rules.
+// Returns an empty (non-nil) map for empty YAML content.
 func parsePolicyYAML(yamlContent string) (map[string]string, error) {
 	var rules map[string]string
 	if err := yaml.Unmarshal([]byte(yamlContent), &rules); err != nil {
 		return nil, fmt.Errorf("parsing policy YAML: %w", err)
+	}
+	if rules == nil {
+		return make(map[string]string), nil
 	}
 	return rules, nil
 }

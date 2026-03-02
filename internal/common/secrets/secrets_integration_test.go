@@ -88,6 +88,33 @@ func TestIsExternalSecretReady_Ready(t *testing.T) {
 	}
 }
 
+func TestIsExternalSecretReady_NoConditions(t *testing.T) {
+	ctx := context.Background()
+	name := "test-es-no-conditions"
+
+	// Create ExternalSecret without status.conditions to exercise the !found
+	// early-return branch. (CC-0005)
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "external-secrets.io",
+		Version: "v1beta1",
+		Kind:    "ExternalSecret",
+	})
+	obj.SetName(name)
+	obj.SetNamespace(testNamespace)
+	if err := k8sClient.Create(ctx, obj); err != nil {
+		t.Fatalf("failed to create ExternalSecret: %v", err)
+	}
+
+	ready, err := secrets.IsExternalSecretReady(ctx, k8sClient, name, testNamespace)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if ready {
+		t.Fatal("expected false for ExternalSecret without status.conditions, got true")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // IsSecretReady
 // ---------------------------------------------------------------------------
@@ -254,8 +281,8 @@ func TestEnsurePushSecret_Idempotent(t *testing.T) {
 		t.Fatalf("second call to EnsurePushSecret returned error: %v", err)
 	}
 
-	// Verify the PushSecret still exists with correct spec.
-	assertPushSecretExists(t, ctx, opts.Name)
+	// Verify spec fields are unchanged after idempotent call.
+	assertPushSecretSpec(t, ctx, opts)
 }
 
 func TestEnsurePushSecret_OwnerRef(t *testing.T) {
@@ -330,21 +357,6 @@ func createOwnerConfigMap(t *testing.T, ctx context.Context, name string) *corev
 	}
 
 	return cm
-}
-
-// assertPushSecretExists fetches the PushSecret and verifies it exists.
-func assertPushSecretExists(t *testing.T, ctx context.Context, name string) {
-	t.Helper()
-
-	obj := &unstructured.Unstructured{}
-	obj.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "external-secrets.io",
-		Version: "v1alpha1",
-		Kind:    "PushSecret",
-	})
-	if err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: testNamespace}, obj); err != nil {
-		t.Fatalf("failed to get PushSecret %s/%s: %v", testNamespace, name, err)
-	}
 }
 
 // assertPushSecretSpec fetches the PushSecret and verifies its spec fields match the opts.

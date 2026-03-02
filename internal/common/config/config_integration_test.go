@@ -31,10 +31,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	k8sClient = c
-
-	// Retrieve the scheme from the client for owner reference setup.
-	scheme = k8sruntime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
+	scheme = c.Scheme()
 
 	ctx := context.Background()
 	ns := &corev1.Namespace{
@@ -54,18 +51,30 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// newOwner creates a ConfigMap to use as an owner object for controller references.
+func newOwner(t *testing.T, ctx context.Context, name string) *corev1.ConfigMap {
+	t.Helper()
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: testNS,
+		},
+	}
+	if err := k8sClient.Create(ctx, cm); err != nil {
+		t.Fatalf("failed to create owner ConfigMap: %v", err)
+	}
+	// Re-fetch to populate UID and other server-set fields.
+	if err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: testNS}, cm); err != nil {
+		t.Fatalf("failed to get owner ConfigMap: %v", err)
+	}
+	return cm
+}
+
 func TestCreateImmutableConfigMap_CreatesWithHashSuffix(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
 
-	owner := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-owner-create",
-			Namespace: testNS,
-			UID:       "fake-uid-create",
-		},
-	}
-	g.Expect(k8sClient.Create(ctx, owner)).To(Succeed())
+	owner := newOwner(t, ctx, "test-owner-create")
 
 	data := map[string]string{
 		"key1": "value1",
@@ -89,14 +98,7 @@ func TestCreateImmutableConfigMap_Idempotent(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
 
-	owner := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-owner-idempotent",
-			Namespace: testNS,
-			UID:       "fake-uid-idempotent",
-		},
-	}
-	g.Expect(k8sClient.Create(ctx, owner)).To(Succeed())
+	owner := newOwner(t, ctx, "test-owner-idempotent")
 
 	data := map[string]string{"idem": "potent"}
 
@@ -124,14 +126,7 @@ func TestCreateImmutableConfigMap_DifferentDataDifferentHash(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
 
-	owner := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-owner-diffhash",
-			Namespace: testNS,
-			UID:       "fake-uid-diffhash",
-		},
-	}
-	g.Expect(k8sClient.Create(ctx, owner)).To(Succeed())
+	owner := newOwner(t, ctx, "test-owner-diffhash")
 
 	data1 := map[string]string{"env": "dev"}
 	data2 := map[string]string{"env": "prod"}
@@ -149,14 +144,7 @@ func TestCreateImmutableConfigMap_OwnerReferenceSet(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
 
-	owner := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-owner-ref",
-			Namespace: testNS,
-			UID:       "fake-uid-ownerref",
-		},
-	}
-	g.Expect(k8sClient.Create(ctx, owner)).To(Succeed())
+	owner := newOwner(t, ctx, "test-owner-ref")
 
 	data := map[string]string{"owner": "test"}
 

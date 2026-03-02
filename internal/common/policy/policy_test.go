@@ -230,3 +230,22 @@ func TestValidatePolicyRules_EmptyMap(t *testing.T) {
 
 	g.Expect(errs).To(BeEmpty())
 }
+
+func TestParsePolicyYAML_EmptyContent(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	// Empty YAML content should return an empty non-nil map. (CC-0005)
+	rules, err := parsePolicyYAML("")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(rules).NotTo(BeNil())
+	g.Expect(rules).To(BeEmpty())
+}
+
+func TestParsePolicyYAML_ValidContent(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	rules, err := parsePolicyYAML("compute:create: role:member\ncompute:delete: role:admin\n")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(rules).To(HaveKeyWithValue("compute:create", "role:member"))
+	g.Expect(rules).To(HaveKeyWithValue("compute:delete", "role:admin"))
+}

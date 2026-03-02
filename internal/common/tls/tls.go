@@ -62,16 +62,11 @@ func EnsureCertificate(ctx context.Context, c client.Client, owner client.Object
 	}
 
 	if err := unstructured.SetNestedField(cert.Object, spec, "spec"); err != nil {
-		return "", fmt.Errorf("setting Certificate spec: %w", err)
+		return "", fmt.Errorf("setting Certificate %s/%s spec: %w", opts.Namespace, opts.Name, err)
 	}
 
-	// Set owner reference so the Certificate is garbage-collected with the owner.
-	// We need to set TypeMeta on the unstructured object for SetControllerReference.
-	cert.SetAPIVersion(certificateGVK.Group + "/" + certificateGVK.Version)
-	cert.SetKind(certificateGVK.Kind)
-
 	if err := controllerutil.SetControllerReference(owner, cert, scheme); err != nil {
-		return "", fmt.Errorf("setting controller reference: %w", err)
+		return "", fmt.Errorf("setting controller reference on Certificate %s/%s: %w", opts.Namespace, opts.Name, err)
 	}
 
 	// Check if the Certificate already exists.
@@ -80,19 +75,19 @@ func EnsureCertificate(ctx context.Context, c client.Client, owner client.Object
 	err := c.Get(ctx, client.ObjectKeyFromObject(cert), existing)
 	if apierrors.IsNotFound(err) {
 		if err := c.Create(ctx, cert); err != nil {
-			return "", fmt.Errorf("creating Certificate: %w", err)
+			return "", fmt.Errorf("creating Certificate %s/%s: %w", opts.Namespace, opts.Name, err)
 		}
 		return opts.Name, nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("checking for existing Certificate: %w", err)
+		return "", fmt.Errorf("checking for existing Certificate %s/%s: %w", opts.Namespace, opts.Name, err)
 	}
 
 	// Update the existing Certificate's spec and owner references.
 	existing.Object["spec"] = cert.Object["spec"]
 	existing.SetOwnerReferences(cert.GetOwnerReferences())
 	if err := c.Update(ctx, existing); err != nil {
-		return "", fmt.Errorf("updating Certificate: %w", err)
+		return "", fmt.Errorf("updating Certificate %s/%s: %w", opts.Namespace, opts.Name, err)
 	}
 
 	return opts.Name, nil

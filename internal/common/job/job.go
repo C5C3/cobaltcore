@@ -50,6 +50,17 @@ func RunJob(ctx context.Context, c client.Client, owner client.Object, scheme *k
 	return job.Name, nil
 }
 
+// toUnstructuredApply converts a typed K8s object to an unstructured apply
+// configuration for use with client.Apply().
+func toUnstructuredApply(obj k8sruntime.Object) (k8sruntime.ApplyConfiguration, error) {
+	data, err := k8sruntime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	if err != nil {
+		return nil, fmt.Errorf("converting to unstructured: %w", err)
+	}
+	u := &unstructured.Unstructured{Object: data}
+	return client.ApplyConfigurationFromUnstructured(u), nil
+}
+
 // EnsureCronJob applies a CronJob via server-side apply with field manager.
 // Sets owner references for garbage collection. (CC-0005 / REQ-006)
 func EnsureCronJob(ctx context.Context, c client.Client, owner client.Object, scheme *k8sruntime.Scheme, cronJob *batchv1.CronJob) (string, error) {
@@ -61,12 +72,10 @@ func EnsureCronJob(ctx context.Context, c client.Client, owner client.Object, sc
 	cronJob.APIVersion = "batch/v1"
 	cronJob.Kind = "CronJob"
 
-	data, err := k8sruntime.DefaultUnstructuredConverter.ToUnstructured(cronJob)
+	ac, err := toUnstructuredApply(cronJob)
 	if err != nil {
-		return "", fmt.Errorf("converting CronJob %s/%s to unstructured: %w", cronJob.Namespace, cronJob.Name, err)
+		return "", fmt.Errorf("preparing CronJob %s/%s for apply: %w", cronJob.Namespace, cronJob.Name, err)
 	}
-	u := &unstructured.Unstructured{Object: data}
-	ac := client.ApplyConfigurationFromUnstructured(u)
 
 	force := true
 	if err := c.Apply(ctx, ac, &client.ApplyOptions{FieldManager: fieldManager, Force: &force}); err != nil {

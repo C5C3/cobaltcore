@@ -34,18 +34,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	k8sClient = c
-
-	testScheme = runtime.NewScheme()
-	if err := corev1.AddToScheme(testScheme); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to add corev1 to scheme: %v\n", err)
-		teardown()
-		os.Exit(1)
-	}
-	if err := batchv1.AddToScheme(testScheme); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to add batchv1 to scheme: %v\n", err)
-		teardown()
-		os.Exit(1)
-	}
+	testScheme = c.Scheme()
 
 	ctx := context.Background()
 	ns := &corev1.Namespace{
@@ -62,7 +51,7 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func newOwner(ctx context.Context, t *testing.T, name string) *corev1.ConfigMap {
+func newOwner(t *testing.T, ctx context.Context, name string) *corev1.ConfigMap {
 	t.Helper()
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
@@ -80,7 +69,7 @@ func newOwner(ctx context.Context, t *testing.T, name string) *corev1.ConfigMap 
 
 func TestEnsureDatabase_Creates(t *testing.T) {
 	ctx := context.Background()
-	owner := newOwner(ctx, t, "owner-db-creates")
+	owner := newOwner(t, ctx, "owner-db-creates")
 
 	opts := database.DatabaseOpts{
 		Name:         "db-creates",
@@ -119,7 +108,7 @@ func TestEnsureDatabase_Creates(t *testing.T) {
 
 func TestEnsureDatabase_Idempotent(t *testing.T) {
 	ctx := context.Background()
-	owner := newOwner(ctx, t, "owner-db-idempotent")
+	owner := newOwner(t, ctx, "owner-db-idempotent")
 
 	opts := database.DatabaseOpts{
 		Name:         "db-idempotent",
@@ -135,11 +124,28 @@ func TestEnsureDatabase_Idempotent(t *testing.T) {
 	if _, err := database.EnsureDatabase(ctx, k8sClient, owner, testScheme, opts); err != nil {
 		t.Fatalf("second call to EnsureDatabase returned error: %v", err)
 	}
+
+	// Verify spec fields are unchanged after idempotent call.
+	db := &unstructured.Unstructured{}
+	db.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "k8s.mariadb.com", Version: "v1alpha1", Kind: "Database",
+	})
+	if err := k8sClient.Get(ctx, client.ObjectKey{Name: opts.Name, Namespace: testNamespace}, db); err != nil {
+		t.Fatalf("failed to get Database after idempotent call: %v", err)
+	}
+	mariaDBRefName, _, _ := unstructured.NestedString(db.Object, "spec", "mariaDbRef", "name")
+	if mariaDBRefName != opts.MariaDBRef {
+		t.Fatalf("spec.mariaDbRef.name changed after idempotent call: expected %q, got %q", opts.MariaDBRef, mariaDBRefName)
+	}
+	dbName, _, _ := unstructured.NestedString(db.Object, "spec", "name")
+	if dbName != opts.DatabaseName {
+		t.Fatalf("spec.name changed after idempotent call: expected %q, got %q", opts.DatabaseName, dbName)
+	}
 }
 
 func TestEnsureDatabase_OwnerRef(t *testing.T) {
 	ctx := context.Background()
-	owner := newOwner(ctx, t, "owner-db-ref")
+	owner := newOwner(t, ctx, "owner-db-ref")
 
 	opts := database.DatabaseOpts{
 		Name:         "db-ownerref",
@@ -181,7 +187,7 @@ func TestEnsureDatabase_OwnerRef(t *testing.T) {
 
 func TestEnsureDatabaseUser_CreatesUserAndGrant(t *testing.T) {
 	ctx := context.Background()
-	owner := newOwner(ctx, t, "owner-user-creates")
+	owner := newOwner(t, ctx, "owner-user-creates")
 
 	opts := database.DatabaseUserOpts{
 		Name:               "dbuser-creates",
@@ -274,7 +280,7 @@ func TestEnsureDatabaseUser_CreatesUserAndGrant(t *testing.T) {
 
 func TestEnsureDatabaseUser_Idempotent(t *testing.T) {
 	ctx := context.Background()
-	owner := newOwner(ctx, t, "owner-user-idempotent")
+	owner := newOwner(t, ctx, "owner-user-idempotent")
 
 	opts := database.DatabaseUserOpts{
 		Name:               "dbuser-idempotent",
@@ -294,13 +300,111 @@ func TestEnsureDatabaseUser_Idempotent(t *testing.T) {
 	if _, err := database.EnsureDatabaseUser(ctx, k8sClient, owner, testScheme, opts); err != nil {
 		t.Fatalf("second call to EnsureDatabaseUser returned error: %v", err)
 	}
+
+	// Verify User spec fields are unchanged after idempotent call.
+	user := &unstructured.Unstructured{}
+	user.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "k8s.mariadb.com", Version: "v1alpha1", Kind: "User",
+	})
+	if err := k8sClient.Get(ctx, client.ObjectKey{Name: opts.Name, Namespace: testNamespace}, user); err != nil {
+		t.Fatalf("failed to get User after idempotent call: %v", err)
+	}
+	userName, _, _ := unstructured.NestedString(user.Object, "spec", "name")
+	if userName != opts.Username {
+		t.Fatalf("User spec.name changed after idempotent call: expected %q, got %q", opts.Username, userName)
+	}
+
+	// Verify Grant spec fields are unchanged after idempotent call.
+	grant := &unstructured.Unstructured{}
+	grant.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "k8s.mariadb.com", Version: "v1alpha1", Kind: "Grant",
+	})
+	grantName := opts.Name + "-grant"
+	if err := k8sClient.Get(ctx, client.ObjectKey{Name: grantName, Namespace: testNamespace}, grant); err != nil {
+		t.Fatalf("failed to get Grant after idempotent call: %v", err)
+	}
+	grantDB, _, _ := unstructured.NestedString(grant.Object, "spec", "database")
+	if grantDB != opts.DatabaseName {
+		t.Fatalf("Grant spec.database changed after idempotent call: expected %q, got %q", opts.DatabaseName, grantDB)
+	}
+}
+
+func TestEnsureDatabaseUser_OwnerRef(t *testing.T) {
+	ctx := context.Background()
+	owner := newOwner(t, ctx, "owner-user-ref")
+
+	opts := database.DatabaseUserOpts{
+		Name:               "dbuser-ownerref",
+		Namespace:          testNamespace,
+		MariaDBRef:         "mariadb-instance",
+		Username:           "app_user",
+		PasswordSecretName: "db-password",
+		PasswordSecretKey:  "password",
+		DatabaseName:       "mydb",
+		Privileges:         []string{"SELECT", "INSERT"},
+	}
+
+	if _, err := database.EnsureDatabaseUser(ctx, k8sClient, owner, testScheme, opts); err != nil {
+		t.Fatalf("EnsureDatabaseUser returned error: %v", err)
+	}
+
+	// Verify Grant CR has owner reference set. (CC-0005)
+	grant := &unstructured.Unstructured{}
+	grant.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "k8s.mariadb.com", Version: "v1alpha1", Kind: "Grant",
+	})
+	grantName := opts.Name + "-grant"
+	if err := k8sClient.Get(ctx, client.ObjectKey{Name: grantName, Namespace: testNamespace}, grant); err != nil {
+		t.Fatalf("failed to get Grant: %v", err)
+	}
+
+	ownerRefs := grant.GetOwnerReferences()
+	if len(ownerRefs) == 0 {
+		t.Fatal("expected at least one owner reference on Grant, got none")
+	}
+
+	found := false
+	for _, ref := range ownerRefs {
+		if ref.UID == owner.UID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected owner reference with UID %s on Grant, not found in %v", owner.UID, ownerRefs)
+	}
+
+	// Also verify User CR has owner reference set.
+	user := &unstructured.Unstructured{}
+	user.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "k8s.mariadb.com", Version: "v1alpha1", Kind: "User",
+	})
+	if err := k8sClient.Get(ctx, client.ObjectKey{Name: opts.Name, Namespace: testNamespace}, user); err != nil {
+		t.Fatalf("failed to get User: %v", err)
+	}
+
+	userOwnerRefs := user.GetOwnerReferences()
+	if len(userOwnerRefs) == 0 {
+		t.Fatal("expected at least one owner reference on User, got none")
+	}
+
+	found = false
+	for _, ref := range userOwnerRefs {
+		if ref.UID == owner.UID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected owner reference with UID %s on User, not found in %v", owner.UID, userOwnerRefs)
+	}
 }
 
 // --- RunDBSyncJob tests ---
 
 func TestRunDBSyncJob_Creates(t *testing.T) {
 	ctx := context.Background()
-	owner := newOwner(ctx, t, "owner-job-creates")
+	owner := newOwner(t, ctx, "owner-job-creates")
 
 	opts := database.DBSyncJobOpts{
 		Name:      "dbsync-creates",
@@ -362,7 +466,7 @@ func TestRunDBSyncJob_Creates(t *testing.T) {
 
 func TestRunDBSyncJob_Idempotent(t *testing.T) {
 	ctx := context.Background()
-	owner := newOwner(ctx, t, "owner-job-idempotent")
+	owner := newOwner(t, ctx, "owner-job-idempotent")
 
 	opts := database.DBSyncJobOpts{
 		Name:      "dbsync-idempotent",
@@ -378,11 +482,20 @@ func TestRunDBSyncJob_Idempotent(t *testing.T) {
 	if _, err := database.RunDBSyncJob(ctx, k8sClient, owner, testScheme, opts); err != nil {
 		t.Fatalf("second call to RunDBSyncJob returned error: %v", err)
 	}
+
+	// Verify Job spec is unchanged after idempotent call.
+	job := &batchv1.Job{}
+	if err := k8sClient.Get(ctx, client.ObjectKey{Name: opts.Name, Namespace: testNamespace}, job); err != nil {
+		t.Fatalf("failed to get Job after idempotent call: %v", err)
+	}
+	if job.Spec.Template.Spec.Containers[0].Image != opts.Image {
+		t.Fatalf("Job image changed after idempotent call: expected %q, got %q", opts.Image, job.Spec.Template.Spec.Containers[0].Image)
+	}
 }
 
 func TestRunDBSyncJob_OwnerRef(t *testing.T) {
 	ctx := context.Background()
-	owner := newOwner(ctx, t, "owner-job-ref")
+	owner := newOwner(t, ctx, "owner-job-ref")
 
 	opts := database.DBSyncJobOpts{
 		Name:      "dbsync-ownerref",

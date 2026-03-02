@@ -32,18 +32,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	k8sClient = c
-
-	testScheme = runtime.NewScheme()
-	if err := corev1.AddToScheme(testScheme); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to add corev1 to scheme: %v\n", err)
-		teardown()
-		os.Exit(1)
-	}
-	if err := appsv1.AddToScheme(testScheme); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to add appsv1 to scheme: %v\n", err)
-		teardown()
-		os.Exit(1)
-	}
+	testScheme = c.Scheme()
 
 	ctx := context.Background()
 	ns := &corev1.Namespace{
@@ -61,7 +50,7 @@ func TestMain(m *testing.M) {
 }
 
 // newOwner creates a ConfigMap to use as an owner object for controller references.
-func newOwner(ctx context.Context, t *testing.T, name string) *corev1.ConfigMap {
+func newOwner(t *testing.T, ctx context.Context, name string) *corev1.ConfigMap {
 	t.Helper()
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -120,7 +109,7 @@ func testService(name string) *corev1.Service {
 
 func TestEnsureDeployment_Creates(t *testing.T) {
 	ctx := context.Background()
-	owner := newOwner(ctx, t, "owner-deploy-creates")
+	owner := newOwner(t, ctx, "owner-deploy-creates")
 
 	dep := testDeployment("dep-creates")
 	if err := deployment.EnsureDeployment(ctx, k8sClient, owner, testScheme, dep); err != nil {
@@ -140,7 +129,7 @@ func TestEnsureDeployment_Creates(t *testing.T) {
 
 func TestEnsureDeployment_Idempotent(t *testing.T) {
 	ctx := context.Background()
-	owner := newOwner(ctx, t, "owner-deploy-idempotent")
+	owner := newOwner(t, ctx, "owner-deploy-idempotent")
 
 	dep := testDeployment("dep-idempotent")
 	if err := deployment.EnsureDeployment(ctx, k8sClient, owner, testScheme, dep); err != nil {
@@ -151,11 +140,20 @@ func TestEnsureDeployment_Idempotent(t *testing.T) {
 	if err := deployment.EnsureDeployment(ctx, k8sClient, owner, testScheme, dep2); err != nil {
 		t.Fatalf("second call to EnsureDeployment returned error: %v", err)
 	}
+
+	// Verify spec fields are unchanged after idempotent call.
+	got := &appsv1.Deployment{}
+	if err := k8sClient.Get(ctx, client.ObjectKey{Name: "dep-idempotent", Namespace: testNamespace}, got); err != nil {
+		t.Fatalf("failed to get Deployment after idempotent call: %v", err)
+	}
+	if got.Spec.Template.Spec.Containers[0].Image != "busybox" {
+		t.Fatalf("Deployment image changed after idempotent call: expected %q, got %q", "busybox", got.Spec.Template.Spec.Containers[0].Image)
+	}
 }
 
 func TestEnsureDeployment_OwnerRef(t *testing.T) {
 	ctx := context.Background()
-	owner := newOwner(ctx, t, "owner-deploy-ref")
+	owner := newOwner(t, ctx, "owner-deploy-ref")
 
 	dep := testDeployment("dep-ownerref")
 	if err := deployment.EnsureDeployment(ctx, k8sClient, owner, testScheme, dep); err != nil {
@@ -186,7 +184,7 @@ func TestEnsureDeployment_OwnerRef(t *testing.T) {
 
 func TestEnsureService_Creates(t *testing.T) {
 	ctx := context.Background()
-	owner := newOwner(ctx, t, "owner-svc-creates")
+	owner := newOwner(t, ctx, "owner-svc-creates")
 
 	svc := testService("svc-creates")
 	if err := deployment.EnsureService(ctx, k8sClient, owner, testScheme, svc); err != nil {
@@ -206,7 +204,7 @@ func TestEnsureService_Creates(t *testing.T) {
 
 func TestEnsureService_Idempotent(t *testing.T) {
 	ctx := context.Background()
-	owner := newOwner(ctx, t, "owner-svc-idempotent")
+	owner := newOwner(t, ctx, "owner-svc-idempotent")
 
 	svc := testService("svc-idempotent")
 	if err := deployment.EnsureService(ctx, k8sClient, owner, testScheme, svc); err != nil {
@@ -217,11 +215,20 @@ func TestEnsureService_Idempotent(t *testing.T) {
 	if err := deployment.EnsureService(ctx, k8sClient, owner, testScheme, svc2); err != nil {
 		t.Fatalf("second call to EnsureService returned error: %v", err)
 	}
+
+	// Verify spec fields are unchanged after idempotent call.
+	gotSvc := &corev1.Service{}
+	if err := k8sClient.Get(ctx, client.ObjectKey{Name: "svc-idempotent", Namespace: testNamespace}, gotSvc); err != nil {
+		t.Fatalf("failed to get Service after idempotent call: %v", err)
+	}
+	if len(gotSvc.Spec.Ports) != 1 || gotSvc.Spec.Ports[0].Port != 80 {
+		t.Fatalf("Service port changed after idempotent call: expected port 80, got %v", gotSvc.Spec.Ports)
+	}
 }
 
 func TestEnsureService_OwnerRef(t *testing.T) {
 	ctx := context.Background()
-	owner := newOwner(ctx, t, "owner-svc-ref")
+	owner := newOwner(t, ctx, "owner-svc-ref")
 
 	svc := testService("svc-ownerref")
 	if err := deployment.EnsureService(ctx, k8sClient, owner, testScheme, svc); err != nil {
