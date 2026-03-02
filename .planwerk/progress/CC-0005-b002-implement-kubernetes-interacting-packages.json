@@ -670,7 +670,7 @@
     },
     {
       "id": "4.1",
-      "title": "Update Makefile test-integration target and verify all integration tests pass (REQ-013)",
+      "title": "Update Makefile test-integration target for new packages (REQ-013)",
       "description": "Update the Makefile test-integration target to actually run integration tests: 'cd internal/common && go test -tags=integration ./...'. Verify all new integration tests pass by running make test-integration. Also verify make test still passes (unit tests only, no integration tag). Fix any compilation or test failures.",
       "level": 4,
       "estimate_minutes": 15,
