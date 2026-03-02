@@ -562,6 +562,7 @@
       "description": "Add CreateImmutableConfigMap(ctx context.Context, c client.Client, name, namespace string, data map[string]string, ownerRefs ...metav1.OwnerReference) (string, error) to internal/common/config/config.go. Computes SHA256 of sorted data keys+values, creates ConfigMap named '{name}-{hash[:8]}' with Immutable=ptr(true), OwnerReferences from variadic args. Uses apierrors.IsAlreadyExists to handle idempotency. Write config_integration_test.go with //go:build integration, TestMain using SetupEnvTest, and tests: TestCreateImmutableConfigMap_CreatesWithHashSuffix, _DeterministicHash, _DifferentDataDifferentHash, _Idempotent, _OwnerReferences.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-009",
@@ -574,6 +575,7 @@
       "description": "Add LoadPolicyFromConfigMap(ctx context.Context, c client.Client, namespace, name string) (map[string]string, error) to internal/common/policy/policy.go. Fetches typed corev1.ConfigMap, extracts 'policy.yaml' key, parses YAML via gopkg.in/yaml.v3 into map[string]string. Returns errors for missing ConfigMap, missing key, and invalid YAML. Write policy_integration_test.go with //go:build integration, TestMain using SetupEnvTest, tests: TestLoadPolicyFromConfigMap_ValidYAML, _MissingConfigMap, _MissingKey, _InvalidYAML.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -584,6 +586,7 @@
       "description": "Create internal/common/secrets/ package with doc.go and secrets.go. Implement: IsExternalSecretReady(ctx, c client.Client, name, namespace string) (bool, error) — fetches unstructured ExternalSecret (external-secrets.io/v1beta1), checks for Ready=True condition; NotFound returns (false, nil). IsSecretReady(ctx, c, namespace, name string) (bool, error) — checks corev1.Secret existence; NotFound returns (false, nil). GetSecretValue(ctx, c, namespace, name, key string) (string, error) — fetches Secret, returns string(data[key]) or error if key missing. Write secrets_integration_test.go with TestMain, tests: TestIsExternalSecretReady_True (use SimulateExternalSecretSync), _NotReady, _NotFound, TestIsSecretReady_Exists, _NotFound, TestGetSecretValue_ReturnsValue, _MissingKey, _MissingSecret.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-003"
@@ -595,6 +598,7 @@
       "description": "Add EnsurePushSecret(ctx context.Context, c client.Client, name, namespace string, spec map[string]interface{}, ownerRefs ...metav1.OwnerReference) error to secrets/secrets.go. Creates unstructured PushSecret (external-secrets.io/v1alpha1) with createOrGet-style idempotency (fetch the object by GVK if AlreadyExists). Sets ownerReferences. Write additional integration tests: TestEnsurePushSecret_Creates (verify CR exists with correct spec), TestEnsurePushSecret_Idempotent, TestEnsurePushSecret_OwnerReferences.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-009",
@@ -607,6 +611,7 @@
       "description": "Create internal/common/tls/ package with doc.go and tls.go. Implement: EnsureCertificate(ctx, c, name, namespace string, dnsNames []string, secretName, issuerName, issuerKind, issuerGroup string, ownerRefs ...metav1.OwnerReference) error — creates unstructured Certificate CR (cert-manager.io/v1) with createOrGet-style idempotency. GetTLSSecret(ctx, c, namespace, name string) (*corev1.Secret, error) — fetches typed Secret. Write tls_integration_test.go with TestMain, tests: TestEnsureCertificate_Creates, _Idempotent, TestGetTLSSecret_Exists (pre-create Secret), _NotFound.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-007",
         "REQ-009",

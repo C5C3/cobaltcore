@@ -1,3 +1,3 @@
-// Package policy provides pure functions for merging and rendering OpenStack
-// oslo.policy policy rules. (CC-0004)
+// Package policy provides functions for merging, rendering, and loading
+// OpenStack oslo.policy policy rules from Kubernetes ConfigMaps. (CC-0004, CC-0005)
 package policy
