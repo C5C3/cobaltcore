@@ -69,6 +69,7 @@ deploy-infra:
 install-test-deps:
 	$(error install-test-deps target requires S002 implementation)
 
-## Run integration tests (stub - requires S002)
+## Run integration tests for internal/common packages (requires envtest binaries via setup-envtest)
 test-integration:
-	$(error test-integration target requires S002 implementation)
+	@echo "Running integration tests for internal/common..."
+	@(cd internal/common && go test -tags integration -count=1 -timeout 300s ./...)
