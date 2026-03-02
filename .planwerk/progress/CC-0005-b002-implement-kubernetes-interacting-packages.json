@@ -1018,6 +1018,8 @@
       "timestamp": "2026-03-02T16:35:20.869845"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/12",
+  "pr_number": 12,
   "execution_history": [
     {
       "run_id": "8dbd031a-57bc-4eed-bdfa-41d8ef134679",
