@@ -6,9 +6,9 @@ quadrant: backend
 # Shared Utility Packages
 
 **Module:** `internal/common`
-**Feature:** CC-0004
+**Feature:** CC-0004, CC-0005
 
-Pure-function utility packages for OpenStack operator reconcilers. All functions operate on Go maps, slices, and structs with no Kubernetes client dependency (except `conditions/` which uses `metav1.Condition`).
+Shared utility packages for OpenStack operator reconcilers. CC-0004 provides pure-function utilities that operate on Go maps, slices, and structs with no Kubernetes client dependency (except `conditions/` which uses `metav1.Condition`). CC-0005 adds Kubernetes-interacting packages that use `controller-runtime`'s `client.Client` to create, read, and manage cluster resources.
 
 ## conditions
 
@@ -299,8 +299,513 @@ CRD Spec Fields ──→ RenderPastePipeline ──→ api-paste.ini ConfigMap
 CRD Spec Fields ──→ MergePolicies ──→ ValidatePolicyRules ──→ RenderPolicyYAML ──→ policy.yaml ConfigMap
 ```
 
+---
+
+## config (K8s-interacting)
+
+**Package:** `internal/common/config`
+**Import:** `"github.com/c5c3/forge/internal/common/config"`
+
+Kubernetes-interacting functions added by CC-0005 to the existing config package. These functions require a `controller-runtime` `client.Client`.
+
+### CreateImmutableConfigMap
+
+```go
+func CreateImmutableConfigMap(
+    ctx context.Context,
+    c client.Client,
+    name, namespace string,
+    data map[string]string,
+    owners ...metav1.OwnerReference,
+) (*corev1.ConfigMap, error)
+```
+
+Creates an immutable Kubernetes ConfigMap whose name includes a content-hash suffix derived from the data. The name is formatted as `{name}-{hash}` where hash is the first 8 hex characters of the SHA-256 digest of the sorted, serialised data content.
+
+| Parameter   | Type                       | Description                                          |
+|-------------|----------------------------|------------------------------------------------------|
+| `ctx`       | `context.Context`          | Context for the Kubernetes API call                  |
+| `c`         | `client.Client`            | controller-runtime Kubernetes client                 |
+| `name`      | `string`                   | Base name prefix for the ConfigMap                   |
+| `namespace` | `string`                   | Kubernetes namespace                                 |
+| `data`      | `map[string]string`        | ConfigMap data entries                               |
+| `owners`    | `...metav1.OwnerReference` | Variadic owner references for garbage collection     |
+
+**Returns:** `(*corev1.ConfigMap, error)` -- the created or existing ConfigMap, or an error.
+
+**Behavior:** The function is idempotent. If a ConfigMap with the same hashed name already exists, it is returned without error. Owner references are set from the variadic `owners` parameter so the ConfigMap is garbage-collected when the owning resource is deleted. The ConfigMap is created with `Immutable: true`.
+
+---
+
+## secrets
+
+**Package:** `internal/common/secrets`
+**Import:** `"github.com/c5c3/forge/internal/common/secrets"`
+
+Functions for inspecting Kubernetes Secrets and managing external-secrets.io custom resources. All functions require a `controller-runtime` `client.Client`.
+
+### IsExternalSecretReady
+
+```go
+func IsExternalSecretReady(ctx context.Context, c client.Client, name, namespace string) (bool, error)
+```
+
+Fetches an ExternalSecret CR (`external-secrets.io/v1beta1`) by name and namespace and inspects its `status.conditions` for a `Ready=True` condition.
+
+| Parameter   | Type              | Description                          |
+|-------------|-------------------|--------------------------------------|
+| `ctx`       | `context.Context` | Context for the Kubernetes API call  |
+| `c`         | `client.Client`   | controller-runtime Kubernetes client |
+| `name`      | `string`          | Name of the ExternalSecret           |
+| `namespace` | `string`          | Kubernetes namespace                 |
+
+**Returns:** `(bool, error)` -- `(true, nil)` if the ExternalSecret exists and has a `Ready=True` condition, `(false, nil)` if it does not exist or is not yet ready, `(false, err)` if the API call fails for any other reason.
+
+### IsSecretReady
+
+```go
+func IsSecretReady(ctx context.Context, c client.Client, name, namespace string) (bool, error)
+```
+
+Checks whether a `corev1.Secret` exists and contains at least one data key.
+
+| Parameter   | Type              | Description                          |
+|-------------|-------------------|--------------------------------------|
+| `ctx`       | `context.Context` | Context for the Kubernetes API call  |
+| `c`         | `client.Client`   | controller-runtime Kubernetes client |
+| `name`      | `string`          | Name of the Secret                   |
+| `namespace` | `string`          | Kubernetes namespace                 |
+
+**Returns:** `(bool, error)` -- `(true, nil)` if the Secret exists and has data, `(false, nil)` if it does not exist or exists but has no data keys, `(false, err)` if the API call fails for any other reason.
+
+### GetSecretValue
+
+```go
+func GetSecretValue(ctx context.Context, c client.Client, name, namespace, key string) (string, error)
+```
+
+Fetches a `corev1.Secret` and returns the string value of the specified key from its `Data` field.
+
+| Parameter   | Type              | Description                          |
+|-------------|-------------------|--------------------------------------|
+| `ctx`       | `context.Context` | Context for the Kubernetes API call  |
+| `c`         | `client.Client`   | controller-runtime Kubernetes client |
+| `name`      | `string`          | Name of the Secret                   |
+| `namespace` | `string`          | Kubernetes namespace                 |
+| `key`       | `string`          | Data key to retrieve                 |
+
+**Returns:** `(string, error)` -- the string value of the requested key, or an error if the Secret does not exist or the key is not present.
+
+### EnsurePushSecret
+
+```go
+func EnsurePushSecret(ctx context.Context, c client.Client, name, namespace, secretStoreName, remoteKey string, owners ...metav1.OwnerReference) error
+```
+
+Creates an `external-secrets.io/v1alpha1` PushSecret custom resource that pushes the contents of the named Kubernetes Secret to a remote secret store via the specified ClusterSecretStore.
+
+| Parameter         | Type                       | Description                                            |
+|-------------------|----------------------------|--------------------------------------------------------|
+| `ctx`             | `context.Context`          | Context for the Kubernetes API call                    |
+| `c`               | `client.Client`            | controller-runtime Kubernetes client                   |
+| `name`            | `string`                   | Name of the PushSecret (and source Secret)             |
+| `namespace`       | `string`                   | Kubernetes namespace                                   |
+| `secretStoreName` | `string`                   | Name of the ClusterSecretStore to push to              |
+| `remoteKey`       | `string`                   | Remote key path in the secret store                    |
+| `owners`          | `...metav1.OwnerReference` | Variadic owner references for garbage collection       |
+
+**Returns:** `error` -- `nil` on success or if the PushSecret already exists (idempotent); an error if the API call fails.
+
+**Behavior:** The PushSecret spec references `spec.secretStoreRefs` pointing to the named ClusterSecretStore, `spec.selector.secret.name` set to the source Secret name, and `spec.data` mapping all keys to the given `remoteKey`. Owner references are set from the variadic `owners` parameter.
+
+---
+
+## policy (K8s-interacting)
+
+**Package:** `internal/common/policy`
+**Import:** `"github.com/c5c3/forge/internal/common/policy"`
+
+Kubernetes-interacting function added by CC-0005 to the existing policy package. Requires a `controller-runtime` `client.Client`.
+
+### LoadPolicyFromConfigMap
+
+```go
+func LoadPolicyFromConfigMap(ctx context.Context, c client.Client, name, namespace string) (map[string]string, error)
+```
+
+Fetches a ConfigMap by name and namespace, reads the `"policy.yaml"` key from its data, and parses the YAML content into a flat `map[string]string` representing oslo.policy rules.
+
+| Parameter   | Type              | Description                          |
+|-------------|-------------------|--------------------------------------|
+| `ctx`       | `context.Context` | Context for the Kubernetes API call  |
+| `c`         | `client.Client`   | controller-runtime Kubernetes client |
+| `name`      | `string`          | Name of the ConfigMap                |
+| `namespace` | `string`          | Kubernetes namespace                 |
+
+**Returns:** `(map[string]string, error)` -- the parsed policy rules, or an error if the ConfigMap is not found, the `"policy.yaml"` key is missing, or the YAML content cannot be parsed.
+
+---
+
+## database
+
+**Package:** `internal/common/database`
+**Import:** `"github.com/c5c3/forge/internal/common/database"`
+
+Functions for managing MariaDB databases, users, and schema migration jobs via the mariadb-operator CRDs (`k8s.mariadb.com/v1alpha1`). All functions require a `controller-runtime` `client.Client`.
+
+### EnsureDatabase
+
+```go
+func EnsureDatabase(ctx context.Context, c client.Client, name, namespace, mariadbRef string, owners ...metav1.OwnerReference) error
+```
+
+Creates a `k8s.mariadb.com/v1alpha1` Database custom resource using an unstructured object. The Database's `spec.mariaDbRef.name` is set to `mariadbRef`, and `spec.name` is set to the given name.
+
+| Parameter    | Type                       | Description                                          |
+|--------------|----------------------------|------------------------------------------------------|
+| `ctx`        | `context.Context`          | Context for the Kubernetes API call                  |
+| `c`          | `client.Client`            | controller-runtime Kubernetes client                 |
+| `name`       | `string`                   | Name of the Database resource (also the database name)|
+| `namespace`  | `string`                   | Kubernetes namespace                                 |
+| `mariadbRef` | `string`                   | Name of the MariaDB instance to reference            |
+| `owners`     | `...metav1.OwnerReference` | Variadic owner references for garbage collection     |
+
+**Returns:** `error` -- `nil` on success or if the Database already exists (idempotent); an error if the API call fails.
+
+### EnsureDatabaseUser
+
+```go
+func EnsureDatabaseUser(ctx context.Context, c client.Client, name, namespace, mariadbRef, passwordSecretName, passwordSecretKey string, owners ...metav1.OwnerReference) error
+```
+
+Creates a `k8s.mariadb.com/v1alpha1` User custom resource and a corresponding Grant custom resource using unstructured objects. The User is configured with the given `mariadbRef` and password secret reference. The Grant gives the user ALL privileges on all databases and tables (`*.*`).
+
+| Parameter            | Type                       | Description                                            |
+|----------------------|----------------------------|--------------------------------------------------------|
+| `ctx`                | `context.Context`          | Context for the Kubernetes API call                    |
+| `c`                  | `client.Client`            | controller-runtime Kubernetes client                   |
+| `name`               | `string`                   | Name of the User resource (also the database username) |
+| `namespace`          | `string`                   | Kubernetes namespace                                   |
+| `mariadbRef`         | `string`                   | Name of the MariaDB instance to reference              |
+| `passwordSecretName` | `string`                   | Name of the Secret containing the password             |
+| `passwordSecretKey`  | `string`                   | Key within the Secret that holds the password          |
+| `owners`             | `...metav1.OwnerReference` | Variadic owner references for garbage collection       |
+
+**Returns:** `error` -- `nil` on success or if the resources already exist (idempotent); an error if the API call fails.
+
+**Behavior:** Creates two resources: a User CR with `spec.mariaDbRef`, `spec.name`, and `spec.passwordSecretKeyRef` configured, and a Grant CR named `{name}-grant` that grants ALL privileges on `*.*` to the user. Both operations are idempotent.
+
+### RunDBSyncJob
+
+```go
+func RunDBSyncJob(ctx context.Context, c client.Client, name, namespace, image string, command []string, volumeMounts []corev1.VolumeMount, volumes []corev1.Volume, owners ...metav1.OwnerReference) error
+```
+
+Creates a Kubernetes Job that runs a database sync/migration command.
+
+| Parameter      | Type                       | Description                                          |
+|----------------|----------------------------|------------------------------------------------------|
+| `ctx`          | `context.Context`          | Context for the Kubernetes API call                  |
+| `c`            | `client.Client`            | controller-runtime Kubernetes client                 |
+| `name`         | `string`                   | Name of the Job                                      |
+| `namespace`    | `string`                   | Kubernetes namespace                                 |
+| `image`        | `string`                   | Container image for the db-sync container            |
+| `command`      | `[]string`                 | Command to execute in the container                  |
+| `volumeMounts` | `[]corev1.VolumeMount`     | Volume mounts for the db-sync container              |
+| `volumes`      | `[]corev1.Volume`          | Volumes for the Pod                                  |
+| `owners`       | `...metav1.OwnerReference` | Variadic owner references for garbage collection     |
+
+**Returns:** `error` -- `nil` on success or if the Job already exists (idempotent); an error if the API call fails.
+
+**Behavior:** The Job is configured with a backoff limit of 4 retries, a TTL of 300 seconds after completion, and a restart policy of `Never`. The container is named `"db-sync"`. Owner references are set from the variadic `owners` parameter.
+
+---
+
+## deployment
+
+**Package:** `internal/common/deployment`
+**Import:** `"github.com/c5c3/forge/internal/common/deployment"`
+
+Functions for managing Kubernetes Deployments and Services. All functions require a `controller-runtime` `client.Client` (except `IsDeploymentReady` which is a pure function).
+
+### EnsureDeployment
+
+```go
+func EnsureDeployment(ctx context.Context, c client.Client, deployment *appsv1.Deployment) error
+```
+
+Creates the given Deployment if it does not exist, or updates it if it already exists. The caller supplies a fully-constructed Deployment object.
+
+| Parameter    | Type                 | Description                              |
+|--------------|----------------------|------------------------------------------|
+| `ctx`        | `context.Context`    | Context for the Kubernetes API call      |
+| `c`          | `client.Client`      | controller-runtime Kubernetes client     |
+| `deployment` | `*appsv1.Deployment` | Fully-constructed Deployment to ensure   |
+
+**Returns:** `error` -- `nil` on success; an error if the API call fails.
+
+**Behavior:** On update, the `ResourceVersion` from the existing object is preserved for optimistic concurrency. If the Deployment does not exist, it is created; otherwise the existing resource is updated in place.
+
+### EnsureService
+
+```go
+func EnsureService(ctx context.Context, c client.Client, service *corev1.Service) error
+```
+
+Creates the given Service if it does not exist, or updates it if it already exists. The caller supplies a fully-constructed Service object.
+
+| Parameter | Type              | Description                           |
+|-----------|-------------------|---------------------------------------|
+| `ctx`     | `context.Context` | Context for the Kubernetes API call   |
+| `c`       | `client.Client`   | controller-runtime Kubernetes client  |
+| `service` | `*corev1.Service` | Fully-constructed Service to ensure   |
+
+**Returns:** `error` -- `nil` on success; an error if the API call fails.
+
+**Behavior:** On update, the `ResourceVersion` and `ClusterIP` from the existing object are preserved because `ClusterIP` is immutable once assigned by Kubernetes. If the Service does not exist, it is created; otherwise the existing resource is updated in place.
+
+### IsDeploymentReady
+
+```go
+func IsDeploymentReady(deployment *appsv1.Deployment) bool
+```
+
+Returns `true` if the given Deployment has an `Available` condition with status `True`. This indicates that the Deployment has reached its minimum availability as defined by its deployment strategy.
+
+| Parameter    | Type                 | Description                  |
+|--------------|----------------------|------------------------------|
+| `deployment` | `*appsv1.Deployment` | Deployment to check          |
+
+**Returns:** `bool` -- `true` if the `Available` condition has status `True`; `false` otherwise (including when the deployment is `nil`).
+
+---
+
+## job
+
+**Package:** `internal/common/job`
+**Import:** `"github.com/c5c3/forge/internal/common/job"`
+
+Functions for managing Kubernetes Jobs and CronJobs. All functions require a `controller-runtime` `client.Client` (except `IsJobComplete` which is a pure function).
+
+### RunJob
+
+```go
+func RunJob(ctx context.Context, c client.Client, job *batchv1.Job) error
+```
+
+Creates the given Job if it does not already exist. Jobs are immutable once created, so an `AlreadyExists` error is treated as success.
+
+| Parameter | Type              | Description                          |
+|-----------|-------------------|--------------------------------------|
+| `ctx`     | `context.Context` | Context for the Kubernetes API call  |
+| `c`       | `client.Client`   | controller-runtime Kubernetes client |
+| `job`     | `*batchv1.Job`    | Fully-constructed Job to create      |
+
+**Returns:** `error` -- `nil` on success or if the Job already exists (idempotent); an error if the API call fails.
+
+### EnsureCronJob
+
+```go
+func EnsureCronJob(ctx context.Context, c client.Client, cronJob *batchv1.CronJob) error
+```
+
+Creates or updates the given CronJob. If the CronJob does not exist it is created; otherwise the existing resource is updated in place.
+
+| Parameter | Type               | Description                            |
+|-----------|--------------------|----------------------------------------|
+| `ctx`     | `context.Context`  | Context for the Kubernetes API call    |
+| `c`       | `client.Client`    | controller-runtime Kubernetes client   |
+| `cronJob` | `*batchv1.CronJob` | Fully-constructed CronJob to ensure    |
+
+**Returns:** `error` -- `nil` on success; an error if the API call fails.
+
+**Behavior:** On update, the `ResourceVersion` from the existing object is preserved for optimistic concurrency. If the CronJob does not exist, it is created; otherwise the existing resource is updated in place.
+
+### IsJobComplete
+
+```go
+func IsJobComplete(j *batchv1.Job) bool
+```
+
+Returns `true` if the given Job has a `Complete` condition with status `True`. This indicates the Job has successfully finished all of its work.
+
+| Parameter | Type           | Description     |
+|-----------|----------------|-----------------|
+| `j`       | `*batchv1.Job` | Job to check    |
+
+**Returns:** `bool` -- `true` if the `Complete` condition has status `True`; `false` otherwise (including when the Job is `nil`).
+
+---
+
+## tls
+
+**Package:** `internal/common/tls`
+**Import:** `"github.com/c5c3/forge/internal/common/tls"`
+
+Functions for managing TLS certificates via cert-manager and retrieving TLS secrets. All functions require a `controller-runtime` `client.Client`.
+
+### EnsureCertificate
+
+```go
+func EnsureCertificate(ctx context.Context, c client.Client, name, namespace, issuerName, commonName string, dnsNames []string, owners ...metav1.OwnerReference) error
+```
+
+Creates a `cert-manager.io/v1` Certificate custom resource using an unstructured object. The Certificate's `spec.secretName` is set to `{name}-tls`, and `spec.issuerRef` points to a ClusterIssuer with the given `issuerName`.
+
+| Parameter    | Type                       | Description                                      |
+|--------------|----------------------------|--------------------------------------------------|
+| `ctx`        | `context.Context`          | Context for the Kubernetes API call              |
+| `c`          | `client.Client`            | controller-runtime Kubernetes client             |
+| `name`       | `string`                   | Name of the Certificate resource                 |
+| `namespace`  | `string`                   | Kubernetes namespace                             |
+| `issuerName` | `string`                   | Name of the ClusterIssuer to reference           |
+| `commonName` | `string`                   | Common name (CN) for the certificate             |
+| `dnsNames`   | `[]string`                 | Subject Alternative Names (SANs)                 |
+| `owners`     | `...metav1.OwnerReference` | Variadic owner references for garbage collection |
+
+**Returns:** `error` -- `nil` on success or if the Certificate already exists (idempotent); an error if the API call fails.
+
+**Behavior:** The resulting TLS secret will be named `{name}-tls`. Owner references are set from the variadic `owners` parameter. The `spec.issuerRef.kind` is set to `ClusterIssuer`.
+
+### GetTLSSecret
+
+```go
+func GetTLSSecret(ctx context.Context, c client.Client, name, namespace string) (*corev1.Secret, error)
+```
+
+Fetches a `corev1.Secret` by name and namespace, then validates that it contains both `"tls.crt"` and `"tls.key"` data keys.
+
+| Parameter   | Type              | Description                          |
+|-------------|-------------------|--------------------------------------|
+| `ctx`       | `context.Context` | Context for the Kubernetes API call  |
+| `c`         | `client.Client`   | controller-runtime Kubernetes client |
+| `name`      | `string`          | Name of the TLS Secret               |
+| `namespace` | `string`          | Kubernetes namespace                 |
+
+**Returns:** `(*corev1.Secret, error)` -- the Secret if found and valid, or an error if the Secret is not found or is missing required TLS keys (`"tls.crt"` or `"tls.key"`).
+
+---
+
+## testutil/simulators
+
+**Package:** `internal/common/testutil/simulators`
+**Import:** `"github.com/c5c3/forge/internal/common/testutil/simulators"`
+
+Test helpers that simulate the behaviour of external operators (cert-manager, external-secrets, mariadb-operator, memcached-operator) and the Kubernetes job controller in envtest environments where these controllers are not running. Each simulator creates the custom resource if it does not exist and patches its status sub-resource to reflect a ready/complete state.
+
+### SimulateCertificateReady
+
+```go
+func SimulateCertificateReady(ctx context.Context, c client.Client, name, namespace string) error
+```
+
+Creates a cert-manager Certificate custom resource (if it does not already exist) and patches its status sub-resource so that `ready=true` and a `Ready` condition with status `True` is present.
+
+| Parameter   | Type              | Description                           |
+|-------------|-------------------|---------------------------------------|
+| `ctx`       | `context.Context` | Context for the Kubernetes API call   |
+| `c`         | `client.Client`   | controller-runtime Kubernetes client  |
+| `name`      | `string`          | Name of the Certificate               |
+| `namespace` | `string`          | Kubernetes namespace                  |
+
+**Returns:** `error` -- `nil` on success; an error if the API call fails.
+
+### SimulatePushSecretReady
+
+```go
+func SimulatePushSecretReady(ctx context.Context, c client.Client, name, namespace string) error
+```
+
+Creates an external-secrets PushSecret custom resource (if it does not already exist) and patches its status sub-resource so that `ready=true` and a `Ready` condition with status `True` is present.
+
+| Parameter   | Type              | Description                           |
+|-------------|-------------------|---------------------------------------|
+| `ctx`       | `context.Context` | Context for the Kubernetes API call   |
+| `c`         | `client.Client`   | controller-runtime Kubernetes client  |
+| `name`      | `string`          | Name of the PushSecret                |
+| `namespace` | `string`          | Kubernetes namespace                  |
+
+**Returns:** `error` -- `nil` on success; an error if the API call fails.
+
+### SimulateExternalSecretSync
+
+```go
+func SimulateExternalSecretSync(ctx context.Context, c client.Client, name, namespace string, targetSecretData map[string][]byte) error
+```
+
+Creates an ExternalSecret custom resource (if it does not already exist), patches its status sub-resource to reflect a successful sync (`Ready=True` condition), and creates the target Kubernetes Secret populated with `targetSecretData`.
+
+| Parameter          | Type                 | Description                                     |
+|--------------------|----------------------|-------------------------------------------------|
+| `ctx`              | `context.Context`    | Context for the Kubernetes API call             |
+| `c`                | `client.Client`      | controller-runtime Kubernetes client            |
+| `name`             | `string`             | Name of the ExternalSecret (and target Secret)  |
+| `namespace`        | `string`             | Kubernetes namespace                            |
+| `targetSecretData` | `map[string][]byte`  | Data to populate in the target Secret           |
+
+**Returns:** `error` -- `nil` on success; an error if the API call fails.
+
+**Behavior:** In a real cluster, the external-secrets operator watches ExternalSecret objects and creates the target Secret automatically. In envtest the operator is absent, so this simulator performs both actions. The function is idempotent -- if the target Secret already exists, its data is updated to match `targetSecretData`.
+
+### SimulateMariaDBReady
+
+```go
+func SimulateMariaDBReady(ctx context.Context, c client.Client, name, namespace string) error
+```
+
+Creates a MariaDB custom resource (if it does not already exist) and patches its status sub-resource so that `ready=true` and a `Ready` condition with status `True` is present.
+
+| Parameter   | Type              | Description                           |
+|-------------|-------------------|---------------------------------------|
+| `ctx`       | `context.Context` | Context for the Kubernetes API call   |
+| `c`         | `client.Client`   | controller-runtime Kubernetes client  |
+| `name`      | `string`          | Name of the MariaDB resource          |
+| `namespace` | `string`          | Kubernetes namespace                  |
+
+**Returns:** `error` -- `nil` on success; an error if the API call fails.
+
+### SimulateMemcachedReady
+
+```go
+func SimulateMemcachedReady(ctx context.Context, c client.Client, name, namespace string) error
+```
+
+Creates a Memcached custom resource (if it does not already exist) and patches its status sub-resource so that `ready=true` and a `Ready` condition with status `True` is present.
+
+| Parameter   | Type              | Description                           |
+|-------------|-------------------|---------------------------------------|
+| `ctx`       | `context.Context` | Context for the Kubernetes API call   |
+| `c`         | `client.Client`   | controller-runtime Kubernetes client  |
+| `name`      | `string`          | Name of the Memcached resource        |
+| `namespace` | `string`          | Kubernetes namespace                  |
+
+**Returns:** `error` -- `nil` on success; an error if the API call fails.
+
+**Note:** The API group `opsv1.memcached.com` is a fabricated placeholder for testing purposes.
+
+### SimulateJobComplete
+
+```go
+func SimulateJobComplete(ctx context.Context, c client.Client, name, namespace string) error
+```
+
+Creates a Kubernetes Job (if it does not already exist) and patches its status sub-resource to reflect a successful completion, setting `succeeded=1` and a `Complete` condition with status `True`.
+
+| Parameter   | Type              | Description                           |
+|-------------|-------------------|---------------------------------------|
+| `ctx`       | `context.Context` | Context for the Kubernetes API call   |
+| `c`         | `client.Client`   | controller-runtime Kubernetes client  |
+| `name`      | `string`          | Name of the Job                       |
+| `namespace` | `string`          | Kubernetes namespace                  |
+
+**Returns:** `error` -- `nil` on success; an error if the API call fails.
+
+**Behavior:** Simulates the Kubernetes job controller in envtest environments where no Pods are actually scheduled and therefore Jobs never transition to a completed state on their own. The Job status includes `startTime`, `completionTime`, and conditions for both `SuccessCriteriaMet` and `Complete`.
+
+---
+
 ## Dependencies
 
-- **CC-0004** — implements all packages
-- **CC-0005** — will add K8s-client-dependent functions (`CreateImmutableConfigMap`, `LoadPolicyFromConfigMap`)
-- **CC-0011** — will consume types in CRD definitions with kubebuilder markers
+- **CC-0004** -- implements pure-function utility packages (conditions, config, plugins, policy)
+- **CC-0005** -- adds K8s-client-dependent packages (config/configmap, secrets, policy/loader, database, deployment, job, tls, testutil/simulators)
+- **CC-0011** -- will consume types in CRD definitions with kubebuilder markers

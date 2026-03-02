@@ -13,6 +13,7 @@ endif
 
 MODULE_DIRS = $(addprefix operators/,$(OPERATORS))
 ALL_MODULE_DIRS = internal/common $(MODULE_DIRS)
+INTEGRATION_MODULE_DIRS = internal/common
 
 .PHONY: build test lint generate manifests docker-build helm-package e2e deploy-infra install-test-deps test-integration
 
@@ -69,6 +70,10 @@ deploy-infra:
 install-test-deps:
 	$(error install-test-deps target requires S002 implementation)
 
-## Run integration tests (stub - requires S002)
+## Run integration tests (requires -tags integration and envtest binaries)
 test-integration:
-	$(error test-integration target requires S002 implementation)
+	@ENVTEST_ASSETS=$$(setup-envtest use --print path 2>/dev/null); \
+	for dir in $(INTEGRATION_MODULE_DIRS); do \
+		echo "Integration testing $$dir..."; \
+		(cd $$dir && KUBEBUILDER_ASSETS="$$ENVTEST_ASSETS" go test -tags integration ./...) || exit 1; \
+	done

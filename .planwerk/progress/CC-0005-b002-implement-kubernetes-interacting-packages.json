@@ -687,6 +687,7 @@
       "description": "Update the Makefile test-integration target to actually run integration tests: 'cd internal/common && go test -tags=integration ./...'. Verify all new integration tests pass by running make test-integration. Also verify make test still passes (unit tests only, no integration tag). Fix any compilation or test failures.",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-013"
       ]
@@ -697,6 +698,7 @@
       "description": "Update docs/reference/internal-common-packages.md to add sections for each new CC-0005 package (secrets/, database/, deployment/, job/, tls/) and the new functions in config/ and policy/. Follow the existing format: Package import path, function signature table with Parameter/Type/Description columns, behavior notes, and return values. Include the CreateImmutableConfigMap and LoadPolicyFromConfigMap additions to existing package sections. Add CC-0005 to the Dependencies section at the bottom.",
       "level": 4,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-012"
       ]
