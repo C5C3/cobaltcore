@@ -37,6 +37,16 @@ var (
 		Version: "v1beta1",
 		Kind:    "ExternalSecret",
 	}
+	certificateGVK = schema.GroupVersionKind{
+		Group:   "cert-manager.io",
+		Version: "v1",
+		Kind:    "Certificate",
+	}
+	pushSecretGVK = schema.GroupVersionKind{
+		Group:   "external-secrets.io",
+		Version: "v1alpha1",
+		Kind:    "PushSecret",
+	}
 )
 
 func TestMain(m *testing.M) {
@@ -189,6 +199,62 @@ func TestSimulateJobComplete_Idempotent(t *testing.T) {
 	}
 
 	assertJobComplete(t, ctx, k8sClient, name, namespace)
+}
+
+func TestSimulateCertificateReady(t *testing.T) {
+	ctx := context.Background()
+	name := "test-certificate-ready"
+	namespace := "test-simulators"
+
+	if err := simulators.SimulateCertificateReady(ctx, k8sClient, name, namespace); err != nil {
+		t.Fatalf("SimulateCertificateReady returned error: %v", err)
+	}
+
+	assertUnstructuredReady(t, ctx, k8sClient, certificateGVK, name, namespace)
+}
+
+func TestSimulateCertificateReady_Idempotent(t *testing.T) {
+	ctx := context.Background()
+	name := "test-certificate-idempotent"
+	namespace := "test-simulators"
+
+	if err := simulators.SimulateCertificateReady(ctx, k8sClient, name, namespace); err != nil {
+		t.Fatalf("first call to SimulateCertificateReady returned error: %v", err)
+	}
+
+	if err := simulators.SimulateCertificateReady(ctx, k8sClient, name, namespace); err != nil {
+		t.Fatalf("second call to SimulateCertificateReady returned error: %v", err)
+	}
+
+	assertUnstructuredReady(t, ctx, k8sClient, certificateGVK, name, namespace)
+}
+
+func TestSimulatePushSecretReady(t *testing.T) {
+	ctx := context.Background()
+	name := "test-pushsecret-ready"
+	namespace := "test-simulators"
+
+	if err := simulators.SimulatePushSecretReady(ctx, k8sClient, name, namespace); err != nil {
+		t.Fatalf("SimulatePushSecretReady returned error: %v", err)
+	}
+
+	assertUnstructuredReady(t, ctx, k8sClient, pushSecretGVK, name, namespace)
+}
+
+func TestSimulatePushSecretReady_Idempotent(t *testing.T) {
+	ctx := context.Background()
+	name := "test-pushsecret-idempotent"
+	namespace := "test-simulators"
+
+	if err := simulators.SimulatePushSecretReady(ctx, k8sClient, name, namespace); err != nil {
+		t.Fatalf("first call to SimulatePushSecretReady returned error: %v", err)
+	}
+
+	if err := simulators.SimulatePushSecretReady(ctx, k8sClient, name, namespace); err != nil {
+		t.Fatalf("second call to SimulatePushSecretReady returned error: %v", err)
+	}
+
+	assertUnstructuredReady(t, ctx, k8sClient, pushSecretGVK, name, namespace)
 }
 
 // ---------------------------------------------------------------------------

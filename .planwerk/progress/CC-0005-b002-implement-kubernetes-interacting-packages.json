@@ -529,6 +529,7 @@
       "description": "Create two new simulator functions in internal/common/testutil/simulators/: SimulateCertificateReady (cert-manager.io/v1/Certificate GVK) and SimulatePushSecretReady (external-secrets.io/v1alpha1/PushSecret GVK). Both use the existing simulateUnstructuredReady helper. Note: PushSecret has no status.ready boolean — only conditions (same as ExternalSecret), so use a custom implementation like SimulateExternalSecretSync rather than simulateUnstructuredReady if needed. Add integration tests (TestSimulateCertificateReady, TestSimulateCertificateReady_Idempotent, TestSimulatePushSecretReady, TestSimulatePushSecretReady_Idempotent) to the existing simulators_integration_test.go file. Follow exact patterns from mariadb.go/memcached.go.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-011"
       ]
@@ -539,6 +540,7 @@
       "description": "Create internal/common/deployment/ package with doc.go and deployment.go containing IsDeploymentReady(deployment *appsv1.Deployment) bool. Checks Available=True condition via appsv1.DeploymentAvailable and that status.ReadyReplicas >= *spec.Replicas. Write table-driven unit tests in deployment_test.go covering: available deployment (true), no status (false), Available=False (false), readyReplicas < desired (false), nil replicas (false).",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -549,6 +551,7 @@
       "description": "Create internal/common/job/ package with doc.go and job.go containing IsJobComplete(job *batchv1.Job) bool. Checks for batchv1.JobComplete condition with status corev1.ConditionTrue. Write table-driven unit tests in job_test.go covering: complete job (true), no conditions (false), Complete=False (false), only SuccessCriteriaMet (false), failed job (false).",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
