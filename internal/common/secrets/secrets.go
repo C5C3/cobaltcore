@@ -65,6 +65,7 @@ func IsSecretReady(ctx context.Context, c client.Client, name, namespace string)
 }
 
 // GetSecretValue retrieves the value of a specific key from a Kubernetes Secret.
+// The returned value may contain credentials — callers should not log it.
 // Returns an error if the Secret or key does not exist. (CC-0005, REQ-003)
 func GetSecretValue(ctx context.Context, c client.Client, name, namespace, key string) (string, error) {
 	secret := &corev1.Secret{}

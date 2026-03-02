@@ -60,11 +60,11 @@ func EnsureDatabase(ctx context.Context, c client.Client, name, namespace, datab
 // (k8s.mariadb.com/v1alpha1) via the unstructured client. Both operations are
 // idempotent -- if the resources already exist, the function returns nil.
 // (CC-0005, REQ-004, REQ-009)
-func EnsureDatabaseUser(ctx context.Context, c client.Client, name, namespace, mariadbRefName, passwordSecretName, passwordSecretKey string, database string, privileges []string, ownerRefs ...metav1.OwnerReference) error {
+func EnsureDatabaseUser(ctx context.Context, c client.Client, name, namespace, mariadbRefName, passwordSecretName, passwordSecretKey string, databaseName string, privileges []string, ownerRefs ...metav1.OwnerReference) error {
 	if err := ensureUser(ctx, c, name, namespace, mariadbRefName, passwordSecretName, passwordSecretKey, ownerRefs); err != nil {
 		return err
 	}
-	return ensureGrant(ctx, c, name, namespace, mariadbRefName, database, privileges, ownerRefs)
+	return ensureGrant(ctx, c, name, namespace, mariadbRefName, databaseName, privileges, ownerRefs)
 }
 
 // ensureUser creates a MariaDB User CR. Idempotent — returns nil if it already exists.
@@ -105,7 +105,7 @@ func ensureUser(ctx context.Context, c client.Client, name, namespace, mariadbRe
 }
 
 // ensureGrant creates a MariaDB Grant CR. Idempotent — returns nil if it already exists.
-func ensureGrant(ctx context.Context, c client.Client, userName, namespace, mariadbRefName, database string, privileges []string, ownerRefs []metav1.OwnerReference) error {
+func ensureGrant(ctx context.Context, c client.Client, userName, namespace, mariadbRefName, databaseName string, privileges []string, ownerRefs []metav1.OwnerReference) error {
 	grantObj := &unstructured.Unstructured{}
 	grantObj.SetGroupVersionKind(mariadbGVK("Grant"))
 	grantObj.SetName(userName + "-grant")
@@ -122,7 +122,7 @@ func ensureGrant(ctx context.Context, c client.Client, userName, namespace, mari
 		return fmt.Errorf("setting Grant spec.mariaDbRef: %w", err)
 	}
 
-	if err := unstructured.SetNestedField(grantObj.Object, database, "spec", "database"); err != nil {
+	if err := unstructured.SetNestedField(grantObj.Object, databaseName, "spec", "database"); err != nil {
 		return fmt.Errorf("setting Grant spec.database: %w", err)
 	}
 

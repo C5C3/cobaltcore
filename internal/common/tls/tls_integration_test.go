@@ -171,7 +171,7 @@ func TestGetTLSSecret_Exists(t *testing.T) {
 		t.Fatalf("creating Secret: %v", err)
 	}
 
-	got, err := tls.GetTLSSecret(ctx, k8sClient, ns.Name, "my-tls-secret")
+	got, err := tls.GetTLSSecret(ctx, k8sClient, "my-tls-secret", ns.Name)
 	if err != nil {
 		t.Fatalf("GetTLSSecret returned error: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestGetTLSSecret_NotFound(t *testing.T) {
 	ctx := context.Background()
 	ns := testutil.CreateTestNamespace(t, ctx, k8sClient, "test-tls-")
 
-	_, err := tls.GetTLSSecret(ctx, k8sClient, ns.Name, "nonexistent-secret")
+	_, err := tls.GetTLSSecret(ctx, k8sClient, "nonexistent-secret", ns.Name)
 	if err == nil {
 		t.Fatal("expected error for non-existent secret, got nil")
 	}

@@ -7,15 +7,10 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-)
 
-// DefaultFieldManager is the recommended server-side apply field manager name
-// for controllers using this package. Callers may use their own value if they
-// need controller-specific ownership tracking. (CC-0005)
-const DefaultFieldManager = "cobaltcore-operator"
+	"github.com/c5c3/forge/internal/common/applyconfig"
+)
 
 // IsDeploymentReady returns true if the given Deployment has reached its desired
 // state: all replicas are updated, available, and ready, with no unavailable
@@ -49,12 +44,12 @@ func EnsureDeployment(ctx context.Context, c client.Client, deploy *appsv1.Deplo
 
 	deploy.SetGroupVersionKind(appsv1.SchemeGroupVersion.WithKind("Deployment"))
 
-	applyConfig, err := toApplyConfiguration(deploy)
+	applyConf, err := applyconfig.ToApplyConfiguration(deploy)
 	if err != nil {
 		return fmt.Errorf("converting Deployment to apply configuration: %w", err)
 	}
 
-	if err := c.Apply(ctx, applyConfig, client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
+	if err := c.Apply(ctx, applyConf, client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
 		return fmt.Errorf("applying Deployment %s/%s: %w", deploy.Namespace, deploy.Name, err)
 	}
 	return nil
@@ -70,24 +65,13 @@ func EnsureService(ctx context.Context, c client.Client, svc *corev1.Service, fi
 
 	svc.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Service"))
 
-	applyConfig, err := toApplyConfiguration(svc)
+	applyConf, err := applyconfig.ToApplyConfiguration(svc)
 	if err != nil {
 		return fmt.Errorf("converting Service to apply configuration: %w", err)
 	}
 
-	if err := c.Apply(ctx, applyConfig, client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
+	if err := c.Apply(ctx, applyConf, client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
 		return fmt.Errorf("applying Service %s/%s: %w", svc.Namespace, svc.Name, err)
 	}
 	return nil
-}
-
-// toApplyConfiguration converts a typed Kubernetes object into a
-// runtime.ApplyConfiguration suitable for client.Client.Apply().
-// The object must have its GVK set before calling this function.
-func toApplyConfiguration(obj k8sruntime.Object) (k8sruntime.ApplyConfiguration, error) {
-	data, err := k8sruntime.DefaultUnstructuredConverter.ToUnstructured(obj)
-	if err != nil {
-		return nil, err
-	}
-	return client.ApplyConfigurationFromUnstructured(&unstructured.Unstructured{Object: data}), nil
 }

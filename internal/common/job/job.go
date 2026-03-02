@@ -8,15 +8,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-)
 
-// DefaultFieldManager is the recommended server-side apply field manager name
-// for controllers using this package. Callers may use their own value if they
-// need controller-specific ownership tracking. (CC-0005)
-const DefaultFieldManager = "cobaltcore-operator"
+	"github.com/c5c3/forge/internal/common/applyconfig"
+)
 
 // IsJobComplete returns true if the given Job has completed successfully.
 // It checks for the presence of a "Complete" condition with status "True"
@@ -63,24 +58,13 @@ func EnsureCronJob(ctx context.Context, c client.Client, cronJob *batchv1.CronJo
 
 	cronJob.SetGroupVersionKind(batchv1.SchemeGroupVersion.WithKind("CronJob"))
 
-	applyConfig, err := toApplyConfiguration(cronJob)
+	applyConf, err := applyconfig.ToApplyConfiguration(cronJob)
 	if err != nil {
 		return fmt.Errorf("converting CronJob to apply configuration: %w", err)
 	}
 
-	if err := c.Apply(ctx, applyConfig, client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
+	if err := c.Apply(ctx, applyConf, client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
 		return fmt.Errorf("applying CronJob %s/%s: %w", cronJob.Namespace, cronJob.Name, err)
 	}
 	return nil
-}
-
-// toApplyConfiguration converts a typed Kubernetes object into a
-// runtime.ApplyConfiguration suitable for client.Client.Apply().
-// The object must have its GVK set before calling this function.
-func toApplyConfiguration(obj k8sruntime.Object) (k8sruntime.ApplyConfiguration, error) {
-	data, err := k8sruntime.DefaultUnstructuredConverter.ToUnstructured(obj)
-	if err != nil {
-		return nil, err
-	}
-	return client.ApplyConfigurationFromUnstructured(&unstructured.Unstructured{Object: data}), nil
 }

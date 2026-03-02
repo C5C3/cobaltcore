@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/policy"
+	"github.com/c5c3/forge/internal/common/testutil"
 	testenvtest "github.com/c5c3/forge/internal/common/testutil/envtest"
 )
 
@@ -31,15 +32,13 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+func createTestNamespace(t *testing.T, ctx context.Context) *corev1.Namespace {
+	return testutil.CreateTestNamespace(t, ctx, k8sClient, "test-policy-")
+}
+
 func TestLoadPolicyFromConfigMap_ValidYAML(t *testing.T) {
 	ctx := context.Background()
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-policy-"}}
-	if err := k8sClient.Create(ctx, ns); err != nil {
-		t.Fatalf("creating namespace: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = k8sClient.Delete(ctx, ns)
-	})
+	ns := createTestNamespace(t, ctx)
 
 	policyYAML := "identity:list_users: \"role:admin\"\nidentity:get_user: \"role:admin or role:reader\"\n"
 	cm := &corev1.ConfigMap{
@@ -55,7 +54,7 @@ func TestLoadPolicyFromConfigMap_ValidYAML(t *testing.T) {
 		t.Fatalf("creating ConfigMap: %v", err)
 	}
 
-	rules, err := policy.LoadPolicyFromConfigMap(ctx, k8sClient, ns.Name, "valid-policy")
+	rules, err := policy.LoadPolicyFromConfigMap(ctx, k8sClient, "valid-policy", ns.Name)
 	if err != nil {
 		t.Fatalf("LoadPolicyFromConfigMap returned error: %v", err)
 	}
@@ -76,15 +75,9 @@ func TestLoadPolicyFromConfigMap_ValidYAML(t *testing.T) {
 
 func TestLoadPolicyFromConfigMap_MissingConfigMap(t *testing.T) {
 	ctx := context.Background()
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-policy-"}}
-	if err := k8sClient.Create(ctx, ns); err != nil {
-		t.Fatalf("creating namespace: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = k8sClient.Delete(ctx, ns)
-	})
+	ns := createTestNamespace(t, ctx)
 
-	_, err := policy.LoadPolicyFromConfigMap(ctx, k8sClient, ns.Name, "nonexistent-cm")
+	_, err := policy.LoadPolicyFromConfigMap(ctx, k8sClient, "nonexistent-cm", ns.Name)
 	if err == nil {
 		t.Fatal("expected error for missing ConfigMap, got nil")
 	}
@@ -92,13 +85,7 @@ func TestLoadPolicyFromConfigMap_MissingConfigMap(t *testing.T) {
 
 func TestLoadPolicyFromConfigMap_MissingKey(t *testing.T) {
 	ctx := context.Background()
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-policy-"}}
-	if err := k8sClient.Create(ctx, ns); err != nil {
-		t.Fatalf("creating namespace: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = k8sClient.Delete(ctx, ns)
-	})
+	ns := createTestNamespace(t, ctx)
 
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -113,7 +100,7 @@ func TestLoadPolicyFromConfigMap_MissingKey(t *testing.T) {
 		t.Fatalf("creating ConfigMap: %v", err)
 	}
 
-	_, err := policy.LoadPolicyFromConfigMap(ctx, k8sClient, ns.Name, "no-policy-key")
+	_, err := policy.LoadPolicyFromConfigMap(ctx, k8sClient, "no-policy-key", ns.Name)
 	if err == nil {
 		t.Fatal("expected error for missing policy.yaml key, got nil")
 	}
@@ -124,13 +111,7 @@ func TestLoadPolicyFromConfigMap_MissingKey(t *testing.T) {
 
 func TestLoadPolicyFromConfigMap_InvalidYAML(t *testing.T) {
 	ctx := context.Background()
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-policy-"}}
-	if err := k8sClient.Create(ctx, ns); err != nil {
-		t.Fatalf("creating namespace: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = k8sClient.Delete(ctx, ns)
-	})
+	ns := createTestNamespace(t, ctx)
 
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -145,7 +126,7 @@ func TestLoadPolicyFromConfigMap_InvalidYAML(t *testing.T) {
 		t.Fatalf("creating ConfigMap: %v", err)
 	}
 
-	_, err := policy.LoadPolicyFromConfigMap(ctx, k8sClient, ns.Name, "invalid-yaml")
+	_, err := policy.LoadPolicyFromConfigMap(ctx, k8sClient, "invalid-yaml", ns.Name)
 	if err == nil {
 		t.Fatal("expected error for invalid YAML, got nil")
 	}

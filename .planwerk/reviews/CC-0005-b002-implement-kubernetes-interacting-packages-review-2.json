@@ -1,0 +1,164 @@
+{
+  "summary": "Review #2 of CC-0005 B002: All 8 issues from review #1 (1 blocking V3, 6 major, 1 minor) have been fully resolved. The deprecated client.Apply usage was replaced with a new applyconfig/ package providing ToApplyConfiguration() and DefaultFieldManager. Parameter ordering in secrets/ was standardized. EnsureDatabaseUser was decomposed into ensureUser/ensureGrant helpers. Simulator duplication was eliminated via simulateConditionsOnlyReady. Integration tests now use per-test GenerateName namespaces throughout. Missing assertions (issuerRef fields, idempotent User+Grant survival) were added. The implementation delivers 7 Kubernetes-client packages (config extension, secrets, database, deployment, job, tls, policy extension) plus 2 new simulators, a shared applyconfig utility, and a testutil.CreateTestNamespace helper. golangci-lint reports 0 issues. go vet passes. All unit tests pass. Integration tests compile correctly (envtest binaries unavailable in review environment).",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Unit tests exist and pass (IsDeploymentReady, IsJobComplete, ToApplyConfiguration)", "checked": true},
+    {"item": "Integration tests exist for all 7 packages with //go:build integration tag", "checked": true},
+    {"item": "Integration tests use TestMain with SetupEnvTest", "checked": true},
+    {"item": "Integration tests use GenerateName namespaces and t.Cleanup for teardown", "checked": true},
+    {"item": "All Ensure/Create functions have idempotency tests", "checked": true},
+    {"item": "Owner reference tests verify refs are set correctly", "checked": true},
+    {"item": "Pure functions have table-driven unit tests (8 cases IsDeploymentReady, 6 cases IsJobComplete)", "checked": true},
+    {"item": "Edge cases covered (not found, missing key, invalid YAML, nil input, scaled-to-zero)", "checked": true},
+    {"item": "New simulators have ready + idempotent tests", "checked": true},
+    {"item": "Assertions are specific (exact values, not just no-error)", "checked": true},
+    {"item": "EnsureCertificate test verifies full issuerRef (name, kind, group)", "checked": true},
+    {"item": "EnsureDatabaseUser idempotency test verifies both User and Grant survive", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "All new packages have doc.go with (CC-0005) convention", "checked": true},
+    {"item": "Unstructured client used for CRD interactions (MariaDB, ESO, cert-manager)", "checked": true},
+    {"item": "Typed client used for core resources (ConfigMap, Secret, Deployment, Service, Job, CronJob)", "checked": true},
+    {"item": "Error wrapping consistent with fmt.Errorf(': %w', err) pattern", "checked": true},
+    {"item": "Function signatures consistent (ctx, client, params, ownerRefs variadic)", "checked": true},
+    {"item": "All functions <= 40 lines after refactoring EnsureDatabaseUser", "checked": true},
+    {"item": "Simulator duplication eliminated via simulateConditionsOnlyReady helper", "checked": true},
+    {"item": "golangci-lint passes with 0 issues", "checked": true},
+    {"item": "go vet passes on all new packages", "checked": true},
+    {"item": "No new direct dependencies in go.mod", "checked": true},
+    {"item": "Parameter ordering standardized (name, namespace) across all secrets/ functions", "checked": true},
+    {"item": "Server-side apply uses consistent applyconfig.ToApplyConfiguration pattern", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded credentials or tokens", "checked": true},
+    {"item": "No sensitive data exposed in logs", "checked": true},
+    {"item": "Error messages do not leak internal details beyond K8s resource identifiers", "checked": true},
+    {"item": "Nil pointer guards on pure functions", "checked": true},
+    {"item": "Type assertions from unstructured safely guarded with ok checks", "checked": true},
+    {"item": "No SQL injection or command injection vectors", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "Follows existing patterns from simulators/helpers.go and CC-0004", "checked": true},
+    {"item": "Server-side apply uses field manager parameter (not hardcoded)", "checked": true},
+    {"item": "DefaultFieldManager constant provided in applyconfig/ for convenience", "checked": true},
+    {"item": "Owner references correctly propagated from variadic args", "checked": true},
+    {"item": "Idempotency via AlreadyExists for create-style, SSA for apply-style", "checked": true},
+    {"item": "New applyconfig/ package centralizes SSA conversion logic (DRY)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated production code", "checked": true},
+    {"item": "Simulator helpers consolidated into simulateConditionsOnlyReady + simulateUnstructuredReady", "checked": true},
+    {"item": "testutil.CreateTestNamespace eliminates namespace boilerplate across test files", "checked": true},
+    {"item": "No unnecessary abstractions", "checked": true},
+    {"item": "No scope creep beyond plan", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors returned early with context", "checked": true},
+    {"item": "NotFound handled gracefully where specified (false, nil)", "checked": true},
+    {"item": "AlreadyExists handled for idempotency", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Nil deployment/job handled in pure functions", "checked": true},
+    {"item": "Empty ownerRefs variadic handled (no empty slice set)", "checked": true},
+    {"item": "Missing YAML key in ConfigMap returns descriptive error", "checked": true},
+    {"item": "Invalid YAML returns descriptive error", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "id": "D1-1",
+      "severity": "minor",
+      "check_id": "D1",
+      "file": "internal/common/config/doc.go",
+      "line": 2,
+      "description": "Package doc.go carries (CC-0004) but was extended with CreateImmutableConfigMap in CC-0005. Consider updating to (CC-0004, CC-0005) for traceability.",
+      "fix": "Update doc comment to: '// Package config provides pure functions for building and merging OpenStack INI configuration files, and Kubernetes-client helpers for creating immutable ConfigMaps. (CC-0004, CC-0005)'"
+    },
+    {
+      "id": "D1-2",
+      "severity": "minor",
+      "check_id": "D1",
+      "file": "internal/common/policy/doc.go",
+      "line": 2,
+      "description": "Package doc.go carries (CC-0004) but was extended with LoadPolicyFromConfigMap in CC-0005. Consider updating to (CC-0004, CC-0005) for traceability.",
+      "fix": "Update doc comment to include (CC-0005) alongside existing (CC-0004)."
+    },
+    {
+      "id": "D1-3",
+      "severity": "minor",
+      "check_id": "D1",
+      "file": "docs/reference/internal-common-k8s-packages.md",
+      "line": null,
+      "description": "The applyconfig/ package (DefaultFieldManager constant, ToApplyConfiguration function) is not documented in the reference docs. It's an internal utility consumed by deployment/ and job/ packages.",
+      "fix": "Add an applyconfig section documenting DefaultFieldManager and ToApplyConfiguration."
+    },
+    {
+      "id": "Q4-1",
+      "severity": "minor",
+      "check_id": "Q4",
+      "file": "internal/common/database/database.go",
+      "line": 63,
+      "description": "Parameter 'database' in EnsureDatabaseUser shadows the enclosing package name. No functional impact today but reduces IDE clarity and could cause confusion if qualified function calls are added later.",
+      "fix": "Rename parameter to 'databaseName' to match the EnsureDatabase parameter naming convention at line 31."
+    },
+    {
+      "id": "PF1-1",
+      "severity": "minor",
+      "check_id": "PF1",
+      "file": "internal/common/config/config.go",
+      "line": 54,
+      "description": "hashData uses 'key=value\\n' format for SHA-256 input. A key containing '=' or a value containing '\\n' could theoretically produce hash collisions between distinct data maps. Practically near-impossible with valid Kubernetes ConfigMap keys, but length-prefixed encoding would be more robust.",
+      "fix": "Consider 'fmt.Fprintf(h, \"%d:%s=%d:%s\\n\", len(k), k, len(data[k]), data[k])' for theoretical collision safety."
+    },
+    {
+      "id": "P5-1",
+      "severity": "minor",
+      "check_id": "P5",
+      "file": "internal/common/policy/policy_integration_test.go",
+      "line": 36,
+      "description": "Uses inline namespace creation with manual t.Cleanup instead of the shared testutil.CreateTestNamespace helper used by all other integration test files. Functionally equivalent but inconsistent.",
+      "fix": "Replace manual namespace creation with testutil.CreateTestNamespace(t, ctx, k8sClient, \"test-policy-\") and add the testutil import."
+    }
+  ],
+  "suggested_improvements": [
+    "Update doc.go tags on config/ and policy/ to reference both CC-0004 and CC-0005",
+    "Document the applyconfig/ package in the reference docs for discoverability",
+    "Rename 'database' parameter to 'databaseName' in EnsureDatabaseUser for consistency with EnsureDatabase",
+    "Use testutil.CreateTestNamespace in policy_integration_test.go for consistency with other test files",
+    "Consider adding a GetSecretValue docstring warning about string immutability and secret value memory retention"
+  ],
+  "next_steps": [
+    "Merge the PR — all blocking and major checks pass",
+    "Address minor suggestions in a follow-up commit if desired"
+  ],
+  "review_1_issues_resolved": [
+    {"id": "V3-1/V3-2", "description": "Deprecated client.Apply usage replaced with applyconfig.ToApplyConfiguration + client.Client.Apply()", "status": "fixed"},
+    {"id": "P1-1", "description": "Parameter ordering standardized to (name, namespace) across all secrets/ functions", "status": "fixed"},
+    {"id": "Q2-1", "description": "EnsureDatabaseUser decomposed into ensureUser + ensureGrant helpers (~6 lines public function)", "status": "fixed"},
+    {"id": "Q3-1", "description": "SimulateCertificateReady/PushSecretReady now delegate to simulateConditionsOnlyReady helper", "status": "fixed"},
+    {"id": "TE4-1", "description": "simulators_integration_test.go now uses testutil.CreateTestNamespace per test", "status": "fixed"},
+    {"id": "TE7-1", "description": "TestEnsureCertificate_Creates now asserts issuerRef.name, .kind, and .group", "status": "fixed"},
+    {"id": "TE7-2", "description": "TestEnsureDatabaseUser_Idempotent now fetches and verifies both User and Grant CRs after second call", "status": "fixed"},
+    {"id": "Q6-1", "description": "Magic string '*' extracted to const grantAllTables", "status": "fixed"}
+  ],
+  "metadata": {
+    "feature_id": "CC-0005",
+    "title": "B002: Implement Kubernetes-interacting packages",
+    "date": "2026-03-02",
+    "verdict": "APPROVED",
+    "review_number": 2,
+    "blocking_checks_failed": [],
+    "major_checks_failed": [],
+    "minor_suggestions": 6,
+    "unit_tests_pass": true,
+    "integration_tests_pass": "N/A (envtest binaries not available in review environment; tests compile successfully)",
+    "go_vet_pass": true,
+    "golangci_lint_clean": true,
+    "new_go_mod_dependencies": false,
+    "review_1_issues_all_resolved": true,
+    "files_reviewed": 34,
+    "lines_changed": 3852
+  }
+}

@@ -52,7 +52,7 @@ Extends the CC-0004 pure-function policy package with a Kubernetes-client functi
 ### LoadPolicyFromConfigMap
 
 ```go
-func LoadPolicyFromConfigMap(ctx context.Context, c client.Client, namespace, name string) (map[string]string, error)
+func LoadPolicyFromConfigMap(ctx context.Context, c client.Client, name, namespace string) (map[string]string, error)
 ```
 
 Fetches a ConfigMap and parses the `policy.yaml` key into a `map[string]string` of policy rules. Returns an error if the ConfigMap does not exist or the key is missing. (CC-0005, REQ-008)
@@ -61,8 +61,8 @@ Fetches a ConfigMap and parses the `policy.yaml` key into a `map[string]string` 
 |-------------|-------------------|---------------------------------------|
 | `ctx`       | `context.Context` | Context for the API call              |
 | `c`         | `client.Client`   | Kubernetes client                     |
-| `namespace` | `string`          | Namespace of the ConfigMap            |
 | `name`      | `string`          | Name of the ConfigMap                 |
+| `namespace` | `string`          | Namespace of the ConfigMap            |
 
 **Returns:** `(map[string]string, error)` — parsed policy rules and any error.
 
@@ -95,7 +95,7 @@ Fetches an ExternalSecret CR (`external-secrets.io/v1beta1`) via the unstructure
 ### IsSecretReady
 
 ```go
-func IsSecretReady(ctx context.Context, c client.Client, namespace, name string) (bool, error)
+func IsSecretReady(ctx context.Context, c client.Client, name, namespace string) (bool, error)
 ```
 
 Returns `true` if a `core/v1` Secret with the given name exists. Returns `(false, nil)` if the Secret does not exist (NotFound). (CC-0005, REQ-003)
@@ -104,15 +104,15 @@ Returns `true` if a `core/v1` Secret with the given name exists. Returns `(false
 |-------------|-------------------|--------------------------|
 | `ctx`       | `context.Context` | Context for the API call |
 | `c`         | `client.Client`   | Kubernetes client        |
-| `namespace` | `string`          | Secret namespace         |
 | `name`      | `string`          | Secret name              |
+| `namespace` | `string`          | Secret namespace         |
 
 **Returns:** `(bool, error)` — existence state and any error.
 
 ### GetSecretValue
 
 ```go
-func GetSecretValue(ctx context.Context, c client.Client, namespace, name, key string) (string, error)
+func GetSecretValue(ctx context.Context, c client.Client, name, namespace, key string) (string, error)
 ```
 
 Retrieves the value of a specific key from a Kubernetes Secret. Returns an error if the Secret or key does not exist. (CC-0005, REQ-003)
@@ -121,8 +121,8 @@ Retrieves the value of a specific key from a Kubernetes Secret. Returns an error
 |-------------|-------------------|--------------------------|
 | `ctx`       | `context.Context` | Context for the API call |
 | `c`         | `client.Client`   | Kubernetes client        |
-| `namespace` | `string`          | Secret namespace         |
 | `name`      | `string`          | Secret name              |
+| `namespace` | `string`          | Secret namespace         |
 | `key`       | `string`          | Data key to retrieve     |
 
 **Returns:** `(string, error)` — decoded string value and any error.
@@ -181,7 +181,7 @@ Creates a cert-manager Certificate CR (`cert-manager.io/v1`) via the unstructure
 ### GetTLSSecret
 
 ```go
-func GetTLSSecret(ctx context.Context, c client.Client, namespace, name string) (*corev1.Secret, error)
+func GetTLSSecret(ctx context.Context, c client.Client, name, namespace string) (*corev1.Secret, error)
 ```
 
 Retrieves a typed `corev1.Secret` by name and namespace. Returns the Secret or an error if it does not exist. (CC-0005, REQ-007)
@@ -190,8 +190,8 @@ Retrieves a typed `corev1.Secret` by name and namespace. Returns the Secret or a
 |-------------|-------------------|--------------------------|
 | `ctx`       | `context.Context` | Context for the API call |
 | `c`         | `client.Client`   | Kubernetes client        |
-| `namespace` | `string`          | Secret namespace         |
 | `name`      | `string`          | Secret name              |
+| `namespace` | `string`          | Secret namespace         |
 
 **Returns:** `(*corev1.Secret, error)` — the Secret object and any error.
 
@@ -227,7 +227,7 @@ Creates a MariaDB Database CR via the unstructured client. Idempotent — Alread
 ### EnsureDatabaseUser
 
 ```go
-func EnsureDatabaseUser(ctx context.Context, c client.Client, name, namespace, mariadbRefName, passwordSecretName, passwordSecretKey string, database string, privileges []string, ownerRefs ...metav1.OwnerReference) error
+func EnsureDatabaseUser(ctx context.Context, c client.Client, name, namespace, mariadbRefName, passwordSecretName, passwordSecretKey string, databaseName string, privileges []string, ownerRefs ...metav1.OwnerReference) error
 ```
 
 Creates a MariaDB User CR and a Grant CR via the unstructured client. Both operations are idempotent. The Grant CR is named `{name}-grant` and grants the specified privileges on the given database. (CC-0005, REQ-004, REQ-009)
@@ -241,7 +241,7 @@ Creates a MariaDB User CR and a Grant CR via the unstructured client. Both opera
 | `mariadbRefName`    | `string`                    | MariaDB instance reference                       |
 | `passwordSecretName`| `string`                    | Secret containing the password                   |
 | `passwordSecretKey` | `string`                    | Key within the Secret                            |
-| `database`          | `string`                    | Database to grant privileges on                  |
+| `databaseName`      | `string`                    | Database to grant privileges on                  |
 | `privileges`        | `[]string`                  | Privileges to grant (e.g. `["SELECT", "INSERT"]`)|
 | `ownerRefs`         | `...metav1.OwnerReference`  | Optional owner references for garbage collection |
 
@@ -427,6 +427,37 @@ Creates an ESO PushSecret CR (if it does not already exist) and patches its stat
 | `namespace` | `string`          | PushSecret namespace     |
 
 **Returns:** `error` — nil on success.
+
+---
+
+## applyconfig
+
+**Package:** `internal/common/applyconfig`
+**Import:** `"github.com/c5c3/forge/internal/common/applyconfig"`
+
+Internal utility for Kubernetes server-side apply operations. Centralises conversion of typed Kubernetes objects into `runtime.ApplyConfiguration` values so that resource packages (`deployment`, `job`) use consistent SSA behaviour.
+
+### DefaultFieldManager
+
+```go
+const DefaultFieldManager = "cobaltcore-operator"
+```
+
+Recommended server-side apply field manager name for controllers using this module. Callers may use their own value for controller-specific ownership tracking. (CC-0005)
+
+### ToApplyConfiguration
+
+```go
+func ToApplyConfiguration(obj k8sruntime.Object) (k8sruntime.ApplyConfiguration, error)
+```
+
+Converts a typed Kubernetes object into a `runtime.ApplyConfiguration` suitable for `client.Client.Apply()`. The object must have its GVK set before calling. (CC-0005)
+
+| Parameter | Type                 | Description                          |
+|-----------|----------------------|--------------------------------------|
+| `obj`     | `k8sruntime.Object`  | Typed Kubernetes object with GVK set |
+
+**Returns:** `(k8sruntime.ApplyConfiguration, error)` — the apply configuration and any conversion error.
 
 ---
 

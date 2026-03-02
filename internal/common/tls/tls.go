@@ -59,7 +59,7 @@ func EnsureCertificate(ctx context.Context, c client.Client, name, namespace str
 
 // GetTLSSecret retrieves a typed corev1.Secret by name and namespace.
 // Returns the Secret or an error if it does not exist. (CC-0005, REQ-007)
-func GetTLSSecret(ctx context.Context, c client.Client, namespace, name string) (*corev1.Secret, error) {
+func GetTLSSecret(ctx context.Context, c client.Client, name, namespace string) (*corev1.Secret, error) {
 	secret := corev1.Secret{}
 	if err := c.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &secret); err != nil {
 		return nil, fmt.Errorf("getting TLS Secret %s/%s: %w", namespace, name, err)

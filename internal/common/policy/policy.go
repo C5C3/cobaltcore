@@ -13,7 +13,7 @@ import (
 
 // LoadPolicyFromConfigMap fetches a ConfigMap and parses the 'policy.yaml' key
 // into a map[string]string of policy rules. (CC-0005, REQ-008)
-func LoadPolicyFromConfigMap(ctx context.Context, c client.Client, namespace, name string) (map[string]string, error) {
+func LoadPolicyFromConfigMap(ctx context.Context, c client.Client, name, namespace string) (map[string]string, error) {
 	var cm corev1.ConfigMap
 	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &cm); err != nil {
 		return nil, fmt.Errorf("fetching ConfigMap %s/%s: %w", namespace, name, err)
