@@ -1,10 +1,15 @@
 package policy
 
 import (
+	"context"
+	"fmt"
 	"sort"
 
-	"gopkg.in/yaml.v3"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"gopkg.in/yaml.v3"
 )
 
 // MergePolicies merges inline policy rules over external rules with inline-wins precedence.
@@ -84,4 +89,37 @@ func RenderPolicyYAML(rules map[string]string) (string, error) {
 	}
 
 	return string(out), nil
+}
+
+// LoadPolicyFromConfigMap fetches the ConfigMap referenced by configMapRef in the given
+// namespace, reads the "policy.yaml" key from its Data, and parses the YAML content
+// into a flat map of policy rules. Returns an error if the ConfigMap is not found,
+// the "policy.yaml" key is missing, or the YAML cannot be parsed. (CC-0005, REQ-008)
+func LoadPolicyFromConfigMap(ctx context.Context, c client.Client, configMapRef *corev1.LocalObjectReference, namespace string) (map[string]string, error) {
+	cm := &corev1.ConfigMap{}
+	key := client.ObjectKey{Name: configMapRef.Name, Namespace: namespace}
+	if err := c.Get(ctx, key, cm); err != nil {
+		return nil, fmt.Errorf("fetching ConfigMap %s/%s: %w", namespace, configMapRef.Name, err)
+	}
+
+	yamlContent, ok := cm.Data["policy.yaml"]
+	if !ok {
+		return nil, fmt.Errorf("ConfigMap %s/%s missing required key %q", namespace, configMapRef.Name, "policy.yaml")
+	}
+
+	rules, err := parsePolicyYAML(yamlContent)
+	if err != nil {
+		return nil, fmt.Errorf("ConfigMap %s/%s: %w", namespace, configMapRef.Name, err)
+	}
+
+	return rules, nil
+}
+
+// parsePolicyYAML parses a YAML string into a flat map of policy rules.
+func parsePolicyYAML(yamlContent string) (map[string]string, error) {
+	var rules map[string]string
+	if err := yaml.Unmarshal([]byte(yamlContent), &rules); err != nil {
+		return nil, fmt.Errorf("parsing policy YAML: %w", err)
+	}
+	return rules, nil
 }

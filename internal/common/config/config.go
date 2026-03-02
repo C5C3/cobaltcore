@@ -1,10 +1,20 @@
 package config
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"sort"
 	"strings"
+
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 // RenderINI produces a deterministic INI-format string from a nested config map.
@@ -194,4 +204,61 @@ func escapePassword(password string) string {
 	userinfo := url.UserPassword("x", password).String()
 	_, encoded, _ := strings.Cut(userinfo, ":")
 	return encoded
+}
+
+// CreateImmutableConfigMap creates an immutable ConfigMap with content-hash naming.
+// The ConfigMap name is formed as "{name}-{hash8}" where hash8 is the first 8 hex
+// characters of the SHA-256 hash of the data (keys sorted for determinism).
+// If a ConfigMap with that name already exists, it is returned as-is (idempotent).
+// Owner references are set on the ConfigMap using the provided owner and scheme. (CC-0005, REQ-001, REQ-009, REQ-010)
+func CreateImmutableConfigMap(ctx context.Context, c client.Client, owner client.Object, scheme *runtime.Scheme, name, namespace string, data map[string]string) (string, error) {
+	hash := contentHash(data)
+	cmName := fmt.Sprintf("%s-%s", name, hash)
+
+	immutable := true
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      cmName,
+			Namespace: namespace,
+		},
+		Immutable: &immutable,
+		Data:      data,
+	}
+
+	if err := controllerutil.SetControllerReference(owner, cm, scheme); err != nil {
+		return "", fmt.Errorf("setting controller reference: %w", err)
+	}
+
+	// Check if the ConfigMap already exists.
+	existing := &corev1.ConfigMap{}
+	err := c.Get(ctx, client.ObjectKeyFromObject(cm), existing)
+	if err == nil {
+		// Already exists — immutable ConfigMaps are never updated.
+		return cmName, nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return "", fmt.Errorf("checking for existing ConfigMap: %w", err)
+	}
+
+	if err := c.Create(ctx, cm); err != nil {
+		return "", fmt.Errorf("creating ConfigMap: %w", err)
+	}
+
+	return cmName, nil
+}
+
+// contentHash computes a deterministic SHA-256 hash of key-value data.
+// Keys are sorted alphabetically before hashing. Returns the first 8 hex characters.
+func contentHash(data map[string]string) string {
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	h := sha256.New()
+	for _, k := range keys {
+		fmt.Fprintf(h, "%s=%s\n", k, data[k])
+	}
+	return hex.EncodeToString(h.Sum(nil))[:8]
 }
