@@ -1,9 +1,65 @@
 package deployment
 
 import (
+	"context"
+	"fmt"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// EnsureDeployment creates the given Deployment if it does not exist, or updates
+// it if it already exists. The caller supplies a fully-constructed Deployment
+// object. On update the ResourceVersion from the existing object is preserved
+// for optimistic concurrency. (CC-0005, REQ-009)
+func EnsureDeployment(ctx context.Context, c client.Client, deployment *appsv1.Deployment) error {
+	existing := &appsv1.Deployment{}
+	err := c.Get(ctx, client.ObjectKeyFromObject(deployment), existing)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			if createErr := c.Create(ctx, deployment); createErr != nil {
+				return fmt.Errorf("creating Deployment %s/%s: %w", deployment.Namespace, deployment.Name, createErr)
+			}
+			return nil
+		}
+		return fmt.Errorf("getting Deployment %s/%s: %w", deployment.Namespace, deployment.Name, err)
+	}
+	// Update existing — preserve ResourceVersion for optimistic concurrency.
+	deployment.ResourceVersion = existing.ResourceVersion
+	if err := c.Update(ctx, deployment); err != nil {
+		return fmt.Errorf("updating Deployment %s/%s: %w", deployment.Namespace, deployment.Name, err)
+	}
+	return nil
+}
+
+// EnsureService creates the given Service if it does not exist, or updates it
+// if it already exists. The caller supplies a fully-constructed Service object.
+// On update the ResourceVersion and ClusterIP from the existing object are
+// preserved because ClusterIP is immutable once assigned by Kubernetes.
+// (CC-0005, REQ-010)
+func EnsureService(ctx context.Context, c client.Client, service *corev1.Service) error {
+	existing := &corev1.Service{}
+	err := c.Get(ctx, client.ObjectKeyFromObject(service), existing)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			if createErr := c.Create(ctx, service); createErr != nil {
+				return fmt.Errorf("creating Service %s/%s: %w", service.Namespace, service.Name, createErr)
+			}
+			return nil
+		}
+		return fmt.Errorf("getting Service %s/%s: %w", service.Namespace, service.Name, err)
+	}
+	// Update existing — preserve ResourceVersion for optimistic concurrency
+	// and ClusterIP which is immutable once assigned.
+	service.ResourceVersion = existing.ResourceVersion
+	service.Spec.ClusterIP = existing.Spec.ClusterIP
+	if err := c.Update(ctx, service); err != nil {
+		return fmt.Errorf("updating Service %s/%s: %w", service.Namespace, service.Name, err)
+	}
+	return nil
+}
 
 // IsDeploymentReady returns true if the given Deployment has an "Available"
 // condition with status "True". This indicates that the Deployment has reached

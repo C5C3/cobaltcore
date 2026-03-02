@@ -624,6 +624,7 @@
       "description": "Create internal/common/database/ package with doc.go and database.go. Implement EnsureDatabase(ctx context.Context, c client.Client, name, namespace, mariadbRefName, databaseName string, ownerRefs ...metav1.OwnerReference) error — creates unstructured Database CR (k8s.mariadb.com/v1alpha1) with spec.mariaDbRef.name, spec.name, and ownerReferences. Uses createOrGet pattern from simulators/helpers.go for idempotency. Write database_integration_test.go with TestMain, tests: TestEnsureDatabase_Creates (verify CR exists with correct spec fields), TestEnsureDatabase_Idempotent, TestEnsureDatabase_OwnerReferences.",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-009",
@@ -636,6 +637,7 @@
       "description": "Add EnsureDatabaseUser(ctx, c, name, namespace, mariadbRefName, username, passwordSecretName, passwordSecretKey, databaseName string, privileges []string, ownerRefs ...metav1.OwnerReference) error to database/database.go. Creates unstructured User CR (k8s.mariadb.com/v1alpha1) with spec.mariaDbRef.name, spec.name=username, spec.passwordSecretKeyRef. Creates unstructured Grant CR with spec.mariaDbRef.name, spec.database, spec.table='*', spec.username, spec.privileges. Both use createOrGet for idempotency. Write tests: TestEnsureDatabaseUser_CreatesUserAndGrant (verify both CRs exist with correct fields), _Idempotent.",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-009"
@@ -647,6 +649,7 @@
       "description": "Add RunDBSyncJob(ctx, c, name, namespace string, image types.ImageSpec, command []string, env []corev1.EnvVar, ownerRefs ...metav1.OwnerReference) error to database/database.go. Creates typed batch/v1 Job with container from ImageSpec (image.Repository:image.Tag), command, env, RestartPolicy=OnFailure. Uses createOrGet pattern (typed, from simulators/helpers.go). Write tests: TestRunDBSyncJob_CreatesJob (verify Job spec: image, command, env, RestartPolicy, ownerRefs).",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-009"
@@ -658,6 +661,7 @@
       "description": "Add to internal/common/deployment/deployment.go: EnsureDeployment(ctx, c, deployment *appsv1.Deployment, ownerRefs ...metav1.OwnerReference) error — sets ownerReferences, applies via server-side apply (client.Apply with ForceOwnership and FieldManager). EnsureService(ctx, c, service *corev1.Service, ownerRefs ...metav1.OwnerReference) error — same pattern. FieldManager string: 'cobaltcore-operator'. Write deployment_integration_test.go: TestEnsureDeployment_Creates, _Idempotent, TestEnsureService_Creates, _Idempotent.",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-009",
@@ -670,6 +674,7 @@
       "description": "Add to internal/common/job/job.go: RunJob(ctx, c, job *batchv1.Job, ownerRefs ...metav1.OwnerReference) error — sets ownerReferences, creates Job using createOrGet pattern. EnsureCronJob(ctx, c, cronJob *batchv1.CronJob, ownerRefs ...metav1.OwnerReference) error — sets ownerReferences, applies via server-side apply. Write job_integration_test.go: TestRunJob_Creates, TestEnsureCronJob_Creates, _Idempotent.",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-009",
