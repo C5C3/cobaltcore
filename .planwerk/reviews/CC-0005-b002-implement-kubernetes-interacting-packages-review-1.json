@@ -1,0 +1,197 @@
+{
+  "summary": "Implements 7 Kubernetes-client-dependent packages (config/, secrets/, database/, deployment/, job/, tls/, policy/) within internal/common/ with envtest integration tests, new simulators (SimulateCertificateReady, SimulatePushSecretReady), reference documentation, and Makefile integration target. All packages compile cleanly, pass go vet and golangci-lint with 0 issues. Unit tests pass. Integration tests fail only due to missing envtest binaries (infrastructure, not code). API signatures evolved from the plan's variadic ownerRefs to controllerutil.SetControllerReference with owner+scheme — a superior design that is consistently documented.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "V1: Unit tests pass (deployment, job)", "checked": true},
+    {"item": "V2: go vet passes on all new packages", "checked": true},
+    {"item": "V3: golangci-lint passes with 0 issues", "checked": true},
+    {"item": "TE1: Happy path tested with realistic data", "checked": true},
+    {"item": "TE2: Edge cases tested (nil, empty, boundary)", "checked": true},
+    {"item": "TE3: Error cases tested (NotFound, missing key, invalid YAML)", "checked": true},
+    {"item": "TE4: Tests independent (no shared mutable state between tests)", "checked": true},
+    {"item": "TE6: Mocking appropriate (envtest for integration, no mocks)", "checked": true},
+    {"item": "TE7: Assertions specific (exact values verified)", "checked": true},
+    {"item": "Integration tests structurally correct (build tag, TestMain, teardown)", "checked": true},
+    {"item": "Idempotency tests verify double-call succeeds without error", "checked": true},
+    {"item": "Owner reference tests verify UID propagation", "checked": true},
+    {"item": "IsDeploymentReady/IsJobComplete have table-driven unit tests", "checked": true},
+    {"item": "Missing: TestEnsureDatabaseUser_OwnerRef (Grant CR owner ref untested)", "checked": false},
+    {"item": "Missing: IsExternalSecretReady test for exists-but-no-conditions case", "checked": false},
+    {"item": "Missing: Idempotency tests do not verify spec preservation after second call", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Q1: Functions do ONE thing (SRP)", "checked": true},
+    {"item": "Q2: Functions small (all under 40 lines)", "checked": true},
+    {"item": "Q3: No egregious code duplication", "checked": true},
+    {"item": "Q4: Clear naming (intention-revealing)", "checked": true},
+    {"item": "Q5: Max 3 nesting levels", "checked": true},
+    {"item": "Q6: No magic numbers/strings (GVKs in package vars)", "checked": true},
+    {"item": "Q7: No dead code", "checked": true},
+    {"item": "P2: Uses existing utilities (testutil/envtest, simulators, builders)", "checked": true},
+    {"item": "P5: File location matches project structure conventions", "checked": true},
+    {"item": "PC1: Unstructured for CRDs, typed for core resources", "checked": true},
+    {"item": "PC2: Server-side apply for deployment/service/cronjob", "checked": true},
+    {"item": "PC3: Create-or-skip for immutable resources (jobs, configmaps)", "checked": true},
+    {"item": "Field manager 'cobaltcore-operator' consistent across deployment/ and job/", "checked": true},
+    {"item": "All new packages have doc.go with CC-0005 annotation", "checked": true},
+    {"item": "No new dependencies in go.mod", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "S1: No user input validation at API boundaries (internal packages — acceptable)", "checked": true},
+    {"item": "S2: No SQL injection risk (K8s API only)", "checked": true},
+    {"item": "S3: No hardcoded secrets", "checked": true},
+    {"item": "S5: Sensitive data not exposed in error messages", "checked": true},
+    {"item": "S6: No path traversal", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible for the requirements", "checked": true},
+    {"item": "Packages are properly isolated with clear responsibilities", "checked": true},
+    {"item": "Builds on existing testutil infrastructure correctly", "checked": true},
+    {"item": "Owner references use controllerutil.SetControllerReference consistently", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No unused code or future-proofing", "checked": true},
+    {"item": "No extra features beyond scope", "checked": true},
+    {"item": "RunDBSyncJob could delegate to job.RunJob but duplication is minimal", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors returned with context (fmt.Errorf with %w)", "checked": true},
+    {"item": "NotFound handled correctly (false, nil for Is* functions)", "checked": true},
+    {"item": "Missing key errors are explicit", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Nil checks in pure functions (IsDeploymentReady, IsJobComplete)", "checked": true},
+    {"item": "apierrors.IsNotFound/IsAlreadyExists used consistently", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [
+    {
+      "severity": "MINOR",
+      "description": "RunDBSyncJob in database/ re-implements the create-or-skip pattern already in job.RunJob. Could delegate to job.RunJob(ctx, c, owner, scheme, job) to reduce duplication, though the current approach is self-contained and adds no cross-package dependency.",
+      "location": "internal/common/database/database.go:227-263",
+      "fix": "Build the *batchv1.Job locally, then call job.RunJob(ctx, c, owner, scheme, j) instead of implementing Create+IsAlreadyExists inline."
+    }
+  ],
+  "issues_found": [
+    {
+      "id": "C3-1",
+      "severity": "major",
+      "check_id": "C3",
+      "description": "CreateImmutableConfigMap has a TOCTOU race: Get-then-Create does not handle AlreadyExists on the Create call. If two goroutines race between Get(NotFound) and Create, one Create will succeed and the other will return an unhandled error. The project's own RunDBSyncJob (database.go:254-257) and RunJob (job.go:42-45) demonstrate the correct Create-then-IsAlreadyExists pattern.",
+      "location": "internal/common/config/config.go:243-245",
+      "fix": "Replace the Get-then-Create with Create-first: if err := c.Create(ctx, cm); err != nil { if apierrors.IsAlreadyExists(err) { return cmName, nil }; return \"\", fmt.Errorf(\"creating ConfigMap: %w\", err) }. Remove the preceding Get call (lines 232-241)."
+    },
+    {
+      "id": "Q4-1",
+      "severity": "major",
+      "check_id": "Q4",
+      "description": "All error messages in the database package (EnsureDatabase, ensureUser, ensureGrant) lack namespace/name context, making log triage difficult. Every other package (deployment, job, secrets, tls) includes namespace/name in error messages (e.g., 'setting controller reference on Job %s/%s').",
+      "location": "internal/common/database/database.go:75,82,90,95,101,137,143,151,157,163,193,199,207,213,219,251,259",
+      "fix": "Add opts.Namespace and opts.Name to all fmt.Errorf calls, e.g.: fmt.Errorf(\"creating Database %s/%s: %w\", opts.Namespace, opts.Name, err)"
+    },
+    {
+      "id": "PC3-1",
+      "severity": "major",
+      "check_id": "PC3",
+      "description": "Integration test scheme construction is inconsistent: secrets_integration_test.go correctly reuses c.Scheme() (line 38), while config, deployment, database, job, and tls tests each build a fresh runtime.Scheme with manual AddToScheme calls. The fresh schemes work today but are fragile — if the owner type changes from ConfigMap to a non-corev1 type, tests will fail with misleading 'no kind registered' errors.",
+      "location": "internal/common/config/config_integration_test.go:36-37, internal/common/deployment/deployment_integration_test.go:36-46, internal/common/database/database_integration_test.go:38-48, internal/common/job/job_integration_test.go:36-38, internal/common/tls/tls_integration_test.go:38-43",
+      "fix": "Replace testScheme construction with testScheme = c.Scheme() (or k8sClient.Scheme()) after SetupEnvTest returns, matching the pattern in secrets_integration_test.go:38."
+    },
+    {
+      "id": "TE3-1",
+      "severity": "major",
+      "check_id": "TE3",
+      "description": "Missing TestEnsureDatabaseUser_OwnerRef: the Grant CR's owner reference is never independently asserted. EnsureDatabase and RunDBSyncJob both have _OwnerRef tests, but EnsureDatabaseUser does not verify that owner references are set on the Grant CR (only User fields are checked in TestEnsureDatabaseUser_CreatesUserAndGrant).",
+      "location": "internal/common/database/database_integration_test.go",
+      "fix": "Add TestEnsureDatabaseUser_OwnerRef that creates User+Grant via EnsureDatabaseUser, then fetches the Grant CR and asserts ownerReferences contains the owner's UID."
+    },
+    {
+      "id": "Q7-1",
+      "severity": "minor",
+      "check_id": "Q7",
+      "description": "Redundant SetAPIVersion/SetKind calls after SetGroupVersionKind in database.go (lines 78-79, 140-141, 196-197) and tls.go (lines 70-71). SetGroupVersionKind already sets apiVersion and kind on the unstructured object; the subsequent manual SetAPIVersion/SetKind calls are no-ops that add maintenance hazard if the GVK constant and manual strings drift.",
+      "location": "internal/common/database/database.go:78-79, internal/common/database/database.go:140-141, internal/common/database/database.go:196-197, internal/common/tls/tls.go:70-71",
+      "fix": "Remove the redundant SetAPIVersion/SetKind lines and the associated comments. SetGroupVersionKind on line 63/121/172 (database.go) and line 44 (tls.go) is sufficient."
+    },
+    {
+      "id": "Q7-2",
+      "severity": "minor",
+      "check_id": "Q7",
+      "description": "buildPushSecret in secrets.go double-sets apiVersion/kind: once via raw map literal (lines 155-156) and again via SetGroupVersionKind (lines 178-182). Should follow the tls/database pattern of SetGroupVersionKind + SetNestedField instead of embedding apiVersion/kind in the raw map.",
+      "location": "internal/common/secrets/secrets.go:153-184",
+      "fix": "Restructure buildPushSecret: create empty &unstructured.Unstructured{}, call SetGroupVersionKind, SetName, SetNamespace, then SetNestedField for spec. Remove apiVersion/kind/metadata from the raw Object map literal."
+    },
+    {
+      "id": "Q4-2",
+      "severity": "minor",
+      "check_id": "Q4",
+      "description": "Variable shadowing in IsExternalSecretReady: loop variable 'c' (line 58) shadows function parameter 'c client.Client' (line 35). No functional bug today but a maintenance hazard.",
+      "location": "internal/common/secrets/secrets.go:58",
+      "fix": "Rename loop variable from 'c' to 'cond': for _, cond := range conditions {"
+    },
+    {
+      "id": "TE3-2",
+      "severity": "minor",
+      "check_id": "TE3",
+      "description": "Missing test case for IsExternalSecretReady when ExternalSecret exists but has no status.conditions (exercises the !found early-return branch at secrets.go:54).",
+      "location": "internal/common/secrets/secrets_integration_test.go",
+      "fix": "Add TestIsExternalSecretReady_NoConditions: create an ExternalSecret CR without patching status, then assert IsExternalSecretReady returns (false, nil)."
+    },
+    {
+      "id": "TE7-1",
+      "severity": "minor",
+      "check_id": "TE7",
+      "description": "Idempotency tests across all packages only verify 'second call does not error' but do not fetch the resource and verify spec fields are unchanged. A regression that corrupts spec on update would not be caught.",
+      "location": "internal/common/tls/tls_integration_test.go:147-170, internal/common/deployment/deployment_integration_test.go:141-154, internal/common/job/job_integration_test.go:214-231",
+      "fix": "After the second call in each idempotency test, fetch the resource and assert key spec fields match the expected values."
+    },
+    {
+      "id": "V3-1",
+      "severity": "minor",
+      "check_id": "V3",
+      "description": "job_integration_test.go discards AddToScheme errors (lines 37-38: _ = corev1.AddToScheme). The database_integration_test.go correctly handles these errors. Inconsistency.",
+      "location": "internal/common/job/job_integration_test.go:37-38",
+      "fix": "Replace _ = with error handling matching database_integration_test.go:39-48."
+    },
+    {
+      "id": "TE2-1",
+      "severity": "minor",
+      "check_id": "TE2",
+      "description": "parsePolicyYAML returns nil map (not empty map) for empty YAML content. No test covers this edge case. Downstream callers iterating over nil maps are safe in Go, but callers doing nil checks or assignments could be surprised.",
+      "location": "internal/common/policy/policy.go:119-125",
+      "fix": "Add nil-coalesce in parsePolicyYAML: if rules == nil { rules = make(map[string]string) }. Add TestLoadPolicyFromConfigMap_EmptyPolicyYAML test."
+    },
+    {
+      "id": "D2-1",
+      "severity": "minor",
+      "check_id": "D2",
+      "description": "config_integration_test.go sets fake UIDs on owner ConfigMaps (UID: 'fake-uid-create', etc.). The API server overrides these with real UIDs on Create. While tests pass, the fake UIDs are confusing and unnecessary — the secrets test (createOwnerConfigMap) correctly omits pre-set UIDs.",
+      "location": "internal/common/config/config_integration_test.go:62-66, 93-97, 128-132, 155-159",
+      "fix": "Remove UID fields from owner ObjectMeta in all config integration test helpers, matching the pattern in secrets/database/tls/deployment/job tests."
+    }
+  ],
+  "suggested_improvements": [
+    "Consider extracting the create-or-update unstructured pattern (Get → NotFound? → Create : Update spec+ownerRefs) into a shared helper in testutil/helpers.go, since database, secrets, and tls all implement it identically",
+    "Consider having SetupEnvTest return the scheme as a fourth return value so integration tests don't need to construct their own",
+    "Add a test for EnsureCertificate/EnsurePushSecret/EnsureDatabase with changed opts on second call to validate the update path semantically, not just the no-error path"
+  ],
+  "next_steps": [
+    "Fix CreateImmutableConfigMap race: replace Get-then-Create with Create-then-IsAlreadyExists (C3-1)",
+    "Add namespace/name to all database package error messages (Q4-1)",
+    "Standardize integration test scheme construction to use c.Scheme() (PC3-1)",
+    "Add TestEnsureDatabaseUser_OwnerRef for Grant CR (TE3-1)",
+    "Fix minor issues: remove redundant SetAPIVersion/SetKind, rename shadowed variable, handle AddToScheme errors in job test"
+  ],
+  "metadata": {
+    "feature_id": "CC-0005",
+    "title": "B002: Implement Kubernetes-interacting packages",
+    "date": "2026-03-02",
+    "verdict": "NEEDS_CHANGES",
+    "verification": {
+      "go_vet": "PASS",
+      "golangci_lint": "PASS (0 issues)",
+      "unit_tests": "PASS (16/16)",
+      "integration_tests": "SKIP (envtest binaries not available in this environment)"
+    }
+  }
+}
