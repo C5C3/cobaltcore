@@ -120,7 +120,12 @@ func RunDBSyncJob(ctx context.Context, c client.Client, name, namespace, image s
 // EnsureDatabaseUser creates a k8s.mariadb.com/v1alpha1 User custom resource
 // and a corresponding Grant custom resource using unstructured objects. The User
 // is configured with the given mariadbRef and password secret reference. The
-// Grant gives the user ALL privileges on all databases and tables.
+// Grant gives the user ALL privileges on all databases and tables (*.*)
+//
+// Known simplification (CC-0005): the Grant always uses ALL privileges on *.*
+// rather than scoping to a specific database. If per-service privilege scoping
+// is needed in the future, this function's signature and Grant construction must
+// be extended to accept a database name and a list of privileges.
 //
 // The operation is idempotent: if either resource already exists, no error is
 // returned. (CC-0005)

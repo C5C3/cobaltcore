@@ -112,6 +112,27 @@ func TestIsSecretReady_TrueForSecretWithData(t *testing.T) {
 	}
 }
 
+func TestIsSecretReady_FalseForEmptyData(t *testing.T) {
+	ctx := context.Background()
+
+	_, err := builders.NewSecretBuilder().
+		WithName("secret-empty-data").
+		WithNamespace(testNamespace).
+		WithData(map[string][]byte{}).
+		Create(ctx, k8sClient)
+	if err != nil {
+		t.Fatalf("failed to create Secret: %v", err)
+	}
+
+	ready, err := secrets.IsSecretReady(ctx, k8sClient, "secret-empty-data", testNamespace)
+	if err != nil {
+		t.Fatalf("IsSecretReady returned error: %v", err)
+	}
+	if ready {
+		t.Fatal("expected IsSecretReady to return false for Secret with empty Data, got true")
+	}
+}
+
 func TestIsSecretReady_FalseForNonExistent(t *testing.T) {
 	ctx := context.Background()
 

@@ -489,6 +489,44 @@ func TestEnsureDatabaseUser_CreatesUserAndGrant(t *testing.T) {
 	}
 }
 
+// TestEnsureDatabaseUser_GrantsAllPrivilegesOnAllDatabases verifies that
+// EnsureDatabaseUser creates a Grant with ALL privileges on *.* (all databases
+// and tables). This is a known simplification (CC-0005): if per-service
+// privilege scoping is needed later, the Grant CR must support per-database
+// grants rather than the current blanket ALL on *.*.
+func TestEnsureDatabaseUser_GrantsAllPrivilegesOnAllDatabases(t *testing.T) {
+	ctx := context.Background()
+	name := "test-user-allprivs"
+	mariadbRef := "my-mariadb-instance"
+
+	err := database.EnsureDatabaseUser(ctx, k8sClient, name, testNamespace, mariadbRef, "my-secret", "password")
+	if err != nil {
+		t.Fatalf("EnsureDatabaseUser returned error: %v", err)
+	}
+
+	grant := &unstructured.Unstructured{}
+	grant.SetGroupVersionKind(grantGVK)
+	if err := k8sClient.Get(ctx, client.ObjectKey{Name: name + "-grant", Namespace: testNamespace}, grant); err != nil {
+		t.Fatalf("failed to get Grant %s/%s-grant: %v", testNamespace, name, err)
+	}
+
+	// Verify the Grant targets ALL databases and tables (known simplification).
+	dbVal, _, _ := unstructured.NestedString(grant.Object, "spec", "database")
+	if dbVal != "*" {
+		t.Fatalf("expected Grant spec.database=%q (all databases), got %q", "*", dbVal)
+	}
+
+	tableVal, _, _ := unstructured.NestedString(grant.Object, "spec", "table")
+	if tableVal != "*" {
+		t.Fatalf("expected Grant spec.table=%q (all tables), got %q", "*", tableVal)
+	}
+
+	privs, _, _ := unstructured.NestedStringSlice(grant.Object, "spec", "privileges")
+	if len(privs) != 1 || privs[0] != "ALL" {
+		t.Fatalf("expected Grant spec.privileges=[\"ALL\"] (known simplification: no per-database scoping), got %v", privs)
+	}
+}
+
 func TestEnsureDatabaseUser_Idempotent(t *testing.T) {
 	ctx := context.Background()
 	name := "test-user-idempotent"
