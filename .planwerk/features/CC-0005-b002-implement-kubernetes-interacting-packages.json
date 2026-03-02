@@ -1,0 +1,1018 @@
+{
+  "feature_id": "CC-0005",
+  "title": "B002: Implement Kubernetes-interacting packages",
+  "slug": "b002-implement-kubernetes-interacting-packages",
+  "status": "prepared",
+  "phase": null,
+  "summary": "",
+  "description": "**Size:** 🏗️ large\n**Category:** backend\n**Priority:** high\n**Feature ID:** CC-0005 / S005\n\n## Summary\n\nImplement 7 Kubernetes-client-dependent packages within `internal/common/` that encapsulate all direct K8s API interactions for the CobaltCore operator suite. These packages provide idempotent resource management (ConfigMaps, Secrets/ESO, MariaDB CRs, Deployments, Jobs, cert-manager Certificates, policy ConfigMaps) with status-checking helpers, building on the existing pure-function packages (`config/`, `policy/`, `types/`, `conditions/`) and test infrastructure (`testutil/envtest`, builders, simulators, assertions). Each package gets envtest integration tests verifying actual object creation, owner references, and status handling against a real API server.\n\n## Resolved Decisions\n\n**Q1: `IsDeploymentReady` / `IsJobComplete` — pure-function or API-calling?**\n→ **Pure-function checks on concrete types.** `IsDeploymentReady(deployment *appsv1.Deployment) bool` and `IsJobComplete(job *batchv1.Job) bool` take already-fetched objects and inspect status locally. Matches the `conditions.IsReady(conditions []metav1.Condition) bool` pattern. Reconciler does `Get()` and passes the object.\n\n**Q2: New simulators or inline status patching?**\n→ **Add `SimulateCertificateReady` and `SimulatePushSecretReady` to `testutil/simulators/`.** Follows the established `simulateUnstructuredReady()` pattern. Fake CRDs already exist in `testutil/fake_crds/cert-manager/` and `testutil/fake_crds/eso/`.\n\n## Scope\n\n**Included:**\n- `config/` package extension: `CreateImmutableConfigMap` — creates ConfigMap with content-hash suffix (`{name}-{hash[:8]}`), `immutable: true`, variadic `...metav1.OwnerReference`. Returns generated name. Uses existing `config.RenderINI` for upstream content generation.\n- `secrets/` package (new): `IsExternalSecretReady` (API-calling `(bool, error)` — fetches unstructured ExternalSecret, checks `Ready` condition), `IsSecretReady`, `GetSecretValue`, `EnsurePushSecret` with variadic owner references. CRD interactions via unstructured client (no typed ESO Go libraries).\n- `database/` package (new): `EnsureDatabase`, `EnsureDatabaseUser` (includes Grant CR), `RunDBSyncJob` — creates MariaDB `Database`/`User`/`Grant` CRs (`k8s.mariadb.com/v1alpha1`) via unstructured client and `batch/v1` Jobs for schema migration. `RunDBSyncJob` accepts `types.ImageSpec`.\n- `deployment/` package (new): `EnsureDeployment`, `EnsureService` (server-side apply with field manager), `IsDeploymentReady` (pure function on `*appsv1.Deployment`).\n- `job/` package (new): `RunJob`, `EnsureCronJob`, `IsJobComplete` (pure function on `*batchv1.Job`).\n- `tls/` package (new): `EnsureCertificate` (unstructured cert-manager `Certificate` CR), `GetTLSSecret`.\n- `policy/` package extension: `LoadPolicyFromConfigMap` — fetches ConfigMap, extracts and parses `policy.yaml` key. Complements existing pure-function `MergePolicies` / `RenderPolicyYAML`.\n- envtest integration tests for all 7 packages using existing `testutil/envtest.SetupEnvTest()`, simulators, builders, and assertions.\n- `doc.go` for each new package following existing convention (`// Package <name> provides... (CC-0005)`).\n- New simulators: `SimulateCertificateReady` and `SimulatePushSecretReady` in `testutil/simulators/`.\n\n**Excluded:**\n- CRD definitions or kubebuilder markers (belong at operator CRD embedding sites — architecture decision #4)\n- Operator reconciler logic (these are building blocks, not controllers — YAGNI)\n- RabbitMQ / Memcached packages (not requested, CRDs bundled for future use)\n- E2E tests against real clusters (envtest only — E2E is separate phase S010)\n- Retry/backoff logic within packages (controller-runtime reconciler handles requeue — YAGNI)\n- Metrics or telemetry instrumentation (separate concern, not requested)\n- CLI or script tooling around these packages\n- New test data builders beyond existing `SecretBuilder` (add when needed — YAGNI)\n- Typed CRD Go client libraries for MariaDB/ESO/cert-manager (unstructured client only, matching current `go.mod` and simulator patterns)\n\n## Visualization\n\n```mermaid\nflowchart TD\n    subgraph operators[\"Operator Reconcilers (consumers)\"]\n        KS[\"Keystone Operator\"]\n        C5[\"c5c3 Operator\"]\n    end\n\n    subgraph s005[\"internal/common — CC-0005 K8s Packages\"]\n        CFG[\"config/\\nCreateImmutableConfigMap\"]\n        SEC[\"secrets/\\nEnsurePushSecret\\nIsExternalSecretReady\\nIsSecretReady\\nGetSecretValue\"]\n        DB[\"database/\\nEnsureDatabase\\nEnsureDatabaseUser\\nRunDBSyncJob\"]\n        DEP[\"deployment/\\nEnsureDeployment\\nEnsureService\\nIsDeploymentReady\"]\n        JOB[\"job/\\nRunJob\\nEnsureCronJob\\nIsJobComplete\"]\n        TLS[\"tls/\\nEnsureCertificate\\nGetTLSSecret\"]\n        POL[\"policy/\\nLoadPolicyFromConfigMap\"]\n    end\n\n    subgraph s004[\"internal/common — CC-0004 Pure Functions\"]\n        TYP[\"types/\\nImageSpec, DatabaseSpec\\nSecretRefSpec, PolicySpec\"]\n        COND[\"conditions/\\nSetCondition, IsReady\"]\n        CFGR[\"config/\\nRenderINI, MergeDefaults\"]\n        POLR[\"policy/\\nMergePolicies, RenderPolicyYAML\"]\n    end\n\n    subgraph k8s[\"Kubernetes API Resources\"]\n        CM[\"ConfigMap\"]\n        SCR[\"Secret\"]\n        ESOCR[\"ExternalSecret CR\"]\n        PSCR[\"PushSecret CR\"]\n        MDBCR[\"MariaDB Database CR\"]\n        MUSRCR[\"MariaDB User CR\"]\n        MGRCR[\"MariaDB Grant CR\"]\n        BJOB[\"batch/v1 Job\"]\n        BCRON[\"batch/v1 CronJob\"]\n        CERTCR[\"cert-manager Certificate CR\"]\n        DEPCR[\"apps/v1 Deployment\"]\n        SVCCR[\"core/v1 Service\"]\n    end\n\n    KS --> s005\n    C5 --> s005\n\n    CFG --> CM\n    SEC --> ESOCR\n    SEC --> PSCR\n    SEC --> SCR\n    DB --> MDBCR\n    DB --> MUSRCR\n    DB --> MGRCR\n    DB --> BJOB\n    DEP --> DEPCR\n    DEP --> SVCCR\n    JOB --> BJOB\n    JOB --> BCRON\n    TLS --> CERTCR\n    TLS --> SCR\n    POL --> CM\n\n    s005 --> TYP\n    s005 --> COND\n    POL --> POLR\n    CFG --> CFGR\n```\n\n```mermaid\nsequenceDiagram\n    participant R as Reconciler\n    participant CFG as config/\n    participant SEC as secrets/\n    participant DB as database/\n    participant DEP as deployment/\n    participant TLS as tls/\n    participant K8s as Kubernetes API\n\n    R->>TLS: EnsureCertificate(ctx, c, spec, ownerRefs...)\n    TLS->>K8s: Apply Certificate CR (unstructured)\n    R->>SEC: IsExternalSecretReady(ctx, c, name, ns)\n    SEC->>K8s: Get ExternalSecret (unstructured), check Ready condition\n    SEC-->>R: true/false, error\n    R->>SEC: GetSecretValue(ctx, c, ns, name, key)\n    SEC->>K8s: Get Secret (typed)\n    SEC-->>R: string, error\n    R->>CFG: CreateImmutableConfigMap(ctx, c, name, ns, data, ownerRefs...)\n    CFG->>K8s: Create ConfigMap with hash suffix\n    CFG-->>R: generated name, error\n    R->>DB: EnsureDatabase(ctx, c, spec, ownerRefs...)\n    DB->>K8s: Apply MariaDB Database CR (unstructured)\n    R->>DB: EnsureDatabaseUser(ctx, c, spec, ownerRefs...)\n    DB->>K8s: Apply MariaDB User + Grant CRs (unstructured)\n    R->>DB: RunDBSyncJob(ctx, c, image, args, ownerRefs...)\n    DB->>K8s: Create batch/v1 Job (typed)\n    R->>DEP: EnsureDeployment(ctx, c, spec, ownerRefs...)\n    DEP->>K8s: Server-side Apply Deployment (typed)\n    R->>DEP: EnsureService(ctx, c, spec, ownerRefs...)\n    DEP->>K8s: Server-side Apply Service (typed)\n```\n\n## Key Components\n\n- **`internal/common/config/`** (extension): `CreateImmutableConfigMap(ctx, client, name, namespace string, data map[string]string, ownerRefs ...metav1.OwnerReference) (string, error)` — computes SHA256 of sorted data content, creates ConfigMap named `{name}-{hash[:8]}` with `immutable: true`. Returns generated name. Builds on existing `config.RenderINI` for upstream content generation. Uses typed `corev1.ConfigMap` client.\n\n- **`internal/common/secrets/`** (new): Wraps ESO CRD interactions via unstructured client. `IsExternalSecretReady(ctx, client, name, namespace) (bool, error)` — fetches ExternalSecret CR (`external-secrets.io/v1beta1`), checks `Ready` condition (non-blocking, reconciler requeues if false). `IsSecretReady(ctx, client, namespace, name) (bool, error)` — checks core Secret exists. `GetSecretValue(ctx, client, namespace, name, key) (string, error)` — retrieves specific key from Secret. `EnsurePushSecret(ctx, client, spec, ownerRefs...) error` — creates/applies PushSecret CR (`external-secrets.io/v1alpha1`, unstructured).\n\n- **`internal/common/database/`** (new): Wraps MariaDB operator CRDs via unstructured client. `EnsureDatabase(ctx, client, spec, ownerRefs...) error` — creates `Database` CR (`k8s.mariadb.com/v1alpha1`). `EnsureDatabaseUser(ctx, client, spec, ownerRefs...) error` — creates `User` CR + `Grant` CR for privileges. `RunDBSyncJob(ctx, client, image ImageSpec, command []string, env, ownerRefs...) error` — creates typed `batch/v1` Job running db-sync container.\n\n- **`internal/common/deployment/`** (new): Manages core workloads via server-side apply with field manager. `EnsureDeployment(ctx, client, spec, ownerRefs...) error` — applies typed `apps/v1 Deployment`. `EnsureService(ctx, client, spec, ownerRefs...) error` — applies typed `core/v1 Service`. `IsDeploymentReady(deployment *appsv1.Deployment) bool` — pure function, checks `Available` condition and ready replicas.\n\n- **`internal/common/job/`** (new): Manages batch workloads. `RunJob(ctx, client, spec, ownerRefs...) error` — creates typed `batch/v1 Job`. `EnsureCronJob(ctx, client, spec, ownerRefs...) error` — creates/applies typed `batch/v1 CronJob`. `IsJobComplete(job *batchv1.Job) bool` — pure function, checks `Complete=True` condition.\n\n- **`internal/common/tls/`** (new): Wraps cert-manager CRDs via unstructured client. `EnsureCertificate(ctx, client, spec, ownerRefs...) error` — creates `Certificate` CR (`cert-manager.io/v1`) with DNS names and issuer ref. `GetTLSSecret(ctx, client, namespace, name) (*corev1.Secret, error)` — retrieves typed TLS Secret generated by cert-manager.\n\n- **`internal/common/policy/`** (extension): `LoadPolicyFromConfigMap(ctx, client, namespace, name string) (map[string]string, error)` — fetches ConfigMap, extracts and parses `policy.yaml` key into rule map. Complements existing `MergePolicies` and `RenderPolicyYAML`.\n\n- **envtest integration tests**: One `<package>_integration_test.go` per package with `//go:build integration` tag. Shared `TestMain` using `testenvtest.SetupEnvTest()`. Tests use existing simulators (`SimulateMariaDBReady`, `SimulateExternalSecretSync`, `SimulateJobComplete`) plus new simulators for cert-manager and PushSecret. Uses `SecretBuilder`, `AssertResourceExists`, `EventuallyCondition` from testutil. Each test creates real K8s objects against envtest API server with unique `GenerateName` namespaces and `t.Cleanup()` for teardown.\n\n- **`testutil/simulators/`** (extension): `SimulateCertificateReady(ctx, client, name, namespace) error` and `SimulatePushSecretReady(ctx, client, name, namespace) error` following existing `simulateUnstructuredReady()` pattern — idempotent, unstructured patching of status conditions. GVKs: `cert-manager.io/v1/Certificate` and `external-secrets.io/v1alpha1/PushSecret`.",
+  "stories": [
+    {
+      "title": "Operator creates immutable ConfigMaps with content-hash naming",
+      "role": "operator reconciler",
+      "want": "to create immutable ConfigMaps with deterministic content-hash-suffixed names and owner references",
+      "so_that": "configuration changes produce new ConfigMap names, triggering rolling restarts via pod template annotation updates",
+      "criteria": [
+        "CreateImmutableConfigMap returns a name in the format {name}-{hash[:8]} where hash is SHA256 of sorted data",
+        "Created ConfigMap has immutable=true field set",
+        "OwnerReferences passed via variadic args are applied to the ConfigMap metadata",
+        "Identical data input produces the same hash suffix (deterministic naming)",
+        "ConfigMap is created via typed corev1.ConfigMap client"
+      ]
+    },
+    {
+      "title": "Operator checks ESO ExternalSecret readiness and reads Secret values",
+      "role": "operator reconciler",
+      "want": "to check if ESO-managed ExternalSecrets have synced and read individual keys from the resulting K8s Secrets",
+      "so_that": "the reconciler can gate subsequent steps on secret availability and inject resolved credentials into config",
+      "criteria": [
+        "IsExternalSecretReady returns (true, nil) when ExternalSecret has Ready=True condition",
+        "IsExternalSecretReady returns (false, nil) when ExternalSecret exists but Ready condition is not True",
+        "IsExternalSecretReady returns (false, error) when the API call fails for reasons other than NotFound",
+        "IsSecretReady returns (true, nil) when the core Secret exists",
+        "IsSecretReady returns (false, nil) when the Secret does not exist (NotFound)",
+        "GetSecretValue returns the string value of the specified key from the Secret",
+        "GetSecretValue returns an error when the Secret or key does not exist"
+      ]
+    },
+    {
+      "title": "Operator creates PushSecret CRs to write generated secrets back to OpenBao",
+      "role": "operator reconciler",
+      "want": "to create PushSecret CRs via the unstructured client with proper owner references",
+      "so_that": "operator-generated secrets (e.g. Fernet keys) are pushed back to OpenBao for cross-cluster distribution",
+      "criteria": [
+        "EnsurePushSecret creates a PushSecret CR (external-secrets.io/v1alpha1) via unstructured client",
+        "EnsurePushSecret is idempotent — calling it twice with the same spec does not error",
+        "OwnerReferences passed via variadic args are applied to the PushSecret",
+        "PushSecret spec includes secretStoreRefs, selector, and data fields"
+      ]
+    },
+    {
+      "title": "Operator manages MariaDB Database, User, and Grant CRs",
+      "role": "operator reconciler",
+      "want": "to create MariaDB Database, User, and Grant custom resources via unstructured client",
+      "so_that": "each OpenStack service gets its own database, user, and privileges provisioned by the MariaDB operator",
+      "criteria": [
+        "EnsureDatabase creates a Database CR (k8s.mariadb.com/v1alpha1) with mariaDbRef and database name",
+        "EnsureDatabaseUser creates a User CR with passwordSecretKeyRef and a Grant CR with privileges",
+        "Both functions are idempotent — re-calling with same parameters does not error",
+        "OwnerReferences are applied to all created CRs",
+        "RunDBSyncJob creates a batch/v1 Job with the specified image, command, and env vars"
+      ]
+    },
+    {
+      "title": "Operator manages Deployments and Services via server-side apply",
+      "role": "operator reconciler",
+      "want": "to create and update Deployments and Services using server-side apply with a field manager",
+      "so_that": "workload resources are managed declaratively without conflicts from other controllers",
+      "criteria": [
+        "EnsureDeployment applies an apps/v1 Deployment via server-side apply with field manager",
+        "EnsureService applies a core/v1 Service via server-side apply with field manager",
+        "IsDeploymentReady returns true when Deployment has Available=True condition and ready replicas match desired",
+        "IsDeploymentReady returns false for a newly created Deployment with no status",
+        "OwnerReferences are applied to both Deployment and Service"
+      ]
+    },
+    {
+      "title": "Operator manages Jobs and CronJobs for batch operations",
+      "role": "operator reconciler",
+      "want": "to create one-shot Jobs and recurring CronJobs for operations like db-sync and key rotation",
+      "so_that": "batch operations run to completion and can be monitored via status",
+      "criteria": [
+        "RunJob creates a batch/v1 Job with the specified pod template",
+        "EnsureCronJob creates or updates a batch/v1 CronJob",
+        "IsJobComplete returns true when Job has Complete=True condition",
+        "IsJobComplete returns false for an in-progress or failed Job",
+        "OwnerReferences are applied to Jobs and CronJobs"
+      ]
+    },
+    {
+      "title": "Operator manages cert-manager Certificate CRs and retrieves TLS Secrets",
+      "role": "operator reconciler",
+      "want": "to create cert-manager Certificate CRs and retrieve the resulting TLS Secrets",
+      "so_that": "each OpenStack API endpoint has proper TLS certificates provisioned automatically",
+      "criteria": [
+        "EnsureCertificate creates a Certificate CR (cert-manager.io/v1) via unstructured client",
+        "Certificate CR includes dnsNames, secretName, and issuerRef fields",
+        "EnsureCertificate is idempotent",
+        "GetTLSSecret retrieves the typed corev1.Secret created by cert-manager",
+        "GetTLSSecret returns error when the Secret does not exist",
+        "OwnerReferences are applied to the Certificate CR"
+      ]
+    },
+    {
+      "title": "Operator loads policy rules from ConfigMap",
+      "role": "operator reconciler",
+      "want": "to fetch and parse policy rules from a user-provided ConfigMap",
+      "so_that": "external policy overrides can be merged with inline rules and rendered into policy.yaml",
+      "criteria": [
+        "LoadPolicyFromConfigMap fetches the ConfigMap by namespace and name",
+        "LoadPolicyFromConfigMap extracts and parses the 'policy.yaml' key as YAML into a map[string]string",
+        "Returns an error when ConfigMap does not exist",
+        "Returns an error when ConfigMap does not contain 'policy.yaml' key",
+        "Returns an error when 'policy.yaml' content is invalid YAML"
+      ]
+    },
+    {
+      "title": "Test simulators exist for Certificate and PushSecret readiness",
+      "role": "test author",
+      "want": "SimulateCertificateReady and SimulatePushSecretReady simulators in testutil/simulators",
+      "so_that": "envtest integration tests can simulate cert-manager and ESO PushSecret controllers",
+      "criteria": [
+        "SimulateCertificateReady creates a Certificate CR and patches Ready=True condition",
+        "SimulatePushSecretReady creates a PushSecret CR and patches Ready=True condition",
+        "Both simulators are idempotent — calling twice does not error",
+        "Both follow the existing simulateUnstructuredReady pattern"
+      ]
+    },
+    {
+      "title": "All packages have envtest integration tests verifying real K8s API interactions",
+      "role": "test author",
+      "want": "integration tests for all 7 packages that verify actual object creation against a real API server",
+      "so_that": "the packages are validated beyond unit tests, catching issues with K8s API interactions",
+      "criteria": [
+        "Each package has a _integration_test.go file with //go:build integration tag",
+        "Tests use testenvtest.SetupEnvTest() with shared TestMain",
+        "Tests create real K8s objects and verify them via API server queries",
+        "Tests use GenerateName namespaces and t.Cleanup() for teardown",
+        "Tests verify owner references are set correctly on created resources",
+        "Tests use existing simulators and assertions from testutil"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "description": "CreateImmutableConfigMap SHALL create a ConfigMap with name={name}-{sha256[:8]}, immutable=true, and the provided data and owner references",
+      "priority": "SHALL",
+      "rationale": "Immutable ConfigMaps with content-hash names enable declarative config rollout",
+      "scenarios": [
+        {
+          "name": "Creates ConfigMap with hash suffix",
+          "when": "CreateImmutableConfigMap is called with name='keystone-config', data={'keystone.conf': '...'}, and owner references",
+          "then": "a ConfigMap is created with name 'keystone-config-{hash[:8]}' and immutable=true",
+          "and_then": [
+            "ConfigMap.OwnerReferences contains the provided references",
+            "the generated name string is returned"
+          ]
+        },
+        {
+          "name": "Deterministic hash for identical data",
+          "when": "CreateImmutableConfigMap is called twice with the same data keys in different insertion order",
+          "then": "both calls produce the same hash suffix",
+          "and_then": []
+        },
+        {
+          "name": "Different data produces different hash",
+          "when": "CreateImmutableConfigMap is called with two different data maps",
+          "then": "two distinct ConfigMaps with different hash suffixes are created",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "description": "IsExternalSecretReady SHALL fetch the ExternalSecret CR via unstructured client and return (true, nil) only when a Ready=True condition exists",
+      "priority": "SHALL",
+      "rationale": "Reconcilers need non-blocking ESO readiness checks to gate subsequent reconciliation steps",
+      "scenarios": [
+        {
+          "name": "Returns true when Ready=True",
+          "when": "ExternalSecret has status.conditions containing Ready=True",
+          "then": "returns (true, nil)",
+          "and_then": []
+        },
+        {
+          "name": "Returns false when not ready",
+          "when": "ExternalSecret exists but has no Ready=True condition",
+          "then": "returns (false, nil)",
+          "and_then": []
+        },
+        {
+          "name": "Returns false+nil for NotFound",
+          "when": "no ExternalSecret with the given name exists",
+          "then": "returns (false, nil)",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "description": "secrets/ package SHALL provide IsSecretReady, GetSecretValue, and EnsurePushSecret",
+      "priority": "SHALL",
+      "rationale": "Operators need to check secret existence, read values, and push generated secrets to OpenBao",
+      "scenarios": [
+        {
+          "name": "IsSecretReady true for existing Secret",
+          "when": "a Secret exists",
+          "then": "returns (true, nil)",
+          "and_then": []
+        },
+        {
+          "name": "GetSecretValue returns key value",
+          "when": "Secret exists with the requested key",
+          "then": "returns the string value and nil error",
+          "and_then": []
+        },
+        {
+          "name": "GetSecretValue error for missing key",
+          "when": "Secret exists but key is absent",
+          "then": "returns error describing missing key",
+          "and_then": []
+        },
+        {
+          "name": "EnsurePushSecret creates CR",
+          "when": "called with valid PushSecret spec",
+          "then": "PushSecret CR (external-secrets.io/v1alpha1) is created with owner references",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "description": "database/ package SHALL create MariaDB Database, User, and Grant CRs via unstructured client and batch/v1 Jobs for db-sync",
+      "priority": "SHALL",
+      "rationale": "Each OpenStack service needs its own database, user, and schema migration job",
+      "scenarios": [
+        {
+          "name": "EnsureDatabase creates Database CR",
+          "when": "called with DatabaseSpec containing clusterRef",
+          "then": "Database CR (k8s.mariadb.com/v1alpha1) is created with mariaDbRef and name",
+          "and_then": [
+            "OwnerReferences set"
+          ]
+        },
+        {
+          "name": "EnsureDatabaseUser creates User+Grant",
+          "when": "called with user spec",
+          "then": "User CR with passwordSecretKeyRef and Grant CR with privileges are both created",
+          "and_then": [
+            "OwnerReferences set on both"
+          ]
+        },
+        {
+          "name": "RunDBSyncJob creates Job",
+          "when": "called with ImageSpec, command, env",
+          "then": "batch/v1 Job created with specified container",
+          "and_then": [
+            "RestartPolicy=OnFailure",
+            "OwnerReferences set"
+          ]
+        },
+        {
+          "name": "Idempotent on existing resources",
+          "when": "EnsureDatabase called twice",
+          "then": "second call succeeds without error",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "description": "deployment/ package SHALL use server-side apply for Deployments and Services, and provide pure-function IsDeploymentReady",
+      "priority": "SHALL",
+      "rationale": "Server-side apply enables conflict-free declarative management; pure readiness check matches existing patterns",
+      "scenarios": [
+        {
+          "name": "EnsureDeployment server-side apply",
+          "when": "called with Deployment spec",
+          "then": "Deployment is applied via server-side apply with field manager",
+          "and_then": [
+            "OwnerReferences set"
+          ]
+        },
+        {
+          "name": "EnsureService server-side apply",
+          "when": "called with Service spec",
+          "then": "Service is applied via server-side apply with field manager",
+          "and_then": [
+            "OwnerReferences set"
+          ]
+        },
+        {
+          "name": "IsDeploymentReady true",
+          "when": "Deployment has Available=True and readyReplicas=desired",
+          "then": "returns true",
+          "and_then": []
+        },
+        {
+          "name": "IsDeploymentReady false",
+          "when": "Deployment has no status or Available!=True",
+          "then": "returns false",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "description": "job/ package SHALL create Jobs and CronJobs and provide pure-function IsJobComplete",
+      "priority": "SHALL",
+      "rationale": "Batch operations (db-sync, Fernet rotation) need Job lifecycle management",
+      "scenarios": [
+        {
+          "name": "RunJob creates Job",
+          "when": "called with Job spec",
+          "then": "batch/v1 Job created with owner references",
+          "and_then": []
+        },
+        {
+          "name": "EnsureCronJob creates/updates CronJob",
+          "when": "called with CronJob spec",
+          "then": "batch/v1 CronJob created or updated",
+          "and_then": [
+            "OwnerReferences set"
+          ]
+        },
+        {
+          "name": "IsJobComplete true",
+          "when": "Job has Complete=True condition",
+          "then": "returns true",
+          "and_then": []
+        },
+        {
+          "name": "IsJobComplete false",
+          "when": "Job has no Complete condition or is still running",
+          "then": "returns false",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "description": "tls/ package SHALL create cert-manager Certificate CRs via unstructured client and retrieve TLS Secrets",
+      "priority": "SHALL",
+      "rationale": "OpenStack API endpoints need TLS certificates from cert-manager",
+      "scenarios": [
+        {
+          "name": "EnsureCertificate creates CR",
+          "when": "called with dnsNames, secretName, issuerRef",
+          "then": "Certificate CR (cert-manager.io/v1) created via unstructured client",
+          "and_then": [
+            "OwnerReferences set"
+          ]
+        },
+        {
+          "name": "EnsureCertificate idempotent",
+          "when": "called twice with same spec",
+          "then": "second call succeeds without error",
+          "and_then": []
+        },
+        {
+          "name": "GetTLSSecret returns Secret",
+          "when": "TLS Secret exists",
+          "then": "returns typed *corev1.Secret",
+          "and_then": []
+        },
+        {
+          "name": "GetTLSSecret error on missing",
+          "when": "TLS Secret does not exist",
+          "then": "returns nil and wrapped NotFound error",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "description": "LoadPolicyFromConfigMap SHALL fetch ConfigMap and parse 'policy.yaml' key into map[string]string",
+      "priority": "SHALL",
+      "rationale": "External policy overrides are stored in user-provided ConfigMaps; parsing enables merging with inline rules",
+      "scenarios": [
+        {
+          "name": "Parses valid policy YAML",
+          "when": "ConfigMap has 'policy.yaml' key with valid YAML",
+          "then": "returns parsed map[string]string",
+          "and_then": []
+        },
+        {
+          "name": "Error on missing ConfigMap",
+          "when": "ConfigMap does not exist",
+          "then": "returns nil and wrapped NotFound error",
+          "and_then": []
+        },
+        {
+          "name": "Error on missing key",
+          "when": "ConfigMap exists but has no 'policy.yaml' key",
+          "then": "returns nil and descriptive error",
+          "and_then": []
+        },
+        {
+          "name": "Error on invalid YAML",
+          "when": "'policy.yaml' content is not valid YAML",
+          "then": "returns nil and YAML parse error",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-009",
+      "description": "All functions creating K8s resources SHALL accept variadic ...metav1.OwnerReference and set them on created resources",
+      "priority": "SHALL",
+      "rationale": "Owner references enable Kubernetes garbage collection when parent CRs are deleted",
+      "scenarios": [
+        {
+          "name": "Owner refs applied",
+          "when": "function called with OwnerReferences",
+          "then": "created resource has those OwnerReferences",
+          "and_then": []
+        },
+        {
+          "name": "No owner refs when none given",
+          "when": "function called without OwnerReference args",
+          "then": "created resource has empty OwnerReferences",
+          "and_then": []
+        },
+        {
+          "name": "Multiple owner refs supported",
+          "when": "function called with two OwnerReferences",
+          "then": "both are present on the created resource",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-010",
+      "description": "All K8s-interacting Ensure/Create functions SHALL be idempotent",
+      "priority": "SHALL",
+      "rationale": "Reconcilers call functions repeatedly; AlreadyExists errors must be handled gracefully",
+      "scenarios": [
+        {
+          "name": "Idempotent unstructured CR creation",
+          "when": "EnsureDatabase called for existing CR",
+          "then": "returns nil error",
+          "and_then": []
+        },
+        {
+          "name": "Idempotent server-side apply",
+          "when": "EnsureDeployment called for existing Deployment",
+          "then": "apply succeeds",
+          "and_then": []
+        },
+        {
+          "name": "Idempotent ConfigMap creation",
+          "when": "CreateImmutableConfigMap called with same data",
+          "then": "returns existing name without error",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-011",
+      "description": "SimulateCertificateReady and SimulatePushSecretReady SHALL follow the existing simulateUnstructuredReady pattern",
+      "priority": "SHALL",
+      "rationale": "Test consistency requires new simulators to match the established idempotent pattern",
+      "scenarios": [
+        {
+          "name": "SimulateCertificateReady patches status",
+          "when": "called with name and namespace",
+          "then": "Certificate CR has Ready=True condition in status",
+          "and_then": []
+        },
+        {
+          "name": "SimulatePushSecretReady patches status",
+          "when": "called with name and namespace",
+          "then": "PushSecret CR has Ready=True condition in status",
+          "and_then": []
+        },
+        {
+          "name": "Both are idempotent",
+          "when": "called twice",
+          "then": "second call succeeds",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-012",
+      "description": "Each new package SHALL have a doc.go with '// Package <name> provides... (CC-0005)' comment",
+      "priority": "SHALL",
+      "rationale": "Documentation convention established in CC-0004",
+      "scenarios": [
+        {
+          "name": "doc.go exists for each new package",
+          "when": "each of secrets/, database/, deployment/, job/, tls/ is created",
+          "then": "a doc.go file exists with the package comment and CC-0005 feature ID",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-013",
+      "description": "Integration tests SHALL use //go:build integration, shared TestMain with SetupEnvTest, GenerateName namespaces, and t.Cleanup()",
+      "priority": "SHALL",
+      "rationale": "Consistent test patterns prevent test pollution and match existing envtest infrastructure",
+      "scenarios": [
+        {
+          "name": "Build tag excludes tests from unit runs",
+          "when": "go test ./... is run without -tags=integration",
+          "then": "integration tests are not compiled",
+          "and_then": []
+        },
+        {
+          "name": "Shared envtest environment",
+          "when": "TestMain runs",
+          "then": "single envtest started and torn down after suite",
+          "and_then": []
+        },
+        {
+          "name": "Unique namespaces per test",
+          "when": "test function runs",
+          "then": "namespace with GenerateName created, t.Cleanup registered",
+          "and_then": []
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1.1",
+      "title": "Add SimulateCertificateReady and SimulatePushSecretReady to testutil/simulators/ with integration tests (REQ-011)",
+      "description": "Create two new simulator functions in internal/common/testutil/simulators/: SimulateCertificateReady (cert-manager.io/v1/Certificate GVK) and SimulatePushSecretReady (external-secrets.io/v1alpha1/PushSecret GVK). Both use the existing simulateUnstructuredReady helper. Note: PushSecret has no status.ready boolean — only conditions (same as ExternalSecret), so use a custom implementation like SimulateExternalSecretSync rather than simulateUnstructuredReady if needed. Add integration tests (TestSimulateCertificateReady, TestSimulateCertificateReady_Idempotent, TestSimulatePushSecretReady, TestSimulatePushSecretReady_Idempotent) to the existing simulators_integration_test.go file. Follow exact patterns from mariadb.go/memcached.go.",
+      "level": 1,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-011"
+      ]
+    },
+    {
+      "id": "1.2",
+      "title": "Implement IsDeploymentReady pure function with unit tests (REQ-005)",
+      "description": "Create internal/common/deployment/ package with doc.go and deployment.go containing IsDeploymentReady(deployment *appsv1.Deployment) bool. Checks Available=True condition via appsv1.DeploymentAvailable and that status.ReadyReplicas >= *spec.Replicas. Write table-driven unit tests in deployment_test.go covering: available deployment (true), no status (false), Available=False (false), readyReplicas < desired (false), nil replicas (false).",
+      "level": 1,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-005"
+      ]
+    },
+    {
+      "id": "1.3",
+      "title": "Implement IsJobComplete pure function with unit tests (REQ-006)",
+      "description": "Create internal/common/job/ package with doc.go and job.go containing IsJobComplete(job *batchv1.Job) bool. Checks for batchv1.JobComplete condition with status corev1.ConditionTrue. Write table-driven unit tests in job_test.go covering: complete job (true), no conditions (false), Complete=False (false), only SuccessCriteriaMet (false), failed job (false).",
+      "level": 1,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-006"
+      ]
+    },
+    {
+      "id": "2.1",
+      "title": "Implement CreateImmutableConfigMap in config/ package with integration tests (REQ-001, REQ-009, REQ-010)",
+      "description": "Add CreateImmutableConfigMap(ctx context.Context, c client.Client, name, namespace string, data map[string]string, ownerRefs ...metav1.OwnerReference) (string, error) to internal/common/config/config.go. Computes SHA256 of sorted data keys+values, creates ConfigMap named '{name}-{hash[:8]}' with Immutable=ptr(true), OwnerReferences from variadic args. Uses apierrors.IsAlreadyExists to handle idempotency. Write config_integration_test.go with //go:build integration, TestMain using SetupEnvTest, and tests: TestCreateImmutableConfigMap_CreatesWithHashSuffix, _DeterministicHash, _DifferentDataDifferentHash, _Idempotent, _OwnerReferences.",
+      "level": 2,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-001",
+        "REQ-009",
+        "REQ-010"
+      ]
+    },
+    {
+      "id": "2.2",
+      "title": "Implement LoadPolicyFromConfigMap in policy/ package with integration tests (REQ-008)",
+      "description": "Add LoadPolicyFromConfigMap(ctx context.Context, c client.Client, namespace, name string) (map[string]string, error) to internal/common/policy/policy.go. Fetches typed corev1.ConfigMap, extracts 'policy.yaml' key, parses YAML via gopkg.in/yaml.v3 into map[string]string. Returns errors for missing ConfigMap, missing key, and invalid YAML. Write policy_integration_test.go with //go:build integration, TestMain using SetupEnvTest, tests: TestLoadPolicyFromConfigMap_ValidYAML, _MissingConfigMap, _MissingKey, _InvalidYAML.",
+      "level": 2,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "2.3",
+      "title": "Implement secrets/ package: IsExternalSecretReady, IsSecretReady, GetSecretValue with integration tests (REQ-002, REQ-003)",
+      "description": "Create internal/common/secrets/ package with doc.go and secrets.go. Implement: IsExternalSecretReady(ctx, c client.Client, name, namespace string) (bool, error) — fetches unstructured ExternalSecret (external-secrets.io/v1beta1), checks for Ready=True condition; NotFound returns (false, nil). IsSecretReady(ctx, c, namespace, name string) (bool, error) — checks corev1.Secret existence; NotFound returns (false, nil). GetSecretValue(ctx, c, namespace, name, key string) (string, error) — fetches Secret, returns string(data[key]) or error if key missing. Write secrets_integration_test.go with TestMain, tests: TestIsExternalSecretReady_True (use SimulateExternalSecretSync), _NotReady, _NotFound, TestIsSecretReady_Exists, _NotFound, TestGetSecretValue_ReturnsValue, _MissingKey, _MissingSecret.",
+      "level": 2,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-002",
+        "REQ-003"
+      ]
+    },
+    {
+      "id": "2.4",
+      "title": "Implement EnsurePushSecret in secrets/ package with integration tests (REQ-003, REQ-009, REQ-010)",
+      "description": "Add EnsurePushSecret(ctx context.Context, c client.Client, name, namespace string, spec map[string]interface{}, ownerRefs ...metav1.OwnerReference) error to secrets/secrets.go. Creates unstructured PushSecret (external-secrets.io/v1alpha1) with createOrGet-style idempotency (fetch the object by GVK if AlreadyExists). Sets ownerReferences. Write additional integration tests: TestEnsurePushSecret_Creates (verify CR exists with correct spec), TestEnsurePushSecret_Idempotent, TestEnsurePushSecret_OwnerReferences.",
+      "level": 2,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-003",
+        "REQ-009",
+        "REQ-010"
+      ]
+    },
+    {
+      "id": "2.5",
+      "title": "Implement tls/ package: EnsureCertificate and GetTLSSecret with integration tests (REQ-007, REQ-009, REQ-010)",
+      "description": "Create internal/common/tls/ package with doc.go and tls.go. Implement: EnsureCertificate(ctx, c, name, namespace string, dnsNames []string, secretName, issuerName, issuerKind, issuerGroup string, ownerRefs ...metav1.OwnerReference) error — creates unstructured Certificate CR (cert-manager.io/v1) with createOrGet-style idempotency. GetTLSSecret(ctx, c, namespace, name string) (*corev1.Secret, error) — fetches typed Secret. Write tls_integration_test.go with TestMain, tests: TestEnsureCertificate_Creates, _Idempotent, TestGetTLSSecret_Exists (pre-create Secret), _NotFound.",
+      "level": 2,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-007",
+        "REQ-009",
+        "REQ-010"
+      ]
+    },
+    {
+      "id": "3.1",
+      "title": "Implement database/ package: EnsureDatabase with integration tests (REQ-004, REQ-009, REQ-010)",
+      "description": "Create internal/common/database/ package with doc.go and database.go. Implement EnsureDatabase(ctx context.Context, c client.Client, name, namespace, mariadbRefName, databaseName string, ownerRefs ...metav1.OwnerReference) error — creates unstructured Database CR (k8s.mariadb.com/v1alpha1) with spec.mariaDbRef.name, spec.name, and ownerReferences. Uses createOrGet pattern from simulators/helpers.go for idempotency. Write database_integration_test.go with TestMain, tests: TestEnsureDatabase_Creates (verify CR exists with correct spec fields), TestEnsureDatabase_Idempotent, TestEnsureDatabase_OwnerReferences.",
+      "level": 3,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-004",
+        "REQ-009",
+        "REQ-010"
+      ]
+    },
+    {
+      "id": "3.2",
+      "title": "Implement EnsureDatabaseUser (User + Grant CRs) in database/ with integration tests (REQ-004, REQ-009)",
+      "description": "Add EnsureDatabaseUser(ctx, c, name, namespace, mariadbRefName, username, passwordSecretName, passwordSecretKey, databaseName string, privileges []string, ownerRefs ...metav1.OwnerReference) error to database/database.go. Creates unstructured User CR (k8s.mariadb.com/v1alpha1) with spec.mariaDbRef.name, spec.name=username, spec.passwordSecretKeyRef. Creates unstructured Grant CR with spec.mariaDbRef.name, spec.database, spec.table='*', spec.username, spec.privileges. Both use createOrGet for idempotency. Write tests: TestEnsureDatabaseUser_CreatesUserAndGrant (verify both CRs exist with correct fields), _Idempotent.",
+      "level": 3,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-004",
+        "REQ-009"
+      ]
+    },
+    {
+      "id": "3.3",
+      "title": "Implement RunDBSyncJob in database/ with integration tests (REQ-004, REQ-009)",
+      "description": "Add RunDBSyncJob(ctx, c, name, namespace string, image types.ImageSpec, command []string, env []corev1.EnvVar, ownerRefs ...metav1.OwnerReference) error to database/database.go. Creates typed batch/v1 Job with container from ImageSpec (image.Repository:image.Tag), command, env, RestartPolicy=OnFailure. Uses createOrGet pattern (typed, from simulators/helpers.go). Write tests: TestRunDBSyncJob_CreatesJob (verify Job spec: image, command, env, RestartPolicy, ownerRefs).",
+      "level": 3,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-004",
+        "REQ-009"
+      ]
+    },
+    {
+      "id": "3.4",
+      "title": "Implement EnsureDeployment and EnsureService in deployment/ with integration tests (REQ-005, REQ-009, REQ-010)",
+      "description": "Add to internal/common/deployment/deployment.go: EnsureDeployment(ctx, c, deployment *appsv1.Deployment, ownerRefs ...metav1.OwnerReference) error — sets ownerReferences, applies via server-side apply (client.Apply with ForceOwnership and FieldManager). EnsureService(ctx, c, service *corev1.Service, ownerRefs ...metav1.OwnerReference) error — same pattern. FieldManager string: 'cobaltcore-operator'. Write deployment_integration_test.go: TestEnsureDeployment_Creates, _Idempotent, TestEnsureService_Creates, _Idempotent.",
+      "level": 3,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-005",
+        "REQ-009",
+        "REQ-010"
+      ]
+    },
+    {
+      "id": "3.5",
+      "title": "Implement RunJob and EnsureCronJob in job/ with integration tests (REQ-006, REQ-009, REQ-010)",
+      "description": "Add to internal/common/job/job.go: RunJob(ctx, c, job *batchv1.Job, ownerRefs ...metav1.OwnerReference) error — sets ownerReferences, creates Job using createOrGet pattern. EnsureCronJob(ctx, c, cronJob *batchv1.CronJob, ownerRefs ...metav1.OwnerReference) error — sets ownerReferences, applies via server-side apply. Write job_integration_test.go: TestRunJob_Creates, TestEnsureCronJob_Creates, _Idempotent.",
+      "level": 3,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-006",
+        "REQ-009",
+        "REQ-010"
+      ]
+    },
+    {
+      "id": "4.1",
+      "title": "Update Makefile test-integration target and verify all integration tests pass (REQ-013)",
+      "description": "Update the Makefile test-integration target to actually run integration tests: 'cd internal/common && go test -tags=integration ./...'. Verify all new integration tests pass by running make test-integration. Also verify make test still passes (unit tests only, no integration tag). Fix any compilation or test failures.",
+      "level": 4,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-013"
+      ]
+    },
+    {
+      "id": "4.2",
+      "title": "Write Reference documentation for all CC-0005 packages (REQ-012)",
+      "description": "Update docs/reference/internal-common-packages.md to add sections for each new CC-0005 package (secrets/, database/, deployment/, job/, tls/) and the new functions in config/ and policy/. Follow the existing format: Package import path, function signature table with Parameter/Type/Description columns, behavior notes, and return values. Include the CreateImmutableConfigMap and LoadPolicyFromConfigMap additions to existing package sections. Add CC-0005 to the Dependencies section at the bottom.",
+      "level": 4,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-012"
+      ]
+    }
+  ],
+  "test_specifications": [
+    {
+      "test_file": "internal/common/config/config_integration_test.go",
+      "test_function": "TestCreateImmutableConfigMap_CreatesWithHashSuffix",
+      "story": "Operator creates immutable ConfigMaps with content-hash naming",
+      "expected": "ConfigMap created with name '{name}-{hash[:8]}', immutable=true, owner references set, generated name returned",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "internal/common/config/config_integration_test.go",
+      "test_function": "TestCreateImmutableConfigMap_DeterministicHash",
+      "story": "Operator creates immutable ConfigMaps with content-hash naming",
+      "expected": "Same data produces same hash suffix regardless of map iteration order",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "internal/common/config/config_integration_test.go",
+      "test_function": "TestCreateImmutableConfigMap_DifferentDataDifferentHash",
+      "story": "Operator creates immutable ConfigMaps with content-hash naming",
+      "expected": "Different data maps produce different hash suffixes",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "internal/common/config/config_integration_test.go",
+      "test_function": "TestCreateImmutableConfigMap_Idempotent",
+      "story": "Operator creates immutable ConfigMaps with content-hash naming",
+      "expected": "Second call with same data returns same name without error",
+      "requirement_id": "REQ-010"
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_integration_test.go",
+      "test_function": "TestIsExternalSecretReady_True",
+      "story": "Operator checks ESO ExternalSecret readiness and reads Secret values",
+      "expected": "Returns (true, nil) when ExternalSecret has Ready=True condition (simulated)",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_integration_test.go",
+      "test_function": "TestIsExternalSecretReady_NotReady",
+      "story": "Operator checks ESO ExternalSecret readiness and reads Secret values",
+      "expected": "Returns (false, nil) when ExternalSecret exists without Ready=True",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_integration_test.go",
+      "test_function": "TestIsExternalSecretReady_NotFound",
+      "story": "Operator checks ESO ExternalSecret readiness and reads Secret values",
+      "expected": "Returns (false, nil) when ExternalSecret does not exist",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_integration_test.go",
+      "test_function": "TestIsSecretReady_Exists",
+      "story": "Operator checks ESO ExternalSecret readiness and reads Secret values",
+      "expected": "Returns (true, nil) when Secret exists",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_integration_test.go",
+      "test_function": "TestIsSecretReady_NotFound",
+      "story": "Operator checks ESO ExternalSecret readiness and reads Secret values",
+      "expected": "Returns (false, nil) when Secret does not exist",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_integration_test.go",
+      "test_function": "TestGetSecretValue_ReturnsValue",
+      "story": "Operator checks ESO ExternalSecret readiness and reads Secret values",
+      "expected": "Returns string value of requested key from Secret",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_integration_test.go",
+      "test_function": "TestGetSecretValue_MissingKey",
+      "story": "Operator checks ESO ExternalSecret readiness and reads Secret values",
+      "expected": "Returns error when key does not exist in Secret",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_integration_test.go",
+      "test_function": "TestGetSecretValue_MissingSecret",
+      "story": "Operator checks ESO ExternalSecret readiness and reads Secret values",
+      "expected": "Returns error when Secret does not exist",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_integration_test.go",
+      "test_function": "TestEnsurePushSecret_Creates",
+      "story": "Operator creates PushSecret CRs to write generated secrets back to OpenBao",
+      "expected": "PushSecret CR created with correct spec and owner references",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_integration_test.go",
+      "test_function": "TestEnsurePushSecret_Idempotent",
+      "story": "Operator creates PushSecret CRs to write generated secrets back to OpenBao",
+      "expected": "Second call with same spec succeeds without error",
+      "requirement_id": "REQ-010"
+    },
+    {
+      "test_file": "internal/common/database/database_integration_test.go",
+      "test_function": "TestEnsureDatabase_Creates",
+      "story": "Operator manages MariaDB Database, User, and Grant CRs",
+      "expected": "Database CR created with mariaDbRef and name; owner references set",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "internal/common/database/database_integration_test.go",
+      "test_function": "TestEnsureDatabase_Idempotent",
+      "story": "Operator manages MariaDB Database, User, and Grant CRs",
+      "expected": "Second call succeeds without error",
+      "requirement_id": "REQ-010"
+    },
+    {
+      "test_file": "internal/common/database/database_integration_test.go",
+      "test_function": "TestEnsureDatabaseUser_CreatesUserAndGrant",
+      "story": "Operator manages MariaDB Database, User, and Grant CRs",
+      "expected": "Both User CR and Grant CR created with correct fields and owner references",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "internal/common/database/database_integration_test.go",
+      "test_function": "TestRunDBSyncJob_CreatesJob",
+      "story": "Operator manages MariaDB Database, User, and Grant CRs",
+      "expected": "batch/v1 Job created with specified image, command, env, RestartPolicy=OnFailure, owner references",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_integration_test.go",
+      "test_function": "TestEnsureDeployment_Creates",
+      "story": "Operator manages Deployments and Services via server-side apply",
+      "expected": "Deployment created via server-side apply with owner references",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_integration_test.go",
+      "test_function": "TestEnsureDeployment_Idempotent",
+      "story": "Operator manages Deployments and Services via server-side apply",
+      "expected": "Second apply succeeds without error",
+      "requirement_id": "REQ-010"
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_integration_test.go",
+      "test_function": "TestEnsureService_Creates",
+      "story": "Operator manages Deployments and Services via server-side apply",
+      "expected": "Service created via server-side apply with owner references",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestIsDeploymentReady",
+      "story": "Operator manages Deployments and Services via server-side apply",
+      "expected": "Table-driven test: true when Available=True+readyReplicas=desired, false otherwise",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "internal/common/job/job_integration_test.go",
+      "test_function": "TestRunJob_Creates",
+      "story": "Operator manages Jobs and CronJobs for batch operations",
+      "expected": "batch/v1 Job created with specified template and owner references",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "internal/common/job/job_integration_test.go",
+      "test_function": "TestEnsureCronJob_Creates",
+      "story": "Operator manages Jobs and CronJobs for batch operations",
+      "expected": "batch/v1 CronJob created with schedule and owner references",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestIsJobComplete",
+      "story": "Operator manages Jobs and CronJobs for batch operations",
+      "expected": "Table-driven test: true when Complete=True condition, false when absent/False",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "internal/common/tls/tls_integration_test.go",
+      "test_function": "TestEnsureCertificate_Creates",
+      "story": "Operator manages cert-manager Certificate CRs and retrieves TLS Secrets",
+      "expected": "Certificate CR created with dnsNames, secretName, issuerRef, owner references",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "internal/common/tls/tls_integration_test.go",
+      "test_function": "TestEnsureCertificate_Idempotent",
+      "story": "Operator manages cert-manager Certificate CRs and retrieves TLS Secrets",
+      "expected": "Second call succeeds without error",
+      "requirement_id": "REQ-010"
+    },
+    {
+      "test_file": "internal/common/tls/tls_integration_test.go",
+      "test_function": "TestGetTLSSecret_Exists",
+      "story": "Operator manages cert-manager Certificate CRs and retrieves TLS Secrets",
+      "expected": "Returns typed *corev1.Secret when it exists",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "internal/common/tls/tls_integration_test.go",
+      "test_function": "TestGetTLSSecret_NotFound",
+      "story": "Operator manages cert-manager Certificate CRs and retrieves TLS Secrets",
+      "expected": "Returns nil and wrapped NotFound error when Secret does not exist",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "internal/common/policy/policy_integration_test.go",
+      "test_function": "TestLoadPolicyFromConfigMap_ValidYAML",
+      "story": "Operator loads policy rules from ConfigMap",
+      "expected": "Parses policy.yaml key into map[string]string",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "internal/common/policy/policy_integration_test.go",
+      "test_function": "TestLoadPolicyFromConfigMap_MissingConfigMap",
+      "story": "Operator loads policy rules from ConfigMap",
+      "expected": "Returns error when ConfigMap does not exist",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "internal/common/policy/policy_integration_test.go",
+      "test_function": "TestLoadPolicyFromConfigMap_MissingKey",
+      "story": "Operator loads policy rules from ConfigMap",
+      "expected": "Returns error when 'policy.yaml' key is absent",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "internal/common/policy/policy_integration_test.go",
+      "test_function": "TestLoadPolicyFromConfigMap_InvalidYAML",
+      "story": "Operator loads policy rules from ConfigMap",
+      "expected": "Returns YAML parse error for invalid content",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_integration_test.go",
+      "test_function": "TestSimulateCertificateReady",
+      "story": "Test simulators exist for Certificate and PushSecret readiness",
+      "expected": "Certificate CR created with Ready=True condition in status",
+      "requirement_id": "REQ-011"
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_integration_test.go",
+      "test_function": "TestSimulateCertificateReady_Idempotent",
+      "story": "Test simulators exist for Certificate and PushSecret readiness",
+      "expected": "Second call succeeds without error",
+      "requirement_id": "REQ-011"
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_integration_test.go",
+      "test_function": "TestSimulatePushSecretReady",
+      "story": "Test simulators exist for Certificate and PushSecret readiness",
+      "expected": "PushSecret CR created with Ready=True condition in status",
+      "requirement_id": "REQ-011"
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_integration_test.go",
+      "test_function": "TestSimulatePushSecretReady_Idempotent",
+      "story": "Test simulators exist for Certificate and PushSecret readiness",
+      "expected": "Second call succeeds without error",
+      "requirement_id": "REQ-011"
+    },
+    {
+      "test_file": "internal/common/config/config_integration_test.go",
+      "test_function": "TestCreateImmutableConfigMap_OwnerReferences",
+      "story": "Operator creates immutable ConfigMaps with content-hash naming",
+      "expected": "Created ConfigMap has the provided OwnerReferences; no OwnerReferences when none provided",
+      "requirement_id": "REQ-009"
+    },
+    {
+      "test_file": "internal/common/database/database_integration_test.go",
+      "test_function": "TestEnsureDatabase_OwnerReferences",
+      "story": "Operator manages MariaDB Database, User, and Grant CRs",
+      "expected": "Database CR has the provided OwnerReferences set",
+      "requirement_id": "REQ-009"
+    }
+  ],
+  "affected_files": [],
+  "similar_patterns": [],
+  "review_criteria": [
+    "All SHALL requirements (REQ-001 through REQ-013) have corresponding passing integration and/or unit tests",
+    "All WHEN/THEN scenarios in requirements are covered by at least one test specification",
+    "All functions follow existing patterns: unstructured client for CRD interactions (MariaDB, ESO, cert-manager), typed client for core resources (ConfigMap, Secret, Deployment, Service, Job, CronJob)",
+    "golangci-lint passes with no new warnings on all modified/new files in internal/common/",
+    "go vet passes on all new packages",
+    "All new packages have doc.go with '// Package <name> provides... (CC-0005)' convention",
+    "Server-side apply uses consistent field manager string across deployment/ and job/ packages",
+    "Integration tests use //go:build integration tag, shared TestMain with SetupEnvTest, GenerateName namespaces, and t.Cleanup()",
+    "All Ensure/Create functions are idempotent — integration tests verify double-call behavior",
+    "Owner references are correctly propagated from variadic arguments to created resource metadata",
+    "No new dependencies added to go.mod beyond what already exists (controller-runtime, k8s.io/api, etc.)",
+    "Pure functions (IsDeploymentReady, IsJobComplete) have table-driven unit tests, not integration tests"
+  ],
+  "implementation_notes": "**Architecture:** All packages live under internal/common/ in the existing Go module. No new Go modules are created. The go.mod already includes all necessary dependencies (controller-runtime, k8s.io/api, k8s.io/apimachinery, k8s.io/client-go, gomega).\n\n**Unstructured vs Typed clients:** CRD interactions (MariaDB Database/User/Grant, ESO ExternalSecret/PushSecret, cert-manager Certificate) use the unstructured client to avoid importing typed CRD Go libraries — matching the existing pattern in simulators. Core K8s resources (ConfigMap, Secret, Deployment, Service, Job, CronJob) use typed clients.\n\n**Server-side apply:** The deployment/ package uses server-side apply (client.Apply with ForceOwnership) with a consistent field manager string 'cobaltcore-operator'. This enables declarative management without conflicts from other controllers. The job/ package's EnsureCronJob also uses server-side apply, while RunJob uses Create (one-shot jobs are not updated).\n\n**Idempotency pattern:** Two patterns are used: (1) createOrGet for unstructured CRs and Jobs — try Create, catch AlreadyExists, Get existing. (2) Server-side apply for Deployments, Services, and CronJobs — inherently idempotent. CreateImmutableConfigMap catches AlreadyExists since the hash-suffixed name is deterministic.\n\n**Content hash:** CreateImmutableConfigMap sorts data keys alphabetically, concatenates 'key=value' pairs with newline separator, computes SHA256, and takes the first 8 hex characters. This matches the ConfigMap naming convention described in architecture docs.\n\n**Test infrastructure:** All integration tests follow the exact pattern from testutil/envtest/setup_integration_test.go and simulators/simulators_integration_test.go: //go:build integration tag, package-level var for client, TestMain calling SetupEnvTest(), per-test namespace with GenerateName and t.Cleanup.\n\n**Key files to follow as patterns:** simulators/helpers.go (createOrGet), simulators/mariadb.go (simulateUnstructuredReady wrapper), simulators/externalsecret.go (custom status patching), simulators/simulators_integration_test.go (test structure), config/config.go (pure functions), conditions/conditions.go (pure status checks).\n\n**Risks:** (1) Server-side apply requires GVK to be set on objects — ensure TypeMeta is populated. (2) The unstructured client does not validate spec fields against CRD schemas — tests against envtest catch this. (3) CronJob server-side apply may require careful handling of the schedule field to avoid conflicts.",
+  "status_history": {
+    "draft": {
+      "github_account": "berendt",
+      "timestamp": "2026-02-22T20:42:36.263267"
+    },
+    "elaborated": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-02T08:48:56.592010"
+    },
+    "preparing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-02T08:53:14.985642"
+    },
+    "prepared": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-02T08:59:23.049143"
+    }
+  },
+  "execution_history": [
+    {
+      "run_id": "8dbd031a-57bc-4eed-bdfa-41d8ef134679",
+      "timestamp": "2026-03-02T08:59:23.049185",
+      "total_duration": 364.80221915245056,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "prepare",
+          "duration": 364.80221915245056,
+          "type": "prepare",
+          "status": "done"
+        }
+      ]
+    }
+  ]
+}
