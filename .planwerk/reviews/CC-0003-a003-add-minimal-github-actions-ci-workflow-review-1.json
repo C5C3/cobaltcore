@@ -1,0 +1,142 @@
+{
+  "feature_id": "CC-0003",
+  "title": "A003: Add minimal GitHub Actions CI workflow",
+  "date": "2026-03-03",
+  "summary": "Minimal GitHub Actions CI workflow with 3 parallel jobs (lint, test, test-integration) in a single 46-line YAML file. SPDX header, least-privilege permissions, concurrency control, and reference documentation all present and correct.",
+  "verdict": "APPROVED",
+  "review_steps": {
+    "1_INTENT": "Plan specifies a minimal CI workflow (.github/workflows/ci.yaml) with 3 parallel jobs (lint, test, test-integration), SPDX header, least-privilege permissions, and concurrency control. 8 requirements (REQ-001 through REQ-008).",
+    "2_SCOPE": "Changed files: .github/workflows/ci.yaml (new), docs/ci-workflow.md (new), .planwerk/progress/CC-0003-*.json (modified). No scope creep — no image builds, no Helm, no E2E/Chainsaw, no coverage, no matrix builds, no branch protection.",
+    "3_VERIFICATION": "YAML syntax validated via python yaml.safe_load — VALID. Infrastructure YAML file — V1/V2/V3 (pytest/mypy/ruff) not applicable.",
+    "4_PATTERNS": "First workflow file in the repository — no existing workflow conventions to compare against on main. SPDX header format, quoted 'on', .yaml extension, permissions, and concurrency group all follow the conventions specified in the plan.",
+    "5_TESTS": "Infrastructure YAML — no automated tests applicable. All 16 verification checks from test_specifications confirmed via manual inspection.",
+    "6_SECURITY": "permissions: contents: read at top level, no job-level overrides, no secrets used, no hardcoded credentials. Actions pinned by major version tag (@v4, @v5, @v9) — standard GHA practice.",
+    "7_COMPLEXITY": "46 lines, 3 jobs, minimal configuration. This is the simplest possible implementation for the requirements.",
+    "8_COMPLETENESS": "All 8 requirements met. All 12 tasks marked done. Reference documentation at docs/ci-workflow.md accurately describes the implementation.",
+    "9_PROMPT_QUALITY": "No new prompt files — N/A."
+  },
+  "tests_checklist": [
+    {"item": "YAML syntax validated (python yaml.safe_load)", "checked": true},
+    {"item": "All 16 verification checks from test_specifications confirmed", "checked": true},
+    {"item": "No excluded scope items present in workflow", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows plan-specified conventions (SPDX, quoted on, .yaml extension)", "checked": true},
+    {"item": "No code duplication beyond expected Go setup repetition in test/test-integration", "checked": true},
+    {"item": "No dead code or commented-out sections", "checked": true},
+    {"item": "File location matches project structure (.github/workflows/)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "permissions: contents: read at top level (least privilege)", "checked": true},
+    {"item": "No job-level permissions overrides", "checked": true},
+    {"item": "No hardcoded secrets, tokens, or credentials", "checked": true},
+    {"item": "No write permissions granted to GITHUB_TOKEN", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible (46 lines, 3 parallel jobs)", "checked": true},
+    {"item": "No unnecessary inter-job dependencies", "checked": true},
+    {"item": "Correctly depends on CC-0001 Makefile targets and .golangci.yml", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No container image builds (CC-0007)", "checked": true},
+    {"item": "No Helm packaging (YAGNI)", "checked": true},
+    {"item": "No E2E/Chainsaw jobs (YAGNI)", "checked": true},
+    {"item": "No code coverage reporting (YAGNI)", "checked": true},
+    {"item": "No matrix builds per operator (Makefile abstracts this)", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "CI jobs fail on lint/test/integration errors (non-zero exit)", "checked": true},
+    {"item": "Concurrency cancels superseded runs early", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Least-privilege permissions prevent accidental writes", "checked": true},
+    {"item": "go-version-file: go.work avoids hardcoded version drift", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Consider SHA-pinning actions (e.g., actions/checkout@<sha>) instead of major version tags for supply-chain security hardening in a future iteration (CC-0018 scope)"
+  ],
+  "next_steps": [
+    "Merge CC-0001 (Go workspace, Makefile, .golangci.yml) before this workflow can pass in CI",
+    "Merge CC-0002 (test infrastructure) before test-integration job produces meaningful results"
+  ],
+  "blocking_checks": {
+    "V1_tests_pass": "N/A — infrastructure YAML, no runnable tests",
+    "V2_type_check": "N/A — YAML, not typed code",
+    "V3_lint_clean": "N/A — YAML validated via yaml.safe_load",
+    "C1_implements_plan": "PASS — all 8 requirements implemented",
+    "C2_acceptance_criteria": "PASS — all acceptance criteria from 5 user stories met",
+    "C3_edge_cases": "N/A — static configuration file",
+    "C4_explicit_errors": "N/A — static configuration file",
+    "C5_no_regression": "PASS — new file, no existing functionality affected",
+    "S1_input_validation": "N/A — no API boundaries",
+    "S2_sql_injection": "N/A",
+    "S3_no_hardcoded_secrets": "PASS",
+    "S4_auth_checks": "N/A",
+    "S5_sensitive_data_logs": "N/A",
+    "S6_path_traversal": "N/A",
+    "T1_type_annotations": "N/A — YAML",
+    "T2_no_bare_any": "N/A",
+    "T3_no_type_ignore": "N/A",
+    "T4_generic_constraints": "N/A",
+    "T5_optional_handled": "N/A",
+    "FC1_all_tasks_implemented": "PASS — all 12 tasks done",
+    "FC2_no_stubs": "PASS — no placeholders or TODOs",
+    "FC3_fully_working": "PASS — valid GHA workflow schema",
+    "FC4_end_to_end": "PASS — will execute correctly once CC-0001 dependencies are merged",
+    "PC1_mandatory_patterns": "PASS — no mandatory patterns defined; plan conventions followed",
+    "PC2_no_adhoc_alternative": "PASS",
+    "PC3_consistency": "PASS — first workflow file, no existing inconsistencies possible",
+    "NPC1_new_pattern_coverage": "N/A — no new patterns requiring cross-codebase application",
+    "PQ1_PQ6_prompt_quality": "N/A — no new prompt files"
+  },
+  "major_checks": {
+    "TE1_TE7_testing": "N/A — infrastructure YAML, verified via manual inspection",
+    "Q1_single_responsibility": "PASS — each job has one responsibility",
+    "Q2_function_size": "PASS — jobs are 4-6 lines each",
+    "Q3_no_duplication": "PASS — Go setup repeated in test/test-integration is necessary (separate jobs)",
+    "Q4_clear_naming": "PASS — job names (lint, test, test-integration) are descriptive",
+    "Q5_nesting": "N/A — YAML structure, not code",
+    "Q6_no_magic_values": "PASS — version values are explicit and documented",
+    "Q7_no_dead_code": "PASS — no unused configuration",
+    "P2_existing_utilities": "PASS — uses standard GHA actions",
+    "P5_file_location": "PASS — .github/workflows/ci.yaml",
+    "DA1_docs_match_code": "PASS — docs/ci-workflow.md accurately describes all 3 jobs, triggers, permissions, concurrency",
+    "DA2_docs_capabilities_built": "PASS — all documented capabilities are implemented",
+    "DA3_new_docs_accurate": "PASS — docs/ci-workflow.md reflects implemented behavior exactly"
+  },
+  "detected_patterns": [
+    {
+      "name": "SPDX license header with SAP copyright",
+      "component": ".github/workflows, docs",
+      "category": "configuration",
+      "applies_when": "Creating any new file in the repository that requires license attribution (workflows, documentation, source code)",
+      "description": "All files include an SPDX-compliant license header with 'Copyright 2026 SAP SE or an SAP affiliate company' and Apache-2.0 identifier. Format adapts to file type: YAML/shell uses '#' comments, Markdown uses HTML comments '<!-- -->'.",
+      "examples": [
+        {
+          "location": ".github/workflows/ci.yaml:1",
+          "code": "# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company\n#\n# SPDX-License-Identifier: Apache-2.0\n---"
+        },
+        {
+          "location": "docs/ci-workflow.md:1",
+          "code": "<!--\n# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company\n#\n# SPDX-License-Identifier: Apache-2.0\n-->"
+        }
+      ]
+    },
+    {
+      "name": "GitHub Actions workflow structure conventions",
+      "component": ".github/workflows",
+      "category": "configuration",
+      "applies_when": "Creating any new GitHub Actions workflow file",
+      "description": "Workflow files use .yaml extension, quote the 'on' key as '\"on\"' to prevent YAML boolean interpretation, declare top-level 'permissions: contents: read' for least privilege, and include a concurrency group '${{ github.ref }}-${{ github.workflow }}' with cancel-in-progress: true. Runner is ubuntu-latest.",
+      "examples": [
+        {
+          "location": ".github/workflows/ci.yaml:7",
+          "code": "\"on\":\n  push:\n    branches: [main]\n  pull_request:\n\npermissions:\n  contents: read\n\nconcurrency:\n  group: ${{ github.ref }}-${{ github.workflow }}\n  cancel-in-progress: true"
+        }
+      ]
+    }
+  ]
+}
