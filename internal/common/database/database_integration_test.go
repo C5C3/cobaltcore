@@ -1,3 +1,18 @@
+// A Database is born from MariaDB's domain,
+// its schema named and scoped with care arcane.
+// The User follows, bearing secret keys,
+// and Grants bestow the privileges that please.
+//
+// Each CR is forged through unstructured art,
+// idempotent in full — no duplicate to start.
+// RunDBSyncJob dispatches work in batch,
+// with volumes, mounts, and backoff neatly matched.
+//
+// With owner references the lineage is clear,
+// a parent's bond that garbage sweeps revere.
+// So here we test, with envtest's careful stage,
+// each database proven on the integration page.
+
 //go:build integration
 
 package database_test

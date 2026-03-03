@@ -1,3 +1,18 @@
+// A secret rests where etcd's shadows dwell,
+// its payload locked in base64's quiet spell.
+// The ExternalSecret fetches what is sealed,
+// and only when it's Ready stands revealed.
+//
+// A PushSecret reverses fortune's tide,
+// it sends the local truth to vaults outside.
+// Idempotent, it knocks but once per name,
+// and owner refs ensure the cleanup game.
+//
+// With envtest's stage we prove each guarded door,
+// that ready means ready — nothing less, nothing more.
+// So test by test the contract holds its ground;
+// in integration's forge, the truth is found.
+
 //go:build integration
 
 package secrets_test

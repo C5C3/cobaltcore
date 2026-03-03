@@ -1,3 +1,18 @@
+// A Deployment rises from the spec's design,
+// its replicas in order, standing line by line.
+// Server-side apply ensures the state converges,
+// and updates flow as new intent emerges.
+//
+// A Service binds the ports with steady grace,
+// its ClusterIP preserved in rightful place.
+// When empty fields arrive, the old holds true;
+// when changed, an error guards what must not skew.
+//
+// With owner references the chain is made,
+// a parent's mark no garbage sweep will fade.
+// So here we test, with envtest's patient stage,
+// each deployment written on the integration page.
+
 //go:build integration
 
 package deployment_test

@@ -1,3 +1,18 @@
+// A policy resides in ConfigMap's hold,
+// its YAML rules in structured lines enrolled.
+// LoadPolicyFromConfigMap reads the key,
+// and parses what the cluster holds decree.
+//
+// When keys are missing, errors plainly speak,
+// when YAML breaks, no silent path to sneak.
+// An empty map returns an empty hand,
+// for absent rules need no enforcing band.
+//
+// With envtest's stage we test each guarded gate,
+// that policies are loaded clean and straight.
+// So rule by rule the contract finds its ground;
+// in integration's forge, the truth is found.
+
 //go:build integration
 
 package policy_test

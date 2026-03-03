@@ -1,3 +1,18 @@
+// The envtest stage is set before the play,
+// an API server conjured for the day.
+// It loads the CRDs from every bundled file,
+// MariaDB, cert-manager, ESO in style.
+//
+// The scheme enrolls each core and batch design,
+// Deployments, Jobs, and Namespaces align.
+// A config points to where the server hears,
+// and teardown sweeps when testing disappears.
+//
+// With dynamic clients we create and check,
+// that every custom resource finds its deck.
+// So here we prove the scaffold's steady frame;
+// in integration's forge, the stage sustains the game.
+
 //go:build integration
 
 package envtest

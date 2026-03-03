@@ -1,3 +1,18 @@
+// A simulator conjures what the cluster needs,
+// a ready MariaDB, a Memcached that succeeds.
+// ExternalSecrets sync with data sealed tight,
+// and PushSecrets proclaim their status right.
+//
+// Certificates emerge with Ready set to true,
+// and Jobs complete the work they're told to do.
+// Idempotent each call — invoke it twice,
+// the state converges, stable and precise.
+//
+// With envtest's stage we prove each mock and sham,
+// that simulators hold to their program.
+// So test by test the doubles play their part;
+// in integration's forge, the test is art.
+
 //go:build integration
 
 package simulators_test

@@ -1,3 +1,18 @@
+// A Job is launched when work must run its course,
+// one-shot and finite, driven by its source.
+// Idempotent it stands — submit it twice,
+// the cluster answers once, exact and nice.
+//
+// A CronJob ticks on schedules yet to come,
+// its template waiting for the hour's drum.
+// Updates shift the rhythm, change the beat,
+// while owner refs ensure a cleanup neat.
+//
+// With envtest's stage we prove each batch command,
+// that jobs complete as contracts understand.
+// So test by test the workload holds its ground;
+// in integration's forge, the truth is found.
+
 //go:build integration
 
 package job_test

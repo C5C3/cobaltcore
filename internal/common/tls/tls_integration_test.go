@@ -1,3 +1,18 @@
+// A certificate blooms where trust must be arranged,
+// its secret name and issuer neatly exchanged.
+// The ClusterIssuer signs what DNS names demand,
+// and owner refs bind child to parent's hand.
+//
+// Idempotent the call — create it twice,
+// the second pass returns without a price.
+// GetTLSSecret reads the PEM from etcd's keep,
+// both cert and key from guarded data deep.
+//
+// If fields are missing, errors rise with care,
+// no silent gaps where bytes should fill the air.
+// With envtest's forge we test each lock and key;
+// in integration's light, the trust runs free.
+
 //go:build integration
 
 package tls_test
