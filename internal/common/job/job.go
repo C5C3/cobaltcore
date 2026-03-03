@@ -1,3 +1,18 @@
+// In the cluster's hum, where containers dream,
+// a Job awakes beside a byte-lit stream.
+// It mounts its volumes, secrets tightly pressed,
+// and writes its purpose on the scheduler's chest.
+//
+// Through reconcile loops the controller flies,
+// past CronJob tides beneath Kubernetes skies.
+// Each pod a verse in YAML's careful rhyme,
+// converging state—one spec at a time.
+//
+// When conditions bloom and status turns to True,
+// the finalizer bows; its work is through.
+// So rest, dear Job, your exit code is zero—
+// in the land of orchestration, you're the hero.
+
 package job
 
 import (
