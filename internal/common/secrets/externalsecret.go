@@ -1,3 +1,10 @@
+// A secret sleeps in etcd's quiet keep,
+// Its value sealed in base64 deep.
+// The ExternalSecret stands as guard,
+// Reconciling what was locked and barred.
+// When Ready glows with status True,
+// The cluster breathes — the secret's through.
+
 package secrets
 
 import (
