@@ -475,10 +475,10 @@ Creates a `k8s.mariadb.com/v1alpha1` Database custom resource using an unstructu
 ### EnsureDatabaseUser
 
 ```go
-func EnsureDatabaseUser(ctx context.Context, c client.Client, name, namespace, mariadbRef, passwordSecretName, passwordSecretKey string, owners ...metav1.OwnerReference) error
+func EnsureDatabaseUser(ctx context.Context, c client.Client, name, namespace, mariadbRef, passwordSecretName, passwordSecretKey, databaseName string, owners ...metav1.OwnerReference) error
 ```
 
-Creates a `k8s.mariadb.com/v1alpha1` User custom resource and a corresponding Grant custom resource using unstructured objects. The User is configured with the given `mariadbRef` and password secret reference. The Grant gives the user ALL privileges on all databases and tables (`*.*`).
+Creates a `k8s.mariadb.com/v1alpha1` User custom resource and a corresponding Grant custom resource using unstructured objects. The User is configured with the given `mariadbRef` and password secret reference. The Grant gives the user ALL privileges scoped to the specified `databaseName` and all tables within it (`databaseName.*`).
 
 | Parameter            | Type                       | Description                                            |
 |----------------------|----------------------------|--------------------------------------------------------|
@@ -489,11 +489,12 @@ Creates a `k8s.mariadb.com/v1alpha1` User custom resource and a corresponding Gr
 | `mariadbRef`         | `string`                   | Name of the MariaDB instance to reference              |
 | `passwordSecretName` | `string`                   | Name of the Secret containing the password             |
 | `passwordSecretKey`  | `string`                   | Key within the Secret that holds the password          |
+| `databaseName`       | `string`                   | Database name to scope the Grant to (privilege separation) |
 | `owners`             | `...metav1.OwnerReference` | Variadic owner references for garbage collection       |
 
 **Returns:** `error` -- `nil` on success or if the resources already exist (idempotent); an error if the API call fails.
 
-**Behavior:** Creates two resources: a User CR with `spec.mariaDbRef`, `spec.name`, and `spec.passwordSecretKeyRef` configured, and a Grant CR named `{name}-grant` that grants ALL privileges on `*.*` to the user. Both operations are idempotent.
+**Behavior:** Internally delegates to two functions: `ensureUser` creates the User CR, and `ensureGrant` creates the Grant CR named `{name}-grant` scoped to the specified database. Both operations are idempotent.
 
 ### RunDBSyncJob
 
@@ -562,7 +563,7 @@ Creates the given Service if it does not exist, or updates it if it already exis
 
 **Returns:** `error` -- `nil` on success; an error if the API call fails.
 
-**Behavior:** On update, the `ResourceVersion` and `ClusterIP` from the existing object are preserved because `ClusterIP` is immutable once assigned by Kubernetes. If the Service does not exist, it is created; otherwise the existing resource is updated in place.
+**Behavior:** On update, the `ResourceVersion` from the existing object is preserved for optimistic concurrency. If the caller specifies a non-empty `ClusterIP` that differs from the existing one, the update is rejected with an error because `ClusterIP` is immutable once assigned by Kubernetes. If the caller's `ClusterIP` is empty, the existing `ClusterIP` is preserved. If the Service does not exist, it is created; otherwise the existing resource is updated in place.
 
 ### IsDeploymentReady
 
@@ -670,10 +671,10 @@ Creates a `cert-manager.io/v1` Certificate custom resource using an unstructured
 ### GetTLSSecret
 
 ```go
-func GetTLSSecret(ctx context.Context, c client.Client, name, namespace string) (*corev1.Secret, error)
+func GetTLSSecret(ctx context.Context, c client.Client, name, namespace string) (certPEM []byte, keyPEM []byte, err error)
 ```
 
-Fetches a `corev1.Secret` by name and namespace, then validates that it contains both `"tls.crt"` and `"tls.key"` data keys.
+Fetches a `corev1.Secret` by name and namespace, validates that it contains both `"tls.crt"` and `"tls.key"` data keys, and returns the raw certificate and key bytes directly.
 
 | Parameter   | Type              | Description                          |
 |-------------|-------------------|--------------------------------------|
@@ -682,7 +683,7 @@ Fetches a `corev1.Secret` by name and namespace, then validates that it contains
 | `name`      | `string`          | Name of the TLS Secret               |
 | `namespace` | `string`          | Kubernetes namespace                 |
 
-**Returns:** `(*corev1.Secret, error)` -- the Secret if found and valid, or an error if the Secret is not found or is missing required TLS keys (`"tls.crt"` or `"tls.key"`).
+**Returns:** `([]byte, []byte, error)` -- the certificate PEM bytes, key PEM bytes, and an error if the Secret is not found or is missing required TLS keys (`"tls.crt"` or `"tls.key"`).
 
 ---
 

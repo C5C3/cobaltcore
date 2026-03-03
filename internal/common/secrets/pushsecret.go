@@ -11,6 +11,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// pushSecretGVK is the GroupVersionKind for the external-secrets PushSecret CR.
+var pushSecretGVK = schema.GroupVersionKind{
+	Group:   "external-secrets.io",
+	Version: "v1alpha1",
+	Kind:    "PushSecret",
+}
+
 // EnsurePushSecret creates an external-secrets.io/v1alpha1 PushSecret custom
 // resource that pushes the contents of the named Kubernetes Secret to a remote
 // secret store via the specified ClusterSecretStore.
@@ -27,11 +34,7 @@ import (
 // (CC-0005)
 func EnsurePushSecret(ctx context.Context, c client.Client, name, namespace, secretStoreName, remoteKey string, owners ...metav1.OwnerReference) error {
 	obj := &unstructured.Unstructured{}
-	obj.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "external-secrets.io",
-		Version: "v1alpha1",
-		Kind:    "PushSecret",
-	})
+	obj.SetGroupVersionKind(pushSecretGVK)
 	obj.SetName(name)
 	obj.SetNamespace(namespace)
 

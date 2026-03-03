@@ -25,6 +25,18 @@ var k8sClient client.Client
 
 const testNamespace = "test-secrets"
 
+var externalSecretGVK = schema.GroupVersionKind{
+	Group:   "external-secrets.io",
+	Version: "v1beta1",
+	Kind:    "ExternalSecret",
+}
+
+var pushSecretGVK = schema.GroupVersionKind{
+	Group:   "external-secrets.io",
+	Version: "v1alpha1",
+	Kind:    "PushSecret",
+}
+
 func TestMain(m *testing.M) {
 	_, c, teardown, err := testenvtest.SetupEnvTest()
 	if err != nil {
@@ -50,6 +62,19 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// deleteUnstructuredOnCleanup registers a t.Cleanup that deletes the
+// unstructured resource identified by gvk, name, and namespace.
+func deleteUnstructuredOnCleanup(t *testing.T, ctx context.Context, gvk schema.GroupVersionKind, name string) {
+	t.Helper()
+	t.Cleanup(func() {
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(gvk)
+		obj.SetName(name)
+		obj.SetNamespace(testNamespace)
+		_ = k8sClient.Delete(ctx, obj)
+	})
+}
+
 // ---------------------------------------------------------------------------
 // IsExternalSecretReady tests
 // ---------------------------------------------------------------------------
@@ -65,6 +90,10 @@ func TestIsExternalSecretReady_TrueAfterSync(t *testing.T) {
 	if err := simulators.SimulateExternalSecretSync(ctx, k8sClient, name, testNamespace, targetData); err != nil {
 		t.Fatalf("SimulateExternalSecretSync returned error: %v", err)
 	}
+	deleteUnstructuredOnCleanup(t, ctx, externalSecretGVK, name)
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace}})
+	})
 
 	ready, err := secrets.IsExternalSecretReady(ctx, k8sClient, name, testNamespace)
 	if err != nil {
@@ -72,6 +101,30 @@ func TestIsExternalSecretReady_TrueAfterSync(t *testing.T) {
 	}
 	if !ready {
 		t.Fatal("expected IsExternalSecretReady to return true after sync, got false")
+	}
+}
+
+func TestIsExternalSecretReady_FalseWhenExistsButNotReady(t *testing.T) {
+	ctx := context.Background()
+	name := "es-not-ready"
+
+	// Create ExternalSecret CR without patching its status — it has no
+	// Ready=True condition, so IsExternalSecretReady must return false. (CC-0005)
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(externalSecretGVK)
+	obj.SetName(name)
+	obj.SetNamespace(testNamespace)
+	if err := k8sClient.Create(ctx, obj); err != nil {
+		t.Fatalf("failed to create ExternalSecret: %v", err)
+	}
+	deleteUnstructuredOnCleanup(t, ctx, externalSecretGVK, name)
+
+	ready, err := secrets.IsExternalSecretReady(ctx, k8sClient, name, testNamespace)
+	if err != nil {
+		t.Fatalf("IsExternalSecretReady returned error: %v", err)
+	}
+	if ready {
+		t.Fatal("expected IsExternalSecretReady to return false for existing-but-not-ready ExternalSecret, got true")
 	}
 }
 
@@ -94,7 +147,7 @@ func TestIsExternalSecretReady_FalseForNonExistent(t *testing.T) {
 func TestIsSecretReady_TrueForSecretWithData(t *testing.T) {
 	ctx := context.Background()
 
-	_, err := builders.NewSecretBuilder().
+	secret, err := builders.NewSecretBuilder().
 		WithName("secret-with-data").
 		WithNamespace(testNamespace).
 		WithData(map[string][]byte{"key": []byte("value")}).
@@ -102,6 +155,9 @@ func TestIsSecretReady_TrueForSecretWithData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create Secret: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, secret)
+	})
 
 	ready, err := secrets.IsSecretReady(ctx, k8sClient, "secret-with-data", testNamespace)
 	if err != nil {
@@ -115,7 +171,7 @@ func TestIsSecretReady_TrueForSecretWithData(t *testing.T) {
 func TestIsSecretReady_FalseForEmptyData(t *testing.T) {
 	ctx := context.Background()
 
-	_, err := builders.NewSecretBuilder().
+	secret, err := builders.NewSecretBuilder().
 		WithName("secret-empty-data").
 		WithNamespace(testNamespace).
 		WithData(map[string][]byte{}).
@@ -123,6 +179,9 @@ func TestIsSecretReady_FalseForEmptyData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create Secret: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, secret)
+	})
 
 	ready, err := secrets.IsSecretReady(ctx, k8sClient, "secret-empty-data", testNamespace)
 	if err != nil {
@@ -152,7 +211,7 @@ func TestIsSecretReady_FalseForNonExistent(t *testing.T) {
 func TestGetSecretValue_ReturnsCorrectValue(t *testing.T) {
 	ctx := context.Background()
 
-	_, err := builders.NewSecretBuilder().
+	secret, err := builders.NewSecretBuilder().
 		WithName("secret-for-get").
 		WithNamespace(testNamespace).
 		WithData(map[string][]byte{
@@ -162,6 +221,9 @@ func TestGetSecretValue_ReturnsCorrectValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create Secret: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, secret)
+	})
 
 	val, err := secrets.GetSecretValue(ctx, k8sClient, "secret-for-get", testNamespace, "db-password")
 	if err != nil {
@@ -175,7 +237,7 @@ func TestGetSecretValue_ReturnsCorrectValue(t *testing.T) {
 func TestGetSecretValue_ErrorForMissingKey(t *testing.T) {
 	ctx := context.Background()
 
-	_, err := builders.NewSecretBuilder().
+	secret, err := builders.NewSecretBuilder().
 		WithName("secret-missing-key").
 		WithNamespace(testNamespace).
 		WithData(map[string][]byte{
@@ -185,6 +247,9 @@ func TestGetSecretValue_ErrorForMissingKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create Secret: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, secret)
+	})
 
 	_, err = secrets.GetSecretValue(ctx, k8sClient, "secret-missing-key", testNamespace, "does-not-exist")
 	if err == nil {
@@ -213,14 +278,11 @@ func TestEnsurePushSecret_CreatesWithCorrectSpec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsurePushSecret returned error: %v", err)
 	}
+	deleteUnstructuredOnCleanup(t, ctx, pushSecretGVK, name)
 
 	// Verify the PushSecret was created with the expected spec.
 	obj := &unstructured.Unstructured{}
-	obj.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "external-secrets.io",
-		Version: "v1alpha1",
-		Kind:    "PushSecret",
-	})
+	obj.SetGroupVersionKind(pushSecretGVK)
 	if err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: testNamespace}, obj); err != nil {
 		t.Fatalf("failed to get PushSecret: %v", err)
 	}
@@ -289,6 +351,7 @@ func TestEnsurePushSecret_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first EnsurePushSecret call returned error: %v", err)
 	}
+	deleteUnstructuredOnCleanup(t, ctx, pushSecretGVK, name)
 
 	err = secrets.EnsurePushSecret(ctx, k8sClient, name, testNamespace, "my-store", "remote/key")
 	if err != nil {
@@ -311,13 +374,10 @@ func TestEnsurePushSecret_SetsOwnerReferences(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsurePushSecret returned error: %v", err)
 	}
+	deleteUnstructuredOnCleanup(t, ctx, pushSecretGVK, name)
 
 	obj := &unstructured.Unstructured{}
-	obj.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "external-secrets.io",
-		Version: "v1alpha1",
-		Kind:    "PushSecret",
-	})
+	obj.SetGroupVersionKind(pushSecretGVK)
 	if err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: testNamespace}, obj); err != nil {
 		t.Fatalf("failed to get PushSecret: %v", err)
 	}

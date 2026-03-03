@@ -122,6 +122,9 @@ func TestEnsureDeployment_CreatesNewDeployment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureDeployment returned error: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, dep)
+	})
 
 	fetched := &appsv1.Deployment{}
 	if err := k8sClient.Get(ctx, client.ObjectKey{Name: "test-create-deploy", Namespace: testNamespace}, fetched); err != nil {
@@ -143,6 +146,9 @@ func TestEnsureDeployment_UpdatesExistingDeployment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first EnsureDeployment returned error: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, dep)
+	})
 
 	// Modify replicas and call again.
 	updated := newTestDeployment("test-update-deploy", int32(5))
@@ -176,6 +182,9 @@ func TestEnsureDeployment_SetsOwnerReferences(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureDeployment returned error: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, dep)
+	})
 
 	fetched := &appsv1.Deployment{}
 	if err := k8sClient.Get(ctx, client.ObjectKey{Name: "test-ownerref-deploy", Namespace: testNamespace}, fetched); err != nil {
@@ -212,6 +221,9 @@ func TestEnsureService_CreatesNewService(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureService returned error: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, svc)
+	})
 
 	fetched := &corev1.Service{}
 	if err := k8sClient.Get(ctx, client.ObjectKey{Name: "test-create-svc", Namespace: testNamespace}, fetched); err != nil {
@@ -236,6 +248,9 @@ func TestEnsureService_UpdatesExistingService(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first EnsureService returned error: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, svc)
+	})
 
 	// Modify port and call again.
 	updated := newTestService("test-update-svc", int32(9090))
@@ -253,7 +268,50 @@ func TestEnsureService_UpdatesExistingService(t *testing.T) {
 	}
 }
 
-func TestEnsureService_PreservesClusterIP(t *testing.T) {
+func TestEnsureService_SetsOwnerReferences(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService("test-ownerref-svc", int32(8080))
+	svc.OwnerReferences = []metav1.OwnerReference{
+		{
+			APIVersion: "apps/v1",
+			Kind:       "Deployment",
+			Name:       "my-parent",
+			UID:        "test-uid-67890",
+		},
+	}
+
+	err := deployment.EnsureService(ctx, k8sClient, svc)
+	if err != nil {
+		t.Fatalf("EnsureService returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, svc)
+	})
+
+	fetched := &corev1.Service{}
+	if err := k8sClient.Get(ctx, client.ObjectKey{Name: "test-ownerref-svc", Namespace: testNamespace}, fetched); err != nil {
+		t.Fatalf("failed to get Service: %v", err)
+	}
+
+	refs := fetched.GetOwnerReferences()
+	if len(refs) != 1 {
+		t.Fatalf("expected 1 owner reference, got %d", len(refs))
+	}
+	if refs[0].Name != "my-parent" {
+		t.Fatalf("expected owner reference name=%q, got %q", "my-parent", refs[0].Name)
+	}
+	if refs[0].Kind != "Deployment" {
+		t.Fatalf("expected owner reference kind=%q, got %q", "Deployment", refs[0].Kind)
+	}
+	if refs[0].APIVersion != "apps/v1" {
+		t.Fatalf("expected owner reference apiVersion=%q, got %q", "apps/v1", refs[0].APIVersion)
+	}
+	if string(refs[0].UID) != "test-uid-67890" {
+		t.Fatalf("expected owner reference uid=%q, got %q", "test-uid-67890", refs[0].UID)
+	}
+}
+
+func TestEnsureService_PreservesClusterIPWhenEmpty(t *testing.T) {
 	ctx := context.Background()
 	svc := newTestService("test-clusterip-svc", int32(8080))
 
@@ -261,6 +319,9 @@ func TestEnsureService_PreservesClusterIP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first EnsureService returned error: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, svc)
+	})
 
 	// Fetch the assigned ClusterIP.
 	fetched := &corev1.Service{}
@@ -286,5 +347,26 @@ func TestEnsureService_PreservesClusterIP(t *testing.T) {
 	}
 	if refetched.Spec.ClusterIP != originalClusterIP {
 		t.Fatalf("expected ClusterIP to be preserved as %q, got %q", originalClusterIP, refetched.Spec.ClusterIP)
+	}
+}
+
+func TestEnsureService_RejectsChangedClusterIP(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService("test-clusterip-reject-svc", int32(8080))
+
+	err := deployment.EnsureService(ctx, k8sClient, svc)
+	if err != nil {
+		t.Fatalf("first EnsureService returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, svc)
+	})
+
+	// Attempt to update with a different ClusterIP — must fail. (CC-0005)
+	updated := newTestService("test-clusterip-reject-svc", int32(9090))
+	updated.Spec.ClusterIP = "10.96.99.99"
+	err = deployment.EnsureService(ctx, k8sClient, updated)
+	if err == nil {
+		t.Fatal("expected error when ClusterIP differs from existing, got nil")
 	}
 }

@@ -31,18 +31,26 @@ func EnsureDatabase(ctx context.Context, c client.Client, name, namespace, maria
 
 ### `internal/common/config/configmap.go:30-63`
 
+Uses a create-first approach: attempt to create the resource, and only if
+creation fails with `AlreadyExists`, fetch and return the existing resource.
+This avoids a redundant lookup in the common case.
+
 ```go
 func CreateImmutableConfigMap(ctx context.Context, c client.Client, name, namespace string, data map[string]string, owners ...metav1.OwnerReference) (*corev1.ConfigMap, error) {
 	hashedName := fmt.Sprintf("%s-%s", name, contentHash(data))
-	existing := &corev1.ConfigMap{}
-	err := c.Get(ctx, types.NamespacedName{Name: hashedName, Namespace: namespace}, existing)
-	if err == nil { return existing, nil }
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: hashedName, Namespace: namespace, OwnerReferences: owners},
 		Immutable: ptr.To(true), Data: data,
 	}
 	if err := c.Create(ctx, cm); err != nil {
-		return nil, fmt.Errorf("creating ConfigMap %s/%s: %w", namespace, hashedName, err)
+		if !apierrors.IsAlreadyExists(err) {
+			return nil, fmt.Errorf("creating ConfigMap %s/%s: %w", namespace, hashedName, err)
+		}
+		existing := &corev1.ConfigMap{}
+		if err := c.Get(ctx, types.NamespacedName{Name: hashedName, Namespace: namespace}, existing); err != nil {
+			return nil, fmt.Errorf("getting existing ConfigMap %s/%s: %w", namespace, hashedName, err)
+		}
+		return existing, nil
 	}
 	return cm, nil
 }

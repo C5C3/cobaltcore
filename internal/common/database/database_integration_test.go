@@ -54,6 +54,19 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// deleteUnstructuredOnCleanup registers a t.Cleanup that deletes the
+// unstructured resource identified by gvk, name, and namespace.
+func deleteUnstructuredOnCleanup(t *testing.T, ctx context.Context, gvk schema.GroupVersionKind, name string) {
+	t.Helper()
+	t.Cleanup(func() {
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(gvk)
+		obj.SetName(name)
+		obj.SetNamespace(testNamespace)
+		_ = k8sClient.Delete(ctx, obj)
+	})
+}
+
 // ---------------------------------------------------------------------------
 // EnsureDatabase tests
 // ---------------------------------------------------------------------------
@@ -67,6 +80,7 @@ func TestEnsureDatabase_CreatesWithCorrectSpec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureDatabase returned error: %v", err)
 	}
+	deleteUnstructuredOnCleanup(t, ctx, databaseGVK, name)
 
 	// Fetch the Database CR and verify spec fields.
 	obj := &unstructured.Unstructured{}
@@ -109,6 +123,7 @@ func TestEnsureDatabase_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first call to EnsureDatabase returned error: %v", err)
 	}
+	deleteUnstructuredOnCleanup(t, ctx, databaseGVK, name)
 
 	// Second call should return nil (AlreadyExists is swallowed).
 	err = database.EnsureDatabase(ctx, k8sClient, name, testNamespace, mariadbRef)
@@ -133,6 +148,7 @@ func TestEnsureDatabase_SetsOwnerReferences(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureDatabase returned error: %v", err)
 	}
+	deleteUnstructuredOnCleanup(t, ctx, databaseGVK, name)
 
 	obj := &unstructured.Unstructured{}
 	obj.SetGroupVersionKind(databaseGVK)
@@ -172,6 +188,9 @@ func TestRunDBSyncJob_CreatesJobWithCorrectSpec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDBSyncJob returned error: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace}})
+	})
 
 	got := &batchv1.Job{}
 	if err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: testNamespace}, got); err != nil {
@@ -220,6 +239,9 @@ func TestRunDBSyncJob_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first call to RunDBSyncJob returned error: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace}})
+	})
 
 	// Second call should return nil (AlreadyExists is swallowed).
 	err = database.RunDBSyncJob(ctx, k8sClient, name, testNamespace, image, command, nil, nil)
@@ -245,6 +267,9 @@ func TestRunDBSyncJob_SetsOwnerReferences(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDBSyncJob returned error: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace}})
+	})
 
 	got := &batchv1.Job{}
 	if err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: testNamespace}, got); err != nil {
@@ -297,6 +322,9 @@ func TestRunDBSyncJob_WithVolumeMounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDBSyncJob returned error: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace}})
+	})
 
 	got := &batchv1.Job{}
 	if err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: testNamespace}, got); err != nil {
@@ -360,11 +388,14 @@ func TestEnsureDatabaseUser_CreatesUserAndGrant(t *testing.T) {
 	mariadbRef := "my-mariadb-instance"
 	passwordSecretName := "my-secret"
 	passwordSecretKey := "password"
+	databaseName := "keystone"
 
-	err := database.EnsureDatabaseUser(ctx, k8sClient, name, testNamespace, mariadbRef, passwordSecretName, passwordSecretKey)
+	err := database.EnsureDatabaseUser(ctx, k8sClient, name, testNamespace, mariadbRef, passwordSecretName, passwordSecretKey, databaseName)
 	if err != nil {
 		t.Fatalf("EnsureDatabaseUser returned error: %v", err)
 	}
+	deleteUnstructuredOnCleanup(t, ctx, userGVK, name)
+	deleteUnstructuredOnCleanup(t, ctx, grantGVK, name+"-grant")
 
 	// Fetch and verify the User CR.
 	user := &unstructured.Unstructured{}
@@ -440,7 +471,7 @@ func TestEnsureDatabaseUser_CreatesUserAndGrant(t *testing.T) {
 		t.Fatalf("expected Grant spec.mariaDbRef.name=%q, got %q", mariadbRef, grantRefName)
 	}
 
-	// Verify Grant spec.database
+	// Verify Grant spec.database is scoped to the specific database (CC-0005).
 	dbVal, found, err := unstructured.NestedString(grant.Object, "spec", "database")
 	if err != nil {
 		t.Fatalf("error reading Grant spec.database: %v", err)
@@ -448,8 +479,8 @@ func TestEnsureDatabaseUser_CreatesUserAndGrant(t *testing.T) {
 	if !found {
 		t.Fatal("Grant spec.database not found")
 	}
-	if dbVal != "*" {
-		t.Fatalf("expected Grant spec.database=%q, got %q", "*", dbVal)
+	if dbVal != databaseName {
+		t.Fatalf("expected Grant spec.database=%q, got %q", databaseName, dbVal)
 	}
 
 	// Verify Grant spec.table
@@ -489,20 +520,22 @@ func TestEnsureDatabaseUser_CreatesUserAndGrant(t *testing.T) {
 	}
 }
 
-// TestEnsureDatabaseUser_GrantsAllPrivilegesOnAllDatabases verifies that
-// EnsureDatabaseUser creates a Grant with ALL privileges on *.* (all databases
-// and tables). This is a known simplification (CC-0005): if per-service
-// privilege scoping is needed later, the Grant CR must support per-database
-// grants rather than the current blanket ALL on *.*.
-func TestEnsureDatabaseUser_GrantsAllPrivilegesOnAllDatabases(t *testing.T) {
+// TestEnsureDatabaseUser_GrantsScopedToSpecificDatabase verifies that
+// EnsureDatabaseUser creates a Grant with ALL privileges scoped to the
+// specified database and all tables within it (databaseName.*), enforcing
+// privilege separation per the planwerk spec (CC-0005).
+func TestEnsureDatabaseUser_GrantsScopedToSpecificDatabase(t *testing.T) {
 	ctx := context.Background()
-	name := "test-user-allprivs"
+	name := "test-user-scoped"
 	mariadbRef := "my-mariadb-instance"
+	databaseName := "glance"
 
-	err := database.EnsureDatabaseUser(ctx, k8sClient, name, testNamespace, mariadbRef, "my-secret", "password")
+	err := database.EnsureDatabaseUser(ctx, k8sClient, name, testNamespace, mariadbRef, "my-secret", "password", databaseName)
 	if err != nil {
 		t.Fatalf("EnsureDatabaseUser returned error: %v", err)
 	}
+	deleteUnstructuredOnCleanup(t, ctx, userGVK, name)
+	deleteUnstructuredOnCleanup(t, ctx, grantGVK, name+"-grant")
 
 	grant := &unstructured.Unstructured{}
 	grant.SetGroupVersionKind(grantGVK)
@@ -510,20 +543,20 @@ func TestEnsureDatabaseUser_GrantsAllPrivilegesOnAllDatabases(t *testing.T) {
 		t.Fatalf("failed to get Grant %s/%s-grant: %v", testNamespace, name, err)
 	}
 
-	// Verify the Grant targets ALL databases and tables (known simplification).
+	// Verify the Grant is scoped to the specific database, not *.* (CC-0005).
 	dbVal, _, _ := unstructured.NestedString(grant.Object, "spec", "database")
-	if dbVal != "*" {
-		t.Fatalf("expected Grant spec.database=%q (all databases), got %q", "*", dbVal)
+	if dbVal != databaseName {
+		t.Fatalf("expected Grant spec.database=%q (scoped to specific database), got %q", databaseName, dbVal)
 	}
 
 	tableVal, _, _ := unstructured.NestedString(grant.Object, "spec", "table")
 	if tableVal != "*" {
-		t.Fatalf("expected Grant spec.table=%q (all tables), got %q", "*", tableVal)
+		t.Fatalf("expected Grant spec.table=%q (all tables in database), got %q", "*", tableVal)
 	}
 
 	privs, _, _ := unstructured.NestedStringSlice(grant.Object, "spec", "privileges")
 	if len(privs) != 1 || privs[0] != "ALL" {
-		t.Fatalf("expected Grant spec.privileges=[\"ALL\"] (known simplification: no per-database scoping), got %v", privs)
+		t.Fatalf("expected Grant spec.privileges=[\"ALL\"], got %v", privs)
 	}
 }
 
@@ -533,14 +566,17 @@ func TestEnsureDatabaseUser_Idempotent(t *testing.T) {
 	mariadbRef := "my-mariadb-instance"
 	passwordSecretName := "my-secret"
 	passwordSecretKey := "password"
+	databaseName := "keystone"
 
-	err := database.EnsureDatabaseUser(ctx, k8sClient, name, testNamespace, mariadbRef, passwordSecretName, passwordSecretKey)
+	err := database.EnsureDatabaseUser(ctx, k8sClient, name, testNamespace, mariadbRef, passwordSecretName, passwordSecretKey, databaseName)
 	if err != nil {
 		t.Fatalf("first call to EnsureDatabaseUser returned error: %v", err)
 	}
+	deleteUnstructuredOnCleanup(t, ctx, userGVK, name)
+	deleteUnstructuredOnCleanup(t, ctx, grantGVK, name+"-grant")
 
 	// Second call should return nil (AlreadyExists is swallowed for both User and Grant).
-	err = database.EnsureDatabaseUser(ctx, k8sClient, name, testNamespace, mariadbRef, passwordSecretName, passwordSecretKey)
+	err = database.EnsureDatabaseUser(ctx, k8sClient, name, testNamespace, mariadbRef, passwordSecretName, passwordSecretKey, databaseName)
 	if err != nil {
 		t.Fatalf("second call to EnsureDatabaseUser returned error: %v", err)
 	}
@@ -552,6 +588,7 @@ func TestEnsureDatabaseUser_SetsOwnerReferences(t *testing.T) {
 	mariadbRef := "my-mariadb-instance"
 	passwordSecretName := "my-secret"
 	passwordSecretKey := "password"
+	databaseName := "keystone"
 
 	ownerRef := metav1.OwnerReference{
 		APIVersion: "apps/v1",
@@ -560,10 +597,12 @@ func TestEnsureDatabaseUser_SetsOwnerReferences(t *testing.T) {
 		UID:        "test-uid-user-99999",
 	}
 
-	err := database.EnsureDatabaseUser(ctx, k8sClient, name, testNamespace, mariadbRef, passwordSecretName, passwordSecretKey, ownerRef)
+	err := database.EnsureDatabaseUser(ctx, k8sClient, name, testNamespace, mariadbRef, passwordSecretName, passwordSecretKey, databaseName, ownerRef)
 	if err != nil {
 		t.Fatalf("EnsureDatabaseUser returned error: %v", err)
 	}
+	deleteUnstructuredOnCleanup(t, ctx, userGVK, name)
+	deleteUnstructuredOnCleanup(t, ctx, grantGVK, name+"-grant")
 
 	// Verify owner references on User CR.
 	user := &unstructured.Unstructured{}

@@ -1,0 +1,75 @@
+{
+  "feature_id": "CC-0005",
+  "title": "GitHub Review by gndrmnn",
+  "summary": "Additional note:\n\nDue to a missing stub in ``Makefile``\n\n```\ntest-integration\n    $(error test-integration target requires S002 implementation)\n```\n\nall of the ``_integration_test.go`` files are not run in the CI\n",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "gndrmnn",
+  "date": "2026-03-03T12:16:32Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "Additional note:\n\nDue to a missing stub in ``Makefile``\n\n```\ntest-integration\n    $(error test-integration target requires S002 implementation)\n```\n\nall of the ``_integration_test.go`` files are not run in the CI\n",
+  "code_comments": [
+    {
+      "body": "I think is a bad design.\n\nEither:\n - This should be removed and callers should use ``GetSecretValue`` from ``secrets/secret.go`` with ``tls.crt`` and ``tls.key`` as key. Then verify the secret contained both themselves.\n\nOr:\n- This function should not return the secret, but instead both data values directly as in ``return secret.Data[\"tls.crt\"], secret.Data[\"tls.key\"], nil``",
+      "path": "internal/common/tls/secret.go",
+      "line": 28,
+      "author": "gndrmnn",
+      "created_at": "2026-03-03T11:02:31Z",
+      "id": null
+    },
+    {
+      "body": "I think it would be better to split ensuring the user and ensuring the grant into two functions then do something like\n\n```\n\tif err := ensureUser(ctx, c, owner, ...); err != nil {\n\t\treturn \"\", err\n\t}\n\tif err := ensureGrant(ctx, c, owner, ...); err != nil {\n\t\treturn \"\", err\n\t}\n\treturn nil\n```\n\nin EnsureDatabaseUser",
+      "path": "internal/common/database/database.go",
+      "line": 127,
+      "author": "gndrmnn",
+      "created_at": "2026-03-03T11:21:07Z",
+      "id": null
+    },
+    {
+      "body": "According to the planwerk spec, the point of this is privilege separation so I think a user is always supposed to be authorized to work on one database not ALL databases.",
+      "path": "internal/common/database/database.go",
+      "line": 179,
+      "author": "gndrmnn",
+      "created_at": "2026-03-03T11:26:40Z",
+      "id": null
+    },
+    {
+      "body": "I don't think we should do this. Instead the update should fail if the new ClusterIP is different from the old one. Otherwise, the EnsureService will run without error, but the new configuration might not be applied as specified.",
+      "path": "internal/common/deployment/deployment.go",
+      "line": 57,
+      "author": "gndrmnn",
+      "created_at": "2026-03-03T11:47:31Z",
+      "id": null
+    },
+    {
+      "body": "Reverse the order: First try to create the resource, if ``IsAlreadyExists`` then fetch and return existing. Prevent doing the same thing twice.",
+      "path": "internal/common/config/configmap.go",
+      "line": 69,
+      "author": "gndrmnn",
+      "created_at": "2026-03-03T11:59:45Z",
+      "id": null
+    },
+    {
+      "body": "As discussed in a previous comment, I think it would make more sense to first attempt to create the resource and then retrieve it, if creation fails with ``IsAlreadyExists``",
+      "path": ".planwerk/patterns/unstructured-client-for-third-party-crds-typed-client-for-core-resources.md",
+      "line": 48,
+      "author": "gndrmnn",
+      "created_at": "2026-03-03T12:07:03Z",
+      "id": null
+    }
+  ],
+  "github_review_id": 3881637938
+}

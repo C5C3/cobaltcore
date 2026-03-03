@@ -36,9 +36,11 @@ func EnsureDeployment(ctx context.Context, c client.Client, deployment *appsv1.D
 
 // EnsureService creates the given Service if it does not exist, or updates it
 // if it already exists. The caller supplies a fully-constructed Service object.
-// On update the ResourceVersion and ClusterIP from the existing object are
-// preserved because ClusterIP is immutable once assigned by Kubernetes.
-// (CC-0005, REQ-010)
+// On update the ResourceVersion from the existing object is preserved for
+// optimistic concurrency. If the caller specifies a non-empty ClusterIP that
+// differs from the existing one, the update is rejected with an error because
+// ClusterIP is immutable once assigned by Kubernetes. If the caller's ClusterIP
+// is empty, the existing ClusterIP is preserved. (CC-0005, REQ-010)
 func EnsureService(ctx context.Context, c client.Client, service *corev1.Service) error {
 	existing := &corev1.Service{}
 	err := c.Get(ctx, client.ObjectKeyFromObject(service), existing)
@@ -50,6 +52,13 @@ func EnsureService(ctx context.Context, c client.Client, service *corev1.Service
 			return nil
 		}
 		return fmt.Errorf("getting Service %s/%s: %w", service.Namespace, service.Name, err)
+	}
+	// Reject updates that specify a different ClusterIP — it is immutable once
+	// assigned by Kubernetes, so silently overwriting it would cause the update
+	// to appear successful while the actual configuration is not applied.
+	if service.Spec.ClusterIP != "" && service.Spec.ClusterIP != existing.Spec.ClusterIP {
+		return fmt.Errorf("service %s/%s ClusterIP cannot be changed: existing=%q, requested=%q",
+			service.Namespace, service.Name, existing.Spec.ClusterIP, service.Spec.ClusterIP)
 	}
 	// Update existing — preserve ResourceVersion for optimistic concurrency
 	// and ClusterIP which is immutable once assigned.

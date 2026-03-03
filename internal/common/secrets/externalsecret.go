@@ -10,6 +10,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// externalSecretGVK is the GroupVersionKind for the external-secrets ExternalSecret CR.
+var externalSecretGVK = schema.GroupVersionKind{
+	Group:   "external-secrets.io",
+	Version: "v1beta1",
+	Kind:    "ExternalSecret",
+}
+
 // IsExternalSecretReady fetches an ExternalSecret CR by name and namespace and
 // inspects its status.conditions for a Ready=True condition.
 //
@@ -18,11 +25,7 @@ import (
 // and (false, err) if the API call fails for any other reason. (CC-0005)
 func IsExternalSecretReady(ctx context.Context, c client.Client, name, namespace string) (bool, error) {
 	obj := &unstructured.Unstructured{}
-	obj.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "external-secrets.io",
-		Version: "v1beta1",
-		Kind:    "ExternalSecret",
-	})
+	obj.SetGroupVersionKind(externalSecretGVK)
 
 	if err := c.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, obj); err != nil {
 		if apierrors.IsNotFound(err) {

@@ -13,6 +13,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// dbSyncBackoffLimit is the number of retries before a db-sync Job is considered failed.
+const dbSyncBackoffLimit int32 = 4
+
+// dbSyncTTLSeconds is the time-to-live (in seconds) for a completed db-sync Job
+// before Kubernetes garbage-collects it.
+const dbSyncTTLSeconds int32 = 300
+
 // databaseGVK is the GroupVersionKind for the mariadb-operator Database CR.
 var databaseGVK = schema.GroupVersionKind{
 	Group:   "k8s.mariadb.com",
@@ -79,8 +86,8 @@ func EnsureDatabase(ctx context.Context, c client.Client, name, namespace, maria
 // The operation is idempotent: if the Job already exists, no error is
 // returned. (CC-0005)
 func RunDBSyncJob(ctx context.Context, c client.Client, name, namespace, image string, command []string, volumeMounts []corev1.VolumeMount, volumes []corev1.Volume, owners ...metav1.OwnerReference) error {
-	backoffLimit := int32(4)
-	ttl := int32(300)
+	backoffLimit := dbSyncBackoffLimit
+	ttl := dbSyncTTLSeconds
 
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -120,17 +127,24 @@ func RunDBSyncJob(ctx context.Context, c client.Client, name, namespace, image s
 // EnsureDatabaseUser creates a k8s.mariadb.com/v1alpha1 User custom resource
 // and a corresponding Grant custom resource using unstructured objects. The User
 // is configured with the given mariadbRef and password secret reference. The
-// Grant gives the user ALL privileges on all databases and tables (*.*)
-//
-// Known simplification (CC-0005): the Grant always uses ALL privileges on *.*
-// rather than scoping to a specific database. If per-service privilege scoping
-// is needed in the future, this function's signature and Grant construction must
-// be extended to accept a database name and a list of privileges.
+// Grant gives the user ALL privileges scoped to the specified databaseName and
+// all tables within it (databaseName.*).
 //
 // The operation is idempotent: if either resource already exists, no error is
 // returned. (CC-0005)
-func EnsureDatabaseUser(ctx context.Context, c client.Client, name, namespace, mariadbRef, passwordSecretName, passwordSecretKey string, owners ...metav1.OwnerReference) error {
-	// 1. Create User CR
+func EnsureDatabaseUser(ctx context.Context, c client.Client, name, namespace, mariadbRef, passwordSecretName, passwordSecretKey, databaseName string, owners ...metav1.OwnerReference) error {
+	if err := ensureUser(ctx, c, name, namespace, mariadbRef, passwordSecretName, passwordSecretKey, owners...); err != nil {
+		return err
+	}
+	if err := ensureGrant(ctx, c, name, namespace, mariadbRef, databaseName, owners...); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ensureUser creates a k8s.mariadb.com/v1alpha1 User CR with the given
+// mariadbRef and password secret reference. The operation is idempotent. (CC-0005)
+func ensureUser(ctx context.Context, c client.Client, name, namespace, mariadbRef, passwordSecretName, passwordSecretKey string, owners ...metav1.OwnerReference) error {
 	user := &unstructured.Unstructured{}
 	user.SetGroupVersionKind(userGVK)
 	user.SetName(name)
@@ -160,12 +174,18 @@ func EnsureDatabaseUser(ctx context.Context, c client.Client, name, namespace, m
 	}
 
 	if err := c.Create(ctx, user); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("creating User %s/%s: %w", namespace, name, err)
+		if apierrors.IsAlreadyExists(err) {
+			return nil
 		}
+		return fmt.Errorf("creating User %s/%s: %w", namespace, name, err)
 	}
+	return nil
+}
 
-	// 2. Create Grant CR
+// ensureGrant creates a k8s.mariadb.com/v1alpha1 Grant CR that gives the user
+// ALL privileges scoped to the specified database and all tables within it.
+// The operation is idempotent. (CC-0005)
+func ensureGrant(ctx context.Context, c client.Client, name, namespace, mariadbRef, databaseName string, owners ...metav1.OwnerReference) error {
 	grant := &unstructured.Unstructured{}
 	grant.SetGroupVersionKind(grantGVK)
 	grant.SetName(name + "-grant")
@@ -178,7 +198,7 @@ func EnsureDatabaseUser(ctx context.Context, c client.Client, name, namespace, m
 		return fmt.Errorf("setting Grant spec.mariaDbRef: %w", err)
 	}
 
-	if err := unstructured.SetNestedField(grant.Object, "*", "spec", "database"); err != nil {
+	if err := unstructured.SetNestedField(grant.Object, databaseName, "spec", "database"); err != nil {
 		return fmt.Errorf("setting Grant spec.database: %w", err)
 	}
 
@@ -200,10 +220,10 @@ func EnsureDatabaseUser(ctx context.Context, c client.Client, name, namespace, m
 	}
 
 	if err := c.Create(ctx, grant); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("creating Grant %s/%s-grant: %w", namespace, name, err)
+		if apierrors.IsAlreadyExists(err) {
+			return nil
 		}
+		return fmt.Errorf("creating Grant %s/%s-grant: %w", namespace, name, err)
 	}
-
 	return nil
 }

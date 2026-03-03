@@ -208,7 +208,7 @@ func TestEnsureCertificate_SetsOwnerReferences(t *testing.T) {
 // GetTLSSecret tests
 // ---------------------------------------------------------------------------
 
-func TestGetTLSSecret_ReturnsSecretWithTLSData(t *testing.T) {
+func TestGetTLSSecret_ReturnsCertAndKeyBytes(t *testing.T) {
 	ctx := context.Background()
 	name := "valid-tls-secret"
 
@@ -225,25 +225,22 @@ func TestGetTLSSecret_ReturnsSecretWithTLSData(t *testing.T) {
 		t.Fatalf("failed to create test Secret: %v", err)
 	}
 
-	secret, err := tls.GetTLSSecret(ctx, k8sClient, name, testNamespace)
+	certPEM, keyPEM, err := tls.GetTLSSecret(ctx, k8sClient, name, testNamespace)
 	if err != nil {
 		t.Fatalf("GetTLSSecret returned error: %v", err)
 	}
-	if secret == nil {
-		t.Fatal("GetTLSSecret returned nil Secret")
+	if string(certPEM) != "fake-cert-data" {
+		t.Fatalf("expected certPEM=%q, got %q", "fake-cert-data", string(certPEM))
 	}
-	if string(secret.Data["tls.crt"]) != "fake-cert-data" {
-		t.Fatalf("expected tls.crt=%q, got %q", "fake-cert-data", string(secret.Data["tls.crt"]))
-	}
-	if string(secret.Data["tls.key"]) != "fake-key-data" {
-		t.Fatalf("expected tls.key=%q, got %q", "fake-key-data", string(secret.Data["tls.key"]))
+	if string(keyPEM) != "fake-key-data" {
+		t.Fatalf("expected keyPEM=%q, got %q", "fake-key-data", string(keyPEM))
 	}
 }
 
 func TestGetTLSSecret_ErrorForNonExistentSecret(t *testing.T) {
 	ctx := context.Background()
 
-	_, err := tls.GetTLSSecret(ctx, k8sClient, "does-not-exist", testNamespace)
+	_, _, err := tls.GetTLSSecret(ctx, k8sClient, "does-not-exist", testNamespace)
 	if err == nil {
 		t.Fatal("expected error for non-existent Secret, got nil")
 	}
@@ -264,7 +261,7 @@ func TestGetTLSSecret_ErrorForMissingTLSCrt(t *testing.T) {
 		t.Fatalf("failed to create test Secret: %v", err)
 	}
 
-	_, err = tls.GetTLSSecret(ctx, k8sClient, name, testNamespace)
+	_, _, err = tls.GetTLSSecret(ctx, k8sClient, name, testNamespace)
 	if err == nil {
 		t.Fatal("expected error for Secret missing tls.crt, got nil")
 	}
@@ -285,7 +282,7 @@ func TestGetTLSSecret_ErrorForMissingTLSKey(t *testing.T) {
 		t.Fatalf("failed to create test Secret: %v", err)
 	}
 
-	_, err = tls.GetTLSSecret(ctx, k8sClient, name, testNamespace)
+	_, _, err = tls.GetTLSSecret(ctx, k8sClient, name, testNamespace)
 	if err == nil {
 		t.Fatal("expected error for Secret missing tls.key, got nil")
 	}

@@ -22,6 +22,11 @@ import (
 // The name is formatted as "{name}-{hash}" where hash is the first 8 hex
 // characters of the SHA-256 digest of the sorted, serialised data content.
 //
+// The operation uses a create-first approach: it attempts to create the
+// resource, and only if creation fails with AlreadyExists does it fetch and
+// return the existing resource. This avoids a redundant lookup in the common
+// case where the resource does not yet exist.
+//
 // Owner references are set from the variadic owners parameter so the ConfigMap
 // is garbage-collected when the owning resource is deleted. (CC-0005, REQ-001, REQ-009, REQ-010)
 func CreateImmutableConfigMap(
@@ -32,17 +37,6 @@ func CreateImmutableConfigMap(
 	owners ...metav1.OwnerReference,
 ) (*corev1.ConfigMap, error) {
 	hashedName := fmt.Sprintf("%s-%s", name, contentHash(data))
-
-	// Check if the ConfigMap already exists (idempotent).
-	existing := &corev1.ConfigMap{}
-	err := c.Get(ctx, types.NamespacedName{Name: hashedName, Namespace: namespace}, existing)
-	if err == nil {
-		return existing, nil
-	}
-	if client.IgnoreNotFound(err) != nil {
-		// Real error (not "not found").
-		return nil, fmt.Errorf("checking for existing ConfigMap %s/%s: %w", namespace, hashedName, err)
-	}
 
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -58,7 +52,8 @@ func CreateImmutableConfigMap(
 		if !apierrors.IsAlreadyExists(err) {
 			return nil, fmt.Errorf("creating ConfigMap %s/%s: %w", namespace, hashedName, err)
 		}
-		// Race: created between our Get and Create. Re-fetch.
+		// Already exists — fetch and return the existing resource.
+		existing := &corev1.ConfigMap{}
 		if err := c.Get(ctx, types.NamespacedName{Name: hashedName, Namespace: namespace}, existing); err != nil {
 			return nil, fmt.Errorf("getting existing ConfigMap %s/%s: %w", namespace, hashedName, err)
 		}

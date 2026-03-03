@@ -9,20 +9,24 @@ import (
 )
 
 // GetTLSSecret fetches a corev1.Secret by name and namespace, then validates
-// that it contains both "tls.crt" and "tls.key" data keys. If the Secret is
-// not found or is missing required TLS keys, an error is returned. (CC-0005)
-func GetTLSSecret(ctx context.Context, c client.Client, name, namespace string) (*corev1.Secret, error) {
+// that it contains both "tls.crt" and "tls.key" data keys. Returns the raw
+// certificate and key bytes directly rather than the Secret object.
+// If the Secret is not found or is missing required TLS keys, an error is
+// returned. (CC-0005)
+func GetTLSSecret(ctx context.Context, c client.Client, name, namespace string) (certPEM []byte, keyPEM []byte, err error) {
 	secret := &corev1.Secret{}
 	if err := c.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, secret); err != nil {
-		return nil, fmt.Errorf("getting TLS Secret %s/%s: %w", namespace, name, err)
+		return nil, nil, fmt.Errorf("getting TLS Secret %s/%s: %w", namespace, name, err)
 	}
 
-	if _, ok := secret.Data["tls.crt"]; !ok {
-		return nil, fmt.Errorf("TLS Secret %s/%s is missing required key %q", namespace, name, "tls.crt")
+	certPEM, ok := secret.Data["tls.crt"]
+	if !ok {
+		return nil, nil, fmt.Errorf("TLS Secret %s/%s is missing required key %q", namespace, name, "tls.crt")
 	}
-	if _, ok := secret.Data["tls.key"]; !ok {
-		return nil, fmt.Errorf("TLS Secret %s/%s is missing required key %q", namespace, name, "tls.key")
+	keyPEM, ok = secret.Data["tls.key"]
+	if !ok {
+		return nil, nil, fmt.Errorf("TLS Secret %s/%s is missing required key %q", namespace, name, "tls.key")
 	}
 
-	return secret, nil
+	return certPEM, keyPEM, nil
 }
