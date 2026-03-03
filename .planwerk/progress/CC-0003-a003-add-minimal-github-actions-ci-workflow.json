@@ -368,6 +368,7 @@
       "title": "Validate complete ci.yaml YAML syntax and GitHub Actions workflow schema correctness — valid `on`/`jobs`/`steps` structure, no YAML parsing errors, all action references use valid `owner/repo@version` format (REQ-001)",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-001"
       ]
@@ -377,6 +378,7 @@
       "title": "Verify SPDX header matches deploy-docs.yaml exactly: first line `# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company`, second line `#`, third line `# SPDX-License-Identifier: Apache-2.0`, followed by `---` separator (REQ-008)",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -386,6 +388,7 @@
       "title": "Verify concurrency group key is exactly `${{ github.ref }}-${{ github.workflow }}` with `cancel-in-progress: true`, matching mega-linter.yml lines 32-34 character-for-character (REQ-006)",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -395,6 +398,7 @@
       "title": "Verify lint job has only 2 steps (checkout + golangci-lint-action), no actions/setup-go step, no working-directory override, and golangci-lint-action targets the workspace root implicitly (REQ-002)",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -404,6 +408,7 @@
       "title": "Verify test and test-integration jobs both use `go-version-file: go.work` (not hardcoded `go-version:`), and that actions/setup-go module caching is not explicitly disabled (default cache: true) (REQ-003, REQ-004)",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-004"
@@ -414,6 +419,7 @@
       "title": "Verify all three jobs (lint, test, test-integration) have no `needs:` key — confirming they run in parallel with no inter-job dependencies (REQ-005)",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
