@@ -1,3 +1,21 @@
+// A ConfigMap is born from data's gentle hand,
+// its keys and values carefully planned.
+// A hash is woven through its given name,
+// so changed content never looks the same.
+//
+// Immutable it stands, steadfast and true,
+// no careless patch may alter what it knew.
+// Idempotent the call — create it twice,
+// the cluster answers once, precise and nice.
+//
+// With owner references the bond is set,
+// a parent's seal the child shall not forget.
+// When garbage collection sweeps the floor,
+// the orphaned map shall trouble us no more.
+//
+// So here we test, with envtest's gentle stage,
+// each verse a case upon this integration page.
+
 //go:build integration
 
 package config_test
