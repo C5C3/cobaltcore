@@ -429,6 +429,7 @@
       "title": "Add reference documentation for CI workflow: file location (.github/workflows/ci.yaml), trigger events, job descriptions (lint/test/test-integration), Go setup convention (go-version-file: go.work), concurrency behavior, dependency on CC-0001 Makefile targets and .golangci.yml (REQ-001 to REQ-008)",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -445,6 +446,7 @@
       "title": "Cross-reference implementation against feature scope checklist — verify all 'Included' items present (triggers, lint, test, test-integration, setup-go, SPDX, permissions, concurrency) and all 'Excluded' items absent (no image builds, no helm, no E2E/Chainsaw, no coverage, no branch protection, no matrix builds) (all REQs)",
       "level": 3,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
