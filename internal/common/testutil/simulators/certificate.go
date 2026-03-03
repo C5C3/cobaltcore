@@ -1,3 +1,18 @@
+// A certificate is forged in trust's quiet flame,
+// its issuer signs the secret with a name.
+// Through TLS handshakes, data travels sealed,
+// no plaintext whisper on the wire revealed.
+//
+// In envtest realms where cert-manager sleeps,
+// this simulator wakes and vigil keeps.
+// It stamps the status, sets the condition True,
+// so reconcile may pass its rendezvous.
+//
+// No ACME dance, no challenge left unsolved—
+// the ready state, by code alone, resolved.
+// Sleep well, dear cert, your chain of trust is whole;
+// a simulated flame can warm a testing soul.
+
 package simulators
 
 import (
