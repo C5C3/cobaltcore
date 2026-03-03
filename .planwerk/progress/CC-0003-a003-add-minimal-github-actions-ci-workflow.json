@@ -322,6 +322,7 @@
       "title": "Create `.github/workflows/ci.yaml` with SPDX header (Copyright 2026 SAP SE or an SAP affiliate company, Apache-2.0), `---` separator, workflow name `CI`, quoted `\"on\"` triggers (push branches: [main] + pull_request), top-level `permissions: contents: read`, concurrency group `${{ github.ref }}-${{ github.workflow }}` with cancel-in-progress: true (REQ-001, REQ-006, REQ-007, REQ-008)",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-006",
@@ -334,6 +335,7 @@
       "title": "Add `lint` job to ci.yaml — runs-on: ubuntu-latest, step 1: actions/checkout@v4, step 2: golangci/golangci-lint-action@v9 with `version: v2.10` pinned. No separate actions/setup-go step (action handles Go setup internally). No `needs:` key. (REQ-002, REQ-005)",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-005"
@@ -344,6 +346,7 @@
       "title": "Add `test` job to ci.yaml — runs-on: ubuntu-latest, step 1: actions/checkout@v4, step 2: actions/setup-go@v5 with `go-version-file: go.work` (module caching enabled by default), step 3: name 'Run unit tests' with `run: make test`. No `needs:` key. (REQ-003, REQ-005)",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-005"
@@ -354,6 +357,7 @@
       "title": "Add `test-integration` job to ci.yaml — runs-on: ubuntu-latest, step 1: actions/checkout@v4, step 2: actions/setup-go@v5 with `go-version-file: go.work` (identical to test job), step 3: name 'Run integration tests' with `run: make test-integration`. No `needs:` key. (REQ-004, REQ-005)",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-005"
