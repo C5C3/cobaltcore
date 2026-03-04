@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-04T09:23:11.812694+00:00",
+  "feature_id": "CC-0001",
+  "task_type": "structure-review",
+  "session_key": "CC-0001",
+  "model": "opus",
+  "prompt": "Convert this human code review feedback into a structured prompt for an AI coding agent.\n\nFeature: CC-0001 - A001: Scaffold Go workspace and module structure\nReviewer: gndrmnn\n\nRaw feedback:\n\n\n## Inline Comments\n- `README.md:37` — \"Remove deviation log from README.md\n\nThis file is meant for users and should not include architectural deviation decisions. Furthermore, this list would have to be kept up-to-date with actual code in the future introducing a huge maintenance burden.\n\nRemove this table from README.md, keep everything else in tact\"\n\nIMPORTANT: Preserve the reviewer's original scope exactly.\nIf the reviewer commented on specific files/lines, the structured prompt must target ONLY those locations.\nDo NOT broaden or generalize the reviewer's intent to other files.\n\nOutput a structured prompt in this format:\n\nPlease address the comments from this code review:\n## Overall Comments\n- (list each overall concern)\n## Individual Comments\n### Comment N\n<location path=\"...\" line_range=\"...\" />\n(description of change needed)\n\nBe specific about file paths and line numbers where available.\nOnly output the structured prompt, nothing else.",
+  "prompt_length": 1148,
+  "caller": "run_claude_cli"
+}
