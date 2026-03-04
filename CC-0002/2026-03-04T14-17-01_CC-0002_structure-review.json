@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-04T14:17:01.049272+00:00",
+  "feature_id": "CC-0002",
+  "task_type": "structure-review",
+  "session_key": "CC-0002",
+  "model": "opus",
+  "prompt": "Convert this human code review feedback into a structured prompt for an AI coding agent.\n\nFeature: CC-0002 - A002: Implement shared test infrastructure\nReviewer: gndrmnn\n\nRaw feedback:\n\n\n## Inline Comments\n- `internal/common/testutil/builders/secret_builder_test.go:1` — \"Introduce a testing framework such as gomega which makes assertions easier to write and read\"\n- `internal/common/testutil/fake_crds/certificate.yaml:1` — \"Group the fake CRDs by controller in subfolders. That way a human reviewer can more easily parse which CRD belongs to which controller\"\n\nIMPORTANT: Preserve the reviewer's original scope exactly.\nIf the reviewer commented on specific files/lines, the structured prompt must target ONLY those locations.\nDo NOT broaden or generalize the reviewer's intent to other files.\n\nOutput a structured prompt in this format:\n\nPlease address the comments from this code review:\n## Overall Comments\n- (list each overall concern)\n## Individual Comments\n### Comment N\n<location path=\"...\" line_range=\"...\" />\n(description of change needed)\n\nBe specific about file paths and line numbers where available.\nOnly output the structured prompt, nothing else.",
+  "prompt_length": 1164,
+  "caller": "run_claude_cli"
+}
