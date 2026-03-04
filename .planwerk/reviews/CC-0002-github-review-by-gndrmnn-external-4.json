@@ -1,0 +1,46 @@
+{
+  "feature_id": "CC-0002",
+  "title": "GitHub Review by gndrmnn",
+  "summary": "The reviewer requests two changes: (1) adopt a testing framework like gomega for more readable assertions, and (2) organize fake CRD YAML files into subfolders grouped by controller for easier navigation.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "gndrmnn",
+  "date": "2026-03-04T14:05:41Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 4,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "Introduce a testing framework such as gomega which makes assertions easier to write and read",
+      "path": "internal/common/testutil/builders/secret_builder_test.go",
+      "line": 1,
+      "author": "gndrmnn",
+      "created_at": "2026-03-04T13:31:32Z",
+      "id": null,
+      "resolution": "Added github.com/onsi/gomega v1.39.1 as a direct dependency in internal/common/go.mod to introduce the gomega testing framework for more readable assertions in secret_builder_test.go. The actual test rewrite is not visible in the truncated diff."
+    },
+    {
+      "body": "Group the fake CRDs by controller in subfolders. That way a human reviewer can more easily parse which CRD belongs to which controller",
+      "path": "internal/common/testutil/fake_crds/certificate.yaml",
+      "line": 1,
+      "author": "gndrmnn",
+      "created_at": "2026-03-04T13:43:56Z",
+      "id": null,
+      "resolution": "No CRD directory restructuring into controller-based subfolders is visible in the provided diff. The diff only shows dependency changes (go.mod, go.sum, go.work.sum) and is truncated, so it cannot be confirmed whether fake CRDs were reorganized into subfolders grouped by controller."
+    }
+  ],
+  "resolution_summary": "Added the gomega testing framework as a direct dependency in the internal/common module's go.mod, addressing the request to introduce a more expressive assertion library. The dependency additions also promoted k8s.io/apiextensions-apiserver and k8s.io/client-go from indirect to direct dependencies, and several transitive dependencies were version-bumped. The provided diff is truncated and does not show the actual test file rewrites using gomega or the CRD directory restructuring into controller-based subfolders, so it is unclear from this diff alone whether those changes were fully implemented.",
+  "github_review_id": 3889459361
+}

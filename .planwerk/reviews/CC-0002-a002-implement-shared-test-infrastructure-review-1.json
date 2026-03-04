@@ -1,0 +1,223 @@
+{
+  "summary": "Shared test infrastructure implementing envtest bootstrap, 11 fake CRDs, SecretBuilder, 4 status simulators, typed assertion helpers, Chainsaw E2E config, and comprehensive reference documentation. Code is well-organized, idiomatic Go, and all unit tests pass. Two correctness/testing issues require changes: SimulateJobComplete is not idempotent (append vs overwrite bug), and WithOwner has zero test coverage despite being the only builder method that can panic.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Unit tests exist for assertions (AssertCondition, AssertConditionWithReason, AssertConditionMissing, AssertResourceExists, AssertResourceNotExists, EventuallyCondition)", "checked": true},
+    {"item": "Unit tests exist for builders (SecretBuilder: basic, data, stringData, labels, annotations, type, chaining, deep copy)", "checked": true},
+    {"item": "Unit tests exist for simulators (MariaDBReady, MemcachedReady, ExternalSecretSync, JobComplete, not-found errors)", "checked": true},
+    {"item": "Integration tests exist for envtest (StartStop, CRDsInstalled, CreateUnstructuredObjects, TeardownCancelsContext)", "checked": true},
+    {"item": "Integration tests exist for simulators (all 4 against real envtest API server)", "checked": true},
+    {"item": "Unit tests for envtest (fakeCRDsDir exists, contains YAML files, SetupEnvTest skips gracefully)", "checked": true},
+    {"item": "WithOwner method has test coverage", "checked": false},
+    {"item": "Simulators are tested for idempotency (calling twice without error)", "checked": false},
+    {"item": "Edge cases covered: empty/nil conditions slices", "checked": false},
+    {"item": "Edge cases covered: EventuallyCondition context cancellation", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "All packages have doc.go with package-level documentation", "checked": true},
+    {"item": "All exported symbols have Go doc comments", "checked": true},
+    {"item": "Error wrapping uses fmt.Errorf with %w consistently", "checked": true},
+    {"item": "SPDX license headers on all source files", "checked": true},
+    {"item": "Feature ID (CC-0002) referenced in all source files", "checked": true},
+    {"item": "No new go.mod created — uses existing internal/common module", "checked": true},
+    {"item": "Builder returns deep copies via Build()", "checked": true},
+    {"item": "Functions are single-responsibility and within length limits", "checked": true},
+    {"item": "No code duplication exceeding threshold (Q3)", "checked": false},
+    {"item": "Max 3 nesting levels (Q5)", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets (API keys, passwords, tokens)", "checked": true},
+    {"item": "No SQL injection vectors", "checked": true},
+    {"item": "No path traversal vulnerabilities", "checked": true},
+    {"item": "No sensitive data in logs or error messages", "checked": true},
+    {"item": "No insecure TLS configuration", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "File organization follows Go conventions (sub-packages by concern)", "checked": true},
+    {"item": "Test infrastructure lives within existing internal/common module", "checked": true},
+    {"item": "Unstructured types used to avoid external operator Go module dependencies", "checked": true},
+    {"item": "t.Cleanup() used for resource teardown (idiomatic envtest pattern)", "checked": true},
+    {"item": "Chainsaw config uses v1alpha2 (correct for v0.3+)", "checked": true},
+    {"item": "Reference documentation covers all exported functions with signatures and examples", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No unused code or dead exports", "checked": true},
+    {"item": "No premature abstractions (builders, simulators are minimal)", "checked": true},
+    {"item": "No scope creep beyond requested infrastructure", "checked": true},
+    {"item": "Simulator functions share identical pattern without extraction (Q3 threshold met)", "checked": false}
+  ],
+  "fail_fast_checklist": [
+    {"item": "SetupEnvTest calls t.Fatalf on environment start failure", "checked": true},
+    {"item": "SetupEnvTest stops environment before fataling on client creation failure", "checked": true},
+    {"item": "ErrorIfCRDPathMissing: true ensures immediate failure for bad CRD paths", "checked": true},
+    {"item": "Assertions use t.Fatalf for fatal conditions (resource existence)", "checked": true},
+    {"item": "runtime.Caller(0) ok return value checked", "checked": false}
+  ],
+  "defensive_checklist": [
+    {"item": "Builder initializes nil maps before use (WithData, WithStringData)", "checked": true},
+    {"item": "AssertResourceNotExists distinguishes NotFound from other errors", "checked": true},
+    {"item": "EventuallyCondition handles context cancellation", "checked": true},
+    {"item": "SimulateJobComplete is idempotent (no duplicate conditions on repeated calls)", "checked": false}
+  ],
+  "security_findings": [],
+  "architecture_findings": [
+    {
+      "severity": "INFO",
+      "description": "SetupEnvTest API simplified from plan: (t testing.TB) instead of (crdPaths ...string). This is more idiomatic Go and leverages t.Cleanup() for automatic teardown. The *rest.Config is no longer exposed since the client is sufficient for all test use cases. Documented deviation from plan — acceptable.",
+      "location": "internal/common/testutil/envtest/setup.go:22",
+      "fix": "No action needed. Document rationale if not already covered."
+    },
+    {
+      "severity": "INFO",
+      "description": "Simulators require resources to exist (error on NotFound) instead of creating-if-absent as specified in plan. This makes test setup more explicit and predictable. The reference documentation correctly describes this behavior.",
+      "location": "internal/common/testutil/simulators/simulators.go:32",
+      "fix": "No action needed. Behavior is documented and intentional."
+    },
+    {
+      "severity": "INFO",
+      "description": "Assertions use standard testing.TB instead of gomega. This eliminates the gomega dependency and makes the helpers usable in any Go test without framework coupling. The EventuallyCondition helper implements its own polling loop instead of wrapping gomega.Eventually.",
+      "location": "internal/common/testutil/assertions/assertions.go:23",
+      "fix": "No action needed. Simpler dependency footprint."
+    }
+  ],
+  "issues_found": [
+    {
+      "id": "C3-1",
+      "severity": "major",
+      "check_id": "C3",
+      "file": "internal/common/testutil/simulators/simulators.go",
+      "line": 147,
+      "description": "SimulateJobComplete uses append() for conditions, so calling it twice produces duplicate JobComplete conditions. The three unstructured simulators overwrite the entire status map and are idempotent. This inconsistency will cause subtle test failures if reconciliation tests call the simulator more than once.",
+      "fix": "Replace `append(job.Status.Conditions, ...)` with a full slice assignment: `job.Status.Conditions = []batchv1.JobCondition{{...}}` to match the overwrite behavior of the unstructured simulators."
+    },
+    {
+      "id": "TE3-1",
+      "severity": "major",
+      "check_id": "TE3",
+      "file": "internal/common/testutil/builders/secret_builder_test.go",
+      "line": null,
+      "description": "WithOwner method has zero test coverage. This is the only builder method that can fail (it calls panic() on error via controllerutil.SetOwnerReference). Neither the happy path nor the panic path is tested.",
+      "fix": "Add two tests: (1) TestSecretBuilder_WithOwner — happy path with valid owner/scheme, verify OwnerReference is set; (2) TestSecretBuilder_WithOwner_panicsOnInvalidOwner — verify panic when scheme doesn't recognize the owner type."
+    },
+    {
+      "id": "TE2-1",
+      "severity": "major",
+      "check_id": "TE2",
+      "file": "internal/common/testutil/simulators/simulators_test.go",
+      "line": null,
+      "description": "No idempotency tests for any simulator function. The review criteria explicitly require 'All simulator functions are idempotent — integration tests call each twice without error.' This is missing and would also surface the C3-1 bug above.",
+      "fix": "Add idempotency tests for all four simulators: call each twice on the same resource, verify no error and that status is correct (no duplicate conditions)."
+    },
+    {
+      "id": "Q3-1",
+      "severity": "major",
+      "check_id": "Q3",
+      "file": "internal/common/testutil/simulators/simulators.go",
+      "line": "24-134",
+      "description": "Three unstructured simulator functions duplicate the identical 6-step pattern: create unstructured with GVK, Get resource, format timestamp, build conditions map with same field structure, SetNestedField, Status().Update(). The condition map shape is copy-pasted 3 times (at threshold).",
+      "fix": "Extract a helper function (e.g., setUnstructuredReadyStatus) that accepts GVK, extra status fields, and condition reason/message. Each simulator becomes a thin wrapper providing its specific parameters."
+    },
+    {
+      "id": "Q5-1",
+      "severity": "minor",
+      "check_id": "Q5",
+      "file": "internal/common/testutil/assertions/assertions.go",
+      "line": "117-137",
+      "description": "EventuallyCondition has 5 nesting levels (for -> select -> case -> for range -> if) exceeding the recommended max of 3. The function also takes 10 parameters which hinders call-site readability.",
+      "fix": "Extract a hasCondition(conditions, condType, status) bool helper to reduce the inner nesting. Consider grouping non-test parameters into an options struct."
+    },
+    {
+      "id": "D1-1",
+      "severity": "minor",
+      "check_id": "D1",
+      "file": "internal/common/testutil/envtest/setup.go",
+      "line": 63,
+      "description": "runtime.Caller(0) returns an ok bool as its 4th value, which is silently discarded. If it fails, fakeCRDsDir() returns an empty-based path causing a confusing downstream error.",
+      "fix": "Check the ok value and panic with a clear message: `if !ok { panic(\"envtest: failed to determine caller file path\") }`"
+    },
+    {
+      "id": "TE2-2",
+      "severity": "minor",
+      "check_id": "TE2",
+      "file": "internal/common/testutil/assertions/assertions_test.go",
+      "line": null,
+      "description": "No tests for empty or nil conditions slices. The conditionTypes() helper has a dedicated '(none)' branch for empty input that is never exercised.",
+      "fix": "Add TestAssertCondition_failsOnEmptyConditions (nil input) and TestAssertConditionMissing_succeedsOnEmptyConditions (empty slice)."
+    },
+    {
+      "id": "TE3-2",
+      "severity": "minor",
+      "check_id": "TE3",
+      "file": "internal/common/testutil/assertions/assertions_test.go",
+      "line": null,
+      "description": "No test for EventuallyCondition when context is cancelled before timeout. The ctx.Done() case at assertions.go:119-121 is never exercised.",
+      "fix": "Add TestEventuallyCondition_contextCancelled using a pre-cancelled context."
+    }
+  ],
+  "suggested_improvements": [
+    "Extract findCondition helper in assertions.go to reduce duplication between AssertCondition and AssertConditionWithReason (preemptive Q3 — currently at 2 occurrences)",
+    "Use strings.Join instead of string concatenation in conditionTypes() for idiomatic Go",
+    "Define package-level constants for repeated condition field values 'Ready' and 'True' in simulators (Q6)",
+    "Add boundary-value tests for simulators: zero replicas, empty server list",
+    "Check error returns from unstructured.NestedInt64/NestedSlice in test code instead of discarding with _"
+  ],
+  "next_steps": [
+    "Fix SimulateJobComplete idempotency bug (replace append with slice assignment)",
+    "Add WithOwner unit tests (happy path and panic path)",
+    "Add idempotency tests for all 4 simulators",
+    "Extract setUnstructuredReadyStatus helper to eliminate simulator duplication"
+  ],
+  "detected_patterns": [
+    {
+      "name": "Unstructured status patching for external operator simulation",
+      "component": "internal/common/testutil/simulators",
+      "category": "testing",
+      "applies_when": "Adding a new simulator for an external operator (e.g., SimulateNovaReady, SimulateCinderReady) in the testutil/simulators package",
+      "description": "External operator simulators use unstructured.Unstructured to avoid importing external Go modules. Each simulator: (1) creates an unstructured object with the target GVK, (2) calls client.Get to retrieve the existing resource, (3) builds a status map with conditions following metav1.Condition structure (type/status/reason/message/lastTransitionTime), (4) calls unstructured.SetNestedField to set status, (5) calls client.Status().Update(). The exception is SimulateJobComplete which uses the typed batchv1.Job since it is a core K8s type. All simulators require the resource to already exist.",
+      "examples": [
+        {
+          "location": "internal/common/testutil/simulators/simulators.go:24",
+          "code": "func SimulateMariaDBReady(ctx context.Context, c client.Client, key client.ObjectKey, replicas int) error {\n\tobj := &unstructured.Unstructured{}\n\tobj.SetGroupVersionKind(schema.GroupVersionKind{\n\t\tGroup:   \"k8s.mariadb.com\",\n\t\tVersion: \"v1alpha1\",\n\t\tKind:    \"MariaDB\",\n\t})\n\tif err := c.Get(ctx, key, obj); err != nil {\n\t\treturn fmt.Errorf(\"getting MariaDB %s: %w\", key, err)\n\t}\n\tnow := metav1.Now().Format(time.RFC3339)\n\tstatus := map[string]interface{}{\n\t\t\"readyReplicas\": int64(replicas),\n\t\t\"conditions\": []interface{}{\n\t\t\tmap[string]interface{}{\"type\": \"Ready\", \"status\": \"True\", \"reason\": \"MariaDBReady\", ...},\n\t\t},\n\t}\n\tunstructured.SetNestedField(obj.Object, status, \"status\")\n\treturn c.Status().Update(ctx, obj)\n}"
+        },
+        {
+          "location": "internal/common/testutil/simulators/simulators.go:103",
+          "code": "func SimulateExternalSecretSync(ctx context.Context, c client.Client, key client.ObjectKey) error {\n\tobj := &unstructured.Unstructured{}\n\tobj.SetGroupVersionKind(schema.GroupVersionKind{\n\t\tGroup:   \"external-secrets.io\",\n\t\tVersion: \"v1beta1\",\n\t\tKind:    \"ExternalSecret\",\n\t})\n\tif err := c.Get(ctx, key, obj); err != nil {\n\t\treturn fmt.Errorf(\"getting ExternalSecret %s: %w\", key, err)\n\t}\n\tnow := metav1.Now().Format(time.RFC3339)\n\tstatus := map[string]interface{}{\"refreshTime\": now, \"conditions\": []interface{}{...}}\n\tunstructured.SetNestedField(obj.Object, status, \"status\")\n\treturn c.Status().Update(ctx, obj)\n}"
+        }
+      ]
+    },
+    {
+      "name": "Fluent builder with DeepCopy isolation",
+      "component": "internal/common/testutil/builders",
+      "category": "testing",
+      "applies_when": "Adding a new test resource builder (e.g., ConfigMapBuilder, DeploymentBuilder) in the testutil/builders package",
+      "description": "Test builders follow the fluent pattern: constructor takes required fields (name, namespace), With* methods return *Builder for chaining, Build() returns a deep copy via DeepCopy() to prevent mutation between test cases. The builder struct holds the resource directly (not a pointer). WithOwner uses controllerutil.SetOwnerReference and panics on error since invalid owner setup indicates a test bug.",
+      "examples": [
+        {
+          "location": "internal/common/testutil/builders/secret_builder.go:23",
+          "code": "func NewSecretBuilder(name, namespace string) *SecretBuilder {\n\treturn &SecretBuilder{\n\t\tsecret: corev1.Secret{\n\t\t\tObjectMeta: metav1.ObjectMeta{\n\t\t\t\tName:      name,\n\t\t\t\tNamespace: namespace,\n\t\t\t},\n\t\t\tType: corev1.SecretTypeOpaque,\n\t\t},\n\t}\n}"
+        },
+        {
+          "location": "internal/common/testutil/builders/secret_builder.go:81",
+          "code": "func (b *SecretBuilder) Build() *corev1.Secret {\n\treturn b.secret.DeepCopy()\n}"
+        }
+      ]
+    },
+    {
+      "name": "envtest skip guard pattern",
+      "component": "internal/common/testutil/envtest, simulators",
+      "category": "testing",
+      "applies_when": "Writing integration tests that require envtest (KUBEBUILDER_ASSETS)",
+      "description": "Integration tests that depend on envtest use a skip guard helper that checks both KUBEBUILDER_ASSETS env var and the presence of the etcd binary. Tests using the //go:build integration tag separate integration tests from unit tests. The guard helper calls t.Helper() and t.Skip()/t.Skipf() for clean skip messages.",
+      "examples": [
+        {
+          "location": "internal/common/testutil/envtest/integration_test.go:26",
+          "code": "func skipIfEnvTestUnavailable(t *testing.T) {\n\tt.Helper()\n\tassets := os.Getenv(\"KUBEBUILDER_ASSETS\")\n\tif assets == \"\" {\n\t\tt.Skip(\"KUBEBUILDER_ASSETS not set, skipping integration test\")\n\t}\n\tif _, err := os.Stat(filepath.Join(assets, \"etcd\")); err != nil {\n\t\tt.Skipf(\"envtest binaries not found at %s, skipping integration test\", assets)\n\t}\n}"
+        },
+        {
+          "location": "internal/common/testutil/simulators/integration_test.go:28",
+          "code": "func skipIfNoEnvTest(t *testing.T) {\n\tt.Helper()\n\tassets := os.Getenv(\"KUBEBUILDER_ASSETS\")\n\tif assets == \"\" {\n\t\tt.Skip(\"KUBEBUILDER_ASSETS not set, skipping envtest integration test\")\n\t}\n\tif _, err := os.Stat(filepath.Join(assets, \"etcd\")); err != nil {\n\t\tt.Skipf(\"envtest binaries not found at %s, skipping envtest integration test\", assets)\n\t}\n}"
+        }
+      ]
+    }
+  ]
+}

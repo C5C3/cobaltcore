@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw v0.3+ E2E test configuration for CC-0002.
+# Reference: https://kyverno.github.io/chainsaw/latest/configuration/
+#
+# DECISION: apiVersion v1alpha2 vs v1alpha1
+# Ambiguity: REQ-006 specifies apiVersion chainsaw.kyverno.io/v1alpha1 but
+#   also says "targeting Chainsaw v0.3+".
+# Chose: v1alpha2 because Chainsaw v0.3+ only supports v1alpha2 (v1alpha1 was
+#   removed in v0.2.0). Using v1alpha1 would cause a parse error.
+# Reviewer: please verify.
+#
+# DECISION: report format JUNIT-TEST vs XML
+# Ambiguity: requirement says "JUnit XML output" without specifying format value.
+# Chose: JUNIT-TEST because the legacy "XML" format was deprecated in v0.2.10.
+# Reviewer: please verify.
+apiVersion: chainsaw.kyverno.io/v1alpha2
+kind: Configuration
+metadata:
+  name: cloud-operator-e2e
+spec:
+  # ── Timeouts ────────────────────────────────────────────────────────────
+  timeouts:
+    apply: 30s
+    assert: 120s
+    cleanup: 60s
+    delete: 30s
+    error: 30s
+    exec: 30s
+
+  # ── Cleanup ─────────────────────────────────────────────────────────────
+  # Ensure test resources are cleaned up after each test run.
+  cleanup:
+    skipDelete: false
+
+  # ── Execution ───────────────────────────────────────────────────────────
+  # Run tests in parallel; stop on first failure for faster feedback.
+  execution:
+    failFast: true
+    parallel: 4
+
+  # ── Report ──────────────────────────────────────────────────────────────
+  # Produce JUnit XML reports for CI integration.
+  report:
+    format: JUNIT-TEST
+    name: chainsaw-report
+    path: _output/reports

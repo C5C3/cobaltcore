@@ -1,0 +1,71 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Minimal fake CRD for MariaDB Operator's MariaDB resource.
+# Used by envtest only — NOT a production-grade schema.
+# Feature: CC-0002
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: mariadbs.k8s.mariadb.com
+spec:
+  group: k8s.mariadb.com
+  names:
+    plural: mariadbs
+    singular: mariadb
+    kind: MariaDB
+    listKind: MariaDBList
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                replicas:
+                  type: integer
+                image:
+                  type: string
+                rootPasswordSecretKeyRef:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                    key:
+                      type: string
+                storage:
+                  type: object
+                  properties:
+                    size:
+                      type: string
+            status:
+              type: object
+              properties:
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                readyReplicas:
+                  type: integer
+                currentPrimaryPodIndex:
+                  type: integer

@@ -1,0 +1,59 @@
+{
+  "feature_id": "CC-0002",
+  "title": "A002: Implement shared test infrastructure",
+  "date": "2026-03-04",
+  "summary": "Review of changes addressing sourcery-ai[bot] feedback (review #2). All three external review comments are fully addressed: (1) EventuallyCondition now validates Timeout/Interval > 0 and fails on non-NotFound Get errors instead of silently continuing, with 3 new tests. (2) SetupEnvTest passes SharedScheme() to client.New, fixes double-stop by registering t.Cleanup only after client.New succeeds, and centralizes the skip guard as exported SkipIfEnvTestUnavailable. (3) SecretBuilder.WithLabels/WithAnnotations defensively copy caller-provided maps, with 3 new tests verifying isolation. All 35 unit tests pass. golangci-lint and go vet are clean.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Unit tests exist and pass (35 tests: 20 assertions + 15 builders)", "checked": true},
+    {"item": "Integration tests properly skip without KUBEBUILDER_ASSETS", "checked": true},
+    {"item": "Edge cases covered (zero interval, zero timeout, non-NotFound errors, nil maps, map mutation)", "checked": true},
+    {"item": "Error paths tested (validation failures, missing resources, wrong conditions)", "checked": true},
+    {"item": "New tests specifically cover each external review comment", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (fluent builder, skip guard, unstructured patching)", "checked": true},
+    {"item": "No code duplication — skip guard centralized into single exported function", "checked": true},
+    {"item": "Functions are focused and small (≤20 lines)", "checked": true},
+    {"item": "Clear naming (SharedScheme, SkipIfEnvTestUnavailable, ConditionPollOpts)", "checked": true},
+    {"item": "Go doc comments on all exported functions", "checked": true},
+    {"item": "No dead code or commented-out code", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "No SQL injection vectors", "checked": true},
+    {"item": "gosec G703 on SkipIfEnvTestUnavailable is false positive (env var for test infra, not user input)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "SharedScheme uses sync.Once for thread-safe lazy initialization", "checked": true},
+    {"item": "t.Cleanup registration moved after client.New to prevent double env.Stop()", "checked": true},
+    {"item": "SkipIfEnvTestUnavailable accepts testing.TB for broad compatibility", "checked": true},
+    {"item": "Solution is minimal — only changes requested by external review", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "Duplicated skip guards removed from envtest/integration_test.go and simulators/integration_test.go", "checked": true},
+    {"item": "No unnecessary abstractions introduced", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "EventuallyCondition validates Interval > 0 before creating ticker (prevents panic)", "checked": true},
+    {"item": "EventuallyCondition validates Timeout > 0 before creating deadline", "checked": true},
+    {"item": "Non-NotFound Get errors fail immediately instead of silently continuing", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "WithLabels/WithAnnotations copy maps to prevent caller mutation of builder state", "checked": true},
+    {"item": "WithLabels(nil) properly clears labels without NPE", "checked": true},
+    {"item": "Build() returns deep copy preventing cross-test mutation", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "D4 (minor): The envtest-skip-guard-pattern.md (.planwerk/patterns/) is stale — it still shows two separate unexported skip guards (skipIfEnvTestUnavailable and skipIfNoEnvTest) as examples, but the code now has a single centralized exported SkipIfEnvTestUnavailable. Update the pattern file to reflect the centralized approach.",
+    "D4 (minor): The fluent-builder-with-deepcopy-isolation.md pattern could be updated to document the defensive map-copying convention established by WithLabels/WithAnnotations, since future builders (KeystoneBuilder, ControlPlaneBuilder) should follow the same practice."
+  ],
+  "next_steps": [
+    "Update .planwerk/patterns/envtest-skip-guard-pattern.md to reflect centralized SkipIfEnvTestUnavailable",
+    "Update .planwerk/patterns/fluent-builder-with-deepcopy-isolation.md to include map-copying convention"
+  ],
+  "detected_patterns": []
+}

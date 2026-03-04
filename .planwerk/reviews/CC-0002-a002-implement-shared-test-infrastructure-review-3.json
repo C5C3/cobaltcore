@@ -1,0 +1,85 @@
+{
+  "feature_id": "CC-0002",
+  "title": "A002: Implement shared test infrastructure",
+  "date": "2026-03-04",
+  "summary": "Review #4 feedback from gndrmnn addressed cleanly: all test files migrated from if/else + t.Errorf/t.Fatalf to gomega assertions (g := NewGomegaWithT(t) with dot import), and fake CRD YAMLs reorganized from flat directory into operator-specific subdirectories (cert-manager/, external-secrets/, mariadb-operator/, memcached-operator/, rabbitmq-operator/). The fakeCRDsDirs() function now dynamically discovers subdirectories. All 28 unit tests pass, go vet and golangci-lint are clean, no regressions introduced.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "All unit tests pass (28/28)", "checked": true},
+    {"item": "Integration tests present and guarded by SkipIfEnvTestUnavailable", "checked": true},
+    {"item": "Edge cases covered (zero replicas, empty server list, not-found errors, idempotency)", "checked": true},
+    {"item": "Gomega assertions produce readable failure messages with context strings", "checked": true},
+    {"item": "Test names follow descriptive convention", "checked": true},
+    {"item": "Tests are independent (no shared mutable state between test functions)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Gomega pattern applied consistently across all 5 test files", "checked": true},
+    {"item": "Dot import used uniformly for gomega", "checked": true},
+    {"item": "No dead code or unused imports after migration", "checked": true},
+    {"item": "fakeCRDsDirs() properly validates directory existence and non-empty", "checked": true},
+    {"item": "doc.go updated to reflect new subdirectory structure", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets or credentials", "checked": true},
+    {"item": "No user-facing input surfaces (test infrastructure only)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "CRD subdirectory grouping follows operator ownership boundaries", "checked": true},
+    {"item": "Dynamic subdirectory discovery avoids hardcoded paths", "checked": true},
+    {"item": "No new go.mod — testutil stays within internal/common module", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated test helpers across files", "checked": true},
+    {"item": "Changes scoped precisely to reviewer feedback (gomega + subdirs)", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "fakeCRDsDirs() panics on missing directory or empty subdirectories", "checked": true},
+    {"item": "Gomega assertions fail immediately on first mismatch", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "setup.go validates runtime.Caller success", "checked": true},
+    {"item": "setup.go validates os.ReadDir success", "checked": true},
+    {"item": "setup.go validates non-empty subdirectory list", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": [
+    {
+      "name": "Gomega test assertions with NewGomegaWithT",
+      "component": "internal/common/testutil/*_test.go",
+      "category": "testing",
+      "applies_when": "Writing unit or integration tests in any testutil package or consumer of testutil",
+      "description": "All test functions use gomega via dot import (`. \"github.com/onsi/gomega\"`) and create a local `g := NewGomegaWithT(t)` at the start of each test function. Assertions use `g.Expect(...)` with gomega matchers (To, NotTo, Succeed, HaveOccurred, BeTrue, Equal, HaveLen, HaveKeyWithValue, ContainSubstring, BeNil, BeEmpty, BeEquivalentTo, Panic). This replaces raw if/else + t.Errorf/t.Fatalf patterns.",
+      "examples": [
+        {
+          "location": "internal/common/testutil/builders/secret_builder_test.go:21",
+          "code": "func TestNewSecretBuilder_basic(t *testing.T) {\n\tg := NewGomegaWithT(t)\n\tsecret := NewSecretBuilder(\"my-secret\", \"default\").Build()\n\n\tg.Expect(secret.Name).To(Equal(\"my-secret\"))\n\tg.Expect(secret.Namespace).To(Equal(\"default\"))\n}"
+        },
+        {
+          "location": "internal/common/testutil/simulators/simulators_test.go:44",
+          "code": "func TestSimulateMariaDBReady(t *testing.T) {\n\tg := NewGomegaWithT(t)\n\n\tmariadb := newUnstructured(\"k8s.mariadb.com\", \"v1alpha1\", \"MariaDB\", \"test-mariadb\", \"default\")\n\tc := fake.NewClientBuilder().\n\t\tWithScheme(newScheme()).\n\t\tWithObjects(mariadb).\n\t\tWithStatusSubresource(mariadb).\n\t\tBuild()\n\n\terr := SimulateMariaDBReady(context.Background(), c, client.ObjectKeyFromObject(mariadb), 3)\n\tg.Expect(err).NotTo(HaveOccurred())"
+        }
+      ]
+    },
+    {
+      "name": "Fake CRD subdirectory grouping by operator",
+      "component": "internal/common/testutil/fake_crds/*/",
+      "category": "testing",
+      "applies_when": "Adding new external operator CRDs for envtest integration tests",
+      "description": "Fake CRD YAML files are organized into subdirectories named after the external operator that owns them (e.g., mariadb-operator/, cert-manager/, external-secrets/). Each subdirectory contains only the CRDs belonging to that operator. The fakeCRDsDirs() function in setup.go dynamically discovers these subdirectories at runtime. Adding a new operator requires only creating a new subdirectory with its CRD YAMLs — no code changes needed.",
+      "examples": [
+        {
+          "location": "internal/common/testutil/envtest/setup.go:107",
+          "code": "func fakeCRDsDirs() []string {\n\t_, thisFile, _, ok := runtime.Caller(0)\n\tif !ok {\n\t\tpanic(\"envtest: runtime.Caller failed to determine source file path\")\n\t}\n\troot := filepath.Join(filepath.Dir(thisFile), \"..\", \"fake_crds\")\n\n\tentries, err := os.ReadDir(root)\n\tif err != nil {\n\t\tpanic(fmt.Sprintf(\"envtest: failed to read fake_crds directory %s: %v\", root, err))\n\t}\n\n\tvar dirs []string\n\tfor _, e := range entries {\n\t\tif e.IsDir() {\n\t\t\tdirs = append(dirs, filepath.Join(root, e.Name()))\n\t\t}\n\t}\n\tif len(dirs) == 0 {\n\t\tpanic(fmt.Sprintf(\"envtest: no subdirectories found in fake_crds directory %s\", root))\n\t}\n\treturn dirs\n}"
+        },
+        {
+          "location": "internal/common/testutil/fake_crds/doc.go:10",
+          "code": "// CRDs are grouped by controller in subdirectories:\n//\n//\tcert-manager/        — cert-manager.io CRDs (Certificate, ClusterIssuer)\n//\texternal-secrets/    — external-secrets.io CRDs (ExternalSecret, PushSecret, ClusterSecretStore)\n//\tmariadb-operator/    — k8s.mariadb.com CRDs (MariaDB, Database, Grant, User)\n//\tmemcached-operator/  — cache.c5c3.io CRDs (Memcached)\n//\trabbitmq-operator/   — rabbitmq.com CRDs (RabbitmqCluster)"
+        }
+      ]
+    }
+  ]
+}
