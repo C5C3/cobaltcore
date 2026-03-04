@@ -107,5 +107,7 @@ install-test-deps:
 	$(error S002: install-test-deps not yet implemented)
 
 .PHONY: test-integration
+# TODO: Replace this stub when envtest CI infrastructure is added.
+# The CI workflow omits the test-integration job; re-add it when this target runs real tests.
 test-integration:
-	$(error S002: test-integration not yet implemented)
+	$(error test-integration not yet implemented — envtest infrastructure pending)
