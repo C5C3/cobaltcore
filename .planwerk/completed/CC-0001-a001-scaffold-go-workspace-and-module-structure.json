@@ -2,8 +2,8 @@
   "feature_id": "CC-0001",
   "title": "A001: Scaffold Go workspace and module structure",
   "slug": "a001-scaffold-go-workspace-and-module-structure",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 🏗️ large\n**Category:** infrastructure\n**Priority:** critical\n\n## Open Questions\n\nAll questions resolved — user decisions incorporated below.\n\n## Summary\n\nScaffold the foundational Go workspace and module structure for the CobaltCore monorepo. This creates `go.work` with three modules (`internal/common`, `operators/keystone`, `operators/c5c3`), initializes `go.mod` per module with controller-runtime/apimachinery dependencies, scaffolds minimal `main.go` entrypoints for both operators (manager setup, scheme registration, leader election, health probes), and provides the top-level `Makefile` and `golangci-lint` configuration. This is S001 from the implementation plan — the base layer upon which all subsequent features (S002–S026) build.\n\n## Scope\n\n**Included:**\n- `go.work` with `use` directives for 3 modules (Go 1.25 — user decision, matching docs)\n- Directory tree: `internal/common/`, `operators/keystone/`, `operators/c5c3/`, `images/`, `releases/`, `deploy/`, `tests/e2e/` — placeholder dirs get `.gitkeep`\n- `go.mod` for each module with `controller-runtime v0.23+`, `k8s.io/apimachinery v0.35+`, `k8s.io/client-go v0.35+`\n- `replace` directives in operator `go.mod` files for `internal/common` (CI builds without `go.work`)\n- `main.go` for `operators/keystone` and `operators/c5c3` with: scheme registration (runtime + k8s core schemes), `ctrl.NewManager`, leader election (`--leader-elect` flag), health/readiness probes (`/healthz`, `/readyz`), metrics bind address, controller registration stub (no-op comment until reconcilers exist)\n- Top-level `Makefile` with targets: `generate`, `manifests`, `build`, `test`, `test-integration`, `lint`, `docker-build`, `helm-package`, `e2e`, `deploy-infra` (stub), `install-test-deps` (stub) — with `OPERATOR` variable for targeting individual operators\n- `.golangci.yml` with standard linters and exclusions for generated code (`zz_generated.*`)\n- `internal/common/doc.go` — package doc placeholder so the module compiles\n- `go.sum` files generated via `go mod tidy`\n\n**Excluded (with rationale):**\n- CRD type definitions, `api/v1alpha1/` — S011, YAGNI until reconciler work starts\n- Controller/reconciler implementations — S013\n- Shared library packages (`internal/common/conditions/`, `config/`, etc.) — S004, S005\n- Helm chart scaffolding — S017\n- Dockerfiles in `images/` — S006\n- GitHub Actions CI workflows — S003\n- Test suites (envtest setup, Chainsaw tests) — S002, S012, S014\n- Webhook configuration — S011, no types exist yet\n- Kubebuilder `config/` directories (crd, rbac, manager manifests) — S011\n- Operator SDK scaffolding (`operator-sdk init`) — creates too many files we'd delete; hand-crafted `main.go` matches documented patterns better\n\n## Visualization\n\n```mermaid\nflowchart TD\n    subgraph root[\"Repository Root\"]\n        gowork[\"go.work\"]\n        makefile[\"Makefile\"]\n        lint[\".golangci.yml\"]\n    end\n\n    subgraph common[\"internal/common/\"]\n        gomod_c[\"go.mod\"]\n        doc_c[\"doc.go\"]\n    end\n\n    subgraph keystone[\"operators/keystone/\"]\n        gomod_k[\"go.mod\"]\n        main_k[\"main.go\"]\n    end\n\n    subgraph c5c3[\"operators/c5c3/\"]\n        gomod_cc[\"go.mod\"]\n        main_cc[\"main.go\"]\n    end\n\n    subgraph placeholders[\"Placeholder Directories\"]\n        images[\"images/.gitkeep\"]\n        releases[\"releases/.gitkeep\"]\n        deploy[\"deploy/.gitkeep\"]\n        tests[\"tests/e2e/.gitkeep\"]\n    end\n\n    gowork -->|\"use ./internal/common\"| common\n    gowork -->|\"use ./operators/keystone\"| keystone\n    gowork -->|\"use ./operators/c5c3\"| c5c3\n\n    gomod_k -->|\"require + replace\"| gomod_c\n    gomod_cc -->|\"require + replace\"| gomod_c\n\n    main_k -->|\"ctrl.NewManager\"| CR[\"controller-runtime\"]\n    main_cc -->|\"ctrl.NewManager\"| CR\n\n    makefile -->|\"iterates OPERATOR\"| keystone\n    makefile -->|\"iterates OPERATOR\"| c5c3\n    lint -->|\"applies to all modules\"| common\n```\n\n```mermaid\nflowchart LR\n    subgraph main_go[\"main.go Structure\"]\n        A[\"Register Schemes\"] --> B[\"Create Manager\"]\n        B --> C[\"Enable Leader Election\"]\n        C --> D[\"Setup Health Probes\"]\n        D --> E[\"Controller Stub\"]\n        E --> F[\"mgr.Start\"]\n    end\n```\n\n## Key Components\n\n- **`go.work`** — Workspace root linking 3 modules; Go 1.25; enables local resolution of `internal/common`\n- **`internal/common/go.mod`** — Shared library module (`github.com/c5c3/forge/internal/common`); minimal deps (apimachinery, controller-runtime for types only); `doc.go` placeholder so the module compiles\n- **`operators/keystone/go.mod`** — Module `github.com/c5c3/forge/operators/keystone`; full controller-runtime + client-go deps; `replace` directive for `internal/common` per docs (`architecture/01-project-setup.md:112-126`)\n- **`operators/c5c3/go.mod`** — Module `github.com/c5c3/forge/operators/c5c3`; same dependency pattern as keystone\n- **`operators/*/main.go`** — Entrypoints with: scheme registration (runtime scheme + k8s core), `ctrl.NewManager(...)`, `--leader-elect` flag, health probe endpoints (`/healthz`, `/readyz`), metrics bind address (`:8080`), `// TODO: register controllers here` stub, `mgr.Start(ctrl.SetupSignalHandler())`\n- **`Makefile`** — Multi-operator build orchestration; `OPERATOR` variable to target individual operators (per docs `architecture/01-project-setup.md:146-152`); `OPERATORS` list defaults to `keystone c5c3`; `deploy-infra` and `install-test-deps` as stubs; all 11 requested targets\n- **`.golangci.yml`** — Enables `govet`, `errcheck`, `staticcheck`, `unused`, `gosimple`, `ineffassign`, `typecheck`, `gocritic`; excludes `zz_generated*.go`; Go 1.25 target\n- **Placeholder dirs** — `images/`, `releases/`, `deploy/`, `tests/e2e/` with `.gitkeep` for future S003/S006/S002 work\n\n## Deviation Note\n\nThe user chose **Go 1.25** over the documented Go 1.25 (`architecture/01-project-setup.md:11,158`). All `go.work` and `go.mod` files will use `go 1.25`. The docs should be updated separately to reflect this decision.",
   "stories": [
@@ -368,6 +368,7 @@
       "title": "Create directory tree with .gitkeep files for images/, releases/, deploy/, tests/e2e/ placeholder directories (REQ-009)",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -377,6 +378,7 @@
       "title": "Create go.work at repository root with `go 1.25` and use directives for ./internal/common, ./operators/keystone, ./operators/c5c3 (REQ-001)",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-001"
       ]
@@ -386,6 +388,7 @@
       "title": "Create internal/common/go.mod (module github.com/c5c3/forge/internal/common, go 1.25) and doc.go with `package common` placeholder (REQ-002)",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -395,6 +398,7 @@
       "title": "Update .gitignore to add Go workspace artifacts: bin/, vendor/, *.exe, *.test, *.out; keep go.work.sum tracked (REQ-009)",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -404,6 +408,7 @@
       "title": "Create operators/keystone/go.mod with module github.com/c5c3/forge/operators/keystone, go 1.25, require controller-runtime v0.23.x + apimachinery v0.35.x + client-go v0.35.x + internal/common v0.0.0, replace directive for internal/common => ../../internal/common (REQ-002, REQ-008)",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-008"
@@ -414,6 +419,7 @@
       "title": "Create operators/c5c3/go.mod with identical dependency and replace pattern as keystone (module github.com/c5c3/forge/operators/c5c3) (REQ-002, REQ-008)",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-008"
@@ -424,6 +430,7 @@
       "title": "Create operators/keystone/main.go: scheme registration (clientgoscheme + runtime), ctrl.NewManager with metricsserver.Options, --leader-elect/--metrics-bind-address/--health-probe-bind-address flags, healthz.Ping probes, blank import of internal/common, controller registration stub comment, mgr.Start(ctrl.SetupSignalHandler()) (REQ-003, REQ-004, REQ-008)",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-004",
@@ -435,6 +442,7 @@
       "title": "Create operators/c5c3/main.go with identical manager setup pattern as keystone, different LeaderElectionID (c5c3.openstack.c5c3.io) (REQ-003, REQ-004, REQ-008)",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-004",
@@ -446,6 +454,7 @@
       "title": "Run `go mod tidy` on all 3 modules to resolve dependencies and generate go.sum files; verify `go build ./...` succeeds from workspace root and from each module with GOWORK=off (REQ-001, REQ-002, REQ-008)",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -457,6 +466,7 @@
       "title": "Create .golangci.yml: enable govet/errcheck/staticcheck/unused/gosimple/ineffassign/typecheck/gocritic, set Go 1.25, exclude zz_generated*.go via issues.exclude-files, set appropriate timeout (REQ-007)",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -466,6 +476,7 @@
       "title": "Create top-level Makefile: OPERATORS='keystone c5c3' default, ifdef OPERATOR override, working targets (build: `go build ./...` per module, test: `go test ./...`, lint: `golangci-lint run`, generate/manifests: echo no-op until controller-gen exists), stub targets with $(error) for docker-build(S006)/helm-package(S017)/e2e(S002)/deploy-infra(S008)/install-test-deps(S002)/test-integration(S002), .PHONY declarations, descriptive comments (REQ-005, REQ-006)",
       "level": 3,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-006"
@@ -476,6 +487,7 @@
       "title": "Verify scaffolded workspace structure aligns with architecture/01-project-setup.md; document any deviations (metricsserver.Options vs deprecated MetricsBindAddress, stub target error behavior) in a brief reference section or inline comments (REQ-001, REQ-009)",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-009"
@@ -639,8 +651,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-02-22T21:47:57.270195"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-03T21:49:07.219908"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-04T09:31:10.266125"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/15",
+  "pr_number": 15,
   "execution_history": [
     {
       "run_id": "a9d4235e-b871-4057-aa72-ed54ae8b3b93",
@@ -652,6 +674,56 @@
           "name": "prepare",
           "duration": 558.868492603302,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "3f32b4b7-9d6e-4811-a5b4-2dd30d2f8211",
+      "timestamp": "2026-03-03T22:19:35.245738",
+      "total_duration": 1532.6716780662537,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (4 tasks)",
+          "duration": 200.6175012588501,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (4 tasks)",
+          "duration": 237.4287965297699,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (3 tasks)",
+          "duration": 427.8423993587494,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (1 tasks)",
+          "duration": 258.8818781375885,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0001] Code Review",
+          "duration": 237.0207118988037,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0001] Improvements",
+          "duration": 120.77358627319336,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0001] Simplify",
+          "duration": 50.106804609298706,
+          "type": "simplify",
           "status": "done"
         }
       ]

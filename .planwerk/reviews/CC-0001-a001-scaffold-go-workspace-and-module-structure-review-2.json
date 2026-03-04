@@ -1,0 +1,97 @@
+{
+  "feature_id": "CC-0001",
+  "title": "A001: Scaffold Go workspace and module structure",
+  "date": "2026-03-03",
+  "summary": "Extracted shared controller-runtime manager bootstrap into internal/common/bootstrap package, eliminating duplication between keystone and c5c3 main.go files. Both operators now delegate to bootstrap.Run() with operator-specific ManagerConfig (Scheme, LeaderElectionID, SetupFunc). Validation logic is unit-tested. Dependencies in go.mod files are resolved via go mod tidy against real versions (no unusual pseudo-versions). All modules build, vet, lint, and test cleanly.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (4 unit tests for ManagerConfig.validate)", "checked": true},
+    {"item": "Edge cases covered (nil Scheme, empty LeaderElectionID)", "checked": true},
+    {"item": "Error cases tested with exact message assertions", "checked": true},
+    {"item": "Valid config path tested (with and without SetupFunc)", "checked": true},
+    {"item": "Run() integration test exists", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (kubebuilder/controller-runtime conventions)", "checked": true},
+    {"item": "Functions do one thing (validate, Run)", "checked": true},
+    {"item": "No code duplication between operators", "checked": true},
+    {"item": "Clear naming (ManagerConfig, SetupFunc, LeaderElectionID)", "checked": true},
+    {"item": "No dead code or unused imports", "checked": true},
+    {"item": "SPDX license headers on all new files", "checked": true},
+    {"item": "Feature ID (CC-0001) annotated on all public types/functions", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "No injection vectors (standard flag parsing only)", "checked": true},
+    {"item": "Standard k8s config loading (ctrl.GetConfigOrDie)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "Shared bootstrap prevents drift across operators", "checked": true},
+    {"item": "ManagerConfig is extensible for future operators without modifying bootstrap", "checked": true},
+    {"item": "SetupFunc callback preserves operator-specific controller registration", "checked": true},
+    {"item": "Kubebuilder scaffold markers preserved in correct locations", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code between operators", "checked": true},
+    {"item": "No speculative features added to ManagerConfig", "checked": true},
+    {"item": "Bootstrap package contains only what is needed now", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Validation errors returned before manager creation", "checked": true},
+    {"item": "Each bootstrap step returns wrapped errors with context", "checked": true},
+    {"item": "os.Exit(1) on unrecoverable errors in main()", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Nil Scheme check before use", "checked": true},
+    {"item": "Empty LeaderElectionID check before use", "checked": true},
+    {"item": "SetupFunc nil-guarded before invocation", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "id": "TE-NOTE-1",
+      "severity": "info",
+      "check_id": "TE1",
+      "file": "internal/common/bootstrap/manager_test.go",
+      "description": "No integration test for bootstrap.Run() — only validate() is tested. Run() requires a kubeconfig (envtest) which is out of scope for S001 scaffold phase and planned under S002. Acceptable for current phase.",
+      "fix": "Add envtest-based integration test for Run() when S002 (test infrastructure) is implemented."
+    },
+    {
+      "id": "MINOR-1",
+      "severity": "minor",
+      "check_id": "D2",
+      "file": "internal/common/go.sum",
+      "description": "Running go mod tidy adds 2 missing /go.mod hash lines (k8s.io/api v0.35.1/go.mod, k8s.io/client-go v0.35.1/go.mod). The existing go.sum works correctly — these are supplementary hash entries that vary by Go toolchain version. Does not affect build or resolution.",
+      "fix": "Re-run go mod tidy -C internal/common and commit the updated go.sum if desired."
+    }
+  ],
+  "suggested_improvements": [
+    "When S002 (test infrastructure) is implemented, add an envtest-based integration test for bootstrap.Run() to validate the full manager lifecycle."
+  ],
+  "next_steps": [
+    "Merge this branch — all blocking and major checks pass.",
+    "S002: Set up envtest infrastructure, then add integration tests for bootstrap.Run().",
+    "S013: When adding reconcilers, extend SetupFunc usage in each operator's main.go."
+  ],
+  "detected_patterns": [
+    {
+      "name": "Operator entrypoint via shared bootstrap",
+      "component": "operators/*/main.go + internal/common/bootstrap",
+      "category": "service-structure",
+      "applies_when": "Adding a new operator to the monorepo (e.g., glance, nova, neutron)",
+      "description": "Every operator main.go follows an identical structure: package-level scheme var, init() with clientgoscheme.AddToScheme + kubebuilder scaffold:scheme marker, main() calling bootstrap.Run(bootstrap.ManagerConfig{...}) with operator-specific Scheme, LeaderElectionID, and SetupFunc. Error handling logs via ctrl.Log.WithName(\"setup\").Error() then os.Exit(1). The bootstrap package centralises flag parsing, zap logging, metrics, health probes, and manager lifecycle — operators only provide configuration.",
+      "examples": [
+        {
+          "location": "operators/keystone/main.go:1-40",
+          "code": "package main\n\nimport (\n\t\"os\"\n\n\t\"github.com/c5c3/forge/internal/common/bootstrap\"\n\n\t\"k8s.io/apimachinery/pkg/runtime\"\n\tutilruntime \"k8s.io/apimachinery/pkg/util/runtime\"\n\tclientgoscheme \"k8s.io/client-go/kubernetes/scheme\"\n\tctrl \"sigs.k8s.io/controller-runtime\"\n)\n\nvar scheme = runtime.NewScheme()\n\nfunc init() {\n\tutilruntime.Must(clientgoscheme.AddToScheme(scheme))\n\t// +kubebuilder:scaffold:scheme\n}\n\nfunc main() {\n\tif err := bootstrap.Run(bootstrap.ManagerConfig{\n\t\tScheme:           scheme,\n\t\tLeaderElectionID: \"keystone.openstack.c5c3.io\",\n\t\tSetupFunc: func(_ ctrl.Manager) error {\n\t\t\t// +kubebuilder:scaffold:builder — register controllers here\n\t\t\treturn nil\n\t\t},\n\t}); err != nil {\n\t\tctrl.Log.WithName(\"setup\").Error(err, \"unable to run manager\")\n\t\tos.Exit(1)\n\t}\n}"
+        },
+        {
+          "location": "operators/c5c3/main.go:1-40",
+          "code": "package main\n\nimport (\n\t\"os\"\n\n\t\"github.com/c5c3/forge/internal/common/bootstrap\"\n\n\t\"k8s.io/apimachinery/pkg/runtime\"\n\tutilruntime \"k8s.io/apimachinery/pkg/util/runtime\"\n\tclientgoscheme \"k8s.io/client-go/kubernetes/scheme\"\n\tctrl \"sigs.k8s.io/controller-runtime\"\n)\n\nvar scheme = runtime.NewScheme()\n\nfunc init() {\n\tutilruntime.Must(clientgoscheme.AddToScheme(scheme))\n\t// +kubebuilder:scaffold:scheme\n}\n\nfunc main() {\n\tif err := bootstrap.Run(bootstrap.ManagerConfig{\n\t\tScheme:           scheme,\n\t\tLeaderElectionID: \"c5c3.openstack.c5c3.io\",\n\t\tSetupFunc: func(_ ctrl.Manager) error {\n\t\t\t// +kubebuilder:scaffold:builder — register controllers here\n\t\t\treturn nil\n\t\t},\n\t}); err != nil {\n\t\tctrl.Log.WithName(\"setup\").Error(err, \"unable to run manager\")\n\t\tos.Exit(1)\n\t}\n}"
+        }
+      ]
+    }
+  ]
+}

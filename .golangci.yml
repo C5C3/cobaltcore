@@ -1,0 +1,19 @@
+go: "1.25"
+
+linters:
+  enable:
+    - errcheck
+    - gocritic
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - typecheck
+    - unused
+
+issues:
+  exclude-files:
+    - "zz_generated.*\\.go$"
+
+run:
+  timeout: 5m

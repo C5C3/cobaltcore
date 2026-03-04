@@ -1,0 +1,40 @@
+{
+  "feature_id": "CC-0001",
+  "title": "A001: Scaffold Go workspace and module structure",
+  "date": "2026-03-04",
+  "summary": "Addresses external review #2 from gndrmnn: removed the 'Scaffold Deviations from Architecture (CC-0001)' section from README.md (heading, introductory paragraph, and deviation table — 16 lines). Added planwerk review record documenting the external feedback and its resolution. Updated progress phase from 'awaiting_external_review' to 'improving'. All other README content preserved intact. No Go code changed.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass", "checked": true, "note": "No Go code changed — existing tests unaffected"},
+    {"item": "Edge cases are covered", "checked": true, "note": "N/A — no logic changes"}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns", "checked": true},
+    {"item": "No dead code or commented-out code introduced", "checked": true},
+    {"item": "Changes are minimal and focused", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No secrets or sensitive data exposed", "checked": true},
+    {"item": "No new attack surface introduced", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "README accurately reflects project state", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated content", "checked": true},
+    {"item": "No unnecessary additions", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "N/A — no executable code changed", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "N/A — no executable code changed", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": []
+}

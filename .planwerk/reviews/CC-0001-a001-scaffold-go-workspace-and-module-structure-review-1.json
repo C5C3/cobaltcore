@@ -1,0 +1,122 @@
+{
+  "feature_id": "CC-0001",
+  "title": "A001: Scaffold Go workspace and module structure",
+  "date": "2026-03-03",
+  "summary": "Scaffolds Go workspace monorepo with go.work linking 3 modules (internal/common, operators/keystone, operators/c5c3), operator main.go entrypoints with controller-runtime manager setup (scheme registration, leader election, health probes, structured zap logging), top-level Makefile with 11 targets (working: build/test/lint/generate/manifests; stubs: docker-build/helm-package/e2e/deploy-infra/install-test-deps/test-integration), and .golangci.yml linter configuration. All modules compile, vet, and lint clean. GOWORK=off builds succeed via replace directives. go mod tidy is idempotent.",
+  "verdict": "APPROVED",
+  "review_steps": {
+    "1_INTENT": "Plan specifies foundational Go workspace scaffold (S001) — base layer for all subsequent features. No business logic, no CRDs, no reconcilers.",
+    "2_SCOPE": "20 files changed. All within scope: go.work, 3 go.mod, 2 main.go, Makefile, .golangci.yml, .gitignore, README.md, doc.go, 7 .gitkeep placeholders, 2 go.sum files, 1 progress JSON. No scope creep.",
+    "3_VERIFICATION": "go build: PASS (all 3 modules). go vet: PASS. golangci-lint run: PASS (0 violations). GOWORK=off go build: PASS (both operators). go mod tidy: idempotent (no changes). make build: PASS. make build OPERATOR=keystone: PASS. make test: PASS (no test files, expected). make lint: PASS. make generate/manifests: PASS (no-op echo). make docker-build: FAIL with expected $(error) message.",
+    "4_PATTERNS": "Both operator main.go files are structurally identical (differing only in package doc and LeaderElectionID). Both go.mod files are identical except module path. Consistent pattern established.",
+    "5_TESTS": "No test files — explicitly excluded per plan (S002). Scaffold phase has no business logic to test. main.go follows standard kubebuilder boilerplate.",
+    "6_SECURITY": "No user-facing inputs. No secrets, SQL, or path traversal. Operator binds to configurable addresses via flags. ctrl.GetConfigOrDie() is standard kubeconfig loading. No OWASP concerns.",
+    "7_COMPLEXITY": "Minimal implementation. Standard kubebuilder/controller-runtime patterns. No unnecessary abstractions.",
+    "8_COMPLETENESS": "All 12 tasks (1.1–4.1) marked done. All plan requirements verified: go.work, 3 go.mod, 2 main.go, Makefile (11 targets), .golangci.yml, .gitkeep dirs, .gitignore, README deviations documented.",
+    "9_PROMPT_QUALITY": "No new prompt files — N/A."
+  },
+  "tests_checklist": [
+    {"item": "Tests exist and pass", "checked": false, "note": "No tests — explicitly excluded (S002). Scaffold has no testable business logic."},
+    {"item": "Edge cases are covered", "checked": false, "note": "N/A for scaffold phase."}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns", "checked": true, "note": "Both main.go files follow standard kubebuilder v4 / controller-runtime v0.23+ patterns."},
+    {"item": "Functions do ONE thing (SRP)", "checked": true},
+    {"item": "No code duplication beyond intentional operator symmetry", "checked": true},
+    {"item": "Clear naming throughout", "checked": true},
+    {"item": "No dead code", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "No user input validation needed (scaffold only)", "checked": true},
+    {"item": "No SQL/path traversal/injection surfaces", "checked": true},
+    {"item": "Sensitive data not exposed in logs", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "Module paths match github.com/c5c3/forge/<path> convention", "checked": true},
+    {"item": "Replace directives enable GOWORK=off builds", "checked": true},
+    {"item": "Directory structure matches architecture/01-project-setup.md layout", "checked": true},
+    {"item": "Deviations documented in README.md", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code (operator symmetry is intentional)", "checked": true},
+    {"item": "No premature abstractions", "checked": true},
+    {"item": "No unused dependencies", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Stub targets fail explicitly with $(error) and feature reference", "checked": true},
+    {"item": "Manager setup errors cause os.Exit(1)", "checked": true},
+    {"item": "Health/ready probe setup errors cause os.Exit(1)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs validated (N/A for scaffold)", "checked": true},
+    {"item": "utilruntime.Must for scheme registration (panics on failure)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "id": "PC3-001",
+      "severity": "minor",
+      "check_id": "PC3",
+      "file": "internal/common/go.mod:3",
+      "description": "Go version directive inconsistency: internal/common/go.mod uses `go 1.25` while go.work, operators/keystone/go.mod, and operators/c5c3/go.mod use `go 1.25.0`. Semantically identical but cosmetically inconsistent.",
+      "fix": "Run `cd internal/common && go mod tidy` with Go 1.25.x to normalize, or manually change to `go 1.25.0` for consistency. Note: the Go toolchain may normalize this differently depending on how the module was initialized."
+    },
+    {
+      "id": "D2-001",
+      "severity": "minor",
+      "check_id": "D2",
+      "file": "Makefile:32",
+      "description": "The build target outputs operator binaries to /dev/null (`go build -o /dev/null ./...`), which is correct for verification-only builds but differs from the common/module build on line 29 which has no -o flag. The asymmetry is technically correct (common has no main package) but could confuse future contributors.",
+      "fix": "Optional: add a brief comment on line 32 explaining why -o /dev/null is used (e.g., `# -o /dev/null: verify compilation only, no binary output in scaffold phase`)."
+    }
+  ],
+  "suggested_improvements": [
+    "Consider normalizing Go version directives across all go.mod files to the same format (1.25 vs 1.25.0) for cosmetic consistency.",
+    "The Makefile test target uses workspace-relative paths (go test ./internal/common/...) while build and lint targets use cd into each module. Both approaches work but a comment explaining the rationale would help future maintainers."
+  ],
+  "next_steps": [
+    "S002: Add test infrastructure (envtest setup, Chainsaw E2E framework, install-test-deps target).",
+    "S003: GitHub Actions CI workflows for build/test/lint.",
+    "S004-S005: Shared library packages in internal/common/ (conditions, config, types).",
+    "S011: CRD type definitions in api/v1alpha1/ with controller-gen integration (will replace generate/manifests no-ops)."
+  ],
+  "detected_patterns": [
+    {
+      "name": "Operator manager entrypoint structure",
+      "component": "operators/*/main.go",
+      "category": "service-structure",
+      "applies_when": "Creating a new operator module (e.g., operators/glance/, operators/nova/)",
+      "description": "Every operator main.go follows a fixed 6-step structure: (1) scheme registration in init() with clientgoscheme + kubebuilder scaffold marker, (2) flag parsing for metrics-bind-address, health-probe-bind-address, leader-elect, and zap options, (3) ctrl.NewManager with metricsserver.Options (not deprecated MetricsBindAddress string), (4) kubebuilder scaffold:builder marker for controller registration, (5) AddHealthzCheck + AddReadyzCheck with healthz.Ping, (6) mgr.Start(ctrl.SetupSignalHandler()). All errors cause setupLog.Error + os.Exit(1). LeaderElectionID follows the convention '<operator-name>.openstack.c5c3.io'.",
+      "examples": [
+        {
+          "location": "operators/keystone/main.go:36",
+          "code": "func main() {\n\tvar metricsAddr string\n\tvar probeAddr string\n\tvar enableLeaderElection bool\n\n\tflag.StringVar(&metricsAddr, \"metrics-bind-address\", \":8080\", \"The address the metric endpoint binds to.\")\n\tflag.StringVar(&probeAddr, \"health-probe-bind-address\", \":8081\", \"The address the probe endpoint binds to.\")\n\tflag.BoolVar(&enableLeaderElection, \"leader-elect\", false,\n\t\t\"Enable leader election for controller manager, ensuring only one active controller manager.\")\n\topts := zap.Options{Development: true}\n\topts.BindFlags(flag.CommandLine)\n\tflag.Parse()\n\n\tctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))\n\n\tmgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{\n\t\tScheme: scheme,\n\t\tMetrics: metricsserver.Options{\n\t\t\tBindAddress: metricsAddr,\n\t\t},\n\t\tHealthProbeBindAddress: probeAddr,\n\t\tLeaderElection:         enableLeaderElection,\n\t\tLeaderElectionID:       \"keystone.openstack.c5c3.io\",\n\t})"
+        },
+        {
+          "location": "operators/c5c3/main.go:36",
+          "code": "func main() {\n\tvar metricsAddr string\n\tvar probeAddr string\n\tvar enableLeaderElection bool\n\n\tflag.StringVar(&metricsAddr, \"metrics-bind-address\", \":8080\", \"The address the metric endpoint binds to.\")\n\tflag.StringVar(&probeAddr, \"health-probe-bind-address\", \":8081\", \"The address the probe endpoint binds to.\")\n\tflag.BoolVar(&enableLeaderElection, \"leader-elect\", false,\n\t\t\"Enable leader election for controller manager, ensuring only one active controller manager.\")\n\topts := zap.Options{Development: true}\n\topts.BindFlags(flag.CommandLine)\n\tflag.Parse()\n\n\tctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))\n\n\tmgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{\n\t\tScheme: scheme,\n\t\tMetrics: metricsserver.Options{\n\t\t\tBindAddress: metricsAddr,\n\t\t},\n\t\tHealthProbeBindAddress: probeAddr,\n\t\tLeaderElection:         enableLeaderElection,\n\t\tLeaderElectionID:       \"c5c3.openstack.c5c3.io\",\n\t})"
+        }
+      ]
+    },
+    {
+      "name": "Operator module dependency with local replace directive",
+      "component": "operators/*/go.mod",
+      "category": "configuration",
+      "applies_when": "Creating a new operator module that depends on internal/common",
+      "description": "Every operator go.mod requires internal/common at v0.0.0 (pseudo-version for local-only module) and declares a replace directive pointing to ../../internal/common for GOWORK=off CI builds. Direct dependencies are controller-runtime v0.23.x, apimachinery v0.35.x, and client-go v0.35.x. The module path follows github.com/c5c3/forge/operators/<name>.",
+      "examples": [
+        {
+          "location": "operators/keystone/go.mod:1",
+          "code": "module github.com/c5c3/forge/operators/keystone\n\ngo 1.25.0\n\nrequire (\n\tgithub.com/c5c3/forge/internal/common v0.0.0\n\tk8s.io/apimachinery v0.35.1\n\tk8s.io/client-go v0.35.1\n\tsigs.k8s.io/controller-runtime v0.23.1\n)\n\n// ... indirect deps ...\n\nreplace github.com/c5c3/forge/internal/common => ../../internal/common"
+        },
+        {
+          "location": "operators/c5c3/go.mod:1",
+          "code": "module github.com/c5c3/forge/operators/c5c3\n\ngo 1.25.0\n\nrequire (\n\tgithub.com/c5c3/forge/internal/common v0.0.0\n\tk8s.io/apimachinery v0.35.1\n\tk8s.io/client-go v0.35.1\n\tsigs.k8s.io/controller-runtime v0.23.1\n)\n\n// ... indirect deps ...\n\nreplace github.com/c5c3/forge/internal/common => ../../internal/common"
+        }
+      ]
+    }
+  ]
+}
