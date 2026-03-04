@@ -368,6 +368,7 @@
       "title": "Add reference documentation for CI workflow: file location (.github/workflows/ci.yaml), trigger events, job descriptions (lint/test/test-integration), Go setup convention (go-version-file: go.work), concurrency behavior, dependency on CC-0001 Makefile targets and .golangci.yml (REQ-001 to REQ-008)",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
