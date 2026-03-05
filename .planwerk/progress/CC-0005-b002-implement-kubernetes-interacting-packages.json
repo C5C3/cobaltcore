@@ -540,6 +540,7 @@
       "description": "Add mariadb-operator/mariadb-operator, external-secrets/external-secrets, cert-manager/cert-manager to internal/common/go.mod. Run go mod tidy. Extend SharedScheme() in testutil/envtest/setup.go to register all external operator types: mariadbv1alpha1 (Database, User, Grant, MariaDB), esov1beta1 (ExternalSecret), esov1alpha1 (PushSecret), certmanagerv1 (Certificate). Verify go build ./... succeeds. Run existing envtest integration tests to confirm no regressions.",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001"
       ]
@@ -550,6 +551,7 @@
       "description": "Refactor SimulateMariaDBReady in testutil/simulators/simulators.go to use typed mariadbv1alpha1.MariaDB instead of unstructured.Unstructured. Update all unit tests in simulators_test.go and integration tests in integration_test.go to use typed MariaDB objects. Retain setUnstructuredReadyStatus helper and SimulateMemcachedReady as-is.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -560,6 +562,7 @@
       "description": "Refactor SimulateExternalSecretSync in testutil/simulators/simulators.go to use typed esov1beta1.ExternalSecret instead of unstructured.Unstructured. Update all unit tests and integration tests accordingly. The condition type used by ESO for sync status is 'SecretSynced' (retain existing reason field).",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -570,6 +573,7 @@
       "description": "Add SimulateDatabaseReady (mariadbv1alpha1.Database), SimulateUserReady (mariadbv1alpha1.User), SimulateGrantReady (mariadbv1alpha1.Grant), SimulatePushSecretSynced (esov1alpha1.PushSecret), SimulateCertificateReady (certmanagerv1.Certificate) to testutil/simulators/simulators.go. Each sets Ready=True condition on the typed struct's status. Write unit tests (happy path, idempotent, not-found) and integration tests following existing patterns (TestSimulate*_*, TestIntegration_Simulate*).",
       "level": 1,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -963,6 +967,132 @@
       "story": "Reconciler developer can load policy overrides from ConfigMaps",
       "expected": "Returns error when policy.yaml contains invalid YAML",
       "requirement_id": "REQ-009"
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/integration_test.go",
+      "test_function": "TestIntegration_SimulateMariaDBReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/integration_test.go",
+      "test_function": "TestIntegration_SimulateMemcachedReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/integration_test.go",
+      "test_function": "TestIntegration_SimulateExternalSecretSync",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/integration_test.go",
+      "test_function": "TestIntegration_SimulateJobComplete",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMariaDBReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMariaDBReady_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMariaDBReady_zeroReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMariaDBReady_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMemcachedReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMemcachedReady_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMemcachedReady_emptyServerList",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMemcachedReady_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateExternalSecretSync",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateExternalSecretSync_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateExternalSecretSync_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateJobComplete",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateJobComplete_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateJobComplete_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],

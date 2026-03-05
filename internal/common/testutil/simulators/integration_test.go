@@ -11,6 +11,8 @@ import (
 
 	. "github.com/onsi/gomega"
 
+	esov1beta1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1beta1"
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,6 +38,7 @@ func newUnstructuredCR(group, version, kind, name, namespace string) *unstructur
 }
 
 // --- SimulateMariaDBReady integration ---
+// Feature: CC-0005
 
 func TestIntegration_SimulateMariaDBReady(t *testing.T) {
 	envtestutil.SkipIfEnvTestUnavailable(t)
@@ -48,8 +51,13 @@ func TestIntegration_SimulateMariaDBReady(t *testing.T) {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-mariadb-ns"}}
 	g.Expect(c.Create(ctx, ns)).To(Succeed())
 
-	// Create the MariaDB resource.
-	mariadb := newUnstructuredCR("k8s.mariadb.com", "v1alpha1", "MariaDB", "test-mariadb", ns.Name)
+	// Create the MariaDB resource using the typed API.
+	mariadb := &mariadbv1alpha1.MariaDB{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-mariadb",
+			Namespace: ns.Name,
+		},
+	}
 	g.Expect(c.Create(ctx, mariadb)).To(Succeed())
 
 	key := client.ObjectKey{Name: "test-mariadb", Namespace: ns.Name}
@@ -58,20 +66,13 @@ func TestIntegration_SimulateMariaDBReady(t *testing.T) {
 	g.Expect(SimulateMariaDBReady(ctx, c, key, 3)).To(Succeed())
 
 	// Verify status via a fresh Get.
-	updated := newUnstructuredCR("k8s.mariadb.com", "v1alpha1", "MariaDB", "test-mariadb", ns.Name)
+	updated := &mariadbv1alpha1.MariaDB{}
 	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
 
-	readyReplicas, found, _ := unstructured.NestedInt64(updated.Object, "status", "readyReplicas")
-	g.Expect(found).To(BeTrue())
-	g.Expect(readyReplicas).To(BeEquivalentTo(3))
-
-	conditions, found, _ := unstructured.NestedSlice(updated.Object, "status", "conditions")
-	g.Expect(found).To(BeTrue())
-	g.Expect(conditions).NotTo(BeEmpty())
-
-	cond := conditions[0].(map[string]interface{})
-	g.Expect(cond["type"]).To(Equal("Ready"))
-	g.Expect(cond["status"]).To(Equal("True"))
+	g.Expect(updated.Status.Replicas).To(BeEquivalentTo(3))
+	g.Expect(updated.Status.Conditions).NotTo(BeEmpty())
+	g.Expect(updated.Status.Conditions[0].Type).To(Equal("Ready"))
+	g.Expect(updated.Status.Conditions[0].Status).To(Equal(metav1.ConditionTrue))
 }
 
 // --- SimulateMemcachedReady integration ---
@@ -119,6 +120,7 @@ func TestIntegration_SimulateMemcachedReady(t *testing.T) {
 }
 
 // --- SimulateExternalSecretSync integration ---
+// Feature: CC-0005
 
 func TestIntegration_SimulateExternalSecretSync(t *testing.T) {
 	envtestutil.SkipIfEnvTestUnavailable(t)
@@ -131,8 +133,13 @@ func TestIntegration_SimulateExternalSecretSync(t *testing.T) {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-es-ns"}}
 	g.Expect(c.Create(ctx, ns)).To(Succeed())
 
-	// Create the ExternalSecret resource.
-	es := newUnstructuredCR("external-secrets.io", "v1beta1", "ExternalSecret", "test-es", ns.Name)
+	// Create the ExternalSecret resource using the typed API.
+	es := &esov1beta1.ExternalSecret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-es",
+			Namespace: ns.Name,
+		},
+	}
 	g.Expect(c.Create(ctx, es)).To(Succeed())
 
 	key := client.ObjectKey{Name: "test-es", Namespace: ns.Name}
@@ -141,21 +148,14 @@ func TestIntegration_SimulateExternalSecretSync(t *testing.T) {
 	g.Expect(SimulateExternalSecretSync(ctx, c, key)).To(Succeed())
 
 	// Verify status via a fresh Get.
-	updated := newUnstructuredCR("external-secrets.io", "v1beta1", "ExternalSecret", "test-es", ns.Name)
+	updated := &esov1beta1.ExternalSecret{}
 	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
 
-	refreshTime, found, _ := unstructured.NestedString(updated.Object, "status", "refreshTime")
-	g.Expect(found).To(BeTrue())
-	g.Expect(refreshTime).NotTo(BeEmpty())
-
-	conditions, found, _ := unstructured.NestedSlice(updated.Object, "status", "conditions")
-	g.Expect(found).To(BeTrue())
-	g.Expect(conditions).NotTo(BeEmpty())
-
-	cond := conditions[0].(map[string]interface{})
-	g.Expect(cond["type"]).To(Equal("Ready"))
-	g.Expect(cond["status"]).To(Equal("True"))
-	g.Expect(cond["reason"]).To(Equal("SecretSynced"))
+	g.Expect(updated.Status.RefreshTime.IsZero()).To(BeFalse())
+	g.Expect(updated.Status.Conditions).NotTo(BeEmpty())
+	g.Expect(string(updated.Status.Conditions[0].Type)).To(Equal("Ready"))
+	g.Expect(string(updated.Status.Conditions[0].Status)).To(Equal("True"))
+	g.Expect(updated.Status.Conditions[0].Reason).To(Equal("SecretSynced"))
 }
 
 // --- SimulateJobComplete integration ---

@@ -9,11 +9,15 @@ import (
 	"fmt"
 	"time"
 
+	esov1beta1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1beta1"
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -67,18 +71,28 @@ func setUnstructuredReadyStatus(
 	return c.Status().Update(ctx, obj)
 }
 
-// SimulateMariaDBReady updates an unstructured MariaDB resource's status to
-// indicate readiness by setting the Ready condition to True and readyReplicas.
+// Feature: CC-0005
+
+// SimulateMariaDBReady updates a typed MariaDB resource's status to indicate
+// readiness by setting the Ready condition to True, replicas, and primary index.
 func SimulateMariaDBReady(ctx context.Context, c client.Client, key client.ObjectKey, replicas int) error {
-	return setUnstructuredReadyStatus(ctx, c, key,
-		schema.GroupVersionKind{Group: "k8s.mariadb.com", Version: "v1alpha1", Kind: "MariaDB"},
-		"MariaDBReady",
-		"MariaDB is ready",
-		map[string]interface{}{
-			"readyReplicas":          int64(replicas),
-			"currentPrimaryPodIndex": int64(0),
-		},
-	)
+	mariadb := &mariadbv1alpha1.MariaDB{}
+	if err := c.Get(ctx, key, mariadb); err != nil {
+		return fmt.Errorf("getting MariaDB %s: %w", key, err)
+	}
+
+	now := metav1.Now()
+	meta.SetStatusCondition(&mariadb.Status.Conditions, metav1.Condition{
+		Type:               conditionTypeReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             "MariaDBReady",
+		Message:            "MariaDB is ready",
+		LastTransitionTime: now,
+	})
+	mariadb.Status.Replicas = int32(replicas)
+	mariadb.Status.CurrentPrimaryPodIndex = ptr.To(0)
+
+	return c.Status().Update(ctx, mariadb)
 }
 
 // SimulateMemcachedReady updates an unstructured Memcached resource's status to
@@ -101,17 +115,31 @@ func SimulateMemcachedReady(ctx context.Context, c client.Client, key client.Obj
 	)
 }
 
-// SimulateExternalSecretSync updates an unstructured ExternalSecret resource's
-// status to indicate successful synchronization.
+// SimulateExternalSecretSync updates a typed ExternalSecret resource's status
+// to indicate successful synchronization by setting the Ready condition with
+// reason SecretSynced and updating the refreshTime.
 func SimulateExternalSecretSync(ctx context.Context, c client.Client, key client.ObjectKey) error {
-	return setUnstructuredReadyStatus(ctx, c, key,
-		schema.GroupVersionKind{Group: "external-secrets.io", Version: "v1beta1", Kind: "ExternalSecret"},
-		"SecretSynced",
-		"Secret was synced",
-		map[string]interface{}{
-			"refreshTime": metav1.Now().Format(time.RFC3339),
+	es := &esov1beta1.ExternalSecret{}
+	if err := c.Get(ctx, key, es); err != nil {
+		return fmt.Errorf("getting ExternalSecret %s: %w", key, err)
+	}
+
+	now := metav1.Now()
+
+	// ESO uses its own ExternalSecretStatusCondition type (not metav1.Condition),
+	// so we set the condition directly rather than using meta.SetStatusCondition.
+	es.Status.Conditions = []esov1beta1.ExternalSecretStatusCondition{
+		{
+			Type:               esov1beta1.ExternalSecretReady,
+			Status:             corev1.ConditionTrue,
+			Reason:             esov1beta1.ConditionReasonSecretSynced,
+			Message:            "Secret was synced",
+			LastTransitionTime: now,
 		},
-	)
+	}
+	es.Status.RefreshTime = now
+
+	return c.Status().Update(ctx, es)
 }
 
 // SimulateJobComplete updates a Job resource's status to indicate successful
