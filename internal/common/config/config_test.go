@@ -619,4 +619,64 @@ func TestCreateImmutableConfigMap(t *testing.T) {
 
 		g.Expect(cm1.Name).NotTo(Equal(cm2.Name))
 	})
+
+	t.Run("sets managed labels on ConfigMap (CC-0005)", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		scheme := testScheme()
+		c := testClient(scheme)
+		ctx := context.Background()
+		owner := testOwner()
+
+		cm, err := CreateImmutableConfigMap(ctx, c, owner, "my-config", map[string]string{"k": "v"})
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(cm.Labels).To(HaveKeyWithValue("forge.c5c3.io/managed-by", "config"))
+		g.Expect(cm.Labels).To(HaveKeyWithValue("forge.c5c3.io/config-owner", "test-owner"))
+		g.Expect(cm.Labels).To(HaveKeyWithValue("forge.c5c3.io/config-base-name", "my-config"))
+	})
+
+	t.Run("deletes stale ConfigMaps when data changes (CC-0005)", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		scheme := testScheme()
+		c := testClient(scheme)
+		ctx := context.Background()
+		owner := testOwner()
+
+		// Create a ConfigMap with initial data.
+		cm1, err := CreateImmutableConfigMap(ctx, c, owner, "cfg", map[string]string{"key": "value1"})
+		g.Expect(err).NotTo(HaveOccurred())
+
+		// Create a ConfigMap with different data — should delete the old one.
+		cm2, err := CreateImmutableConfigMap(ctx, c, owner, "cfg", map[string]string{"key": "value2"})
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(cm1.Name).NotTo(Equal(cm2.Name))
+
+		// Verify the old ConfigMap was deleted.
+		stale := &corev1.ConfigMap{}
+		err = c.Get(ctx, client.ObjectKeyFromObject(cm1), stale)
+		g.Expect(err).To(HaveOccurred(), "stale ConfigMap should have been deleted")
+
+		// Verify the new ConfigMap still exists.
+		current := &corev1.ConfigMap{}
+		err = c.Get(ctx, client.ObjectKeyFromObject(cm2), current)
+		g.Expect(err).NotTo(HaveOccurred(), "current ConfigMap should still exist")
+	})
+
+	t.Run("does not delete ConfigMaps for different base names (CC-0005)", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		scheme := testScheme()
+		c := testClient(scheme)
+		ctx := context.Background()
+		owner := testOwner()
+
+		// Create ConfigMaps with different base names.
+		cmA, err := CreateImmutableConfigMap(ctx, c, owner, "config-a", map[string]string{"k": "v"})
+		g.Expect(err).NotTo(HaveOccurred())
+
+		cmB, err := CreateImmutableConfigMap(ctx, c, owner, "config-b", map[string]string{"k": "v"})
+		g.Expect(err).NotTo(HaveOccurred())
+
+		// Both should still exist.
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cmA), &corev1.ConfigMap{})).To(Succeed())
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cmB), &corev1.ConfigMap{})).To(Succeed())
+	})
 }

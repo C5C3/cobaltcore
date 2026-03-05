@@ -31,10 +31,11 @@ func RunJob(ctx context.Context, c client.Client, owner client.Object, desired *
 	existing := &batchv1.Job{}
 	err := c.Get(ctx, client.ObjectKeyFromObject(desired), existing)
 	if apierrors.IsNotFound(err) {
-		if err := controllerutil.SetControllerReference(owner, desired, c.Scheme()); err != nil {
+		job := desired.DeepCopy()
+		if err := controllerutil.SetControllerReference(owner, job, c.Scheme()); err != nil {
 			return false, fmt.Errorf("setting controller reference: %w", err)
 		}
-		if err := c.Create(ctx, desired); err != nil {
+		if err := c.Create(ctx, job); err != nil {
 			return false, fmt.Errorf("creating Job %s/%s: %w", desired.Namespace, desired.Name, err)
 		}
 		return false, nil // just created; not yet complete

@@ -32,6 +32,7 @@ func EnsureDeployment(ctx context.Context, c client.Client, owner client.Object,
 
 	_, err := controllerutil.CreateOrUpdate(ctx, c, deploy, func() error {
 		deploy.Labels = spec.Labels
+		deploy.Annotations = spec.Annotations
 		deploy.Spec = spec.Spec
 		return controllerutil.SetControllerReference(owner, deploy, c.Scheme())
 	})
@@ -62,6 +63,7 @@ func EnsureService(ctx context.Context, c client.Client, owner client.Object, sp
 
 	_, err := controllerutil.CreateOrUpdate(ctx, c, svc, func() error {
 		svc.Labels = spec.Labels
+		svc.Annotations = spec.Annotations
 		svc.Spec.Selector = spec.Spec.Selector
 		svc.Spec.Ports = spec.Spec.Ports
 		svc.Spec.Type = spec.Spec.Type

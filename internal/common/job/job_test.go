@@ -248,6 +248,38 @@ func TestRunJob_setsOwnerReference(t *testing.T) {
 	g.Expect(created.OwnerReferences[0].UID).To(Equal(types.UID("owner-uid-1234")))
 }
 
+func TestRunJob_doesNotMutateDesired(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	c := newFakeClient()
+
+	desired := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "no-mutate-job",
+			Namespace: "default",
+		},
+		Spec: batchv1.JobSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "worker", Image: "busybox"},
+					},
+					RestartPolicy: corev1.RestartPolicyNever,
+				},
+			},
+		},
+	}
+
+	// Capture the OwnerReferences before calling RunJob.
+	g.Expect(desired.OwnerReferences).To(BeEmpty(), "desired should have no owner references before RunJob")
+
+	_, err := RunJob(ctx, c, owner(), desired)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// The caller's desired object must not have been mutated with an OwnerReference (CC-0005).
+	g.Expect(desired.OwnerReferences).To(BeEmpty(), "RunJob must not mutate the caller's desired parameter")
+}
+
 // --- EnsureCronJob ---
 
 func TestEnsureCronJob_createsCronJob(t *testing.T) {

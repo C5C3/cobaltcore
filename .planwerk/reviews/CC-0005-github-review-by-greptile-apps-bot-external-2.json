@@ -1,0 +1,64 @@
+{
+  "feature_id": "CC-0005",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "**Review Summary:** The reviewer identified 4 issues: (1) `CreateImmutableConfigMap` leaks stale ConfigMaps on every config change since old hash-suffixed ConfigMaps are never cleaned up — add label-based listing and deletion of superseded ConfigMaps. (2-3) `EnsureDeployment` and `EnsureService` both silently drop `Annotations` from the caller-supplied spec in their mutate functions — add `spec.Annotations` propagation alongside `Labels`. (4) `RunJob` inconsistently mutates the caller's `desired` parameter via `SetControllerReference` instead of working on a `DeepCopy()` like every other similar function in the PR.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-05T19:24:32Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 2,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**Stale ConfigMaps accumulate across configuration changes**\n\nEvery time the data map changes, a new ConfigMap with a different hash-suffixed name is created, but the old ConfigMap (e.g. `keystone-config-a1b2c3d4`) is **never deleted**. The owner reference only triggers GC when the owner object itself is deleted — it does not clean up superseded siblings with stale hashes.\n\nIn a typical OpenStack service lifecycle, configuration data changes regularly (e.g. new endpoint URLs, policy updates, feature flags). Each change permanently orphans the prior ConfigMap. On a long-lived cluster, hundreds of stale immutable ConfigMaps can accumulate in a namespace, consuming etcd storage.\n\nThe caller (reconciler) knows the previous ConfigMap name (it was returned on the prior reconcile) and could delete it after confirming the new one is adopted. A cleaner option is to add a label such as `forge.c5c3.io/config-hash-for: <owner-name>` to every ConfigMap created here and have `CreateImmutableConfigMap` list + delete all ConfigMaps owned by `owner` whose hash suffix no longer matches the current hash before returning. Example sketch:\n\n```go\n// After CreateOrUpdate succeeds, clean up stale versions.\nvar cmList corev1.ConfigMapList\nif err := c.List(ctx, &cmList,\n    client.InNamespace(owner.GetNamespace()),\n    client.MatchingLabels{labelOwner: owner.GetName(), labelManaged: \"true\"},\n); err == nil {\n    for _, old := range cmList.Items {\n        if old.Name != hashedName {\n            _ = c.Delete(ctx, &old)\n        }\n    }\n}\n```\n\nWithout cleanup, `CreateImmutableConfigMap` has an unbounded memory/storage leak for any owner that is long-lived.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: internal/common/config/config.go\nLine: 143-159\n\nComment:\n**Stale ConfigMaps accumulate across configuration changes**\n\nEvery time the data map changes, a new ConfigMap with a different hash-suffixed name is created, but the old ConfigMap (e.g. `keystone-config-a1b2c3d4`) is **never deleted**. The owner reference only triggers GC when the owner object itself is deleted — it does not clean up superseded siblings with stale hashes.\n\nIn a typical OpenStack service lifecycle, configuration data changes regularly (e.g. new endpoint URLs, policy updates, feature flags). Each change permanently orphans the prior ConfigMap. On a long-lived cluster, hundreds of stale immutable ConfigMaps can accumulate in a namespace, consuming etcd storage.\n\nThe caller (reconciler) knows the previous ConfigMap name (it was returned on the prior reconcile) and could delete it after confirming the new one is adopted. A cleaner option is to add a label such as `forge.c5c3.io/config-hash-for: <owner-name>` to every ConfigMap created here and have `CreateImmutableConfigMap` list + delete all ConfigMaps owned by `owner` whose hash suffix no longer matches the current hash before returning. Example sketch:\n\n```go\n// After CreateOrUpdate succeeds, clean up stale versions.\nvar cmList corev1.ConfigMapList\nif err := c.List(ctx, &cmList,\n    client.InNamespace(owner.GetNamespace()),\n    client.MatchingLabels{labelOwner: owner.GetName(), labelManaged: \"true\"},\n); err == nil {\n    for _, old := range cmList.Items {\n        if old.Name != hashedName {\n            _ = c.Delete(ctx, &old)\n        }\n    }\n}\n```\n\nWithout cleanup, `CreateImmutableConfigMap` has an unbounded memory/storage leak for any owner that is long-lived.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "internal/common/config/config.go",
+      "line": 159,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-05T19:24:28Z",
+      "id": null,
+      "resolution": "Resolved: Added three managed labels (labelManagedBy, labelConfigOwner, labelConfigBaseName) to each created ConfigMap and introduced a deleteStaleConfigMaps function that lists ConfigMaps matching those labels and deletes any whose name differs from the current hashed name. Three new tests cover label assignment, stale deletion on data change, and non-interference with different base names."
+    },
+    {
+      "body": "**Annotations silently dropped from desired Deployment**\n\nThe mutate function copies `Labels` and `Spec` from the caller-supplied `spec`, but does not propagate `Annotations`. Any annotations set on the desired Deployment — for example Prometheus scraping hints (`prometheus.io/scrape: \"true\"`), ArgoCD wave annotations (`argocd.argoproj.io/sync-wave`), or custom reconciler markers — will be silently ignored on both creation and subsequent updates.\n\n```suggestion\n\t\tdeploy.Labels = spec.Labels\n\t\tdeploy.Annotations = spec.Annotations\n\t\tdeploy.Spec = spec.Spec\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: internal/common/deployment/deployment.go\nLine: 37-42\n\nComment:\n**Annotations silently dropped from desired Deployment**\n\nThe mutate function copies `Labels` and `Spec` from the caller-supplied `spec`, but does not propagate `Annotations`. Any annotations set on the desired Deployment — for example Prometheus scraping hints (`prometheus.io/scrape: \"true\"`), ArgoCD wave annotations (`argocd.argoproj.io/sync-wave`), or custom reconciler markers — will be silently ignored on both creation and subsequent updates.\n\n```suggestion\n\t\tdeploy.Labels = spec.Labels\n\t\tdeploy.Annotations = spec.Annotations\n\t\tdeploy.Spec = spec.Spec\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "internal/common/deployment/deployment.go",
+      "line": 42,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-05T19:24:29Z",
+      "id": null,
+      "resolution": "Not addressed: The diff contains no changes to internal/common/deployment/deployment.go. Annotations are still not propagated in EnsureDeployment."
+    },
+    {
+      "body": "**Annotations silently dropped from desired Service**\n\nSame issue as `EnsureDeployment`: `Annotations` from the caller-supplied `spec` are not propagated in the mutate function. Service annotations are commonly used for AWS/GCP load-balancer configuration, Prometheus endpoint scraping, and internal platform tooling. Callers that set `spec.Annotations` will find them silently discarded.\n\n```suggestion\n\t\tsvc.Labels = spec.Labels\n\t\tsvc.Annotations = spec.Annotations\n\t\tsvc.Spec.Selector = spec.Spec.Selector\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: internal/common/deployment/deployment.go\nLine: 61-66\n\nComment:\n**Annotations silently dropped from desired Service**\n\nSame issue as `EnsureDeployment`: `Annotations` from the caller-supplied `spec` are not propagated in the mutate function. Service annotations are commonly used for AWS/GCP load-balancer configuration, Prometheus endpoint scraping, and internal platform tooling. Callers that set `spec.Annotations` will find them silently discarded.\n\n```suggestion\n\t\tsvc.Labels = spec.Labels\n\t\tsvc.Annotations = spec.Annotations\n\t\tsvc.Spec.Selector = spec.Spec.Selector\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "internal/common/deployment/deployment.go",
+      "line": 66,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-05T19:24:30Z",
+      "id": null,
+      "resolution": "Not addressed: The diff contains no changes to internal/common/deployment/deployment.go. Annotations are still not propagated in EnsureService."
+    },
+    {
+      "body": "**`RunJob` mutates the caller's `desired` parameter on first call**\n\nEvery other function in this PR (`EnsureDatabase`, `EnsureDatabaseUser`, `EnsureCertificate`, `EnsurePushSecret`, `EnsureCronJob`) creates a separate `existing` object and calls `SetControllerReference` only on that internal copy. `RunJob` is the only function that calls `SetControllerReference(owner, desired, ...)` directly, **mutating the caller's pointer** by appending an `OwnerReference` entry to `desired.OwnerReferences`.\n\nOn the first reconcile (Job not found) the caller's `desired` object is silently modified. While most reconcilers construct a fresh `desired` on each loop, the inconsistency is surprising and makes the function unsafe to call with a shared or pooled Job spec. Prefer creating an internal copy:\n\n```go\nif apierrors.IsNotFound(err) {\n    job := desired.DeepCopy()\n    if err := controllerutil.SetControllerReference(owner, job, c.Scheme()); err != nil {\n        return false, fmt.Errorf(\"setting controller reference: %w\", err)\n    }\n    if err := c.Create(ctx, job); err != nil {\n        return false, fmt.Errorf(\"creating Job %s/%s: %w\", desired.Namespace, desired.Name, err)\n    }\n    return false, nil\n}\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: internal/common/job/job.go\nLine: 34-43\n\nComment:\n**`RunJob` mutates the caller's `desired` parameter on first call**\n\nEvery other function in this PR (`EnsureDatabase`, `EnsureDatabaseUser`, `EnsureCertificate`, `EnsurePushSecret`, `EnsureCronJob`) creates a separate `existing` object and calls `SetControllerReference` only on that internal copy. `RunJob` is the only function that calls `SetControllerReference(owner, desired, ...)` directly, **mutating the caller's pointer** by appending an `OwnerReference` entry to `desired.OwnerReferences`.\n\nOn the first reconcile (Job not found) the caller's `desired` object is silently modified. While most reconcilers construct a fresh `desired` on each loop, the inconsistency is surprising and makes the function unsafe to call with a shared or pooled Job spec. Prefer creating an internal copy:\n\n```go\nif apierrors.IsNotFound(err) {\n    job := desired.DeepCopy()\n    if err := controllerutil.SetControllerReference(owner, job, c.Scheme()); err != nil {\n        return false, fmt.Errorf(\"setting controller reference: %w\", err)\n    }\n    if err := c.Create(ctx, job); err != nil {\n        return false, fmt.Errorf(\"creating Job %s/%s: %w\", desired.Namespace, desired.Name, err)\n    }\n    return false, nil\n}\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "internal/common/job/job.go",
+      "line": 43,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-05T19:24:31Z",
+      "id": null,
+      "resolution": "Not addressed: The diff contains no changes to internal/common/job/job.go. RunJob still mutates the caller's desired parameter directly instead of using DeepCopy."
+    }
+  ],
+  "resolution_summary": "The diff only addresses the stale ConfigMap accumulation issue (comment [0]) by adding managed labels (forge.c5c3.io/managed-by, forge.c5c3.io/config-owner, forge.c5c3.io/config-base-name) to ConfigMaps created by CreateImmutableConfigMap and introducing a deleteStaleConfigMaps helper that lists and deletes ConfigMaps with the same owner and base name but a different hash suffix. Tests were added to verify label assignment and stale cleanup. Comments [1], [2], and [3] (annotations not propagated in EnsureDeployment/EnsureService, and RunJob mutating the caller's desired parameter) are NOT addressed in this diff.",
+  "github_review_id": 3899086331
+}

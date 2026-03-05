@@ -306,6 +306,51 @@ func TestEnsureDeployment_setsOwnerReference(t *testing.T) {
 	g.Expect(created.OwnerReferences[0].UID).To(Equal(types.UID("owner-uid-1234")))
 }
 
+func TestEnsureDeployment_propagatesAnnotations(t *testing.T) {
+	g := NewGomegaWithT(t)
+	scheme := testScheme()
+	c := testClient(scheme)
+	ctx := context.Background()
+	owner := testOwner()
+
+	desired := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-deploy",
+			Namespace: "default",
+			Labels:    map[string]string{"app": "test"},
+			Annotations: map[string]string{
+				"prometheus.io/scrape": "true",
+				"prometheus.io/port":   "9090",
+			},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: int32Ptr(1),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "test"},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": "test"},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "app", Image: "nginx:latest"},
+					},
+				},
+			},
+		},
+	}
+
+	_, err := EnsureDeployment(ctx, c, owner, desired)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	created := &appsv1.Deployment{}
+	err = c.Get(ctx, client.ObjectKeyFromObject(desired), created)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(created.Annotations).To(HaveKeyWithValue("prometheus.io/scrape", "true"))
+	g.Expect(created.Annotations).To(HaveKeyWithValue("prometheus.io/port", "9090"))
+}
+
 func TestEnsureDeployment_returnsFalse_whenNotReady(t *testing.T) {
 	g := NewGomegaWithT(t)
 	scheme := testScheme()
@@ -377,6 +422,42 @@ func TestEnsureService_createsService(t *testing.T) {
 	g.Expect(created.Spec.Ports).To(HaveLen(1))
 	g.Expect(created.Spec.Ports[0].Port).To(Equal(int32(80)))
 	g.Expect(created.Spec.Type).To(Equal(corev1.ServiceTypeClusterIP))
+}
+
+func TestEnsureService_propagatesAnnotations(t *testing.T) {
+	g := NewGomegaWithT(t)
+	scheme := testScheme()
+	c := testClient(scheme)
+	ctx := context.Background()
+	owner := testOwner()
+
+	desired := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-svc",
+			Namespace: "default",
+			Labels:    map[string]string{"app": "test"},
+			Annotations: map[string]string{
+				"prometheus.io/scrape": "true",
+				"prometheus.io/port":   "9090",
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeClusterIP,
+			Selector: map[string]string{"app": "test"},
+			Ports: []corev1.ServicePort{
+				{Name: "http", Port: 80, Protocol: corev1.ProtocolTCP},
+			},
+		},
+	}
+
+	err := EnsureService(ctx, c, owner, desired)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	created := &corev1.Service{}
+	err = c.Get(ctx, client.ObjectKeyFromObject(desired), created)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(created.Annotations).To(HaveKeyWithValue("prometheus.io/scrape", "true"))
+	g.Expect(created.Annotations).To(HaveKeyWithValue("prometheus.io/port", "9090"))
 }
 
 func TestEnsureService_updatesService(t *testing.T) {

@@ -1,0 +1,53 @@
+{
+  "feature_id": "CC-0005",
+  "title": "B002: Implement Kubernetes-interacting packages",
+  "date": "2026-03-05",
+  "summary": "All 4 external review findings from greptile-apps[bot] are properly addressed: (1) stale ConfigMap cleanup via label-based listing and deletion in deleteStaleConfigMaps, (2-3) Annotations propagation added to EnsureDeployment and EnsureService mutate functions, (4) RunJob now uses desired.DeepCopy() before SetControllerReference to avoid mutating the caller's parameter. Each fix includes corresponding test coverage. All unit tests pass, go vet and go build clean.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "V1: All unit tests pass (config/, deployment/, job/)", "checked": true},
+    {"item": "V2: go vet passes on all changed packages", "checked": true},
+    {"item": "V3: go build passes on all changed packages", "checked": true},
+    {"item": "TE1: Happy path tested — stale CM deletion, annotation propagation, no-mutation", "checked": true},
+    {"item": "TE2: Edge cases tested — different base names don't interfere (config), empty OwnerReferences before/after (job)", "checked": true},
+    {"item": "TE3: Error cases tested — stale CM verified deleted via Get returning error", "checked": true},
+    {"item": "TE4: Tests are independent — each creates its own client and owner", "checked": true},
+    {"item": "TE7: Assertions specific — exact label key-value pairs, exact annotation values, exact OwnerReferences state", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Q1: deleteStaleConfigMaps is a focused helper with single responsibility", "checked": true},
+    {"item": "Q2: All new/changed functions under 20 lines", "checked": true},
+    {"item": "Q3: No code duplication introduced", "checked": true},
+    {"item": "Q4: Clear naming — labelManagedBy, labelConfigOwner, labelConfigBaseName, deleteStaleConfigMaps", "checked": true},
+    {"item": "Q7: No dead code introduced", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "S3: No hardcoded secrets", "checked": true},
+    {"item": "S5: No sensitive data exposed in logs or errors", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is minimal — each fix is the simplest correct approach", "checked": true},
+    {"item": "Label-based cleanup is idiomatic Kubernetes (label selectors for resource management)", "checked": true},
+    {"item": "DeepCopy usage consistent with other functions in the codebase", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No over-engineering — stale cleanup is a necessary fix, not speculative", "checked": true},
+    {"item": "No duplicated code", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "deleteStaleConfigMaps propagates errors (not silently swallowed)", "checked": true},
+    {"item": "Errors use fmt.Errorf with %w for proper wrapping", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Label values derived from owner.GetName() and base name — no user-controlled injection", "checked": true},
+    {"item": "Range iteration uses index (for i := range) to avoid loop variable capture", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Minor: deleteStaleConfigMaps could wrap Delete errors with client.IgnoreNotFound to handle the rare race where a stale ConfigMap is deleted between List and Delete (e.g., by a concurrent reconciler). Currently, the reconciler will simply retry on the next loop, so this is cosmetic rather than functional."
+  ],
+  "next_steps": [],
+  "detected_patterns": []
+}

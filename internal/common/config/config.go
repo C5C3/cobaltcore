@@ -128,15 +128,34 @@ func InjectOsloPolicyConfig(config map[string]map[string]string, policyFilePath 
 
 // Feature: CC-0005
 
+const (
+	// labelManagedBy identifies ConfigMaps managed by CreateImmutableConfigMap.
+	labelManagedBy = "forge.c5c3.io/managed-by"
+	// labelConfigOwner identifies which owner resource a ConfigMap belongs to.
+	labelConfigOwner = "forge.c5c3.io/config-owner"
+	// labelConfigBaseName identifies the base name of the ConfigMap (before hash suffix).
+	labelConfigBaseName = "forge.c5c3.io/config-base-name"
+)
+
 // CreateImmutableConfigMap creates an immutable ConfigMap with a content-hash
 // suffix in its name. It computes a SHA-256 hash of the data map (sorted keys
 // for determinism) and appends the first 8 hex chars as suffix: {name}-{hash[:8]}.
 // The ConfigMap's Immutable field is set to true. A controller owner reference
 // is set using the provided owner. Uses controllerutil.CreateOrUpdate to
 // create or update the ConfigMap.
+//
+// After creating the new ConfigMap, stale ConfigMaps with the same owner and
+// base name but a different hash suffix are deleted to prevent unbounded
+// accumulation of superseded immutable ConfigMaps (CC-0005).
 func CreateImmutableConfigMap(ctx context.Context, c client.Client, owner client.Object, name string, data map[string]string) (*corev1.ConfigMap, error) {
 	hash := hashConfigMapData(data)
 	hashedName := fmt.Sprintf("%s-%s", name, hash[:8])
+
+	managedLabels := map[string]string{
+		labelManagedBy:      "config",
+		labelConfigOwner:    owner.GetName(),
+		labelConfigBaseName: name,
+	}
 
 	immutable := true
 	cm := &corev1.ConfigMap{
@@ -149,13 +168,42 @@ func CreateImmutableConfigMap(ctx context.Context, c client.Client, owner client
 	_, err := controllerutil.CreateOrUpdate(ctx, c, cm, func() error {
 		cm.Data = copyStringMap(data)
 		cm.Immutable = &immutable
+		cm.Labels = managedLabels
 		return controllerutil.SetControllerReference(owner, cm, c.Scheme())
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating or updating immutable ConfigMap %s/%s: %w", owner.GetNamespace(), hashedName, err)
 	}
 
+	// Clean up stale ConfigMaps with the same owner and base name but
+	// a different hash suffix. This prevents unbounded accumulation of
+	// superseded immutable ConfigMaps across configuration changes.
+	if err := deleteStaleConfigMaps(ctx, c, owner.GetNamespace(), managedLabels, hashedName); err != nil {
+		return nil, fmt.Errorf("cleaning up stale ConfigMaps for %s/%s: %w", owner.GetNamespace(), name, err)
+	}
+
 	return cm, nil
+}
+
+// deleteStaleConfigMaps lists all ConfigMaps matching the given labels and
+// deletes any whose name differs from currentName.
+func deleteStaleConfigMaps(ctx context.Context, c client.Client, namespace string, labels map[string]string, currentName string) error {
+	var cmList corev1.ConfigMapList
+	if err := c.List(ctx, &cmList,
+		client.InNamespace(namespace),
+		client.MatchingLabels(labels),
+	); err != nil {
+		return fmt.Errorf("listing managed ConfigMaps: %w", err)
+	}
+
+	for i := range cmList.Items {
+		if cmList.Items[i].Name != currentName {
+			if err := client.IgnoreNotFound(c.Delete(ctx, &cmList.Items[i])); err != nil {
+				return fmt.Errorf("deleting stale ConfigMap %s/%s: %w", namespace, cmList.Items[i].Name, err)
+			}
+		}
+	}
+	return nil
 }
 
 // copyStringMap returns a shallow copy of the given map to prevent mutations
