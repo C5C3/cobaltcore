@@ -473,10 +473,8 @@ func testOwner() *corev1.ConfigMap {
 
 func TestHashConfigMapData(t *testing.T) {
 	tests := []struct {
-		name       string
-		data       map[string]string
-		wantSame   string // if non-empty, the hash must equal this value
-		wantDiffer string // if non-empty, the hash must NOT equal this value
+		name string
+		data map[string]string
 	}{
 		{
 			name: "deterministic – same data produces same hash",
@@ -514,6 +512,13 @@ func TestHashConfigMapData(t *testing.T) {
 		h1 := hashConfigMapData(map[string]string{"a": "1", "b": "2", "c": "3"})
 		h2 := hashConfigMapData(map[string]string{"c": "3", "a": "1", "b": "2"})
 		g.Expect(h1).To(Equal(h2))
+	})
+
+	t.Run("key-value boundary ambiguity produces different hashes", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		h1 := hashConfigMapData(map[string]string{"ab": "cd"})
+		h2 := hashConfigMapData(map[string]string{"a": "bcd"})
+		g.Expect(h1).NotTo(Equal(h2), "different key/value splits must produce different hashes")
 	})
 }
 

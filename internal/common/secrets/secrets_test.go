@@ -42,6 +42,10 @@ func owner() *corev1.ConfigMap {
 			Namespace: "default",
 			UID:       types.UID("owner-uid-1234"),
 		},
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "ConfigMap",
+		},
 	}
 }
 
@@ -154,6 +158,66 @@ func TestIsSecretReady_NotFound(t *testing.T) {
 
 	ready, err := IsSecretReady(ctx, c, "default", "missing-secret")
 	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ready).To(BeFalse())
+}
+
+func TestIsSecretReady_WithExpectedKeys_AllPresent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-secret",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			"username": []byte("admin"),
+			"password": []byte("s3cret"),
+		},
+	}
+	c := newFakeClient(secret)
+
+	ready, err := IsSecretReady(ctx, c, "default", "my-secret", "username", "password")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ready).To(BeTrue())
+}
+
+func TestIsSecretReady_WithExpectedKeys_MissingKey(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-secret",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			"username": []byte("admin"),
+		},
+	}
+	c := newFakeClient(secret)
+
+	ready, err := IsSecretReady(ctx, c, "default", "my-secret", "username", "password")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(`expected key "password" not found`))
+	g.Expect(ready).To(BeFalse())
+}
+
+func TestIsSecretReady_WithExpectedKeys_EmptyData(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-secret",
+			Namespace: "default",
+		},
+	}
+	c := newFakeClient(secret)
+
+	ready, err := IsSecretReady(ctx, c, "default", "my-secret", "password")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(`expected key "password" not found`))
 	g.Expect(ready).To(BeFalse())
 }
 

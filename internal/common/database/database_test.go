@@ -382,60 +382,142 @@ func TestRunDBSyncJob_detectsCompletedJob(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// isDatabaseReady tests
+// isDatabaseReady tests – table-driven
 // ---------------------------------------------------------------------------
 
-func TestIsDatabaseReady_falseWhenNoConditions(t *testing.T) {
-	g := NewGomegaWithT(t)
-
-	db := &mariadbv1alpha1.Database{}
-	g.Expect(isDatabaseReady(db)).To(BeFalse())
-}
-
-func TestIsDatabaseReady_trueWhenReadyCondition(t *testing.T) {
-	g := NewGomegaWithT(t)
-
-	db := &mariadbv1alpha1.Database{
-		Status: mariadbv1alpha1.DatabaseStatus{
-			Conditions: []metav1.Condition{
-				{
-					Type:   "Ready",
-					Status: metav1.ConditionTrue,
+func TestIsDatabaseReady(t *testing.T) {
+	tests := []struct {
+		name string
+		db   *mariadbv1alpha1.Database
+		want bool
+	}{
+		{
+			name: "no conditions returns false",
+			db:   &mariadbv1alpha1.Database{},
+			want: false,
+		},
+		{
+			name: "Ready=True returns true",
+			db: &mariadbv1alpha1.Database{
+				Status: mariadbv1alpha1.DatabaseStatus{
+					Conditions: []metav1.Condition{
+						{Type: "Ready", Status: metav1.ConditionTrue},
+					},
 				},
 			},
+			want: true,
 		},
-	}
-	g.Expect(isDatabaseReady(db)).To(BeTrue())
-}
-
-func TestIsUserReady_falseWhenNotReady(t *testing.T) {
-	g := NewGomegaWithT(t)
-
-	user := &mariadbv1alpha1.User{
-		Status: mariadbv1alpha1.UserStatus{
-			Conditions: []metav1.Condition{
-				{
-					Type:   "Ready",
-					Status: metav1.ConditionFalse,
+		{
+			name: "Ready=False returns false",
+			db: &mariadbv1alpha1.Database{
+				Status: mariadbv1alpha1.DatabaseStatus{
+					Conditions: []metav1.Condition{
+						{Type: "Ready", Status: metav1.ConditionFalse},
+					},
 				},
 			},
+			want: false,
 		},
 	}
-	g.Expect(isUserReady(user)).To(BeFalse())
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			g.Expect(isDatabaseReady(tt.db)).To(Equal(tt.want))
+		})
+	}
 }
 
-func TestIsGrantReady_trueWhenReadyCondition(t *testing.T) {
-	g := NewGomegaWithT(t)
+// ---------------------------------------------------------------------------
+// isUserReady tests – table-driven
+// ---------------------------------------------------------------------------
 
-	grant := &mariadbv1alpha1.Grant{
-		Status: mariadbv1alpha1.GrantStatus{
-			Conditions: []metav1.Condition{
-				{
-					Type:   "Ready",
-					Status: metav1.ConditionTrue,
+func TestIsUserReady(t *testing.T) {
+	tests := []struct {
+		name string
+		user *mariadbv1alpha1.User
+		want bool
+	}{
+		{
+			name: "no conditions returns false",
+			user: &mariadbv1alpha1.User{},
+			want: false,
+		},
+		{
+			name: "Ready=True returns true",
+			user: &mariadbv1alpha1.User{
+				Status: mariadbv1alpha1.UserStatus{
+					Conditions: []metav1.Condition{
+						{Type: "Ready", Status: metav1.ConditionTrue},
+					},
 				},
 			},
+			want: true,
+		},
+		{
+			name: "Ready=False returns false",
+			user: &mariadbv1alpha1.User{
+				Status: mariadbv1alpha1.UserStatus{
+					Conditions: []metav1.Condition{
+						{Type: "Ready", Status: metav1.ConditionFalse},
+					},
+				},
+			},
+			want: false,
 		},
 	}
-	g.Expect(isGrantReady(grant)).To(BeTrue())
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			g.Expect(isUserReady(tt.user)).To(Equal(tt.want))
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// isGrantReady tests – table-driven
+// ---------------------------------------------------------------------------
+
+func TestIsGrantReady(t *testing.T) {
+	tests := []struct {
+		name  string
+		grant *mariadbv1alpha1.Grant
+		want  bool
+	}{
+		{
+			name:  "no conditions returns false",
+			grant: &mariadbv1alpha1.Grant{},
+			want:  false,
+		},
+		{
+			name: "Ready=True returns true",
+			grant: &mariadbv1alpha1.Grant{
+				Status: mariadbv1alpha1.GrantStatus{
+					Conditions: []metav1.Condition{
+						{Type: "Ready", Status: metav1.ConditionTrue},
+					},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "Ready=False returns false",
+			grant: &mariadbv1alpha1.Grant{
+				Status: mariadbv1alpha1.GrantStatus{
+					Conditions: []metav1.Condition{
+						{Type: "Ready", Status: metav1.ConditionFalse},
+					},
+				},
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			g.Expect(isGrantReady(tt.grant)).To(Equal(tt.want))
+		})
+	}
 }

@@ -4,8 +4,11 @@
 
 package deployment
 
+// Feature: CC-0005
+
 import (
 	"context"
+	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -13,8 +16,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
-
-// Feature: CC-0005
 
 // EnsureDeployment creates or updates a Deployment using controllerutil.CreateOrUpdate.
 // It sets an owner reference on the Deployment so it is garbage-collected with the owner.
@@ -35,7 +36,12 @@ func EnsureDeployment(ctx context.Context, c client.Client, owner client.Object,
 		return controllerutil.SetControllerReference(owner, deploy, c.Scheme())
 	})
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("creating or updating Deployment %s/%s: %w", spec.Namespace, spec.Name, err)
+	}
+
+	// Re-fetch to get current status after create/update.
+	if err := c.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		return false, fmt.Errorf("fetching Deployment status %s/%s: %w", spec.Namespace, spec.Name, err)
 	}
 
 	return IsDeploymentReady(deploy), nil
@@ -63,8 +69,11 @@ func EnsureService(ctx context.Context, c client.Client, owner client.Object, sp
 		// These are assigned by the API server and must be preserved.
 		return controllerutil.SetControllerReference(owner, svc, c.Scheme())
 	})
+	if err != nil {
+		return fmt.Errorf("creating or updating Service %s/%s: %w", spec.Namespace, spec.Name, err)
+	}
 
-	return err
+	return nil
 }
 
 // IsDeploymentReady checks whether all desired replicas of a Deployment are

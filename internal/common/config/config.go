@@ -159,6 +159,9 @@ func CreateImmutableConfigMap(ctx context.Context, c client.Client, owner client
 }
 
 // hashConfigMapData computes a deterministic SHA-256 hash of ConfigMap data.
+// Null byte separators are written between key and value, and after each entry,
+// to prevent hash collisions from key/value boundary ambiguity (e.g.
+// {"ab":"cd"} vs {"a":"bcd"}).
 func hashConfigMapData(data map[string]string) string {
 	h := sha256.New()
 	keys := make([]string, 0, len(data))
@@ -168,7 +171,9 @@ func hashConfigMapData(data map[string]string) string {
 	sort.Strings(keys)
 	for _, k := range keys {
 		h.Write([]byte(k))
+		h.Write([]byte{0})
 		h.Write([]byte(data[k]))
+		h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

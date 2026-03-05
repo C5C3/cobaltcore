@@ -39,10 +39,12 @@ func WaitForExternalSecret(ctx context.Context, c client.Client, namespace, name
 	return false, nil
 }
 
-// IsSecretReady verifies that a Kubernetes Secret exists. Returns (true, nil)
-// if the Secret exists, (false, nil) if it is not found, and (false, error) on
-// other failures.
-func IsSecretReady(ctx context.Context, c client.Client, namespace, name string) (bool, error) {
+// IsSecretReady verifies that a Kubernetes Secret exists and, if expectedKeys
+// are provided, that every expected key is present in the Secret's Data map.
+// Returns (true, nil) if the Secret exists and all expected keys are present,
+// (false, nil) if the Secret is not found, and (false, error) on other failures
+// or if any expected key is missing.
+func IsSecretReady(ctx context.Context, c client.Client, namespace, name string, expectedKeys ...string) (bool, error) {
 	secret := &corev1.Secret{}
 	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, secret); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -50,6 +52,13 @@ func IsSecretReady(ctx context.Context, c client.Client, namespace, name string)
 		}
 		return false, fmt.Errorf("getting Secret %s/%s: %w", namespace, name, err)
 	}
+
+	for _, key := range expectedKeys {
+		if _, ok := secret.Data[key]; !ok {
+			return false, fmt.Errorf("expected key %q not found in Secret %s/%s", key, namespace, name)
+		}
+	}
+
 	return true, nil
 }
 

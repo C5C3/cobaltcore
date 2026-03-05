@@ -133,6 +133,58 @@ func TestIntegration_IsSecretReady_Exists(t *testing.T) {
 	g.Expect(ready).To(BeTrue())
 }
 
+func TestIntegration_IsSecretReady_WithExpectedKeys_AllPresent(t *testing.T) {
+	envtestutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, cancel := envtestutil.SetupEnvTest(t)
+	defer cancel()
+
+	ns := helperCreateNamespace(ctx, g, c, "test-secret-keys-ok-ns")
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-secret",
+			Namespace: ns.Name,
+		},
+		Data: map[string][]byte{
+			"username": []byte("admin"),
+			"password": []byte("s3cret"),
+		},
+	}
+	g.Expect(c.Create(ctx, secret)).To(Succeed())
+
+	ready, err := IsSecretReady(ctx, c, ns.Name, "my-secret", "username", "password")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ready).To(BeTrue())
+}
+
+func TestIntegration_IsSecretReady_WithExpectedKeys_MissingKey(t *testing.T) {
+	envtestutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, cancel := envtestutil.SetupEnvTest(t)
+	defer cancel()
+
+	ns := helperCreateNamespace(ctx, g, c, "test-secret-keys-miss-ns")
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-secret",
+			Namespace: ns.Name,
+		},
+		Data: map[string][]byte{
+			"username": []byte("admin"),
+		},
+	}
+	g.Expect(c.Create(ctx, secret)).To(Succeed())
+
+	ready, err := IsSecretReady(ctx, c, ns.Name, "my-secret", "username", "password")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(`expected key "password" not found`))
+	g.Expect(ready).To(BeFalse())
+}
+
 // --- GetSecretValue ---
 
 func TestIntegration_GetSecretValue_ReadsValue(t *testing.T) {

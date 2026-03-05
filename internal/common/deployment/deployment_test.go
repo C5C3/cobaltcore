@@ -4,6 +4,8 @@
 
 package deployment
 
+// Feature: CC-0005
+
 import (
 	"context"
 	"testing"
@@ -18,8 +20,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
-
-// Feature: CC-0005
 
 // helper to build a scheme with all core types.
 func testScheme() *runtime.Scheme {

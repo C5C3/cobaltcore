@@ -30,13 +30,17 @@ func newFakeClient(objs ...client.Object) client.Client {
 		Build()
 }
 
-// owner returns a simple ConfigMap to use as the owner in tests.
+// owner returns a ConfigMap with UID and GVK set to use as the owner in tests.
 func owner() *corev1.ConfigMap {
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-owner",
 			Namespace: "default",
 			UID:       types.UID("owner-uid-1234"),
+		},
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "ConfigMap",
 		},
 	}
 }

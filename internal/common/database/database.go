@@ -16,7 +16,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
+	"github.com/c5c3/forge/internal/common/job"
 )
+
+// conditionTypeReady is the condition type used by MariaDB Operator CRs
+// (Database, User, Grant) to indicate readiness.
+const conditionTypeReady = "Ready"
 
 // EnsureDatabase creates or updates a MariaDB Operator Database CR. The owner
 // is set as the controller reference so that the Database is garbage-collected
@@ -95,45 +101,25 @@ func EnsureDatabaseUser(ctx context.Context, c client.Client, owner client.Objec
 }
 
 // RunDBSyncJob creates or updates a Kubernetes Job intended for database schema
-// synchronisation (migrations, seed data, etc.). The owner is set as the
-// controller reference so that the Job is garbage-collected when the owner is
-// deleted. Returns (true, nil) when the Job has succeeded, (false, nil) when
-// still running, and (false, error) on failure.
+// synchronisation (migrations, seed data, etc.). It delegates to job.RunJob for
+// the create-or-update, owner reference, re-fetch, and completion check logic.
+// Returns (true, nil) when the Job has succeeded, (false, nil) when still
+// running, and (false, error) on failure.
 func RunDBSyncJob(ctx context.Context, c client.Client, owner client.Object, desired *batchv1.Job) (bool, error) {
-	existing := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      desired.Name,
-			Namespace: desired.Namespace,
-		},
-	}
-
-	_, err := controllerutil.CreateOrUpdate(ctx, c, existing, func() error {
-		existing.Spec = desired.Spec
-		return controllerutil.SetControllerReference(owner, existing, c.Scheme())
-	})
-	if err != nil {
-		return false, fmt.Errorf("creating or updating DB sync Job %s/%s: %w", desired.Namespace, desired.Name, err)
-	}
-
-	// Re-fetch the Job to get current status after create/update.
-	if err := c.Get(ctx, client.ObjectKeyFromObject(existing), existing); err != nil {
-		return false, fmt.Errorf("fetching DB sync Job status %s/%s: %w", desired.Namespace, desired.Name, err)
-	}
-
-	return existing.Status.Succeeded >= 1, nil
+	return job.RunJob(ctx, c, owner, desired)
 }
 
 // isDatabaseReady returns true if the Database has a Ready=True condition.
 func isDatabaseReady(db *mariadbv1alpha1.Database) bool {
-	return meta.IsStatusConditionTrue(db.Status.Conditions, "Ready")
+	return meta.IsStatusConditionTrue(db.Status.Conditions, conditionTypeReady)
 }
 
 // isUserReady returns true if the User has a Ready=True condition.
 func isUserReady(user *mariadbv1alpha1.User) bool {
-	return meta.IsStatusConditionTrue(user.Status.Conditions, "Ready")
+	return meta.IsStatusConditionTrue(user.Status.Conditions, conditionTypeReady)
 }
 
 // isGrantReady returns true if the Grant has a Ready=True condition.
 func isGrantReady(grant *mariadbv1alpha1.Grant) bool {
-	return meta.IsStatusConditionTrue(grant.Status.Conditions, "Ready")
+	return meta.IsStatusConditionTrue(grant.Status.Conditions, conditionTypeReady)
 }
