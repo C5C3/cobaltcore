@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-04T20:08:24.655269+00:00",
+  "feature_id": "CC-0004",
+  "task_type": "quick",
+  "session_key": "CC-0004",
+  "model": "opus",
+  "prompt": "Convert this feature description into a concise English title.\n\nORIGINAL DESCRIPTION:\nCommon Types & Pure Function Packages\n\nREQUIREMENTS:\n1. Output MUST be in English (translate if necessary)\n2. Maximum 54 characters\n3. Use imperative form (e.g., \"Add...\", \"Fix...\", \"Standardize...\", \"Implement...\")\n4. Be specific but concise\n5. No punctuation at the end\n6. Output ONLY the title, nothing else\n\nEXAMPLES:\n- \"Die Verwendung von Slugs vereinheitlichen\" -> \"Standardize slug usage across codebase\"\n- \"Add missing TypeScript types in api-client package\" -> \"Add TypeScript types to api-client\"\n- \"Behebe den Bug im Login\" -> \"Fix login authentication bug\"\n",
+  "prompt_length": 655,
+  "caller": "run_claude_cli"
+}

@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-05T14:08:52.257397+00:00",
+  "feature_id": "CC-0004",
+  "task_type": "commit",
+  "session_key": "CC-0004",
+  "model": "opus",
+  "prompt": "Generate a detailed git commit body for this commit.\nSubject: fix(CC-0004): address review #32 feedback from greptile-apps[bot]\nReview feedback was: \n\nDiff stat:\ninternal/common/config/config.go | 7 ++++---\n 1 file changed, 4 insertions(+), 3 deletions(-)\n\nDiff (truncated):\ndiff --git a/internal/common/config/config.go b/internal/common/config/config.go\nindex c190bc1..047f490 100644\n--- a/internal/common/config/config.go\n+++ b/internal/common/config/config.go\n@@ -101,9 +101,10 @@ func InjectSecrets(config map[string]map[string]string, secrets map[string]strin\n }\n \n // InjectOsloPolicyConfig returns a config map with oslo_policy configuration\n-// injected. If policyFilePath is non-empty, it creates a shallow copy of the\n-// input map, ensures the oslo_policy section exists, sets the policy_file key,\n-// and returns the copy without mutating the input. If policyFilePath is empty,\n+// injected. If policyFilePath is non-empty, it creates a deep copy of the\n+// input map (via MergeDefaults), ensures the oslo_policy section exists, sets\n+// the policy_file key, and returns the copy without mutating the input.\n+// If policyFilePath is empty,\n // it returns the original config reference unchanged (no copy is made).\n func InjectOsloPolicyConfig(config map[string]map[string]string, policyFilePath string) map[string]map[string]string {\n \tif policyFilePath == \"\" {\n\n\nWrite ONLY the body text, no subject line, no markdown.\nFor each changed file, write a bullet point: '- path/to/file: what was changed'\nDo NOT mention .planwerk directory changes.",
+  "prompt_length": 1556,
+  "caller": "run_claude_cli"
+}

@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-05T11:55:09.703279+00:00",
+  "feature_id": "CC-0004",
+  "task_type": "commit",
+  "session_key": "CC-0004",
+  "model": "opus",
+  "prompt": "Generate a detailed git commit body for this commit.\nSubject: fix(CC-0004): address review #20 feedback from greptile-apps[bot]\nReview feedback was: \n\nDiff stat:\ninternal/common/config/config_test.go | 20 ++++++++++++++++++++\n 1 file changed, 20 insertions(+)\n\nDiff (truncated):\ndiff --git a/internal/common/config/config_test.go b/internal/common/config/config_test.go\nindex 40f31e8..e7baf45 100644\n--- a/internal/common/config/config_test.go\n+++ b/internal/common/config/config_test.go\n@@ -5,6 +5,7 @@\n package config\n \n import (\n+\t\"reflect\"\n \t\"testing\"\n \n \t. \"github.com/onsi/gomega\"\n@@ -413,3 +414,22 @@ func TestInjectOsloPolicyConfig_doesNotMutateInput(t *testing.T) {\n \t// Result should have it.\n \tg.Expect(result[\"oslo_policy\"][\"policy_file\"]).To(Equal(\"/etc/nova/policy.yaml\"))\n }\n+\n+func TestInjectOsloPolicyConfig_emptyPathReturnsOriginalReference(t *testing.T) {\n+\tg := NewGomegaWithT(t)\n+\n+\tconfig := map[string]map[string]string{\n+\t\t\"DEFAULT\": {\"debug\": \"true\"},\n+\t}\n+\n+\tresult := InjectOsloPolicyConfig(config, \"\")\n+\n+\t// Empty path must return the exact same map reference (documented no-copy contract).\n+\t// Note: Go maps are not comparable with ==, so BeIdenticalTo cannot be used.\n+\t// Instead we compare the underlying map header pointers via reflect.\n+\tg.Expect(reflect.ValueOf(result).Pointer()).To(Equal(reflect.ValueOf(config).Pointer()))\n+\n+\t// Mutating result must therefore also mutate config (caller beware).\n+\tresult[\"mutated\"] = map[string]string{\"key\": \"val\"}\n+\tg.Expect(config).To(HaveKey(\"mutated\"))\n+}\n\n\nWrite ONLY the body text, no subject line, no markdown.\nFor each changed file, write a bullet point: '- path/to/file: what was changed'\nDo NOT mention .planwerk directory changes.",
+  "prompt_length": 1717,
+  "caller": "run_claude_cli"
+}
