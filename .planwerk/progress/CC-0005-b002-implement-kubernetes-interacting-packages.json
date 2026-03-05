@@ -634,6 +634,7 @@
       "description": "Create internal/common/secrets/ package with doc.go (Feature: CC-0005). Implement WaitForExternalSecret: Get typed esov1beta1.ExternalSecret, check status.conditions for type=SecretSynced status=True, return (bool, error). Implement IsSecretReady: Get corev1.Secret, check all expectedKeys present in .Data, return (bool, error). Implement GetSecretValue: Get corev1.Secret, return string(secret.Data[key]) or error if key missing. Implement EnsurePushSecret: use controllerutil.CreateOrUpdate with typed esov1alpha1.PushSecret and owner ref.",
       "level": 3,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-010",
@@ -646,6 +647,7 @@
       "description": "Create internal/common/secrets/integration_test.go with //go:build integration tag. Test WaitForExternalSecret: create ExternalSecret, simulate sync via SimulateExternalSecretSync, verify returns true. Test not-synced case. Test not-found case. Test IsSecretReady: create Secret with data, verify returns true with matching keys, false with missing keys. Test GetSecretValue: verify returns decoded string, verify error on missing key. Test EnsurePushSecret: create, verify exists, verify owner ref, call again (idempotency).",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-012"
@@ -657,6 +659,7 @@
       "description": "Add CreateImmutableConfigMap to internal/common/config/config.go. Compute SHA256 hash of sorted data keys+values, take first 8 hex chars as suffix. Create ConfigMap named '<baseName>-<hash>' with Immutable=ptr(true), set owner reference via controllerutil.SetOwnerReference. If ConfigMap with that name already exists, return it. Write unit tests for hash determinism and different-content-different-hash. Create integration_test.go with //go:build integration tag testing actual ConfigMap creation, immutability flag, owner reference, and idempotency.",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-010"
@@ -668,6 +671,7 @@
       "description": "Create internal/common/tls/ package with doc.go (Feature: CC-0005). Implement EnsureCertificate: use controllerutil.CreateOrUpdate with typed certmanagerv1.Certificate and owner ref. Implement GetTLSSecret: Get corev1.Secret by namespace/name, return (*corev1.Secret, error). Create integration_test.go: test EnsureCertificate creates Certificate CR, verify owner ref, idempotency. Test GetTLSSecret with existing and non-existing Secret.",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-008",
         "REQ-010",
@@ -681,6 +685,7 @@
       "description": "Add LoadPolicyFromConfigMap to internal/common/policy/policy.go. Get ConfigMap by namespace/name, extract 'policy.yaml' key from .Data, parse YAML into map[string]string using sigs.k8s.io/yaml. Return error if ConfigMap not found, key missing, or YAML invalid. Tag function with // Feature: CC-0005. Create integration_test.go with //go:build integration tag testing: successful load, ConfigMap not found, missing key, invalid YAML.",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -1234,6 +1239,307 @@
     {
       "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
       "test_function": "TestSimulateCertificateReady_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestRenderINI",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestMergeDefaults",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestMergeDefaults_doesNotMutateInputs",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestInjectSecrets",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestInjectSecrets_doesNotMutateInput",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestInjectOsloPolicyConfig",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestInjectOsloPolicyConfig_doesNotMutateInput",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestInjectOsloPolicyConfig_emptyPathReturnsOriginalReference",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestHashConfigMapData",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestCreateImmutableConfigMap",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureDeployment_createsDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureDeployment_updatesDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureDeployment_setsOwnerReference",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureDeployment_returnsFalse_whenNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_createsService",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_updatesService",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_setsOwnerReference",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_preservesClusterIP",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/integration_test.go",
+      "test_function": "TestIntegration_EnsureDeployment_CreatesInCluster",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/integration_test.go",
+      "test_function": "TestIntegration_EnsureDeployment_UpdatesExisting",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/integration_test.go",
+      "test_function": "TestIntegration_EnsureService_CreatesInCluster",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/integration_test.go",
+      "test_function": "TestIntegration_EnsureService_UpdatesExisting",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/integration_test.go",
+      "test_function": "TestIntegration_EnsureService_PreservesClusterIP",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/integration_test.go",
+      "test_function": "TestIntegration_IsDeploymentReady_RealCluster",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/integration_test.go",
+      "test_function": "TestIntegration_RunJob_CreatesJobInCluster",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/integration_test.go",
+      "test_function": "TestIntegration_RunJob_DetectsCompletedJob",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/integration_test.go",
+      "test_function": "TestIntegration_EnsureCronJob_CreatesInCluster",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/integration_test.go",
+      "test_function": "TestIntegration_EnsureCronJob_UpdatesExisting",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/integration_test.go",
+      "test_function": "TestIntegration_IsJobComplete_WithRealJobStatus",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestRunJob_createsJob",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestRunJob_returnsTrue_whenComplete",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestRunJob_returnsFalse_whenRunning",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestRunJob_setsOwnerReference",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestEnsureCronJob_createsCronJob",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestEnsureCronJob_updatesCronJob",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestEnsureCronJob_setsOwnerReference",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestRenderPolicyYAML",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestRenderPolicyYAML_sortedOutput",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestMergePolicies",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestMergePolicies_doesNotMutateInputs",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestValidatePolicyRules",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestValidatePolicyRules_nilFldPathDefaultsToRules",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestLoadPolicyFromConfigMap",
       "story": "",
       "expected": "Discovered during implementation",
       "requirement_id": ""

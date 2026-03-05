@@ -5,10 +5,18 @@
 package config
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 // Feature: CC-0004
@@ -432,4 +440,178 @@ func TestInjectOsloPolicyConfig_emptyPathReturnsOriginalReference(t *testing.T) 
 	// Mutating result must therefore also mutate config (caller beware).
 	result["mutated"] = map[string]string{"key": "val"}
 	g.Expect(config).To(HaveKey("mutated"))
+}
+
+// Feature: CC-0005
+
+// helper to build a scheme with all core types.
+func testScheme() *runtime.Scheme {
+	s := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(s)
+	return s
+}
+
+// helper to build a fake client.
+func testClient(scheme *runtime.Scheme, objs ...client.Object) client.Client {
+	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+}
+
+// helper to create an owner ConfigMap with UID and GVK set.
+func testOwner() *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-owner",
+			Namespace: "default",
+			UID:       types.UID("owner-uid-1234"),
+		},
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "ConfigMap",
+		},
+	}
+}
+
+func TestHashConfigMapData(t *testing.T) {
+	tests := []struct {
+		name       string
+		data       map[string]string
+		wantSame   string // if non-empty, the hash must equal this value
+		wantDiffer string // if non-empty, the hash must NOT equal this value
+	}{
+		{
+			name: "deterministic – same data produces same hash",
+			data: map[string]string{"key1": "val1", "key2": "val2"},
+		},
+		{
+			name: "empty map produces a hash",
+			data: map[string]string{},
+		},
+		{
+			name: "nil map produces a hash",
+			data: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			h1 := hashConfigMapData(tt.data)
+			h2 := hashConfigMapData(tt.data)
+			g.Expect(h1).To(Equal(h2), "same data must produce the same hash")
+			g.Expect(h1).NotTo(BeEmpty())
+		})
+	}
+
+	t.Run("different data produces different hash", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		h1 := hashConfigMapData(map[string]string{"key": "value1"})
+		h2 := hashConfigMapData(map[string]string{"key": "value2"})
+		g.Expect(h1).NotTo(Equal(h2))
+	})
+
+	t.Run("key order does not affect hash", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		h1 := hashConfigMapData(map[string]string{"a": "1", "b": "2", "c": "3"})
+		h2 := hashConfigMapData(map[string]string{"c": "3", "a": "1", "b": "2"})
+		g.Expect(h1).To(Equal(h2))
+	})
+}
+
+func TestCreateImmutableConfigMap(t *testing.T) {
+	tests := []struct {
+		name     string
+		cmName   string
+		data     map[string]string
+		wantErr  bool
+	}{
+		{
+			name:   "creates ConfigMap with hashed name",
+			cmName: "my-config",
+			data:   map[string]string{"key1": "val1"},
+		},
+		{
+			name:   "empty data produces ConfigMap",
+			cmName: "empty-config",
+			data:   map[string]string{},
+		},
+		{
+			name:   "multiple keys in data",
+			cmName: "multi-config",
+			data:   map[string]string{"a": "1", "b": "2", "c": "3"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			scheme := testScheme()
+			c := testClient(scheme)
+			ctx := context.Background()
+			owner := testOwner()
+
+			cm, err := CreateImmutableConfigMap(ctx, c, owner, tt.cmName, tt.data)
+			if tt.wantErr {
+				g.Expect(err).To(HaveOccurred())
+				return
+			}
+			g.Expect(err).NotTo(HaveOccurred())
+
+			// Verify the name contains the base name and a hash suffix.
+			hash := hashConfigMapData(tt.data)
+			expectedName := tt.cmName + "-" + hash[:8]
+			g.Expect(cm.Name).To(Equal(expectedName))
+			g.Expect(cm.Namespace).To(Equal("default"))
+
+			// Verify ConfigMap is immutable.
+			g.Expect(cm.Immutable).NotTo(BeNil())
+			g.Expect(*cm.Immutable).To(BeTrue())
+
+			// Verify data.
+			g.Expect(cm.Data).To(Equal(tt.data))
+
+			// Verify owner reference.
+			g.Expect(cm.OwnerReferences).To(HaveLen(1))
+			g.Expect(cm.OwnerReferences[0].Name).To(Equal("test-owner"))
+			g.Expect(cm.OwnerReferences[0].UID).To(Equal(types.UID("owner-uid-1234")))
+
+			// Verify the ConfigMap exists in the fake client.
+			fetched := &corev1.ConfigMap{}
+			err = c.Get(ctx, client.ObjectKeyFromObject(cm), fetched)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(fetched.Name).To(Equal(expectedName))
+		})
+	}
+
+	t.Run("same data produces same hash deterministically", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		scheme := testScheme()
+		c := testClient(scheme)
+		ctx := context.Background()
+		owner := testOwner()
+
+		data := map[string]string{"key": "value"}
+		cm1, err := CreateImmutableConfigMap(ctx, c, owner, "cfg", data)
+		g.Expect(err).NotTo(HaveOccurred())
+
+		// Second call with same data should produce same name (CreateOrUpdate).
+		cm2, err := CreateImmutableConfigMap(ctx, c, owner, "cfg", data)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(cm1.Name).To(Equal(cm2.Name))
+	})
+
+	t.Run("different data produces different hash", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		scheme := testScheme()
+		c := testClient(scheme)
+		ctx := context.Background()
+		owner := testOwner()
+
+		cm1, err := CreateImmutableConfigMap(ctx, c, owner, "cfg", map[string]string{"key": "value1"})
+		g.Expect(err).NotTo(HaveOccurred())
+
+		cm2, err := CreateImmutableConfigMap(ctx, c, owner, "cfg", map[string]string{"key": "value2"})
+		g.Expect(err).NotTo(HaveOccurred())
+
+		g.Expect(cm1.Name).NotTo(Equal(cm2.Name))
+	})
 }

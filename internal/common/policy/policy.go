@@ -5,11 +5,13 @@
 package policy
 
 import (
+	"context"
 	"fmt"
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
 	"github.com/c5c3/forge/internal/common/types"
@@ -112,4 +114,29 @@ func ValidatePolicyRules(rules map[string]string, fldPath *field.Path) field.Err
 	}
 
 	return allErrs
+}
+
+// Feature: CC-0005
+
+// LoadPolicyFromConfigMap reads a ConfigMap by namespace/name, parses the
+// "policy.yaml" key from its Data as a YAML mapping of string keys to string
+// values (oslo.policy rules), and returns the parsed map. Returns an error if
+// the ConfigMap is not found, the key is missing, or the YAML parse fails.
+func LoadPolicyFromConfigMap(ctx context.Context, c client.Client, namespace, name string) (map[string]string, error) {
+	cm := &corev1.ConfigMap{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, cm); err != nil {
+		return nil, fmt.Errorf("getting ConfigMap %s/%s: %w", namespace, name, err)
+	}
+
+	data, ok := cm.Data["policy.yaml"]
+	if !ok {
+		return nil, fmt.Errorf("ConfigMap %s/%s does not contain key %q", namespace, name, "policy.yaml")
+	}
+
+	var rules map[string]string
+	if err := yaml.Unmarshal([]byte(data), &rules); err != nil {
+		return nil, fmt.Errorf("parsing policy.yaml from ConfigMap %s/%s: %w", namespace, name, err)
+	}
+
+	return rules, nil
 }

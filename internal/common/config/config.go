@@ -5,10 +5,18 @@
 package config
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"sort"
 	"strings"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 // Feature: CC-0004
@@ -116,4 +124,51 @@ func InjectOsloPolicyConfig(config map[string]map[string]string, policyFilePath 
 	}
 	result["oslo_policy"]["policy_file"] = policyFilePath
 	return result
+}
+
+// Feature: CC-0005
+
+// CreateImmutableConfigMap creates an immutable ConfigMap with a content-hash
+// suffix in its name. It computes a SHA-256 hash of the data map (sorted keys
+// for determinism) and appends the first 8 hex chars as suffix: {name}-{hash[:8]}.
+// The ConfigMap's Immutable field is set to true. A controller owner reference
+// is set using the provided owner. Uses controllerutil.CreateOrUpdate to
+// create or update the ConfigMap.
+func CreateImmutableConfigMap(ctx context.Context, c client.Client, owner client.Object, name string, data map[string]string) (*corev1.ConfigMap, error) {
+	hash := hashConfigMapData(data)
+	hashedName := fmt.Sprintf("%s-%s", name, hash[:8])
+
+	immutable := true
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      hashedName,
+			Namespace: owner.GetNamespace(),
+		},
+	}
+
+	_, err := controllerutil.CreateOrUpdate(ctx, c, cm, func() error {
+		cm.Data = data
+		cm.Immutable = &immutable
+		return controllerutil.SetControllerReference(owner, cm, c.Scheme())
+	})
+	if err != nil {
+		return nil, fmt.Errorf("creating or updating immutable ConfigMap %s/%s: %w", owner.GetNamespace(), hashedName, err)
+	}
+
+	return cm, nil
+}
+
+// hashConfigMapData computes a deterministic SHA-256 hash of ConfigMap data.
+func hashConfigMapData(data map[string]string) string {
+	h := sha256.New()
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		h.Write([]byte(k))
+		h.Write([]byte(data[k]))
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }

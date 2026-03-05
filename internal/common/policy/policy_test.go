@@ -5,11 +5,17 @@
 package policy
 
 import (
+	"context"
 	"testing"
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/c5c3/forge/internal/common/types"
 )
@@ -374,4 +380,124 @@ func TestValidatePolicyRules_nilFldPathDefaultsToRules(t *testing.T) {
 	g.Expect(errs).To(HaveLen(1))
 	g.Expect(errs[0].Field).To(Equal("rules[compute:delete]"))
 	g.Expect(errs[0].Detail).To(Equal("rule value must not be empty"))
+}
+
+// Feature: CC-0005
+
+// helper to build a scheme with all core types.
+func testScheme() *runtime.Scheme {
+	s := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(s)
+	return s
+}
+
+// helper to build a fake client.
+func testClient(scheme *runtime.Scheme, objs ...client.Object) client.Client {
+	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+}
+
+func TestLoadPolicyFromConfigMap(t *testing.T) {
+	tests := []struct {
+		name      string
+		configMap *corev1.ConfigMap
+		namespace string
+		cmName    string
+		want      map[string]string
+		wantErr   string
+	}{
+		{
+			name: "valid ConfigMap with policy.yaml key returns parsed rules",
+			configMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "policy-cm",
+					Namespace: "default",
+				},
+				Data: map[string]string{
+					"policy.yaml": "compute:create: role:admin\nidentity:list_users: role:reader\n",
+				},
+			},
+			namespace: "default",
+			cmName:    "policy-cm",
+			want: map[string]string{
+				"compute:create":      "role:admin",
+				"identity:list_users": "role:reader",
+			},
+		},
+		{
+			name:      "ConfigMap not found returns error",
+			configMap: nil,
+			namespace: "default",
+			cmName:    "nonexistent",
+			wantErr:   "getting ConfigMap default/nonexistent",
+		},
+		{
+			name: "ConfigMap without policy.yaml key returns error",
+			configMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-policy-key",
+					Namespace: "default",
+				},
+				Data: map[string]string{
+					"other.yaml": "key: value",
+				},
+			},
+			namespace: "default",
+			cmName:    "no-policy-key",
+			wantErr:   `does not contain key "policy.yaml"`,
+		},
+		{
+			name: "invalid YAML in policy.yaml returns error",
+			configMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "bad-yaml",
+					Namespace: "default",
+				},
+				Data: map[string]string{
+					"policy.yaml": "not: [valid: yaml: {{{",
+				},
+			},
+			namespace: "default",
+			cmName:    "bad-yaml",
+			wantErr:   "parsing policy.yaml from ConfigMap default/bad-yaml",
+		},
+		{
+			name: "empty policy.yaml returns nil map",
+			configMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "empty-policy",
+					Namespace: "default",
+				},
+				Data: map[string]string{
+					"policy.yaml": "",
+				},
+			},
+			namespace: "default",
+			cmName:    "empty-policy",
+			want:      nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			scheme := testScheme()
+			ctx := context.Background()
+
+			var c client.Client
+			if tt.configMap != nil {
+				c = testClient(scheme, tt.configMap)
+			} else {
+				c = testClient(scheme)
+			}
+
+			got, err := LoadPolicyFromConfigMap(ctx, c, tt.namespace, tt.cmName)
+			if tt.wantErr != "" {
+				g.Expect(err).To(HaveOccurred())
+				g.Expect(err.Error()).To(ContainSubstring(tt.wantErr))
+				return
+			}
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(got).To(Equal(tt.want))
+		})
+	}
 }
