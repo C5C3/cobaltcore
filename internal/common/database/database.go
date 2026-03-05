@@ -100,11 +100,12 @@ func EnsureDatabaseUser(ctx context.Context, c client.Client, owner client.Objec
 	return isUserReady(existingUser) && isGrantReady(existingGrant), nil
 }
 
-// RunDBSyncJob creates or updates a Kubernetes Job intended for database schema
-// synchronisation (migrations, seed data, etc.). It delegates to job.RunJob for
-// the create-or-update, owner reference, re-fetch, and completion check logic.
-// Returns (true, nil) when the Job has succeeded, (false, nil) when still
-// running, and (false, error) on failure.
+// RunDBSyncJob ensures a Kubernetes Job intended for database schema
+// synchronisation (migrations, seed data, etc.) exists and checks completion.
+// It delegates to job.RunJob for the get-or-create, owner reference, and
+// completion check logic. Returns (true, nil) when the Job has succeeded,
+// (false, nil) when still running or just created, and (false, error) on
+// failure.
 func RunDBSyncJob(ctx context.Context, c client.Client, owner client.Object, desired *batchv1.Job) (bool, error) {
 	return job.RunJob(ctx, c, owner, desired)
 }

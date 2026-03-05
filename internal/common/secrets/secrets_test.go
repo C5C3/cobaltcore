@@ -197,9 +197,10 @@ func TestIsSecretReady_WithExpectedKeys_MissingKey(t *testing.T) {
 	}
 	c := newFakeClient(secret)
 
+	// Missing key is a transient not-yet-ready condition (CC-0005): returns
+	// (false, nil) so reconcilers re-queue without recording an error.
 	ready, err := IsSecretReady(ctx, c, "default", "my-secret", "username", "password")
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring(`expected key "password" not found`))
+	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeFalse())
 }
 
@@ -215,9 +216,10 @@ func TestIsSecretReady_WithExpectedKeys_EmptyData(t *testing.T) {
 	}
 	c := newFakeClient(secret)
 
+	// Empty data with expected keys is a transient not-yet-ready condition
+	// (CC-0005): returns (false, nil) so reconcilers re-queue without error.
 	ready, err := IsSecretReady(ctx, c, "default", "my-secret", "password")
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring(`expected key "password" not found`))
+	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeFalse())
 }
 

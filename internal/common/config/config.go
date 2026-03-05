@@ -147,7 +147,7 @@ func CreateImmutableConfigMap(ctx context.Context, c client.Client, owner client
 	}
 
 	_, err := controllerutil.CreateOrUpdate(ctx, c, cm, func() error {
-		cm.Data = data
+		cm.Data = copyStringMap(data)
 		cm.Immutable = &immutable
 		return controllerutil.SetControllerReference(owner, cm, c.Scheme())
 	})
@@ -156,6 +156,17 @@ func CreateImmutableConfigMap(ctx context.Context, c client.Client, owner client
 	}
 
 	return cm, nil
+}
+
+// copyStringMap returns a shallow copy of the given map to prevent mutations
+// from propagating to the caller's data or to an immutable ConfigMap's stored
+// data.
+func copyStringMap(m map[string]string) map[string]string {
+	cp := make(map[string]string, len(m))
+	for k, v := range m {
+		cp[k] = v
+	}
+	return cp
 }
 
 // hashConfigMapData computes a deterministic SHA-256 hash of ConfigMap data.

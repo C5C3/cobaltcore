@@ -11,37 +11,36 @@ import (
 	"fmt"
 
 	batchv1 "k8s.io/api/batch/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
-// RunJob creates or updates a Kubernetes Job and checks whether it has
-// completed. The desired parameter must be a fully constructed *batchv1.Job
-// including ObjectMeta (Name, Namespace) and Spec. The owner is set as the
-// controller reference so that the Job is garbage-collected when the owner is
-// deleted.
+// RunJob ensures a Kubernetes Job exists and checks whether it has completed.
+// If the Job does not exist, it is created with the owner set as the controller
+// reference so that the Job is garbage-collected when the owner is deleted.
+// If the Job already exists, its status is checked as-is without updating the
+// spec — Job spec fields (selector, template) are immutable after creation.
+//
+// The desired parameter must be a fully constructed *batchv1.Job including
+// ObjectMeta (Name, Namespace) and Spec.
 //
 // Returns (true, nil) when the Job has succeeded, (false, nil) when still
-// running, and (false, error) on failure.
+// running or just created, and (false, error) on failure.
 func RunJob(ctx context.Context, c client.Client, owner client.Object, desired *batchv1.Job) (bool, error) {
 	existing := &batchv1.Job{}
-	existing.Name = desired.Name
-	existing.Namespace = desired.Namespace
-
-	_, err := controllerutil.CreateOrUpdate(ctx, c, existing, func() error {
-		if err := controllerutil.SetControllerReference(owner, existing, c.Scheme()); err != nil {
-			return fmt.Errorf("setting controller reference: %w", err)
+	err := c.Get(ctx, client.ObjectKeyFromObject(desired), existing)
+	if apierrors.IsNotFound(err) {
+		if err := controllerutil.SetControllerReference(owner, desired, c.Scheme()); err != nil {
+			return false, fmt.Errorf("setting controller reference: %w", err)
 		}
-		existing.Spec = desired.Spec
-		return nil
-	})
-	if err != nil {
-		return false, fmt.Errorf("creating or updating Job %s/%s: %w", desired.Namespace, desired.Name, err)
+		if err := c.Create(ctx, desired); err != nil {
+			return false, fmt.Errorf("creating Job %s/%s: %w", desired.Namespace, desired.Name, err)
+		}
+		return false, nil // just created; not yet complete
 	}
-
-	// Re-fetch the Job to get current status after create/update.
-	if err := c.Get(ctx, client.ObjectKeyFromObject(existing), existing); err != nil {
-		return false, fmt.Errorf("fetching Job status %s/%s: %w", desired.Namespace, desired.Name, err)
+	if err != nil {
+		return false, fmt.Errorf("getting Job %s/%s: %w", desired.Namespace, desired.Name, err)
 	}
 
 	return IsJobComplete(existing), nil
