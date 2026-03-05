@@ -584,6 +584,7 @@
       "description": "Create internal/common/job/ package with doc.go (Feature: CC-0005). Implement IsJobComplete as pure function (job.Status.Succeeded >= 1). Implement RunJob: Get existing Job by name — if exists and IsJobComplete return (true, nil), if exists and not complete return (false, nil), if not exists create with owner ref via controllerutil.SetOwnerReference and return (false, nil). Implement EnsureCronJob: use controllerutil.CreateOrUpdate with owner ref. Write table-driven unit tests for IsJobComplete (succeeded=0, succeeded=1, succeeded=5) using NewGomegaWithT(t) and gomega matchers.",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-007",
         "REQ-010",
@@ -596,6 +597,7 @@
       "description": "Create internal/common/job/integration_test.go with //go:build integration tag. Test RunJob: create Job, verify it exists in API server, simulate completion via simulators.SimulateJobComplete, verify RunJob returns (true, nil). Test EnsureCronJob: create CronJob, verify exists, call again (idempotency). Test RunJob with already-complete Job. Test owner references are set. Use envtestutil.SetupEnvTest and envtestutil.SkipIfEnvTestUnavailable.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-007",
         "REQ-012"
@@ -607,6 +609,7 @@
       "description": "Create internal/common/deployment/ package with doc.go (Feature: CC-0005). Implement IsDeploymentReady as pure function: if spec.replicas is nil treat as 1, return status.availableReplicas >= desired. Implement EnsureDeployment: set owner ref, use controllerutil.CreateOrUpdate, return readiness via IsDeploymentReady. Implement EnsureService: set owner ref, use controllerutil.CreateOrUpdate. Write table-driven unit tests for IsDeploymentReady (nil replicas, zero replicas, partial ready, fully ready, zero available).",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-010",
@@ -619,6 +622,7 @@
       "description": "Create internal/common/deployment/integration_test.go with //go:build integration tag. Test EnsureDeployment: create Deployment, verify exists in API server, verify owner reference, call again (idempotency). Test EnsureService: create Service, verify exists, verify owner reference, call again (idempotency). Use envtestutil.SetupEnvTest.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-012"
@@ -1090,6 +1094,146 @@
     {
       "test_file": "internal/common/testutil/simulators/simulators_test.go",
       "test_function": "TestSimulateJobComplete_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_integration_test.go",
+      "test_function": "TestIntegration_SimulateDatabaseReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_integration_test.go",
+      "test_function": "TestIntegration_SimulateUserReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_integration_test.go",
+      "test_function": "TestIntegration_SimulateGrantReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_integration_test.go",
+      "test_function": "TestIntegration_SimulatePushSecretSynced",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_integration_test.go",
+      "test_function": "TestIntegration_SimulateCertificateReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulateDatabaseReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulateDatabaseReady_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulateDatabaseReady_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulateUserReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulateUserReady_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulateUserReady_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulateGrantReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulateGrantReady_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulateGrantReady_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulatePushSecretSynced",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulatePushSecretSynced_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulatePushSecretSynced_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulateCertificateReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulateCertificateReady_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulateCertificateReady_notFound",
       "story": "",
       "expected": "Discovered during implementation",
       "requirement_id": ""
