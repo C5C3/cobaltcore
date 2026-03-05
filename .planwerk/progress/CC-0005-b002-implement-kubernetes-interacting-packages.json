@@ -721,6 +721,7 @@
       "description": "Create docs/reference/backend/cc-0005-kubernetes-packages.md documenting all CC-0005 package APIs. For each package (config/, secrets/, database/, deployment/, job/, tls/, policy/): function signatures, parameter descriptions, return values, error conditions, and usage examples. Follow the function table format from architecture/docs/09-implementation/02-shared-library.md. Reference Feature: CC-0005.",
       "level": 5,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-011"
       ]
@@ -1731,6 +1732,146 @@
     {
       "test_file": "internal/common/tls/tls_test.go",
       "test_function": "TestGetTLSSecret_returnsError_whenNotFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestEnsureDatabase_createsDatabase",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestEnsureDatabase_setsOwnerReference",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestEnsureDatabase_updatesExisting",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestEnsureDatabaseUser_createsUserAndGrant",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestEnsureDatabaseUser_setsOwnerReferenceOnBoth",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestEnsureDatabaseUser_updatesExisting",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestRunDBSyncJob_createsJob",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestRunDBSyncJob_setsOwnerReference",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestRunDBSyncJob_detectsCompletedJob",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestIsDatabaseReady_falseWhenNoConditions",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestIsDatabaseReady_trueWhenReadyCondition",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestIsUserReady_falseWhenNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestIsGrantReady_trueWhenReadyCondition",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/integration_test.go",
+      "test_function": "TestIntegration_EnsureDatabase_CreatesInCluster",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/integration_test.go",
+      "test_function": "TestIntegration_EnsureDatabase_UpdatesExisting",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/integration_test.go",
+      "test_function": "TestIntegration_EnsureDatabase_DetectsReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/integration_test.go",
+      "test_function": "TestIntegration_EnsureDatabaseUser_CreatesInCluster",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/integration_test.go",
+      "test_function": "TestIntegration_EnsureDatabaseUser_DetectsReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/integration_test.go",
+      "test_function": "TestIntegration_RunDBSyncJob_CreatesInCluster",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/integration_test.go",
+      "test_function": "TestIntegration_RunDBSyncJob_DetectsCompleted",
       "story": "",
       "expected": "Discovered during implementation",
       "requirement_id": ""
