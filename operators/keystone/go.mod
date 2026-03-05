@@ -6,7 +6,7 @@ require (
 	github.com/c5c3/forge/internal/common v0.0.0
 	k8s.io/apimachinery v0.35.2
 	k8s.io/client-go v0.35.2
-	sigs.k8s.io/controller-runtime v0.23.2
+	sigs.k8s.io/controller-runtime v0.23.3
 )
 
 require (
