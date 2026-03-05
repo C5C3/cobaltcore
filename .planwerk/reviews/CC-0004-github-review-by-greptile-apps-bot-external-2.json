@@ -1,0 +1,55 @@
+{
+  "feature_id": "CC-0004",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer flags three issues: (1) `RenderPluginConfig` silently overwrites config when two plugins share the same `ConfigSection` — it should either merge or error; (2) an empty `AppName` produces an invalid PasteDeploy pipeline directive and needs a guard; (3) `SetCondition`/`GetCondition` are hand-rolled instead of delegating to `k8s.io/apimachinery/pkg/api/meta` as stated in the plan, losing Kubernetes-conventional validation (e.g., empty `Reason` is silently accepted).",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-04T22:25:15Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 2,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**Duplicate `ConfigSection` silently overwrites earlier plugin config**\n\nIf two `PluginSpec` entries share the same `ConfigSection` value, the second iteration silently overwrites the entire section map built for the first plugin, dropping all of its config. There is no error, warning, or documentation of this last-write-wins behaviour.\n\nThis is likely to surface when consumers build a `[]PluginSpec` programmatically (e.g. from a merged CRD spec) and accidentally duplicate a section name. The result is a `keystone.conf` that is missing one plugin's configuration with no indication of why.\n\nConsider either:\n1. Merging the configs of duplicate sections (consistent with `MergeDefaults` semantics), or\n2. Returning an error / noting the behaviour in the godoc so callers can guard against it.\n\n```go\n// RenderPluginConfig renders plugin configuration as INI sections.\n// Each plugin's ConfigSection becomes a section name with its Config\n// key-value pairs. If two plugins share the same ConfigSection, the\n// later entry's values overwrite the earlier entry's values.\n// Returns a map suitable for merging with config.MergeDefaults\n// and rendering with config.RenderINI.\n```",
+      "path": "internal/common/plugins/plugins.go",
+      "line": 95,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-04T22:25:12Z",
+      "id": null,
+      "resolution": "RenderPluginConfig's signature was changed to return (map[string]map[string]string, error). A duplicate-key check was added that returns a descriptive error (including the duplicate section name and the offending plugin name) when two plugins share the same ConfigSection. The godoc was updated to document this behavior. A dedicated test (TestRenderPluginConfig_duplicateConfigSectionReturnsError) was added, and existing tests were updated to assert no error on the happy path."
+    },
+    {
+      "body": "**Empty `AppName` produces an invalid PasteDeploy pipeline directive**\n\n`spec.AppName` is appended to the pipeline slice unconditionally (line 59). When `AppName` is an empty string the resulting `pipeline = …` value ends with a trailing space (e.g. `\"cors sizelimit \"` instead of `\"cors sizelimit app\"`). PasteDeploy will fail to load the resulting `api-paste.ini` at runtime because the terminal application name resolves to an empty token.\n\nThere is no guard, no documentation stating that `AppName` must be non-empty, and no test covering this edge case.\n\nConsider adding an early-return guard:\n\n```go\n// Build pipeline: [before] [base] [after] [app]\npipeline := make([]string, 0, len(beforeFilters)+len(spec.BaseFilters)+len(afterFilters)+1)\npipeline = append(pipeline, beforeFilters...)\npipeline = append(pipeline, spec.BaseFilters...)\npipeline = append(pipeline, afterFilters...)\nif spec.AppName != \"\" {\n    pipeline = append(pipeline, spec.AppName)\n}\n```",
+      "path": "internal/common/plugins/plugins.go",
+      "line": 64,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-04T22:25:13Z",
+      "id": null,
+      "resolution": "An if-guard was added around the AppName append so that an empty AppName no longer produces a trailing space in the pipeline directive. A new test case ('empty AppName omits terminal app from pipeline') was added to cover this edge case."
+    },
+    {
+      "body": "**`SetCondition` and `GetCondition` are fully hand-rolled instead of delegating to `k8s.io/apimachinery/pkg/api/meta`**\n\nThe PR description (and the story descriptions in `.planwerk/progress/`) explicitly state:\n\n> `SetCondition` — delegates to `meta.SetStatusCondition`\n> `GetCondition` — delegates to `meta.FindStatusCondition`\n\nThe implementation does not import `\"k8s.io/apimachinery/pkg/api/meta\"` at all and reimplements both helpers from scratch. The two approaches differ in an important way: `meta.SetStatusCondition` panics when `condition.Reason` is empty or `condition.ObservedGeneration` is negative — enforcing the Kubernetes API conventions for conditions. The custom implementation silently accepts a zero-`Reason` condition and sets it without error.\n\nThis is a design divergence that will likely surprise future contributors who expect the Kubernetes-conventional strictness. If the looser validation is intentional (e.g. to ease testing), it should be documented in the godoc so that callers know the `Reason` field is not enforced here.",
+      "path": "internal/common/conditions/conditions.go",
+      "line": 39,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-04T22:25:15Z",
+      "id": null,
+      "resolution": "The hand-rolled implementations of SetCondition and GetCondition were replaced with one-line delegations to meta.SetStatusCondition and meta.FindStatusCondition respectively, and the import of k8s.io/apimachinery/pkg/api/meta was added. The godoc for both functions was updated to note the delegation and the Kubernetes API convention enforcement (non-empty Reason, non-negative ObservedGeneration)."
+    }
+  ],
+  "resolution_summary": "All three review comments were addressed: RenderPluginConfig now returns an error on duplicate ConfigSection instead of silently overwriting, RenderPastePipeline guards against empty AppName to avoid invalid pipeline directives, and SetCondition/GetCondition now delegate to meta.SetStatusCondition and meta.FindStatusCondition from k8s.io/apimachinery. Additionally, internal/common/plugins/plugins_test.go was updated to handle the new error return from RenderPluginConfig and to add test cases for both the empty-AppName guard and the duplicate-ConfigSection error path.",
+  "github_review_id": 3892392621
+}

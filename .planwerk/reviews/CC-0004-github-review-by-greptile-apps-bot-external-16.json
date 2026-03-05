@@ -1,0 +1,46 @@
+{
+  "feature_id": "CC-0004",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer wants two changes: (1) Add a `TestRenderPastePipeline_doesNotMutateInput` test to verify that mutating the returned map doesn't affect the input spec's middleware config, matching the existing immutability-verification test pattern already applied to `RenderPluginConfig`. (2) Add a doc comment (or guard) to `RenderINI` noting that empty section name keys produce invalid INI output (`[]`), since the function doesn't validate against this even though current callers happen to prevent it.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-05T11:20:07Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 16,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**`RenderPastePipeline` missing `_doesNotMutateInputs` test**\n\nThe project pattern (documented in the new `.planwerk/patterns/immutability-verification-test-for-map-returning-pure-functions.md` file) requires a `_doesNotMutateInput(s)` test for every pure function that returns a new map. The pattern is correctly applied to `RenderPluginConfig` (above, `TestRenderPluginConfig_doesNotMutateInput`), but `RenderPastePipeline` — which also returns `map[string]map[string]string` and deep-copies filter config values from `mw.Config` — has no equivalent.\n\nThe implementation does correctly create independent copies of each filter's `Config` entries (the `filterConfig` loop in `plugins.go`), so it is behaviourally safe. The gap is that there is no test asserting this, which means a future refactor that accidentally shares the `mw.Config` reference would not be caught.\n\nA test in the style of the existing pattern would be:\n```go\nfunc TestRenderPastePipeline_doesNotMutateInput(t *testing.T) {\n    g := NewGomegaWithT(t)\n\n    spec := PipelineSpec{\n        PipelineName: \"api_v3\",\n        AppName:      \"service_v3\",\n        BaseFilters:  []string{\"cors\"},\n        Middleware: []types.MiddlewareSpec{\n            {\n                Name:          \"audit\",\n                FilterFactory: \"audit:factory\",\n                Position:      types.PipelinePositionBefore,\n                Config:        map[string]string{\"key\": \"value\"},\n            },\n        },\n    }\n\n    result, err := RenderPastePipeline(spec)\n    g.Expect(err).NotTo(HaveOccurred())\n\n    // Mutating result should not affect spec.Middleware[0].Config.\n    result[\"filter:audit\"][\"key\"] = \"mutated\"\n    result[\"filter:audit\"][\"new_key\"] = \"new_value\"\n\n    g.Expect(spec.Middleware[0].Config[\"key\"]).To(Equal(\"value\"))\n    g.Expect(spec.Middleware[0].Config).NotTo(HaveKey(\"new_key\"))\n}\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: internal/common/plugins/plugins_test.go\nLine: 451-471\n\nComment:\n**`RenderPastePipeline` missing `_doesNotMutateInputs` test**\n\nThe project pattern (documented in the new `.planwerk/patterns/immutability-verification-test-for-map-returning-pure-functions.md` file) requires a `_doesNotMutateInput(s)` test for every pure function that returns a new map. The pattern is correctly applied to `RenderPluginConfig` (above, `TestRenderPluginConfig_doesNotMutateInput`), but `RenderPastePipeline` — which also returns `map[string]map[string]string` and deep-copies filter config values from `mw.Config` — has no equivalent.\n\nThe implementation does correctly create independent copies of each filter's `Config` entries (the `filterConfig` loop in `plugins.go`), so it is behaviourally safe. The gap is that there is no test asserting this, which means a future refactor that accidentally shares the `mw.Config` reference would not be caught.\n\nA test in the style of the existing pattern would be:\n```go\nfunc TestRenderPastePipeline_doesNotMutateInput(t *testing.T) {\n    g := NewGomegaWithT(t)\n\n    spec := PipelineSpec{\n        PipelineName: \"api_v3\",\n        AppName:      \"service_v3\",\n        BaseFilters:  []string{\"cors\"},\n        Middleware: []types.MiddlewareSpec{\n            {\n                Name:          \"audit\",\n                FilterFactory: \"audit:factory\",\n                Position:      types.PipelinePositionBefore,\n                Config:        map[string]string{\"key\": \"value\"},\n            },\n        },\n    }\n\n    result, err := RenderPastePipeline(spec)\n    g.Expect(err).NotTo(HaveOccurred())\n\n    // Mutating result should not affect spec.Middleware[0].Config.\n    result[\"filter:audit\"][\"key\"] = \"mutated\"\n    result[\"filter:audit\"][\"new_key\"] = \"new_value\"\n\n    g.Expect(spec.Middleware[0].Config[\"key\"]).To(Equal(\"value\"))\n    g.Expect(spec.Middleware[0].Config).NotTo(HaveKey(\"new_key\"))\n}\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "internal/common/plugins/plugins_test.go",
+      "line": 471,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-05T11:20:06Z",
+      "id": null,
+      "resolution": "Added `TestRenderPastePipeline_doesNotMutateInputs` in `internal/common/plugins/plugins_test.go` following the suggested test structure: it constructs a `PipelineSpec` with middleware config, calls `RenderPastePipeline`, mutates the result map, and asserts the original spec's config is unchanged."
+    },
+    {
+      "body": "**`RenderINI` silently renders invalid `[]` for empty section names**\n\n`RenderINI` is a public function and does not guard against empty-string section name keys. If called with `sections[\"\"] = {...}`, it produces `[]\\n` — an invalid INI section header that PasteDeploy rejects at runtime.\n\nThe higher-level callers `RenderPastePipeline` and `RenderPluginConfig` already guard against empty section names before producing their section maps, so this is low-risk in the current codebase. However, since `RenderINI` is the public surface of the package, a future direct caller could hit this silently.\n\nConsider adding a guard or a documentation note:\n```go\n// RenderINI renders a map of INI sections into an INI format string.\n// Sections are sorted alphabetically for deterministic output.\n// Keys within each section are sorted alphabetically.\n// Section names must be non-empty; an empty section name produces \"[]\",\n// which is invalid INI. Callers are responsible for ensuring non-empty\n// section names before calling this function.\nfunc RenderINI(sections map[string]map[string]string) string {\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: internal/common/config/config.go\nLine: 22\n\nComment:\n**`RenderINI` silently renders invalid `[]` for empty section names**\n\n`RenderINI` is a public function and does not guard against empty-string section name keys. If called with `sections[\"\"] = {...}`, it produces `[]\\n` — an invalid INI section header that PasteDeploy rejects at runtime.\n\nThe higher-level callers `RenderPastePipeline` and `RenderPluginConfig` already guard against empty section names before producing their section maps, so this is low-risk in the current codebase. However, since `RenderINI` is the public surface of the package, a future direct caller could hit this silently.\n\nConsider adding a guard or a documentation note:\n```go\n// RenderINI renders a map of INI sections into an INI format string.\n// Sections are sorted alphabetically for deterministic output.\n// Keys within each section are sorted alphabetically.\n// Section names must be non-empty; an empty section name produces \"[]\",\n// which is invalid INI. Callers are responsible for ensuring non-empty\n// section names before calling this function.\nfunc RenderINI(sections map[string]map[string]string) string {\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "internal/common/config/config.go",
+      "line": 22,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-05T11:20:07Z",
+      "id": null,
+      "resolution": "Added a three-line documentation comment to `RenderINI` in `internal/common/config/config.go` stating that empty section names produce invalid `[]` headers and that callers are responsible for ensuring non-empty section names, matching the reviewer's suggested wording."
+    }
+  ],
+  "resolution_summary": "Added a `TestRenderPastePipeline_doesNotMutateInputs` test to verify that mutating the returned map does not affect the input `PipelineSpec`. Added a documentation comment to `RenderINI` noting that empty section names produce invalid INI and that callers are responsible for ensuring non-empty names.",
+  "github_review_id": 3895789878
+}

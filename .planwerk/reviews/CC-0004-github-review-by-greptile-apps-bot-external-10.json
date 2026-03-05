@@ -1,0 +1,37 @@
+{
+  "feature_id": "CC-0004",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer says `SetCondition` and `GetCondition` are missing from the conditions package, even though the PR description lists them as key components. They should be added as simple delegating wrappers around `meta.SetStatusCondition` and `meta.FindStatusCondition`, or the PR description should be updated to note they were deferred.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-05T10:40:45Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 10,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "`SetCondition` and `GetCondition` are absent from the conditions package.\n\nThe PR description and \"Key Components\" section explicitly list four functions for this package:\n\n- `SetCondition(conditions *[]metav1.Condition, condition metav1.Condition)` — delegates to `meta.SetStatusCondition`\n- `GetCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition` — delegates to `meta.FindStatusCondition`\n- `IsReady`, `AllTrue`\n\nThe current file implements only `IsReady` and `AllTrue`. This is a meaningful API gap: reconcilers that need to set a condition or retrieve a single named condition by type have no package-level helper to call.\n\nThe `testutil/assertions/assertions.go` file demonstrates this gap: it calls `meta.FindStatusCondition` directly (lines 28, 43, 60, 140) rather than using a `conditions.GetCondition` wrapper.\n\nThe delegating implementations are straightforward:\n\n```go\n// SetCondition upserts condition into conditions, delegating to\n// meta.SetStatusCondition which enforces the Kubernetes API conventions\n// (non-empty Reason, non-negative ObservedGeneration).\nfunc SetCondition(conditions *[]metav1.Condition, condition metav1.Condition) {\n\tmeta.SetStatusCondition(conditions, condition)\n}\n\n// GetCondition returns the condition with the given type, or nil if absent.\nfunc GetCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {\n\treturn meta.FindStatusCondition(conditions, conditionType)\n}\n```\n\nIf these functions were intentionally deferred to a later story, the scope table in the PR description should be updated to reflect that.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: internal/common/conditions/conditions.go\nLine: 1-30\n\nComment:\n`SetCondition` and `GetCondition` are absent from the conditions package.\n\nThe PR description and \"Key Components\" section explicitly list four functions for this package:\n\n- `SetCondition(conditions *[]metav1.Condition, condition metav1.Condition)` — delegates to `meta.SetStatusCondition`\n- `GetCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition` — delegates to `meta.FindStatusCondition`\n- `IsReady`, `AllTrue`\n\nThe current file implements only `IsReady` and `AllTrue`. This is a meaningful API gap: reconcilers that need to set a condition or retrieve a single named condition by type have no package-level helper to call.\n\nThe `testutil/assertions/assertions.go` file demonstrates this gap: it calls `meta.FindStatusCondition` directly (lines 28, 43, 60, 140) rather than using a `conditions.GetCondition` wrapper.\n\nThe delegating implementations are straightforward:\n\n```go\n// SetCondition upserts condition into conditions, delegating to\n// meta.SetStatusCondition which enforces the Kubernetes API conventions\n// (non-empty Reason, non-negative ObservedGeneration).\nfunc SetCondition(conditions *[]metav1.Condition, condition metav1.Condition) {\n\tmeta.SetStatusCondition(conditions, condition)\n}\n\n// GetCondition returns the condition with the given type, or nil if absent.\nfunc GetCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {\n\treturn meta.FindStatusCondition(conditions, conditionType)\n}\n```\n\nIf these functions were intentionally deferred to a later story, the scope table in the PR description should be updated to reflect that.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "internal/common/conditions/conditions.go",
+      "line": 30,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-05T10:40:44Z",
+      "id": null,
+      "resolution": "Added `SetCondition` and `GetCondition` functions to `internal/common/conditions/conditions.go` with the exact signatures and doc comments suggested in the review. Added corresponding table-driven tests in `conditions_test.go` covering empty/nil slices, upsert behavior, adding new types, and lookup among multiple conditions. However, `testutil/assertions/assertions.go` was not updated to use the new `GetCondition` wrapper instead of calling `meta.FindStatusCondition` directly."
+    }
+  ],
+  "resolution_summary": "Added the missing `SetCondition` and `GetCondition` functions to the conditions package as specified in the PR description. Both are thin delegating wrappers around `meta.SetStatusCondition` and `meta.FindStatusCondition` respectively, with comprehensive table-driven tests added. Note: the `testutil/assertions/assertions.go` file was NOT updated to use the new `GetCondition` wrapper in place of its direct `meta.FindStatusCondition` calls (lines 28, 43, 60, 140), so that gap identified by the reviewer remains unaddressed.",
+  "github_review_id": 3895569799
+}

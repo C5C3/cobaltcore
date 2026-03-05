@@ -1,0 +1,37 @@
+{
+  "feature_id": "CC-0004",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer wants an empty-string validation guard added for `spec.PipelineName` in `plugins.go`, consistent with the existing guards for `AppName` and middleware `Name`. Without it, an empty `PipelineName` produces an invalid `[pipeline:]` INI section that PasteDeploy rejects at load time.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-05T11:11:00Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 14,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**Empty `PipelineName` produces an invalid PasteDeploy section name**\n\nThe function guards against empty `AppName` (line 64), empty middleware `Name` (line 44), and an entirely empty pipeline string (line 69–71), but there is no guard for an empty `spec.PipelineName`. When `PipelineName == \"\"`, the section key becomes `\"pipeline:\"` (colon with nothing after it):\n\n```go\npipelineSection := fmt.Sprintf(\"pipeline:%s\", spec.PipelineName)\n// → \"pipeline:\"\n```\n\n`RenderINI` will then render `[pipeline:]`, which PasteDeploy rejects at load time because the pipeline name token is empty. There is no test covering this path.\n\nThis is inconsistent with the error contract established by the other empty-string guards already in this function. Consider adding:\n\n```go\nif spec.PipelineName == \"\" {\n    return nil, fmt.Errorf(\"PipelineName must not be empty\")\n}\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: internal/common/plugins/plugins.go\nLine: 73-76\n\nComment:\n**Empty `PipelineName` produces an invalid PasteDeploy section name**\n\nThe function guards against empty `AppName` (line 64), empty middleware `Name` (line 44), and an entirely empty pipeline string (line 69–71), but there is no guard for an empty `spec.PipelineName`. When `PipelineName == \"\"`, the section key becomes `\"pipeline:\"` (colon with nothing after it):\n\n```go\npipelineSection := fmt.Sprintf(\"pipeline:%s\", spec.PipelineName)\n// → \"pipeline:\"\n```\n\n`RenderINI` will then render `[pipeline:]`, which PasteDeploy rejects at load time because the pipeline name token is empty. There is no test covering this path.\n\nThis is inconsistent with the error contract established by the other empty-string guards already in this function. Consider adding:\n\n```go\nif spec.PipelineName == \"\" {\n    return nil, fmt.Errorf(\"PipelineName must not be empty\")\n}\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "internal/common/plugins/plugins.go",
+      "line": 76,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-05T11:10:59Z",
+      "id": null,
+      "resolution": "Added `if spec.PipelineName == \"\" { return nil, fmt.Errorf(\"PipelineName must not be empty\") }` at the start of `RenderPastePipeline` (plugins.go:39-41) and added a new test `TestRenderPastePipeline_emptyPipelineNameReturnsError` (plugins_test.go:251-267) that exercises the empty-PipelineName path and asserts the error message."
+    }
+  ],
+  "resolution_summary": "Added an empty-string guard for `spec.PipelineName` at the top of `RenderPastePipeline`, consistent with existing guards for `AppName` and middleware `Name`. A dedicated test was also added to verify that an empty `PipelineName` returns the expected error.",
+  "github_review_id": 3895745847
+}

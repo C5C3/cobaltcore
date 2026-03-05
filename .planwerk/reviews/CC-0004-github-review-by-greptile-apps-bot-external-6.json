@@ -1,0 +1,37 @@
+{
+  "feature_id": "CC-0004",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "Add `omitempty` to the `json` tag on `PluginSpec.Config` (line 90) to match the existing `MiddlewareSpec.Config` tag and avoid inconsistent JSON serialization (null vs. omitted) in CRD status diffs.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-05T06:44:43Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 6,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "`PluginSpec.Config` is missing the `omitempty` JSON tag that is present on the analogous `MiddlewareSpec.Config` field (line 113). This inconsistency means a `PluginSpec` with a nil `Config` will serialize as `\"config\": null` in JSON, while a `MiddlewareSpec` will omit the field entirely. This creates a discrepancy that will be visible in CRD status diffs once these types are embedded in S011.\n\n```suggestion\n\tConfig map[string]string `json:\"config,omitempty\"`\n```",
+      "path": "internal/common/types/types.go",
+      "line": 90,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-05T06:44:42Z",
+      "id": null,
+      "resolution": "Added `omitempty` to the `Config` field's JSON tag in `PluginSpec` (line 90) so that a nil `Config` map is omitted from JSON output, consistent with the analogous `MiddlewareSpec.Config` field."
+    }
+  ],
+  "resolution_summary": "Added the missing `omitempty` JSON tag to the `PluginSpec.Config` field to match the existing convention on `MiddlewareSpec.Config`. This ensures consistent JSON serialization behavior where nil maps are omitted rather than serialized as `null`, preventing spurious CRD status diffs when these types are embedded in S011.",
+  "github_review_id": 3894218691
+}

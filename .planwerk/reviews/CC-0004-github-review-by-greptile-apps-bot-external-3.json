@@ -1,0 +1,55 @@
+{
+  "feature_id": "CC-0004",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer flags three issues: (1) `RenderPastePipeline` lacks a duplicate-name guard for middleware, causing silent overwrites — add one matching the existing `RenderPluginConfig` pattern and change the return signature to include an error. (2) `MergePolicies` and (3) `ValidatePolicyRules` both have function signatures that intentionally diverge from the design spec (richer types, extra `fldPath` param), but the spec/PR description was never updated to match — update the planning docs to reflect the actual signatures.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-04T23:00:06Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 3,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**Duplicate middleware `Name` silently produces inconsistent pipeline output**\n\n`RenderPluginConfig` was fixed in this PR to return an error when two `PluginSpec` entries share the same `ConfigSection`. `RenderPastePipeline` has an analogous gap: if two `MiddlewareSpec` entries in `spec.Middleware` share the same `Name` but have different positions or configs, the loop at line 69 overwrites `result[filterSection]` on the second iteration, while both name tokens were already appended to `beforeFilters`/`afterFilters` in the earlier loop. The resulting output is:\n\n- Pipeline directive: `\"audit cors audit service_v3\"` — the name appears twice\n- Filter section: only the **second** entry's factory/config is emitted\n\nThis means the first \"audit\" token in the pipeline references a section that was defined by the second entry's config — silently wrong.\n\nConsider adding a duplicate-name guard consistent with `RenderPluginConfig`:\n\n```go\nseen := make(map[string]struct{}, len(spec.Middleware))\nfor _, mw := range validMiddleware {\n    if _, exists := seen[mw.Name]; exists {\n        return nil, fmt.Errorf(\"duplicate middleware Name %q in pipeline %q\", mw.Name, spec.PipelineName)\n    }\n    seen[mw.Name] = struct{}{}\n    // ... rest of filter section generation\n}\n```\n\n(Note: this would require `RenderPastePipeline` to return `(map[string]map[string]string, error)`, mirroring `RenderPluginConfig`.)",
+      "path": "internal/common/plugins/plugins.go",
+      "line": 78,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-04T23:00:03Z",
+      "id": null,
+      "resolution": "Addressed: Added a `seen` map to detect duplicate middleware Names in RenderPastePipeline, returning a descriptive error when a duplicate is found. Changed the return signature of both RenderPastePipeline and RenderPastePipelineINI to include an error. Updated all existing tests to handle the new error return, and added a new test (TestRenderPastePipeline_duplicateMiddlewareNameReturnsError) verifying the duplicate-name error message includes the middleware name and pipeline name."
+    },
+    {
+      "body": "**`MergePolicies` signature diverges from the stated design without documentation**\n\nThe PR description, task spec (`.planwerk/progress/` stories), and key components section all specify:\n\n> `MergePolicies(inline, external map[string]string) map[string]string` — inline rules take precedence over external\n\nThe implementation instead accepts and returns `types.PolicySpec`, also merging the `ConfigMapRef` field. The implementation is semantically richer and more correct for consumers that need `ConfigMapRef` merging — but this change is undocumented. The pattern seen in the previously-flagged `ValidatePolicyRules` signature discrepancy applies here as well: a silent signature change makes it harder for future contributors to know the canonical interface.\n\nIf this broader signature is intentional (it should be), please update the PR description key components section and the planwerk story description to reflect `MergePolicies(base, override types.PolicySpec) types.PolicySpec` so the design document stays as the single source of truth.",
+      "path": "internal/common/policy/policy.go",
+      "line": 78,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-04T23:00:04Z",
+      "id": null,
+      "resolution": "Not addressed in this diff: The review requested updating the PR description and planwerk story to reflect the actual MergePolicies(base, override types.PolicySpec) types.PolicySpec signature. No documentation or spec file changes are present in the diff."
+    },
+    {
+      "body": "**`ValidatePolicyRules` adds a `fldPath` parameter not present in the spec**\n\nThe task spec and PR description both state the signature as:\n\n> `ValidatePolicyRules(rules map[string]string) field.ErrorList`\n\nThe current implementation adds a required `fldPath *field.Path` parameter. The addition is architecturally sound — it makes error paths context-aware and is the idiomatic pattern for Kubernetes webhook validators. However, it requires every caller to construct a `*field.Path` before calling the function, which is a non-trivial ergonomic change from the stated signature.\n\nSince the previous review comment on this function was about it accepting `types.PolicySpec` and returning `error` (both of which have been corrected), this is a new observation. If the `fldPath` parameter is intentional (and it looks like it is, given the tests pass a concrete path), please update the spec/description to reflect the final signature so downstream integrators aren't surprised.",
+      "path": "internal/common/policy/policy.go",
+      "line": 84,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-04T23:00:05Z",
+      "id": null,
+      "resolution": "Not addressed in this diff: The review requested updating the spec/description to reflect the added fldPath *field.Path parameter in ValidatePolicyRules. No documentation or spec file changes are present in the diff."
+    }
+  ],
+  "resolution_summary": "The diff addresses the duplicate middleware Name issue (comment [0]) by adding a duplicate-name guard in RenderPastePipeline, changing its return signature to (map[string]map[string]string, error), propagating the error through RenderPastePipelineINI, and adding a dedicated test for the duplicate-name error path. Comments [1] and [2] regarding documentation/spec updates for MergePolicies and ValidatePolicyRules signatures are not addressed in this diff—no changes were made to internal/common/policy/policy.go or to any planning/spec documents.",
+  "github_review_id": 3892535853
+}

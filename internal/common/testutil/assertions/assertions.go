@@ -12,21 +12,12 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // Feature: CC-0002
-
-// findCondition returns the condition with the given type, or nil if not found.
-func findCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {
-	for i := range conditions {
-		if conditions[i].Type == conditionType {
-			return &conditions[i]
-		}
-	}
-	return nil
-}
 
 // AssertCondition checks that a condition with the given type exists in the
 // conditions slice and has the expected status. It calls t.Helper() and
@@ -34,7 +25,7 @@ func findCondition(conditions []metav1.Condition, conditionType string) *metav1.
 func AssertCondition(t testing.TB, conditions []metav1.Condition, conditionType string, expectedStatus metav1.ConditionStatus) {
 	t.Helper()
 
-	c := findCondition(conditions, conditionType)
+	c := meta.FindStatusCondition(conditions, conditionType)
 	if c == nil {
 		t.Errorf("condition %q not found; available types: %s", conditionType, conditionTypes(conditions))
 		return
@@ -49,7 +40,7 @@ func AssertCondition(t testing.TB, conditions []metav1.Condition, conditionType 
 func AssertConditionWithReason(t testing.TB, conditions []metav1.Condition, conditionType string, expectedStatus metav1.ConditionStatus, expectedReason string) {
 	t.Helper()
 
-	c := findCondition(conditions, conditionType)
+	c := meta.FindStatusCondition(conditions, conditionType)
 	if c == nil {
 		t.Errorf("condition %q not found; available types: %s", conditionType, conditionTypes(conditions))
 		return
@@ -66,7 +57,7 @@ func AssertConditionWithReason(t testing.TB, conditions []metav1.Condition, cond
 func AssertConditionMissing(t testing.TB, conditions []metav1.Condition, conditionType string) {
 	t.Helper()
 
-	if c := findCondition(conditions, conditionType); c != nil {
+	if c := meta.FindStatusCondition(conditions, conditionType); c != nil {
 		t.Errorf("expected condition %q to be absent, but it exists with status %q", conditionType, c.Status)
 	}
 }
@@ -146,7 +137,7 @@ func EventuallyCondition(t testing.TB, ctx context.Context, opts ConditionPollOp
 					opts.Key.Namespace, opts.Key.Name, opts.ConditionType, err)
 				return
 			}
-			if c := findCondition(opts.Extractor(opts.Obj), opts.ConditionType); c != nil && c.Status == opts.ExpectedStatus {
+			if c := meta.FindStatusCondition(opts.Extractor(opts.Obj), opts.ConditionType); c != nil && c.Status == opts.ExpectedStatus {
 				return // success
 			}
 		}

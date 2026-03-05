@@ -1,0 +1,46 @@
+{
+  "feature_id": "CC-0004",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer asks for two changes:\n\n1. **`MergePolicies`**: Fix the nil/non-nil map normalization so that when either input has a non-nil (but empty) `Rules` map, the result preserves that non-nil status instead of silently collapsing it to `nil`.\n\n2. **`RenderPastePipelineINI` tests**: Add a test case that triggers the duplicate-middleware error path, since current tests only cover success paths and leave that error branch uncovered.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-04T23:26:33Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 5,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**`MergePolicies` silently normalises empty-but-non-nil `Rules` to `nil`**\n\nWhen both `base.Rules` and `override.Rules` are empty (zero length) but non-nil maps, the condition at line 56 evaluates to false and `result.Rules` is left `nil` instead of inheriting the non-nil status of the inputs.\n\nIn practice this is harmless (JSON `omitempty` treats both identically, and `len(nil) == 0`), but it creates a subtle semantic inconsistency: callers that distinguish `nil` (\"field was never set\") from `map[string]string{}` (\"field was explicitly cleared\") will see unexpected null-normalisation here.\n\nConsider preserving the nil/non-nil distinction:\n\n```go\nif base.Rules != nil || override.Rules != nil {\n    result.Rules = make(map[string]string)\n    for k, v := range base.Rules {\n        result.Rules[k] = v\n    }\n    for k, v := range override.Rules {\n        result.Rules[k] = v\n    }\n}\n```",
+      "path": "internal/common/policy/policy.go",
+      "line": 64,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-04T23:26:31Z",
+      "id": null,
+      "resolution": "Changed the guard condition in `MergePolicies` from `len(base.Rules) > 0 || len(override.Rules) > 0` to `base.Rules != nil || override.Rules != nil` in `policy.go:56`, and added a new test case in `policy_test.go` (\"both empty-but-non-nil rules preserves non-nil result\") that verifies two empty-but-non-nil rule maps produce a non-nil result map."
+    },
+    {
+      "body": "**`RenderPastePipelineINI` error propagation is untested**\n\n`TestRenderPastePipelineINI` exercises only success paths. The error return at line 122–123 is never reached by the test suite. While the propagation logic is trivially correct, adding a test case that triggers the duplicate-middleware error would close this coverage gap:\n\n```go\n{\n    name: \"duplicate middleware returns error\",\n    spec: PipelineSpec{\n        PipelineName: \"api_v3\",\n        AppName:      \"service_v3\",\n        BaseFilters:  []string{\"cors\"},\n        Middleware: []types.MiddlewareSpec{\n            {Name: \"audit\", FilterFactory: \"a:ff\", Position: types.PipelinePositionBefore},\n            {Name: \"audit\", FilterFactory: \"b:ff\", Position: types.PipelinePositionAfter},\n        },\n    },\n    wantErr: true,\n    wantErrSubstring: \"duplicate middleware Name\",\n}\n```\n\nNote: `RenderPastePipeline` error cases are tested separately (line 251–278), but the wrapper's error path deserves its own coverage.",
+      "path": "internal/common/plugins/plugins_test.go",
+      "line": 458,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-04T23:26:32Z",
+      "id": null,
+      "resolution": "Added a standalone test function `TestRenderPastePipelineINI_duplicateMiddlewareNameReturnsError` in `plugins_test.go` that exercises the error path with two middleware entries sharing the same name (\"audit\"), asserting that an error is returned containing \"duplicate middleware Name\" and \"audit\", and that the result string is empty."
+    }
+  ],
+  "resolution_summary": "Both review comments were addressed. The `MergePolicies` function condition was changed from `len()>0` to `!=nil` checks to preserve the nil/non-nil semantic distinction for empty maps, with a corresponding test case added to `policy_test.go`. A dedicated test for the `RenderPastePipelineINI` duplicate-middleware error path was added to `plugins_test.go` to close the coverage gap.",
+  "github_review_id": 3892618434
+}

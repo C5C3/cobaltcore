@@ -1,0 +1,37 @@
+{
+  "feature_id": "CC-0004",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer wants a new test added for `InjectOsloPolicyConfig` that covers the empty-path case, asserting that the function returns the exact same map reference (not a copy) when `policyFilePath` is empty — matching the documented no-copy contract that the existing test doesn't verify.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-05T11:51:39Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 20,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "`TestInjectOsloPolicyConfig_doesNotMutateInput` only covers the non-empty-path case (line 409: `\"/etc/nova/policy.yaml\"`). The godoc explicitly documents that when `policyFilePath` is empty, the function \"returns the original config reference unchanged (no copy is made)\" — but this reference-identity contract is untested. A future refactor that accidentally makes a copy for the empty-path case would silently break the documented semantics without any test failure.\n\nConsider adding a test that asserts the reference-identity for the no-op case:\n\n```go\nfunc TestInjectOsloPolicyConfig_emptyPathReturnsOriginalReference(t *testing.T) {\n    g := NewGomegaWithT(t)\n\n    config := map[string]map[string]string{\n        \"DEFAULT\": {\"debug\": \"true\"},\n    }\n\n    result := InjectOsloPolicyConfig(config, \"\")\n\n    // Empty path must return the exact same map reference (documented no-copy contract).\n    g.Expect(result).To(BeIdenticalTo(config))\n\n    // Mutating result must therefore also mutate config (caller beware).\n    result[\"mutated\"] = map[string]string{\"key\": \"val\"}\n    g.Expect(config).To(HaveKey(\"mutated\"))\n}\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: internal/common/config/config_test.go\nLine: 402-415\n\nComment:\n`TestInjectOsloPolicyConfig_doesNotMutateInput` only covers the non-empty-path case (line 409: `\"/etc/nova/policy.yaml\"`). The godoc explicitly documents that when `policyFilePath` is empty, the function \"returns the original config reference unchanged (no copy is made)\" — but this reference-identity contract is untested. A future refactor that accidentally makes a copy for the empty-path case would silently break the documented semantics without any test failure.\n\nConsider adding a test that asserts the reference-identity for the no-op case:\n\n```go\nfunc TestInjectOsloPolicyConfig_emptyPathReturnsOriginalReference(t *testing.T) {\n    g := NewGomegaWithT(t)\n\n    config := map[string]map[string]string{\n        \"DEFAULT\": {\"debug\": \"true\"},\n    }\n\n    result := InjectOsloPolicyConfig(config, \"\")\n\n    // Empty path must return the exact same map reference (documented no-copy contract).\n    g.Expect(result).To(BeIdenticalTo(config))\n\n    // Mutating result must therefore also mutate config (caller beware).\n    result[\"mutated\"] = map[string]string{\"key\": \"val\"}\n    g.Expect(config).To(HaveKey(\"mutated\"))\n}\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "internal/common/config/config_test.go",
+      "line": 415,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-05T11:51:39Z",
+      "id": null,
+      "resolution": "Added the suggested test `TestInjectOsloPolicyConfig_emptyPathReturnsOriginalReference` largely as proposed by the reviewer. The only deviation is that `BeIdenticalTo` cannot be used directly on Go maps (they are not comparable with `==`), so the pointer-identity assertion was implemented using `reflect.ValueOf(result).Pointer()` compared to `reflect.ValueOf(config).Pointer()` instead. The mutation-based assertion (`result[\"mutated\"]` propagating to `config`) was kept as suggested. A new `reflect` import was added to support this."
+    }
+  ],
+  "resolution_summary": "Added a new test `TestInjectOsloPolicyConfig_emptyPathReturnsOriginalReference` that verifies the documented no-copy contract when `policyFilePath` is empty. The test confirms the returned map is the same reference as the input (via `reflect.ValueOf().Pointer()` comparison) and that mutating the result also mutates the original config.",
+  "github_review_id": 3895952477
+}

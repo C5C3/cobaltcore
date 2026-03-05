@@ -1,0 +1,46 @@
+{
+  "feature_id": "CC-0004",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer wants two changes:\n\n1. **Fix incorrect godoc comments** on `PipelinePositionBefore` and `PipelinePositionAfter` — the current docs describe the opposite of what the code actually does (e.g., \"after the application\" when the app is always last in the pipeline).\n2. **Guard against silent key collision** in `plugins.go` — `mw.Config` can overwrite the `\"paste.filter_factory\"` entry set by the dedicated `FilterFactory` field; either skip that key during the map merge or document the restriction.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-04T23:10:40Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 4,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**`PipelinePositionAfter` godoc contradicts the actual pipeline ordering**\n\nThe pipeline is built as `[before] [base] [after] [app]`, so `PipelinePositionAfter` places middleware *after the base filters but still before the terminal application*. The current godoc — \"inserts middleware after the application\" — says the exact opposite of what happens. `PipelinePositionBefore` is also slightly imprecise (\"before the application\" rather than \"before the base filters\"), but the `After` case is the more confusing one since the app is always last.\n\n```suggestion\n\t// PipelinePositionBefore inserts middleware before the base filters in the pipeline.\n\tPipelinePositionBefore PipelinePosition = \"before\"\n\t// PipelinePositionAfter inserts middleware after the base filters but before\n\t// the terminal application in the pipeline.\n\tPipelinePositionAfter PipelinePosition = \"after\"\n```",
+      "path": "internal/common/types/types.go",
+      "line": 101,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-04T23:10:39Z",
+      "id": null,
+      "resolution": "Updated the godoc for PipelinePositionBefore to say 'before the base filters in the pipeline' and PipelinePositionAfter to say 'after the base filters but before the terminal application in the pipeline', matching the reviewer's suggestion exactly."
+    },
+    {
+      "body": "**`mw.Config` can silently overwrite the `paste.filter_factory` entry**\n\nThe filter section map is initialized with `\"paste.filter_factory\": mw.FilterFactory` and then immediately overlaid with the contents of `mw.Config`. If a caller includes `\"paste.filter_factory\"` in `mw.Config` (accidentally or not), the value set from the dedicated `FilterFactory` field is silently overwritten and the INI output will contain the wrong factory entry.\n\nConsider either guarding against this key in `mw.Config`, or documenting clearly in godoc that `Config` must not contain `\"paste.filter_factory\"`:\n\n```go\nfilterConfig := map[string]string{\n    \"paste.filter_factory\": mw.FilterFactory,\n}\nfor k, v := range mw.Config {\n    if k == \"paste.filter_factory\" {\n        continue // FilterFactory field takes precedence\n    }\n    filterConfig[k] = v\n}\n```",
+      "path": "internal/common/plugins/plugins.go",
+      "line": 86,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-04T23:10:39Z",
+      "id": null,
+      "resolution": "Added a guard in the Config iteration loop that skips the 'paste.filter_factory' key so the dedicated FilterFactory field always takes precedence, matching the reviewer's suggested code. Also added a new test case in plugins_test.go ('Config with paste.filter_factory key does not overwrite FilterFactory field') that verifies the correct factory value is preserved and extra config keys are still applied."
+    }
+  ],
+  "resolution_summary": "Fixed inaccurate godoc comments for PipelinePositionBefore and PipelinePositionAfter to correctly describe their placement relative to base filters and the terminal application. Added a guard in RenderPastePipeline to prevent mw.Config from silently overwriting the paste.filter_factory entry set by the dedicated FilterFactory field. A corresponding test case was added in plugins_test.go to verify this guard behavior.",
+  "github_review_id": 3892573307
+}
