@@ -696,6 +696,7 @@
       "description": "Create internal/common/database/ package with doc.go (Feature: CC-0005). Implement EnsureDatabase: use controllerutil.CreateOrUpdate with typed mariadbv1alpha1.Database, set owner ref, check status conditions for Ready=True, return (bool, error). Implement EnsureDatabaseUser: create or update mariadbv1alpha1.User and mariadbv1alpha1.Grant with owner refs, check status readiness, return (bool, error). Implement RunDBSyncJob: build batchv1.Job with provided image, command, env vars; delegate to job.RunJob; return (bool, error). Depends on job/ package from task 2.1.",
       "level": 4,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-010",
@@ -708,6 +709,7 @@
       "description": "Create internal/common/database/integration_test.go with //go:build integration tag. Test EnsureDatabase: create Database CR, verify exists with owner ref, simulate ready via SimulateDatabaseReady, verify returns (true, nil). Test idempotency. Test EnsureDatabaseUser: create User and Grant CRs, verify both exist with owner refs, simulate ready. Test RunDBSyncJob: verify Job created, simulate completion, verify returns (true, nil). Test error paths (missing resources).",
       "level": 4,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-012"
@@ -1540,6 +1542,195 @@
     {
       "test_file": "internal/common/policy/policy_test.go",
       "test_function": "TestLoadPolicyFromConfigMap",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/integration_test.go",
+      "test_function": "TestIntegration_WaitForExternalSecret_NotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/integration_test.go",
+      "test_function": "TestIntegration_WaitForExternalSecret_Ready",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/integration_test.go",
+      "test_function": "TestIntegration_IsSecretReady_NotFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/integration_test.go",
+      "test_function": "TestIntegration_IsSecretReady_Exists",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/integration_test.go",
+      "test_function": "TestIntegration_GetSecretValue_ReadsValue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/integration_test.go",
+      "test_function": "TestIntegration_EnsurePushSecret_CreatesWithOwnerRef",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestWaitForExternalSecret_NotFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestWaitForExternalSecret_ExistsButNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestWaitForExternalSecret_ExistsAndReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestWaitForExternalSecret_NoConditions",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestIsSecretReady_Exists",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestIsSecretReady_NotFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestGetSecretValue_ReturnsValue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestGetSecretValue_SecretNotFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestGetSecretValue_KeyNotFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestEnsurePushSecret_Creates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestEnsurePushSecret_SetsOwnerReference",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestEnsurePushSecret_UpdatesExisting",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/integration_test.go",
+      "test_function": "TestIntegration_EnsureCertificate_CreatesInCluster",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/integration_test.go",
+      "test_function": "TestIntegration_EnsureCertificate_UpdatesExisting",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/integration_test.go",
+      "test_function": "TestIntegration_GetTLSSecret_RetrievesSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/integration_test.go",
+      "test_function": "TestIntegration_GetTLSSecret_ReturnsError_WhenNotFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestEnsureCertificate_createsCertificate",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestEnsureCertificate_setsOwnerReference",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestEnsureCertificate_updatesCertificate",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestGetTLSSecret_returnsSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestGetTLSSecret_returnsError_whenNotFound",
       "story": "",
       "expected": "Discovered during implementation",
       "requirement_id": ""
