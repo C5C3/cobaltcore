@@ -12,7 +12,9 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-ins
     build-essential \
     git \
     libffi-dev \
+    libldap2-dev \
     libpq-dev \
+    libsasl2-dev \
     libssl-dev \
     python3-dev \
     python3-venv \

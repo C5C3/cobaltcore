@@ -1,0 +1,253 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+name: Build Images
+
+"on":
+  push:
+    branches:
+      - main
+      - stable/**
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.ref }}-${{ github.workflow }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-base-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      python-base-image: ghcr.io/${{ steps.meta.outputs.owner }}/python-base@${{ steps.build-python-base.outputs.digest }}
+      venv-builder-image: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder@${{ steps.build-venv-builder.outputs.digest }}
+    steps:
+      # CC-0007: Fork PRs receive a read-only GITHUB_TOKEN that cannot push
+      # to GHCR. Since base images must be pushed (docker-image:// URIs require
+      # registry availability), fork PRs are unsupported. Fail fast with a
+      # clear message rather than failing mid-build with a cryptic 403.
+      - name: Reject fork PRs
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "::error::Fork PRs are not supported. Base images must be pushed to GHCR, which requires packages:write. Fork PRs receive a read-only GITHUB_TOKEN. Please open your PR from a branch in the upstream repository."
+          exit 1
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Normalize image owner
+        id: meta
+        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push python-base
+        id: build-python-base
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: images/python-base
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ steps.meta.outputs.owner }}/python-base:latest
+            ghcr.io/${{ steps.meta.outputs.owner }}/python-base:${{ github.sha }}
+          cache-from: type=gha,scope=python-base
+          cache-to: type=gha,mode=max,scope=python-base
+
+      - name: Build and push venv-builder
+        id: build-venv-builder
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: images/venv-builder
+          build-contexts: |
+            python-base=docker-image://ghcr.io/${{ steps.meta.outputs.owner }}/python-base@${{ steps.build-python-base.outputs.digest }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder:latest
+            ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder:${{ github.sha }}
+          cache-from: type=gha,scope=venv-builder
+          cache-to: type=gha,mode=max,scope=venv-builder
+
+  build-service-images:
+    needs: [build-base-images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [keystone]
+        release: ["2025.2"]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Resolve source ref
+        id: source-ref
+        env:
+          MATRIX_SERVICE: ${{ matrix.service }}
+          MATRIX_RELEASE: ${{ matrix.release }}
+        run: |
+          ref=$(yq ".\"${MATRIX_SERVICE}\"" "releases/${MATRIX_RELEASE}/source-refs.yaml")
+          if [ -z "$ref" ] || [ "$ref" = "null" ]; then
+            echo "::error::No source-ref found for '${MATRIX_SERVICE}' in releases/${MATRIX_RELEASE}/source-refs.yaml"
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "Resolved ${MATRIX_SERVICE} source ref: $ref"
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          repository: openstack/${{ matrix.service }}
+          ref: ${{ steps.source-ref.outputs.ref }}
+          path: src/${{ matrix.service }}
+          fetch-depth: 1
+
+      - name: Apply patches
+        if: hashFiles(format('patches/{0}/{1}/*.patch', matrix.service, matrix.release)) != ''
+        env:
+          MATRIX_SERVICE: ${{ matrix.service }}
+          MATRIX_RELEASE: ${{ matrix.release }}
+        run: git -C "src/${MATRIX_SERVICE}" apply "${GITHUB_WORKSPACE}/patches/${MATRIX_SERVICE}/${MATRIX_RELEASE}"/*.patch
+
+      - name: Apply constraint overrides
+        env:
+          MATRIX_RELEASE: ${{ matrix.release }}
+        run: scripts/apply-constraint-overrides.sh "$MATRIX_RELEASE"
+
+      - name: Derive tags
+        id: tags
+        env:
+          VERSION: ${{ steps.source-ref.outputs.ref }}
+          MATRIX_SERVICE: ${{ matrix.service }}
+          MATRIX_RELEASE: ${{ matrix.release }}
+          IMAGE_OWNER: ${{ github.repository_owner }}
+        run: |
+          IMAGE_OWNER="${IMAGE_OWNER,,}"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          BRANCH="${GITHUB_REF_NAME//\//-}"
+
+          PATCH_DIR="patches/${MATRIX_SERVICE}/${MATRIX_RELEASE}"
+          if [ -d "$PATCH_DIR" ]; then
+            PATCH_COUNT=$(find "$PATCH_DIR" -name '*.patch' -type f | wc -l | xargs)
+          else
+            PATCH_COUNT=0
+          fi
+
+          IMAGE="ghcr.io/${IMAGE_OWNER}/${MATRIX_SERVICE}"
+          COMPOSITE="${VERSION}-p${PATCH_COUNT}-${BRANCH}-${SHORT_SHA}"
+
+          echo "composite=${IMAGE}:${COMPOSITE}" >> "$GITHUB_OUTPUT"
+          echo "version=${IMAGE}:${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "sha=${IMAGE}:${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "Tags: ${COMPOSITE}, ${VERSION}, ${SHORT_SHA}"
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build service image
+        id: build-service
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: images/${{ matrix.service }}
+          file: images/${{ matrix.service }}/Dockerfile
+          build-contexts: |
+            python-base=docker-image://${{ needs.build-base-images.outputs.python-base-image }}
+            venv-builder=docker-image://${{ needs.build-base-images.outputs.venv-builder-image }}
+            ${{ matrix.service }}=src/${{ matrix.service }}
+            upper-constraints=releases/${{ matrix.release }}/
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          load: ${{ github.event_name == 'pull_request' }}
+          push: ${{ github.event_name != 'pull_request' }}
+          # CC-0007: The version-only tag (e.g. keystone:28.0.0) is restricted
+          # to main to prevent silent overwrites across branches. The composite
+          # tag already encodes branch, so stable/** builds remain identifiable.
+          tags: |
+            ${{ steps.tags.outputs.composite }}
+            ${{ github.ref_name == 'main' && steps.tags.outputs.version || '' }}
+            ${{ steps.tags.outputs.sha }}
+          cache-from: type=gha,scope=${{ matrix.service }}-${{ matrix.release }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}-${{ matrix.release }}
+
+      - name: Smoke test (PR)
+        if: github.event_name == 'pull_request'
+        env:
+          IMAGE_REF: ${{ steps.tags.outputs.composite }}
+          MATRIX_SERVICE: ${{ matrix.service }}
+        run: docker run --rm "$IMAGE_REF" "${MATRIX_SERVICE}-manage" --version
+
+  smoke-test:
+    if: github.event_name != 'pull_request'
+    needs: [build-service-images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [keystone]
+        release: ["2025.2"]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # NOTE: This tag derivation MUST stay in sync with the 'Derive tags' step
+      # in build-service-images. If the tag format changes there, update this
+      # step too — otherwise smoke-test pulls a ref that was never pushed.
+      - name: Derive image ref
+        id: tags
+        env:
+          MATRIX_SERVICE: ${{ matrix.service }}
+          MATRIX_RELEASE: ${{ matrix.release }}
+          IMAGE_OWNER: ${{ github.repository_owner }}
+        run: |
+          IMAGE_OWNER="${IMAGE_OWNER,,}"
+          VERSION=$(yq ".\"${MATRIX_SERVICE}\"" "releases/${MATRIX_RELEASE}/source-refs.yaml")
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            echo "::error::No source-ref found for '${MATRIX_SERVICE}' in releases/${MATRIX_RELEASE}/source-refs.yaml"
+            exit 1
+          fi
+          SHORT_SHA="${GITHUB_SHA::7}"
+          BRANCH="${GITHUB_REF_NAME//\//-}"
+          PATCH_DIR="patches/${MATRIX_SERVICE}/${MATRIX_RELEASE}"
+          if [ -d "$PATCH_DIR" ]; then
+            PATCH_COUNT=$(find "$PATCH_DIR" -name '*.patch' -type f | wc -l | xargs)
+          else
+            PATCH_COUNT=0
+          fi
+          IMAGE="ghcr.io/${IMAGE_OWNER}/${MATRIX_SERVICE}"
+          echo "image-ref=${IMAGE}:${VERSION}-p${PATCH_COUNT}-${BRANCH}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Pull and test image
+        env:
+          IMAGE_REF: ${{ steps.tags.outputs.image-ref }}
+          MATRIX_SERVICE: ${{ matrix.service }}
+        run: |
+          docker pull "$IMAGE_REF"
+          docker run --rm "$IMAGE_REF" "${MATRIX_SERVICE}-manage" --version

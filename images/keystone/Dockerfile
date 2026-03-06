@@ -11,9 +11,11 @@ FROM venv-builder AS build
 #   --build-context upper-constraints=<path-to-release-dir>
 RUN --mount=type=bind,from=upper-constraints,source=upper-constraints.txt,target=/tmp/upper-constraints.txt \
     --mount=type=bind,from=keystone,target=/tmp/keystone \
+    cp -a /tmp/keystone /tmp/keystone-build && \
     uv pip install --prefix /var/lib/openstack \
         --constraint /tmp/upper-constraints.txt \
-        "/tmp/keystone[ldap,memcache_pool,oauth1]"
+        "/tmp/keystone-build[ldap,memcache_pool,oauth1]" && \
+    rm -rf /tmp/keystone-build
 
 # ---------- Stage 2: runtime ----------
 FROM python-base
@@ -27,7 +29,7 @@ COPY --from=build --link /var/lib/openstack /var/lib/openstack
 # Runtime system packages required by Keystone
 RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends \
     libapache2-mod-wsgi-py3 \
-    libldap-2.5-0 \
+    libldap2 \
     libsasl2-2 \
     libxml2 \
     && rm -rf /var/lib/apt/lists/*

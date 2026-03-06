@@ -1,0 +1,46 @@
+{
+  "feature_id": "CC-0007",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer wants two changes to the CI workflow:\n\n1. **Add SHA-based tags to base images**: `python-base` and `venv-builder` currently only push `:latest`, which gets overwritten every run with no way to trace or roll back. Add a `:<commit-sha>` tag alongside `:latest` for immutable references.\n\n2. **Set `fail-fast: false` on matrix jobs**: Both `build-service-images` and `smoke-test` use the default `fail-fast: true`, which will cancel sibling matrix legs on failure once more services are added. Set `fail-fast: false` so all matrix combinations run independently.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-06T21:04:40Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 3,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "Base images tagged only as `:latest` with no immutable history.\n\nBoth `python-base` and `venv-builder` are pushed with a single `:latest` tag (lines 53 and 66). Each workflow run overwrites the previous tag, including on PR builds. While the `build-service-images` job pins to exact digests — preserving per-run reproducibility — there is no way to identify which commit produced the currently-published `:latest`, or to retrieve an earlier base image version without a digest from a workflow run artifact.\n\nAdding a SHA-tagged label (e.g., `python-base:${{ github.sha }}`) alongside `:latest` would provide an immutable reference for auditing and rollback:\n\n```suggestion\n      - name: Build and push python-base\n        id: build-python-base\n        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6\n        with:\n          context: images/python-base\n          platforms: linux/amd64,linux/arm64\n          push: true\n          tags: |\n            ghcr.io/${{ steps.meta.outputs.owner }}/python-base:latest\n            ghcr.io/${{ steps.meta.outputs.owner }}/python-base:${{ github.sha }}\n          cache-from: type=gha,scope=python-base\n          cache-to: type=gha,mode=max,scope=python-base\n\n      - name: Build and push venv-builder\n        id: build-venv-builder\n        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6\n        with:\n          context: images/venv-builder\n          build-contexts: |\n            python-base=docker-image://${{ steps.meta.outputs.owner }}/python-base@${{ steps.build-python-base.outputs.digest }}\n          platforms: linux/amd64,linux/arm64\n          push: true\n          tags: |\n            ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder:latest\n            ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder:${{ github.sha }}\n          cache-from: type=gha,scope=venv-builder\n          cache-to: type=gha,mode=max,scope=venv-builder\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: .github/workflows/build-images.yaml\nLine: 46-68\n\nComment:\nBase images tagged only as `:latest` with no immutable history.\n\nBoth `python-base` and `venv-builder` are pushed with a single `:latest` tag (lines 53 and 66). Each workflow run overwrites the previous tag, including on PR builds. While the `build-service-images` job pins to exact digests — preserving per-run reproducibility — there is no way to identify which commit produced the currently-published `:latest`, or to retrieve an earlier base image version without a digest from a workflow run artifact.\n\nAdding a SHA-tagged label (e.g., `python-base:${{ github.sha }}`) alongside `:latest` would provide an immutable reference for auditing and rollback:\n\n```suggestion\n      - name: Build and push python-base\n        id: build-python-base\n        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6\n        with:\n          context: images/python-base\n          platforms: linux/amd64,linux/arm64\n          push: true\n          tags: |\n            ghcr.io/${{ steps.meta.outputs.owner }}/python-base:latest\n            ghcr.io/${{ steps.meta.outputs.owner }}/python-base:${{ github.sha }}\n          cache-from: type=gha,scope=python-base\n          cache-to: type=gha,mode=max,scope=python-base\n\n      - name: Build and push venv-builder\n        id: build-venv-builder\n        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6\n        with:\n          context: images/venv-builder\n          build-contexts: |\n            python-base=docker-image://${{ steps.meta.outputs.owner }}/python-base@${{ steps.build-python-base.outputs.digest }}\n          platforms: linux/amd64,linux/arm64\n          push: true\n          tags: |\n            ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder:latest\n            ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder:${{ github.sha }}\n          cache-from: type=gha,scope=venv-builder\n          cache-to: type=gha,mode=max,scope=venv-builder\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": ".github/workflows/build-images.yaml",
+      "line": 68,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-06T21:04:38Z",
+      "id": null,
+      "resolution": "Added `${{ github.sha }}` tag alongside `:latest` for both `python-base` (line 65) and `venv-builder` (line 80), matching the reviewer's suggested code exactly. Both base images now have an immutable SHA-tagged reference for auditing and rollback."
+    },
+    {
+      "body": "`fail-fast: true` (default) will silence failures when matrix is extended.\n\nBoth `build-service-images` (lines 77–80) and `smoke-test` (lines 189–192) use the default `fail-fast: true`. When the matrix is expanded beyond the current single `[keystone]` entry (as documented under \"Adding a New Service\" in `docs/reference/build-images-workflow.md`), a failure in one service/release combination will immediately cancel all remaining matrix legs. This makes it impossible to detect whether multiple services are broken in a single run; each must be fixed and re-run sequentially to reveal the next failure.\n\nBoth matrix jobs should opt out before matrix expansion occurs:\n\n```suggestion\n    strategy:\n      fail-fast: false\n      matrix:\n        service: [keystone]\n        release: [\"2025.2\"]\n```\n\nThe same applies to the `smoke-test` job matrix (lines 189–192).\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: .github/workflows/build-images.yaml\nLine: 77-86\n\nComment:\n`fail-fast: true` (default) will silence failures when matrix is extended.\n\nBoth `build-service-images` (lines 77–80) and `smoke-test` (lines 189–192) use the default `fail-fast: true`. When the matrix is expanded beyond the current single `[keystone]` entry (as documented under \"Adding a New Service\" in `docs/reference/build-images-workflow.md`), a failure in one service/release combination will immediately cancel all remaining matrix legs. This makes it impossible to detect whether multiple services are broken in a single run; each must be fixed and re-run sequentially to reveal the next failure.\n\nBoth matrix jobs should opt out before matrix expansion occurs:\n\n```suggestion\n    strategy:\n      fail-fast: false\n      matrix:\n        service: [keystone]\n        release: [\"2025.2\"]\n```\n\nThe same applies to the `smoke-test` job matrix (lines 189–192).\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": ".github/workflows/build-images.yaml",
+      "line": 86,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-06T21:04:39Z",
+      "id": null,
+      "resolution": "Added `fail-fast: false` to both the `build-service-images` strategy (line 92) and the `smoke-test` strategy (line 202), matching the reviewer's suggestion. This ensures all matrix legs run to completion even when one fails, enabling detection of multiple broken services in a single run."
+    }
+  ],
+  "resolution_summary": "Both review comments were addressed exactly as suggested. SHA-tagged labels were added alongside :latest for python-base and venv-builder base images, and fail-fast: false was added to both the build-service-images and smoke-test matrix strategies. No additional changes were made beyond the two files/locations mentioned in the review.",
+  "github_review_id": 3906032279
+}

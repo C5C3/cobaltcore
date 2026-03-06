@@ -1,0 +1,68 @@
+{
+  "summary": "Review of changes addressing greptile-apps[bot] review feedback: (1) hardcoded keystone-manage replaced with dynamic ${MATRIX_SERVICE}-manage, (2) smoke-test job restructured with its own matrix strategy and independent image-ref derivation to eliminate single-output limitation, (3) wc -l output trimmed with xargs. All 60 verification tests pass. YAML validates. One documentation accuracy issue found: smoke-test permissions section in docs/reference/build-images-workflow.md omits contents: read.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (60/60 passed)", "checked": true},
+    {"item": "Edge cases covered: dynamic smoke test command, matrix strategy, independent tag derivation", "checked": true},
+    {"item": "New tests for smoke-test matrix (test_smoke_test_has_matrix) and independent derivation (test_smoke_test_derives_image_ref)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing workflow patterns (ci.yaml conventions)", "checked": true},
+    {"item": "Expression injection defense via env vars consistently applied", "checked": true},
+    {"item": "Tag derivation logic duplicated between build-service-images and smoke-test (acceptable GHA limitation)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No direct interpolation of matrix values in run: blocks (expression injection defense)", "checked": true},
+    {"item": "GITHUB_TOKEN used for GHCR auth (no hardcoded secrets)", "checked": true},
+    {"item": "Job-level permissions scoped appropriately (packages: write only on build jobs)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "smoke-test job independently derives image refs via own matrix (eliminates single-output limitation)", "checked": true},
+    {"item": "Dynamic service-manage dispatch works for any OpenStack service added to matrix", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "Tag derivation duplication is justified by GHA job isolation (no shared shell between jobs)", "checked": true},
+    {"item": "Matrix must be kept in sync between build-service-images and smoke-test (documented in Adding a New Service section)", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Smoke test fails workflow on non-zero exit from service-manage --version", "checked": true},
+    {"item": "wc -l whitespace trimmed with xargs to prevent invalid Docker tags", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "PATCH_COUNT defaults to 0 when patches directory absent", "checked": true},
+    {"item": "Branch name sanitized (slash to dash) for Docker tag compatibility", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "id": "DA3-1",
+      "severity": "major",
+      "check_id": "DA3",
+      "description": "Documentation permissions section for smoke-test job is inaccurate after adding checkout step. The docs show only `packages: read` but the code has both `contents: read` and `packages: read`. In GHA, job-level permissions OVERRIDE (not merge with) top-level permissions, so `contents: read` is required for the checkout step to work. The text at line 55-56 stating 'The smoke-test job receives only packages: read' is wrong.",
+      "location": "docs/reference/build-images-workflow.md:46-56",
+      "fix": "Update the smoke-test permissions snippet (line 48-51) to include `contents: read` alongside `packages: read`. Update the explanatory text (line 55-56) to mention both permissions: 'The smoke-test job receives contents: read (for checkout to access source-refs.yaml) and packages: read (sufficient for pulling images), following the principle of least privilege.'"
+    }
+  ],
+  "suggested_improvements": [
+    "D3/Q7: The build-service-images output `image-ref` (line 82) is no longer consumed by any job within this workflow since smoke-test now derives its own refs. The NOTE comment explains the limitation but consider removing the output entirely to avoid confusion, or documenting it as available for external workflow_call consumers."
+  ],
+  "next_steps": [
+    "Fix DA3-1: Update docs/reference/build-images-workflow.md smoke-test permissions section to include contents: read"
+  ],
+  "detected_patterns": [],
+  "metadata": {
+    "feature_id": "CC-0007",
+    "title": "C002: Add container image CI workflow",
+    "date": "2026-03-06",
+    "verdict": "NEEDS_CHANGES",
+    "review_sequence": 2,
+    "tests_run": "verify_build_images_workflow.sh: 60 passed, 0 failed",
+    "yaml_valid": true,
+    "external_review_fixes_verified": {
+      "hardcoded_keystone_manage": "Fixed: dynamic ${MATRIX_SERVICE}-manage in both PR inline and push smoke-test",
+      "matrix_output_limitation": "Fixed: smoke-test has own matrix + independent tag derivation",
+      "wc_whitespace": "Fixed: | xargs in both build-service-images and smoke-test"
+    }
+  }
+}

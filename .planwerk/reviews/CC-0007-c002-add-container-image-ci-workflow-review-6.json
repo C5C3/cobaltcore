@@ -1,0 +1,40 @@
+{
+  "feature_id": "CC-0007",
+  "title": "C002: Add container image CI workflow",
+  "date": "2026-03-06",
+  "summary": "Review of fix addressing external review #5 feedback: added `fetch-depth: 1` to the `actions/checkout` step for the upstream `openstack/${{ matrix.service }}` repository checkout. The change is a single-line addition at line 118 of `.github/workflows/build-images.yaml` that limits the clone to the tip commit at the resolved ref, avoiding hundreds of MB of unnecessary git history from long-lived OpenStack projects. A new review pattern file `.planwerk/review_patterns/require-shallow-clone-for-external-repository-checkouts-in-ci.md` was persisted to catch this in future reviews. All 75 verification tests pass. YAML validates. No regressions.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "All 75 verification tests in verify_build_images_workflow.sh pass", "checked": true},
+    {"item": "YAML validates (yq . exits 0)", "checked": true},
+    {"item": "Edge cases covered (patch application with shallow clone is safe — git apply works on working tree)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (fetch-depth: 1 is standard GHA convention for checkouts that don't need history)", "checked": true},
+    {"item": "Minimal change — single line addition, no scope creep", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No secrets or credentials exposed", "checked": true},
+    {"item": "No expression injection vectors introduced", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible (single line addition)", "checked": true},
+    {"item": "Compatible with downstream steps (git apply, Docker build context)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unnecessary additions", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early (existing null guards and fork PR rejection unchanged)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Shallow clone is safe for all downstream consumers (git apply, Dockerfile COPY)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": []
+}

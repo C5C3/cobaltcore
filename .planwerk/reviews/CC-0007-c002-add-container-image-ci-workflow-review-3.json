@@ -1,0 +1,51 @@
+{
+  "feature_id": "CC-0007",
+  "title": "C002: Add container image CI workflow",
+  "date": "2026-03-06",
+  "verdict": "APPROVED",
+  "summary": "All four external review comments from greptile-apps[bot] were correctly addressed: (1) fork PRs are rejected early with a clear ::error:: message, (2) the mutable version-only tag is restricted to main-only pushes preventing cross-branch clobbering, (3) the unused image-ref output was removed from build-service-images, (4) base images now receive an immutable :${{ github.sha }} tag alongside :latest for commit-to-image traceability. Documentation updated consistently. All 61 verification tests pass. YAML validates. No new bugs introduced.",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (61/61 in verify_build_images_workflow.sh)", "checked": true},
+    {"item": "Edge cases are covered (tag derivation, branch sanitization, patch count)", "checked": true},
+    {"item": "REQ-001 through REQ-009 have test coverage", "checked": true},
+    {"item": "New behaviors from review #2 fixes have dedicated tests", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (SPDX header, quoted on, SHA pinning)", "checked": true},
+    {"item": "Changes are minimal and focused on review feedback", "checked": true},
+    {"item": "No dead code or unused outputs remain", "checked": true},
+    {"item": "Comments explain non-obvious rationale (fork PR, version tag restriction)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Fork PR detection uses correct GHA context (github.event.pull_request.head.repo.full_name)", "checked": true},
+    {"item": "No expression injection in run: blocks (env vars used consistently)", "checked": true},
+    {"item": "GITHUB_TOKEN permissions scoped per-job (least privilege)", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible (GHA ternary for version tag, conditional step for fork check)", "checked": true},
+    {"item": "Documentation matches implementation", "checked": true},
+    {"item": "Review patterns created to prevent recurrence of missed issues", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "Removed unused image-ref output (YAGNI)", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Fork PRs fail fast before any build steps execute", "checked": true},
+    {"item": "Smoke test fails workflow on non-zero exit", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Fork PR check prevents cryptic 403 errors mid-build", "checked": true},
+    {"item": "Version tag restricted to main prevents silent cross-branch clobbering", "checked": true},
+    {"item": "SHA tags on base images provide immutable audit trail", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "D4: Consider adding test functions to verify_build_images_workflow.sh for the three new behaviors: (1) test_fork_pr_rejection_step_exists — verify the 'Reject fork PRs' step exists in build-base-images with the correct if condition, (2) test_base_images_have_sha_tags — verify both python-base and venv-builder tags include ${{ github.sha }}, (3) test_version_tag_restricted_to_main — verify the version tag line in build-service-images contains the github.ref_name == 'main' conditional. These are low-risk since the behaviors are simple GHA expressions, but explicit tests prevent future regressions."
+  ],
+  "next_steps": [],
+  "detected_patterns": []
+}

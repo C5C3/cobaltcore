@@ -1,0 +1,189 @@
+{
+  "summary": "Workflow file is well-structured and matches ci.yaml conventions. All 37 validation tests pass, YAML is valid, action SHAs are verified legitimate, and the core build/tag/smoke-test logic is correct for the current single-entry matrix. Two categories of major issues: (1) test script has significant coverage gaps for 6 of 9 requirements, and (2) docs inaccurately claim adding new services requires no workflow changes when the smoke test is hardcoded to keystone-manage. Minor security hardening suggestions for expression injection patterns.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (37/37)", "checked": true},
+    {"item": "REQ-001 push/PR triggers covered", "checked": true},
+    {"item": "REQ-002 base images always push verified", "checked": true},
+    {"item": "REQ-002 base images multi-arch verified", "checked": false},
+    {"item": "REQ-003 base image digest ref outputs verified", "checked": false},
+    {"item": "REQ-004 yq source ref resolution step verified", "checked": false},
+    {"item": "REQ-004 conditional patch application step verified", "checked": false},
+    {"item": "REQ-004 constraint overrides step verified", "checked": false},
+    {"item": "REQ-004 four build-contexts verified", "checked": true},
+    {"item": "REQ-005 composite tag components verified", "checked": true},
+    {"item": "REQ-005 branch sanitization verified", "checked": false},
+    {"item": "REQ-005 version and sha output tags verified", "checked": false},
+    {"item": "REQ-006 PR single-arch/load behavior verified (weak assertions)", "checked": false},
+    {"item": "REQ-007 keystone-manage --version command verified", "checked": false},
+    {"item": "REQ-008 SPDX, quoted on, permissions, concurrency, pinning, timeout, runner covered", "checked": true},
+    {"item": "REQ-009 GHA cache-from verified", "checked": true},
+    {"item": "REQ-009 GHA cache-to verified", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing GitHub Actions workflow patterns (SPDX, quoted on, permissions, concurrency)", "checked": true},
+    {"item": "Action SHAs verified legitimate (checkout v6, buildx v3, login v3.7.0, build-push v6.19.2)", "checked": true},
+    {"item": "Tag derivation step uses env vars for safe expression handling", "checked": true},
+    {"item": "GHA caching with scoped keys prevents collisions", "checked": true},
+    {"item": "Test script follows shell test script pattern (assertions.sh, PASS/FAIL counters)", "checked": true},
+    {"item": "Docs follow ci-workflow.md reference doc convention (frontmatter, tables, sections)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "All actions pinned to 40-char commit SHAs with version comments", "checked": true},
+    {"item": "No hardcoded secrets (uses GITHUB_TOKEN via secrets context)", "checked": true},
+    {"item": "Matrix values hardcoded (not user-controllable)", "checked": true},
+    {"item": "GHCR login uses docker/login-action (not raw docker login)", "checked": true},
+    {"item": "Expression injection: tag derivation step uses env vars correctly", "checked": true},
+    {"item": "Expression injection: smoke test run blocks use direct interpolation (should use env vars)", "checked": false}
+  ],
+  "architecture_checklist": [
+    {"item": "Three-job pipeline (base → service → smoke) matches plan", "checked": true},
+    {"item": "Matrix strategy allows extensibility for new services/releases", "checked": true},
+    {"item": "PR vs push conditional logic is correct (load/push/platforms)", "checked": true},
+    {"item": "Base images always push for docker-image:// URI resolution", "checked": true},
+    {"item": "Solution is as simple as possible for current requirements", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated workflow logic", "checked": true},
+    {"item": "No premature abstractions or unused features", "checked": true},
+    {"item": "Matrix strategy avoids copy-paste for future services", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Smoke test fails workflow on non-zero exit", "checked": true},
+    {"item": "hashFiles guard prevents patch application errors when no patches exist", "checked": true},
+    {"item": "apply-constraint-overrides.sh is idempotent (exits 0 when no overrides)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Job timeouts set on all three jobs (30/30/10 minutes)", "checked": true},
+    {"item": "Concurrency control prevents redundant PR builds", "checked": true},
+    {"item": "Patch count defaults to 0 when patches directory absent", "checked": true}
+  ],
+  "security_findings": [
+    {
+      "severity": "LOW",
+      "id": "S-01",
+      "description": "Expression injection pattern: smoke test run blocks at workflow lines 154 and 170-171 use ${{ }} expressions directly in shell commands instead of env vars. Current risk is low (values are constructed from GITHUB_SHA, GITHUB_REF_NAME, and committed YAML), but inconsistent with the defensive env-var pattern used in the Derive tags step (line 97-121).",
+      "location": ".github/workflows/build-images.yaml:154,170-171",
+      "fix": "Pass image references through env: variables. For line 154: add env: IMAGE_REF: ${{ steps.tags.outputs.composite }} and use docker run --rm \"$IMAGE_REF\". For lines 170-171: add env: IMAGE_REF: ${{ needs.build-service-images.outputs.image-ref }} and use \"$IMAGE_REF\" in both docker commands."
+    },
+    {
+      "severity": "LOW",
+      "id": "S-02",
+      "description": "packages: write granted at top level applies to all three jobs including smoke-test, which only pulls/runs images and does not need registry write access. Violates least privilege principle.",
+      "location": ".github/workflows/build-images.yaml:14-16",
+      "fix": "Move packages: write to per-job permissions on build-base-images and build-service-images. Set packages: read (or omit) on smoke-test. Note: per-job permissions override top-level entirely, so contents: read must also be repeated in each job-level block."
+    }
+  ],
+  "architecture_findings": [
+    {
+      "severity": "minor",
+      "id": "A-01",
+      "description": "Matrix job output image-ref (line 73) only captures the last matrix combination to complete. With the current 1x1 matrix this is correct, but it will silently break when a second service is added. The smoke-test job would test an arbitrary single service.",
+      "location": ".github/workflows/build-images.yaml:73",
+      "fix": "Add a comment documenting this limitation. When the matrix grows, refactor to use a matrix on the smoke-test job or aggregate outputs via fromJSON."
+    }
+  ],
+  "issues_found": [
+    {
+      "id": "TE-01",
+      "severity": "major",
+      "check_id": "TE1/TE7",
+      "description": "Test script missing coverage for base image multi-arch platforms (REQ-002). No assertion verifies that build-base-images steps use platforms: linux/amd64,linux/arm64.",
+      "location": "tests/container-images/verify_build_images_workflow.sh",
+      "fix": "Add test_base_images_multi_arch() that queries yq for platforms on build-base-images build-push-action steps and asserts both linux/amd64 and linux/arm64 are present."
+    },
+    {
+      "id": "TE-02",
+      "severity": "major",
+      "check_id": "TE1/TE7",
+      "description": "Test script missing coverage for base image digest ref outputs (REQ-003). No assertion verifies that build-base-images outputs contain digest references (outputs.digest pattern).",
+      "location": "tests/container-images/verify_build_images_workflow.sh",
+      "fix": "Add test_base_image_outputs_have_digest_refs() that queries .jobs.build-base-images.outputs and asserts both values contain 'outputs.digest'."
+    },
+    {
+      "id": "TE-03",
+      "severity": "major",
+      "check_id": "TE1",
+      "description": "Test script missing coverage for three REQ-004 sub-requirements: (1) yq source ref resolution step existence, (2) conditional patch application step with hashFiles guard, (3) constraint overrides step referencing apply-constraint-overrides.sh.",
+      "location": "tests/container-images/verify_build_images_workflow.sh",
+      "fix": "Add three test functions: test_yq_source_ref_resolution() asserting 'yq' and 'id: source-ref' present; test_conditional_patch_application() asserting 'Apply patches' and 'hashFiles' present; test_constraint_overrides_step() asserting 'Apply constraint overrides' and 'apply-constraint-overrides.sh' present."
+    },
+    {
+      "id": "TE-04",
+      "severity": "major",
+      "check_id": "TE2/TE7",
+      "description": "Test script missing coverage for branch sanitization in tag derivation (REQ-005). No assertion verifies the GITHUB_REF_NAME slash-to-dash replacement. Also missing assertions for version= and sha= output emissions.",
+      "location": "tests/container-images/verify_build_images_workflow.sh:258-269",
+      "fix": "Add assertions in test_tag_schema_composite(): assert_contains for 'GITHUB_REF_NAME//' (sanitization pattern), 'version=' output, and 'sha=' output."
+    },
+    {
+      "id": "TE-05",
+      "severity": "major",
+      "check_id": "TE7",
+      "description": "Test for PR behavior (REQ-006) has weak assertions. test_pr_single_arch_load checks that 'pull_request' appears somewhere in the build-service with block, but does not specifically verify that push, load, and platforms fields contain the correct conditional expressions.",
+      "location": "tests/container-images/verify_build_images_workflow.sh:271-280",
+      "fix": "Query yq for .with.push, .with.load, and .with.platforms individually from the build-service step and assert each contains the expected expression (e.g., push contains 'event_name != pull_request', load contains 'event_name == pull_request', platforms contains both 'linux/amd64' and 'linux/arm64')."
+    },
+    {
+      "id": "TE-06",
+      "severity": "major",
+      "check_id": "TE1",
+      "description": "Test script missing coverage for smoke test command (REQ-007). No assertion verifies that 'keystone-manage --version' appears in the workflow. test_smoke_test_depends_on_service_images only checks the dependency chain.",
+      "location": "tests/container-images/verify_build_images_workflow.sh:282-290",
+      "fix": "Add test_smoke_test_runs_keystone_manage() with assert_file_contains for 'keystone-manage --version'."
+    },
+    {
+      "id": "TE-07",
+      "severity": "minor",
+      "check_id": "TE7",
+      "description": "REQ-009 test only checks cache-from but not cache-to. Both are configured on every build-push-action step.",
+      "location": "tests/container-images/verify_build_images_workflow.sh:149-154",
+      "fix": "Add assert_file_contains for 'cache-to: type=gha' in test_gha_caching_present()."
+    },
+    {
+      "id": "DA-01",
+      "severity": "major",
+      "check_id": "DA3",
+      "description": "Documentation inaccurately claims 'No other workflow changes are required' when adding a new service (line 298). The smoke test commands at workflow lines 154 and 170-171 hardcode 'keystone-manage --version', which would fail for a non-keystone service. The matrix output image-ref also only captures one matrix entry.",
+      "location": "docs/reference/build-images-workflow.md:298-299",
+      "fix": "Amend the paragraph to note: 'The inline smoke test step and the separate smoke-test job currently hardcode keystone-manage --version. When adding a second service, these must be parameterized (e.g., via a matrix include mapping each service to its smoke-test command). The image-ref output also needs generalization for multiple matrix entries.'"
+    },
+    {
+      "id": "DA-02",
+      "severity": "minor",
+      "check_id": "DA3",
+      "description": "Build-contexts table at doc line 140 shows Source as 'docker-image://<python-base-image>@<digest>' but the output value already includes the digest. Substituting the output into the table produces a double-digest URI.",
+      "location": "docs/reference/build-images-workflow.md:140-142",
+      "fix": "Remove '@<digest>' suffix from the python-base and venv-builder Source columns, noting the output already includes the digest."
+    },
+    {
+      "id": "DA-03",
+      "severity": "minor",
+      "check_id": "DA3",
+      "description": "Trigger events table description says 'any stable/* branch' but the workflow uses 'stable/**' (recursive glob). 'stable/*' and 'stable/**' have different meanings.",
+      "location": "docs/reference/build-images-workflow.md:27",
+      "fix": "Change 'any stable/*' to 'any stable/**' in the description column."
+    },
+    {
+      "id": "D-01",
+      "severity": "minor",
+      "check_id": "D4",
+      "description": "ci-workflow.md consistently uses REQ-XXX references throughout; build-images-workflow.md does not include any requirement references. Style inconsistency between the two reference documents.",
+      "location": "docs/reference/build-images-workflow.md",
+      "fix": "Add REQ-XXX references to relevant sections, matching ci-workflow.md convention."
+    }
+  ],
+  "suggested_improvements": [
+    "Use env vars instead of direct ${{ }} interpolation in all run: blocks for defense-in-depth against expression injection (workflow lines 154, 170-171, 80, 92)",
+    "Add a comment on the image-ref output (workflow line 73) documenting the single-matrix-entry limitation",
+    "Consider scoping packages: write to the build jobs only, not the smoke-test job",
+    "Add cache-to assertion to the caching test for completeness"
+  ],
+  "next_steps": [
+    "Add missing test coverage for REQ-002 multi-arch, REQ-003 digest refs, REQ-004 yq/patches/overrides steps, REQ-005 branch sanitization and version/sha outputs, REQ-006 specific push/load/platforms assertions, REQ-007 keystone-manage --version command",
+    "Fix docs line 298 to note smoke test limitation when adding new services",
+    "Fix docs line 27 glob notation (stable/* → stable/**)",
+    "Fix docs line 140 build-contexts table double-digest ambiguity"
+  ],
+  "detected_patterns": []
+}

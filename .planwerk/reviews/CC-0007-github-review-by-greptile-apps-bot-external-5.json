@@ -1,0 +1,37 @@
+{
+  "feature_id": "CC-0007",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer wants `fetch-depth: 1` added to the upstream OpenStack service checkout step in the CI workflow to avoid fetching the full git history (hundreds of MB) on every run, since only the tip commit is needed.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-06T21:21:07Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 5,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**Missing `fetch-depth: 1` for upstream service checkout**\n\nThe upstream service checkout (e.g. `openstack/keystone`) is performed without `fetch-depth: 1`, so the full git history is fetched. OpenStack Keystone has been active since 2012 — its full history is hundreds of MB of objects. Fetching it on every CI run wastes time and runner disk space, and the extra history is never used: `git apply` works on the working tree regardless of depth, and the Dockerfile build context only needs the source files.\n\nAdding `fetch-depth: 1` limits the checkout to the tip at the resolved ref:\n\n```suggestion\n      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6\n        with:\n          repository: openstack/${{ matrix.service }}\n          ref: ${{ steps.source-ref.outputs.ref }}\n          path: src/${{ matrix.service }}\n          fetch-depth: 1\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: .github/workflows/build-images.yaml\nLine: 100-104\n\nComment:\n**Missing `fetch-depth: 1` for upstream service checkout**\n\nThe upstream service checkout (e.g. `openstack/keystone`) is performed without `fetch-depth: 1`, so the full git history is fetched. OpenStack Keystone has been active since 2012 — its full history is hundreds of MB of objects. Fetching it on every CI run wastes time and runner disk space, and the extra history is never used: `git apply` works on the working tree regardless of depth, and the Dockerfile build context only needs the source files.\n\nAdding `fetch-depth: 1` limits the checkout to the tip at the resolved ref:\n\n```suggestion\n      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6\n        with:\n          repository: openstack/${{ matrix.service }}\n          ref: ${{ steps.source-ref.outputs.ref }}\n          path: src/${{ matrix.service }}\n          fetch-depth: 1\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": ".github/workflows/build-images.yaml",
+      "line": 117,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-06T21:21:06Z",
+      "id": null,
+      "resolution": "Added `fetch-depth: 1` to the upstream service checkout step (lines 113-118 in build-images.yaml), exactly as suggested. The checkout now performs a shallow clone limited to the tip commit at the resolved ref, avoiding the full OpenStack git history download."
+    }
+  ],
+  "resolution_summary": "The review feedback requested adding `fetch-depth: 1` to the upstream OpenStack service checkout step to avoid fetching the full git history on every CI run. This was addressed by adding `fetch-depth: 1` to the `actions/checkout` step for `openstack/${{ matrix.service }}` at line 118 of `.github/workflows/build-images.yaml`. No other files were modified to address this review comment.",
+  "github_review_id": 3906098464
+}

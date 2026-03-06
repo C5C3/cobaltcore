@@ -2,8 +2,8 @@
   "feature_id": "CC-0007",
   "title": "C002: Add container image CI workflow",
   "slug": "c002-add-container-image-ci-workflow",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 🔨 medium\n**Category:** infrastructure\n**Priority:** high\n**Feature ID:** S007\n\n## Summary\n\nCreate `.github/workflows/build-images.yaml` implementing S007 from the project plan. The workflow builds OpenStack service container images (starting with Keystone) as multi-arch builds (`linux/amd64`, `linux/arm64`) and pushes them to GHCR. Base images (`python-base`, `venv-builder`) are built as prerequisite jobs within the same workflow and passed to service builds via `--build-context` overrides pointing at `docker-image://ghcr.io/...` refs. The workflow uses a matrix strategy over services and releases, resolves upstream source refs from `releases/<release>/source-refs.yaml` (currently `keystone: \"28.0.0\"`), applies patches and constraint overrides conditionally, and tags images with composite format `<service>:<upstream-version>-p<N>-<branch>-<sha>` plus standalone `<upstream-version>` and `<sha>` tags. A smoke test job validates the built image by running `keystone-manage --version`.\n\nOn PRs, base images are always pushed to GHCR (small, shared, required for `docker-image://` build-context resolution), while service images build single-arch (`linux/amd64`) with `--load` for local smoke testing without registry push. On push events, all images build multi-arch and push to GHCR.\n\n## Scope\n\n**Included:**\n- Workflow file `.github/workflows/build-images.yaml` with SPDX header matching `ci.yaml` convention (`Copyright 2026 SAP SE or an SAP affiliate company`, Apache-2.0), quoted `\"on\"` key, top-level `permissions:` block, and three jobs\n- All jobs use `runs-on: ubuntu-latest` matching `ci.yaml` convention; `timeout-minutes` set per job (base and service builds need higher than `ci.yaml`'s 10 min — 30 min recommended for multi-arch builds)\n- `build-base-images` job: sequential build of `python-base` (from `images/python-base/`, base `ubuntu:noble`) then `venv-builder` (from `images/venv-builder/`, with `--build-context python-base=docker-image://...`); always multi-arch; always push to GHCR (including PRs — required for `docker-image://` refs in service builds); outputs image refs with digest (`ghcr.io/c5c3/python-base@sha256:...`) for downstream jobs\n- `build-service-images` job (matrix over `service: [keystone]` × `release: [\"2025.2\"]`): resolves ref from `releases/<release>/source-refs.yaml` via `yq` (`.keystone` yields `\"28.0.0\"`); checks out `openstack/<service>` at resolved ref into `src/<service>`; applies patches conditionally with `git -C src/<service> apply patches/<service>/<release>/*.patch` (guarded by `hashFiles` — currently no `patches/` directory exists, step is no-op); runs `scripts/apply-constraint-overrides.sh <release>` (idempotent, exits 0 when `overrides/<release>/constraints.txt` absent); builds with `docker/build-push-action`\n- **PR behavior**: single-arch `linux/amd64` with `load: true` (image available locally for smoke test), `push: false`\n- **Push behavior**: multi-arch `linux/amd64,linux/arm64` with `push: true`\n- Four `--build-context` overrides for service builds: `python-base=docker-image://ghcr.io/c5c3/python-base@sha256:...`, `venv-builder=docker-image://ghcr.io/c5c3/venv-builder@sha256:...`, `<service>=src/<service>`, `upper-constraints=releases/<release>/`\n- Multi-arch via `docker/setup-buildx-action` + `docker/build-push-action` for `linux/amd64,linux/arm64`\n- GHCR login with `docker/login-action` using `GITHUB_TOKEN`\n- Tag schema: composite `<upstream-version>-p<N>-<branch>-<sha>` (e.g., `keystone:28.0.0-p0-main-a1b2c3d`), plus standalone `<upstream-version>` tag (e.g., `keystone:28.0.0`) and `<sha>` tag (e.g., `keystone:a1b2c3d`)\n- Patch count derivation: `p0` when no `patches/<service>/<release>/` directory or no `.patch` files; `pN` = count of `.patch` files\n- Branch name sanitization for Docker tag compatibility (replace `/` with `-`, e.g., `stable/2025.2` → `stable-2025.2`)\n- `smoke-test` job: depends on `build-service-images`; on PRs uses locally loaded image, on push pulls from GHCR; runs `docker run --rm <image> keystone-manage --version`; non-zero exit fails the workflow\n- Triggers: `push` to `main` and `stable/**` branches, `pull_request`\n- GHA layer caching (`cache-from: type=gha`, `cache-to: type=gha,mode=max`)\n- Concurrency control matching `ci.yaml` pattern (`group: ${{ github.ref }}-${{ github.workflow }}`, `cancel-in-progress` on PR only)\n- Actions pinned to full commit SHAs with version comments (matching `ci.yaml` convention, e.g., `actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6`)\n- Permissions: top-level `contents: read`, `packages: write` (top-level block matching `ci.yaml` convention — `packages: write` added for GHCR push)\n\n**Excluded:**\n- SBOM generation and attestation (`architecture/docs/08-container-images/04-sbom.md` documents CycloneDX via `anchore/sbom-action` + `actions/attest-sbom` — separate feature requiring `id-token: write` and `attestations: write` permissions)\n- Renovate custom regex managers for `source-refs.yaml` (`architecture/docs/08-container-images/02-versioning.md` documents planned config — separate concern, current `renovate.json` only has `config:recommended`)\n- Operator image builds (S017/S018 — separate scope, different Dockerfiles in `operators/`)\n- Helm chart packaging and push (S018 scope)\n- Library patch checkout and build-context injection (Level 2 patches from `architecture/docs/08-container-images/03-patching.md` — no library patches exist yet, YAGNI)\n- OVN/OVS build pipeline (architecture docs mark as TODO)\n- E2E or integration testing beyond the smoke test (separate workflow scope)\n- Adding new services beyond keystone to the matrix (matrix is extensible, but only `images/keystone/Dockerfile` exists today)\n- `docker-build` Makefile target update (currently a stub error referencing S006 — can be updated separately)\n- `extra-packages.yaml` consumption (declarative config consumed by Dockerfiles directly, not by the workflow)\n\n## Visualization\n\n```mermaid\nflowchart TD\n    subgraph Triggers\n        PR[\"Pull Request\"]\n        Push[\"Push main / stable/**\"]\n    end\n\n    subgraph BaseJob[\"Job: build-base-images\"]\n        BCheckout[\"Checkout repo\"]\n        BBuildx[\"Setup Buildx\"]\n        BLogin[\"Login to GHCR\"]\n        BB1[\"Build + push python-base\"]\n        BB2[\"Build + push venv-builder\"]\n        BCheckout --> BBuildx --> BLogin --> BB1 --> BB2\n    end\n\n    subgraph Matrix[\"Job: build-service-images #40;matrix: service x release#41;\"]\n        Checkout[\"Checkout C5C3 repo\"]\n        Resolve[\"Resolve source ref #40;yq .keystone#41;\"]\n        CheckoutSrc[\"Checkout openstack/keystone at ref\"]\n        Patches[\"Apply patches #40;conditional, currently no-op#41;\"]\n        Overrides[\"Apply constraint overrides #40;idempotent#41;\"]\n        PatchCount[\"Derive patch count #40;pN#41;\"]\n        TagCalc[\"Calculate tags\"]\n        Buildx[\"Setup Docker Buildx\"]\n        Login[\"Login to GHCR\"]\n        Build[\"Build image with 4 build-contexts\"]\n        PushDecision{\"PR?\"}\n        LoadLocal[\"load: true #40;amd64 only#41;\"]\n        PushGHCR[\"push: true #40;amd64+arm64#41;\"]\n\n        Checkout --> Resolve --> CheckoutSrc --> Patches --> Overrides --> PatchCount --> TagCalc --> Buildx --> Login --> Build --> PushDecision\n        PushDecision -->|yes| LoadLocal\n        PushDecision -->|no| PushGHCR\n    end\n\n    subgraph Smoke[\"Job: smoke-test\"]\n        Pull[\"Load or pull built image\"]\n        RunTest[\"docker run keystone-manage --version\"]\n        Pull --> RunTest\n    end\n\n    PR --> BaseJob\n    Push --> BaseJob\n    BaseJob --> Matrix\n    Matrix --> Smoke\n```\n\n```mermaid\nflowchart LR\n    subgraph BuildContexts[\"Named Build Contexts\"]\n        BC1[\"python-base = docker-image://ghcr.io/c5c3/python-base@sha256:...\"]\n        BC2[\"venv-builder = docker-image://ghcr.io/c5c3/venv-builder@sha256:...\"]\n        BC3[\"keystone = src/keystone\"]\n        BC4[\"upper-constraints = releases/2025.2/\"]\n    end\n\n    subgraph Dockerfile[\"images/keystone/Dockerfile\"]\n        S1[\"FROM venv-builder AS build\"]\n        S2[\"RUN uv pip install --constraint ... keystone\"]\n        S3[\"FROM python-base\"]\n        S4[\"COPY --from=build /var/lib/openstack\"]\n    end\n\n    subgraph Tags[\"Image Tags #40;3 per service#41;\"]\n        T1[\"keystone:28.0.0-p0-main-a1b2c3d\"]\n        T2[\"keystone:28.0.0\"]\n        T3[\"keystone:a1b2c3d\"]\n    end\n\n    BC1 --> S3\n    BC2 --> S1\n    BC3 --> S2\n    BC4 --> S2\n    Dockerfile --> Tags --> GHCR[\"ghcr.io/c5c3/keystone\"]\n```\n\n```mermaid\nsequenceDiagram\n    participant GHA as GitHub Actions\n    participant YQ as yq\n    participant Git as git\n    participant Script as apply-constraint-overrides.sh\n    participant Buildx as Docker Buildx\n    participant GHCR as ghcr.io\n\n    GHA->>YQ: Read releases/2025.2/source-refs.yaml\n    YQ-->>GHA: keystone = \"28.0.0\"\n    GHA->>Git: checkout openstack/keystone@28.0.0 into src/keystone\n    GHA->>Git: apply patches/keystone/2025.2/*.patch #40;if any#41;\n    GHA->>Script: apply-constraint-overrides.sh 2025.2\n    Script-->>GHA: constraints updated #40;or no-op#41;\n    GHA->>GHA: Derive tags #40;28.0.0-p0-main-a1b2c3d, 28.0.0, a1b2c3d#41;\n    GHA->>Buildx: Build with 4 build-contexts\n    alt Push event\n        Buildx->>GHCR: Push ghcr.io/c5c3/keystone #40;multi-arch#41;\n        GHA->>GHCR: Pull image for smoke test\n    else PR event\n        Buildx->>GHA: Load image locally #40;amd64 only#41;\n    end\n    GHA->>GHA: docker run keystone-manage --version\n```\n\n## Key Components\n\n- **`.github/workflows/build-images.yaml`**: Workflow file with SPDX header, quoted `\"on\"` key, triggers (`push: [main, stable/**]` + `pull_request`), concurrency control (matching `ci.yaml`: `group: ${{ github.ref }}-${{ github.workflow }}`, cancel-in-progress on PR), top-level permissions (`contents: read`, `packages: write`), three jobs on `runs-on: ubuntu-latest`\n- **`build-base-images` job**: Sequential build of `python-base` (from `images/python-base/`, base `ubuntu:noble`) then `venv-builder` (from `images/venv-builder/`, with `--build-context python-base=docker-image://...`); always multi-arch; always pushed to GHCR (even on PRs — required for `docker-image://` refs in downstream service builds); outputs image refs with digest for downstream consumption; `timeout-minutes: 30`\n- **`build-service-images` job (matrix)**: Matrix over `service: [keystone]` × `release: [\"2025.2\"]`; resolves ref from `releases/<release>/source-refs.yaml` via `yq` (`.keystone` yields `\"28.0.0\"`); checks out `openstack/<service>` at that ref into `src/<service>`; applies patches with `git -C src/<service> apply patches/<service>/<release>/*.patch` (conditional on `hashFiles` — currently no patches exist, step is no-op); runs `scripts/apply-constraint-overrides.sh <release>` (idempotent, exits 0 when `overrides/<release>/constraints.txt` absent); builds with `docker/build-push-action` passing four `build-contexts`; on push: multi-arch with three tags; on PR: single-arch `amd64` with `--load`; `timeout-minutes: 30`\n- **Tag derivation step**: Reads upstream version from `source-refs.yaml` via `yq`; counts `.patch` files in `patches/<service>/<release>/` (defaulting to `p0` when directory absent); sanitizes branch name (`${GITHUB_REF_NAME//\\//-}`); extracts 7-char short SHA; assembles composite `<version>-p<N>-<branch>-<sha>` plus standalone `<version>` and `<sha>` tags\n- **`smoke-test` job**: Depends on `build-service-images`; on PRs uses locally loaded image, on push pulls from GHCR; runs `docker run --rm <image> keystone-manage --version`; non-zero exit fails the workflow; `timeout-minutes: 10`\n- **Action version pinning**: All third-party actions pinned to full commit SHAs with version comments matching `ci.yaml` convention (e.g., `actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6`, `docker/build-push-action@<sha> # v6`)",
   "stories": [
@@ -426,10 +426,11 @@
   "tasks": [
     {
       "id": "1.1",
-      "title": "Create workflow skeleton with build-base-images job (REQ-001, REQ-002, REQ-003, REQ-008, REQ-009)",
+      "title": "Create workflow skeleton with build-base-images job: .github/workflows/build-images.yaml with SPDX header, quoted 'on' key, triggers (push: main/stable/**, pull_request), top-level permissions (contents: read, packages: write), concurrency control, build-base-images job (sequential python-base then venv-builder, always multi-arch, always push to GHCR, output image refs with digest) (REQ-001, REQ-002, REQ-003, REQ-008, REQ-009)",
       "description": "Create `.github/workflows/build-images.yaml` with: SPDX header matching ci.yaml, `name: Build Images`, quoted `\"on\"` key with triggers (push to main and stable/**, pull_request), top-level permissions (contents: read, packages: write), concurrency control matching ci.yaml pattern. Add the `build-base-images` job with: runs-on: ubuntu-latest, timeout-minutes: 30, steps for checkout (SHA-pinned), docker/setup-buildx-action (SHA-pinned), docker/login-action to GHCR (SHA-pinned), two sequential docker/build-push-action steps — first for python-base (context: images/python-base, platforms: linux/amd64,linux/arm64, push: true always, GHA caching), then for venv-builder (context: images/venv-builder, build-contexts: python-base=docker-image://ghcr.io/c5c3/python-base@<digest>, platforms: linux/amd64,linux/arm64, push: true always, GHA caching). Job outputs: python-base-image and venv-builder-image with digest refs from build-push-action outputs. Pin actions/checkout to the same SHA as ci.yaml (de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6). Look up and pin docker/setup-buildx-action, docker/login-action, docker/build-push-action to their latest v3/v3/v6 release SHAs respectively.",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -440,20 +441,22 @@
     },
     {
       "id": "1.2",
-      "title": "Add build-service-images job with matrix, source resolution, patches, and constraint overrides (REQ-004)",
+      "title": "Add build-service-images job with matrix strategy (service: [keystone] x release: [\"2025.2\"]), source ref resolution via yq, upstream checkout into src/<service>, conditional patch application (hashFiles guard), constraint overrides invocation, four named build-contexts (REQ-004)",
       "description": "Add `build-service-images` job to the workflow with: needs: [build-base-images], runs-on: ubuntu-latest, timeout-minutes: 30, strategy.matrix with service: [keystone] and release: ['2025.2']. Steps: (1) Checkout C5C3 repo (SHA-pinned actions/checkout). (2) Resolve source ref: `ref=$(yq '.\"${{ matrix.service }}\"' releases/${{ matrix.release }}/source-refs.yaml)` → output to GITHUB_OUTPUT. (3) Checkout openstack/<service> at resolved ref into src/<service> (second actions/checkout with repository and path). (4) Apply patches: conditional on `hashFiles(format('patches/{0}/{1}/*.patch', matrix.service, matrix.release)) != ''`, run `git -C src/${{ matrix.service }} apply patches/${{ matrix.service }}/${{ matrix.release }}/*.patch`. (5) Apply constraint overrides: run `scripts/apply-constraint-overrides.sh ${{ matrix.release }}`.",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
     },
     {
       "id": "1.3",
-      "title": "Add tag derivation step and image build with build-contexts and PR/push conditional (REQ-005, REQ-006, REQ-009)",
+      "title": "Add tag derivation step (composite <version>-p<N>-<branch>-<sha>, standalone <version>, standalone <sha>) and PR/push conditional (PR: single-arch amd64 load:true push:false; push: multi-arch push:true) (REQ-005, REQ-006, REQ-009)",
       "description": "Continue the build-service-images job by adding: (6) Tag derivation step that reads upstream version from the already-resolved source ref, counts .patch files in patches/<service>/<release>/ (defaulting to 0 if directory absent), sanitizes branch name (${GITHUB_REF_NAME//\\//-}), extracts 7-char short SHA (${GITHUB_SHA::7}), and assembles three tags: composite `<version>-p<N>-<branch>-<sha>`, standalone `<version>`, standalone `<sha>`. Output tags as GITHUB_OUTPUT. (7) docker/setup-buildx-action (SHA-pinned). (8) docker/login-action to GHCR (SHA-pinned). (9) docker/build-push-action with: context: images/${{ matrix.service }}, file: images/${{ matrix.service }}/Dockerfile, build-contexts (python-base=docker-image://...@digest, venv-builder=docker-image://...@digest from job outputs, <service>=src/<service>, upper-constraints=releases/<release>/), platforms conditional (linux/amd64 on PR, linux/amd64,linux/arm64 on push), load conditional (true on PR, false on push), push conditional (false on PR, true on push), tags from derivation step (only on push), GHA caching. Job outputs the image ref for the smoke test.",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-006",
@@ -462,20 +465,22 @@
     },
     {
       "id": "1.4",
-      "title": "Add smoke-test job (REQ-007)",
+      "title": "Add smoke-test job: on push events runs as separate job pulling from GHCR; on PR events runs as inline step within build-service-images job (since --load image is only available on same runner); runs keystone-manage --version, fails on non-zero exit (REQ-007)",
       "description": "Add `smoke-test` job to the workflow with: needs: [build-service-images], runs-on: ubuntu-latest, timeout-minutes: 10. The job needs to handle two scenarios: (a) On PRs, the image was loaded locally in the service build job — but since smoke-test runs on a different runner, the PR path needs to use the same build-service-images runner or re-build. Actually, GHA jobs run on separate runners, so for PRs the smoke test needs the image. The standard pattern is: on push, pull from GHCR; on PRs, the image needs to be available. Since service images aren't pushed on PRs, the smoke test step should be part of the build-service-images job for PRs, or use a different approach. Implement: add a smoke-test step directly within build-service-images (after the build step, conditional: always run `docker run --rm <local-image> keystone-manage --version` when load: true). Also add a separate smoke-test job for push events that pulls from GHCR and runs the same command. This handles both cases correctly.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
     },
     {
       "id": "2.1",
-      "title": "Create workflow validation test script (REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-006, REQ-007, REQ-008, REQ-009)",
+      "title": "Create workflow validation test script tests/container-images/verify_build_images_workflow.sh with all test functions from test specifications (REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-006, REQ-007, REQ-008, REQ-009)",
       "description": "Create `tests/container-images/verify_build_images_workflow.sh` following the existing test script pattern (SPDX header, source assertions.sh, PASS/FAIL counters). Tests: (1) SPDX header present in first 3 lines. (2) Quoted 'on' key present. (3) Top-level permissions block with contents: read and packages: write. (4) Concurrency group matches pattern. (5) Three jobs defined: build-base-images, build-service-images, smoke-test. (6) build-service-images has needs: containing build-base-images. (7) Matrix includes service and release keys. (8) All 'uses:' lines contain @ followed by 40-char hex SHA. (9) All 'uses:' lines with SHA have a version comment (# vN). (10) cache-from: type=gha present in build steps. (11) push trigger includes main and stable/**. (12) pull_request trigger present. (13) timeout-minutes defined on all jobs. (14) runs-on: ubuntu-latest on all jobs. Use yq for YAML parsing where possible, grep for pattern matching. Requires: yq.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -490,10 +495,11 @@
     },
     {
       "id": "3.1",
-      "title": "Create reference documentation for build-images workflow (REQ-010)",
+      "title": "Create reference documentation docs/reference/build-images-workflow.md covering triggers, jobs, tag schema, PR vs push behavior, and how to add new services/releases (REQ-010)",
       "description": "Create `docs/reference/build-images-workflow.md` with YAML frontmatter (title: Build Images Workflow, quadrant: infrastructure, feature: CC-0007) matching the convention in docs/reference/ci-workflow.md. Sections: File Location, Trigger Events (table: push main+stable/**, pull_request), Permissions (contents: read, packages: write with explanation), Jobs (build-base-images with step table, build-service-images with step table including matrix explanation, smoke-test with step table), Tag Schema (table showing all three tag formats with examples), PR vs Push Behavior (comparison table showing platforms, push, load, tags differences), Concurrency, SPDX Header, GHA Caching, How to Add a New Service (numbered steps: add Dockerfile, add to source-refs.yaml, add to matrix), Dependencies on CC-0006 (table listing Dockerfiles, release config, scripts used by the workflow).",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-010"
       ]
@@ -597,6 +603,41 @@
       "story": "Workflow follows repository conventions",
       "expected": "All jobs should use runs-on: ubuntu-latest",
       "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "tests/container-images/verify_build_images_workflow.sh",
+      "test_function": "test_base_images_always_push",
+      "story": "",
+      "expected": "build-base-images job should have push: true unconditionally (not conditioned on event type) since base images must always be in GHCR for docker-image:// refs",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "tests/container-images/verify_build_images_workflow.sh",
+      "test_function": "test_build_contexts_for_service_images",
+      "story": "",
+      "expected": "build-service-images job should reference four build-contexts: python-base, venv-builder, the service source, and upper-constraints",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "tests/container-images/verify_build_images_workflow.sh",
+      "test_function": "test_tag_schema_composite",
+      "story": "",
+      "expected": "Tag derivation should produce a composite tag matching pattern <version>-p<N>-<branch>-<sha>",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "tests/container-images/verify_build_images_workflow.sh",
+      "test_function": "test_pr_single_arch_load",
+      "story": "",
+      "expected": "On pull_request events, service image build should use load: true and platforms: linux/amd64 only",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "tests/container-images/verify_build_images_workflow.sh",
+      "test_function": "test_smoke_test_depends_on_service_images",
+      "story": "Smoke test validates built images",
+      "expected": "smoke-test job should have needs: containing build-service-images",
+      "requirement_id": "REQ-007"
     }
   ],
   "affected_files": [],
@@ -629,8 +670,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-03-06T19:29:26.408772"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-06T19:30:20.424971"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-06T22:35:25.103537"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/32",
+  "pr_number": 32,
   "execution_history": [
     {
       "run_id": "613d59c6-f112-42c8-8b3f-30190b656902",
@@ -642,6 +693,120 @@
           "name": "prepare",
           "duration": 299.2064492702484,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "7b55bb17-41d3-4c65-a980-d68341d8685e",
+      "timestamp": "2026-03-06T20:03:55.593560",
+      "total_duration": 1821.1695160865784,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (4 tasks)",
+          "duration": 518.2545580863953,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (1 tasks)",
+          "duration": 273.76694083213806,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (1 tasks)",
+          "duration": 127.26973843574524,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0007] Code Review",
+          "duration": 420.5994429588318,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0007] Improvements",
+          "duration": 421.69583654403687,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0007] Simplify",
+          "duration": 59.58299922943115,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "d35f712b-9792-45ad-bfa2-5f223fc10b1b",
+      "timestamp": "2026-03-06T20:30:50.895469",
+      "total_duration": 803.1041531562805,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 803.1041531562805,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "2717744f-38ad-4dbc-bb9c-4bce6a78d2cd",
+      "timestamp": "2026-03-06T21:52:09.864554",
+      "total_duration": 749.7570765018463,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 749.7570765018463,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "04c0c849-5da1-4c32-8df2-fc195c50e4af",
+      "timestamp": "2026-03-06T22:01:50.053921",
+      "total_duration": 285.1863651275635,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #3",
+          "duration": 285.1863651275635,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "583a5525-321f-4672-b613-6a61bc6ad07e",
+      "timestamp": "2026-03-06T22:16:20.859178",
+      "total_duration": 399.1576201915741,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #4",
+          "duration": 399.1576201915741,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "bec3c9a3-589a-4c48-9fab-aa2124bc3d68",
+      "timestamp": "2026-03-06T22:21:26.624716",
+      "total_duration": 159.49091291427612,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #5",
+          "duration": 159.49091291427612,
+          "type": "review_address",
           "status": "done"
         }
       ]
