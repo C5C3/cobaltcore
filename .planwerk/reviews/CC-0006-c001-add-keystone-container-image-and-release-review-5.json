@@ -1,0 +1,44 @@
+{
+  "summary": "Documentation fix: updated pip install example in docs/reference/container-images.md to use the combined PEP 508 extras form (\"/tmp/keystone[ldap,memcache_pool,oauth1]\") matching the actual images/keystone/Dockerfile implementation. Planwerk metadata files added to record the external review feedback and capture a review pattern for cross-referencing documentation examples against implementation.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass", "checked": true},
+    {"item": "Edge cases are covered", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns", "checked": true},
+    {"item": "Documentation matches implementation", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "All user inputs validated", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "Change is scoped to the reviewer feedback", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unnecessary additions", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs validated", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": [],
+  "metadata": {
+    "feature_id": "CC-0006",
+    "title": "C001: Add Keystone container image and release config",
+    "date": "2026-03-06",
+    "verdict": "APPROVED",
+    "review_cycle": 5,
+    "scope": "Documentation-only fix addressing greptile-apps[bot] review #4 feedback"
+  }
+}

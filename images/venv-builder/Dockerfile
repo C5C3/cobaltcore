@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+FROM python-base
+
+# Install uv (fast Python package manager, pinned via Renovate)
+COPY --from=ghcr.io/astral-sh/uv:0.6.3 /uv /bin/
+
+# Build dependencies
+RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    libffi-dev \
+    libpq-dev \
+    libssl-dev \
+    python3-dev \
+    python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+# Prepare virtual environment
+RUN python3 -m venv /var/lib/openstack
+
+# Common base packages for all services (no --constraint: venv-builder is
+# release-independent; constraints are applied in service Dockerfiles)
+RUN uv pip install --prefix /var/lib/openstack \
+    cryptography \
+    pymysql \
+    python-memcached \
+    uwsgi

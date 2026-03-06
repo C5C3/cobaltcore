@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Per-service Python extras and runtime system packages.
+# pip_packages: installed via uv pip install alongside the service in the build stage.
+#   WARNING: Adding entries here does NOT automatically install them. You must also
+#   update the corresponding `uv pip install` line in `images/keystone/Dockerfile`.
+#   The Dockerfile combines extras into a single install argument
+#   (e.g. "keystone[ldap,memcache_pool,oauth1]") so that uv resolves all extras in
+#   one pass. The verify_release_config.sh test validates that these stay in sync.
+# apt_packages: installed via apt in the final runtime image.
+keystone:
+  pip_packages:
+    - "keystone[ldap]"
+    - "keystone[memcache_pool]"
+    - "keystone[oauth1]"
+  apt_packages:
+    - libapache2-mod-wsgi-py3
+    - libldap-2.5-0
+    - libsasl2-2
+    - libxml2

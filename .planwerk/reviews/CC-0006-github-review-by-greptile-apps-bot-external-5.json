@@ -1,0 +1,45 @@
+{
+  "feature_id": "CC-0006",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer found two issues: (1) The `CONSTRAINTS` variable in `apply-constraint-overrides.sh` uses a bare filename instead of the correct `releases/${RELEASE}/upper-constraints.txt` path, causing the script to always fail at its pre-flight check even when run correctly from the repo root — the tests have the same structural mismatch. (2) The `pip_packages` list in `extra-packages.yaml` is never consumed by the build and serves only as documentation, but neither the comment nor the verification tests enforce that it stays in sync with the Dockerfile's hard-coded extras string, risking silent drift.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-06T12:59:51Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 5,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**`CONSTRAINTS` path doesn't match the repo layout — script always fails from repo root**\n\n`CONSTRAINTS` is set to the bare filename `upper-constraints.txt`, but the actual file lives at `releases/${RELEASE}/upper-constraints.txt` in the repository. When the script is invoked from the repo root as documented (`./scripts/apply-constraint-overrides.sh 2025.2`), the pre-flight check on line 133 will immediately fail with:\n\n```\nError: 'upper-constraints.txt' not found. Run this script from the repository root.\n```\n\n…even though the caller *is* at the repo root. The error message is also wrong: following the instruction to \"run from repo root\" will never work because `upper-constraints.txt` doesn't exist there.\n\nThe consistent fix is to derive `CONSTRAINTS` from the `$RELEASE` argument, matching the `OVERRIDES` pattern already used below:\n\n```suggestion\nRELEASE=\"${1:?Usage: $0 <release>}\"\nCONSTRAINTS=\"releases/${RELEASE}/upper-constraints.txt\"\nOVERRIDES=\"overrides/${RELEASE}/constraints.txt\"\n```\n\nThe same issue affects the tests in `tests/scripts/test_apply_constraint_overrides.sh` (e.g., lines 817–818): each test workdir places `upper-constraints.txt` directly in the temp dir root rather than under `releases/2025.2/upper-constraints.txt`. Once `CONSTRAINTS` is corrected, the test setup should be updated to create `\"$workdir/releases/2025.2/upper-constraints.txt\"` to stay consistent with the real repository structure.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: scripts/apply-constraint-overrides.sh\nLine: 13-14\n\nComment:\n**`CONSTRAINTS` path doesn't match the repo layout — script always fails from repo root**\n\n`CONSTRAINTS` is set to the bare filename `upper-constraints.txt`, but the actual file lives at `releases/${RELEASE}/upper-constraints.txt` in the repository. When the script is invoked from the repo root as documented (`./scripts/apply-constraint-overrides.sh 2025.2`), the pre-flight check on line 133 will immediately fail with:\n\n```\nError: 'upper-constraints.txt' not found. Run this script from the repository root.\n```\n\n…even though the caller *is* at the repo root. The error message is also wrong: following the instruction to \"run from repo root\" will never work because `upper-constraints.txt` doesn't exist there.\n\nThe consistent fix is to derive `CONSTRAINTS` from the `$RELEASE` argument, matching the `OVERRIDES` pattern already used below:\n\n```suggestion\nRELEASE=\"${1:?Usage: $0 <release>}\"\nCONSTRAINTS=\"releases/${RELEASE}/upper-constraints.txt\"\nOVERRIDES=\"overrides/${RELEASE}/constraints.txt\"\n```\n\nThe same issue affects the tests in `tests/scripts/test_apply_constraint_overrides.sh` (e.g., lines 817–818): each test workdir places `upper-constraints.txt` directly in the temp dir root rather than under `releases/2025.2/upper-constraints.txt`. Once `CONSTRAINTS` is corrected, the test setup should be updated to create `\"$workdir/releases/2025.2/upper-constraints.txt\"` to stay consistent with the real repository structure.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "scripts/apply-constraint-overrides.sh",
+      "line": 14,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-06T12:59:46Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "**`pip_packages` is a documentation-only manifest that is silently decoupled from the Dockerfile build**\n\nThe comment on lines 8–10 correctly notes that `pip_packages` is a \"reference manifest\" and that the Dockerfile hard-codes the combined extras string (`/tmp/keystone[ldap,memcache_pool,oauth1]`). This means `pip_packages` is **never read** by the build process — it is pure documentation.\n\nThe risk is that someone adds a new extra to `pip_packages` (e.g., `keystone[federation]`) and expects it to be installed, when in fact the Dockerfile also needs to be updated independently. The test in `verify_release_config.sh` only checks counts (3 pip items, 4 apt items), so it would pass even if `extra-packages.yaml` and the Dockerfile diverge.\n\nConsider either:\n1. Adding an explicit assertion (e.g. in `verify_release_config.sh`) that the combined extras in `extra-packages.yaml` match what's in the Dockerfile, or\n2. Strengthening the comment to make the coupling explicit: e.g., \"**Warning: adding entries here does NOT automatically install them. You must also update the corresponding `uv pip install` line in `images/keystone/Dockerfile`.**\"\n\nAt minimum, ensuring the warning is prominent prevents silent drift as new services are added.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: releases/2025.2/extra-packages.yaml\nLine: 7-14\n\nComment:\n**`pip_packages` is a documentation-only manifest that is silently decoupled from the Dockerfile build**\n\nThe comment on lines 8–10 correctly notes that `pip_packages` is a \"reference manifest\" and that the Dockerfile hard-codes the combined extras string (`/tmp/keystone[ldap,memcache_pool,oauth1]`). This means `pip_packages` is **never read** by the build process — it is pure documentation.\n\nThe risk is that someone adds a new extra to `pip_packages` (e.g., `keystone[federation]`) and expects it to be installed, when in fact the Dockerfile also needs to be updated independently. The test in `verify_release_config.sh` only checks counts (3 pip items, 4 apt items), so it would pass even if `extra-packages.yaml` and the Dockerfile diverge.\n\nConsider either:\n1. Adding an explicit assertion (e.g. in `verify_release_config.sh`) that the combined extras in `extra-packages.yaml` match what's in the Dockerfile, or\n2. Strengthening the comment to make the coupling explicit: e.g., \"**Warning: adding entries here does NOT automatically install them. You must also update the corresponding `uv pip install` line in `images/keystone/Dockerfile`.**\"\n\nAt minimum, ensuring the warning is prominent prevents silent drift as new services are added.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "releases/2025.2/extra-packages.yaml",
+      "line": 14,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-06T12:59:51Z",
+      "id": null,
+      "resolution": ""
+    }
+  ],
+  "github_review_id": 3903596072
+}

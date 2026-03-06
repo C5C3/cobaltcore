@@ -1,0 +1,146 @@
+{
+  "feature_id": "CC-0006",
+  "title": "C001: Add Keystone container image and release config",
+  "date": "2026-03-06",
+  "summary": "Implements the container image build infrastructure for Keystone: three Dockerfiles (python-base, venv-builder, keystone) following the multi-stage build pattern from architecture docs, release configuration for OpenStack 2025.2 (source-refs.yaml, upper-constraints.txt, extra-packages.yaml), the constraint override script with 5 passing shell tests, 6 container image verification test scripts, reference documentation, and .gitkeep cleanup. All non-Docker tests pass (30/30). SPDX headers and DEVIATION comments are present on all required files.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Shell tests for apply-constraint-overrides.sh exist and pass (13/13)", "checked": true},
+    {"item": "SPDX header verification tests exist and pass (8/8)", "checked": true},
+    {"item": "DEVIATION comment verification tests exist and pass (4/4)", "checked": true},
+    {"item": "Release config verification tests exist and pass (5/5)", "checked": true},
+    {"item": "Container image verification tests exist (Docker required to run)", "checked": true},
+    {"item": "verify_keystone.sh exit code assertion is correct", "checked": false},
+    {"item": "Edge case: sed regex metacharacters in package names tested", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Dockerfiles are minimal and follow architecture doc patterns", "checked": true},
+    {"item": "SPDX headers match ci.yaml convention", "checked": true},
+    {"item": "DEVIATION comments explain rationale with doc reference", "checked": true},
+    {"item": "Script uses set -euo pipefail", "checked": true},
+    {"item": "Named build contexts used (not COPY or git clone)", "checked": true},
+    {"item": "No dead code or commented-out code", "checked": true},
+    {"item": "Test helper functions not duplicated across test files (DRY)", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "Final image runs as non-root (USER openstack)", "checked": true},
+    {"item": "Build tools excluded from final image (multi-stage)", "checked": true},
+    {"item": "No path traversal in scripts (fixed paths from repo)", "checked": true},
+    {"item": "apt lists cleaned after install (rm -rf /var/lib/apt/lists/*)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Three-layer Dockerfile hierarchy matches architecture doc", "checked": true},
+    {"item": "Multi-stage build separates build and runtime", "checked": true},
+    {"item": "Release configuration is source of truth (not Dockerfiles)", "checked": true},
+    {"item": "Dockerfiles are release-independent", "checked": true},
+    {"item": "Deviations from architecture doc documented with DEVIATION comments", "checked": true},
+    {"item": "extra-packages.yaml values consistent with keystone Dockerfile", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated Dockerfile logic", "checked": true},
+    {"item": "No unused files or configs", "checked": true},
+    {"item": "Test assertion helpers duplicated across 7 scripts", "checked": false}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Script exits on missing argument (${1:?})", "checked": true},
+    {"item": "set -euo pipefail in all scripts", "checked": true},
+    {"item": "Tests exit 1 on any failure", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Override script handles missing file gracefully (no-op)", "checked": true},
+    {"item": "All apt-get install uses --no-install-recommends", "checked": true},
+    {"item": "Script validates release argument", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "id": "TE7-001",
+      "severity": "major",
+      "check_id": "TE7",
+      "description": "verify_keystone.sh line 59: `version=$(docker run --rm \"$IMAGE\" keystone-manage --version 2>&1) || true` followed by `exit_code=$?` on line 60. The `|| true` causes `$?` to always be 0, making the exit code assertion on line 62 (`assert_eq \"keystone-manage --version exits 0\" \"0\" \"$exit_code\"`) pass unconditionally — even if keystone-manage fails. The test claims to verify the exit code but actually does not.",
+      "location": "tests/container-images/verify_keystone.sh:59-62",
+      "fix": "Remove `|| true` and capture exit code before branching: `version=$(docker run --rm \"$IMAGE\" keystone-manage --version 2>&1); exit_code=$?` — or use a subshell: `exit_code=0; version=$(docker run --rm \"$IMAGE\" keystone-manage --version 2>&1) || exit_code=$?`"
+    },
+    {
+      "id": "C3-001",
+      "severity": "minor",
+      "check_id": "C3",
+      "description": "apply-constraint-overrides.sh lines 30 and 35: Package names are used directly in sed regex patterns without escaping. The dot in package names like `oslo.messaging` is a regex metacharacter matching any character. While unlikely to cause issues with real OpenStack package names, this is technically incorrect — `sed \"/^oslo.messaging===/d\"` would also match a hypothetical `osloxmessaging===...` line.",
+      "location": "scripts/apply-constraint-overrides.sh:30,35",
+      "fix": "Escape dots before using in sed: `escaped=$(echo \"$package\" | sed 's/\\./\\\\./g')` then use `$escaped` in the sed pattern. Alternatively, use `sed -i` with fixed-string matching if available."
+    },
+    {
+      "id": "Q3-001",
+      "severity": "minor",
+      "check_id": "Q3",
+      "description": "The assert_eq, assert_contains, assert_file_contains, and assert_nonzero_exit helper functions are duplicated across 7 shell test scripts (tests/scripts/test_apply_constraint_overrides.sh, tests/container-images/verify_*.sh). Each file defines its own identical copies.",
+      "location": "tests/scripts/test_apply_constraint_overrides.sh:24-56, tests/container-images/verify_python_base.sh:18-55, tests/container-images/verify_venv_builder.sh:18-42, tests/container-images/verify_keystone.sh:18-53, tests/container-images/verify_spdx_headers.sh:17-28, tests/container-images/verify_deviation_comments.sh:14-15, tests/container-images/verify_release_config.sh:18-29",
+      "fix": "Extract shared assertion functions to `tests/lib/assertions.sh` and source it from each test script: `source \"$(dirname \"${BASH_SOURCE[0]}\")/../lib/assertions.sh\"`. This reduces maintenance burden when assertion behavior needs updating."
+    }
+  ],
+  "suggested_improvements": [
+    "Extract shared shell test assertion helpers (assert_eq, assert_contains, etc.) into tests/lib/assertions.sh to eliminate duplication across 7 test files",
+    "Consider adding a `uv` absence check to verify_keystone.sh (alongside gcc and python3-dev) to verify build tools are fully excluded from the final image",
+    "The Makefile mentioned in the plan scope exclusion (docker-build target) would simplify the multi-step local build process documented in docs/reference/container-images.md"
+  ],
+  "next_steps": [
+    "Fix TE7-001: Remove `|| true` from verify_keystone.sh exit code capture to make the assertion meaningful",
+    "Optionally fix C3-001: Escape dots in package names before sed regex usage in apply-constraint-overrides.sh",
+    "Optionally extract shared test helpers to reduce duplication (Q3-001)"
+  ],
+  "detected_patterns": [
+    {
+      "name": "SPDX Apache-2.0 header on infrastructure files",
+      "component": "images/*, releases/*, scripts/*",
+      "category": "configuration",
+      "applies_when": "Adding any new Dockerfile, YAML config, or shell script to the repository (extends the existing GitHub Actions SPDX pattern to all infrastructure files)",
+      "description": "All infrastructure files (Dockerfiles, YAML configs, shell scripts) start with the SPDX license header using the same copyright text as .github/workflows/ci.yaml. Dockerfiles and YAML files use `# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company` on line 1, blank comment on line 2, `# SPDX-License-Identifier: Apache-2.0` on line 3. Shell scripts place the shebang on line 1 and SPDX header on lines 2-4. This extends the existing github-actions-workflow-spdx-header-and-structure-convention pattern beyond workflows to all repo files.",
+      "examples": [
+        {
+          "location": "images/python-base/Dockerfile:1-3",
+          "code": "# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company\n#\n# SPDX-License-Identifier: Apache-2.0"
+        },
+        {
+          "location": "scripts/apply-constraint-overrides.sh:1-4",
+          "code": "#!/bin/bash\n# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company\n#\n# SPDX-License-Identifier: Apache-2.0"
+        }
+      ]
+    },
+    {
+      "name": "DEVIATION comment for architecture doc divergence",
+      "component": "images/*/Dockerfile",
+      "category": "configuration",
+      "applies_when": "Implementing a Dockerfile (or other infrastructure file) that intentionally deviates from the architecture documentation in architecture/docs/",
+      "description": "When the implementation deliberately deviates from the architecture documentation, a multi-line `# DEVIATION from architecture/docs/<path>:` comment is added at the point of deviation. The comment (1) names the specific architecture doc file, (2) explains what the architecture doc specifies, (3) explains what the implementation does instead, and (4) provides rationale. Cross-references between related DEVIATION comments point readers to the primary explanation. This pattern appears in 2 Dockerfiles for the generic user vs per-service user decision.",
+      "examples": [
+        {
+          "location": "images/python-base/Dockerfile:19-23",
+          "code": "# DEVIATION from architecture/docs/08-container-images/01-build-pipeline.md:\n# The architecture doc's Keystone Dockerfile example creates a per-service user\n# (e.g., groupadd keystone / useradd keystone). We use a generic 'openstack'\n# user/group (UID/GID 42424) shared by all service images to reduce complexity\n# and image layers. Each service image inherits this user via USER openstack."
+        },
+        {
+          "location": "images/keystone/Dockerfile:24-26",
+          "code": "# DEVIATION from architecture/docs/08-container-images/01-build-pipeline.md:\n# Uses the generic 'openstack' user (UID/GID 42424) from python-base instead\n# of a per-service user. See python-base/Dockerfile for rationale."
+        }
+      ]
+    },
+    {
+      "name": "Shell test script structure with PASS/FAIL counters",
+      "component": "tests/scripts/*, tests/container-images/*",
+      "category": "testing",
+      "applies_when": "Writing a new shell-based verification test script for infrastructure components (Dockerfiles, scripts, configs)",
+      "description": "Shell test scripts follow a consistent structure: (1) shebang + SPDX header, (2) description comment with CC feature ID and requirement IDs, (3) `set -euo pipefail`, (4) PASS/FAIL integer counters, (5) assert_* helper functions (assert_eq, assert_contains, etc.) that increment counters and print PASS/FAIL with description, (6) named test_* functions each printing a test name, (7) sequential test execution with blank-line separators, (8) summary line `=== Results: $PASS passed, $FAIL failed ===`, (9) `exit 1` if any failures. This pattern is consistently used across 7 test files.",
+      "examples": [
+        {
+          "location": "tests/scripts/test_apply_constraint_overrides.sh:9-35",
+          "code": "set -euo pipefail\n\nSCRIPT_DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"\nPROJECT_ROOT=\"$(cd \"$SCRIPT_DIR/../..\" && pwd)\"\nSCRIPT_UNDER_TEST=\"$PROJECT_ROOT/scripts/apply-constraint-overrides.sh\"\n\nPASS=0\nFAIL=0\nTMPDIR_BASE=$(mktemp -d)\n\ncleanup() {\n  rm -rf \"$TMPDIR_BASE\"\n}\ntrap cleanup EXIT\n\nassert_eq() {\n  local description=\"$1\" expected=\"$2\" actual=\"$3\"\n  if [ \"$expected\" = \"$actual\" ]; then\n    echo \"  PASS: $description\"\n    PASS=$((PASS + 1))\n  else\n    echo \"  FAIL: $description\"\n    echo \"    expected: $expected\"\n    echo \"    actual:   $actual\"\n    FAIL=$((FAIL + 1))\n  fi\n}"
+        },
+        {
+          "location": "tests/container-images/verify_python_base.sh:11-29",
+          "code": "set -euo pipefail\n\nIMAGE=\"${1:-c5c3/python-base:3.12-noble}\"\n\nPASS=0\nFAIL=0\n\nassert_eq() {\n  local description=\"$1\" expected=\"$2\" actual=\"$3\"\n  if [ \"$expected\" = \"$actual\" ]; then\n    echo \"  PASS: $description\"\n    PASS=$((PASS + 1))\n  else\n    echo \"  FAIL: $description\"\n    echo \"    expected: $expected\"\n    echo \"    actual:   $actual\"\n    FAIL=$((FAIL + 1))\n  fi\n}"
+        }
+      ]
+    }
+  ]
+}

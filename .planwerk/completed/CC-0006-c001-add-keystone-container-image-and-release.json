@@ -2,8 +2,8 @@
   "feature_id": "CC-0006",
   "title": "C001: Add Keystone container image and release config",
   "slug": "c001-add-keystone-container-image-and-release",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 🔨 medium\n**Category:** infrastructure\n**Priority:** high\n**Feature ID:** S006\n\n## Summary\n\nImplement the container image build infrastructure for Keystone. This creates three Dockerfiles (`python-base`, `venv-builder`, `keystone`) following the multi-stage build pattern from `architecture/docs/08-container-images/`, the release configuration for OpenStack 2025.2 (`source-refs.yaml`, `upper-constraints.txt`, `extra-packages.yaml`), the constraint override script, and verifies the Keystone image builds successfully with `keystone-manage --version`.\n\n## Scope\n\n**Included:**\n- `images/python-base/Dockerfile` — Ubuntu Noble base with Python 3.12, runtime libs, PATH, generic `openstack` service user UID/GID 42424, non-root\n- `images/venv-builder/Dockerfile` — Build dependencies, `uv` (pinned via `COPY --from=ghcr.io/astral-sh/uv:0.6.3`), virtualenv at `/var/lib/openstack/`, common base packages\n- `images/keystone/Dockerfile` — Multi-stage build: Stage 1 (`venv-builder`) installs Keystone via `uv pip install` with `--constraint` and extras from `extra-packages.yaml`; Stage 2 (`python-base`) copies venv, adds Keystone runtime system packages. Source and constraints passed as named build contexts (`--build-context`)\n- `releases/2025.2/source-refs.yaml` — Git refs for Keystone (initially `keystone: \"28.0.0\"`)\n- `releases/2025.2/upper-constraints.txt` — Python dependency pins committed from OpenStack `stable/2025.2` branch\n- `releases/2025.2/extra-packages.yaml` — Combined per-service Python extras and apt runtime packages\n- `scripts/apply-constraint-overrides.sh` — Merges `overrides/<release>/constraints.txt` into `upper-constraints.txt`\n- Local image build verification: `docker build` succeeds, `keystone-manage --version` runs\n- Remove `.gitkeep` from `images/` and `releases/` (no longer needed)\n\n**Excluded:**\n- GitHub Actions CI workflow for image builds (S007)\n- Multi-arch support (S007)\n- GHCR push and tag schema (S007)\n- Other service Dockerfiles (nova, neutron, glance, cinder, placement) — Keystone-first strategy\n- `patches/` directory structure — no patches needed yet\n- `overrides/` directory with actual constraint override files — script handles the logic; files added when needed\n- SBOM generation and signing (documented in `architecture/docs/08-container-images/04-sbom.md`)\n- Makefile `docker-build` target implementation (follow-up or part of S007)\n\n## Resolved Decisions\n\n1. **Service user**: Generic `openstack` user/group (UID/GID 42424) created in `python-base`. All service images inherit via `USER openstack`. This is a **deviation** from the architecture doc's Keystone Dockerfile example which creates a per-service `keystone` user — the deviation should be documented with a `# DEVIATION` comment.\n\n2. **`extra-packages.yaml` format**: Combined schema with both Python extras and apt runtime packages per service:\n   ```yaml\n   keystone:\n     pip_packages:\n       - \"keystone[ldap]\"\n       - \"keystone[memcache_pool]\"\n       - \"keystone[oauth1]\"\n     apt_packages:\n       - libapache2-mod-wsgi-py3\n       - libldap-2.5-0\n       - libsasl2-2\n       - libxml2\n   ```\n\n3. **`upper-constraints.txt`**: Committed in the repo at `releases/2025.2/upper-constraints.txt`, sourced from OpenStack's `requirements` repo `stable/2025.2` branch. Renovate can track updates.\n\n## Visualization\n\n```mermaid\nflowchart TD\n    subgraph BaseImages[\"Base Images\"]\n        UB[\"ubuntu:noble\"]\n        PB[\"images/python-base/Dockerfile\"]\n        VB[\"images/venv-builder/Dockerfile\"]\n        UB --> PB\n        PB --> VB\n    end\n\n    subgraph ReleaseConfig[\"releases/2025.2/\"]\n        SR[\"source-refs.yaml\"]\n        UC[\"upper-constraints.txt\"]\n        EP[\"extra-packages.yaml\"]\n    end\n\n    subgraph Scripts[\"scripts/\"]\n        AO[\"apply-constraint-overrides.sh\"]\n    end\n\n    subgraph KeystoneBuild[\"images/keystone/Dockerfile\"]\n        S1[\"Stage 1: FROM venv-builder AS build\"]\n        S2[\"Stage 2: FROM python-base\"]\n        S1 -->|\"COPY --from=build --link /var/lib/openstack\"| S2\n    end\n\n    VB --> S1\n    PB --> S2\n    UC -->|\"--constraint via named build context\"| S1\n    EP -->|\"pip extras + apt packages\"| S1\n    SR -->|\"git ref for CI checkout\"| S1\n    AO -->|\"merges overrides into\"| UC\n\n    S2 --> VERIFY[\"keystone-manage --version\"]\n```\n\n```mermaid\nsequenceDiagram\n    participant Dev as Developer\n    participant Docker as Docker Build\n    participant PB as python-base\n    participant VB as venv-builder\n    participant KS as keystone Stage 1\n    participant RT as keystone Stage 2\n\n    Dev->>Docker: docker build images/python-base\n    Docker->>PB: FROM ubuntu:noble + Python 3.12 + runtime libs + openstack user 42424\n    Dev->>Docker: docker build images/venv-builder\n    Docker->>VB: FROM python-base + uv 0.6.3 + build-essential + venv\n    Dev->>Docker: docker build images/keystone --build-context keystone=src/ --build-context upper-constraints=releases/2025.2/\n    Docker->>KS: FROM venv-builder AS build + bind-mount source + uv pip install\n    KS-->>RT: COPY --from=build --link /var/lib/openstack\n    Docker->>RT: FROM python-base + apt runtime packages + USER openstack\n    Dev->>RT: keystone-manage --version\n    RT-->>Dev: 28.0.0\n```\n\n## Key Components\n\n- **`images/python-base/Dockerfile`**: Ubuntu Noble 24.04 LTS runtime base. Installs `ca-certificates`, `netbase`, `python3`, `sudo`, `tzdata`. Sets `ENV PATH=/var/lib/openstack/bin:$PATH`, `ENV LANG=C.UTF-8`. Creates generic `openstack` user/group (UID/GID 42424). All service images inherit from this. SPDX header required.\n\n- **`images/venv-builder/Dockerfile`**: Build-time image extending `python-base`. Adds `build-essential`, `git`, `libffi-dev`, `libpq-dev`, `libssl-dev`, `python3-dev`, `python3-venv`. Copies `uv` binary from `ghcr.io/astral-sh/uv:0.6.3`. Creates virtualenv at `/var/lib/openstack`. Pre-installs common packages (`cryptography`, `pymysql`, `python-memcached`, `uwsgi`) with constraints. SPDX header required.\n\n- **`images/keystone/Dockerfile`**: Multi-stage build, release-independent. Stage 1 (`FROM venv-builder AS build`): bind-mounts Keystone source and `upper-constraints.txt` via `--mount=type=bind,from=<context>`, runs `uv pip install --constraint` with extras from `extra-packages.yaml`. Stage 2 (`FROM python-base`): `COPY --from=build --link /var/lib/openstack /var/lib/openstack`, installs Keystone-specific runtime apt packages (`libapache2-mod-wsgi-py3`, `libldap-2.5-0`, `libsasl2-2`, `libxml2`), sets `USER openstack`. SPDX header required. Includes `# DEVIATION` comment explaining generic user vs per-service user.\n\n- **`releases/2025.2/source-refs.yaml`**: YAML mapping component names to git refs. Initially `keystone: \"28.0.0\"`. Single source of truth for what version is built per release. Renovate tracks updates via custom regex manager.\n\n- **`releases/2025.2/upper-constraints.txt`**: Pinned Python dependency versions from OpenStack `requirements` repo, `stable/2025.2` branch. ~500 lines. Ensures reproducible builds.\n\n- **`releases/2025.2/extra-packages.yaml`**: Per-service map with two sections: `pip_packages` (Python extras/packages to install alongside the service) and `apt_packages` (runtime system packages for the final image). Initially populated for Keystone only.\n\n- **`scripts/apply-constraint-overrides.sh`**: Bash script reading `overrides/<release>/constraints.txt` and applying line-by-line overrides to `upper-constraints.txt`. Supports version replacement (`cryptography===44.0.1`) and package removal (`-oslo.messaging`). Idempotent — no-op when override file doesn't exist. SPDX header required.",
   "stories": [
@@ -381,6 +381,7 @@
       "title": "Create images/python-base/Dockerfile: Ubuntu Noble base with Python 3.12, runtime libs (ca-certificates, netbase, python3, sudo, tzdata), ENV PATH and LANG, generic openstack user/group (UID/GID 42424, nologin shell), SPDX header, DEVIATION comment explaining generic user vs per-service user (REQ-001, REQ-008, REQ-010)",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-008",
@@ -392,6 +393,7 @@
       "title": "Create images/venv-builder/Dockerfile: FROM python-base, install build-essential/git/libffi-dev/libpq-dev/libssl-dev/python3-dev/python3-venv, COPY --from=ghcr.io/astral-sh/uv:0.6.3 /uv /uvx /bin/, create virtualenv at /var/lib/openstack via python3 -m venv, pre-install common packages (cryptography, pymysql, python-memcached, uwsgi) with uv pip install --prefix, SPDX header (REQ-002, REQ-008)",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-008"
@@ -402,6 +404,7 @@
       "title": "Create releases/2025.2/source-refs.yaml with keystone: '28.0.0' and releases/2025.2/extra-packages.yaml with keystone.pip_packages (keystone[ldap], keystone[memcache_pool], keystone[oauth1]) and keystone.apt_packages (libapache2-mod-wsgi-py3, libldap-2.5-0, libsasl2-2, libxml2), both with SPDX headers (REQ-004, REQ-005, REQ-008)",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-005",
@@ -413,6 +416,7 @@
       "title": "Fetch upper-constraints.txt from OpenStack requirements repo stable/2025.2 branch (https://raw.githubusercontent.com/openstack/requirements/stable/2025.2/upper-constraints.txt) and commit as releases/2025.2/upper-constraints.txt (REQ-006)",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -422,6 +426,7 @@
       "title": "Create scripts/apply-constraint-overrides.sh (shebang, SPDX header, argument parsing for release, idempotent no-op when override file absent, while-read loop processing version replacements via sed and package removals via sed -d, skip comments/blanks, echo actions). Write shell tests in tests/scripts/test_apply_constraint_overrides.sh covering: no override file, version replacement, package removal, comments/blanks skipped, multiple overrides in one run (REQ-007, REQ-008)",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-007",
         "REQ-008"
@@ -432,6 +437,7 @@
       "title": "Create images/keystone/Dockerfile: Stage 1 (FROM venv-builder AS build) with --mount=type=bind,from=upper-constraints and --mount=type=bind,from=keystone for uv pip install --constraint with Keystone extras; Stage 2 (FROM python-base) with COPY --from=build --link /var/lib/openstack, apt install runtime packages (libapache2-mod-wsgi-py3, libldap-2.5-0, libsasl2-2, libxml2), USER openstack. Include SPDX header and DEVIATION comment for generic user (REQ-003, REQ-008, REQ-010)",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-008",
@@ -442,13 +448,15 @@
       "id": "2.2",
       "title": "Remove .gitkeep placeholder files from images/ and releases/ directories — no longer needed now that actual Dockerfiles and release configuration files exist (S006)",
       "level": 2,
-      "estimate_minutes": 5
+      "estimate_minutes": 5,
+      "status": "done"
     },
     {
       "id": "3.1",
       "title": "Verify complete image build chain locally: (1) docker build images/python-base -t c5c3/python-base:3.12-noble, (2) docker build images/venv-builder -t c5c3/venv-builder:3.12-noble, (3) git clone openstack/keystone at tag 28.0.0, (4) docker build images/keystone with --build-context keystone=src/keystone --build-context upper-constraints=releases/2025.2/, (5) docker run --rm keystone-manage --version succeeds, (6) verify non-root user and absence of build tools in final image (REQ-009)",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -457,7 +465,8 @@
       "id": "4.1",
       "title": "Write reference documentation at docs/reference/container-images.md (S006): Dockerfile hierarchy (python-base → venv-builder → service), base image contents and ENV vars, release config file formats (source-refs.yaml, upper-constraints.txt, extra-packages.yaml), named build context usage pattern, apply-constraint-overrides.sh usage and override format, local build instructions for developer verification",
       "level": 4,
-      "estimate_minutes": 20
+      "estimate_minutes": 20,
+      "status": "done"
     }
   ],
   "test_specifications": [
@@ -646,8 +655,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-03-06T10:15:39.377958"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-06T10:33:41.938557"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-06T16:26:46.840259"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/29",
+  "pr_number": 29,
   "execution_history": [
     {
       "run_id": "f3ce0295-d9e7-4d9f-81d2-bb345346571a",
@@ -659,6 +678,182 @@
           "name": "prepare",
           "duration": 662.6655690670013,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "fd1dc8d6-9d3a-44cc-9fc5-39152c930f32",
+      "timestamp": "2026-03-06T11:04:16.404397",
+      "total_duration": 1603.8742518424988,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (5 tasks)",
+          "duration": 346.24570870399475,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (2 tasks)",
+          "duration": 112.7662034034729,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (1 tasks)",
+          "duration": 251.1956102848053,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (1 tasks)",
+          "duration": 292.6416714191437,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0006] Code Review",
+          "duration": 246.7360396385193,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0006] Improvements",
+          "duration": 267.7794086933136,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0006] Simplify",
+          "duration": 86.50960969924927,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "a85c4e81-ea71-40ba-82e5-099ae78b9279",
+      "timestamp": "2026-03-06T12:00:50.453610",
+      "total_duration": 431.89906430244446,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 431.89906430244446,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "3a56058b-4226-41f6-a981-237df94c3f24",
+      "timestamp": "2026-03-06T12:18:09.910400",
+      "total_duration": 406.81324458122253,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 406.81324458122253,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "cf303199-adc7-4747-88bd-a80ffd7e9c23",
+      "timestamp": "2026-03-06T12:31:18.568100",
+      "total_duration": 359.337824344635,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #3",
+          "duration": 359.337824344635,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "54cb4040-4ca0-4592-bb4f-d48b6da3b47c",
+      "timestamp": "2026-03-06T12:54:49.487857",
+      "total_duration": 188.9772686958313,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #4",
+          "duration": 188.9772686958313,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "a164cc4e-9c9e-4c7a-a7c5-c634036a53e6",
+      "timestamp": "2026-03-06T13:21:21.063325",
+      "total_duration": 464.68028259277344,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #5",
+          "duration": 464.68028259277344,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "b7161ea5-1cb2-44b4-bb99-27783726a462",
+      "timestamp": "2026-03-06T13:35:02.872181",
+      "total_duration": 220.9514172077179,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #6",
+          "duration": 220.9514172077179,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "4b23d11c-17b4-4c2f-ac70-01e174a67370",
+      "timestamp": "2026-03-06T13:48:38.468163",
+      "total_duration": 324.2645456790924,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #7",
+          "duration": 324.2645456790924,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "3e585612-549b-4eb7-b74a-dee3a6ddd51c",
+      "timestamp": "2026-03-06T14:04:04.697591",
+      "total_duration": 325.5128345489502,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #8",
+          "duration": 325.5128345489502,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "7416a660-f2a5-4db8-83be-e5da8149b0d9",
+      "timestamp": "2026-03-06T14:22:17.605067",
+      "total_duration": 259.9385540485382,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #9",
+          "duration": 259.9385540485382,
+          "type": "review_address",
           "status": "done"
         }
       ]

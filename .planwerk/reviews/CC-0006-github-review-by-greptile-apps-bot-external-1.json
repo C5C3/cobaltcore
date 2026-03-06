@@ -1,0 +1,55 @@
+{
+  "feature_id": "CC-0006",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer identified three bugs:\n\n1. **`verify_venv_builder.sh`**: The `set -e` shell option causes the script to abort immediately on a failing `docker run` instead of capturing the exit code, so test failures are never recorded. Fix by appending `|| exit_code=$?` to the command.\n\n2. **`verify_deviation_comments.sh`**: This is the only test script that doesn't source the shared `assertions.sh` library, duplicating assertion logic inline instead. It should source the library and use its helpers like every other test.\n\n3. **`apply-constraint-overrides.sh`**: The `sed` substitution silently corrupts packages that have multiple constraint lines with Python-version markers — it replaces all matching lines with the same unmarked value, dropping the markers. Fix by deleting all existing lines for the package first, then appending the new one.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-06T11:51:24Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**`set -e` aborts script instead of recording FAIL**\n\nWith `set -euo pipefail` active, if `docker run` exits non-zero, the script terminates immediately on line 35 — before `exit_code=$?` can be reached on line 36, and before the `assert_eq` call increments `$FAIL`. The test never reports a failure; it just aborts silently mid-run.\n\nCompare with the correct pattern used in `test_keystone_manage_version()` in `verify_keystone.sh` (line 26):\n\n```bash\nlocal version exit_code=0\nversion=$(docker run --rm \"$IMAGE\" keystone-manage --version 2>&1) || exit_code=$?\n```\n\nApply the same idiom here:\n\n```suggestion\n  local exit_code=0\n  docker run --rm \"$IMAGE\" test -x /var/lib/openstack/bin/python3 || exit_code=$?\n\n  assert_eq \"/var/lib/openstack/bin/python3 is executable\" \"0\" \"$exit_code\"\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: tests/container-images/verify_venv_builder.sh\nLine: 35-36\n\nComment:\n**`set -e` aborts script instead of recording FAIL**\n\nWith `set -euo pipefail` active, if `docker run` exits non-zero, the script terminates immediately on line 35 — before `exit_code=$?` can be reached on line 36, and before the `assert_eq` call increments `$FAIL`. The test never reports a failure; it just aborts silently mid-run.\n\nCompare with the correct pattern used in `test_keystone_manage_version()` in `verify_keystone.sh` (line 26):\n\n```bash\nlocal version exit_code=0\nversion=$(docker run --rm \"$IMAGE\" keystone-manage --version 2>&1) || exit_code=$?\n```\n\nApply the same idiom here:\n\n```suggestion\n  local exit_code=0\n  docker run --rm \"$IMAGE\" test -x /var/lib/openstack/bin/python3 || exit_code=$?\n\n  assert_eq \"/var/lib/openstack/bin/python3 is executable\" \"0\" \"$exit_code\"\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "tests/container-images/verify_venv_builder.sh",
+      "line": 36,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-06T11:51:21Z",
+      "id": null,
+      "resolution": "Fixed in verify_venv_builder.sh: Changed `local exit_code` + separate `docker run` + `exit_code=$?` to `local exit_code=0` + `docker run ... || exit_code=$?` on a single line, exactly matching the reviewer's suggested pattern. This prevents set -e from aborting the script before the exit code is captured."
+    },
+    {
+      "body": "**Does not source the shared `assertions.sh` library — inconsistent with all other test scripts**\n\nEvery other test script added in this PR (`verify_keystone.sh`, `verify_python_base.sh`, `verify_venv_builder.sh`, `verify_release_config.sh`, `verify_spdx_headers.sh`, `test_apply_constraint_overrides.sh`) sources `tests/lib/assertions.sh`. This file skips the source and uses duplicated inline `if`/`grep` blocks instead.\n\nThe `tests/lib/assertions.sh` library is added in this very PR specifically to eliminate this duplication — not sourcing it here defeats that purpose and leaves this file as the only outlier.\n\nAdd the source directive after the `PASS=0` / `FAIL=0` declarations, then replace the inline `if … grep … PASS/FAIL` blocks with the appropriate `assert_*` helper calls:\n\n```bash\nSCRIPT_DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"\n# shellcheck source=tests/lib/assertions.sh\nsource \"$SCRIPT_DIR/../lib/assertions.sh\"\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: tests/container-images/verify_deviation_comments.sh\nLine: 1-15\n\nComment:\n**Does not source the shared `assertions.sh` library — inconsistent with all other test scripts**\n\nEvery other test script added in this PR (`verify_keystone.sh`, `verify_python_base.sh`, `verify_venv_builder.sh`, `verify_release_config.sh`, `verify_spdx_headers.sh`, `test_apply_constraint_overrides.sh`) sources `tests/lib/assertions.sh`. This file skips the source and uses duplicated inline `if`/`grep` blocks instead.\n\nThe `tests/lib/assertions.sh` library is added in this very PR specifically to eliminate this duplication — not sourcing it here defeats that purpose and leaves this file as the only outlier.\n\nAdd the source directive after the `PASS=0` / `FAIL=0` declarations, then replace the inline `if … grep … PASS/FAIL` blocks with the appropriate `assert_*` helper calls:\n\n```bash\nSCRIPT_DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"\n# shellcheck source=tests/lib/assertions.sh\nsource \"$SCRIPT_DIR/../lib/assertions.sh\"\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "tests/container-images/verify_deviation_comments.sh",
+      "line": 15,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-06T11:51:22Z",
+      "id": null,
+      "resolution": "Fixed in verify_deviation_comments.sh: Added `source \"$SCRIPT_DIR/../lib/assertions.sh\"` with the shellcheck directive after the PASS/FAIL declarations. Replaced all four inline if/grep/PASS/FAIL blocks (two per test function) with calls to `assert_file_contains`, eliminating the duplicated assertion logic and making this script consistent with all other test scripts in the PR."
+    },
+    {
+      "body": "**Replacement silently corrupts packages with Python-version markers**\n\nSeveral packages in `releases/2025.2/upper-constraints.txt` have **two separate lines** with environment markers (e.g., one pin for Python 3.9 and another for Python >= 3.10). Examples: `alabaster`, `Pint`, `networkx`, `scipy`, `python-glanceclient`, `glance_store`, `jira`, `doc8`, and `async-timeout`.\n\nThe `sed` substitution on line 37 replaces **every** line matching `^<package>===` with the override value:\n\n```bash\nsed -i \"s/^${escaped_package}===.*$/${line}/\" \"$CONSTRAINTS\"\n```\n\nTwo bugs follow:\n1. Both version-specific lines are replaced by the same string, making the Python 3.9 and Python 3.10 entries identical.\n2. The replacement `$line` carries no environment marker, so both markers are **silently dropped** — downstream builds targeting Python 3.9 would resolve the wrong version.\n\nA safer fix is to delete all existing pins for the package first, then append the new single line (consistent with what the removal branch already does on line 31):\n\n```suggestion\n  else\n    # Override constraint (replace existing line)\n    package=$(echo \"$line\" | cut -d'=' -f1)\n    escaped_package=\"${package//./\\\\.}\"\n    sed -i \"/^${escaped_package}===/d\" \"$CONSTRAINTS\"\n    echo \"$line\" >> \"$CONSTRAINTS\"\n    echo \"Updated constraint: $line\"\n  fi\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: scripts/apply-constraint-overrides.sh\nLine: 34-39\n\nComment:\n**Replacement silently corrupts packages with Python-version markers**\n\nSeveral packages in `releases/2025.2/upper-constraints.txt` have **two separate lines** with environment markers (e.g., one pin for Python 3.9 and another for Python >= 3.10). Examples: `alabaster`, `Pint`, `networkx`, `scipy`, `python-glanceclient`, `glance_store`, `jira`, `doc8`, and `async-timeout`.\n\nThe `sed` substitution on line 37 replaces **every** line matching `^<package>===` with the override value:\n\n```bash\nsed -i \"s/^${escaped_package}===.*$/${line}/\" \"$CONSTRAINTS\"\n```\n\nTwo bugs follow:\n1. Both version-specific lines are replaced by the same string, making the Python 3.9 and Python 3.10 entries identical.\n2. The replacement `$line` carries no environment marker, so both markers are **silently dropped** — downstream builds targeting Python 3.9 would resolve the wrong version.\n\nA safer fix is to delete all existing pins for the package first, then append the new single line (consistent with what the removal branch already does on line 31):\n\n```suggestion\n  else\n    # Override constraint (replace existing line)\n    package=$(echo \"$line\" | cut -d'=' -f1)\n    escaped_package=\"${package//./\\\\.}\"\n    sed -i \"/^${escaped_package}===/d\" \"$CONSTRAINTS\"\n    echo \"$line\" >> \"$CONSTRAINTS\"\n    echo \"Updated constraint: $line\"\n  fi\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "scripts/apply-constraint-overrides.sh",
+      "line": 39,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-06T11:51:23Z",
+      "id": null,
+      "resolution": "Fixed in apply-constraint-overrides.sh: Replaced the `sed -i \"s/^${escaped_package}===.*$/${line}/\"` substitution with a delete-then-append approach (`sed -i \"/^${escaped_package}===/d\"` followed by `echo \"$line\" >> \"$CONSTRAINTS\"`), exactly as the reviewer suggested. This prevents silent corruption of packages that have multiple lines with Python-version environment markers."
+    }
+  ],
+  "resolution_summary": "All three review comments were addressed. Comment [0] fixed the set -e exit code capture bug in verify_venv_builder.sh. Comment [1] refactored verify_deviation_comments.sh to source assertions.sh and replace inline if/grep blocks with assert_file_contains calls. Comment [2] fixed the sed replacement bug in apply-constraint-overrides.sh by switching to delete-then-append, preventing silent corruption of packages with Python-version markers.",
+  "github_review_id": 3903281996
+}

@@ -1,0 +1,64 @@
+{
+  "feature_id": "CC-0006",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer wants four changes:\n\n1. **Add `DEBIAN_FRONTEND=noninteractive`** to `apt-get` commands in `images/keystone/Dockerfile` and `images/venv-builder/Dockerfile`, matching the fix already applied in `python-base`.\n2. **Replace inline if/grep/PASS/FAIL logic** in `tests/container-images/verify_keystone.sh` with the shared `assert_contains` helper used everywhere else.\n3. **Fix case-sensitive package matching** in `scripts/apply-constraint-overrides.sh` by adding the `/I` flag to `sed` (or normalizing to lowercase), since PyPI names are case-insensitive and mismatches cause silent duplicate constraints.\n4. **Add a case-mismatch test** in `tests/scripts/test_apply_constraint_overrides.sh` to cover the case-insensitive matching fix and prevent regressions.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-06T13:41:52Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 7,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**`DEBIAN_FRONTEND=noninteractive` missing — same gap as the `python-base` fix**\n\nThe `apt-get install` in Stage 2 installs `libapache2-mod-wsgi-py3`, which triggers Apache post-install helper scripts (`a2enmod`, debconf prompts). In some CI runner environments these can stall or emit unexpected interactive prompts when `DEBIAN_FRONTEND` is unset. The same root cause was identified and fixed in `images/python-base/Dockerfile` (line 11), but the fix was not propagated here.\n\nAdditionally, `images/venv-builder/Dockerfile` (line 11) has the same omission.\n\nBoth should follow the same pattern as `python-base`:\n\n```suggestion\nRUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends \\\n    libapache2-mod-wsgi-py3 \\\n    libldap-2.5-0 \\\n    libsasl2-2 \\\n    libxml2 \\\n    && rm -rf /var/lib/apt/lists/*\n```\n\nAnd in `images/venv-builder/Dockerfile` line 11:\n```dockerfile\nRUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends \\\n    build-essential \\\n    ...\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: images/keystone/Dockerfile\nLine: 28-33\n\nComment:\n**`DEBIAN_FRONTEND=noninteractive` missing — same gap as the `python-base` fix**\n\nThe `apt-get install` in Stage 2 installs `libapache2-mod-wsgi-py3`, which triggers Apache post-install helper scripts (`a2enmod`, debconf prompts). In some CI runner environments these can stall or emit unexpected interactive prompts when `DEBIAN_FRONTEND` is unset. The same root cause was identified and fixed in `images/python-base/Dockerfile` (line 11), but the fix was not propagated here.\n\nAdditionally, `images/venv-builder/Dockerfile` (line 11) has the same omission.\n\nBoth should follow the same pattern as `python-base`:\n\n```suggestion\nRUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends \\\n    libapache2-mod-wsgi-py3 \\\n    libldap-2.5-0 \\\n    libsasl2-2 \\\n    libxml2 \\\n    && rm -rf /var/lib/apt/lists/*\n```\n\nAnd in `images/venv-builder/Dockerfile` line 11:\n```dockerfile\nRUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends \\\n    build-essential \\\n    ...\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "images/keystone/Dockerfile",
+      "line": 33,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-06T13:41:48Z",
+      "id": null,
+      "resolution": "Added DEBIAN_FRONTEND=noninteractive prefix to the apt-get RUN instruction in images/keystone/Dockerfile line 28. Also applied the same fix to images/venv-builder/Dockerfile line 11 as the reviewer requested, since it had the same omission."
+    },
+    {
+      "body": "**Inline if/grep pattern is inconsistent with `assert_contains` used elsewhere**\n\nTest 4 duplicates the if/grep/PASS/FAIL idiom that `assertions.sh` was introduced to eliminate. Every other check in this file (and all other test scripts) uses the shared helpers. `assert_contains` from `tests/lib/assertions.sh` is a direct replacement:\n\n```suggestion\ntest_runtime_apt_packages_installed() {\n  echo \"Test: runtime apt packages are installed\"\n  local dpkg_output\n  dpkg_output=$(docker run --rm \"$IMAGE\" dpkg -l 2>&1)\n\n  for pkg in libapache2-mod-wsgi-py3 libldap-2.5-0 libsasl2-2 libxml2; do\n    assert_contains \"$pkg is installed\" \"$dpkg_output\" \"$pkg\"\n  done\n}\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: tests/container-images/verify_keystone.sh\nLine: 69-84\n\nComment:\n**Inline if/grep pattern is inconsistent with `assert_contains` used elsewhere**\n\nTest 4 duplicates the if/grep/PASS/FAIL idiom that `assertions.sh` was introduced to eliminate. Every other check in this file (and all other test scripts) uses the shared helpers. `assert_contains` from `tests/lib/assertions.sh` is a direct replacement:\n\n```suggestion\ntest_runtime_apt_packages_installed() {\n  echo \"Test: runtime apt packages are installed\"\n  local dpkg_output\n  dpkg_output=$(docker run --rm \"$IMAGE\" dpkg -l 2>&1)\n\n  for pkg in libapache2-mod-wsgi-py3 libldap-2.5-0 libsasl2-2 libxml2; do\n    assert_contains \"$pkg is installed\" \"$dpkg_output\" \"$pkg\"\n  done\n}\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>\n\n<sub>Note: If this suggestion doesn't match your team's coding style, reply to this and let me know. I'll remember it for next time!</sub>",
+      "path": "tests/container-images/verify_keystone.sh",
+      "line": 84,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-06T13:41:49Z",
+      "id": null,
+      "resolution": "Replaced the inline if/grep/PASS/FAIL block in test_runtime_apt_packages_installed() with a single assert_contains call inside the for loop, matching the reviewer's suggested code exactly."
+    },
+    {
+      "body": "**Case-sensitive package matching can silently miss existing constraints**\n\nThe `sed` deletion pattern and the `cut -d'='` extraction are both case-sensitive (line 34 uses `\"${line#-}\"`, line 40 uses `cut -d'=' -f1`). PyPI package names are case-insensitive, and the OpenStack `upper-constraints.txt` mixes cases (e.g., `PyMySQL`, `oslo.config`).\n\nIf an override file writes `pymysql===2.1.0` (lowercase) but the constraint file contains `PyMySQL===2.0.0`, the `sed -i \"/^pymysql===/d\"` pattern will not match `PyMySQL===2.0.0`, so the old pin is left in place and the new line is appended — creating a duplicate with conflicting versions. Downstream `uv`/`pip` will then resolve against two conflicting constraints for the same package.\n\nConsider adding case-insensitive matching to the `sed` delete:\n```bash\nsed -i \"/^${escaped_package}===/Id\" \"$CONSTRAINTS\"\n```\n(`/I` flag enables case-insensitive matching in GNU `sed`). Alternatively, normalise the package name to lowercase before constructing the pattern.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: scripts/apply-constraint-overrides.sh\nLine: 28-46\n\nComment:\n**Case-sensitive package matching can silently miss existing constraints**\n\nThe `sed` deletion pattern and the `cut -d'='` extraction are both case-sensitive (line 34 uses `\"${line#-}\"`, line 40 uses `cut -d'=' -f1`). PyPI package names are case-insensitive, and the OpenStack `upper-constraints.txt` mixes cases (e.g., `PyMySQL`, `oslo.config`).\n\nIf an override file writes `pymysql===2.1.0` (lowercase) but the constraint file contains `PyMySQL===2.0.0`, the `sed -i \"/^pymysql===/d\"` pattern will not match `PyMySQL===2.0.0`, so the old pin is left in place and the new line is appended — creating a duplicate with conflicting versions. Downstream `uv`/`pip` will then resolve against two conflicting constraints for the same package.\n\nConsider adding case-insensitive matching to the `sed` delete:\n```bash\nsed -i \"/^${escaped_package}===/Id\" \"$CONSTRAINTS\"\n```\n(`/I` flag enables case-insensitive matching in GNU `sed`). Alternatively, normalise the package name to lowercase before constructing the pattern.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "scripts/apply-constraint-overrides.sh",
+      "line": 46,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-06T13:41:50Z",
+      "id": null,
+      "resolution": "Added the /I flag (GNU sed case-insensitive matching) to both sed -i deletion patterns in apply-constraint-overrides.sh (lines 36 and 42), changing '/d' to '/Id' so that package name matching is case-insensitive."
+    },
+    {
+      "body": "**No case-sensitivity test — the case-mismatch bug described in `apply-constraint-overrides.sh` is undetected**\n\nTest 2 and Test 5 use the same-cased package names in both the constraints file and the override file (e.g., `cryptography` in both). Since the script's `sed` pattern matching is case-sensitive, a test using a package whose canonical constraint name has different casing (e.g., `PyMySQL===2.0.0` in constraints, `pymysql===2.1.0` in override) would reveal the silent-duplicate failure. Consider adding a Test 7 (or extending Test 2) with a case-mismatched package to document the expected behaviour and prevent regressions once the fix is applied.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: tests/scripts/test_apply_constraint_overrides.sh\nLine: 46-63\n\nComment:\n**No case-sensitivity test — the case-mismatch bug described in `apply-constraint-overrides.sh` is undetected**\n\nTest 2 and Test 5 use the same-cased package names in both the constraints file and the override file (e.g., `cryptography` in both). Since the script's `sed` pattern matching is case-sensitive, a test using a package whose canonical constraint name has different casing (e.g., `PyMySQL===2.0.0` in constraints, `pymysql===2.1.0` in override) would reveal the silent-duplicate failure. Consider adding a Test 7 (or extending Test 2) with a case-mismatched package to document the expected behaviour and prevent regressions once the fix is applied.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "tests/scripts/test_apply_constraint_overrides.sh",
+      "line": 63,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-06T13:41:51Z",
+      "id": null,
+      "resolution": "Added Test 7 (test_case_insensitive_package_matching) to test_apply_constraint_overrides.sh that uses 'PyMySQL===1.1.0' in the constraints file and 'pymysql===1.1.1' (lowercase) in the override file, verifying the old mixed-case entry is removed and the new lowercase entry is present."
+    }
+  ],
+  "resolution_summary": "All four review comments were addressed. DEBIAN_FRONTEND=noninteractive was added to both images/keystone/Dockerfile and images/venv-builder/Dockerfile (the reviewer noted the venv-builder gap as an additional location beyond the directly commented file). The inline if/grep pattern in verify_keystone.sh was replaced with the assert_contains helper. Case-insensitive sed matching (/Id flag) was added to both sed calls in apply-constraint-overrides.sh, and a new Test 7 was added to test_apply_constraint_overrides.sh to cover the case-mismatch scenario.",
+  "github_review_id": 3903784372
+}
