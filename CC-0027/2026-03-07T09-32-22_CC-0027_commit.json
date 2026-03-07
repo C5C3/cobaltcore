@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-07T09:32:22.783151+00:00",
+  "feature_id": "CC-0027",
+  "task_type": "commit",
+  "session_key": "CC-0027",
+  "model": "opus",
+  "prompt": "Generate a detailed git commit body for this commit.\nSubject: fix(CC-0027): address review #5 feedback from greptile-apps[bot]\n\nReview feedback is in: /worktrees/CC-0027/.planwerk/reviews/CC-0027-github-review-by-greptile-apps-bot-external-5.json\nUse `git diff --cached -- ':(exclude).planwerk'` to see the full staged diff.\n\nDiff stat:\ntests/container-images/verify_release_config.sh | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n\nWrite ONLY the body text, no subject line, no markdown.\nFor each changed file, write a bullet point: '- path/to/file: what was changed'\nDo NOT mention .planwerk directory changes.\nOutput ONLY plain text — no tool_call tags, no XML, no code blocks.",
+  "prompt_length": 687,
+  "caller": "run_claude_cli"
+}
