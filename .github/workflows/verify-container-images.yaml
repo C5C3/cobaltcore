@@ -9,7 +9,25 @@ name: Verify Container Images
     branches:
       - main
       - stable/**
+    paths:
+      - images/**
+      - releases/**
+      - patches/**
+      - scripts/**
+      - tests/container-images/**
+      - tests/scripts/**
+      - .github/workflows/build-images.yaml
+      - .github/workflows/verify-container-images.yaml
   pull_request:
+    paths:
+      - images/**
+      - releases/**
+      - patches/**
+      - scripts/**
+      - tests/container-images/**
+      - tests/scripts/**
+      - .github/workflows/build-images.yaml
+      - .github/workflows/verify-container-images.yaml
 
 permissions:
   contents: read

@@ -9,7 +9,21 @@ name: Build Images
     branches:
       - main
       - stable/**
+    paths:
+      - images/**
+      - releases/**
+      - patches/**
+      - scripts/**
+      - tests/container-images/**
+      - .github/workflows/build-images.yaml
   pull_request:
+    paths:
+      - images/**
+      - releases/**
+      - patches/**
+      - scripts/**
+      - tests/container-images/**
+      - .github/workflows/build-images.yaml
 
 permissions:
   contents: read
