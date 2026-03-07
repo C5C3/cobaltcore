@@ -2,21 +2,23 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Per-service Python extras and runtime system packages.
-# pip_packages: installed via uv pip install alongside the service in the build stage.
-#   WARNING: Adding entries here does NOT automatically install them. You must also
-#   update the corresponding `uv pip install` line in `images/keystone/Dockerfile`.
-#   The Dockerfile combines extras into a single install argument
-#   (e.g. "keystone[ldap,memcache_pool,oauth1]") so that uv resolves all extras in
-#   one pass. The verify_release_config.sh test validates that these stay in sync.
-# apt_packages: installed via apt in the final runtime image.
+# Per-service Python extras, additional pip packages, and runtime system packages.
+# pip_extras: bare Python extra names (e.g. ldap, not keystone[ldap]).
+#   The CI workflow reads these and passes them as the PIP_EXTRAS build arg to the
+#   Dockerfile, which appends them to the package path (e.g. "keystone[ldap,...]").
+#   verify_release_config.sh validates the wiring between this file, the Dockerfile,
+#   and the CI workflow.
+# pip_packages: additional pip packages installed alongside the service (PIP_PACKAGES
+#   build arg). Use an empty list when none are needed.
+# apt_packages: runtime system packages installed via apt in the final image
+#   (EXTRA_APT_PACKAGES build arg).
 keystone:
-  pip_packages:
-    - "keystone[ldap]"
-    - "keystone[memcache_pool]"
-    - "keystone[oauth1]"
+  pip_extras:
+    - ldap
+    - oauth1
+  pip_packages: []
   apt_packages:
     - libapache2-mod-wsgi-py3
-    - libldap-2.5-0
+    - libldap2
     - libsasl2-2
     - libxml2

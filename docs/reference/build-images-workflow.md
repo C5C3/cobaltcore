@@ -151,11 +151,12 @@ Depends on `build-base-images` to provide base image references (REQ-003).
 | 3 | Checkout service source | `actions/checkout@v6` | Clones `openstack/<service>` at the resolved ref into `src/<service>` |
 | 4 | Apply patches | Shell (conditional) | Runs `git apply` for patches in `patches/<service>/<release>/` — skipped if no `.patch` files exist |
 | 5 | Apply constraint overrides | Shell | Runs `scripts/apply-constraint-overrides.sh <release>` (idempotent) |
-| 6 | Derive tags | Shell | Computes three image tags (see [Tag Schema](#tag-schema)) (REQ-005) |
-| 7 | Set up Buildx | `docker/setup-buildx-action@v3` | Enables multi-platform builds |
-| 8 | Login to GHCR | `docker/login-action@v3` | Authenticates with `GITHUB_TOKEN` |
-| 9 | Build service image | `docker/build-push-action@v6` | Builds with four named build contexts, conditional platform/push/load (REQ-006) |
-| 10 | Smoke test (PR) | Shell (conditional) | On PRs only: `docker run --rm <image> <service>-manage --version` — uses `matrix.service` for dynamic dispatch (REQ-007) |
+| 6 | Resolve extra packages | Shell | Reads `releases/<release>/extra-packages.yaml` via `yq` to extract `pip_extras` (comma-joined), `pip_packages` (space-joined), and `apt_packages` (space-joined). All three fields tolerate empty values — the Dockerfile handles them via conditional guards (CC-0027). |
+| 7 | Derive tags | Shell | Computes three image tags (see [Tag Schema](#tag-schema)) (REQ-005) |
+| 8 | Set up Buildx | `docker/setup-buildx-action@v3` | Enables multi-platform builds |
+| 9 | Login to GHCR | `docker/login-action@v3` | Authenticates with `GITHUB_TOKEN` |
+| 10 | Build service image | `docker/build-push-action@v6` | Builds with four named build contexts and three build args, conditional platform/push/load (REQ-006) |
+| 11 | Smoke test (PR) | Shell (conditional) | On PRs only: `docker run --rm <image> <service>-manage --version` — uses `matrix.service` for dynamic dispatch (REQ-007) |
 
 **Build Contexts:**
 
@@ -169,6 +170,22 @@ The service image build passes four named build contexts to resolve `FROM` and
 | `<service>` | `src/<service>` | Service source tree (upstream checkout) |
 | `upper-constraints` | `releases/<release>/` | Release directory containing `upper-constraints.txt` |
 
+**Build Arguments (CC-0027):**
+
+The service image build passes three build arguments sourced from
+`releases/<release>/extra-packages.yaml` by the "Resolve extra packages" step:
+
+| Build arg | Source field | Format | Example |
+| --- | --- | --- | --- |
+| `PIP_EXTRAS` | `<service>.pip_extras` | Comma-separated | `ldap,oauth1` |
+| `PIP_PACKAGES` | `<service>.pip_packages` | Space-separated | *(empty by default)* |
+| `EXTRA_APT_PACKAGES` | `<service>.apt_packages` | Space-separated | `libapache2-mod-wsgi-py3 libldap2 libsasl2-2 libxml2` |
+
+`PIP_EXTRAS` and `PIP_PACKAGES` are consumed in the Dockerfile build stage (stage 1).
+`EXTRA_APT_PACKAGES` is consumed in the runtime stage (stage 2). See
+[Container Images — extra-packages.yaml](container-images.md#extra-packagesyaml) for the
+YAML schema.
+
 This job does not declare outputs. The `smoke-test` job derives its own image refs
 independently via its own matrix strategy (CC-0007).
 
@@ -180,7 +197,7 @@ are in GHCR) and uses its own matrix strategy matching `build-service-images` to
 every service independently.
 
 On PRs, the equivalent smoke test runs as an inline step within `build-service-images`
-(step 10 above) because `--load` makes the image available only on the same runner.
+(step 11 above) because `--load` makes the image available only on the same runner.
 
 | Property | Value |
 | --- | --- |
@@ -307,7 +324,23 @@ keystone: "28.0.0"
 nova: "31.0.0"        # ← new entry
 ```
 
-### 3. Extend the matrices
+### 3. Add extra-packages entry
+
+Add the service to `releases/<release>/extra-packages.yaml` with its Python extras,
+additional pip packages, and runtime system packages. This file is the source of truth
+for build arguments `PIP_EXTRAS`, `PIP_PACKAGES`, and `EXTRA_APT_PACKAGES` — the
+service will not build without an entry here.
+
+```yaml
+nova:
+  pip_extras:
+    - oslo_vmware
+  pip_packages: []
+  apt_packages:
+    - libvirt0
+```
+
+### 4. Extend the matrices
 
 Add the service to both the `build-service-images` and `smoke-test` matrices in
 `.github/workflows/build-images.yaml`:
@@ -326,13 +359,13 @@ strategy:
     release: ["2025.2"]
 ```
 
-### 4. (Optional) Add patches
+### 5. (Optional) Add patches
 
 If the service requires patches, create patch files at
 `patches/<service>/<release>/*.patch`. The workflow applies them automatically when
 present; no workflow changes are needed.
 
-### 5. (Optional) Add constraint overrides
+### 6. (Optional) Add constraint overrides
 
 If the service requires constraint overrides, add entries to
 `overrides/<release>/constraints.txt`. The `apply-constraint-overrides.sh` script
@@ -353,9 +386,15 @@ Create the release directory with required files:
 
 ```text
 releases/2026.1/
+├── extra-packages.yaml       # Extra pip/apt packages per service (CC-0027)
 ├── source-refs.yaml          # Service versions for this release
 └── upper-constraints.txt     # From openstack/requirements stable/2026.1
 ```
+
+`extra-packages.yaml` is required — the workflow reads it to resolve `PIP_EXTRAS`,
+`PIP_PACKAGES`, and `EXTRA_APT_PACKAGES` build arguments. See
+[Container Images — extra-packages.yaml](container-images.md#extra-packagesyaml) for the
+YAML schema and `releases/2025.2/extra-packages.yaml` for a working example.
 
 ### 2. Extend the matrix
 

@@ -18,4 +18,4 @@ Separate arguments create ambiguity: if the local source is missing or version-m
 ### CC-0006 — greptile-apps[bot]
 - **Feedback**: `/tmp/keystone` (local source) and `"keystone[ldap]"` etc. (PyPI references with extras) are passed as separate, independent arguments to `uv pip install`... The single-argument form leaves no room for ambiguity: uv cannot inadvertently resolve `keystone[ldap]` from PyPI if the local source is unexpectedly absent.
 - **What was missed**: When installing a local package with extras, verify the extras are specified on the local path argument itself (e.g., '/path/to/pkg[extra1,extra2]') rather than as separate PyPI-style references alongside the path.
-- **Fix**: Combined the local path and all extras into a single argument: `"/tmp/keystone[ldap,memcache_pool,oauth1]"`.
+- **Fix**: Combined the local path and all extras into a single argument: `"/tmp/keystone[ldap,oauth1]"`.

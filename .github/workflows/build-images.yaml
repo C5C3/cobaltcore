@@ -129,6 +129,31 @@ jobs:
           MATRIX_RELEASE: ${{ matrix.release }}
         run: scripts/apply-constraint-overrides.sh "$MATRIX_RELEASE"
 
+      - name: Resolve extra packages
+        id: extra-pkgs
+        env:
+          MATRIX_SERVICE: ${{ matrix.service }}
+          MATRIX_RELEASE: ${{ matrix.release }}
+        run: |
+          EXTRAS_FILE="releases/${MATRIX_RELEASE}/extra-packages.yaml"
+          if [ ! -f "$EXTRAS_FILE" ]; then
+            echo "::error::Missing ${EXTRAS_FILE}. Each release directory must contain an extra-packages.yaml file (see docs/reference/build-images-workflow.md#adding-a-new-release)."
+            exit 1
+          fi
+
+          pip_extras=$(yq -r ".\"${MATRIX_SERVICE}\".pip_extras // [] | join(\",\")" "$EXTRAS_FILE")
+          echo "pip-extras=${pip_extras}" >> "$GITHUB_OUTPUT"
+
+          pip_packages=$(yq -r ".\"${MATRIX_SERVICE}\".pip_packages // [] | join(\" \")" "$EXTRAS_FILE")
+          echo "pip-packages=${pip_packages}" >> "$GITHUB_OUTPUT"
+
+          apt_packages=$(yq -r ".\"${MATRIX_SERVICE}\".apt_packages // [] | join(\" \")" "$EXTRAS_FILE")
+          echo "apt-packages=${apt_packages}" >> "$GITHUB_OUTPUT"
+
+          echo "Resolved pip extras: ${pip_extras}"
+          echo "Resolved pip packages: ${pip_packages}"
+          echo "Resolved apt packages: ${apt_packages}"
+
       - name: Derive tags
         id: tags
         env:
@@ -170,6 +195,10 @@ jobs:
         with:
           context: images/${{ matrix.service }}
           file: images/${{ matrix.service }}/Dockerfile
+          build-args: |
+            PIP_EXTRAS=${{ steps.extra-pkgs.outputs.pip-extras }}
+            PIP_PACKAGES=${{ steps.extra-pkgs.outputs.pip-packages }}
+            EXTRA_APT_PACKAGES=${{ steps.extra-pkgs.outputs.apt-packages }}
           build-contexts: |
             python-base=docker-image://${{ needs.build-base-images.outputs.python-base-image }}
             venv-builder=docker-image://${{ needs.build-base-images.outputs.venv-builder-image }}

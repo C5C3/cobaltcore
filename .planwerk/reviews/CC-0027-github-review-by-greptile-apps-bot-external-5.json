@@ -1,0 +1,37 @@
+{
+  "feature_id": "CC-0027",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer wants `grep -qw` changed to `grep -qFw` on line 209 of `verify_release_config.sh` to use fixed-string matching instead of regex, preventing false positives where `.` in package names (e.g., `libapache2-mod-wsgi-py3`) could match any character.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-07T08:48:16Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 5,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "`grep -qw` matches word boundaries but treats the package name as a regex pattern, where `.` is a metacharacter matching any character. For package names like `libapache2-mod-wsgi-py3`, this means a package like `libapache2Xmod-wsgi-py3` would also match (false positive). Using `-F` (fixed-string mode) would be more robust:\n\n```suggestion\n    if grep -v '^ARG ' \"$dockerfile\" | grep -v '^#' | grep 'apt-get install' -A 20 \\\n        | grep -qFw \"$pkg\"; then\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: tests/container-images/verify_release_config.sh\nLine: 208-209\n\nComment:\n`grep -qw` matches word boundaries but treats the package name as a regex pattern, where `.` is a metacharacter matching any character. For package names like `libapache2-mod-wsgi-py3`, this means a package like `libapache2Xmod-wsgi-py3` would also match (false positive). Using `-F` (fixed-string mode) would be more robust:\n\n```suggestion\n    if grep -v '^ARG ' \"$dockerfile\" | grep -v '^#' | grep 'apt-get install' -A 20 \\\n        | grep -qFw \"$pkg\"; then\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "tests/container-images/verify_release_config.sh",
+      "line": 209,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-07T08:48:15Z",
+      "id": null,
+      "resolution": "Changed `grep -qw` to `grep -qFw` at line 209 of `tests/container-images/verify_release_config.sh`, exactly matching the reviewer's suggestion. The `-F` flag ensures package names like `libapache2-mod-wsgi-py3` are treated as fixed strings rather than regex patterns, preventing false positives where `.` would match any character."
+    }
+  ],
+  "resolution_summary": "The review comment requested changing `grep -qw` to `grep -qFw` at line 209 of `tests/container-images/verify_release_config.sh` to use fixed-string mode and avoid regex metacharacter false positives with package names containing dots. The fix was applied exactly as suggested — line 209 now reads `grep -qFw \"$pkg\"` instead of `grep -qw \"$pkg\"`. No other files were modified to address this comment.",
+  "github_review_id": 3908207950
+}

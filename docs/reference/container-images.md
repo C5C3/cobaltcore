@@ -115,15 +115,18 @@ The Keystone identity service image uses a two-stage build:
 
 **Stage 1 (`build`)** — extends `venv-builder`:
 
+- Declares `ARG PIP_EXTRAS` and `ARG PIP_PACKAGES` for build-time injection of extras
+  and additional packages from `extra-packages.yaml` (passed by the CI workflow)
 - Mounts `upper-constraints.txt` and the Keystone source tree via named build contexts
-- Installs Keystone with extras (`ldap`, `memcache_pool`, `oauth1`) into the virtualenv
-  using `uv pip install --constraint`
+- Installs Keystone with extras into the virtualenv using `uv pip install --constraint`
 
 **Stage 2 (runtime)** — extends `python-base`:
 
+- Declares `ARG EXTRA_APT_PACKAGES` for build-time injection of runtime system packages
+  from `extra-packages.yaml` (passed by the CI workflow)
 - Copies `/var/lib/openstack` from the build stage using `COPY --from=build --link`
   (the `--link` flag enables parallel layer extraction and deduplication)
-- Installs runtime system packages required by Keystone's Python dependencies
+- Installs runtime system packages via `apt-get install ${EXTRA_APT_PACKAGES}`
 - Sets `USER openstack` for non-root execution
 
 **Runtime packages:**
@@ -131,7 +134,7 @@ The Keystone identity service image uses a two-stage build:
 | Package | Purpose |
 | --- | --- |
 | `libapache2-mod-wsgi-py3` | Apache WSGI module for serving Keystone |
-| `libldap-2.5-0` | LDAP client library (python-ldap runtime dependency) |
+| `libldap2` | LDAP client library (python-ldap runtime dependency) |
 | `libsasl2-2` | SASL authentication library (LDAP SASL bind support) |
 | `libxml2` | XML parsing library (lxml runtime dependency) |
 
@@ -163,14 +166,21 @@ docker build images/keystone \
   --build-context upper-constraints=releases/2025.2/
 ```
 
-Inside the Dockerfile, named build contexts are consumed via `--mount=type=bind,from=`:
+Inside the Dockerfile, named build contexts are consumed via `--mount=type=bind,from=`.
+Extras are injected via `ARG PIP_EXTRAS` (comma-separated, e.g. `ldap,oauth1`)
+which the CI workflow reads from `extra-packages.yaml`:
 
 ```dockerfile
+ARG PIP_EXTRAS=""
+ARG PIP_PACKAGES=""
+
 RUN --mount=type=bind,from=upper-constraints,source=upper-constraints.txt,target=/tmp/upper-constraints.txt \
     --mount=type=bind,from=keystone,target=/tmp/keystone \
+    PKG="/tmp/keystone" && \
+    if [ -n "$PIP_EXTRAS" ]; then PKG="${PKG}[${PIP_EXTRAS}]"; fi && \
     uv pip install --prefix /var/lib/openstack \
         --constraint /tmp/upper-constraints.txt \
-        "/tmp/keystone[ldap,memcache_pool,oauth1]"
+        "$PKG" $PIP_PACKAGES
 ```
 
 The `from=upper-constraints` directive tells Docker to resolve the file from the named
@@ -242,24 +252,25 @@ core OpenStack package.
 # SPDX-License-Identifier: Apache-2.0
 
 keystone:
-  pip_packages:
-    - "keystone[ldap]"
-    - "keystone[memcache_pool]"
-    - "keystone[oauth1]"
+  pip_extras:
+    - ldap
+    - oauth1
+  pip_packages: []
   apt_packages:
     - libapache2-mod-wsgi-py3
-    - libldap-2.5-0
+    - libldap2
     - libsasl2-2
     - libxml2
 ```
 
 | Key | Purpose |
 | --- | --- |
-| `<service>.pip_packages` | Python extras installed via `uv pip install` in the build stage |
-| `<service>.apt_packages` | Runtime system packages installed via `apt` in the final image |
+| `<service>.pip_extras` | Bare Python extra names combined with the service name to form install arguments (e.g. `keystone[ldap,oauth1]`). Passed as the `PIP_EXTRAS` build arg. |
+| `<service>.pip_packages` | Additional pip packages to install alongside the service (space-separated in the build arg `PIP_PACKAGES`). Use an empty list (`[]`) when none are needed. |
+| `<service>.apt_packages` | Runtime system packages installed via `apt` in the final image. Passed as the `EXTRA_APT_PACKAGES` build arg. |
 
 To add packages for a new service, add a new top-level key matching the service name
-with both `pip_packages` and `apt_packages` lists.
+with both `pip_extras` and `apt_packages` lists.
 
 ## Constraint Overrides
 
@@ -349,9 +360,13 @@ The branch/tag must match the version specified in `releases/2025.2/source-refs.
 
 ### Step 3: Build the service image
 
+Extras are read from `extra-packages.yaml` and passed as `--build-arg`:
+
 ```bash
 docker build images/keystone \
   -t c5c3/keystone:28.0.0 \
+  --build-arg PIP_EXTRAS=ldap,oauth1 \
+  --build-arg "EXTRA_APT_PACKAGES=libapache2-mod-wsgi-py3 libldap2 libsasl2-2 libxml2" \
   --build-context keystone=src/keystone \
   --build-context upper-constraints=releases/2025.2/
 ```

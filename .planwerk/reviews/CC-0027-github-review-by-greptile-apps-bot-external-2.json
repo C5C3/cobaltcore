@@ -1,0 +1,37 @@
+{
+  "feature_id": "CC-0027",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer wants the Dockerfile's `apt-get install` for `EXTRA_APT_PACKAGES` wrapped in a conditional guard (`if [ -n \"${EXTRA_APT_PACKAGES}\" ]`) so that local builds without `--build-arg EXTRA_APT_PACKAGES=...` don't fail with a cryptic \"no packages specified\" error.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-07T00:28:49Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 2,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "`apt-get install` fails with default empty `EXTRA_APT_PACKAGES`\n\nWhen the image is built locally without explicitly passing `--build-arg EXTRA_APT_PACKAGES=...`, the `ARG` default of `\"\"` means `${EXTRA_APT_PACKAGES}` expands to nothing. On Ubuntu Noble (apt 2.7.x), `apt-get install -y --no-install-recommends` with no package arguments exits with a non-zero code (`E: No packages specified`), failing the build with a cryptic error rather than a helpful message.\n\nWhile the CI workflow always provides packages (enforced by the empty-check in `Resolve extra packages`), a developer following the local build instructions who omits `--build-arg EXTRA_APT_PACKAGES=...` gets a confusing failure. A conditional guard would make this more resilient:\n\n```suggestion\nRUN if [ -n \"${EXTRA_APT_PACKAGES}\" ]; then \\\n    DEBIAN_FRONTEND=noninteractive apt-get update && \\\n    apt-get install -y --no-install-recommends ${EXTRA_APT_PACKAGES} && \\\n    rm -rf /var/lib/apt/lists/*; \\\n    fi\n```\n\nAlternatively, a comment noting that this ARG must be non-empty (or that `docs/reference/container-images.md` step 3 shows the required `--build-arg`) would also help.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: images/keystone/Dockerfile\nLine: 42-44\n\nComment:\n`apt-get install` fails with default empty `EXTRA_APT_PACKAGES`\n\nWhen the image is built locally without explicitly passing `--build-arg EXTRA_APT_PACKAGES=...`, the `ARG` default of `\"\"` means `${EXTRA_APT_PACKAGES}` expands to nothing. On Ubuntu Noble (apt 2.7.x), `apt-get install -y --no-install-recommends` with no package arguments exits with a non-zero code (`E: No packages specified`), failing the build with a cryptic error rather than a helpful message.\n\nWhile the CI workflow always provides packages (enforced by the empty-check in `Resolve extra packages`), a developer following the local build instructions who omits `--build-arg EXTRA_APT_PACKAGES=...` gets a confusing failure. A conditional guard would make this more resilient:\n\n```suggestion\nRUN if [ -n \"${EXTRA_APT_PACKAGES}\" ]; then \\\n    DEBIAN_FRONTEND=noninteractive apt-get update && \\\n    apt-get install -y --no-install-recommends ${EXTRA_APT_PACKAGES} && \\\n    rm -rf /var/lib/apt/lists/*; \\\n    fi\n```\n\nAlternatively, a comment noting that this ARG must be non-empty (or that `docs/reference/container-images.md` step 3 shows the required `--build-arg`) would also help.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "images/keystone/Dockerfile",
+      "line": 44,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-07T00:28:48Z",
+      "id": null,
+      "resolution": "The Dockerfile's apt-get install RUN instruction (lines 46-50) was replaced with the exact conditional guard pattern suggested by the reviewer: `if [ -n \"${EXTRA_APT_PACKAGES}\" ]; then ... fi`. An explanatory comment (lines 42-45) was added above the RUN instruction clarifying that the guard prevents 'E: No packages specified' errors during local builds without --build-arg, and that CI always provides packages via the 'Resolve extra packages' workflow step."
+    }
+  ],
+  "resolution_summary": "The review comment about apt-get install failing with an empty EXTRA_APT_PACKAGES was addressed by wrapping the apt-get install in a conditional guard (`if [ -n \"${EXTRA_APT_PACKAGES}\" ]`), exactly as suggested. A comment block (lines 42-45) was also added explaining why the guard exists and noting that CI always provides packages via the workflow.",
+  "github_review_id": 3906739078
+}

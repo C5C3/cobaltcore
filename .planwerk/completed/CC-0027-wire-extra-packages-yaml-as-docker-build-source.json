@@ -2,8 +2,8 @@
   "feature_id": "CC-0027",
   "title": "Wire extra-packages.yaml as Docker build source of truth",
   "slug": "wire-extra-packages-yaml-as-docker-build-source",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 📦 medium\n**Category:** infrastructure\n**Priority:** high\n**Source:** Proposed for 'There is releases/2025.2/extra-packages.yaml. JEdoc'\n\nRestructure releases/2025.2/extra-packages.yaml into pip_extras (bare extras: ldap, memcache_pool, oauth1), pip_packages (standalone packages, initially empty), and apt_packages (runtime: libapache2-mod-wsgi-py3, libldap2, libsasl2-2, libxml2) — fixing the incorrect libldap-2.5-0 to libldap2. Add a 'Resolve extra packages' step in .github/workflows/build-images.yaml (build-service-images job, after the existing 'Resolve source ref' step) that uses yq to extract all three fields per service from extra-packages.yaml and writes them to $GITHUB_OUTPUT. Pass these as --build-arg PIP_EXTRAS, PIP_PACKAGES, and EXTRA_APT_PACKAGES to docker/build-push-action. In images/keystone/Dockerfile, declare the three ARGs and replace the hardcoded [ldap,memcache_pool,oauth1] with [${PIP_EXTRAS}], add ${PIP_PACKAGES} to uv pip install, and replace the hardcoded apt package list with ${EXTRA_APT_PACKAGES}. Update tests/container-images/verify_release_config.sh: remove the now-obsolete test_extra_packages_match_dockerfile function and update test_extra_packages_valid_yaml_structure to validate the new field names (pip_extras, pip_packages, apt_packages), non-empty pip_extras and apt_packages, and valid package name patterns.\n\n**Rationale:** extra-packages.yaml exists but is completely ignored by the build pipeline — packages are independently hardcoded in the Dockerfile, creating silent drift risk and a false sense of configuration. The file also contains libldap-2.5-0 which does not exist as an Ubuntu Noble package (correct name: libldap2). Making the YAML the single source of truth eliminates duplication, prevents drift, and ensures release-specific package declarations actually reach the built images.\n\n**Affected Areas:**\n- releases/2025.2/extra-packages.yaml\n- .github/workflows/build-images.yaml\n- images/keystone/Dockerfile\n- tests/container-images/verify_release_config.sh",
   "stories": [
@@ -339,6 +339,7 @@
       "title": "Restructure releases/2025.2/extra-packages.yaml: rename pip_packages to pip_extras with bare names (ldap, memcache_pool, oauth1), add empty pip_packages list, fix libldap-2.5-0 to libldap2, replace WARNING comment with single-source-of-truth header (REQ-001, REQ-002)",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002"
@@ -349,6 +350,7 @@
       "title": "Update images/keystone/Dockerfile: declare ARG PIP_EXTRAS and ARG PIP_PACKAGES in build stage, ARG EXTRA_APT_PACKAGES in runtime stage; replace hardcoded [ldap,memcache_pool,oauth1] with [${PIP_EXTRAS}], add ${PIP_PACKAGES} to uv pip install, replace hardcoded apt package list with ${EXTRA_APT_PACKAGES} (REQ-006)",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -358,6 +360,7 @@
       "title": "Add 'Resolve extra packages' step in .github/workflows/build-images.yaml build-service-images job after 'Resolve source ref': use yq to extract pip_extras (join with comma), pip_packages (join with space), apt_packages (join with space) from extra-packages.yaml, write to $GITHUB_OUTPUT with null/empty checks and ::error:: messages (REQ-003, REQ-004)",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-004"
@@ -368,6 +371,7 @@
       "title": "Add build-args (PIP_EXTRAS, PIP_PACKAGES, EXTRA_APT_PACKAGES) to the docker/build-push-action step in build-service-images job, referencing steps.extra-packages.outputs (REQ-005)",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -377,6 +381,7 @@
       "title": "Update test_extra_packages_valid_yaml_structure in tests/container-images/verify_release_config.sh: validate new field names (pip_extras, pip_packages, apt_packages), assert pip_extras count >= 1 and apt_packages count >= 1, add pattern validation for pip_extras entries (^[a-z][a-z0-9_]*$) and apt_packages entries (^[a-z0-9][a-z0-9.+-]+$) (REQ-007)",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -386,6 +391,7 @@
       "title": "Remove test_extra_packages_match_dockerfile function and its invocation from tests/container-images/verify_release_config.sh (REQ-008)",
       "level": 3,
       "estimate_minutes": 5,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -395,6 +401,7 @@
       "title": "Update docs/reference/container-images.md: replace extra-packages.yaml section with new pip_extras/pip_packages/apt_packages schema, update example YAML, fix libldap-2.5-0 to libldap2, update keystone Dockerfile example to show ARG-based usage, update field description table (REQ-009)",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -404,6 +411,7 @@
       "title": "Update docs/reference/build-images-workflow.md: add 'Resolve extra packages' step to build-service-images steps table (step 3, after 'Resolve source ref'), document build-args (PIP_EXTRAS, PIP_PACKAGES, EXTRA_APT_PACKAGES) in the Build Contexts or a new Build Arguments section, update step numbering (REQ-009)",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -541,8 +549,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-03-06T23:39:04.806563"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-06T23:39:57.345236"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-07T15:50:44.049368"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/36",
+  "pr_number": 36,
   "execution_history": [
     {
       "run_id": "2642738a-9c61-4d73-b8d0-535a126e29ce",
@@ -554,6 +572,126 @@
           "name": "prepare",
           "duration": 296.6680018901825,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "92ebab3e-da82-4486-92fc-ef69f9baaa80",
+      "timestamp": "2026-03-07T00:06:18.630550",
+      "total_duration": 1398.1663632392883,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (2 tasks)",
+          "duration": 368.2564272880554,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (2 tasks)",
+          "duration": 141.83717679977417,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (2 tasks)",
+          "duration": 184.23026847839355,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (2 tasks)",
+          "duration": 215.36779642105103,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0027] Code Review",
+          "duration": 183.25488352775574,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0027] Improvements",
+          "duration": 232.2460331916809,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0027] Simplify",
+          "duration": 72.97377753257751,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "babf90ac-4409-4a0b-90a1-b06d1b51e24d",
+      "timestamp": "2026-03-07T00:21:22.513460",
+      "total_duration": 425.72520685195923,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 425.72520685195923,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "c4e0b160-8e91-4a94-859d-23d1dcce71ee",
+      "timestamp": "2026-03-07T07:31:35.376279",
+      "total_duration": 245.68145322799683,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 245.68145322799683,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "a04fa2ae-95ce-4b6f-93e4-82fbcd3e95a8",
+      "timestamp": "2026-03-07T08:11:00.597109",
+      "total_duration": 430.81388330459595,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #3",
+          "duration": 430.81388330459595,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "98b0578d-bfd6-494b-a8b4-9e03edb8e3d4",
+      "timestamp": "2026-03-07T08:41:30.864284",
+      "total_duration": 202.80851030349731,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #4",
+          "duration": 202.80851030349731,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "277c083a-d113-4ff6-b920-5f9b7a59ad4c",
+      "timestamp": "2026-03-07T09:34:46.845442",
+      "total_duration": 194.55548310279846,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #5",
+          "duration": 194.55548310279846,
+          "type": "review_address",
           "status": "done"
         }
       ]

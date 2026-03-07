@@ -1,0 +1,73 @@
+{
+  "feature_id": "CC-0027",
+  "title": "Wire extra-packages.yaml as Docker build source of truth",
+  "date": "2026-03-07",
+  "summary": "Review of changes addressing external review #3 from greptile-apps[bot]. Two changes were made: (1) Removed mandatory non-empty guards (::error:: + exit 1) for pip_extras and apt_packages in the CI workflow's 'Resolve extra packages' step, making all three fields (pip_extras, pip_packages, apt_packages) uniformly tolerant of empty values. This is correct — the Dockerfile already handles empty values via conditional guards ([ -n \"$PIP_EXTRAS\" ] and if [ -n \"${EXTRA_APT_PACKAGES}\" ]). (2) Removed unnecessary cp -a / rm -rf of the Keystone source tree in the Dockerfile, using the bind-mounted /tmp/keystone directly for uv pip install. Both changes are sound. However, docs/reference/build-images-workflow.md and docs/reference/container-images.md were not updated to reflect these changes, leaving stale descriptions of removed behavior.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "verify_release_config.sh passes (13/13)", "checked": true},
+    {"item": "test_extra_packages_valid_yaml_structure validates pip_extras, pip_packages, apt_packages fields", "checked": true},
+    {"item": "test_extra_packages_build_wiring confirms Dockerfile ARGs and workflow wiring", "checked": true},
+    {"item": "test_no_hardcoded_apt_packages confirms no hardcoded package names in Dockerfile", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing yq + $GITHUB_OUTPUT pattern from 'Resolve source ref' step", "checked": true},
+    {"item": "All three fields handled uniformly (no asymmetric validation)", "checked": true},
+    {"item": "Dockerfile conditional guards correctly handle empty ARG values", "checked": true},
+    {"item": "No dead code left behind", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "yq input from checked-in YAML file (not user-supplied)", "checked": true},
+    {"item": "EXTRA_APT_PACKAGES expansion in apt-get install is safe (values from controlled YAML)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is minimal — only removes over-strict validation", "checked": true},
+    {"item": "Dockerfile handles empty values defensively without CI-level guards", "checked": true},
+    {"item": "Consistent empty-value handling across pipeline stages", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated validation logic", "checked": true},
+    {"item": "Removed unnecessary cp -a / rm -rf layer", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "yq // [] fallback prevents null errors from missing fields", "checked": true},
+    {"item": "Dockerfile guards prevent apt-get failure on empty package list", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Dockerfile [ -n \"$PIP_EXTRAS\" ] guard prevents empty extras bracket", "checked": true},
+    {"item": "Dockerfile if [ -n \"${EXTRA_APT_PACKAGES}\" ] guard prevents apt-get error", "checked": true},
+    {"item": "PIP_PACKAGES trailing space on empty is harmless to uv pip install", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "id": "DA3-1",
+      "severity": "major",
+      "check_id": "DA3",
+      "file": "docs/reference/build-images-workflow.md",
+      "line": 154,
+      "description": "Stale documentation: step 6 description still says 'Fails with ::error:: if pip_extras or apt_packages are empty (CC-0027)' but this behavior was removed in the workflow. The CI step now allows empty values for all three fields.",
+      "fix": "Update the step 6 description to: 'Reads releases/<release>/extra-packages.yaml via yq to extract pip_extras (comma-joined), pip_packages (space-joined), and apt_packages (space-joined). Empty values are passed through — the Dockerfile handles them via conditional guards (CC-0027).'"
+    },
+    {
+      "id": "DA3-2",
+      "severity": "major",
+      "check_id": "DA3",
+      "file": "docs/reference/container-images.md",
+      "line": 179,
+      "description": "Stale Dockerfile code example in the 'Named Build Contexts' section still shows the old cp -a / rm -rf pattern (cp -a /tmp/keystone /tmp/keystone-build, rm -rf /tmp/keystone-build) that was removed from the actual Dockerfile. The code now uses the bind-mounted /tmp/keystone directly.",
+      "fix": "Update the code block at lines 177-185 to match the current Dockerfile:\n```dockerfile\nARG PIP_EXTRAS=\"\"\nARG PIP_PACKAGES=\"\"\n\nRUN --mount=type=bind,from=upper-constraints,source=upper-constraints.txt,target=/tmp/upper-constraints.txt \\\n    --mount=type=bind,from=keystone,target=/tmp/keystone \\\n    PKG=\"/tmp/keystone\" && \\\n    [ -n \"$PIP_EXTRAS\" ] && PKG=\"${PKG}[${PIP_EXTRAS}]\" || true && \\\n    uv pip install --prefix /var/lib/openstack \\\n        --constraint /tmp/upper-constraints.txt \\\n        \"$PKG\" $PIP_PACKAGES\n```"
+    }
+  ],
+  "suggested_improvements": [],
+  "next_steps": [
+    "Update docs/reference/build-images-workflow.md:154 to remove the stale 'Fails with ::error::' description",
+    "Update docs/reference/container-images.md:177-185 to show current Dockerfile code without cp -a / rm -rf"
+  ],
+  "detected_patterns": [],
+  "reviewer": "planwerk-reviewer",
+  "review_type": "internal",
+  "commit_reference": "2b2a40e"
+}

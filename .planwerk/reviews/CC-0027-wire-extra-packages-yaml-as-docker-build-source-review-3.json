@@ -1,0 +1,45 @@
+{
+  "feature_id": "CC-0027",
+  "title": "Wire extra-packages.yaml as Docker build source of truth",
+  "date": "2026-03-07",
+  "summary": "Review #2 external feedback addressed: Dockerfile's apt-get install for EXTRA_APT_PACKAGES is now wrapped in a conditional guard (`if [ -n \"${EXTRA_APT_PACKAGES}\" ]`) so local builds without --build-arg don't fail with a cryptic 'E: No packages specified' error. A review pattern was documented for future detection. All 13 verify_release_config.sh tests pass.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "verify_release_config.sh passes (13/13, exit 0)", "checked": true},
+    {"item": "Edge case: empty EXTRA_APT_PACKAGES handled by conditional guard", "checked": true},
+    {"item": "Edge case: empty PIP_EXTRAS handled by inline conditional (line 22)", "checked": true},
+    {"item": "Edge case: empty PIP_PACKAGES handled by shell word splitting (no extra args)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing Dockerfile patterns (SPDX header, DEVIATION comment, stage structure)", "checked": true},
+    {"item": "Comment explains WHY the guard exists, not just WHAT it does", "checked": true},
+    {"item": "Minimal change — only the apt-get RUN instruction was modified", "checked": true},
+    {"item": "No hardcoded package names in Dockerfile", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No secrets or credentials in Dockerfile", "checked": true},
+    {"item": "Unquoted ${EXTRA_APT_PACKAGES} is intentional for word splitting; package names validated by CI test (dpkg pattern)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Guard pattern is the simplest solution (if/fi block vs alternatives like set +e or dummy package)", "checked": true},
+    {"item": "Consistent with PIP_EXTRAS guard on line 22 (both handle empty defaults gracefully)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated logic", "checked": true},
+    {"item": "No unnecessary abstractions added", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "CI still fails fast on missing/null pip_extras or apt_packages (workflow null-checks unchanged)", "checked": true},
+    {"item": "Local builds degrade gracefully (skip apt-get instead of cryptic error)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Empty EXTRA_APT_PACKAGES produces no-op instead of build failure", "checked": true},
+    {"item": "Other Dockerfiles (python-base, venv-builder) use hardcoded lists — guard not needed there", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": []
+}

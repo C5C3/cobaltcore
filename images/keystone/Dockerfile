@@ -5,17 +5,23 @@
 # ---------- Stage 1: build ----------
 FROM venv-builder AS build
 
+# Comma-separated Python extras (e.g. "ldap,oauth1").
+# Passed by CI from releases/<release>/extra-packages.yaml.
+ARG PIP_EXTRAS=""
+# Space-separated additional pip packages to install alongside the service.
+ARG PIP_PACKAGES=""
+
 # Install Keystone and extras into the shared virtualenv.
 # Named build contexts supply the source tree and constraints file:
 #   --build-context keystone=<path-to-keystone-source>
 #   --build-context upper-constraints=<path-to-release-dir>
 RUN --mount=type=bind,from=upper-constraints,source=upper-constraints.txt,target=/tmp/upper-constraints.txt \
-    --mount=type=bind,from=keystone,target=/tmp/keystone \
-    cp -a /tmp/keystone /tmp/keystone-build && \
+    --mount=type=bind,from=keystone,target=/tmp/keystone,readwrite \
+    PKG="/tmp/keystone" && \
+    if [ -n "$PIP_EXTRAS" ]; then PKG="${PKG}[${PIP_EXTRAS}]"; fi && \
     uv pip install --prefix /var/lib/openstack \
         --constraint /tmp/upper-constraints.txt \
-        "/tmp/keystone-build[ldap,memcache_pool,oauth1]" && \
-    rm -rf /tmp/keystone-build
+        "$PKG" $PIP_PACKAGES
 
 # ---------- Stage 2: runtime ----------
 FROM python-base
@@ -24,14 +30,21 @@ FROM python-base
 # Uses the generic 'openstack' user (UID/GID 42424) from python-base instead
 # of a per-service user. See python-base/Dockerfile for rationale.
 
+# Space-separated runtime system packages (e.g. "libapache2-mod-wsgi-py3 libldap2 ...").
+# Passed by CI from releases/<release>/extra-packages.yaml.
+ARG EXTRA_APT_PACKAGES=""
+
 COPY --from=build --link /var/lib/openstack /var/lib/openstack
 
-# Runtime system packages required by Keystone
-RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends \
-    libapache2-mod-wsgi-py3 \
-    libldap2 \
-    libsasl2-2 \
-    libxml2 \
-    && rm -rf /var/lib/apt/lists/*
+# Runtime system packages required by Keystone.
+# Guard: when EXTRA_APT_PACKAGES is empty (e.g. local build without
+# --build-arg EXTRA_APT_PACKAGES=...), skip the install to avoid
+# "E: No packages specified" from apt-get. CI always provides packages
+# via the workflow's "Resolve extra packages" step.
+RUN if [ -n "${EXTRA_APT_PACKAGES}" ]; then \
+    DEBIAN_FRONTEND=noninteractive apt-get update && \
+    apt-get install -y --no-install-recommends ${EXTRA_APT_PACKAGES} && \
+    rm -rf /var/lib/apt/lists/*; \
+    fi
 
 USER openstack

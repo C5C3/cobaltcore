@@ -1,0 +1,52 @@
+{
+  "feature_id": "CC-0027",
+  "title": "Wire extra-packages.yaml as Docker build source of truth",
+  "date": "2026-03-07",
+  "verdict": "APPROVED",
+  "summary": "Post-external-review changes correctly address all four issues raised by greptile-apps[bot]: (1) EXTRA_APT_PACKAGES ARG wired into Dockerfile Stage 2, (2) libldap-2.5-0 fixed to libldap2 in source-of-truth YAML, (3) test coverage expanded with ARG EXTRA_APT_PACKAGES assertion and test_no_hardcoded_apt_packages, (4) pip_packages: [] field added to YAML. The diff adds three well-structured review pattern files and updates the external review record. Full implementation verified: all 6 affected files meet review criteria, tests pass 13/13.",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (13/13 in verify_release_config.sh)", "checked": true},
+    {"item": "Edge cases covered (empty pip_packages, pattern validation for pip_extras and apt_packages)", "checked": true},
+    {"item": "Error cases covered (yq null-check with ::error:: for empty pip_extras/apt_packages)", "checked": true},
+    {"item": "Build wiring verified end-to-end (ARG declarations, workflow references, no hardcoded packages)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (shell test structure, SPDX headers, yq+$GITHUB_OUTPUT)", "checked": true},
+    {"item": "Review pattern files follow consistent markdown structure", "checked": true},
+    {"item": "No code duplication", "checked": true},
+    {"item": "No dead code", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "Shell variables properly quoted where needed", "checked": true},
+    {"item": "yq output sanitized via null coalesce (// [])", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Single source of truth: extra-packages.yaml drives all package lists", "checked": true},
+    {"item": "Dockerfile is release-independent (all packages from ARGs)", "checked": true},
+    {"item": "CI step follows existing workflow patterns", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated package lists (YAML is sole source)", "checked": true},
+    {"item": "No unnecessary abstractions", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Empty pip_extras/apt_packages fail CI with ::error:: before docker build", "checked": true},
+    {"item": "Test validates YAML structure before build runs", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "yq uses // [] to handle null fields", "checked": true},
+    {"item": "Dockerfile ARGs default to empty string for standalone builds", "checked": true},
+    {"item": "Empty PIP_PACKAGES does not break uv pip install", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "D4 (minor, out of diff scope): docs/reference/build-images-workflow.md 'Adding a New Service' section (line ~325) does not mention adding entries to extra-packages.yaml. Since extra-packages.yaml is now the source of truth, a new service cannot build without a YAML entry. Consider adding a step between 'Add the source ref' and 'Extend the matrices'."
+  ],
+  "next_steps": [
+    "Merge PR — all review criteria satisfied, all tests pass, external review feedback fully addressed"
+  ],
+  "detected_patterns": []
+}

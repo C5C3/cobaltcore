@@ -1,0 +1,42 @@
+{
+  "feature_id": "CC-0027",
+  "title": "Wire extra-packages.yaml as Docker build source of truth",
+  "date": "2026-03-07",
+  "summary": "Review #4 feedback addressed: pip_extras validation regex updated from '^[a-z][a-z0-9_]*$' to '^[a-z][a-z0-9_-]*$' to allow PEP 508-valid hyphenated extra names. Error message updated to match. All 13 tests pass. Review pattern document and external review record added correctly.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "All tests pass (13/13, exit 0)", "checked": true},
+    {"item": "Edge cases covered (empty pip_packages, pattern validation for all fields)", "checked": true},
+    {"item": "Regex accepts valid PEP 508 extras with hyphens", "checked": true},
+    {"item": "Error messages reflect the actual validation pattern", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing shell test script structure pattern", "checked": true},
+    {"item": "Change is minimal and focused — exactly 2 lines modified in code file", "checked": true},
+    {"item": "Regex patterns are consistent across validation blocks (pip_extras vs pip_packages vs apt_packages each appropriately scoped to their spec)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No security-relevant changes in this diff", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is minimal — no unnecessary changes", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code introduced", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Validation still fails fast on invalid patterns", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "grep -vE with || true still handles zero-match case correctly", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": [],
+  "reviewer": "claude-opus-4-6",
+  "review_type": "internal",
+  "sequence_number": 5
+}

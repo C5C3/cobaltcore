@@ -1,0 +1,37 @@
+{
+  "feature_id": "CC-0027",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer asks to add a hyphen (`-`) to the `pip_extras` validation regex (`^[a-z][a-z0-9_]*$` → `^[a-z][a-z0-9_-]*$`) so it accepts PEP 508-valid extra names containing hyphens, which the current pattern would incorrectly reject.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-07T08:24:42Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 4,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**`pip_extras` regex excludes valid hyphenated extra names**\n\nThe validation pattern `^[a-z][a-z0-9_]*$` does not allow hyphens. PEP 508 defines extra names using the same normalized identifier rules as package names, which permit hyphens (e.g. `oslo-messaging`, `oslo-policy`). The current three extras (`ldap`, `memcache_pool`, `oauth1`) all match, but any future OpenStack service extra that uses a hyphen would be incorrectly rejected by this test.\n\nAligning the pip extras pattern to also allow hyphens would keep the test in sync with the spec:\n\n```suggestion\n  bad_extras=$(yq '.keystone.pip_extras[]' \"$extra_packages\" \\\n    | tr -d '\"' | grep -vE '^[a-z][a-z0-9_-]*$' || true)\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: tests/container-images/verify_release_config.sh\nLine: 116-117\n\nComment:\n**`pip_extras` regex excludes valid hyphenated extra names**\n\nThe validation pattern `^[a-z][a-z0-9_]*$` does not allow hyphens. PEP 508 defines extra names using the same normalized identifier rules as package names, which permit hyphens (e.g. `oslo-messaging`, `oslo-policy`). The current three extras (`ldap`, `memcache_pool`, `oauth1`) all match, but any future OpenStack service extra that uses a hyphen would be incorrectly rejected by this test.\n\nAligning the pip extras pattern to also allow hyphens would keep the test in sync with the spec:\n\n```suggestion\n  bad_extras=$(yq '.keystone.pip_extras[]' \"$extra_packages\" \\\n    | tr -d '\"' | grep -vE '^[a-z][a-z0-9_-]*$' || true)\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "tests/container-images/verify_release_config.sh",
+      "line": 117,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-07T08:24:41Z",
+      "id": null,
+      "resolution": "The pip_extras regex at verify_release_config.sh:117 was updated from '^[a-z][a-z0-9_]*$' to '^[a-z][a-z0-9_-]*$' to allow hyphens per PEP 508, exactly matching the reviewer's suggestion. The error message on line 122 was also updated to show the new pattern."
+    }
+  ],
+  "resolution_summary": "The review's suggestion to allow hyphens in the pip_extras validation regex was applied exactly as recommended. The pattern at line 117 was changed from '^[a-z][a-z0-9_]*$' to '^[a-z][a-z0-9_-]*$', and the corresponding error message at line 122 was also updated to reflect the new pattern. No other files were modified beyond the single test file mentioned in the review.",
+  "github_review_id": 3908158716
+}
