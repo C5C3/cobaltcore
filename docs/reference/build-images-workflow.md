@@ -6,16 +6,21 @@ feature: CC-0007
 
 # Build Images Workflow
 
-Reference documentation for the GitHub Actions build-images workflow (CC-0007). This
-workflow builds, tags, and publishes container images for OpenStack services to GHCR
-(GitHub Container Registry).
+Reference documentation for the GitHub Actions build-images workflow (CC-0007) and the
+verify-container-images workflow (CC-0028). The build-images workflow builds, tags, and
+publishes container images for OpenStack services to GHCR (GitHub Container Registry).
+The verify-container-images workflow runs static verification tests against container
+infrastructure files (Dockerfiles, workflows, release configs) without requiring Docker.
 
-## File Location
+## File Locations
 
-`.github/workflows/build-images.yaml`
+| Workflow | Path |
+| --- | --- |
+| Build Images | `.github/workflows/build-images.yaml` |
+| Verify Container Images | `.github/workflows/verify-container-images.yaml` |
 
-The file uses the `.yaml` extension and quotes the trigger key as `"on"` to prevent
-YAML boolean interpretation (REQ-008). It starts with the standard SPDX license header
+Both files use the `.yaml` extension and quote the trigger key as `"on"` to prevent
+YAML boolean interpretation (REQ-008). They start with the standard SPDX license header
 (matching `ci.yaml`).
 
 ## Trigger Events
@@ -50,7 +55,7 @@ permissions:
   contents: read
   packages: write
 
-# smoke-test job
+# Verification jobs (verify-base-images, verify-service-images)
 permissions:
   contents: read
   packages: read
@@ -58,9 +63,9 @@ permissions:
 
 `contents: read` allows repository checkout. `packages: write` is granted only to
 `build-base-images` and `build-service-images` for pushing images to GHCR. The
-`smoke-test` job receives `contents: read` (required for its checkout step to access
-`source-refs.yaml` and count patches) and `packages: read` (for pulling the image
-from GHCR), following the principle of least privilege.
+verification jobs (`verify-base-images`, `verify-service-images`) receive
+`contents: read` (required for checkout and test scripts) and `packages: read`
+(for pulling images from GHCR), following the principle of least privilege (CC-0028).
 
 ## Concurrency
 
@@ -78,13 +83,20 @@ ensuring every merge commit produces a complete set of images.
 
 ## Jobs
 
-The workflow defines three jobs with a linear dependency chain:
+The workflow defines four jobs with a linear dependency chain (CC-0028):
 
 ```text
-build-base-images  ──>  build-service-images  ──>  smoke-test (push only)
-                                │
-                                └── Smoke test (PR, inline step)
+build-base-images ──> verify-base-images ──> build-service-images ──> verify-service-images (push only)
+                                                      │
+                                                      └── verify_keystone.sh (PR, inline step)
 ```
+
+The `verify-base-images` job validates base image properties (Python version, user
+UID/GID, PATH, uv version) before service image builds begin. This catches base image
+regressions before they cascade into service image failures. On push events, the
+`verify-service-images` job validates service images pulled from GHCR. On PRs, the
+equivalent verification runs as an inline step within `build-service-images` because
+`--load` makes the image available only on the same runner.
 
 ### build-base-images
 
@@ -127,19 +139,55 @@ mapping from any base image in GHCR back to the commit that produced it (CC-0007
 | `python-base-image` | `ghcr.io/<owner>/python-base@sha256:<digest>` | `ghcr.io/c5c3/python-base@sha256:abc123...` |
 | `venv-builder-image` | `ghcr.io/<owner>/venv-builder@sha256:<digest>` | `ghcr.io/c5c3/venv-builder@sha256:def456...` |
 
-These outputs are consumed by `build-service-images` via `needs.build-base-images.outputs`
-(REQ-003).
+These outputs are consumed by `verify-base-images` and `build-service-images` via
+`needs.build-base-images.outputs` (REQ-003).
+
+### verify-base-images
+
+Validates that just-built base images meet expected properties before service image
+builds begin (CC-0028). Runs after `build-base-images` and blocks
+`build-service-images`, forming the dependency chain:
+`build-base-images` → `verify-base-images` → `build-service-images`.
+
+| Property | Value |
+| --- | --- |
+| `runs-on` | `ubuntu-latest` |
+| `timeout-minutes` | `10` |
+| `needs` | `[build-base-images]` |
+| Permissions | `contents: read`, `packages: read` |
+
+**Steps:**
+
+| # | Step | Action / Command | Details |
+| --- | --- | --- | --- |
+| 1 | Checkout | `actions/checkout@v6` | Checks out the repository (needed for test scripts) |
+| 2 | Login to GHCR | `docker/login-action@v4` | Authenticates to pull base images |
+| 3 | Pull base images | Shell | Pulls both `python-base` and `venv-builder` by digest from `build-base-images` outputs |
+| 4 | Verify python-base | Shell | Runs `verify_python_base.sh` with the digest-tagged image ref |
+| 5 | Verify venv-builder | Shell | Runs `verify_venv_builder.sh` with the digest-tagged image ref |
+
+**Test scripts executed:**
+
+| Script | Validates |
+| --- | --- |
+| `tests/container-images/verify_python_base.sh` | Python version, `openstack` user (UID/GID 42424), PATH includes `/opt/openstack/bin`, virtualenv at `/opt/openstack` |
+| `tests/container-images/verify_venv_builder.sh` | uv version (0.10.8), pip available, virtualenv at `/var/lib/openstack` |
+
+The job receives image references via `needs.build-base-images.outputs` (digest-pinned),
+ensuring the exact images that were just built are the ones being tested.
 
 ### build-service-images
 
 Builds service images using a matrix strategy over `service x release` (REQ-004).
-Depends on `build-base-images` to provide base image references (REQ-003).
+Depends on `build-base-images` for image references (REQ-003) and on
+`verify-base-images` to ensure base images are valid before building on top of them
+(CC-0028).
 
 | Property | Value |
 | --- | --- |
 | `runs-on` | `ubuntu-latest` |
 | `timeout-minutes` | `30` |
-| `needs` | `[build-base-images]` |
+| `needs` | `[build-base-images, verify-base-images]` |
 | Matrix | `service: [keystone]`, `release: ["2025.2"]` |
 
 **Steps:**
@@ -156,7 +204,7 @@ Depends on `build-base-images` to provide base image references (REQ-003).
 | 8 | Set up Buildx | `docker/setup-buildx-action@v3` | Enables multi-platform builds |
 | 9 | Login to GHCR | `docker/login-action@v3` | Authenticates with `GITHUB_TOKEN` |
 | 10 | Build service image | `docker/build-push-action@v6` | Builds with four named build contexts and three build args, conditional platform/push/load (REQ-006) |
-| 11 | Smoke test (PR) | Shell (conditional) | On PRs only: `docker run --rm <image> <service>-manage --version` — uses `matrix.service` for dynamic dispatch (REQ-007) |
+| 11 | Verify service image (PR) | Shell (conditional) | On PRs only: runs `verify_keystone.sh` with the locally loaded image ref (CC-0028) |
 
 **Build Contexts:**
 
@@ -186,17 +234,17 @@ The service image build passes three build arguments sourced from
 [Container Images — extra-packages.yaml](container-images.md#extra-packagesyaml) for the
 YAML schema.
 
-This job does not declare outputs. The `smoke-test` job derives its own image refs
-independently via its own matrix strategy (CC-0007).
+This job does not declare outputs. The `verify-service-images` job derives its own image
+refs independently via its own matrix strategy (CC-0007).
 
-### smoke-test
+### verify-service-images
 
-Validates that built service images are functional by running
-`<service>-manage --version` (REQ-007). This job runs only on push events (when images
-are in GHCR) and uses its own matrix strategy matching `build-service-images` to test
-every service independently.
+Validates that built service images are functional by running `verify_keystone.sh`
+(CC-0028). This job replaces the former `smoke-test` job and runs only on push events
+(when images are in GHCR). It uses its own matrix strategy matching
+`build-service-images` to test every service independently.
 
-On PRs, the equivalent smoke test runs as an inline step within `build-service-images`
+On PRs, the equivalent verification runs as an inline step within `build-service-images`
 (step 11 above) because `--load` makes the image available only on the same runner.
 
 | Property | Value |
@@ -205,20 +253,26 @@ On PRs, the equivalent smoke test runs as an inline step within `build-service-i
 | `timeout-minutes` | `10` |
 | `needs` | `[build-service-images]` |
 | `if` | `github.event_name != 'pull_request'` |
+| Permissions | `contents: read`, `packages: read` |
 | Matrix | `service: [keystone]`, `release: ["2025.2"]` |
 
 **Steps:**
 
 | # | Step | Action / Command | Details |
 | --- | --- | --- | --- |
-| 1 | Checkout | `actions/checkout@v6` | Checks out the repository (needed for `source-refs.yaml` and patch counting) |
-| 2 | Login to GHCR | `docker/login-action@v3` | Authenticates to pull the image |
+| 1 | Checkout | `actions/checkout@v6` | Checks out the repository (needed for test scripts, `source-refs.yaml`, and patch counting) |
+| 2 | Login to GHCR | `docker/login-action@v4` | Authenticates to pull the image |
 | 3 | Derive image ref | Shell | Reconstructs the composite tag from the same inputs as `build-service-images` |
-| 4 | Pull and test | Shell | `docker pull <image-ref>` then `docker run --rm <image-ref> <service>-manage --version` |
+| 4 | Pull and verify | Shell | `docker pull <image-ref>` then runs `verify_keystone.sh` with the pulled image ref |
 
-The job fails the workflow if `<service>-manage --version` returns a non-zero exit code.
-The management command is derived dynamically from `matrix.service`, so new services are
-automatically tested when added to the matrix.
+**Test script executed:**
+
+| Script | Validates |
+| --- | --- |
+| `tests/container-images/verify_keystone.sh` | `keystone-manage --version` exits 0, runs as `openstack` user, no build tools (gcc, python3-dev, uv), runtime apt packages installed |
+
+The job fails the workflow if `verify_keystone.sh` exits non-zero. The tag derivation
+step must stay in sync with the "Derive tags" step in `build-service-images`.
 
 ## Tag Schema
 
@@ -254,11 +308,12 @@ The workflow behaves differently depending on the trigger event (REQ-006):
 | Aspect | Pull Request | Push (main / stable/**) |
 | --- | --- | --- |
 | Base images | Multi-arch, pushed to GHCR | Multi-arch, pushed to GHCR |
+| Base image verification | `verify-base-images` job (always runs) | `verify-base-images` job (always runs) |
 | Service image platforms | `linux/amd64` only | `linux/amd64,linux/arm64` |
 | Service image push | No (`push: false`, `load: true`) | Yes (`push: true`) |
 | Service image tags | Computed but not published | Published to GHCR |
-| Smoke test location | Inline step in `build-service-images` | Separate `smoke-test` job |
-| Smoke test image source | Locally loaded image (same runner) | Pulled from GHCR |
+| Service image verification | Inline step in `build-service-images` | Separate `verify-service-images` job |
+| Verification image source | Locally loaded image (same runner) | Pulled from GHCR |
 
 **Why base images are always pushed:** Service Dockerfiles reference base images via
 `docker-image://` URIs in build contexts. This Docker BuildKit feature requires the
@@ -268,7 +323,7 @@ registry-independent.
 
 **Why PRs use single-arch:** `docker/build-push-action` with `load: true` only supports
 single-platform builds. Multi-platform images cannot be loaded into the local Docker
-daemon. Since the smoke test needs the image locally, PRs build only `linux/amd64`.
+daemon. Since the verification step needs the image locally, PRs build only `linux/amd64`.
 
 ## GHA Caching
 
@@ -342,8 +397,8 @@ nova:
 
 ### 4. Extend the matrices
 
-Add the service to both the `build-service-images` and `smoke-test` matrices in
-`.github/workflows/build-images.yaml`:
+Add the service to both the `build-service-images` and `verify-service-images` matrices
+in `.github/workflows/build-images.yaml`:
 
 ```yaml
 # build-service-images job:
@@ -352,7 +407,7 @@ strategy:
     service: [keystone, nova]    # ← add here
     release: ["2025.2"]
 
-# smoke-test job (must mirror build-service-images):
+# verify-service-images job (must mirror build-service-images):
 strategy:
   matrix:
     service: [keystone, nova]    # ← add here too
@@ -371,10 +426,12 @@ If the service requires constraint overrides, add entries to
 `overrides/<release>/constraints.txt`. The `apply-constraint-overrides.sh` script
 processes them automatically.
 
-The tag derivation, build context resolution, and smoke test commands all use matrix
-variables and work automatically for new services. The smoke test dynamically constructs
-`<service>-manage --version` from `matrix.service`. The `smoke-test` job derives its own
-image refs independently via its own matrix strategy.
+The tag derivation, build context resolution, and verification steps all use matrix
+variables and work automatically for new services. The `verify-service-images` job
+derives its own image refs independently via its own matrix strategy. Note that adding a
+new service also requires creating a corresponding `verify_<service>.sh` test script in
+`tests/container-images/` and updating the inline PR verification step in
+`build-service-images` accordingly.
 
 ## Adding a New Release
 
@@ -410,6 +467,89 @@ strategy:
 ### 3. (Optional) Add patches and overrides
 
 Create `patches/<service>/2026.1/` and `overrides/2026.1/constraints.txt` as needed.
+
+## Verify Container Images Workflow
+
+A separate workflow (`.github/workflows/verify-container-images.yaml`) runs static
+verification tests against container infrastructure files without requiring Docker
+(CC-0028). This workflow validates Dockerfiles, workflow structure, SPDX compliance,
+release configuration, and constraint override scripts.
+
+### Trigger Events
+
+The workflow triggers on the same events as `build-images.yaml`:
+
+| Event | Scope | Description |
+| --- | --- | --- |
+| `push` | `branches: [main, stable/**]` | Runs on every push to `main` or any `stable/**` branch |
+| `pull_request` | all branches | Runs on every pull request |
+
+### Permissions and Concurrency
+
+Top-level permissions are `contents: read` (least privilege). The concurrency group
+follows the standard pattern: `${{ github.ref }}-${{ github.workflow }}` with
+`cancel-in-progress` limited to pull request events.
+
+### Job: verify-static-tests
+
+A single job that runs all static test scripts sequentially. If any script exits
+non-zero, the job fails.
+
+| Property | Value |
+| --- | --- |
+| `runs-on` | `ubuntu-latest` |
+| `timeout-minutes` | `10` |
+
+**Steps:**
+
+| # | Step | Action / Command | Details |
+| --- | --- | --- | --- |
+| 1 | Checkout | `actions/checkout@v6` | Checks out the repository |
+| 2 | Install yq | Shell | Downloads `yq` binary from GitHub releases (version-pinned via `YQ_VERSION` env var) |
+| 3 | Verify build-images workflow structure | Shell | Runs `tests/container-images/verify_build_images_workflow.sh` |
+| 4 | Verify deviation comments | Shell | Runs `tests/container-images/verify_deviation_comments.sh` |
+| 5 | Verify release config | Shell | Runs `tests/container-images/verify_release_config.sh` |
+| 6 | Verify SPDX headers | Shell | Runs `tests/container-images/verify_spdx_headers.sh` |
+| 7 | Test apply-constraint-overrides | Shell | Runs `tests/scripts/test_apply_constraint_overrides.sh` |
+
+**Test scripts executed:**
+
+| Script | Validates |
+| --- | --- |
+| `verify_build_images_workflow.sh` | Workflow structure: job names, dependency chain, trigger events, permissions, action pinning, concurrency, matrix strategy |
+| `verify_deviation_comments.sh` | DEVIATION comments in Dockerfiles cross-reference architecture docs |
+| `verify_release_config.sh` | `source-refs.yaml` and `extra-packages.yaml` structure and content validity |
+| `verify_spdx_headers.sh` | SPDX Apache-2.0 license headers present on all infrastructure files |
+| `test_apply_constraint_overrides.sh` | `scripts/apply-constraint-overrides.sh` correctly applies constraint overrides |
+
+yq is installed before the test scripts because `verify_build_images_workflow.sh` and
+`verify_release_config.sh` use `yq` to parse YAML files. The installation uses a direct
+binary download from the mikefarah/yq GitHub releases (more reliable across runner
+updates than snap).
+
+### Relationship to build-images.yaml
+
+The verify-container-images workflow is intentionally separate from `build-images.yaml`
+because it tests container _infrastructure_ (file structure, conventions, configs) rather
+than the container _images_ themselves. Separate workflows provide clear, independent
+signals in GitHub's check status UI. The Docker-based image verification tests
+(`verify_python_base.sh`, `verify_venv_builder.sh`, `verify_keystone.sh`) run inside
+`build-images.yaml` where the images are actually built.
+
+## Verification Coverage Summary
+
+The following table summarizes which test scripts run where (CC-0028):
+
+| Test Script | verify-container-images.yaml | build-images.yaml | Requires Docker |
+| --- | --- | --- | --- |
+| `verify_build_images_workflow.sh` | verify-static-tests | — | No |
+| `verify_deviation_comments.sh` | verify-static-tests | — | No |
+| `verify_release_config.sh` | verify-static-tests | — | No |
+| `verify_spdx_headers.sh` | verify-static-tests | — | No |
+| `test_apply_constraint_overrides.sh` | verify-static-tests | — | No |
+| `verify_python_base.sh` | — | verify-base-images | Yes |
+| `verify_venv_builder.sh` | — | verify-base-images | Yes |
+| `verify_keystone.sh` | — | build-service-images (PR) / verify-service-images (push) | Yes |
 
 ## SPDX Header
 

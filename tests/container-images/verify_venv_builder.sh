@@ -19,14 +19,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"
 
-# --- Test 1: uv version is pinned at 0.6.3 ---
+# --- Test 1: uv version is pinned at 0.10.8 ---
 test_uv_version_is_pinned() {
-  echo "Test: uv version is 0.6.3"
+  echo "Test: uv version is 0.10.8"
   local version exit_code=0
   version=$(docker run --rm "$IMAGE" uv --version 2>&1) || exit_code=$?
 
   assert_eq "uv --version exits 0" "0" "$exit_code"
-  assert_contains "uv version is 0.6.3" "$version" "0.6.3"
+  assert_contains "uv version is 0.10.8" "$version" "0.10.8"
 }
 
 # --- Test 2: virtualenv exists at /var/lib/openstack ---

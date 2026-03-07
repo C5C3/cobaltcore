@@ -81,8 +81,42 @@ jobs:
           cache-from: type=gha,scope=venv-builder
           cache-to: type=gha,mode=max,scope=venv-builder
 
-  build-service-images:
+  verify-base-images:
     needs: [build-base-images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull base images
+        env:
+          PYTHON_BASE_IMAGE: ${{ needs.build-base-images.outputs.python-base-image }}
+          VENV_BUILDER_IMAGE: ${{ needs.build-base-images.outputs.venv-builder-image }}
+        run: |
+          docker pull "$PYTHON_BASE_IMAGE"
+          docker pull "$VENV_BUILDER_IMAGE"
+
+      - name: Verify python-base image
+        env:
+          PYTHON_BASE_IMAGE: ${{ needs.build-base-images.outputs.python-base-image }}
+        run: bash tests/container-images/verify_python_base.sh "$PYTHON_BASE_IMAGE"
+
+      - name: Verify venv-builder image
+        env:
+          VENV_BUILDER_IMAGE: ${{ needs.build-base-images.outputs.venv-builder-image }}
+        run: bash tests/container-images/verify_venv_builder.sh "$VENV_BUILDER_IMAGE"
+
+  build-service-images:
+    needs: [build-base-images, verify-base-images]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -217,14 +251,13 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.service }}-${{ matrix.release }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}-${{ matrix.release }}
 
-      - name: Smoke test (PR)
+      - name: Verify service image (PR)
         if: github.event_name == 'pull_request'
         env:
           IMAGE_REF: ${{ steps.tags.outputs.composite }}
-          MATRIX_SERVICE: ${{ matrix.service }}
-        run: docker run --rm "$IMAGE_REF" "${MATRIX_SERVICE}-manage" --version
+        run: bash tests/container-images/verify_keystone.sh "$IMAGE_REF"
 
-  smoke-test:
+  verify-service-images:
     if: github.event_name != 'pull_request'
     needs: [build-service-images]
     runs-on: ubuntu-latest
@@ -248,7 +281,7 @@ jobs:
 
       # NOTE: This tag derivation MUST stay in sync with the 'Derive tags' step
       # in build-service-images. If the tag format changes there, update this
-      # step too — otherwise smoke-test pulls a ref that was never pushed.
+      # step too — otherwise verify-service-images pulls a ref that was never pushed.
       - name: Derive image ref
         id: tags
         env:
@@ -273,10 +306,9 @@ jobs:
           IMAGE="ghcr.io/${IMAGE_OWNER}/${MATRIX_SERVICE}"
           echo "image-ref=${IMAGE}:${VERSION}-p${PATCH_COUNT}-${BRANCH}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
 
-      - name: Pull and test image
+      - name: Pull and verify service image
         env:
           IMAGE_REF: ${{ steps.tags.outputs.image-ref }}
-          MATRIX_SERVICE: ${{ matrix.service }}
         run: |
           docker pull "$IMAGE_REF"
-          docker run --rm "$IMAGE_REF" "${MATRIX_SERVICE}-manage" --version
+          bash tests/container-images/verify_keystone.sh "$IMAGE_REF"

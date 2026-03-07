@@ -19,6 +19,17 @@ assert_eq() {
   fi
 }
 
+assert_not_empty() {
+  local description="$1" value="$2"
+  if [ -n "$value" ]; then
+    echo "  PASS: $description"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: $description (expected non-empty value)"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
 assert_contains() {
   local description="$1" haystack="$2" needle="$3"
   if [[ "$haystack" == *"$needle"* ]]; then

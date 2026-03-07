@@ -59,19 +59,19 @@ test_job_permissions_scoping() {
   echo "Test: job-level permissions scoping (REQ-008)"
 
   # build-base-images and build-service-images need packages: write
-  local base_perms service_perms smoke_perms
+  local base_perms service_perms verify_service_perms
   base_perms=$(yq_raw '.jobs["build-base-images"]["permissions"]["packages"]' "$WORKFLOW" 2>/dev/null || echo "null")
   service_perms=$(yq_raw '.jobs["build-service-images"]["permissions"]["packages"]' "$WORKFLOW" 2>/dev/null || echo "null")
-  smoke_perms=$(yq_raw '.jobs["smoke-test"]["permissions"]["packages"]' "$WORKFLOW" 2>/dev/null || echo "null")
+  verify_service_perms=$(yq_raw '.jobs["verify-service-images"]["permissions"]["packages"]' "$WORKFLOW" 2>/dev/null || echo "null")
 
   assert_eq "build-base-images has packages: write" "write" "$base_perms"
   assert_eq "build-service-images has packages: write" "write" "$service_perms"
-  assert_eq "smoke-test has packages: read (least privilege)" "read" "$smoke_perms"
+  assert_eq "verify-service-images has packages: read (least privilege)" "read" "$verify_service_perms"
 
-  # smoke-test also needs contents: read for checkout (source-refs.yaml + patch counting)
-  local smoke_contents_perms
-  smoke_contents_perms=$(yq_raw '.jobs["smoke-test"]["permissions"]["contents"]' "$WORKFLOW" 2>/dev/null || echo "null")
-  assert_eq "smoke-test has contents: read (for checkout)" "read" "$smoke_contents_perms"
+  # verify-service-images also needs contents: read for checkout (source-refs.yaml + patch counting)
+  local verify_service_contents_perms
+  verify_service_contents_perms=$(yq_raw '.jobs["verify-service-images"]["permissions"]["contents"]' "$WORKFLOW" 2>/dev/null || echo "null")
+  assert_eq "verify-service-images has contents: read (for checkout)" "read" "$verify_service_contents_perms"
 }
 
 # --- REQ-008: Concurrency control ---
@@ -96,13 +96,45 @@ test_pull_request_trigger() {
   assert_file_contains "pull_request trigger present" "$WORKFLOW" "pull_request"
 }
 
-# --- REQ-002, REQ-003, REQ-007: Three jobs defined ---
-test_three_jobs_defined() {
-  echo "Test: three jobs defined (REQ-002, REQ-003, REQ-007)"
+# --- REQ-002, REQ-003, REQ-004, REQ-005, REQ-007: Four jobs defined ---
+test_four_jobs_defined() {
+  echo "Test: four jobs defined (REQ-002, REQ-003, REQ-004, REQ-005)"
 
   assert_file_contains "build-base-images job defined" "$WORKFLOW" "build-base-images:"
+  assert_file_contains "verify-base-images job defined" "$WORKFLOW" "verify-base-images:"
   assert_file_contains "build-service-images job defined" "$WORKFLOW" "build-service-images:"
-  assert_file_contains "smoke-test job defined" "$WORKFLOW" "smoke-test:"
+  assert_file_contains "verify-service-images job defined" "$WORKFLOW" "verify-service-images:"
+}
+
+# --- REQ-004: verify-base-images job depends on build-base-images ---
+test_verify_base_images_job() {
+  echo "Test: verify-base-images job structure (REQ-004)"
+
+  local needs
+  needs=$(yq_raw '.jobs["verify-base-images"]["needs"][]' "$WORKFLOW" 2>/dev/null || true)
+  assert_contains "verify-base-images needs build-base-images" "$needs" "build-base-images"
+
+  local timeout
+  timeout=$(yq_raw '.jobs["verify-base-images"]["timeout-minutes"]' "$WORKFLOW" 2>/dev/null || echo "null")
+  if [ "$timeout" != "null" ] && [ -n "$timeout" ]; then
+    echo "  PASS: verify-base-images has timeout-minutes: $timeout"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: verify-base-images missing timeout-minutes"
+    FAIL=$((FAIL + 1))
+  fi
+
+  local runner
+  runner=$(yq_raw '.jobs["verify-base-images"]["runs-on"]' "$WORKFLOW" 2>/dev/null || echo "null")
+  assert_eq "verify-base-images uses ubuntu-latest" "ubuntu-latest" "$runner"
+
+  local pkg_perms
+  pkg_perms=$(yq_raw '.jobs["verify-base-images"]["permissions"]["packages"]' "$WORKFLOW" 2>/dev/null || echo "null")
+  assert_eq "verify-base-images has packages: read" "read" "$pkg_perms"
+
+  local contents_perms
+  contents_perms=$(yq_raw '.jobs["verify-base-images"]["permissions"]["contents"]' "$WORKFLOW" 2>/dev/null || echo "null")
+  assert_eq "verify-base-images has contents: read (for checkout)" "read" "$contents_perms"
 }
 
 # --- REQ-002: Base images build with multi-arch platforms ---
@@ -147,14 +179,15 @@ test_base_image_digest_outputs() {
   assert_contains "venv-builder-image output references digest" "$venv_output" "outputs.digest"
 }
 
-# --- REQ-003: build-service-images depends on build-base-images ---
+# --- REQ-003, REQ-004: build-service-images depends on build-base-images and verify-base-images ---
 test_service_images_depend_on_base() {
-  echo "Test: build-service-images depends on build-base-images (REQ-003)"
+  echo "Test: build-service-images depends on build-base-images and verify-base-images (REQ-003, REQ-004)"
 
   local needs
   needs=$(yq_raw '.jobs["build-service-images"]["needs"][]' "$WORKFLOW" 2>/dev/null || true)
 
   assert_contains "build-service-images needs build-base-images" "$needs" "build-base-images"
+  assert_contains "build-service-images needs verify-base-images" "$needs" "verify-base-images"
 }
 
 # --- REQ-004: Matrix includes service and release ---
@@ -263,44 +296,44 @@ test_pr_single_arch_load() {
   assert_contains "push conditioned on not pull_request" "$push_val" "pull_request"
 }
 
-# --- REQ-007: Smoke test uses dynamic service-manage command ---
-test_smoke_test_command() {
-  echo "Test: smoke test uses dynamic service-manage command (REQ-007)"
+# --- REQ-007: verify-service-images uses verify_keystone.sh ---
+test_verify_service_images_command() {
+  echo "Test: verify-service-images uses verify_keystone.sh (REQ-007)"
 
-  # PR smoke test uses MATRIX_SERVICE env var for dynamic dispatch
-  assert_file_contains "PR smoke test uses MATRIX_SERVICE env var" "$WORKFLOW" 'MATRIX_SERVICE: \${{ matrix.service }}'
-  assert_file_contains "smoke test uses dynamic manage command" "$WORKFLOW" '${MATRIX_SERVICE}-manage'
+  # verify-service-images uses MATRIX_SERVICE env var for tag derivation
+  assert_file_contains "verify-service-images uses MATRIX_SERVICE env var" "$WORKFLOW" 'MATRIX_SERVICE: \${{ matrix.service }}'
+  assert_file_contains "verify-service-images runs verify_keystone.sh" "$WORKFLOW" 'verify_keystone.sh'
 }
 
-# --- REQ-007: smoke-test depends on build-service-images ---
-test_smoke_test_depends_on_service_images() {
-  echo "Test: smoke-test depends on build-service-images (REQ-007)"
+# --- REQ-007: verify-service-images depends on build-service-images ---
+test_verify_service_images_depends_on_service_images() {
+  echo "Test: verify-service-images depends on build-service-images (REQ-007)"
 
   local needs
-  needs=$(yq_raw '.jobs["smoke-test"]["needs"][]' "$WORKFLOW" 2>/dev/null || true)
+  needs=$(yq_raw '.jobs["verify-service-images"]["needs"][]' "$WORKFLOW" 2>/dev/null || true)
 
-  assert_contains "smoke-test needs build-service-images" "$needs" "build-service-images"
+  assert_contains "verify-service-images needs build-service-images" "$needs" "build-service-images"
 }
 
-# --- REQ-007: smoke-test has its own matrix strategy for multi-service support ---
-test_smoke_test_has_matrix() {
-  echo "Test: smoke-test has its own matrix strategy (REQ-007)"
+# --- REQ-007: verify-service-images has its own matrix strategy for multi-service support ---
+test_verify_service_images_has_matrix() {
+  echo "Test: verify-service-images has its own matrix strategy (REQ-007)"
 
   local services
-  services=$(yq_raw '.jobs["smoke-test"]["strategy"]["matrix"]["service"][]' "$WORKFLOW" 2>/dev/null || true)
+  services=$(yq_raw '.jobs["verify-service-images"]["strategy"]["matrix"]["service"][]' "$WORKFLOW" 2>/dev/null || true)
 
-  assert_contains "smoke-test matrix includes keystone" "$services" "keystone"
+  assert_contains "verify-service-images matrix includes keystone" "$services" "keystone"
 }
 
-# --- REQ-007: smoke-test derives image ref independently ---
-test_smoke_test_derives_image_ref() {
-  echo "Test: smoke-test derives image ref via tags step (REQ-007)"
+# --- REQ-007: verify-service-images derives image ref independently ---
+test_verify_service_images_derives_image_ref() {
+  echo "Test: verify-service-images derives image ref via tags step (REQ-007)"
 
   local derive_step
-  derive_step=$(yq_raw '.jobs["smoke-test"]["steps"][] | select(.id == "tags") | .run' "$WORKFLOW" 2>/dev/null || true)
+  derive_step=$(yq_raw '.jobs["verify-service-images"]["steps"][] | select(.id == "tags") | .run' "$WORKFLOW" 2>/dev/null || true)
 
-  assert_contains "smoke-test derives VERSION from source-refs.yaml" "$derive_step" "source-refs.yaml"
-  assert_contains "smoke-test computes image-ref output" "$derive_step" "image-ref="
+  assert_contains "verify-service-images derives VERSION from source-refs.yaml" "$derive_step" "source-refs.yaml"
+  assert_contains "verify-service-images computes image-ref output" "$derive_step" "image-ref="
 }
 
 # --- REQ-008: All actions pinned to 40-char hex SHA ---
@@ -357,16 +390,25 @@ test_gha_caching_present() {
 test_timeout_minutes_on_all_jobs() {
   echo "Test: all jobs have timeout-minutes (REQ-008)"
 
-  local base_timeout service_timeout smoke_timeout
+  local base_timeout verify_base_timeout service_timeout verify_service_timeout
   base_timeout=$(yq_raw '.jobs["build-base-images"]["timeout-minutes"]' "$WORKFLOW" 2>/dev/null || echo "null")
+  verify_base_timeout=$(yq_raw '.jobs["verify-base-images"]["timeout-minutes"]' "$WORKFLOW" 2>/dev/null || echo "null")
   service_timeout=$(yq_raw '.jobs["build-service-images"]["timeout-minutes"]' "$WORKFLOW" 2>/dev/null || echo "null")
-  smoke_timeout=$(yq_raw '.jobs["smoke-test"]["timeout-minutes"]' "$WORKFLOW" 2>/dev/null || echo "null")
+  verify_service_timeout=$(yq_raw '.jobs["verify-service-images"]["timeout-minutes"]' "$WORKFLOW" 2>/dev/null || echo "null")
 
   if [ "$base_timeout" != "null" ] && [ -n "$base_timeout" ]; then
     echo "  PASS: build-base-images has timeout-minutes: $base_timeout"
     PASS=$((PASS + 1))
   else
     echo "  FAIL: build-base-images missing timeout-minutes"
+    FAIL=$((FAIL + 1))
+  fi
+
+  if [ "$verify_base_timeout" != "null" ] && [ -n "$verify_base_timeout" ]; then
+    echo "  PASS: verify-base-images has timeout-minutes: $verify_base_timeout"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: verify-base-images missing timeout-minutes"
     FAIL=$((FAIL + 1))
   fi
 
@@ -378,11 +420,11 @@ test_timeout_minutes_on_all_jobs() {
     FAIL=$((FAIL + 1))
   fi
 
-  if [ "$smoke_timeout" != "null" ] && [ -n "$smoke_timeout" ]; then
-    echo "  PASS: smoke-test has timeout-minutes: $smoke_timeout"
+  if [ "$verify_service_timeout" != "null" ] && [ -n "$verify_service_timeout" ]; then
+    echo "  PASS: verify-service-images has timeout-minutes: $verify_service_timeout"
     PASS=$((PASS + 1))
   else
-    echo "  FAIL: smoke-test missing timeout-minutes"
+    echo "  FAIL: verify-service-images missing timeout-minutes"
     FAIL=$((FAIL + 1))
   fi
 }
@@ -391,14 +433,16 @@ test_timeout_minutes_on_all_jobs() {
 test_runs_on_ubuntu_latest() {
   echo "Test: all jobs use runs-on: ubuntu-latest (REQ-008)"
 
-  local base_runner service_runner smoke_runner
+  local base_runner verify_base_runner service_runner verify_service_runner
   base_runner=$(yq_raw '.jobs["build-base-images"]["runs-on"]' "$WORKFLOW" 2>/dev/null || echo "null")
+  verify_base_runner=$(yq_raw '.jobs["verify-base-images"]["runs-on"]' "$WORKFLOW" 2>/dev/null || echo "null")
   service_runner=$(yq_raw '.jobs["build-service-images"]["runs-on"]' "$WORKFLOW" 2>/dev/null || echo "null")
-  smoke_runner=$(yq_raw '.jobs["smoke-test"]["runs-on"]' "$WORKFLOW" 2>/dev/null || echo "null")
+  verify_service_runner=$(yq_raw '.jobs["verify-service-images"]["runs-on"]' "$WORKFLOW" 2>/dev/null || echo "null")
 
   assert_eq "build-base-images uses ubuntu-latest" "ubuntu-latest" "$base_runner"
+  assert_eq "verify-base-images uses ubuntu-latest" "ubuntu-latest" "$verify_base_runner"
   assert_eq "build-service-images uses ubuntu-latest" "ubuntu-latest" "$service_runner"
-  assert_eq "smoke-test uses ubuntu-latest" "ubuntu-latest" "$smoke_runner"
+  assert_eq "verify-service-images uses ubuntu-latest" "ubuntu-latest" "$verify_service_runner"
 }
 
 # --- REQ-002: Base images always push unconditionally ---
@@ -480,12 +524,12 @@ test_version_tag_restricted_to_main() {
 test_matrix_jobs_fail_fast_false() {
   echo "Test: matrix jobs use fail-fast: false (CC-0007)"
 
-  local service_fail_fast smoke_fail_fast
+  local service_fail_fast verify_service_fail_fast
   service_fail_fast=$(yq_raw '.jobs["build-service-images"]["strategy"]["fail-fast"]' "$WORKFLOW" 2>/dev/null || echo "null")
-  smoke_fail_fast=$(yq_raw '.jobs["smoke-test"]["strategy"]["fail-fast"]' "$WORKFLOW" 2>/dev/null || echo "null")
+  verify_service_fail_fast=$(yq_raw '.jobs["verify-service-images"]["strategy"]["fail-fast"]' "$WORKFLOW" 2>/dev/null || echo "null")
 
   assert_eq "build-service-images has fail-fast: false" "false" "$service_fail_fast"
-  assert_eq "smoke-test has fail-fast: false" "false" "$smoke_fail_fast"
+  assert_eq "verify-service-images has fail-fast: false" "false" "$verify_service_fail_fast"
 }
 
 # --- CC-0007: Source ref resolution validates yq output against null/empty ---
@@ -500,22 +544,22 @@ test_source_ref_null_guard() {
   assert_contains "source-ref step exits on invalid ref" "$source_ref_run" "exit 1"
 }
 
-# --- CC-0007: smoke-test tag derivation has sync comment referencing build-service-images ---
-test_smoke_test_tag_derivation_sync_comment() {
-  echo "Test: smoke-test tag derivation has sync comment (CC-0007)"
+# --- CC-0007: verify-service-images tag derivation has sync comment referencing build-service-images ---
+test_verify_service_images_tag_derivation_sync_comment() {
+  echo "Test: verify-service-images tag derivation has sync comment (CC-0007)"
 
-  assert_file_contains "smoke-test has sync comment referencing Derive tags step" "$WORKFLOW" "MUST stay in sync with the .Derive tags. step"
+  assert_file_contains "verify-service-images has sync comment referencing Derive tags step" "$WORKFLOW" "MUST stay in sync with the .Derive tags. step"
 }
 
-# --- CC-0007: smoke-test validates yq output against null/empty ---
-test_smoke_test_null_guard() {
-  echo "Test: smoke-test validates yq output against null/empty (CC-0007)"
+# --- CC-0007: verify-service-images validates yq output against null/empty ---
+test_verify_service_images_null_guard() {
+  echo "Test: verify-service-images validates yq output against null/empty (CC-0007)"
 
   local derive_step
-  derive_step=$(yq_raw '.jobs["smoke-test"]["steps"][] | select(.id == "tags") | .run' "$WORKFLOW" 2>/dev/null || true)
+  derive_step=$(yq_raw '.jobs["verify-service-images"]["steps"][] | select(.id == "tags") | .run' "$WORKFLOW" 2>/dev/null || true)
 
-  assert_contains "smoke-test derive step checks for null string" "$derive_step" '"null"'
-  assert_contains "smoke-test derive step exits on invalid ref" "$derive_step" "exit 1"
+  assert_contains "verify-service-images derive step checks for null string" "$derive_step" '"null"'
+  assert_contains "verify-service-images derive step exits on invalid ref" "$derive_step" "exit 1"
 }
 
 # --- REQ-008: Expression injection defense — run: blocks use env vars ---
@@ -544,7 +588,9 @@ test_push_triggers
 echo ""
 test_pull_request_trigger
 echo ""
-test_three_jobs_defined
+test_four_jobs_defined
+echo ""
+test_verify_base_images_job
 echo ""
 test_base_images_multi_arch
 echo ""
@@ -570,13 +616,13 @@ test_version_and_sha_outputs
 echo ""
 test_pr_single_arch_load
 echo ""
-test_smoke_test_command
+test_verify_service_images_command
 echo ""
-test_smoke_test_depends_on_service_images
+test_verify_service_images_depends_on_service_images
 echo ""
-test_smoke_test_has_matrix
+test_verify_service_images_has_matrix
 echo ""
-test_smoke_test_derives_image_ref
+test_verify_service_images_derives_image_ref
 echo ""
 test_actions_pinned_to_sha
 echo ""
@@ -602,9 +648,9 @@ test_matrix_jobs_fail_fast_false
 echo ""
 test_source_ref_null_guard
 echo ""
-test_smoke_test_tag_derivation_sync_comment
+test_verify_service_images_tag_derivation_sync_comment
 echo ""
-test_smoke_test_null_guard
+test_verify_service_images_null_guard
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

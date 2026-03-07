@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+name: Verify Container Images
+
+"on":
+  push:
+    branches:
+      - main
+      - stable/**
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.ref }}-${{ github.workflow }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify-static-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install yq
+        env:
+          YQ_VERSION: v4.45.1
+          YQ_SHA256: 654d2943ca1d3be2024089eb4f270f4070f491a0610481d128509b2834870049
+        run: |
+          sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          echo "${YQ_SHA256}  /usr/local/bin/yq" | sha256sum --check --strict
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Verify build-images workflow structure
+        run: bash tests/container-images/verify_build_images_workflow.sh
+
+      - name: Verify deviation comments
+        run: bash tests/container-images/verify_deviation_comments.sh
+
+      - name: Verify release config
+        run: bash tests/container-images/verify_release_config.sh
+
+      - name: Verify SPDX headers
+        run: bash tests/container-images/verify_spdx_headers.sh
+
+      - name: Test apply-constraint-overrides
+        run: bash tests/scripts/test_apply_constraint_overrides.sh

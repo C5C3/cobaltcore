@@ -2,8 +2,8 @@
   "feature_id": "CC-0028",
   "title": "Integrate container image test scripts into CI",
   "slug": "integrate-container-image-test-scripts-into-ci",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 📦 medium\n**Category:** infrastructure\n**Priority:** high\n**Source:** Proposed for 'The tests under tests/container-images/ are currently'\n\n1. Create `.github/workflows/verify-container-images.yaml` — a new single-job workflow triggered on push (main, stable/**) and pull_request that installs yq and runs 5 static test scripts sequentially: verify_build_images_workflow.sh, verify_deviation_comments.sh, verify_release_config.sh, verify_spdx_headers.sh, test_apply_constraint_overrides.sh. Follow existing conventions (SPDX header, SHA-pinned actions/checkout, permissions: contents: read, concurrency ${{ github.ref }}-${{ github.workflow }} with cancel-in-progress only on PR, timeout-minutes, runs-on: ubuntu-latest).\n\n2. Modify `.github/workflows/build-images.yaml` — add a verification step/job after build-base-images that runs verify_python_base.sh and verify_venv_builder.sh with digest-tagged image refs from job outputs. Replace the inline PR smoke test (~lines 191–196) and the push-only smoke-test job (~lines 198–254) with verify_keystone.sh; push path retains docker pull from GHCR before invocation, PR path uses local --load image.\n\n3. Fix test script issues — add assert_not_empty to tests/lib/assertions.sh; refactor verify_keystone.sh manual pass/fail block (lines 31–37) to use it and align default image tag with CI tags; fix stale uv version in verify_venv_builder.sh (0.6.3 → match Dockerfile); evaluate/harden sed-based extras extraction in verify_release_config.sh (lines 97–108).\n\n4. Update docs/reference/build-images-workflow.md to document test integration, verification coverage, and the new workflow.\n\n**Rationale:** Eight test scripts exist but zero are executed in CI, meaning container image structure validation, SPDX compliance checks, release config validation, and Dockerfile convention enforcement provide no automated protection. Bugs like the stale uv version expectation in verify_venv_builder.sh (tests for 0.6.3 while Dockerfile uses 0.10.8) would fail immediately if CI ran the scripts, proving the gap is real. Integrating these scripts catches regressions at PR time, replaces the limited inline smoke test (single --version check) with comprehensive verification (non-root user, no build tools, runtime packages), and ensures the existing test investment delivers value.\n\n**Affected Areas:**\n- .github/workflows/verify-container-images.yaml\n- .github/workflows/build-images.yaml\n- tests/lib/assertions.sh\n- tests/container-images/verify_keystone.sh\n- tests/container-images/verify_venv_builder.sh\n- tests/container-images/verify_release_config.sh\n- docs/reference/build-images-workflow.md",
   "stories": [
@@ -370,6 +370,7 @@
       "description": "Add assert_not_empty function to tests/lib/assertions.sh following the existing pattern (description, value params; increment PASS/FAIL; print result). Place it after the existing assert_eq function. Function signature: assert_not_empty description value. Passes when value is non-empty, fails when empty with message '(expected non-empty value)'.",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -380,6 +381,7 @@
       "description": "In tests/container-images/verify_venv_builder.sh, update test_uv_version_is_pinned to expect 0.10.8 instead of 0.6.3. Change the echo description, the assert_contains call, and the assert_contains description string. The Dockerfile at images/venv-builder/Dockerfile uses COPY --from=ghcr.io/astral-sh/uv:0.10.8.",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -390,6 +392,7 @@
       "description": "In tests/container-images/verify_keystone.sh: (1) Replace the manual if/else block in test_keystone_manage_version (lines 35-40: 'if [ -n \"$version\" ]' block) with a single call to assert_not_empty 'version output is non-empty' \"$version\". (2) Keep the default IMAGE as c5c3/keystone:28.0.0 since it matches the local build instructions in docs/reference/container-images.md. The CI workflow will always pass an explicit image ref.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-008"
@@ -401,6 +404,7 @@
       "description": "In tests/container-images/verify_build_images_workflow.sh: (1) Update test_three_jobs_defined to expect 4 jobs: build-base-images, verify-base-images, build-service-images, verify-service-images (rename function to test_four_jobs_defined or similar). (2) Add test for verify-base-images job: needs build-base-images, has timeout-minutes, runs-on ubuntu-latest, permissions packages: read. (3) Update test_smoke_test_* functions to reference verify-service-images instead of smoke-test. (4) Remove tests for the old smoke-test job structure that will no longer exist. (5) Add test for verify-service-images job: needs build-service-images, has timeout-minutes.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-004",
@@ -413,6 +417,7 @@
       "description": "Create new workflow file .github/workflows/verify-container-images.yaml with: (1) SPDX header matching ci.yaml. (2) Triggers: push to main and stable/**, pull_request. (3) permissions: contents: read. (4) Concurrency: ${{ github.ref }}-${{ github.workflow }} with cancel-in-progress on PR only. (5) Single job 'verify-static-tests' with runs-on: ubuntu-latest, timeout-minutes: 10. (6) Steps: checkout (SHA-pinned actions/checkout@de0fac2e...  # v6), install yq (via snap or wget), then run each of the 5 scripts sequentially: verify_build_images_workflow.sh, verify_deviation_comments.sh, verify_release_config.sh, verify_spdx_headers.sh, test_apply_constraint_overrides.sh.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -425,6 +430,7 @@
       "description": "Add a new verify-base-images job to .github/workflows/build-images.yaml: (1) needs: [build-base-images]. (2) runs-on: ubuntu-latest, timeout-minutes: 10. (3) permissions: contents: read, packages: read. (4) Steps: checkout (SHA-pinned), login to GHCR, docker pull both digest-tagged base images from build-base-images outputs, run verify_python_base.sh with python-base-image digest ref, run verify_venv_builder.sh with venv-builder-image digest ref. (5) Update build-service-images needs to include verify-base-images: needs: [build-base-images, verify-base-images].",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-010"
@@ -436,6 +442,7 @@
       "description": "Modify .github/workflows/build-images.yaml: (1) Replace the inline 'Smoke test (PR)' step in build-service-images with a step that runs 'bash tests/container-images/verify_keystone.sh \"$IMAGE_REF\"' using the composite tag, conditioned on github.event_name == 'pull_request'. (2) Replace the entire smoke-test job with a new verify-service-images job: needs [build-service-images], if github.event_name != 'pull_request', runs-on ubuntu-latest, timeout-minutes 10, permissions contents: read + packages: read, same matrix strategy. Steps: checkout (SHA-pinned), GHCR login, derive image ref (same tag derivation as current smoke-test), docker pull, run verify_keystone.sh with the pulled image ref. Use env vars for matrix values in run blocks (expression injection defense).",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-010"
@@ -447,6 +454,7 @@
       "description": "Update docs/reference/build-images-workflow.md: (1) Add a new top-level section 'Verification Workflows' or 'Test Integration' documenting verify-container-images.yaml: trigger events, yq prerequisite, list of 5 static scripts with what each validates. (2) Update the Jobs section to show 4 jobs in build-images.yaml: build-base-images -> verify-base-images -> build-service-images -> verify-service-images. Update the ASCII dependency diagram. (3) Update the verify-base-images job description: what it tests, how images are referenced by digest. (4) Replace smoke-test documentation with verify-service-images documentation. (5) Update 'Adding a New Service' section to mention creating a verification script under tests/container-images/. (6) Add a verification coverage table mapping scripts to what they validate.",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -572,8 +580,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-03-07T19:07:59.686481"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-07T19:10:35.201674"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-07T20:39:07.283917"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/38",
+  "pr_number": 38,
   "execution_history": [
     {
       "run_id": "c5b57d5b-c88f-487d-a22a-f491298d8500",
@@ -585,6 +603,50 @@
           "name": "prepare",
           "duration": 283.10997247695923,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "e5dee5d2-8fe2-4642-aa44-0448a0a6b595",
+      "timestamp": "2026-03-07T19:38:47.905893",
+      "total_duration": 1480.6532340049744,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (4 tasks)",
+          "duration": 508.58499550819397,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (3 tasks)",
+          "duration": 310.1301865577698,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (1 tasks)",
+          "duration": 256.0541207790375,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0028] Code Review",
+          "duration": 203.03686046600342,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0028] Improvements",
+          "duration": 114.6989221572876,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0028] Simplify",
+          "duration": 88.14814853668213,
+          "type": "simplify",
           "status": "done"
         }
       ]

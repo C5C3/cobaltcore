@@ -27,14 +27,7 @@ test_keystone_manage_version() {
 
   assert_eq "keystone-manage --version exits 0" "0" "$exit_code"
 
-  # Version string should be non-empty
-  if [ -n "$version" ]; then
-    echo "  PASS: version output is non-empty ($version)"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: version output is empty"
-    FAIL=$((FAIL + 1))
-  fi
+  assert_not_empty "version output is non-empty" "$version"
 }
 
 # --- Test 2: runs as openstack user ---
@@ -58,7 +51,7 @@ test_no_build_tools_in_final_image() {
 
   # python3-dev should not be installed
   local pydev_exit=0
-  docker run --rm "$IMAGE" dpkg -l python3-dev > /dev/null 2>&1 || pydev_exit=$?
+  docker run --rm "$IMAGE" dpkg -s python3-dev > /dev/null 2>&1 || pydev_exit=$?
   assert_nonzero_exit "python3-dev not installed" "$pydev_exit"
 
   # uv should not be present in the final image
@@ -74,7 +67,7 @@ test_runtime_apt_packages_installed() {
   dpkg_output=$(docker run --rm "$IMAGE" dpkg -l 2>&1) || exit_code=$?
 
   assert_eq "dpkg -l exits 0" "0" "$exit_code"
-  for pkg in libapache2-mod-wsgi-py3 libldap-2.5-0 libsasl2-2 libxml2; do
+  for pkg in libapache2-mod-wsgi-py3 libldap2 libsasl2-2 libxml2; do
     assert_contains "$pkg is installed" "$dpkg_output" "$pkg"
   done
 }
