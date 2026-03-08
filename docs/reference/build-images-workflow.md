@@ -132,10 +132,10 @@ availability.
 | 4 | Login to GHCR | `docker/login-action@v4` | Authenticates with `GITHUB_TOKEN` |
 | 5 | Build python-base | `docker/build-push-action@v7` | Context: `images/python-base`, multi-arch, push: true, tags: `:latest` and `:${{ github.sha }}` |
 | 6 | Generate SBOM for python-base | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed python-base image by digest. Output: `sbom-python-base.cyclonedx.json` (CC-0029) |
-| 7 | Attest SBOM for python-base | `actions/attest-sbom@v2` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
+| 7 | Attest SBOM for python-base | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
 | 8 | Build venv-builder | `docker/build-push-action@v7` | Context: `images/venv-builder`, multi-arch, push: true, tags: `:latest` and `:${{ github.sha }}`, `--build-context python-base=docker-image://...` |
 | 9 | Generate SBOM for venv-builder | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed venv-builder image by digest. Output: `sbom-venv-builder.cyclonedx.json` (CC-0029) |
-| 10 | Attest SBOM for venv-builder | `actions/attest-sbom@v2` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
+| 10 | Attest SBOM for venv-builder | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
 
 The `venv-builder` build uses a `docker-image://` build context pointing at the
 just-pushed `python-base` image (referenced by digest), ensuring its `FROM python-base`
@@ -218,7 +218,7 @@ Depends on `build-base-images` for image references (REQ-003) and on
 | 9 | Login to GHCR | `docker/login-action@v4` | Authenticates with `GITHUB_TOKEN` |
 | 10 | Build service image | `docker/build-push-action@v7` | Builds with four named build contexts and three build args, conditional platform/push/load (REQ-006) |
 | 11 | Generate SBOM for service image | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed service image by digest. Output: `sbom-${{ matrix.service }}.cyclonedx.json` (CC-0029) |
-| 12 | Attest SBOM for service image | `actions/attest-sbom@v2` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
+| 12 | Attest SBOM for service image | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
 | 13 | Verify service image (PR) | Shell (conditional) | On PRs only: runs `verify_keystone.sh` with the locally loaded image ref (CC-0028) |
 
 **Build Contexts:**
@@ -374,7 +374,7 @@ uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4
 uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2  # v4
 uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294  # v7
 uses: anchore/sbom-action@17ae1740179002c89186b61233e0f892c3118b11  # v0 (CC-0029)
-uses: actions/attest-sbom@bd218ad0dbcb3e146bd073d1d9c6d78e08aa8a0b  # v2 (CC-0029)
+uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26  # v4 (CC-0029)
 ```
 
 This prevents supply-chain attacks via tag mutation while remaining auditable through
@@ -396,7 +396,7 @@ run:
    by digest) and produces a CycloneDX JSON file covering both OS packages (dpkg) and
    Python packages (dist-info).
 
-2. **SBOM attestation** (`actions/attest-sbom`) — The CycloneDX file is signed via
+2. **SBOM attestation** (`actions/attest`) — The CycloneDX file is signed via
    Sigstore keyless OIDC (using the GitHub Actions workflow identity) and pushed to GHCR
    as an OCI referrer artifact alongside the image. No signing keys are managed; the OIDC
    token binds the attestation to the specific workflow run.

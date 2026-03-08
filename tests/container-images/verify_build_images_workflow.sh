@@ -729,12 +729,12 @@ test_sbom_attestation_steps_exist() {
 
   # build-base-images should have 2 attestation steps
   local base_attest_count
-  base_attest_count=$(yq_count '.jobs["build-base-images"]["steps"][] | select(.uses and (.uses | test("actions/attest-sbom"))) | .uses' "$WORKFLOW")
+  base_attest_count=$(yq_count '.jobs["build-base-images"]["steps"][] | select(.uses and (.uses | test("actions/attest@"))) | .uses' "$WORKFLOW")
   assert_eq "build-base-images has 2 attestation steps" "2" "$base_attest_count"
 
   # build-service-images should have 1 attestation step
   local service_attest_count
-  service_attest_count=$(yq_count '.jobs["build-service-images"]["steps"][] | select(.uses and (.uses | test("actions/attest-sbom"))) | .uses' "$WORKFLOW")
+  service_attest_count=$(yq_count '.jobs["build-service-images"]["steps"][] | select(.uses and (.uses | test("actions/attest@"))) | .uses' "$WORKFLOW")
   assert_eq "build-service-images has 1 attestation step" "1" "$service_attest_count"
 }
 
@@ -744,7 +744,7 @@ test_sbom_attestation_push_to_registry() {
 
   # All attestation steps in build-base-images
   local base_push_values
-  base_push_values=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.uses and (.uses | test("actions/attest-sbom"))) | .with["push-to-registry"]' "$WORKFLOW" || true)
+  base_push_values=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.uses and (.uses | test("actions/attest@"))) | .with["push-to-registry"]' "$WORKFLOW" || true)
 
   local all_true=true
   while IFS= read -r val; do
@@ -766,7 +766,7 @@ test_sbom_attestation_push_to_registry() {
 
   # build-service-images attestation step
   local service_push
-  service_push=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.uses and (.uses | test("actions/attest-sbom"))) | .with["push-to-registry"]' "$WORKFLOW" || true)
+  service_push=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.uses and (.uses | test("actions/attest@"))) | .with["push-to-registry"]' "$WORKFLOW" || true)
   assert_eq "build-service-images attestation push-to-registry is true" "true" "$service_push"
 }
 
@@ -776,7 +776,7 @@ test_sbom_steps_pr_skip_guard() {
 
   # All SBOM steps in build-base-images must have PR guard
   local base_sbom_ifs
-  base_sbom_ifs=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.uses and (.uses | test("anchore/sbom-action|actions/attest-sbom"))) | .if' "$WORKFLOW" || true)
+  base_sbom_ifs=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.uses and (.uses | test("anchore/sbom-action|actions/attest"))) | .if' "$WORKFLOW" || true)
 
   local all_guarded=true
   while IFS= read -r val; do
@@ -800,7 +800,7 @@ test_sbom_steps_pr_skip_guard() {
 
   # All SBOM steps in build-service-images must have PR guard
   local service_sbom_ifs
-  service_sbom_ifs=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.uses and (.uses | test("anchore/sbom-action|actions/attest-sbom"))) | .if' "$WORKFLOW" || true)
+  service_sbom_ifs=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.uses and (.uses | test("anchore/sbom-action|actions/attest"))) | .if' "$WORKFLOW" || true)
 
   local service_all_guarded=true
   while IFS= read -r val; do
