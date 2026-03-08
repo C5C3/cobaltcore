@@ -19,14 +19,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"
 
-# --- Test 1: uv version is pinned at 0.10.8 ---
+# --- Test 1: uv version matches Dockerfile ---
+EXPECTED_UV_VERSION=$(sed -n 's/.*COPY --from=ghcr\.io\/astral-sh\/uv:\([^@ ]*\).*/\1/p' \
+  "$SCRIPT_DIR/../../images/venv-builder/Dockerfile" 2>/dev/null | head -1) || true
+if [[ -z "$EXPECTED_UV_VERSION" ]]; then
+  echo "ERROR: Could not extract uv version from $SCRIPT_DIR/../../images/venv-builder/Dockerfile" >&2
+  exit 1
+fi
 test_uv_version_is_pinned() {
-  echo "Test: uv version is 0.10.8"
+  echo "Test: uv version is $EXPECTED_UV_VERSION"
   local version exit_code=0
   version=$(docker run --rm "$IMAGE" uv --version 2>&1) || exit_code=$?
 
   assert_eq "uv --version exits 0" "0" "$exit_code"
-  assert_contains "uv version is 0.10.8" "$version" "0.10.8"
+  assert_contains "uv version is $EXPECTED_UV_VERSION" "$version" "$EXPECTED_UV_VERSION"
 }
 
 # --- Test 2: virtualenv exists at /var/lib/openstack ---

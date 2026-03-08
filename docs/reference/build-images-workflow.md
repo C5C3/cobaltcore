@@ -171,7 +171,7 @@ builds begin (CC-0028). Runs after `build-base-images` and blocks
 | Script | Validates |
 | --- | --- |
 | `tests/container-images/verify_python_base.sh` | Python version, `openstack` user (UID/GID 42424), PATH includes `/opt/openstack/bin`, virtualenv at `/opt/openstack` |
-| `tests/container-images/verify_venv_builder.sh` | uv version (0.10.8), pip available, virtualenv at `/var/lib/openstack` |
+| `tests/container-images/verify_venv_builder.sh` | uv version (from Dockerfile), pip available, virtualenv at `/var/lib/openstack` |
 
 The job receives image references via `needs.build-base-images.outputs` (digest-pinned),
 ensuring the exact images that were just built are the ones being tested.
