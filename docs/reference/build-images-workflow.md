@@ -1,16 +1,18 @@
 ---
 title: Build Images Workflow
 quadrant: infrastructure
-feature: CC-0007
+feature: CC-0007, CC-0029
 ---
 
 # Build Images Workflow
 
-Reference documentation for the GitHub Actions build-images workflow (CC-0007) and the
-verify-container-images workflow (CC-0028). The build-images workflow builds, tags, and
-publishes container images for OpenStack services to GHCR (GitHub Container Registry).
-The verify-container-images workflow runs static verification tests against container
-infrastructure files (Dockerfiles, workflows, release configs) without requiring Docker.
+Reference documentation for the GitHub Actions build-images workflow (CC-0007, CC-0029)
+and the verify-container-images workflow (CC-0028). The build-images workflow builds,
+tags, and publishes container images for OpenStack services to GHCR (GitHub Container
+Registry). Each pushed image receives a CycloneDX SBOM and a Sigstore-signed attestation
+(CC-0029). The verify-container-images workflow runs static verification tests against
+container infrastructure files (Dockerfiles, workflows, release configs) without
+requiring Docker.
 
 ## File Locations
 
@@ -42,8 +44,8 @@ single-arch images loaded locally for testing (see [PR vs Push Behavior](#pr-vs-
 
 ## Permissions
 
-Top-level permissions grant least privilege (REQ-008). Registry write access is scoped
-to the build jobs that push images:
+Top-level permissions grant least privilege (REQ-008). Registry write access and
+attestation permissions are scoped to the build jobs only:
 
 ```yaml
 # Top-level (applies to all jobs)
@@ -54,6 +56,8 @@ permissions:
 permissions:
   contents: read
   packages: write
+  id-token: write       # CC-0029: Sigstore OIDC signing for SBOM attestation
+  attestations: write   # CC-0029: GitHub Attestations API
 
 # Verification jobs (verify-base-images, verify-service-images)
 permissions:
@@ -62,10 +66,15 @@ permissions:
 ```
 
 `contents: read` allows repository checkout. `packages: write` is granted only to
-`build-base-images` and `build-service-images` for pushing images to GHCR. The
-verification jobs (`verify-base-images`, `verify-service-images`) receive
-`contents: read` (required for checkout and test scripts) and `packages: read`
-(for pulling images from GHCR), following the principle of least privilege (CC-0028).
+`build-base-images` and `build-service-images` for pushing images to GHCR.
+`id-token: write` enables Sigstore keyless OIDC signing — the GitHub Actions runner
+requests a short-lived OIDC token bound to the workflow identity, which Sigstore uses to
+sign the attestation without managing keys (CC-0029). `attestations: write` grants
+access to the GitHub Attestations API for storing signed attestations. The verification
+jobs (`verify-base-images`, `verify-service-images`) do **not** receive `id-token` or
+`attestations` permissions — they only need `contents: read` (for checkout and test
+scripts) and `packages: read` (for pulling images from GHCR), following the principle of
+least privilege (CC-0028).
 
 ## Concurrency
 
@@ -119,10 +128,14 @@ availability.
 | --- | --- | --- | --- |
 | 1 | Reject fork PRs | Shell (conditional) | Fails fast with `::error::` if the PR originates from a fork (CC-0007) |
 | 2 | Checkout | `actions/checkout@v6` | Checks out the repository |
-| 3 | Set up Buildx | `docker/setup-buildx-action@v3` | Enables multi-platform builds |
-| 4 | Login to GHCR | `docker/login-action@v3` | Authenticates with `GITHUB_TOKEN` |
-| 5 | Build python-base | `docker/build-push-action@v6` | Context: `images/python-base`, multi-arch, push: true, tags: `:latest` and `:${{ github.sha }}` |
-| 6 | Build venv-builder | `docker/build-push-action@v6` | Context: `images/venv-builder`, multi-arch, push: true, tags: `:latest` and `:${{ github.sha }}`, `--build-context python-base=docker-image://...` |
+| 3 | Set up Buildx | `docker/setup-buildx-action@v4` | Enables multi-platform builds |
+| 4 | Login to GHCR | `docker/login-action@v4` | Authenticates with `GITHUB_TOKEN` |
+| 5 | Build python-base | `docker/build-push-action@v7` | Context: `images/python-base`, multi-arch, push: true, tags: `:latest` and `:${{ github.sha }}` |
+| 6 | Generate SBOM for python-base | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed python-base image by digest. Output: `sbom-python-base.cyclonedx.json` (CC-0029) |
+| 7 | Attest SBOM for python-base | `actions/attest-sbom@v2` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
+| 8 | Build venv-builder | `docker/build-push-action@v7` | Context: `images/venv-builder`, multi-arch, push: true, tags: `:latest` and `:${{ github.sha }}`, `--build-context python-base=docker-image://...` |
+| 9 | Generate SBOM for venv-builder | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed venv-builder image by digest. Output: `sbom-venv-builder.cyclonedx.json` (CC-0029) |
+| 10 | Attest SBOM for venv-builder | `actions/attest-sbom@v2` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
 
 The `venv-builder` build uses a `docker-image://` build context pointing at the
 just-pushed `python-base` image (referenced by digest), ensuring its `FROM python-base`
@@ -200,11 +213,13 @@ Depends on `build-base-images` for image references (REQ-003) and on
 | 4 | Apply patches | Shell (conditional) | Runs `git apply` for patches in `patches/<service>/<release>/` — skipped if no `.patch` files exist |
 | 5 | Apply constraint overrides | Shell | Runs `scripts/apply-constraint-overrides.sh <release>` (idempotent) |
 | 6 | Resolve extra packages | Shell | Reads `releases/<release>/extra-packages.yaml` via `yq` to extract `pip_extras` (comma-joined), `pip_packages` (space-joined), and `apt_packages` (space-joined). All three fields tolerate empty values — the Dockerfile handles them via conditional guards (CC-0027). |
-| 7 | Derive tags | Shell | Computes three image tags (see [Tag Schema](#tag-schema)) (REQ-005) |
-| 8 | Set up Buildx | `docker/setup-buildx-action@v3` | Enables multi-platform builds |
-| 9 | Login to GHCR | `docker/login-action@v3` | Authenticates with `GITHUB_TOKEN` |
-| 10 | Build service image | `docker/build-push-action@v6` | Builds with four named build contexts and three build args, conditional platform/push/load (REQ-006) |
-| 11 | Verify service image (PR) | Shell (conditional) | On PRs only: runs `verify_keystone.sh` with the locally loaded image ref (CC-0028) |
+| 7 | Derive tags | Shell | Computes three image tags and the lowercase `image` path (see [Tag Schema](#tag-schema)) (REQ-005, CC-0029) |
+| 8 | Set up Buildx | `docker/setup-buildx-action@v4` | Enables multi-platform builds |
+| 9 | Login to GHCR | `docker/login-action@v4` | Authenticates with `GITHUB_TOKEN` |
+| 10 | Build service image | `docker/build-push-action@v7` | Builds with four named build contexts and three build args, conditional platform/push/load (REQ-006) |
+| 11 | Generate SBOM for service image | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed service image by digest. Output: `sbom-${{ matrix.service }}.cyclonedx.json` (CC-0029) |
+| 12 | Attest SBOM for service image | `actions/attest-sbom@v2` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
+| 13 | Verify service image (PR) | Shell (conditional) | On PRs only: runs `verify_keystone.sh` with the locally loaded image ref (CC-0028) |
 
 **Build Contexts:**
 
@@ -245,7 +260,7 @@ Validates that built service images are functional by running `verify_keystone.s
 `build-service-images` to test every service independently.
 
 On PRs, the equivalent verification runs as an inline step within `build-service-images`
-(step 11 above) because `--load` makes the image available only on the same runner.
+(step 13 above) because `--load` makes the image available only on the same runner.
 
 | Property | Value |
 | --- | --- |
@@ -312,6 +327,9 @@ The workflow behaves differently depending on the trigger event (REQ-006):
 | Service image platforms | `linux/amd64` only | `linux/amd64,linux/arm64` |
 | Service image push | No (`push: false`, `load: true`) | Yes (`push: true`) |
 | Service image tags | Computed but not published | Published to GHCR |
+| SBOM generation | Skipped (CC-0029) | CycloneDX JSON for every image |
+| SBOM attestation | Skipped (CC-0029) | Sigstore-signed, pushed to GHCR |
+| OIDC token request | None | Requested for Sigstore signing |
 | Service image verification | Inline step in `build-service-images` | Separate `verify-service-images` job |
 | Verification image source | Locally loaded image (same runner) | Pulled from GHCR |
 
@@ -351,14 +369,119 @@ All actions are pinned to full commit SHAs with version comments (REQ-008), matc
 convention in `ci.yaml`:
 
 ```yaml
-uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4
+uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2  # v4
+uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294  # v7
+uses: anchore/sbom-action@17ae1740179002c89186b61233e0f892c3118b11  # v0 (CC-0029)
+uses: actions/attest-sbom@bd218ad0dbcb3e146bd073d1d9c6d78e08aa8a0b  # v2 (CC-0029)
 ```
 
 This prevents supply-chain attacks via tag mutation while remaining auditable through
 version comments.
+
+## SBOM Generation and Attestation
+
+Every container image pushed to GHCR on non-PR events receives a CycloneDX SBOM and a
+Sigstore-signed attestation (CC-0029). This enables consumers to audit image contents,
+check for known vulnerabilities, and verify that images have not been tampered with since
+build time.
+
+### How It Works
+
+After each `docker/build-push-action` step pushes an image to GHCR, two additional steps
+run:
+
+1. **SBOM generation** (`anchore/sbom-action`) — Syft scans the pushed image (referenced
+   by digest) and produces a CycloneDX JSON file covering both OS packages (dpkg) and
+   Python packages (dist-info).
+
+2. **SBOM attestation** (`actions/attest-sbom`) — The CycloneDX file is signed via
+   Sigstore keyless OIDC (using the GitHub Actions workflow identity) and pushed to GHCR
+   as an OCI referrer artifact alongside the image. No signing keys are managed; the OIDC
+   token binds the attestation to the specific workflow run.
+
+This pattern is applied to all three image types:
+
+| Image | SBOM output file | Job |
+| --- | --- | --- |
+| `python-base` | `sbom-python-base.cyclonedx.json` | `build-base-images` |
+| `venv-builder` | `sbom-venv-builder.cyclonedx.json` | `build-base-images` |
+| Service (e.g., `keystone`) | `sbom-${{ matrix.service }}.cyclonedx.json` | `build-service-images` |
+
+### PR Behavior
+
+All SBOM generation and attestation steps are guarded with
+`if: github.event_name != 'pull_request'`. On pull requests:
+
+- No SBOMs are generated or attested — the `if: github.event_name != 'pull_request'` guard applies uniformly to all SBOM/attestation steps, including for base images which are pushed on PRs.
+- No OIDC token requests occur — SBOM/attestation steps are skipped so `id-token: write` is not exercised.
+- No attestations are created for ephemeral PR builds.
+- PR CI time is not increased by SBOM/attestation steps.
+
+Base images are always pushed to GHCR (even on PRs) because downstream service builds
+reference them via `docker-image://` URIs. However, SBOM generation and attestation for
+base images are still skipped on PRs — the PR guard applies to all SBOM/attestation
+steps uniformly.
+
+### Required Permissions
+
+SBOM attestation requires two additional job-level permissions beyond the existing
+`contents: read` and `packages: write`:
+
+| Permission | Purpose |
+| --- | --- |
+| `id-token: write` | Allows the GitHub Actions runner to request a short-lived Sigstore OIDC token for keyless signing |
+| `attestations: write` | Grants access to the GitHub Attestations API for storing signed attestations |
+
+These permissions are granted only to `build-base-images` and `build-service-images`.
+Verification jobs (`verify-base-images`, `verify-service-images`) do not receive these
+permissions.
+
+### Verifying Attestations
+
+To verify that an image has a valid Sigstore-signed attestation:
+
+```bash
+gh attestation verify oci://ghcr.io/<owner>/<service>:<tag> --owner <owner>
+```
+
+To extract the SBOM predicate from the attestation, first inspect the raw
+output to find the exact `predicateType` URI used in your environment:
+
+```bash
+gh attestation verify oci://ghcr.io/<owner>/<service>:<tag> \
+  --owner <owner> \
+  --format json | jq '.[].verificationResult.statement.predicateType'
+```
+
+Then filter for that predicate type (the URI below may differ by action version):
+
+```bash
+gh attestation verify oci://ghcr.io/<owner>/<service>:<tag> \
+  --owner <owner> \
+  --format json | jq -r '
+    [ .[] | select(.verificationResult.statement.predicateType | test("cyclonedx")) ]
+    | if length == 0 then error("no CycloneDX attestation found") else .[0].verificationResult.statement.predicate end
+  '
+```
+
+### Test Coverage
+
+The `verify_build_images_workflow.sh` script validates SBOM/attestation configuration
+(CC-0029):
+
+| Test | Validates |
+| --- | --- |
+| `test_sbom_permissions_on_build_base_images` | `id-token: write` and `attestations: write` on `build-base-images` |
+| `test_sbom_permissions_on_build_service_images` | `id-token: write` and `attestations: write` on `build-service-images` |
+| `test_verify_jobs_no_sbom_permissions` | Verification jobs do **not** have `id-token` or `attestations` permissions |
+| `test_sbom_generation_steps_exist` | SBOM generation steps exist in both build jobs |
+| `test_sbom_format_cyclonedx_json` | All SBOM steps specify `format: cyclonedx-json` |
+| `test_sbom_generation_references_digest` | SBOM steps reference the correct digest output |
+| `test_sbom_attestation_steps_exist` | Attestation steps exist in both build jobs |
+| `test_sbom_attestation_push_to_registry` | All attestation steps have `push-to-registry: true` |
+| `test_sbom_steps_pr_skip_guard` | All SBOM/attestation steps have `github.event_name != 'pull_request'` guard |
 
 ## Adding a New Service
 
@@ -516,7 +639,7 @@ non-zero, the job fails.
 
 | Script | Validates |
 | --- | --- |
-| `verify_build_images_workflow.sh` | Workflow structure: job names, dependency chain, trigger events, permissions, action pinning, concurrency, matrix strategy |
+| `verify_build_images_workflow.sh` | Workflow structure: job names, dependency chain, trigger events, permissions, action pinning, concurrency, matrix strategy, SBOM/attestation configuration (CC-0029) |
 | `verify_deviation_comments.sh` | DEVIATION comments in Dockerfiles cross-reference architecture docs |
 | `verify_release_config.sh` | `source-refs.yaml` and `extra-packages.yaml` structure and content validity |
 | `verify_spdx_headers.sh` | SPDX Apache-2.0 license headers present on all infrastructure files |
@@ -538,7 +661,7 @@ signals in GitHub's check status UI. The Docker-based image verification tests
 
 ## Verification Coverage Summary
 
-The following table summarizes which test scripts run where (CC-0028):
+The following table summarizes which test scripts run where (CC-0028, CC-0029):
 
 | Test Script | verify-container-images.yaml | build-images.yaml | Requires Docker |
 | --- | --- | --- | --- |

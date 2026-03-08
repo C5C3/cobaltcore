@@ -1,0 +1,46 @@
+{
+  "feature_id": "CC-0029",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer flags two issues: (1) In `verify_build_images_workflow.sh`, the `test_sbom_attestation_steps_exist` function has the same bug as a previously noted one—`grep -c '\"uses\":'` looks for JSON-formatted keys in YAML output from `yq`, so counts will always be \"0\"; fix by piping `.uses` through `grep -c .` instead. (2) In `build-images-workflow.md`, the claim that \"no `id-token: write` usage\" occurs on PRs is misleading since the permission is unconditionally granted at job level—it should say the SBOM/attestation steps are skipped so the permission is not *exercised*.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-08T19:27:44Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**Same `grep -c '\"uses\":'` fragility in attestation step counter**\n\n`test_sbom_attestation_steps_exist` has the same root problem as `test_sbom_generation_steps_exist` above: it greps for the JSON-format key `\"uses\":` in what is likely YAML output from `yq`. Both `base_attest_count` and `service_attest_count` will evaluate to `\"0\"` and fail their assertions.\n\n```bash\n# Instead of:\nbase_attest_count=$(yq '.jobs[\"build-base-images\"][\"steps\"][] | select(.uses and (.uses | test(\"actions/attest-sbom\")))' \"$WORKFLOW\" 2>/dev/null | grep -c '\"uses\":' || echo \"0\")\n\n# Use:\nbase_attest_count=$(yq_raw '.jobs[\"build-base-images\"][\"steps\"][] | select(.uses and (.uses | test(\"actions/attest-sbom\"))) | .uses' \"$WORKFLOW\" 2>/dev/null | grep -c . || echo \"0\")\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: tests/container-images/verify_build_images_workflow.sh\nLine: 621-632\n\nComment:\n**Same `grep -c '\"uses\":'` fragility in attestation step counter**\n\n`test_sbom_attestation_steps_exist` has the same root problem as `test_sbom_generation_steps_exist` above: it greps for the JSON-format key `\"uses\":` in what is likely YAML output from `yq`. Both `base_attest_count` and `service_attest_count` will evaluate to `\"0\"` and fail their assertions.\n\n```bash\n# Instead of:\nbase_attest_count=$(yq '.jobs[\"build-base-images\"][\"steps\"][] | select(.uses and (.uses | test(\"actions/attest-sbom\")))' \"$WORKFLOW\" 2>/dev/null | grep -c '\"uses\":' || echo \"0\")\n\n# Use:\nbase_attest_count=$(yq_raw '.jobs[\"build-base-images\"][\"steps\"][] | select(.uses and (.uses | test(\"actions/attest-sbom\"))) | .uses' \"$WORKFLOW\" 2>/dev/null | grep -c . || echo \"0\")\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "tests/container-images/verify_build_images_workflow.sh",
+      "line": 632,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-08T19:27:42Z",
+      "id": null,
+      "resolution": "Fixed: Replaced `yq` + `grep -c '\"uses\":'` with `yq_raw ... | .uses` + `grep -c .` in both `base_attest_count` and `service_attest_count` within `test_sbom_attestation_steps_exist` (lines 687, 692). The same fix was also applied to the identical fragile pattern in `test_sbom_generation_steps_exist` (lines 623, 628), which the reviewer flagged as having the same root problem."
+    },
+    {
+      "body": "**Documentation claim about OIDC on PRs is inaccurate**\n\nThe doc says:\n> No OIDC token requests occur (no `id-token: write` usage).\n\nHowever, `id-token: write` **is** present at the job level on `build-base-images`, which runs on PRs (base images are always pushed). The permission is available to all steps in that job, including on PR runs. It's just that the SBOM steps are guarded so they skip — but the permission itself is unconditionally granted.\n\nA more precise phrasing would be:\n\n```suggestion\n- No OIDC token requests occur — SBOM/attestation steps are skipped so `id-token: write` is not exercised.\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: docs/reference/build-images-workflow.md\nLine: 414-416\n\nComment:\n**Documentation claim about OIDC on PRs is inaccurate**\n\nThe doc says:\n> No OIDC token requests occur (no `id-token: write` usage).\n\nHowever, `id-token: write` **is** present at the job level on `build-base-images`, which runs on PRs (base images are always pushed). The permission is available to all steps in that job, including on PR runs. It's just that the SBOM steps are guarded so they skip — but the permission itself is unconditionally granted.\n\nA more precise phrasing would be:\n\n```suggestion\n- No OIDC token requests occur — SBOM/attestation steps are skipped so `id-token: write` is not exercised.\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "docs/reference/build-images-workflow.md",
+      "line": 416,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-08T19:27:43Z",
+      "id": null,
+      "resolution": "Fixed: Changed line 418 in docs/reference/build-images-workflow.md from 'No OIDC token requests occur (no `id-token: write` usage).' to 'No OIDC token requests occur — SBOM/attestation steps are skipped so `id-token: write` is not exercised.' — exactly matching the reviewer's suggested phrasing."
+    }
+  ],
+  "resolution_summary": "Both review comments were addressed via uncommitted (staged) changes. Comment [0] about grep fragility was fixed in test_sbom_attestation_steps_exist and also applied to the same pattern in test_sbom_generation_steps_exist (which had the identical bug). Comment [1] about inaccurate OIDC documentation was fixed with the reviewer's suggested phrasing. The grep -c '\"uses\":' fix was applied to 4 total locations across 2 test functions (test_sbom_generation_steps_exist and test_sbom_attestation_steps_exist), because test_sbom_generation_steps_exist had the same fragile yq/grep pattern — this additional change beyond what the reviewer explicitly commented on is traceable to comment [0].",
+  "github_review_id": 3911922630
+}

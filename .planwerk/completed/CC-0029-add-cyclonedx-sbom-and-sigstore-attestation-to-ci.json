@@ -2,8 +2,8 @@
   "feature_id": "CC-0029",
   "title": "Add CycloneDX SBOM and Sigstore attestation to CI",
   "slug": "add-cyclonedx-sbom-and-sigstore-attestation-to-ci",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 📦 medium\n**Category:** infrastructure\n**Priority:** high\n**Source:** Proposed for 'From the start, SBOMs with CycloneDX should be generated for all'\n\nIntegrate SBOM generation and attestation into `.github/workflows/build-images.yaml` for all container images:\n\n1. **`build-base-images` job**: Add `id-token: write` and `attestations: write` permissions. After `build-python-base` and `build-venv-builder` push steps, add two new step pairs each:\n   - `anchore/sbom-action` (SHA-pinned) scanning the pushed image by digest (`steps.build-python-base.outputs.digest` / `steps.build-venv-builder.outputs.digest`), outputting CycloneDX 1.5 JSON (`format: cyclonedx-json`)\n   - `actions/attest-sbom@v2` (SHA-pinned) attesting the SBOM via Sigstore keyless OIDC and pushing attestation to GHCR (`push-to-registry: true`)\n   - Both steps guarded by `if: github.event_name != 'pull_request'`\n\n2. **`build-service-images` job**: Same permissions additions. After the `build-service` step, add one SBOM generation + attestation step pair referencing `steps.build-service.outputs.digest` and `matrix.service` for naming. Same PR-skip guard.\n\n3. **SHA-pinning**: Both new actions must be SHA-pinned with version comments per existing convention enforced by `verify_build_images_workflow.sh`.\n\n4. **Verification tests**: Update `tests/container-images/verify_build_images_workflow.sh` with new test cases validating: SBOM generation steps exist with `anchore/sbom-action` and correct `format: cyclonedx-json` parameter; attestation steps exist with `actions/attest-sbom` and `push-to-registry: true`; `id-token: write` and `attestations: write` permissions on both build jobs; `if: github.event_name != 'pull_request'` guard on all SBOM/attestation steps. Use existing assertion helpers from `tests/lib/assertions.sh`.\n\n**Rationale:** Container images published to GHCR currently lack any software bill of materials or cryptographic attestation, leaving consumers unable to verify image contents or provenance. The architecture doc (`architecture/docs/08-container-images/04-sbom.md`) mandates CycloneDX SBOMs with Sigstore attestation. Without this, the project cannot meet supply chain security requirements, and downstream consumers have no tamper-evident way to audit image dependencies. This is a prerequisite for any future vulnerability scanning or compliance reporting from SBOMs.\n\n**Affected Areas:**\n- .github/workflows/build-images.yaml\n- tests/container-images/verify_build_images_workflow.sh\n- architecture/docs/08-container-images/04-sbom.md",
   "stories": [
@@ -330,6 +330,7 @@
       "title": "Add SBOM permissions and generation/attestation steps for python-base and venv-builder in build-base-images job (REQ-010, REQ-011, REQ-012, REQ-013, REQ-014, REQ-015, REQ-016)",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-010",
         "REQ-011",
@@ -345,6 +346,7 @@
       "title": "Add SBOM permissions and generation/attestation steps for service images in build-service-images job, including image output in tags step (REQ-010, REQ-011, REQ-012, REQ-013, REQ-014, REQ-015, REQ-016)",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-010",
         "REQ-011",
@@ -360,6 +362,7 @@
       "title": "Add verification tests for SBOM/attestation job permissions (id-token: write, attestations: write) on both build jobs in verify_build_images_workflow.sh (REQ-012, REQ-017)",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-012",
         "REQ-017"
@@ -370,6 +373,7 @@
       "title": "Add verification tests for SBOM generation steps (anchore/sbom-action existence, format: cyclonedx-json, digest references) in verify_build_images_workflow.sh (REQ-010, REQ-015, REQ-017)",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-010",
         "REQ-015",
@@ -381,6 +385,7 @@
       "title": "Add verification tests for attestation steps (actions/attest-sbom existence, push-to-registry: true) and PR-skip guard on all SBOM/attestation steps in verify_build_images_workflow.sh (REQ-011, REQ-013, REQ-016, REQ-017)",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-011",
         "REQ-013",
@@ -393,6 +398,7 @@
       "title": "Update docs/reference/build-images-workflow.md with SBOM generation, attestation steps, required permissions, and PR behavior documentation (REQ-010, REQ-011, REQ-012)",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-010",
         "REQ-011",
@@ -490,8 +496,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-03-08T18:40:40.397267"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-08T18:44:17.904645"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-08T20:34:42.590096"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/43",
+  "pr_number": 43,
   "execution_history": [
     {
       "run_id": "ceed797e-bd55-4e4e-9fea-2980e0c93779",
@@ -503,6 +519,106 @@
           "name": "prepare",
           "duration": 425.0957443714142,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "bb3338bf-0bec-4ed4-856d-185fbb8f5b27",
+      "timestamp": "2026-03-08T19:05:26.938780",
+      "total_duration": 1083.017442703247,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (2 tasks)",
+          "duration": 446.3316185474396,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (3 tasks)",
+          "duration": 142.77218651771545,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (1 tasks)",
+          "duration": 210.4118161201477,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0029] Code Review",
+          "duration": 162.994619846344,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0029] Improvements",
+          "duration": 41.66034173965454,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0029] Simplify",
+          "duration": 78.8468599319458,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "8920862b-3dd7-4b2f-8d6d-3b6d0f4d6152",
+      "timestamp": "2026-03-08T19:38:01.244970",
+      "total_duration": 510.2237961292267,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 510.2237961292267,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "aef17a2f-8426-4c2d-b439-0507d849fc87",
+      "timestamp": "2026-03-08T19:52:03.403453",
+      "total_duration": 303.2073895931244,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 303.2073895931244,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "1e7acc1e-183f-47cb-a99c-b9d655726509",
+      "timestamp": "2026-03-08T20:03:27.374224",
+      "total_duration": 272.9146456718445,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #3",
+          "duration": 272.9146456718445,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "f2c47dab-208d-471a-9a5a-6e598ddf1feb",
+      "timestamp": "2026-03-08T20:20:22.641990",
+      "total_duration": 353.9953896999359,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #4",
+          "duration": 353.9953896999359,
+          "type": "review_address",
           "status": "done"
         }
       ]

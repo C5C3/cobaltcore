@@ -1,0 +1,46 @@
+{
+  "feature_id": "CC-0029",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer identified silent failure modes in three test functions where empty yq query results cause neither PASS nor FAIL counters to increment, making the tests silently skip instead of explicitly failing. They want `else`/`elif` branches added to `test_sbom_steps_pr_skip_guard` (both base and service blocks) and `test_sbom_format_cyclonedx_json` (base-images block) so that empty or missing results always increment FAIL with a descriptive message.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-08T19:44:53Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 2,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "`test_sbom_steps_pr_skip_guard` has a silent failure mode: if the yq query returns empty results (e.g., no steps found, or a parse error), the function increments neither PASS nor FAIL and returns silently. \n\nThis happens because:\n- `base_sbom_ifs` would be empty\n- The condition `if $all_guarded && [ -n \"$base_sbom_ifs\" ]` (line 743) evaluates to false\n- Neither counter is incremented\n\nFor a security-critical test like the PR-skip guard, an empty result should explicitly fail. Add an `else` branch:\n\n```bash\nif $all_guarded && [ -n \"$base_sbom_ifs\" ]; then\n  echo \"  PASS: all build-base-images SBOM/attestation steps have PR-skip guard\"\n  PASS=$((PASS + 1))\nelse\n  echo \"  FAIL: build-base-images SBOM/attestation steps not found or missing PR guard\"\n  FAIL=$((FAIL + 1))\nfi\n```\n\nApply the same fix to the `service_sbom_ifs` block (lines 762–765).\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: tests/container-images/verify_build_images_workflow.sh\nLine: 726-766\n\nComment:\n`test_sbom_steps_pr_skip_guard` has a silent failure mode: if the yq query returns empty results (e.g., no steps found, or a parse error), the function increments neither PASS nor FAIL and returns silently. \n\nThis happens because:\n- `base_sbom_ifs` would be empty\n- The condition `if $all_guarded && [ -n \"$base_sbom_ifs\" ]` (line 743) evaluates to false\n- Neither counter is incremented\n\nFor a security-critical test like the PR-skip guard, an empty result should explicitly fail. Add an `else` branch:\n\n```bash\nif $all_guarded && [ -n \"$base_sbom_ifs\" ]; then\n  echo \"  PASS: all build-base-images SBOM/attestation steps have PR-skip guard\"\n  PASS=$((PASS + 1))\nelse\n  echo \"  FAIL: build-base-images SBOM/attestation steps not found or missing PR guard\"\n  FAIL=$((FAIL + 1))\nfi\n```\n\nApply the same fix to the `service_sbom_ifs` block (lines 762–765).\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "tests/container-images/verify_build_images_workflow.sh",
+      "line": 766,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-08T19:44:51Z",
+      "id": null,
+      "resolution": "Fixed: Added else branches to both the base_sbom_ifs block (line ~746) and the service_sbom_ifs block (line ~768) in test_sbom_steps_pr_skip_guard. Both now explicitly FAIL with a descriptive message ('SBOM/attestation steps not found or missing PR guard') when the yq query returns empty results or no steps have the PR-skip guard, exactly matching the reviewer's suggested code."
+    },
+    {
+      "body": "`test_sbom_format_cyclonedx_json` has asymmetric handling of empty results: the base-images branch uses a silent non-count pattern, while the service branch correctly uses `assert_eq`.\n\nThe base-images branch (lines 650–653):\n```bash\nif $all_cyclonedx && [ -n \"$base_formats\" ]; then\n  echo \"  PASS: all build-base-images SBOM steps use cyclonedx-json\"\n  PASS=$((PASS + 1))\nfi\n```\n\nIf `base_formats` is empty, neither counter increments. The service branch avoids this by using `assert_eq` (line 658), which increments FAIL when the value is empty.\n\nMake the base-images branch consistent by adding an explicit failure case:\n\n```bash\nif $all_cyclonedx && [ -n \"$base_formats\" ]; then\n  echo \"  PASS: all build-base-images SBOM steps use cyclonedx-json\"\n  PASS=$((PASS + 1))\nelif [ -z \"$base_formats\" ]; then\n  echo \"  FAIL: build-base-images SBOM format check found no steps\"\n  FAIL=$((FAIL + 1))\nfi\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: tests/container-images/verify_build_images_workflow.sh\nLine: 633-659\n\nComment:\n`test_sbom_format_cyclonedx_json` has asymmetric handling of empty results: the base-images branch uses a silent non-count pattern, while the service branch correctly uses `assert_eq`.\n\nThe base-images branch (lines 650–653):\n```bash\nif $all_cyclonedx && [ -n \"$base_formats\" ]; then\n  echo \"  PASS: all build-base-images SBOM steps use cyclonedx-json\"\n  PASS=$((PASS + 1))\nfi\n```\n\nIf `base_formats` is empty, neither counter increments. The service branch avoids this by using `assert_eq` (line 658), which increments FAIL when the value is empty.\n\nMake the base-images branch consistent by adding an explicit failure case:\n\n```bash\nif $all_cyclonedx && [ -n \"$base_formats\" ]; then\n  echo \"  PASS: all build-base-images SBOM steps use cyclonedx-json\"\n  PASS=$((PASS + 1))\nelif [ -z \"$base_formats\" ]; then\n  echo \"  FAIL: build-base-images SBOM format check found no steps\"\n  FAIL=$((FAIL + 1))\nfi\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "tests/container-images/verify_build_images_workflow.sh",
+      "line": 659,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-08T19:44:52Z",
+      "id": null,
+      "resolution": "Fixed: Added an elif [ -z \"$base_formats\" ] branch (line ~653) to the base-images block in test_sbom_format_cyclonedx_json. When base_formats is empty, the test now explicitly FAILs with 'build-base-images SBOM format check found no steps', making it consistent with the service branch's assert_eq pattern, exactly matching the reviewer's suggested code."
+    }
+  ],
+  "resolution_summary": "Both review comments were addressed in staged (uncommitted) changes to tests/container-images/verify_build_images_workflow.sh. The fixes add explicit else/elif failure branches to three conditional blocks that previously had silent failure modes when yq queries returned empty results. No changes were made to files or locations outside those directly mentioned in the review feedback.",
+  "github_review_id": 3911936746
+}

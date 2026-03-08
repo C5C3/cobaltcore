@@ -39,6 +39,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write       # CC-0029: Sigstore OIDC signing for SBOM attestation
+      attestations: write   # CC-0029: GitHub Attestations API
     outputs:
       python-base-image: ghcr.io/${{ steps.meta.outputs.owner }}/python-base@${{ steps.build-python-base.outputs.digest }}
       venv-builder-image: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder@${{ steps.build-venv-builder.outputs.digest }}
@@ -80,6 +82,25 @@ jobs:
           cache-from: type=gha,scope=python-base
           cache-to: type=gha,mode=max,scope=python-base
 
+      # CC-0029: Generate and attest SBOM for python-base
+      - name: Generate SBOM for python-base
+        if: github.event_name != 'pull_request'
+        uses: anchore/sbom-action@17ae1740179002c89186b61233e0f892c3118b11 # v0
+        with:
+          image: ghcr.io/${{ steps.meta.outputs.owner }}/python-base@${{ steps.build-python-base.outputs.digest }}
+          format: cyclonedx-json
+          output-file: sbom-python-base.cyclonedx.json
+          upload-artifact: false
+
+      - name: Attest SBOM for python-base
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-sbom@bd218ad0dbcb3e146bd073d1d9c6d78e08aa8a0b # v2
+        with:
+          subject-name: ghcr.io/${{ steps.meta.outputs.owner }}/python-base
+          subject-digest: ${{ steps.build-python-base.outputs.digest }}
+          sbom-path: sbom-python-base.cyclonedx.json
+          push-to-registry: true
+
       - name: Build and push venv-builder
         id: build-venv-builder
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
@@ -94,6 +115,25 @@ jobs:
             ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder:${{ github.sha }}
           cache-from: type=gha,scope=venv-builder
           cache-to: type=gha,mode=max,scope=venv-builder
+
+      # CC-0029: Generate and attest SBOM for venv-builder
+      - name: Generate SBOM for venv-builder
+        if: github.event_name != 'pull_request'
+        uses: anchore/sbom-action@17ae1740179002c89186b61233e0f892c3118b11 # v0
+        with:
+          image: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder@${{ steps.build-venv-builder.outputs.digest }}
+          format: cyclonedx-json
+          output-file: sbom-venv-builder.cyclonedx.json
+          upload-artifact: false
+
+      - name: Attest SBOM for venv-builder
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-sbom@bd218ad0dbcb3e146bd073d1d9c6d78e08aa8a0b # v2
+        with:
+          subject-name: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder
+          subject-digest: ${{ steps.build-venv-builder.outputs.digest }}
+          sbom-path: sbom-venv-builder.cyclonedx.json
+          push-to-registry: true
 
   verify-base-images:
     needs: [build-base-images]
@@ -136,6 +176,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write       # CC-0029: Sigstore OIDC signing for SBOM attestation
+      attestations: write   # CC-0029: GitHub Attestations API
     strategy:
       fail-fast: false
       matrix:
@@ -224,6 +266,7 @@ jobs:
           IMAGE="ghcr.io/${IMAGE_OWNER}/${MATRIX_SERVICE}"
           COMPOSITE="${VERSION}-p${PATCH_COUNT}-${BRANCH}-${SHORT_SHA}"
 
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
           echo "composite=${IMAGE}:${COMPOSITE}" >> "$GITHUB_OUTPUT"
           echo "version=${IMAGE}:${VERSION}" >> "$GITHUB_OUTPUT"
           echo "sha=${IMAGE}:${SHORT_SHA}" >> "$GITHUB_OUTPUT"
@@ -264,6 +307,25 @@ jobs:
             ${{ steps.tags.outputs.sha }}
           cache-from: type=gha,scope=${{ matrix.service }}-${{ matrix.release }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}-${{ matrix.release }}
+
+      # CC-0029: Generate and attest SBOM for service image
+      - name: Generate SBOM for service image
+        if: github.event_name != 'pull_request'
+        uses: anchore/sbom-action@17ae1740179002c89186b61233e0f892c3118b11 # v0
+        with:
+          image: ${{ steps.tags.outputs.image }}@${{ steps.build-service.outputs.digest }}
+          format: cyclonedx-json
+          output-file: sbom-${{ matrix.service }}.cyclonedx.json
+          upload-artifact: false
+
+      - name: Attest SBOM for service image
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-sbom@bd218ad0dbcb3e146bd073d1d9c6d78e08aa8a0b # v2
+        with:
+          subject-name: ${{ steps.tags.outputs.image }}
+          subject-digest: ${{ steps.build-service.outputs.digest }}
+          sbom-path: sbom-${{ matrix.service }}.cyclonedx.json
+          push-to-registry: true
 
       - name: Verify service image (PR)
         if: github.event_name == 'pull_request'

@@ -1,0 +1,40 @@
+{
+  "feature_id": "CC-0029",
+  "title": "Add CycloneDX SBOM and Sigstore attestation to CI",
+  "date": "2026-03-08",
+  "summary": "Review of changes addressing external review #4 feedback from greptile-apps[bot]. Two documentation fixes in docs/reference/build-images-workflow.md: (1) replaced misleading parenthetical about PR SBOM behavior with accurate explanation of the uniform `if: github.event_name != 'pull_request'` guard, (2) replaced invalid `cosign verify-attestation --type cyclonedx` example with correct `gh attestation verify` commands using the proper CycloneDX predicate type URI. Two review pattern files were added/updated to capture the lessons learned. All 105 verification tests pass.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "All 105 verification tests pass (verify_build_images_workflow.sh)", "checked": true},
+    {"item": "No test modifications required for this doc-only change", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Documentation changes are accurate and internally consistent", "checked": true},
+    {"item": "Review pattern files follow established format", "checked": true},
+    {"item": "Changes are minimal and scoped to reviewer feedback", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No security-sensitive changes (documentation only)", "checked": true},
+    {"item": "Documented verification commands use correct tooling (gh attestation vs cosign)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Documentation aligns with implemented workflow behavior", "checked": true},
+    {"item": "PR behavior explanation is now consistent across all bullet points", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated content introduced", "checked": true},
+    {"item": "Review pattern files capture reusable review knowledge", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Not applicable (documentation-only changes)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Not applicable (documentation-only changes)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": []
+}
