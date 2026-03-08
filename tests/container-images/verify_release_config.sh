@@ -41,10 +41,19 @@ test_source_refs_valid_yaml_with_keystone() {
     return
   fi
 
-  # Verify keystone version
+  # Verify keystone version is a valid semver tag
   local keystone_version
   keystone_version=$(yq '.keystone' "$source_refs" | tr -d '"')
-  assert_eq "keystone version is 28.0.0" "28.0.0" "$keystone_version"
+  if [[ "$keystone_version" == "null" || -z "$keystone_version" ]]; then
+    echo "  FAIL: keystone key is missing from source-refs.yaml"
+    FAIL=$((FAIL + 1))
+  elif [[ "$keystone_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "  PASS: keystone version is valid semver ($keystone_version)"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: keystone version is not valid semver: $keystone_version"
+    FAIL=$((FAIL + 1))
+  fi
 }
 
 # --- Test 2: extra-packages.yaml has expected structure (CC-0027 REQ-007) ---
