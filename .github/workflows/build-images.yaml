@@ -94,7 +94,7 @@ jobs:
 
       - name: Attest SBOM for python-base
         if: github.event_name != 'pull_request'
-        uses: actions/attest-sbom@bd218ad0dbcb3e146bd073d1d9c6d78e08aa8a0b # v2
+        uses: actions/attest-sbom@07e74fc4e78d1aad915e867f9a094073a9f71527 # v4
         with:
           subject-name: ghcr.io/${{ steps.meta.outputs.owner }}/python-base
           subject-digest: ${{ steps.build-python-base.outputs.digest }}
@@ -128,7 +128,7 @@ jobs:
 
       - name: Attest SBOM for venv-builder
         if: github.event_name != 'pull_request'
-        uses: actions/attest-sbom@bd218ad0dbcb3e146bd073d1d9c6d78e08aa8a0b # v2
+        uses: actions/attest-sbom@07e74fc4e78d1aad915e867f9a094073a9f71527 # v4
         with:
           subject-name: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder
           subject-digest: ${{ steps.build-venv-builder.outputs.digest }}
@@ -320,7 +320,7 @@ jobs:
 
       - name: Attest SBOM for service image
         if: github.event_name != 'pull_request'
-        uses: actions/attest-sbom@bd218ad0dbcb3e146bd073d1d9c6d78e08aa8a0b # v2
+        uses: actions/attest-sbom@07e74fc4e78d1aad915e867f9a094073a9f71527 # v4
         with:
           subject-name: ${{ steps.tags.outputs.image }}
           subject-digest: ${{ steps.build-service.outputs.digest }}
