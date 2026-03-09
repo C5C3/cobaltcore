@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-05T23:28:38.961997+00:00",
+  "feature_id": "CC-0005",
+  "task_type": "commit",
+  "session_key": "CC-0005",
+  "model": "opus",
+  "prompt": "Generate a detailed git commit body for this commit.\nSubject: fix(CC-0005): address review #6 feedback from greptile-apps[bot]\n\nReview feedback is in: /worktrees/CC-0005/.planwerk/reviews/CC-0005-github-review-by-greptile-apps-bot-external-6.json\nUse `git diff --cached -- ':(exclude).planwerk'` to see the full staged diff.\n\nDiff stat:\ninternal/common/database/database.go      |  9 ++++-\n internal/common/database/database_test.go | 61 ++++++++++++++++++++++++++----\n internal/common/job/job.go                | 28 +++++++++++++-\n internal/common/job/job_test.go           | 62 +++++++++++++++++++++++++++++--\n internal/common/policy/policy.go          |  4 ++\n internal/common/policy/policy_test.go     | 42 +++++++++++++++++++++\n 6 files changed, 193 insertions(+), 13 deletions(-)\n\nWrite ONLY the body text, no subject line, no markdown.\nFor each changed file, write a bullet point: '- path/to/file: what was changed'\nDo NOT mention .planwerk directory changes.\nOutput ONLY plain text — no tool_call tags, no XML, no code blocks.",
+  "prompt_length": 1034,
+  "caller": "run_claude_cli"
+}
