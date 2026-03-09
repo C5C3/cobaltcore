@@ -97,7 +97,7 @@ The workflow defines four jobs with a linear dependency chain (CC-0028):
 ```text
 build-base-images ──> verify-base-images ──> build-service-images ──> verify-service-images (push only)
                                                       │
-                                                      └── verify_keystone.sh (PR, inline step)
+                                                      └── verify_<service>.sh (PR, inline step)
 ```
 
 The `verify-base-images` job validates base image properties (Python version, user
@@ -228,7 +228,7 @@ Depends on `build-base-images` for image references (REQ-003) and on
 | 13 | Generate SBOM for service image | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed service image by digest. Output: `sbom-${{ matrix.service }}.cyclonedx.json` (CC-0029) |
 | 14 | Attest SBOM for service image | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
 | 15 | Sign service image | Shell | Skipped on PRs. Signs service image by digest with cosign keyless OIDC (`cosign sign --yes`) (CC-0030) |
-| 16 | Verify service image (PR) | Shell (conditional) | On PRs only: runs `verify_keystone.sh` with the locally loaded image ref (CC-0028) |
+| 16 | Verify service image (PR) | Shell (conditional) | On PRs only: runs `verify_${{ matrix.service }}.sh` with the locally loaded image ref (CC-0028) |
 
 **Build Contexts:**
 
@@ -263,7 +263,7 @@ refs independently via its own matrix strategy (CC-0007).
 
 ### verify-service-images
 
-Validates that built service images are functional by running `verify_keystone.sh`
+Validates that built service images are functional by running `verify_${{ matrix.service }}.sh`
 (CC-0028). This job replaces the former `smoke-test` job and runs only on push events
 (when images are in GHCR). It uses its own matrix strategy matching
 `build-service-images` to test every service independently.
@@ -287,15 +287,15 @@ On PRs, the equivalent verification runs as an inline step within `build-service
 | 1 | Checkout | `actions/checkout@v6` | Checks out the repository (needed for test scripts, `source-refs.yaml`, and patch counting) |
 | 2 | Login to GHCR | `docker/login-action@v4` | Authenticates to pull the image |
 | 3 | Derive image ref | Shell | Reconstructs the composite tag from the same inputs as `build-service-images` |
-| 4 | Pull and verify | Shell | `docker pull <image-ref>` then runs `verify_keystone.sh` with the pulled image ref |
+| 4 | Pull and verify | Shell | `docker pull <image-ref>` then runs `verify_${{ matrix.service }}.sh` with the pulled image ref |
 
 **Test script executed:**
 
 | Script | Validates |
 | --- | --- |
-| `tests/container-images/verify_keystone.sh` | `keystone-manage --version` exits 0, runs as `openstack` user, no build tools (gcc, python3-dev, uv), runtime apt packages installed |
+| `tests/container-images/verify_<service>.sh` | Service-specific checks (e.g. `keystone-manage --version` exits 0), runs as `openstack` user, no build tools (gcc, python3-dev, uv), runtime apt packages installed |
 
-The job fails the workflow if `verify_keystone.sh` exits non-zero. The tag derivation
+The job fails the workflow if the verify script exits non-zero. The tag derivation
 step must stay in sync with the "Derive tags" step in `build-service-images`.
 
 ## Tag Schema
@@ -837,7 +837,7 @@ The verify-container-images workflow is intentionally separate from `build-image
 because it tests container _infrastructure_ (file structure, conventions, configs) rather
 than the container _images_ themselves. Separate workflows provide clear, independent
 signals in GitHub's check status UI. The Docker-based image verification tests
-(`verify_python_base.sh`, `verify_venv_builder.sh`, `verify_keystone.sh`) run inside
+(`verify_python_base.sh`, `verify_venv_builder.sh`, `verify_<service>.sh`) run inside
 `build-images.yaml` where the images are actually built.
 
 ## Verification Coverage Summary
@@ -853,7 +853,7 @@ The following table summarizes which test scripts run where (CC-0028, CC-0029):
 | `test_apply_constraint_overrides.sh` | verify-static-tests | — | No |
 | `verify_python_base.sh` | — | verify-base-images | Yes |
 | `verify_venv_builder.sh` | — | verify-base-images | Yes |
-| `verify_keystone.sh` | — | build-service-images (PR) / verify-service-images (push) | Yes |
+| `verify_<service>.sh` | — | build-service-images (PR) / verify-service-images (push) | Yes |
 
 ## SPDX Header
 

@@ -305,13 +305,13 @@ test_pr_single_arch_load() {
   assert_contains "push conditioned on not pull_request" "$push_val" "pull_request"
 }
 
-# --- REQ-007: verify-service-images uses verify_keystone.sh ---
+# --- REQ-007: verify-service-images uses verify_<service>.sh via matrix ---
 test_verify_service_images_command() {
-  echo "Test: verify-service-images uses verify_keystone.sh (REQ-007)"
+  echo "Test: verify-service-images uses verify script via matrix.service (REQ-007)"
 
   # verify-service-images uses MATRIX_SERVICE env var for tag derivation
   assert_file_contains "verify-service-images uses MATRIX_SERVICE env var" "$WORKFLOW" 'MATRIX_SERVICE: \${{ matrix.service }}'
-  assert_file_contains "verify-service-images runs verify_keystone.sh" "$WORKFLOW" 'verify_keystone.sh'
+  assert_file_contains "verify-service-images runs verify script via matrix.service" "$WORKFLOW" 'verify_${{ matrix.service }}.sh'
 }
 
 # --- REQ-007: verify-service-images depends on build-service-images ---

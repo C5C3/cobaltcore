@@ -395,7 +395,7 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           IMAGE_REF: ${{ steps.tags.outputs.composite }}
-        run: bash tests/container-images/verify_keystone.sh "$IMAGE_REF"
+        run: bash tests/container-images/verify_${{ matrix.service }}.sh "$IMAGE_REF"
 
   verify-service-images:
     if: github.event_name != 'pull_request'
@@ -451,4 +451,4 @@ jobs:
           IMAGE_REF: ${{ steps.tags.outputs.image-ref }}
         run: |
           docker pull "$IMAGE_REF"
-          bash tests/container-images/verify_keystone.sh "$IMAGE_REF"
+          bash tests/container-images/verify_${{ matrix.service }}.sh "$IMAGE_REF"
