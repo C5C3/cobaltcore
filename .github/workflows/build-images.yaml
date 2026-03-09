@@ -72,7 +72,7 @@ jobs:
       # CC-0031: Generate OCI annotations for python-base
       - name: Generate metadata for python-base
         id: meta-python-base
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
         with:
           images: ghcr.io/${{ steps.meta.outputs.owner }}/python-base
           labels: |
@@ -117,7 +117,7 @@ jobs:
       # CC-0031: Generate OCI annotations for venv-builder
       - name: Generate metadata for venv-builder
         id: meta-venv-builder
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
         with:
           images: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder
           labels: |
@@ -311,7 +311,7 @@ jobs:
       # with the upstream OpenStack release version from source-refs.yaml.
       - name: Generate metadata for service image
         id: meta-service
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
         with:
           images: ${{ steps.tags.outputs.image }}
           tags: |
