@@ -1,0 +1,62 @@
+{
+  "summary": "Added RestartPolicy default (Always) to DeploymentSpecDefaults and corresponding tests covering both nil-default and explicit-value-preserved paths. Addresses external review feedback about missing API-server defaults.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass", "checked": true},
+    {"item": "Edge cases are covered (nil RestartPolicy defaults to Always)", "checked": true},
+    {"item": "Explicit values preserved (RestartPolicyNever not overwritten)", "checked": true},
+    {"item": "PodSpecDefaults delegation still verified", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing DeploymentSpecDefaults if-nil-then-default pattern", "checked": true},
+    {"item": "Comment explains why RestartPolicy is here (Deployment-specific) not in PodSpecDefaults", "checked": true},
+    {"item": "Feature ID CC-0005 tagged in comment", "checked": true},
+    {"item": "Minimal change — only adds what was missing", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No user input handling — pure default-filling function", "checked": true},
+    {"item": "No secrets or credentials involved", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "RestartPolicy default placed in DeploymentSpecDefaults (not PodSpecDefaults) since different workload types have different defaults", "checked": true},
+    {"item": "Ordering correct: PodSpecDefaults called first, then Deployment-specific RestartPolicy", "checked": true},
+    {"item": "Solution is as simple as possible", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unnecessary abstractions added", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Empty string check is correct for corev1.RestartPolicy (string type)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Default only applied when field is zero-value (empty string)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": [],
+  "metadata": {
+    "feature_id": "CC-0005",
+    "title": "B002: Implement Kubernetes-interacting packages",
+    "date": "2026-03-06",
+    "verdict": "APPROVED",
+    "review_patterns_checked": [
+      {
+        "pattern": "Alle API-Server-Defaults in Normalisierungsfunktionen abdecken",
+        "result": "PASS — DeploymentSpecDefaults now covers Replicas, RevisionHistoryLimit, ProgressDeadlineSeconds, Strategy (type + RollingUpdate params), and RestartPolicy. Remaining DeploymentSpec fields (MinReadySeconds, Paused) default to zero values and need no explicit handling."
+      },
+      {
+        "pattern": "Tests muessen nil/leere Felder abdecken",
+        "result": "PASS — TestDeploymentSpecDefaults leaves RestartPolicy unset and verifies it becomes Always. TestDeploymentSpecDefaults_preservesExplicitValues sets RestartPolicyNever and verifies preservation."
+      }
+    ],
+    "verification": {
+      "go_vet": "PASS (0 issues)",
+      "golangci_lint": "PASS (0 issues)",
+      "go_test": "PASS (all 14 tests in normalize package)"
+    }
+  }
+}

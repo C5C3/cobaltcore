@@ -1,0 +1,54 @@
+{
+  "feature_id": "CC-0005",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer requests three changes: (1) update the `CreateImmutableConfigMap` docstring to warn that old hash-suffixed ConfigMaps accumulate and are not cleaned up until the owner is deleted, so callers should prune them; (2) fix a hash collision bug in the ConfigMap content hashing where values with embedded newlines can produce ambiguous encodings—use length-prefixed encoding instead; (3) correct the PR description and reference docs to show `EnsureTLSCertSecret` returns `(bool, error)`, not just `error`.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-05T23:05:25Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 5,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "The function docstring should document that old hash-suffixed ConfigMaps accumulate during the owner's lifetime, since Kubernetes garbage collection only fires when the owner is deleted. Each data change creates a new ConfigMap name (due to the hash suffix), but the previous ConfigMaps are not cleaned up.\n\nConsider adding a note to the function docstring:\n\n```go\n// CreateImmutableConfigMap creates an immutable ConfigMap with a content-hash\n// suffix appended to the base name. The hash ensures configuration changes\n// result in new ConfigMap names, triggering pod restarts. It returns the\n// actual name of the created ConfigMap (with hash suffix).\n// \n// Note: Old ConfigMaps with the same baseName but different hash suffixes\n// accumulate during the owner's lifetime since GC only removes them when the\n// owner is deleted. Callers (reconcilers) should prune obsolete ConfigMaps\n// after rolling updates complete to avoid unbounded growth.\n```\n\nThis prevents operational surprises when owners with frequent config updates accumulate many orphaned ConfigMaps over time.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: internal/common/config/config.go\nLine: 121-124\n\nComment:\nThe function docstring should document that old hash-suffixed ConfigMaps accumulate during the owner's lifetime, since Kubernetes garbage collection only fires when the owner is deleted. Each data change creates a new ConfigMap name (due to the hash suffix), but the previous ConfigMaps are not cleaned up.\n\nConsider adding a note to the function docstring:\n\n```go\n// CreateImmutableConfigMap creates an immutable ConfigMap with a content-hash\n// suffix appended to the base name. The hash ensures configuration changes\n// result in new ConfigMap names, triggering pod restarts. It returns the\n// actual name of the created ConfigMap (with hash suffix).\n// \n// Note: Old ConfigMaps with the same baseName but different hash suffixes\n// accumulate during the owner's lifetime since GC only removes them when the\n// owner is deleted. Callers (reconcilers) should prune obsolete ConfigMaps\n// after rolling updates complete to avoid unbounded growth.\n```\n\nThis prevents operational surprises when owners with frequent config updates accumulate many orphaned ConfigMaps over time.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "internal/common/config/config.go",
+      "line": 124,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-05T23:05:22Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "The hash encoding format is ambiguous for ConfigMap values containing embedded newlines. A single-entry ConfigMap with key `\"key1\"` and value `\"x\\nb=y\"` produces the same hash as a two-entry ConfigMap with entries `key1=\"x\"` and `b=\"y\"`. This matters because OpenStack config values (e.g., full INI blobs) regularly contain newlines, making this a realistic collision rather than theoretical.\n\nThe docstring claims the format is \"unambiguous\" because \"ConfigMap keys cannot contain '='\", but that doesn't prevent ambiguity when values themselves contain `=` and newlines.\n\nUse length-prefixed encoding to eliminate ambiguity:\n\n```go\nh := sha256.New()\nfor _, k := range keys {\n    _, _ = fmt.Fprintf(h, \"%d:%s=%d:%s\\n\", len(k), k, len(data[k]), data[k])\n}\n```\n\nThis makes each entry self-delimiting regardless of content.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: internal/common/config/config.go\nLine: 135-139\n\nComment:\nThe hash encoding format is ambiguous for ConfigMap values containing embedded newlines. A single-entry ConfigMap with key `\"key1\"` and value `\"x\\nb=y\"` produces the same hash as a two-entry ConfigMap with entries `key1=\"x\"` and `b=\"y\"`. This matters because OpenStack config values (e.g., full INI blobs) regularly contain newlines, making this a realistic collision rather than theoretical.\n\nThe docstring claims the format is \"unambiguous\" because \"ConfigMap keys cannot contain '='\", but that doesn't prevent ambiguity when values themselves contain `=` and newlines.\n\nUse length-prefixed encoding to eliminate ambiguity:\n\n```go\nh := sha256.New()\nfor _, k := range keys {\n    _, _ = fmt.Fprintf(h, \"%d:%s=%d:%s\\n\", len(k), k, len(data[k]), data[k])\n}\n```\n\nThis makes each entry self-delimiting regardless of content.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "internal/common/config/config.go",
+      "line": 139,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-05T23:05:23Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "The function implementation correctly returns `(bool, error)` for readiness signalling, but the PR description's Key Components section documents it as returning just `error`. The function's docstring is correct; update the PR description and `docs/reference/kubernetes-packages.md` to reflect the correct signature `(bool, error)` so that callers understand the function blocks on readiness.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: internal/common/tls/tls.go\nLine: 23-27\n\nComment:\nThe function implementation correctly returns `(bool, error)` for readiness signalling, but the PR description's Key Components section documents it as returning just `error`. The function's docstring is correct; update the PR description and `docs/reference/kubernetes-packages.md` to reflect the correct signature `(bool, error)` so that callers understand the function blocks on readiness.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "internal/common/tls/tls.go",
+      "line": 27,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-05T23:05:24Z",
+      "id": null,
+      "resolution": ""
+    }
+  ],
+  "github_review_id": 3900216282
+}

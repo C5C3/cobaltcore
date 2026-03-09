@@ -2,8 +2,8 @@
   "feature_id": "CC-0005",
   "title": "B002: Implement Kubernetes-interacting packages",
   "slug": "b002-implement-kubernetes-interacting-packages",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 🏗️ large\n**Category:** backend\n**Priority:** high\n**Feature ID:** CC-0005 (S005)\n\n## Summary\n\nImplement 5 new packages (`secrets/`, `database/`, `deployment/`, `job/`, `tls/`) and extend 2 existing packages (`config/`, `policy/`) in `internal/common/` with Kubernetes API interaction functions (CC-0005). These packages provide reusable create-or-update helpers with owner references, readiness checks, and idempotent behavior — consumed by all service reconcilers starting with Keystone (CC-0013/CC-0014). External CRDs (MariaDB, ESO, cert-manager) use typed Go client imports. Existing `testutil/simulators/` will be migrated from `unstructured.Unstructured` to typed clients as part of this feature. All packages require envtest integration tests verifying actual object creation and status handling.\n\n## Scope\n\n**Included:**\n- Add typed Go module dependencies: `mariadb-operator/mariadb-operator`, `external-secrets/external-secrets`, `cert-manager/cert-manager` to `internal/common/go.mod`\n- Extend `testutil/envtest.SharedScheme()` to register external operator types (MariaDB, ESO, cert-manager) alongside existing core/apps/batch groups\n- Migrate existing `testutil/simulators/` functions (`SimulateMariaDBReady`, `SimulateExternalSecretSync`) from `unstructured.Unstructured` to typed structs; update their integration tests; retain `setUnstructuredReadyStatus` helper and `SimulateMemcachedReady` as-is (Memcached not in CC-0005 scope)\n- Add new typed simulator functions for `Database`, `User`, `Grant`, `PushSecret`, `Certificate` CRD status transitions needed by CC-0005 integration tests\n- `config/CreateImmutableConfigMap` — content-hash suffix naming (SHA256), `immutable: true`, owner references via `controllerutil.SetOwnerReference`\n- `secrets/WaitForExternalSecret` — check ESO `ExternalSecret` status for `SecretSynced=True` (typed import)\n- `secrets/IsSecretReady` — verify Secret exists and contains all `expectedKeys` in `.data` (variadic)\n- `secrets/GetSecretValue` — read and decode a specific key from Secret `.data`\n- `secrets/EnsurePushSecret` — create-or-update `PushSecret` CR (typed import) with owner reference\n- `database/EnsureDatabase` — create or verify MariaDB `Database` CR (typed import), check status readiness\n- `database/EnsureDatabaseUser` — create or verify MariaDB `User` + `Grant` CRs with owner references\n- `database/RunDBSyncJob` — build and run a K8s Job for `db_sync`, delegates to `job.RunJob`\n- `deployment/EnsureDeployment` — accepts full `*appsv1.Deployment`, sets owner reference, create-or-update, returns readiness\n- `deployment/EnsureService` — accepts full `*corev1.Service`, sets owner reference, create-or-update\n- `deployment/IsDeploymentReady` — pure function: `availableReplicas >= *spec.replicas`\n- `job/RunJob` — create Job idempotently (skip if complete), return `(true, nil)` when `succeeded >= 1`\n- `job/EnsureCronJob` — create-or-update CronJob with owner reference\n- `job/IsJobComplete` — pure function: `succeeded >= 1`\n- `tls/EnsureCertificate` — create-or-update cert-manager `Certificate` CR (typed import) with owner reference\n- `tls/GetTLSSecret` — retrieve TLS Secret containing `tls.crt`, `tls.key`\n- `policy/LoadPolicyFromConfigMap` — read ConfigMap, parse `policy.yaml` key into `map[string]string`\n- `doc.go` with `Feature: CC-0005` tag for each new package\n- envtest integration tests (`//go:build integration`) for every package using existing `testutil/envtest.SetupEnvTest`\n- Unit tests (table-driven, gomega matchers) for pure functions (`IsDeploymentReady`, `IsJobComplete`)\n\n**Excluded:**\n- Managed vs brownfield mode branching logic (reconciler responsibility, not shared library — YAGNI)\n- Connection string assembly (already in `config.InjectSecrets` from CC-0004)\n- Reconciler sub-reconciler implementations (CC-0013/CC-0014)\n- CRD type definitions and webhooks (CC-0011/CC-0012)\n- New testutil builders beyond what CC-0002 provides (new typed simulators for CC-0005 CRDs are in-scope; new fluent builders are not)\n- Migration of `SimulateMemcachedReady` to typed (Memcached not in CC-0005 scope — remains unstructured)\n- Helm chart packaging, RBAC markers, controller registration (later phases)\n- RabbitMQ or Memcached interaction packages (not in CC-0005 scope)\n- Architecture doc update for the unstructured→typed decision (tracked separately)\n\n## Visualization\n\n```mermaid\nflowchart TD\n    subgraph existing[\"Existing Packages - CC-0004\"]\n        types[\"types/\"]\n        conditions[\"conditions/\"]\n        configPure[\"config/ pure funcs\"]\n        policyPure[\"policy/ pure funcs\"]\n    end\n\n    subgraph testInfra[\"Test Infrastructure - CC-0002 + migration\"]\n        envtest[\"testutil/envtest/ + SharedScheme ext\"]\n        simulators[\"testutil/simulators/ - migrated to typed\"]\n        builders[\"testutil/builders/\"]\n        fakeCRDs[\"testutil/fake_crds/\"]\n    end\n\n    subgraph new[\"New/Extended Packages - CC-0005\"]\n        configK8s[\"config/ + CreateImmutableConfigMap\"]\n        policyK8s[\"policy/ + LoadPolicyFromConfigMap\"]\n        secretsPkg[\"secrets/\"]\n        databasePkg[\"database/\"]\n        deploymentPkg[\"deployment/\"]\n        jobPkg[\"job/\"]\n        tlsPkg[\"tls/\"]\n    end\n\n    subgraph k8sAPI[\"Core Kubernetes Resources\"]\n        CM[\"ConfigMap\"]\n        Secret[\"Secret\"]\n        Dep[\"Deployment\"]\n        Svc[\"Service\"]\n        Job[\"Job\"]\n        CronJob[\"CronJob\"]\n    end\n\n    subgraph extCRDs[\"External Operator CRDs - typed imports\"]\n        MariaDB[\"MariaDB Database/User/Grant\"]\n        ESO[\"ExternalSecret/PushSecret\"]\n        CertMgr[\"cert-manager Certificate\"]\n    end\n\n    configK8s --> CM\n    policyK8s --> CM\n    secretsPkg --> Secret\n    secretsPkg --> ESO\n    databasePkg --> MariaDB\n    databasePkg --> jobPkg\n    deploymentPkg --> Dep\n    deploymentPkg --> Svc\n    jobPkg --> Job\n    jobPkg --> CronJob\n    tlsPkg --> CertMgr\n    tlsPkg --> Secret\n\n    configK8s -.->|uses| configPure\n    policyK8s -.->|uses| policyPure\n    databasePkg -.->|uses| types\n    secretsPkg -.->|uses| types\n    simulators -.->|typed structs| extCRDs\n    envtest -.->|registers| extCRDs\n```\n\n```mermaid\nsequenceDiagram\n    participant R as Reconciler\n    participant S as secrets/\n    participant DB as database/\n    participant J as job/\n    participant C as config/\n    participant D as deployment/\n    participant K8s as Kubernetes API\n\n    R->>S: WaitForExternalSecret\n    S->>K8s: Get ExternalSecret CR\n    K8s-->>S: status.conditions\n    S-->>R: ready=true\n\n    R->>DB: EnsureDatabase\n    DB->>K8s: Create/Update MariaDB Database CR\n    K8s-->>DB: status ready\n    DB-->>R: ready=true\n\n    R->>DB: RunDBSyncJob\n    DB->>J: RunJob internally\n    J->>K8s: Create Job\n    K8s-->>J: status.succeeded=1\n    J-->>DB: complete=true\n    DB-->>R: synced=true\n\n    R->>C: CreateImmutableConfigMap\n    C->>K8s: Create ConfigMap with hash suffix\n    K8s-->>C: created\n    C-->>R: configMapName\n\n    R->>D: EnsureDeployment\n    D->>K8s: Create/Update Deployment\n    K8s-->>D: availableReplicas\n    D-->>R: ready=true\n```\n\n## Key Components\n\n- **Typed Go module imports**: Add `mariadb-operator/mariadb-operator`, `external-secrets/external-secrets`, `cert-manager/cert-manager` as dependencies in `internal/common/go.mod`. Used by production packages and migrated simulators.\n- **SharedScheme extension**: Extend `testutil/envtest.SharedScheme()` to register external operator types (MariaDB `Database`/`User`/`Grant`, ESO `ExternalSecret`/`PushSecret`, cert-manager `Certificate`) so envtest's controller-runtime client can work with typed objects. The existing `fake_crds/` CRD YAML schemas remain unchanged — they define the API server schema; the scheme registration adds Go type awareness.\n- **Simulator migration**: Refactor `testutil/simulators/SimulateMariaDBReady` and `SimulateExternalSecretSync` from `unstructured.Unstructured` to typed structs. Retain `setUnstructuredReadyStatus` helper and `SimulateMemcachedReady` as-is (Memcached not in CC-0005 scope). Add new typed simulators: `SimulateDatabaseReady`, `SimulateUserReady`, `SimulateGrantReady`, `SimulatePushSecretSynced`, `SimulateCertificateReady` for CC-0005 integration tests.\n- **`config/CreateImmutableConfigMap`**: Creates immutable ConfigMap with SHA256 content-hash suffix (e.g., `keystone-config-a1b2c3d4`), sets owner reference, sets `immutable: true`. Returns `(*corev1.ConfigMap, error)`. Hash change triggers new ConfigMap → Deployment rolling restart via changed volume reference.\n- **`secrets/WaitForExternalSecret`**: Gets ESO `ExternalSecret` CR (typed), checks status conditions for `SecretSynced=True`. Returns `(bool, error)`.\n- **`secrets/IsSecretReady`**: Gets K8s Secret, verifies existence and that all `expectedKeys` are present in `.data`. Signature: `IsSecretReady(ctx, client, namespace, name string, expectedKeys ...string) (bool, error)`.\n- **`secrets/GetSecretValue`**: Reads specific key from Secret `.data`, returns decoded string. Returns `(string, error)`.\n- **`secrets/EnsurePushSecret`**: Creates or updates ESO `PushSecret` CR (typed) with owner reference. Idempotent via `controllerutil.CreateOrUpdate`.\n- **`database/EnsureDatabase`**: Creates or verifies MariaDB `Database` CR (typed), checks status for readiness. Returns `(bool, error)`.\n- **`database/EnsureDatabaseUser`**: Creates or verifies MariaDB `User` CR + `Grant` CR in a single call. Both get owner references. Returns `(bool, error)`.\n- **`database/RunDBSyncJob`**: Builds Job from image spec, command, and env vars for `db_sync`. Delegates to `job.RunJob`. Returns `(bool, error)`.\n- **`deployment/EnsureDeployment`**: Accepts full `*appsv1.Deployment`. Sets owner reference, applies create-or-update, returns readiness based on `availableReplicas >= *spec.replicas`. Returns `(bool, error)`.\n- **`deployment/EnsureService`**: Accepts full `*corev1.Service`. Sets owner reference, applies create-or-update. Returns `error`.\n- **`deployment/IsDeploymentReady`**: Pure function, no API call. Checks `deployment.Status.AvailableReplicas >= *deployment.Spec.Replicas`.\n- **`job/RunJob`**: Creates Job idempotently (skips if already exists and complete). Returns `(true, nil)` when `succeeded >= 1`, `(false, nil)` when still running.\n- **`job/EnsureCronJob`**: Create-or-update for CronJob with owner reference. Returns `error`.\n- **`job/IsJobComplete`**: Pure function, no API call. Checks `job.Status.Succeeded >= 1`.\n- **`tls/EnsureCertificate`**: Creates or updates cert-manager `Certificate` CR (typed) with owner reference. Returns `error`.\n- **`tls/GetTLSSecret`**: Gets TLS Secret by name, returns `(*corev1.Secret, error)`.\n- **`policy/LoadPolicyFromConfigMap`**: Gets ConfigMap by namespace/name, extracts `policy.yaml` key, parses YAML into `map[string]string`. Returns error if ConfigMap missing or key absent.\n- **envtest integration tests**: One `_integration_test.go` per package with `//go:build integration` tag. Uses `testutil/envtest.SetupEnvTest` (which auto-discovers CRDs from `fake_crds/`), simulators for external CRD status transitions. Tests verify: object creation, owner references, status handling, idempotency (call twice), and not-found error cases. Pure functions (`IsDeploymentReady`, `IsJobComplete`) use standard table-driven unit tests with `NewGomegaWithT(t)` and gomega matchers, consistent with existing CC-0004 test patterns.",
   "stories": [
@@ -540,6 +540,7 @@
       "description": "Add mariadb-operator/mariadb-operator, external-secrets/external-secrets, cert-manager/cert-manager to internal/common/go.mod. Run go mod tidy. Extend SharedScheme() in testutil/envtest/setup.go to register all external operator types: mariadbv1alpha1 (Database, User, Grant, MariaDB), esov1beta1 (ExternalSecret), esov1alpha1 (PushSecret), certmanagerv1 (Certificate). Verify go build ./... succeeds. Run existing envtest integration tests to confirm no regressions.",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001"
       ]
@@ -550,6 +551,7 @@
       "description": "Refactor SimulateMariaDBReady in testutil/simulators/simulators.go to use typed mariadbv1alpha1.MariaDB instead of unstructured.Unstructured. Update all unit tests in simulators_test.go and integration tests in integration_test.go to use typed MariaDB objects. Retain setUnstructuredReadyStatus helper and SimulateMemcachedReady as-is.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -560,6 +562,7 @@
       "description": "Refactor SimulateExternalSecretSync in testutil/simulators/simulators.go to use typed esov1beta1.ExternalSecret instead of unstructured.Unstructured. Update all unit tests and integration tests accordingly. The condition type used by ESO for sync status is 'SecretSynced' (retain existing reason field).",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -570,6 +573,7 @@
       "description": "Add SimulateDatabaseReady (mariadbv1alpha1.Database), SimulateUserReady (mariadbv1alpha1.User), SimulateGrantReady (mariadbv1alpha1.Grant), SimulatePushSecretSynced (esov1alpha1.PushSecret), SimulateCertificateReady (certmanagerv1.Certificate) to testutil/simulators/simulators.go. Each sets Ready=True condition on the typed struct's status. Write unit tests (happy path, idempotent, not-found) and integration tests following existing patterns (TestSimulate*_*, TestIntegration_Simulate*).",
       "level": 1,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -580,6 +584,7 @@
       "description": "Create internal/common/job/ package with doc.go (Feature: CC-0005). Implement IsJobComplete as pure function (job.Status.Succeeded >= 1). Implement RunJob: Get existing Job by name — if exists and IsJobComplete return (true, nil), if exists and not complete return (false, nil), if not exists create with owner ref via controllerutil.SetOwnerReference and return (false, nil). Implement EnsureCronJob: use controllerutil.CreateOrUpdate with owner ref. Write table-driven unit tests for IsJobComplete (succeeded=0, succeeded=1, succeeded=5) using NewGomegaWithT(t) and gomega matchers.",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-007",
         "REQ-010",
@@ -592,6 +597,7 @@
       "description": "Create internal/common/job/integration_test.go with //go:build integration tag. Test RunJob: create Job, verify it exists in API server, simulate completion via simulators.SimulateJobComplete, verify RunJob returns (true, nil). Test EnsureCronJob: create CronJob, verify exists, call again (idempotency). Test RunJob with already-complete Job. Test owner references are set. Use envtestutil.SetupEnvTest and envtestutil.SkipIfEnvTestUnavailable.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-007",
         "REQ-012"
@@ -603,6 +609,7 @@
       "description": "Create internal/common/deployment/ package with doc.go (Feature: CC-0005). Implement IsDeploymentReady as pure function: if spec.replicas is nil treat as 1, return status.availableReplicas >= desired. Implement EnsureDeployment: set owner ref, use controllerutil.CreateOrUpdate, return readiness via IsDeploymentReady. Implement EnsureService: set owner ref, use controllerutil.CreateOrUpdate. Write table-driven unit tests for IsDeploymentReady (nil replicas, zero replicas, partial ready, fully ready, zero available).",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-010",
@@ -615,6 +622,7 @@
       "description": "Create internal/common/deployment/integration_test.go with //go:build integration tag. Test EnsureDeployment: create Deployment, verify exists in API server, verify owner reference, call again (idempotency). Test EnsureService: create Service, verify exists, verify owner reference, call again (idempotency). Use envtestutil.SetupEnvTest.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-012"
@@ -626,6 +634,7 @@
       "description": "Create internal/common/secrets/ package with doc.go (Feature: CC-0005). Implement WaitForExternalSecret: Get typed esov1beta1.ExternalSecret, check status.conditions for type=SecretSynced status=True, return (bool, error). Implement IsSecretReady: Get corev1.Secret, check all expectedKeys present in .Data, return (bool, error). Implement GetSecretValue: Get corev1.Secret, return string(secret.Data[key]) or error if key missing. Implement EnsurePushSecret: use controllerutil.CreateOrUpdate with typed esov1alpha1.PushSecret and owner ref.",
       "level": 3,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-010",
@@ -638,6 +647,7 @@
       "description": "Create internal/common/secrets/integration_test.go with //go:build integration tag. Test WaitForExternalSecret: create ExternalSecret, simulate sync via SimulateExternalSecretSync, verify returns true. Test not-synced case. Test not-found case. Test IsSecretReady: create Secret with data, verify returns true with matching keys, false with missing keys. Test GetSecretValue: verify returns decoded string, verify error on missing key. Test EnsurePushSecret: create, verify exists, verify owner ref, call again (idempotency).",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-012"
@@ -649,6 +659,7 @@
       "description": "Add CreateImmutableConfigMap to internal/common/config/config.go. Compute SHA256 hash of sorted data keys+values, take first 8 hex chars as suffix. Create ConfigMap named '<baseName>-<hash>' with Immutable=ptr(true), set owner reference via controllerutil.SetOwnerReference. If ConfigMap with that name already exists, return it. Write unit tests for hash determinism and different-content-different-hash. Create integration_test.go with //go:build integration tag testing actual ConfigMap creation, immutability flag, owner reference, and idempotency.",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-010"
@@ -660,6 +671,7 @@
       "description": "Create internal/common/tls/ package with doc.go (Feature: CC-0005). Implement EnsureCertificate: use controllerutil.CreateOrUpdate with typed certmanagerv1.Certificate and owner ref. Implement GetTLSSecret: Get corev1.Secret by namespace/name, return (*corev1.Secret, error). Create integration_test.go: test EnsureCertificate creates Certificate CR, verify owner ref, idempotency. Test GetTLSSecret with existing and non-existing Secret.",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-008",
         "REQ-010",
@@ -673,6 +685,7 @@
       "description": "Add LoadPolicyFromConfigMap to internal/common/policy/policy.go. Get ConfigMap by namespace/name, extract 'policy.yaml' key from .Data, parse YAML into map[string]string using sigs.k8s.io/yaml. Return error if ConfigMap not found, key missing, or YAML invalid. Tag function with // Feature: CC-0005. Create integration_test.go with //go:build integration tag testing: successful load, ConfigMap not found, missing key, invalid YAML.",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -683,6 +696,7 @@
       "description": "Create internal/common/database/ package with doc.go (Feature: CC-0005). Implement EnsureDatabase: use controllerutil.CreateOrUpdate with typed mariadbv1alpha1.Database, set owner ref, check status conditions for Ready=True, return (bool, error). Implement EnsureDatabaseUser: create or update mariadbv1alpha1.User and mariadbv1alpha1.Grant with owner refs, check status readiness, return (bool, error). Implement RunDBSyncJob: build batchv1.Job with provided image, command, env vars; delegate to job.RunJob; return (bool, error). Depends on job/ package from task 2.1.",
       "level": 4,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-010",
@@ -695,6 +709,7 @@
       "description": "Create internal/common/database/integration_test.go with //go:build integration tag. Test EnsureDatabase: create Database CR, verify exists with owner ref, simulate ready via SimulateDatabaseReady, verify returns (true, nil). Test idempotency. Test EnsureDatabaseUser: create User and Grant CRs, verify both exist with owner refs, simulate ready. Test RunDBSyncJob: verify Job created, simulate completion, verify returns (true, nil). Test error paths (missing resources).",
       "level": 4,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-012"
@@ -706,6 +721,7 @@
       "description": "Create docs/reference/backend/cc-0005-kubernetes-packages.md documenting all CC-0005 package APIs. For each package (config/, secrets/, database/, deployment/, job/, tls/, policy/): function signatures, parameter descriptions, return values, error conditions, and usage examples. Follow the function table format from architecture/docs/09-implementation/02-shared-library.md. Reference Feature: CC-0005.",
       "level": 5,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-011"
       ]
@@ -963,6 +979,930 @@
       "story": "Reconciler developer can load policy overrides from ConfigMaps",
       "expected": "Returns error when policy.yaml contains invalid YAML",
       "requirement_id": "REQ-009"
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateUserReady",
+      "story": "Operator developer can use migrated typed simulators for MariaDB and ESO",
+      "expected": "SimulateUserReady should set Ready=True on typed MariaDB User struct",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateGrantReady",
+      "story": "Operator developer can use migrated typed simulators for MariaDB and ESO",
+      "expected": "SimulateGrantReady should set Ready=True on typed MariaDB Grant struct",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulatePushSecretSynced",
+      "story": "Operator developer can use migrated typed simulators for MariaDB and ESO",
+      "expected": "SimulatePushSecretSynced should set Synced=True on typed PushSecret struct",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "internal/common/testutil/envtest/setup_test.go",
+      "test_function": "TestFakeCRDsDirs_returnsSubdirectories",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/envtest/setup_test.go",
+      "test_function": "TestFakeCRDsDirs_eachSubdirContainsYAML",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/envtest/setup_test.go",
+      "test_function": "TestSetupEnvTest",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/envtest/setup_test.go",
+      "test_function": "TestSharedScheme_registersExternalOperatorTypes",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMariaDBReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMariaDBReady_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMariaDBReady_zeroReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMariaDBReady_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMemcachedReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMemcachedReady_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMemcachedReady_emptyServerList",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMemcachedReady_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateExternalSecretSync",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateExternalSecretSync_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateExternalSecretSync_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateJobComplete",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateJobComplete_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateJobComplete_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulateDatabaseReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulateDatabaseReady_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulateDatabaseReady_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulateUserReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulateUserReady_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulateUserReady_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulateGrantReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulateGrantReady_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulateGrantReady_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulatePushSecretSynced",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulatePushSecretSynced_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulatePushSecretSynced_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulateCertificateReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulateCertificateReady_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/typed_simulators_test.go",
+      "test_function": "TestSimulateCertificateReady_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestRenderINI",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestMergeDefaults",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestMergeDefaults_doesNotMutateInputs",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestInjectSecrets",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestInjectSecrets_doesNotMutateInput",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestInjectOsloPolicyConfig",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestInjectOsloPolicyConfig_doesNotMutateInput",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestInjectOsloPolicyConfig_emptyPathReturnsOriginalReference",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestCreateImmutableConfigMap_creates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestCreateImmutableConfigMap_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestCreateImmutableConfigMap_deterministic",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestCreateImmutableConfigMap_differentData",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureDeployment_creates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureDeployment_updatesExisting",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureDeployment_readyWhenAvailable",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureDeployment_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_creates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_updatesPreservingClusterIP",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestIsDeploymentReady_true",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestIsDeploymentReady_false_notEnoughReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestIsDeploymentReady_false_noCondition",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestIsDeploymentReady_false_noStatus",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestIsDeploymentReady_nilReplicas_defaults1",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/integration_test.go",
+      "test_function": "TestIntegration_EnsureDeployment_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/integration_test.go",
+      "test_function": "TestIntegration_EnsureService_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/integration_test.go",
+      "test_function": "TestIntegration_EnsureCronJob_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestRunJob_creates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestRunJob_existingIncomplete",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestRunJob_existingComplete",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestRunJob_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestEnsureCronJob_creates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestEnsureCronJob_updates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestEnsureCronJob_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestIsJobComplete_true",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestIsJobComplete_false_noConditions",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestIsJobComplete_false_failed",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestIsJobComplete_false_completeNotTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestRenderPolicyYAML",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestRenderPolicyYAML_sortedOutput",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestMergePolicies",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestMergePolicies_doesNotMutateInputs",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestValidatePolicyRules",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestValidatePolicyRules_nilFldPathDefaultsToRules",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestLoadPolicyFromConfigMap_success",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestLoadPolicyFromConfigMap_missingKey",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestLoadPolicyFromConfigMap_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestLoadPolicyFromConfigMap_invalidYAML",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/integration_test.go",
+      "test_function": "TestIntegration_WaitForExternalSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/integration_test.go",
+      "test_function": "TestIntegration_IsSecretReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/integration_test.go",
+      "test_function": "TestIntegration_GetSecretValue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/integration_test.go",
+      "test_function": "TestIntegration_EnsurePushSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestWaitForExternalSecret_ready",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestWaitForExternalSecret_notReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestWaitForExternalSecret_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestIsSecretReady_exists",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestIsSecretReady_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestGetSecretValue_found",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestGetSecretValue_secretNotFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestGetSecretValue_keyNotPresent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestEnsurePushSecret_creates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestEnsurePushSecret_updates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestEnsurePushSecret_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/integration_test.go",
+      "test_function": "TestIntegration_EnsureCertificate_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/integration_test.go",
+      "test_function": "TestIntegration_GetTLSSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestEnsureCertificate_creates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestEnsureCertificate_existingNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestEnsureCertificate_existingReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestEnsureCertificate_updates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestEnsureCertificate_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestIsCertificateReady_true",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestIsCertificateReady_false_noConditions",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestIsCertificateReady_false_notTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestGetTLSSecret_found",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestGetTLSSecret_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestEnsureDatabase_creates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestEnsureDatabase_existingNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestEnsureDatabase_existingReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestEnsureDatabase_updates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestEnsureDatabase_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestIsDatabaseReady_true",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestIsDatabaseReady_false_noConditions",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestIsDatabaseReady_false_notTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestEnsureDatabaseUser_creates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestEnsureDatabaseUser_existingNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestEnsureDatabaseUser_existingReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestEnsureDatabaseUser_partialReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestEnsureDatabaseUser_updates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestEnsureDatabaseUser_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestIsUserReady_true",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestIsUserReady_false",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestIsGrantReady_true",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestIsGrantReady_false",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestRunDBSyncJob_creates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/database_test.go",
+      "test_function": "TestRunDBSyncJob_complete",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/database/integration_test.go",
+      "test_function": "TestIntegration_EnsureDatabaseUser_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],
@@ -996,8 +1936,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-03-05T16:20:01.886307"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-05T20:01:04.021980"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-09T16:53:22.324579"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/28",
+  "pr_number": 28,
   "execution_history": [
     {
       "run_id": "ed74cb4b-ad94-4358-a353-dca29ab05f14",
@@ -1009,6 +1959,230 @@
           "name": "prepare",
           "duration": 348.8795716762543,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "7683bbe9-80b9-49df-a6ac-a8f8c2fabeed",
+      "timestamp": "2026-03-05T21:15:10.382408",
+      "total_duration": 4001.4813709259033,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (4 tasks)",
+          "duration": 719.6075141429901,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (4 tasks)",
+          "duration": 667.4750642776489,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (5 tasks)",
+          "duration": 710.7155876159668,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (2 tasks)",
+          "duration": 655.4970955848694,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 5 (1 tasks)",
+          "duration": 270.10584926605225,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0005] Code Review",
+          "duration": 447.0056834220886,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0005] Improvements",
+          "duration": 468.37906312942505,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0005] Simplify",
+          "duration": 62.69551348686218,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "1d78ba59-2b28-4f48-ad1b-c06a964febd9",
+      "timestamp": "2026-03-05T22:10:52.647798",
+      "total_duration": 563.4973278045654,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 563.4973278045654,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "e3268f25-150a-471c-8b2c-92bf92428b1d",
+      "timestamp": "2026-03-05T22:43:18.603862",
+      "total_duration": 870.9299056529999,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #3",
+          "duration": 870.9299056529999,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "9046cc35-5eb7-4712-87e3-f68a13fcebc1",
+      "timestamp": "2026-03-05T22:56:49.098562",
+      "total_duration": 444.21207761764526,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #4",
+          "duration": 444.21207761764526,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "5c3f7175-76f1-483d-88b0-34601f5f0f17",
+      "timestamp": "2026-03-05T23:13:10.970287",
+      "total_duration": 390.39930725097656,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #5",
+          "duration": 390.39930725097656,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "84fd702e-8bfd-4b80-a8c8-bbafc05210bd",
+      "timestamp": "2026-03-05T23:35:58.860960",
+      "total_duration": 919.7520637512207,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #6",
+          "duration": 919.7520637512207,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "10cdcc08-4c82-4b6b-ab21-08991355929c",
+      "timestamp": "2026-03-06T07:36:45.014159",
+      "total_duration": 1018.3079264163971,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #7",
+          "duration": 1018.3079264163971,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "f6470e68-40bc-437b-a57b-73eba5bed19e",
+      "timestamp": "2026-03-06T07:55:12.836260",
+      "total_duration": 678.8515713214874,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #8",
+          "duration": 678.8515713214874,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "b4254d66-03c8-4262-84bf-577d1d458a8f",
+      "timestamp": "2026-03-06T08:14:47.492360",
+      "total_duration": 302.64411902427673,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #9",
+          "duration": 302.64411902427673,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "301311b6-de5a-4f94-80c7-0ee424910608",
+      "timestamp": "2026-03-06T08:28:45.759193",
+      "total_duration": 218.9820749759674,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #10",
+          "duration": 218.9820749759674,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "fa52e05c-2a08-446e-bdb0-889ce64710da",
+      "timestamp": "2026-03-06T08:44:54.736406",
+      "total_duration": 289.85893630981445,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #11",
+          "duration": 289.85893630981445,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "df602156-fa94-4ecb-8cb8-31021e3118a0",
+      "timestamp": "2026-03-06T09:05:38.865910",
+      "total_duration": 246.68017196655273,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #12",
+          "duration": 246.68017196655273,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "d5877141-552f-4725-b119-639446909eb1",
+      "timestamp": "2026-03-09T14:24:08.522264",
+      "total_duration": 1680.5489926338196,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #13",
+          "duration": 1680.5489926338196,
+          "type": "review_address",
           "status": "done"
         }
       ]

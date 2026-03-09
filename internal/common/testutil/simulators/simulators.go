@@ -9,8 +9,14 @@ import (
 	"fmt"
 	"time"
 
+	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
+	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
+	esov1beta1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1beta1"
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -67,18 +73,27 @@ func setUnstructuredReadyStatus(
 	return c.Status().Update(ctx, obj)
 }
 
-// SimulateMariaDBReady updates an unstructured MariaDB resource's status to
-// indicate readiness by setting the Ready condition to True and readyReplicas.
+// SimulateMariaDBReady updates a MariaDB resource's status to indicate
+// readiness by setting the Ready condition to True, replicas, and
+// currentPrimaryPodIndex.
 func SimulateMariaDBReady(ctx context.Context, c client.Client, key client.ObjectKey, replicas int) error {
-	return setUnstructuredReadyStatus(ctx, c, key,
-		schema.GroupVersionKind{Group: "k8s.mariadb.com", Version: "v1alpha1", Kind: "MariaDB"},
-		"MariaDBReady",
-		"MariaDB is ready",
-		map[string]interface{}{
-			"readyReplicas":          int64(replicas),
-			"currentPrimaryPodIndex": int64(0),
-		},
-	)
+	mariadb := &mariadbv1alpha1.MariaDB{}
+	if err := c.Get(ctx, key, mariadb); err != nil {
+		return fmt.Errorf("getting MariaDB %s: %w", key, err)
+	}
+
+	mariadb.Status.Replicas = int32(replicas)
+	primaryIdx := 0
+	mariadb.Status.CurrentPrimaryPodIndex = &primaryIdx
+
+	meta.SetStatusCondition(&mariadb.Status.Conditions, metav1.Condition{
+		Type:    conditionTypeReady,
+		Status:  metav1.ConditionTrue,
+		Reason:  "MariaDBReady",
+		Message: "MariaDB is ready",
+	})
+
+	return c.Status().Update(ctx, mariadb)
 }
 
 // SimulateMemcachedReady updates an unstructured Memcached resource's status to
@@ -101,17 +116,27 @@ func SimulateMemcachedReady(ctx context.Context, c client.Client, key client.Obj
 	)
 }
 
-// SimulateExternalSecretSync updates an unstructured ExternalSecret resource's
-// status to indicate successful synchronization.
+// SimulateExternalSecretSync updates an ExternalSecret resource's status to
+// indicate successful synchronization by setting the Ready condition to True
+// and updating the refresh time.
 func SimulateExternalSecretSync(ctx context.Context, c client.Client, key client.ObjectKey) error {
-	return setUnstructuredReadyStatus(ctx, c, key,
-		schema.GroupVersionKind{Group: "external-secrets.io", Version: "v1beta1", Kind: "ExternalSecret"},
-		"SecretSynced",
-		"Secret was synced",
-		map[string]interface{}{
-			"refreshTime": metav1.Now().Format(time.RFC3339),
+	es := &esov1beta1.ExternalSecret{}
+	if err := c.Get(ctx, key, es); err != nil {
+		return fmt.Errorf("getting ExternalSecret %s: %w", key, err)
+	}
+
+	es.Status.RefreshTime = metav1.Now()
+	es.Status.Conditions = []esov1beta1.ExternalSecretStatusCondition{
+		{
+			Type:               esov1beta1.ExternalSecretReady,
+			Status:             corev1.ConditionTrue,
+			Reason:             "SecretSynced",
+			Message:            "Secret was synced",
+			LastTransitionTime: metav1.Now(),
 		},
-	)
+	}
+
+	return c.Status().Update(ctx, es)
 }
 
 // SimulateJobComplete updates a Job resource's status to indicate successful
@@ -136,4 +161,104 @@ func SimulateJobComplete(ctx context.Context, c client.Client, key client.Object
 	}
 
 	return c.Status().Update(ctx, job)
+}
+
+// Feature: CC-0005
+
+// SimulateDatabaseReady updates a MariaDB Database resource's status to indicate
+// readiness by setting the Ready condition to True (CC-0005).
+func SimulateDatabaseReady(ctx context.Context, c client.Client, key client.ObjectKey) error {
+	db := &mariadbv1alpha1.Database{}
+	if err := c.Get(ctx, key, db); err != nil {
+		return fmt.Errorf("getting Database %s: %w", key, err)
+	}
+
+	meta.SetStatusCondition(&db.Status.Conditions, metav1.Condition{
+		Type:    "Ready",
+		Status:  metav1.ConditionTrue,
+		Reason:  "DatabaseReady",
+		Message: "Database is ready",
+	})
+
+	return c.Status().Update(ctx, db)
+}
+
+// SimulateUserReady updates a MariaDB User resource's status to indicate
+// readiness by setting the Ready condition to True (CC-0005).
+func SimulateUserReady(ctx context.Context, c client.Client, key client.ObjectKey) error {
+	user := &mariadbv1alpha1.User{}
+	if err := c.Get(ctx, key, user); err != nil {
+		return fmt.Errorf("getting User %s: %w", key, err)
+	}
+
+	meta.SetStatusCondition(&user.Status.Conditions, metav1.Condition{
+		Type:    "Ready",
+		Status:  metav1.ConditionTrue,
+		Reason:  "UserReady",
+		Message: "User is ready",
+	})
+
+	return c.Status().Update(ctx, user)
+}
+
+// SimulateGrantReady updates a MariaDB Grant resource's status to indicate
+// readiness by setting the Ready condition to True (CC-0005).
+func SimulateGrantReady(ctx context.Context, c client.Client, key client.ObjectKey) error {
+	grant := &mariadbv1alpha1.Grant{}
+	if err := c.Get(ctx, key, grant); err != nil {
+		return fmt.Errorf("getting Grant %s: %w", key, err)
+	}
+
+	meta.SetStatusCondition(&grant.Status.Conditions, metav1.Condition{
+		Type:    "Ready",
+		Status:  metav1.ConditionTrue,
+		Reason:  "GrantReady",
+		Message: "Grant is ready",
+	})
+
+	return c.Status().Update(ctx, grant)
+}
+
+// SimulatePushSecretSynced updates a PushSecret resource's status to indicate
+// successful synchronization (CC-0005).
+func SimulatePushSecretSynced(ctx context.Context, c client.Client, key client.ObjectKey) error {
+	ps := &esov1alpha1.PushSecret{}
+	if err := c.Get(ctx, key, ps); err != nil {
+		return fmt.Errorf("getting PushSecret %s: %w", key, err)
+	}
+
+	ps.Status.RefreshTime = metav1.Now()
+	ps.Status.Conditions = []esov1alpha1.PushSecretStatusCondition{
+		{
+			Type:               esov1alpha1.PushSecretReady,
+			Status:             corev1.ConditionTrue,
+			Reason:             "PushSecretSynced",
+			Message:            "PushSecret was synced",
+			LastTransitionTime: metav1.Now(),
+		},
+	}
+
+	return c.Status().Update(ctx, ps)
+}
+
+// SimulateCertificateReady updates a cert-manager Certificate resource's status
+// to indicate readiness by setting the Ready condition to True (CC-0005).
+func SimulateCertificateReady(ctx context.Context, c client.Client, key client.ObjectKey) error {
+	cert := &certmanagerv1.Certificate{}
+	if err := c.Get(ctx, key, cert); err != nil {
+		return fmt.Errorf("getting Certificate %s: %w", key, err)
+	}
+
+	now := metav1.Now()
+	cert.Status.Conditions = []certmanagerv1.CertificateCondition{
+		{
+			Type:               certmanagerv1.CertificateConditionReady,
+			Status:             cmmeta.ConditionTrue,
+			Reason:             "CertificateReady",
+			Message:            "Certificate is ready",
+			LastTransitionTime: &now,
+		},
+	}
+
+	return c.Status().Update(ctx, cert)
 }

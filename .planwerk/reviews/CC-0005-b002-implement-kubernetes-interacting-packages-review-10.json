@@ -1,0 +1,69 @@
+{
+  "summary": "Addresses external review #9 feedback from greptile-apps[bot]: adds missing Replicas nil-default to DeploymentSpecDefaults and missing ServicePort.Protocol normalization to ServiceSpecDefaults. Both fixes prevent spurious update loops during reconciliation. Tests updated to cover nil-defaulting and explicit-value-preservation for each new default.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass for all changed code", "checked": true},
+    {"item": "Nil-defaulting case tested (Replicas defaults to 1, Protocol defaults to TCP)", "checked": true},
+    {"item": "Explicit-value-preservation tested (Replicas=3 preserved, ProtocolUDP preserved)", "checked": true},
+    {"item": "Edge cases covered (empty ports list in ServiceSpecDefaults — handled by range loop)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing normalize package patterns (nil-guard then assign default)", "checked": true},
+    {"item": "Test structure matches existing table format with NewGomegaWithT(t)", "checked": true},
+    {"item": "SPDX license headers present", "checked": true},
+    {"item": "Feature: CC-0005 tag present in test files", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No user input handling — pure in-memory struct mutation", "checked": true},
+    {"item": "No secrets or credentials involved", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Changes are minimal and targeted to the review feedback", "checked": true},
+    {"item": "No scope creep beyond the two identified gaps", "checked": true},
+    {"item": "Normalizers correctly consumed by deployment package (deployment.go:50,52,112,114)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unnecessary abstractions added", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Nil checks are explicit guard clauses at top of function", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Pointer nil-safety maintained (Replicas, InternalTrafficPolicy)", "checked": true},
+    {"item": "Range loop over Ports handles empty slice correctly", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": [],
+  "metadata": {
+    "feature_id": "CC-0005",
+    "title": "B002: Implement Kubernetes-interacting packages",
+    "date": "2026-03-06",
+    "verdict": "APPROVED",
+    "review_sequence": 10,
+    "external_review_response": true,
+    "external_reviewer": "greptile-apps[bot]",
+    "external_review_sequence": 9,
+    "verification": {
+      "go_test": "PASS — all 13 tests in normalize/ pass",
+      "go_vet": "PASS — no issues",
+      "golangci_lint": "PASS — 0 issues (pre-review validation)",
+      "gosec": "PASS — no issues (pre-review validation)"
+    },
+    "review_steps": {
+      "1_INTENT": "Address two missing API-server default normalizations identified by greptile-apps[bot] that cause spurious update loops",
+      "2_SCOPE": "Changes strictly limited to 4 files in normalize/ — no scope creep",
+      "3_VERIFICATION": "go test ./normalize/ passes all 13 tests; go vet clean",
+      "4_PATTERNS": "Follows existing nil-guard-then-assign pattern used throughout normalize/ for RevisionHistoryLimit, ProgressDeadlineSeconds, Strategy, etc.",
+      "5_TESTS": "Both functions have defaulting test (nil input → expected default) and preservation test (explicit value → unchanged). Port Protocol test covers multiple ports.",
+      "6_SECURITY": "N/A — pure struct mutation functions with no I/O, no user input, no secrets",
+      "7_COMPLEXITY": "Minimal changes — 4-line Replicas block, 4-line Protocol loop. Simplest possible fix.",
+      "8_COMPLETENESS": "Both review comments fully addressed as suggested",
+      "9_PROMPT_QUALITY": "N/A — no new prompt files"
+    }
+  }
+}

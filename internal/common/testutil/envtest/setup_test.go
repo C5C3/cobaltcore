@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 // Feature: CC-0002
@@ -46,4 +48,35 @@ func TestSetupEnvTest(t *testing.T) {
 
 	g.Expect(c).NotTo(BeNil())
 	g.Expect(ctx).NotTo(BeNil())
+}
+
+// Feature: CC-0005
+
+func TestSharedScheme_registersExternalOperatorTypes(t *testing.T) {
+	s := SharedScheme()
+
+	tests := []struct {
+		name string
+		gvk  schema.GroupVersionKind
+	}{
+		// MariaDB operator types
+		{"MariaDB", schema.GroupVersionKind{Group: "k8s.mariadb.com", Version: "v1alpha1", Kind: "MariaDB"}},
+		{"Database", schema.GroupVersionKind{Group: "k8s.mariadb.com", Version: "v1alpha1", Kind: "Database"}},
+		{"User", schema.GroupVersionKind{Group: "k8s.mariadb.com", Version: "v1alpha1", Kind: "User"}},
+		{"Grant", schema.GroupVersionKind{Group: "k8s.mariadb.com", Version: "v1alpha1", Kind: "Grant"}},
+		// ESO types (v1beta1)
+		{"ExternalSecret", schema.GroupVersionKind{Group: "external-secrets.io", Version: "v1beta1", Kind: "ExternalSecret"}},
+		// ESO types (v1alpha1)
+		{"PushSecret", schema.GroupVersionKind{Group: "external-secrets.io", Version: "v1alpha1", Kind: "PushSecret"}},
+		// cert-manager types
+		{"Certificate", schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			recognized := s.Recognizes(tt.gvk)
+			g.Expect(recognized).To(BeTrue(), "SharedScheme should recognize %s", tt.gvk)
+		})
+	}
 }

@@ -5,17 +5,52 @@
 package policy
 
 import (
+	"context"
 	"fmt"
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
 	"github.com/c5c3/forge/internal/common/types"
 )
 
 // Feature: CC-0004
+
+// Feature: CC-0005
+
+// PolicyConfigMapKey is the ConfigMap data key that holds oslo.policy rules.
+// This key is part of the operator-user contract: users must store their
+// policy YAML under this key in the referenced ConfigMap (CC-0005).
+const PolicyConfigMapKey = "policy.yaml"
+
+// LoadPolicyFromConfigMap reads the PolicyConfigMapKey key from a ConfigMap and
+// parses it into a map of policy rules. Returns an error if the ConfigMap
+// does not exist or does not contain the expected key (CC-0005).
+func LoadPolicyFromConfigMap(ctx context.Context, c client.Client, key client.ObjectKey) (map[string]string, error) {
+	var cm corev1.ConfigMap
+	if err := c.Get(ctx, key, &cm); err != nil {
+		return nil, fmt.Errorf("getting ConfigMap %s: %w", key, err)
+	}
+
+	raw, ok := cm.Data[PolicyConfigMapKey]
+	if !ok {
+		return nil, fmt.Errorf("ConfigMap %s does not contain key %q", key, PolicyConfigMapKey)
+	}
+
+	var rules map[string]string
+	if err := yaml.Unmarshal([]byte(raw), &rules); err != nil {
+		return nil, fmt.Errorf("parsing %s from ConfigMap %s: %w", PolicyConfigMapKey, key, err)
+	}
+
+	if rules == nil {
+		return nil, fmt.Errorf("ConfigMap %s key %q is empty or parsed to nil", key, PolicyConfigMapKey)
+	}
+
+	return rules, nil
+}
 
 // RenderPolicyYAML renders oslo.policy rules as a YAML string.
 // Keys are sorted alphabetically for deterministic output.

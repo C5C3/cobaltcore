@@ -1,0 +1,54 @@
+{
+  "summary": "Review #3 covers two targeted fixes addressing external reviewer feedback: (1) EnsureService now uses DeepCopy to avoid mutating the caller's Service object (ClusterIP, ClusterIPs, NodePort fields), with a dedicated non-mutation test added; (2) RunJob now returns a sentinel error ErrJobFailed (via errors.New) wrapped with fmt.Errorf %w, enabling callers to use errors.Is for programmatic failure detection. Both changes are well-scoped, correct, and properly tested.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "All unit tests pass (deployment: 16 passed, job: 14 passed)", "checked": true},
+    {"item": "New test TestEnsureService_doesNotMutateCallerObject verifies non-mutation of ClusterIP, ClusterIPs, and NodePort", "checked": true},
+    {"item": "Updated test TestRunJob_existingFailed verifies errors.Is(err, ErrJobFailed) and namespace/name in error message", "checked": true},
+    {"item": "Edge cases covered: NodePort preservation with omitted protocol, ClusterIP preservation, idempotency", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "DeepCopy approach in EnsureService is correct and follows K8s patterns", "checked": true},
+    {"item": "ErrJobFailed sentinel error follows Go standard library conventions", "checked": true},
+    {"item": "Error wrapping uses fmt.Errorf with %w consistently", "checked": true},
+    {"item": "Code passes golangci-lint and go vet", "checked": true},
+    {"item": "Code passes gofmt formatting check", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "No user input handling changes — N/A for this diff", "checked": true},
+    {"item": "No secrets or credentials exposed", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Changes are minimal and focused on the review feedback", "checked": true},
+    {"item": "DeepCopy prevents unintended side-effects on caller objects", "checked": true},
+    {"item": "Sentinel error enables programmatic error handling by callers", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code introduced", "checked": true},
+    {"item": "No unnecessary abstractions added", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "IsJobFailed check occurs before IsJobComplete — fail-fast ordering preserved", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "DeepCopy prevents mutation of caller-provided objects", "checked": true},
+    {"item": "Error messages include namespace/name for debuggability", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "id": "V3",
+      "severity": "major",
+      "check_id": "V3",
+      "description": "gofmt formatting error: line 172 in job_test.go has an extra tab indent (two tabs instead of one), inconsistent with surrounding statements at the same block level. `gofmt -d` confirms the deviation.",
+      "location": "internal/common/job/job_test.go:172",
+      "fix": "Remove the extra leading tab on line 172 so `g.Expect(err).To(HaveOccurred())` aligns with the other assertions in the same block. Run `gofmt -w internal/common/job/job_test.go` to auto-fix."
+    }
+  ],
+  "suggested_improvements": [],
+  "next_steps": [
+    "Fix gofmt formatting on internal/common/job/job_test.go:172 (remove extra tab)"
+  ],
+  "detected_patterns": []
+}

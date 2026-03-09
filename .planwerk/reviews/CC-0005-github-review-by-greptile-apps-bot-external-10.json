@@ -1,0 +1,37 @@
+{
+  "feature_id": "CC-0005",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "`ServiceSpecDefaults` is missing `IPFamilyPolicy` normalization, and `EnsureService` doesn't preserve `IPFamilies` from the existing spec. This causes a nil-vs-defaulted mismatch on every reconcile, producing spurious Service updates in a loop. The fix: default `IPFamilyPolicy` to `SingleStack` in `ServiceSpecDefaults`, and copy `IPFamilies` from the existing Service in `EnsureService` (like `ClusterIP` already is).",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-06T08:21:30Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 10,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "Missing `IPFamilyPolicy` and `IPFamilies` normalization — causes spurious Service updates on every reconcile.\n\n`ServiceSpecDefaults` normalizes `Type`, `SessionAffinity`, `InternalTrafficPolicy`, and `Port.Protocol`, but omits two fields the Kubernetes API server populates on every newly created Service:\n\n| Field | API-server default |\n|---|---|\n| `IPFamilyPolicy` | `\"SingleStack\"` |\n| `IPFamilies` | `[\"IPv4\"]` (IPv4 cluster) or `[\"IPv6\"]` (IPv6 cluster) |\n\nAfter first creation, `existingSpec.IPFamilyPolicy == &\"SingleStack\"` while `newSpec.IPFamilyPolicy == nil`. Because `reflect.DeepEqual(nil, &\"SingleStack\")` is `false`, `apiequality.Semantic.DeepEqual(existingSpec, newSpec)` returns `false` on every subsequent reconcile — triggering `c.Update` in `EnsureService` on every pass. The API server reapplies the default, and the loop repeats. This produces continuous unnecessary updates and watch events.\n\n`IPFamilyPolicy` can be statically defaulted. `IPFamilies` is cluster-dependent, so it should instead be preserved from the existing spec in `EnsureService` (mirroring how `ClusterIP` is already handled):\n\n```suggestion\nfunc ServiceSpecDefaults(spec *corev1.ServiceSpec) {\n\tif spec.Type == \"\" {\n\t\tspec.Type = corev1.ServiceTypeClusterIP\n\t}\n\tif spec.SessionAffinity == \"\" {\n\t\tspec.SessionAffinity = corev1.ServiceAffinityNone\n\t}\n\tif spec.InternalTrafficPolicy == nil {\n\t\tcluster := corev1.ServiceInternalTrafficPolicyCluster\n\t\tspec.InternalTrafficPolicy = &cluster\n\t}\n\tif spec.IPFamilyPolicy == nil {\n\t\tsingleStack := corev1.IPFamilyPolicySingleStack\n\t\tspec.IPFamilyPolicy = &singleStack\n\t}\n\tfor i := range spec.Ports {\n\t\tif spec.Ports[i].Protocol == \"\" {\n\t\t\tspec.Ports[i].Protocol = corev1.ProtocolTCP\n\t\t}\n\t}\n}\n```\n\nAlso in `EnsureService` (around line 92-93), preserve `IPFamilies` from the existing spec:\n\n```go\nnewSpec.ClusterIP = existing.Spec.ClusterIP\nnewSpec.ClusterIPs = existing.Spec.ClusterIPs\nnewSpec.IPFamilies = existing.Spec.IPFamilies   // preserve API-server-assigned IP families\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: internal/common/normalize/service.go\nLine: 14-29\n\nComment:\nMissing `IPFamilyPolicy` and `IPFamilies` normalization — causes spurious Service updates on every reconcile.\n\n`ServiceSpecDefaults` normalizes `Type`, `SessionAffinity`, `InternalTrafficPolicy`, and `Port.Protocol`, but omits two fields the Kubernetes API server populates on every newly created Service:\n\n| Field | API-server default |\n|---|---|\n| `IPFamilyPolicy` | `\"SingleStack\"` |\n| `IPFamilies` | `[\"IPv4\"]` (IPv4 cluster) or `[\"IPv6\"]` (IPv6 cluster) |\n\nAfter first creation, `existingSpec.IPFamilyPolicy == &\"SingleStack\"` while `newSpec.IPFamilyPolicy == nil`. Because `reflect.DeepEqual(nil, &\"SingleStack\")` is `false`, `apiequality.Semantic.DeepEqual(existingSpec, newSpec)` returns `false` on every subsequent reconcile — triggering `c.Update` in `EnsureService` on every pass. The API server reapplies the default, and the loop repeats. This produces continuous unnecessary updates and watch events.\n\n`IPFamilyPolicy` can be statically defaulted. `IPFamilies` is cluster-dependent, so it should instead be preserved from the existing spec in `EnsureService` (mirroring how `ClusterIP` is already handled):\n\n```suggestion\nfunc ServiceSpecDefaults(spec *corev1.ServiceSpec) {\n\tif spec.Type == \"\" {\n\t\tspec.Type = corev1.ServiceTypeClusterIP\n\t}\n\tif spec.SessionAffinity == \"\" {\n\t\tspec.SessionAffinity = corev1.ServiceAffinityNone\n\t}\n\tif spec.InternalTrafficPolicy == nil {\n\t\tcluster := corev1.ServiceInternalTrafficPolicyCluster\n\t\tspec.InternalTrafficPolicy = &cluster\n\t}\n\tif spec.IPFamilyPolicy == nil {\n\t\tsingleStack := corev1.IPFamilyPolicySingleStack\n\t\tspec.IPFamilyPolicy = &singleStack\n\t}\n\tfor i := range spec.Ports {\n\t\tif spec.Ports[i].Protocol == \"\" {\n\t\t\tspec.Ports[i].Protocol = corev1.ProtocolTCP\n\t\t}\n\t}\n}\n```\n\nAlso in `EnsureService` (around line 92-93), preserve `IPFamilies` from the existing spec:\n\n```go\nnewSpec.ClusterIP = existing.Spec.ClusterIP\nnewSpec.ClusterIPs = existing.Spec.ClusterIPs\nnewSpec.IPFamilies = existing.Spec.IPFamilies   // preserve API-server-assigned IP families\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "internal/common/normalize/service.go",
+      "line": 29,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-06T08:21:29Z",
+      "id": null,
+      "resolution": "Fully addressed: (1) Added IPFamilyPolicy static defaulting to SingleStack in ServiceSpecDefaults (normalize/service.go:25-28), matching the reviewer's suggested code exactly. (2) Added IPFamilies preservation from existing.Spec in EnsureService (deployment/deployment.go:94), placed alongside ClusterIP/ClusterIPs preservation as suggested. (3) Updated both unit tests in service_test.go: TestServiceSpecDefaults now asserts IPFamilyPolicy is set to SingleStack (lines 33-34), and TestServiceSpecDefaults_preservesExplicitValues now sets IPFamilyPolicy to PreferDualStack and asserts it is not overwritten (lines 45, 50, 61)."
+    }
+  ],
+  "resolution_summary": "Both parts of the review feedback were fully addressed. IPFamilyPolicy defaulting to SingleStack was added to ServiceSpecDefaults in normalize/service.go (lines 25-28), and IPFamilies preservation from the existing spec was added to EnsureService in deployment/deployment.go (line 94), mirroring the existing ClusterIP/ClusterIPs preservation pattern. The test file service_test.go was also updated to cover the new IPFamilyPolicy normalization in both the defaults test and the preserves-explicit-values test.",
+  "github_review_id": 3902189638
+}

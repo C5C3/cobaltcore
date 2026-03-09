@@ -13,6 +13,10 @@ import (
 	"sync"
 	"testing"
 
+	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
+	esov1beta1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1beta1"
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -86,8 +90,8 @@ var (
 )
 
 // SharedScheme returns a runtime.Scheme pre-populated with the core, batch,
-// and apiextensions API groups. The scheme is constructed once and reused
-// across all callers (CC-0002).
+// apiextensions, and external operator API groups. The scheme is constructed
+// once and reused across all callers (CC-0002, extended CC-0005).
 func SharedScheme() *k8sruntime.Scheme {
 	sharedSchemeOnce.Do(func() {
 		sharedScheme = k8sruntime.NewScheme()
@@ -97,6 +101,11 @@ func SharedScheme() *k8sruntime.Scheme {
 		// apiextensionsv1 is needed for CRD list/get operations in integration
 		// tests.
 		utilruntime.Must(apiextensionsv1.AddToScheme(sharedScheme))
+		// External operator types for typed client operations (CC-0005).
+		utilruntime.Must(mariadbv1alpha1.AddToScheme(sharedScheme))
+		utilruntime.Must(esov1beta1.AddToScheme(sharedScheme))
+		utilruntime.Must(esov1alpha1.AddToScheme(sharedScheme))
+		utilruntime.Must(certmanagerv1.AddToScheme(sharedScheme))
 	})
 	return sharedScheme
 }

@@ -1,0 +1,90 @@
+{
+  "feature_id": "CC-0005",
+  "title": "B002: Implement Kubernetes-interacting packages",
+  "date": "2026-03-05",
+  "summary": "Review of changes addressing greptile-apps[bot] review #3 feedback. Three issues were addressed: (1) RunJob now detects stale completed Jobs by comparing pod template specs via apiequality.Semantic.DeepEqual and performs delete-and-recreate when they differ, preventing skipped migrations on operator upgrades. (2) All 7 Ensure* functions (EnsureDatabase, ensureUser, ensureGrant, EnsureCertificate, EnsureDeployment, EnsurePushSecret, EnsureCronJob) now guard c.Update calls with an apiequality.Semantic.DeepEqual check, eliminating unnecessary API churn. (3) Deployment readiness tests now explicitly set Generation/ObservedGeneration values and a new TestEnsureDeployment_notReadyWhenGenerationLags test exercises the safety guard directly.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "V1: All unit tests pass (go test ./database/... ./deployment/... ./job/... ./secrets/... ./tls/...)", "checked": true},
+    {"item": "TE1: Happy paths tested — TestRunJob_existingComplete_specUnchanged, TestEnsureDeployment_readyWhenAvailable with explicit Generation/ObservedGeneration", "checked": true},
+    {"item": "TE2: Edge cases tested — TestRunJob_existingComplete_specChanged (stale Job), TestEnsureDeployment_notReadyWhenGenerationLags (generation lag)", "checked": true},
+    {"item": "TE3: Error/failure paths tested — ErrJobFailed sentinel, spec drift detection", "checked": true},
+    {"item": "TE4: Tests independent — each test creates fresh fake client and objects", "checked": true},
+    {"item": "TE7: Assertions specific — verify exact image, owner ref count, readiness bool", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "V2: go vet passes with 0 issues", "checked": true},
+    {"item": "V3: golangci-lint passes with 0 issues", "checked": true},
+    {"item": "Q1: Each function has single responsibility", "checked": true},
+    {"item": "Q3: apiequality guard pattern applied consistently via DRY principle", "checked": true},
+    {"item": "Q4: Clear naming — apiequality import alias consistent across all files", "checked": true},
+    {"item": "Q7: No dead code — no commented-out or unreachable code", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "S1: gosec scan: 0 issues across all changed files", "checked": true},
+    {"item": "S3: No hardcoded secrets", "checked": true},
+    {"item": "S5: No sensitive data in error messages", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "C1: All three external review comments addressed correctly", "checked": true},
+    {"item": "C3: Edge cases handled (stale Jobs, generation lag, unchanged specs)", "checked": true},
+    {"item": "C4: Errors wrapped with %w consistently", "checked": true},
+    {"item": "C5: No regression — existing tests still pass, build succeeds", "checked": true},
+    {"item": "PC3: apiequality.Semantic.DeepEqual guard applied consistently across all 7 Ensure* update paths", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code — guard pattern is minimal and inline", "checked": true},
+    {"item": "No unnecessary abstractions introduced", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "IsJobFailed checked before IsJobComplete in RunJob", "checked": true},
+    {"item": "Stale Job spec drift detected before returning true", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Re-fetch after update to avoid stale status evaluation", "checked": true},
+    {"item": "Owner reference set on replacement Job in RunJob stale path", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "D2 (minor): EnsureService (deployment/deployment.go:99) is the only Ensure* function without an apiequality guard. Its ClusterIP/NodePort preservation logic makes a pre-merge comparison less straightforward, but a post-merge comparison (comparing merged newSpec against existing.Spec before assignment) could skip the update when nothing changed. Not blocking since this function was not in scope of the external review feedback."
+  ],
+  "next_steps": [],
+  "detected_patterns": [
+    {
+      "name": "Conditional spec update with apiequality guard",
+      "component": "internal/common/*/",
+      "category": "data-access",
+      "applies_when": "Writing an Ensure* function that creates-or-updates a Kubernetes resource by comparing desired spec against existing spec",
+      "description": "All Ensure* functions that perform create-or-update on Kubernetes resources guard the c.Update call with apiequality.Semantic.DeepEqual(existing.Spec, desired.Spec). When specs are equal, the update is skipped to avoid unnecessary API churn, spurious watch events, and 409 Conflict errors. When specs differ, the update is performed and the object is re-fetched to avoid evaluating stale status. The apiequality package is imported with the named alias 'apiequality'.",
+      "examples": [
+        {
+          "location": "internal/common/database/database.go:46",
+          "code": "if !apiequality.Semantic.DeepEqual(existing.Spec, db.Spec) {\n\texisting.Spec = db.Spec\n\tif err := c.Update(ctx, existing); err != nil {\n\t\treturn false, fmt.Errorf(\"updating Database %s/%s: %w\", db.Namespace, db.Name, err)\n\t}\n\t// Re-fetch to avoid evaluating stale status from before the spec\n\t// update (CC-0005).\n\tif err := c.Get(ctx, client.ObjectKeyFromObject(db), existing); err != nil {\n\t\treturn false, fmt.Errorf(\"re-fetching Database %s/%s after update: %w\", db.Namespace, db.Name, err)\n\t}\n}"
+        },
+        {
+          "location": "internal/common/job/job.go:96",
+          "code": "if !apiequality.Semantic.DeepEqual(existing.Spec, cronJob.Spec) {\n\texisting.Spec = cronJob.Spec\n\tif err := c.Update(ctx, existing); err != nil {\n\t\treturn fmt.Errorf(\"updating CronJob %s/%s: %w\", cronJob.Namespace, cronJob.Name, err)\n\t}\n}"
+        }
+      ]
+    },
+    {
+      "name": "Stale completed Job detection via pod template spec comparison",
+      "component": "internal/common/job",
+      "category": "data-access",
+      "applies_when": "Implementing idempotent Job execution that must re-run when the Job spec changes (e.g., operator upgrade with new container image)",
+      "description": "RunJob guards against stale completed Jobs by comparing existing.Spec.Template.Spec against the desired job.Spec.Template.Spec using apiequality.Semantic.DeepEqual after confirming IsJobComplete. When specs differ (e.g., new container image from an operator upgrade), the old Job is deleted and a new one is created with the updated spec, returning (false, nil) so the reconciler requeues. This prevents silently skipping migrations when the operator binary changes.",
+      "examples": [
+        {
+          "location": "internal/common/job/job.go:53",
+          "code": "if IsJobComplete(existing) {\n\t// Guard against stale completed Jobs: if the pod spec has changed\n\t// (e.g. operator upgrade with a new container image), delete the\n\t// old Job and create a new one so the updated migration runs\n\t// (CC-0005).\n\tif !apiequality.Semantic.DeepEqual(existing.Spec.Template.Spec, job.Spec.Template.Spec) {\n\t\tif err := c.Delete(ctx, existing); err != nil {\n\t\t\treturn false, fmt.Errorf(\"deleting stale Job %s/%s: %w\", existing.Namespace, existing.Name, err)\n\t\t}\n\t\tif err := controllerutil.SetControllerReference(owner, job, scheme); err != nil {\n\t\t\treturn false, fmt.Errorf(\"setting owner reference on Job %s/%s: %w\", job.Namespace, job.Name, err)\n\t\t}\n\t\tif err := c.Create(ctx, job); err != nil {\n\t\t\treturn false, fmt.Errorf(\"creating replacement Job %s/%s: %w\", job.Namespace, job.Name, err)\n\t\t}\n\t\treturn false, nil\n\t}\n\treturn true, nil\n}"
+        },
+        {
+          "location": "internal/common/job/job_test.go:178",
+          "code": "func TestRunJob_existingComplete_specChanged(t *testing.T) {\n\tg := NewGomegaWithT(t)\n\ts := newScheme()\n\towner := testOwner()\n\n\tnow := metav1.Now()\n\toldJob := testJob()\n\toldJob.Status.Succeeded = 1\n\toldJob.Status.CompletionTime = &now\n\toldJob.Status.Conditions = []batchv1.JobCondition{\n\t\t{Type: batchv1.JobComplete, Status: corev1.ConditionTrue},\n\t}\n\n\tc := fake.NewClientBuilder().\n\t\tWithScheme(s).\n\t\tWithObjects(owner, oldJob).\n\t\tWithStatusSubresource(oldJob).\n\t\tBuild()\n\n\tnewJob := testJob()\n\tnewJob.Spec.Template.Spec.Containers[0].Image = \"busybox:v2\"\n\n\tready, err := RunJob(context.Background(), c, s, owner, newJob)\n\tg.Expect(err).NotTo(HaveOccurred())\n\tg.Expect(ready).To(BeFalse(), \"should recreate Job when spec changes after completion\")\n}"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "feature_id": "CC-0005",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer identified that `ContainerDefaults` doesn't set `ContainerPort.Protocol` to `TCP`, causing spurious updates every reconcile loop — the API server defaults the protocol to `\"TCP\"` on stored objects, but the desired spec leaves it as `\"\"`, so the equality check always sees a diff. They request adding a loop inside `ContainerDefaults` to default empty `Protocol` fields to `corev1.ProtocolTCP`.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-06T08:35:29Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 11,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**Missing `ContainerPort.Protocol` default — spurious Deployment/CronJob updates**\n\n`ContainerDefaults` fills in `ImagePullPolicy`, `TerminationMessagePath`, and `TerminationMessagePolicy`, but omits port-level defaulting. The Kubernetes API server calls `SetDefaults_ContainerPort` on every stored container port and sets `Protocol: TCP` when the field is empty. If a caller declares container ports without an explicit `Protocol` (a common pattern), `existingSpec.Containers[i].Ports[j].Protocol == \"TCP\"` while `desiredSpec.Containers[i].Ports[j].Protocol == \"\"`. Because `apiequality.Semantic` falls back to `reflect.DeepEqual` for string fields, `\"\" != \"TCP\"` — so `EnsureDeployment` detects a spec change and calls `c.Update` on every reconcile.\n\nAll existing tests use containers that either declare no ports at all or explicitly set `Protocol: corev1.ProtocolTCP`, so this gap is not caught.\n\nAdd a protocol default loop inside `ContainerDefaults`:\n\n```suggestion\n// ContainerDefaults fills in the API-server defaults for each container:\n// ImagePullPolicy, TerminationMessagePath, TerminationMessagePolicy, and\n// ContainerPort.Protocol.\nfunc ContainerDefaults(containers []corev1.Container) {\n\tfor i := range containers {\n\t\tif containers[i].ImagePullPolicy == \"\" {\n\t\t\tcontainers[i].ImagePullPolicy = DefaultImagePullPolicy(containers[i].Image)\n\t\t}\n\t\tif containers[i].TerminationMessagePath == \"\" {\n\t\t\tcontainers[i].TerminationMessagePath = corev1.TerminationMessagePathDefault\n\t\t}\n\t\tif containers[i].TerminationMessagePolicy == \"\" {\n\t\t\tcontainers[i].TerminationMessagePolicy = corev1.TerminationMessageReadFile\n\t\t}\n\t\tfor j := range containers[i].Ports {\n\t\t\tif containers[i].Ports[j].Protocol == \"\" {\n\t\t\t\tcontainers[i].Ports[j].Protocol = corev1.ProtocolTCP\n\t\t\t}\n\t\t}\n\t}\n}\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: internal/common/normalize/podspec.go\nLine: 42-54\n\nComment:\n**Missing `ContainerPort.Protocol` default — spurious Deployment/CronJob updates**\n\n`ContainerDefaults` fills in `ImagePullPolicy`, `TerminationMessagePath`, and `TerminationMessagePolicy`, but omits port-level defaulting. The Kubernetes API server calls `SetDefaults_ContainerPort` on every stored container port and sets `Protocol: TCP` when the field is empty. If a caller declares container ports without an explicit `Protocol` (a common pattern), `existingSpec.Containers[i].Ports[j].Protocol == \"TCP\"` while `desiredSpec.Containers[i].Ports[j].Protocol == \"\"`. Because `apiequality.Semantic` falls back to `reflect.DeepEqual` for string fields, `\"\" != \"TCP\"` — so `EnsureDeployment` detects a spec change and calls `c.Update` on every reconcile.\n\nAll existing tests use containers that either declare no ports at all or explicitly set `Protocol: corev1.ProtocolTCP`, so this gap is not caught.\n\nAdd a protocol default loop inside `ContainerDefaults`:\n\n```suggestion\n// ContainerDefaults fills in the API-server defaults for each container:\n// ImagePullPolicy, TerminationMessagePath, TerminationMessagePolicy, and\n// ContainerPort.Protocol.\nfunc ContainerDefaults(containers []corev1.Container) {\n\tfor i := range containers {\n\t\tif containers[i].ImagePullPolicy == \"\" {\n\t\t\tcontainers[i].ImagePullPolicy = DefaultImagePullPolicy(containers[i].Image)\n\t\t}\n\t\tif containers[i].TerminationMessagePath == \"\" {\n\t\t\tcontainers[i].TerminationMessagePath = corev1.TerminationMessagePathDefault\n\t\t}\n\t\tif containers[i].TerminationMessagePolicy == \"\" {\n\t\t\tcontainers[i].TerminationMessagePolicy = corev1.TerminationMessageReadFile\n\t\t}\n\t\tfor j := range containers[i].Ports {\n\t\t\tif containers[i].Ports[j].Protocol == \"\" {\n\t\t\t\tcontainers[i].Ports[j].Protocol = corev1.ProtocolTCP\n\t\t\t}\n\t\t}\n\t}\n}\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "internal/common/normalize/podspec.go",
+      "line": 54,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-06T08:35:27Z",
+      "id": null,
+      "resolution": "Added a `for j := range containers[i].Ports` loop inside ContainerDefaults (podspec.go:54-58) that sets `Protocol = corev1.ProtocolTCP` when empty, matching the reviewer's exact suggestion. Updated the function's doc comment to list ContainerPort.Protocol. Added test coverage in TestContainerDefaults (podspec_test.go) with a container that has two ports — one with no protocol (asserts TCP default) and one with explicit UDP (asserts preservation) — directly addressing the reviewer's note that existing tests did not cover this gap."
+    }
+  ],
+  "resolution_summary": "Added the missing ContainerPort.Protocol defaulting to ContainerDefaults in podspec.go, exactly as suggested by the reviewer. The loop sets Protocol to corev1.ProtocolTCP for any port that has an empty Protocol field. The function's doc comment was updated to mention ContainerPort.Protocol. A corresponding test case was added to TestContainerDefaults in podspec_test.go that exercises both the empty-protocol default (TCP) and an explicitly set UDP protocol.",
+  "github_review_id": 3902256162
+}

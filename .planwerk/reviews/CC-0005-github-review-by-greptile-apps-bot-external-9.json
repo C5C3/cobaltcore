@@ -1,0 +1,46 @@
+{
+  "feature_id": "CC-0005",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer identifies two missing Kubernetes API-server default normalizations that cause spurious update loops on every reconcile: `DeploymentSpecDefaults` needs to default `Replicas` to `&1` when nil, and `ServiceSpecDefaults` needs to default each `ServicePort.Protocol` to `\"TCP\"` when empty. Both gaps are masked by existing tests that always set these fields explicitly.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-06T08:00:28Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 9,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**Missing `Replicas` default — spurious update loop when caller omits Replicas**\n\n`DeploymentSpecDefaults` fills in `RevisionHistoryLimit`, `ProgressDeadlineSeconds`, and `Strategy.*`, but not `Replicas`. The Kubernetes API server defaults `Replicas` to `&1` when the field is `nil`. Any caller that constructs a `Deployment` without explicitly setting `Replicas` will have `desiredSpec.Replicas == nil` while `existingSpec.Replicas == &1` (after API-server round-trip). Since `apiequality.Semantic` falls back to `reflect.DeepEqual` for `*int32` fields, `nil != &1` — so the `EnsureDeployment` spec comparison returns `false` on every reconcile and `c.Update` is called continuously.\n\n`testDeployment()` always passes `ptr(int32(3))`, masking this in all current tests.\n\nAdd the missing default:\n\n```suggestion\nfunc DeploymentSpecDefaults(spec *appsv1.DeploymentSpec) {\n\tif spec.Replicas == nil {\n\t\tv := int32(1)\n\t\tspec.Replicas = &v\n\t}\n\tif spec.RevisionHistoryLimit == nil {\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: internal/common/normalize/deployment.go\nLine: 17-35\n\nComment:\n**Missing `Replicas` default — spurious update loop when caller omits Replicas**\n\n`DeploymentSpecDefaults` fills in `RevisionHistoryLimit`, `ProgressDeadlineSeconds`, and `Strategy.*`, but not `Replicas`. The Kubernetes API server defaults `Replicas` to `&1` when the field is `nil`. Any caller that constructs a `Deployment` without explicitly setting `Replicas` will have `desiredSpec.Replicas == nil` while `existingSpec.Replicas == &1` (after API-server round-trip). Since `apiequality.Semantic` falls back to `reflect.DeepEqual` for `*int32` fields, `nil != &1` — so the `EnsureDeployment` spec comparison returns `false` on every reconcile and `c.Update` is called continuously.\n\n`testDeployment()` always passes `ptr(int32(3))`, masking this in all current tests.\n\nAdd the missing default:\n\n```suggestion\nfunc DeploymentSpecDefaults(spec *appsv1.DeploymentSpec) {\n\tif spec.Replicas == nil {\n\t\tv := int32(1)\n\t\tspec.Replicas = &v\n\t}\n\tif spec.RevisionHistoryLimit == nil {\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "internal/common/normalize/deployment.go",
+      "line": 35,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-06T08:00:26Z",
+      "id": null,
+      "resolution": "Added `Replicas` nil-check defaulting to `&1` at the top of `DeploymentSpecDefaults` in deployment.go, matching the suggested code exactly. Updated `TestDeploymentSpecDefaults` to assert `Replicas` defaults to 1 when nil, and updated `TestDeploymentSpecDefaults_preservesExplicitValues` to set `Replicas: &3` and assert it is preserved."
+    },
+    {
+      "body": "**Missing `ServicePort.Protocol` normalization — spurious Service updates when Protocol is omitted**\n\n`ServiceSpecDefaults` normalizes spec-level fields (`Type`, `SessionAffinity`, `InternalTrafficPolicy`) but omits port-level defaults. The Kubernetes API server defaults each `ServicePort.Protocol` to `\"TCP\"` when the field is unset. A caller that constructs a Service with `ServicePort{Port: 80}` (no explicit Protocol) will have `newSpec.Ports[i].Protocol == \"\"` after `ServiceSpecDefaults`, while `existingSpec.Ports[i].Protocol == \"TCP\"`. Because `reflect.DeepEqual` is used for string fields, `\"\" != \"TCP\"` — the `apiequality.Semantic.DeepEqual` guard in `EnsureService` returns `false` and `c.Update` is called on every reconcile.\n\nAll tests in `deployment_test.go` explicitly set `Protocol: corev1.ProtocolTCP`, so this gap is not exercised.\n\nAdd port Protocol normalization:\n\n```suggestion\nfunc ServiceSpecDefaults(spec *corev1.ServiceSpec) {\n\tif spec.Type == \"\" {\n\t\tspec.Type = corev1.ServiceTypeClusterIP\n\t}\n\tif spec.SessionAffinity == \"\" {\n\t\tspec.SessionAffinity = corev1.ServiceAffinityNone\n\t}\n\tif spec.InternalTrafficPolicy == nil {\n\t\tcluster := corev1.ServiceInternalTrafficPolicyCluster\n\t\tspec.InternalTrafficPolicy = &cluster\n\t}\n\tfor i := range spec.Ports {\n\t\tif spec.Ports[i].Protocol == \"\" {\n\t\t\tspec.Ports[i].Protocol = corev1.ProtocolTCP\n\t\t}\n\t}\n}\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: internal/common/normalize/service.go\nLine: 13-24\n\nComment:\n**Missing `ServicePort.Protocol` normalization — spurious Service updates when Protocol is omitted**\n\n`ServiceSpecDefaults` normalizes spec-level fields (`Type`, `SessionAffinity`, `InternalTrafficPolicy`) but omits port-level defaults. The Kubernetes API server defaults each `ServicePort.Protocol` to `\"TCP\"` when the field is unset. A caller that constructs a Service with `ServicePort{Port: 80}` (no explicit Protocol) will have `newSpec.Ports[i].Protocol == \"\"` after `ServiceSpecDefaults`, while `existingSpec.Ports[i].Protocol == \"TCP\"`. Because `reflect.DeepEqual` is used for string fields, `\"\" != \"TCP\"` — the `apiequality.Semantic.DeepEqual` guard in `EnsureService` returns `false` and `c.Update` is called on every reconcile.\n\nAll tests in `deployment_test.go` explicitly set `Protocol: corev1.ProtocolTCP`, so this gap is not exercised.\n\nAdd port Protocol normalization:\n\n```suggestion\nfunc ServiceSpecDefaults(spec *corev1.ServiceSpec) {\n\tif spec.Type == \"\" {\n\t\tspec.Type = corev1.ServiceTypeClusterIP\n\t}\n\tif spec.SessionAffinity == \"\" {\n\t\tspec.SessionAffinity = corev1.ServiceAffinityNone\n\t}\n\tif spec.InternalTrafficPolicy == nil {\n\t\tcluster := corev1.ServiceInternalTrafficPolicyCluster\n\t\tspec.InternalTrafficPolicy = &cluster\n\t}\n\tfor i := range spec.Ports {\n\t\tif spec.Ports[i].Protocol == \"\" {\n\t\t\tspec.Ports[i].Protocol = corev1.ProtocolTCP\n\t\t}\n\t}\n}\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "internal/common/normalize/service.go",
+      "line": 24,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-06T08:00:27Z",
+      "id": null,
+      "resolution": "Added a `for i := range spec.Ports` loop at the end of `ServiceSpecDefaults` in service.go that defaults `Protocol` to `corev1.ProtocolTCP` when empty, matching the suggested code. Updated `TestServiceSpecDefaults` to include two ports without Protocol and assert both default to TCP. Updated `TestServiceSpecDefaults_preservesExplicitValues` to include a port with explicit `ProtocolUDP` and assert it is preserved."
+    }
+  ],
+  "resolution_summary": "Both review comments were addressed exactly as suggested. The Replicas default was added to DeploymentSpecDefaults and the ServicePort.Protocol normalization loop was added to ServiceSpecDefaults. Tests were updated to cover both the nil-defaulting and explicit-value-preservation cases for each new default. No changes were made to files beyond the four directly mentioned in the review feedback.",
+  "github_review_id": 3902095638
+}

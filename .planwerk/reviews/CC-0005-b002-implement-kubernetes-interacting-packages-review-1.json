@@ -1,0 +1,218 @@
+{
+  "summary": "CC-0005 implements 5 new packages (secrets/, database/, deployment/, job/, tls/) and extends config/ and policy/ with Kubernetes API interaction functions. SharedScheme extended with external operator types. SimulateMariaDBReady and SimulateExternalSecretSync migrated from unstructured to typed. New typed simulators added. All code compiles, lints clean (golangci-lint 0 issues), and unit tests pass. Architecture is clean with consistent error wrapping, owner references via SetControllerReference, and idempotent create-or-update patterns. Three spec deviations identified: IsSecretReady missing expectedKeys validation, and missing envtest integration tests for config/ and policy/ packages.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Unit tests exist for all pure functions (IsDeploymentReady, IsJobComplete, IsDatabaseReady, IsUserReady, IsGrantReady, IsCertificateReady)", "checked": true},
+    {"item": "Unit tests exist for all K8s-interacting functions using fake client", "checked": true},
+    {"item": "Integration tests with //go:build integration tag exist for database/, deployment/, job/, secrets/, tls/", "checked": true},
+    {"item": "Integration tests exist for config/CreateImmutableConfigMap (task 3.3 requires envtest integration_test.go)", "checked": false},
+    {"item": "Integration tests exist for policy/LoadPolicyFromConfigMap (task 3.5 requires envtest integration_test.go)", "checked": false},
+    {"item": "All integration tests use SkipIfEnvTestUnavailable guard", "checked": true},
+    {"item": "Tests use g := NewGomegaWithT(t) pattern consistently", "checked": true},
+    {"item": "Idempotency tested (call twice, verify single resource)", "checked": true},
+    {"item": "Owner references verified in tests", "checked": true},
+    {"item": "Edge cases covered (nil, empty, not-found, boundary values)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns from CC-0002/CC-0004", "checked": true},
+    {"item": "All functions under 40 lines", "checked": true},
+    {"item": "No dead code or commented-out code", "checked": true},
+    {"item": "Clear naming (intention-revealing)", "checked": true},
+    {"item": "SPDX license headers on all new files", "checked": true},
+    {"item": "doc.go with Feature: CC-0005 tag for each new package", "checked": true},
+    {"item": "No unstructured.Unstructured in new CC-0005 packages", "checked": true},
+    {"item": "All errors wrapped with fmt.Errorf and %w", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets or credentials", "checked": true},
+    {"item": "No SQL/command injection vectors", "checked": true},
+    {"item": "YAML parsing uses sigs.k8s.io/yaml with map[string]string target (no arbitrary deserialization)", "checked": true},
+    {"item": "No sensitive data in error messages", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is simple and focused", "checked": true},
+    {"item": "Cross-package dependency is minimal (only database/ -> job/)", "checked": true},
+    {"item": "Owner references use SetControllerReference (correct for operator-owned resources)", "checked": true},
+    {"item": "SharedScheme uses sync.Once for thread safety", "checked": true},
+    {"item": "EnsureService preserves ClusterIP on update", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No unnecessary abstractions or generics", "checked": true},
+    {"item": "No features beyond spec scope", "checked": true},
+    {"item": "SimulateMemcachedReady and setUnstructuredReadyStatus retained unmodified", "checked": true},
+    {"item": "Get+Create/Update pattern repeated but idiomatic for Go without generics", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors returned immediately (no silent failures)", "checked": true},
+    {"item": "NotFound handled explicitly in all Get calls", "checked": true},
+    {"item": "Owner reference errors caught before Create calls", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All K8s API errors wrapped with resource context", "checked": true},
+    {"item": "IsDeploymentReady handles nil Spec.Replicas", "checked": true},
+    {"item": "CreateImmutableConfigMap handles AlreadyExists idempotently", "checked": true},
+    {"item": "IsSecretReady validates expectedKeys from Secret.Data", "checked": false}
+  ],
+  "security_findings": [],
+  "architecture_findings": [
+    {
+      "severity": "INFO",
+      "description": "All Ensure* functions use manual Get+Create/Update instead of controllerutil.CreateOrUpdate. The review criteria specifies CreateOrUpdate usage (REQ-010), but the reference docs document this as an intentional design choice for explicit control. The pattern is consistent across all 9 Ensure* call sites. Note: CreateOrUpdate handles potential race conditions (object created between Get and Create) via retry, which the manual pattern does not. In practice, this race is negligible for controller-owned resources.",
+      "location": "internal/common/deployment/deployment.go:25, database/database.go:28, job/job.go:25, secrets/secrets.go:74, tls/tls.go:27",
+      "fix": "No action required if this is a deliberate architectural decision. Document the rationale in a code comment or ADR if not already captured."
+    },
+    {
+      "severity": "INFO",
+      "description": "All functions use controllerutil.SetControllerReference instead of controllerutil.SetOwnerReference as mentioned in the spec. SetControllerReference is the correct choice for operator-owned resources (sets controller=true, blockOwnerDeletion=true). This ensures proper garbage collection and prevents multiple controllers from claiming the same resource.",
+      "location": "All Ensure* functions across 5 packages",
+      "fix": "No action required. SetControllerReference is the correct choice."
+    }
+  ],
+  "issues_found": [
+    {
+      "id": "FC1-1",
+      "severity": "blocking",
+      "check": "FC1",
+      "file": "internal/common/secrets/secrets.go",
+      "line": 43,
+      "description": "IsSecretReady missing expectedKeys validation. Spec (task 3.1) requires: 'IsSecretReady: Get corev1.Secret, check all expectedKeys present in .Data, return (bool, error)' with signature 'IsSecretReady(ctx, client, namespace, name string, expectedKeys ...string) (bool, error)'. Implementation only checks Secret existence with signature IsSecretReady(ctx, c, key) — no key validation. The docs acknowledge this simplified behavior, but the plan requirement is unmet.",
+      "fix": "Add variadic expectedKeys parameter. After confirming the Secret exists, iterate expectedKeys and verify each is present in secret.Data. Return (false, nil) if any key is missing. Alternatively: if the simplified API is intentional, update the plan/spec to match and document the design decision."
+    },
+    {
+      "id": "FC1-2",
+      "severity": "blocking",
+      "check": "FC1",
+      "file": "internal/common/config/",
+      "line": 0,
+      "description": "Missing config/integration_test.go. Task 3.3 explicitly requires: 'Create integration_test.go with //go:build integration tag testing actual ConfigMap creation, immutability flag, owner reference, and idempotency.' The existing tests in config_test.go use fake.NewClientBuilder() (unit tests), not envtest. While fake client tests cover the same scenarios, the plan specifically calls for envtest integration tests.",
+      "fix": "Create internal/common/config/integration_test.go with //go:build integration tag, SkipIfEnvTestUnavailable guard, and SetupEnvTest following the pattern in deployment/integration_test.go. Test: ConfigMap creation, immutable flag, owner reference, idempotency, and different-data-different-name."
+    },
+    {
+      "id": "FC1-3",
+      "severity": "blocking",
+      "check": "FC1",
+      "file": "internal/common/policy/",
+      "line": 0,
+      "description": "Missing policy/integration_test.go. Task 3.5 explicitly requires: 'Create integration_test.go with //go:build integration tag testing: successful load, ConfigMap not found, missing key, invalid YAML.' The existing tests in policy_test.go use fake.NewClientBuilder() (unit tests), not envtest.",
+      "fix": "Create internal/common/policy/integration_test.go with //go:build integration tag, SkipIfEnvTestUnavailable guard, and SetupEnvTest. Test: successful load, ConfigMap not found, missing policy.yaml key, invalid YAML content."
+    },
+    {
+      "id": "TE3-1",
+      "severity": "major",
+      "check": "TE3",
+      "file": "internal/common/job/job.go",
+      "line": 42,
+      "description": "RunJob does not detect permanently failed Jobs. If a Job exceeds its backoffLimit, RunJob returns (false, nil) indefinitely. The reconciler has no way to distinguish a running job from a permanently failed one, leading to infinite requeue loops without error surfacing.",
+      "fix": "Add IsJobFailed helper checking for batchv1.JobFailed condition with status True. In RunJob, check IsJobFailed before IsJobComplete and return a descriptive error (e.g., fmt.Errorf with a sentinel error) so reconcilers can set a Failed condition."
+    },
+    {
+      "id": "Q6-1",
+      "severity": "minor",
+      "check": "Q6",
+      "file": "internal/common/config/config.go",
+      "line": 131,
+      "description": "Magic number 8 in hash truncation hex.EncodeToString(h.Sum(nil))[:8]. The truncation length determines collision probability and ConfigMap name structure but is undocumented.",
+      "fix": "Extract to named constant: const hashTruncLen = 8 // 4 bytes (32 bits) of SHA-256"
+    },
+    {
+      "id": "Q6-2",
+      "severity": "minor",
+      "check": "Q6",
+      "file": "internal/common/policy/policy.go",
+      "line": 33,
+      "description": "String literal \"policy.yaml\" hardcoded in LoadPolicyFromConfigMap. This ConfigMap data key is part of the operator-user contract.",
+      "fix": "Extract to package-level constant: const PolicyYAMLKey = \"policy.yaml\""
+    },
+    {
+      "id": "Q3-1",
+      "severity": "minor",
+      "check": "Q3",
+      "file": "internal/common/testutil/simulators/simulators.go",
+      "line": 87,
+      "description": "SimulateMariaDBReady uses literal string \"Ready\" at line 87 despite conditionTypeReady constant defined at line 27 in the same file. The constant is only used by setUnstructuredReadyStatus.",
+      "fix": "Use conditionTypeReady constant at line 87 for consistency within the file."
+    },
+    {
+      "id": "TE3-2",
+      "severity": "minor",
+      "check": "TE3",
+      "file": "internal/common/job/job_test.go",
+      "line": 104,
+      "description": "Missing test case for RunJob when the underlying Job has a Failed condition. Tests cover incomplete (no conditions) and complete (JobComplete=True), but not the failed state. This documents an implicit API contract that RunJob treats failed jobs as in-progress.",
+      "fix": "Add TestRunJob_existingFailed that creates a Job with batchv1.JobFailed condition and verifies RunJob returns (false, nil)."
+    },
+    {
+      "id": "TE7-1",
+      "severity": "minor",
+      "check": "TE7",
+      "file": "internal/common/policy/policy_test.go",
+      "line": 30,
+      "description": "Dead test infrastructure: wantErr field defined in TestRenderPolicyYAML table struct but no test case sets it to true, so the error-path assertion (lines 77-79) is never exercised.",
+      "fix": "Remove wantErr field from the test struct since RenderPolicyYAML cannot currently produce errors that would be triggered by the test inputs."
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a hash format comment in CreateImmutableConfigMap explaining the key=value\\n encoding (e.g., noting that ConfigMap keys cannot contain '=' per K8s naming rules, so the format is unambiguous)",
+    "Add an inline comment in InjectOsloPolicyConfig explaining that MergeDefaults(config, nil) is used as a deep-copy operation",
+    "Consider extracting the condition type string 'Ready' to a shared constant in internal/common/conditions/ for reuse across database/, simulators/, and future packages"
+  ],
+  "next_steps": [
+    "Add expectedKeys ...string parameter to IsSecretReady and implement key validation against Secret.Data",
+    "Create internal/common/config/integration_test.go with //go:build integration tag",
+    "Create internal/common/policy/integration_test.go with //go:build integration tag",
+    "Consider adding IsJobFailed detection in RunJob to prevent infinite requeue on permanently failed Jobs"
+  ],
+  "detected_patterns": [
+    {
+      "name": "Manual Get+Create/Update with SetControllerReference",
+      "component": "internal/common/*/",
+      "category": "data-access",
+      "applies_when": "Implementing an Ensure* or Run* function that creates or updates a Kubernetes resource owned by a controller",
+      "description": "All K8s-interacting functions follow a consistent Get+IsNotFound+Create/Update pattern instead of controllerutil.CreateOrUpdate. On not-found: set controller reference via SetControllerReference, then Create. On exists: overwrite existing.Spec with desired.Spec, then Update. Owner references are set only on create (not on update). The pattern returns (bool, error) where bool indicates readiness. Error wrapping includes resource namespace/name context.",
+      "examples": [
+        {
+          "location": "internal/common/deployment/deployment.go:25",
+          "code": "func EnsureDeployment(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, deploy *appsv1.Deployment) (bool, error) {\n\texisting := &appsv1.Deployment{}\n\terr := c.Get(ctx, client.ObjectKeyFromObject(deploy), existing)\n\n\tif apierrors.IsNotFound(err) {\n\t\tif err := controllerutil.SetControllerReference(owner, deploy, scheme); err != nil {\n\t\t\treturn false, fmt.Errorf(\"setting owner reference on Deployment %s/%s: %w\", deploy.Namespace, deploy.Name, err)\n\t\t}\n\t\tif err := c.Create(ctx, deploy); err != nil {\n\t\t\treturn false, fmt.Errorf(\"creating Deployment %s/%s: %w\", deploy.Namespace, deploy.Name, err)\n\t\t}\n\t\treturn false, nil\n\t}\n\tif err != nil {\n\t\treturn false, fmt.Errorf(\"getting Deployment %s/%s: %w\", deploy.Namespace, deploy.Name, err)\n\t}\n\n\texisting.Spec = deploy.Spec\n\tif err := c.Update(ctx, existing); err != nil {\n\t\treturn false, fmt.Errorf(\"updating Deployment %s/%s: %w\", deploy.Namespace, deploy.Name, err)\n\t}\n\n\treturn IsDeploymentReady(existing), nil\n}"
+        },
+        {
+          "location": "internal/common/tls/tls.go:27",
+          "code": "func EnsureCertificate(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, cert *certmanagerv1.Certificate) (bool, error) {\n\texisting := &certmanagerv1.Certificate{}\n\terr := c.Get(ctx, client.ObjectKeyFromObject(cert), existing)\n\n\tif apierrors.IsNotFound(err) {\n\t\tif err := controllerutil.SetControllerReference(owner, cert, scheme); err != nil {\n\t\t\treturn false, fmt.Errorf(\"setting owner reference on Certificate %s/%s: %w\", cert.Namespace, cert.Name, err)\n\t\t}\n\t\tif err := c.Create(ctx, cert); err != nil {\n\t\t\treturn false, fmt.Errorf(\"creating Certificate %s/%s: %w\", cert.Namespace, cert.Name, err)\n\t\t}\n\t\treturn false, nil\n\t}\n\tif err != nil {\n\t\treturn false, fmt.Errorf(\"getting Certificate %s/%s: %w\", cert.Namespace, cert.Name, err)\n\t}\n\n\texisting.Spec = cert.Spec\n\tif err := c.Update(ctx, existing); err != nil {\n\t\treturn false, fmt.Errorf(\"updating Certificate %s/%s: %w\", cert.Namespace, cert.Name, err)\n\t}\n\n\treturn IsCertificateReady(existing), nil\n}"
+        }
+      ]
+    },
+    {
+      "name": "Typed external CRD simulator with status condition patching",
+      "component": "internal/common/testutil/simulators",
+      "category": "testing",
+      "applies_when": "Adding a new simulator for an external operator CRD that has been migrated from unstructured to typed (CC-0005 scope: MariaDB Database/User/Grant, ESO PushSecret, cert-manager Certificate)",
+      "description": "Typed simulators (CC-0005) use the external operator's Go types directly instead of unstructured.Unstructured. Each simulator: (1) creates a typed empty struct, (2) calls client.Get to retrieve the existing resource, (3) sets status conditions using either meta.SetStatusCondition (for metav1.Condition-based types like MariaDB) or direct status field assignment (for operator-specific condition types like ESO/cert-manager), (4) calls client.Status().Update(). Unit tests verify happy path, idempotency (call twice), and not-found error. The unstructured pattern (CC-0002) remains for CRDs without typed Go imports (e.g., Memcached).",
+      "examples": [
+        {
+          "location": "internal/common/testutil/simulators/typed_simulators.go:25",
+          "code": "func SimulateDatabaseReady(ctx context.Context, c client.Client, key client.ObjectKey) error {\n\tdb := &mariadbv1alpha1.Database{}\n\tif err := c.Get(ctx, key, db); err != nil {\n\t\treturn fmt.Errorf(\"getting Database %s: %w\", key, err)\n\t}\n\n\tmeta.SetStatusCondition(&db.Status.Conditions, metav1.Condition{\n\t\tType:    \"Ready\",\n\t\tStatus:  metav1.ConditionTrue,\n\t\tReason:  \"DatabaseReady\",\n\t\tMessage: \"Database is ready\",\n\t})\n\n\treturn c.Status().Update(ctx, db)\n}"
+        },
+        {
+          "location": "internal/common/testutil/simulators/typed_simulators.go:99",
+          "code": "func SimulateCertificateReady(ctx context.Context, c client.Client, key client.ObjectKey) error {\n\tcert := &certmanagerv1.Certificate{}\n\tif err := c.Get(ctx, key, cert); err != nil {\n\t\treturn fmt.Errorf(\"getting Certificate %s: %w\", key, err)\n\t}\n\n\tnow := metav1.Now()\n\tcert.Status.Conditions = []certmanagerv1.CertificateCondition{\n\t\t{\n\t\t\tType:               certmanagerv1.CertificateConditionReady,\n\t\t\tStatus:             cmmeta.ConditionTrue,\n\t\t\tReason:             \"CertificateReady\",\n\t\t\tMessage:            \"Certificate is ready\",\n\t\t\tLastTransitionTime: &now,\n\t\t},\n\t}\n\n\treturn c.Status().Update(ctx, cert)\n}"
+        }
+      ]
+    },
+    {
+      "name": "Namespace-isolated envtest integration tests with SkipIfEnvTestUnavailable",
+      "component": "internal/common/*/integration_test.go",
+      "category": "testing",
+      "applies_when": "Writing envtest integration tests for any package in internal/common/ that interacts with the Kubernetes API",
+      "description": "Integration tests use //go:build integration tag, call envtestutil.SkipIfEnvTestUnavailable(t) as the first line, and call envtestutil.SetupEnvTest(t) to get a client+context. Each test function creates a unique namespace (e.g., 'test-db-ensure', 'test-deploy-create') for resource isolation, preventing cross-test interference. Tests verify: resource creation, owner references, status handling after simulator calls, idempotency (call Ensure* twice, verify single resource), and not-found error paths.",
+      "examples": [
+        {
+          "location": "internal/common/database/integration_test.go:25",
+          "code": "func TestIntegration_EnsureDatabase_creates(t *testing.T) {\n\tenvtestutil.SkipIfEnvTestUnavailable(t)\n\tc, ctx, _ := envtestutil.SetupEnvTest(t)\n\n\tns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: \"test-db-ensure\"}}\n\tg := NewGomegaWithT(t)\n\tg.Expect(c.Create(ctx, ns)).To(Succeed())\n\n\towner := &corev1.ConfigMap{\n\t\tObjectMeta: metav1.ObjectMeta{Name: \"test-owner\", Namespace: ns.Name, UID: \"test-uid\"},\n\t}\n\tg.Expect(c.Create(ctx, owner)).To(Succeed())\n\t// ... test body\n}"
+        },
+        {
+          "location": "internal/common/tls/integration_test.go:25",
+          "code": "func TestIntegration_EnsureCertificate_creates(t *testing.T) {\n\tenvtestutil.SkipIfEnvTestUnavailable(t)\n\tc, ctx, _ := envtestutil.SetupEnvTest(t)\n\n\tns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: \"test-cert-ensure\"}}\n\tg := NewGomegaWithT(t)\n\tg.Expect(c.Create(ctx, ns)).To(Succeed())\n\t// ... test body\n}"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,102 @@
+{
+  "feature_id": "CC-0005",
+  "title": "B002: Implement Kubernetes-interacting packages",
+  "date": "2026-03-06",
+  "summary": "Review of changes addressing greptile-apps[bot] review #7 feedback: pod-level API-server default normalization was added to normalizePodSpecDefaults in job.go, and complete copies of normalizePodSpecDefaults/normalizeContainerDefaults/defaultImagePullPolicy were added to deployment.go. EnsureDeployment and EnsureCronJob now deep-copy and normalize the desired spec before comparison. Three new unit tests (TestEnsureDeployment_apiServerDefaults, TestEnsureCronJob_apiServerDefaults, expanded TestRunJob_existingComplete_apiServerDefaults) verify the fix. The external review feedback is fully addressed. However, two issues were introduced: a bug in deployment.go's simplified defaultImagePullPolicy (mishandles registry:port/image with no tag), and full code duplication of ~50 lines of normalization logic across both packages.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "All unit tests pass (deployment: 17 pass, job: 22 pass)", "checked": true},
+    {"item": "New apiServerDefaults tests cover the external review scenario", "checked": true},
+    {"item": "Edge cases for defaultImagePullPolicy covered in job_test.go (table-driven)", "checked": true},
+    {"item": "deployment.go defaultImagePullPolicy has no dedicated tests — bug hidden", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (CC-0005 tag, gomega matchers, error wrapping)", "checked": true},
+    {"item": "No code duplication (normalization functions duplicated across job.go and deployment.go)", "checked": false},
+    {"item": "Consistent formatting (job.go:103 has indentation inconsistency)", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "No injection vulnerabilities", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Normalization logic should be shared, not duplicated", "checked": false},
+    {"item": "Deep-copy before comparison prevents caller mutation", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "normalizePodSpecDefaults duplicated in two packages", "checked": false},
+    {"item": "normalizeContainerDefaults duplicated in two packages", "checked": false},
+    {"item": "defaultImagePullPolicy duplicated in two packages (with divergent implementations)", "checked": false}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early with proper wrapping", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Deep-copy isolates comparison from caller state", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [
+    {
+      "severity": "MAJOR",
+      "description": "Q3: normalizePodSpecDefaults, normalizeContainerDefaults, and defaultImagePullPolicy are fully duplicated across job/job.go and deployment/deployment.go (~50 lines each). Worse, the two copies of defaultImagePullPolicy have divergent implementations — job.go's version correctly handles registry:port/image references while deployment.go's version does not. This duplication will cause maintenance drift. Extract into a shared internal package (e.g., internal/common/k8sutil/podspec.go) imported by both.",
+      "location": "internal/common/deployment/deployment.go:139-189 and internal/common/job/job.go:146-210",
+      "fix": "Create internal/common/k8sutil/podspec.go with the three shared functions (use job.go's more robust defaultImagePullPolicy implementation). Import from both deployment/ and job/ packages."
+    }
+  ],
+  "issues_found": [
+    {
+      "id": "C3-1",
+      "severity": "blocking",
+      "check_id": "C3",
+      "file": "internal/common/deployment/deployment.go",
+      "line": 184,
+      "description": "deployment.go's defaultImagePullPolicy mishandles registry:port/image references with no tag. For image 'registry:5000/myapp', strings.Contains(image, \":\") returns true (matching the port colon), so the function returns PullIfNotPresent. Kubernetes treats untagged images as :latest and uses PullAlways. The job.go version correctly handles this by isolating the image name portion after the last '/' before checking for a tag colon.",
+      "fix": "Replace deployment.go's defaultImagePullPolicy with job.go's version (which handles @sha256 digests and registry ports), or extract both into a shared package."
+    },
+    {
+      "id": "Q3-1",
+      "severity": "major",
+      "check_id": "Q3",
+      "file": "internal/common/deployment/deployment.go",
+      "line": 139,
+      "description": "Three functions (normalizePodSpecDefaults, normalizeContainerDefaults, defaultImagePullPolicy) are duplicated between deployment/deployment.go and job/job.go. The duplication already caused a bug — deployment.go got a simplified (incorrect) version of defaultImagePullPolicy while job.go has the robust version.",
+      "fix": "Extract all three functions into a shared package (e.g., internal/common/k8sutil/podspec.go) and import from both deployment/ and job/."
+    },
+    {
+      "id": "Q5-1",
+      "severity": "minor",
+      "check_id": "Q5",
+      "file": "internal/common/job/job.go",
+      "line": 103,
+      "description": "Indentation inconsistency: comment at line 103 starts with two tabs (extra indentation) while its continuation at line 104 has one tab. This breaks the visual alignment.",
+      "fix": "Remove the extra tab at the start of line 103 so the comment aligns with the surrounding code at one-tab indentation."
+    }
+  ],
+  "suggested_improvements": [
+    "Consider verifying no-update in apiServerDefaults tests using ResourceVersion comparison (as done in TestEnsureService_skipsUpdateWhenSpecUnchanged) instead of field-value proxies"
+  ],
+  "next_steps": [
+    "Fix C3-1: Replace deployment.go's defaultImagePullPolicy with job.go's robust version, or extract into shared package",
+    "Fix Q3-1: Extract normalizePodSpecDefaults, normalizeContainerDefaults, defaultImagePullPolicy into a shared internal package",
+    "Fix Q5-1: Remove extra tab on job.go:103"
+  ],
+  "detected_patterns": [
+    {
+      "name": "API-server default normalization for spec comparison",
+      "component": "internal/common/deployment, internal/common/job",
+      "category": "data-access",
+      "applies_when": "Implementing create-or-update logic that compares a desired Kubernetes resource spec against the stored (API-server-defaulted) spec to avoid spurious updates",
+      "description": "When comparing a caller-constructed Kubernetes resource spec against an API-server-stored spec, the desired spec must be deep-copied and normalized to fill in API-server defaults before the comparison. This prevents infinite update loops caused by zero-value fields in the caller's spec differing from defaulted fields in the stored spec. The comparison uses the normalized copy, but the update (if needed) writes the original spec to let the API server apply its own defaults. Both pod-level defaults (ServiceAccountName, DNSPolicy, SchedulerName, TerminationGracePeriodSeconds, EnableServiceLinks) and container-level defaults (ImagePullPolicy, TerminationMessagePath, TerminationMessagePolicy) must be normalized.",
+      "examples": [
+        {
+          "location": "internal/common/job/job.go:59-61",
+          "code": "desiredSpec := job.Spec.Template.Spec.DeepCopy()\nnormalizePodSpecDefaults(desiredSpec)\nif !apiequality.Semantic.DeepEqual(existing.Spec.Template.Spec, *desiredSpec) {"
+        },
+        {
+          "location": "internal/common/deployment/deployment.go:47-50",
+          "code": "desiredSpec := deploy.Spec.DeepCopy()\nnormalizePodSpecDefaults(&desiredSpec.Template.Spec)\n\nif !apiequality.Semantic.DeepEqual(existing.Spec, *desiredSpec) {"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,91 @@
+{
+  "feature_id": "CC-0005",
+  "title": "B002: Implement Kubernetes-interacting packages",
+  "date": "2026-03-09",
+  "verdict": "APPROVED",
+  "summary": "Review #13 feedback from gndrmnn fully addressed: (1) database readiness checks refactored to use shared conditions.IsReady(), (2) entire normalize package deleted and replaced with unconditional updates (deployment, cronJob) and hash-based comparison (job), (3) GetTLSSecret returns (certPEM, keyPEM, err) instead of (*corev1.Secret, error), (4) EnsureService gained validateImmutableServiceFields guard for ClusterIP/ClusterIPs/IPFamilies, (5) typed_simulators.go merged into simulators.go. Net -686 lines. All 72 unit tests pass, go build/vet/golangci-lint clean, no dangling references to deleted normalize package.",
+  "tests_checklist": [
+    {"item": "All unit tests pass (72/72 across deployment, job, tls, database)", "checked": true},
+    {"item": "Edge cases covered (no-hash-annotation backward compat, immutable field conflicts, matching immutable fields allowed)", "checked": true},
+    {"item": "Tests updated for GetTLSSecret new signature (certPEM, keyPEM, err)", "checked": true},
+    {"item": "Normalization-based tests properly removed alongside normalize package deletion", "checked": true},
+    {"item": "Hash annotation presence verified in Job creation and replacement tests", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (error wrapping with %w, controllerutil usage)", "checked": true},
+    {"item": "Functions are focused and single-responsibility", "checked": true},
+    {"item": "No dead code or unused imports remain", "checked": true},
+    {"item": "Consistent use of conditions.IsReady() across database package", "checked": true},
+    {"item": "Clean separation of concerns (createJobWithHash extracted as helper)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets or credentials", "checked": true},
+    {"item": "SHA-256 hashing used appropriately for PodSpec comparison", "checked": true},
+    {"item": "No injection vulnerabilities", "checked": true},
+    {"item": "Fail-fast validation for immutable service fields prevents silent data corruption", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Normalize package removal eliminates API-server-default mirroring maintenance burden", "checked": true},
+    {"item": "Hash-based Job comparison is simpler and more robust than normalization", "checked": true},
+    {"item": "GetTLSSecret returns data directly instead of leaking Secret object to callers", "checked": true},
+    {"item": "validateImmutableServiceFields catches programming errors early", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code across packages", "checked": true},
+    {"item": "Normalize package (9 files, ~500 lines) correctly identified as unnecessary and removed", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "validateImmutableServiceFields returns error immediately on conflict", "checked": true},
+    {"item": "GetTLSSecret validates presence of tls.crt and tls.key before returning", "checked": true},
+    {"item": "All API errors wrapped with context (namespace/name/operation)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "createJobWithHash uses DeepCopy to avoid mutating caller's Job object", "checked": true},
+    {"item": "EnsureService works on DeepCopy of desired spec to avoid caller mutation", "checked": true},
+    {"item": "AlreadyExists handled gracefully in createJobWithHash (old Job still terminating)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "D2 (minor): deployment.go:144 — ipFamiliesEqual reimplements slices.Equal which is already imported and works with []corev1.IPFamily (IPFamily is a comparable type). Consider replacing with slices.Equal(a, b) to reduce code.",
+    "D2 (minor): job.go:31 — PodSpecHash discards the json.Marshal error with `data, _ := json.Marshal(spec)`. This is safe for *corev1.PodSpec (no unserializable types), but a brief comment explaining why would improve clarity for future readers."
+  ],
+  "next_steps": [],
+  "detected_patterns": [
+    {
+      "name": "Hash-based spec comparison for immutable Kubernetes resources",
+      "component": "internal/common/job",
+      "category": "data-access",
+      "applies_when": "Implementing create-or-update logic for Kubernetes resources whose specs are mutated by API-server defaulting (e.g., Jobs where PodSpec fields like ImagePullPolicy are filled in after creation), and you need to detect whether the desired spec has changed from what was originally created",
+      "description": "Instead of maintaining a normalization layer that mirrors API-server defaulting logic (fragile and requires updates with every Kubernetes version), a SHA-256 hash of the desired spec is stored as an annotation at creation time. On subsequent reconciliations, the hash of the current desired spec is compared against the stored annotation. This is used specifically for Jobs because they are immutable after creation — if the spec changes, the old Job must be deleted and a new one created. The annotation key follows the pattern 'forge.c5c3.io/<spec-type>-hash'.",
+      "examples": [
+        {
+          "location": "internal/common/job/job.go:23-34",
+          "code": "const PodSpecHashAnnotation = \"forge.c5c3.io/pod-spec-hash\"\n\nfunc PodSpecHash(spec *corev1.PodSpec) string {\n\tdata, _ := json.Marshal(spec)\n\tsum := sha256.Sum256(data)\n\treturn hex.EncodeToString(sum[:])\n}"
+        },
+        {
+          "location": "internal/common/job/job.go:69-79",
+          "code": "\t\tdesiredHash := PodSpecHash(&job.Spec.Template.Spec)\n\t\texistingHash := existing.Annotations[PodSpecHashAnnotation]\n\t\tif desiredHash != existingHash {\n\t\t\tif err := c.Delete(ctx, existing); err != nil {\n\t\t\t\treturn false, fmt.Errorf(\"deleting stale Job %s/%s: %w\", existing.Namespace, existing.Name, err)\n\t\t\t}\n\t\t\tif err := createJobWithHash(ctx, c, scheme, owner, job); err != nil {\n\t\t\t\treturn false, err\n\t\t\t}\n\t\t\treturn false, nil\n\t\t}"
+        }
+      ]
+    },
+    {
+      "name": "Unconditional spec update for mutable Kubernetes resources",
+      "component": "internal/common/deployment, internal/common/job",
+      "category": "data-access",
+      "applies_when": "Implementing create-or-update logic for mutable Kubernetes resources (Deployments, Services, CronJobs) where the API server applies defaulting that makes comparison unreliable without a normalization layer",
+      "description": "For mutable resources (Deployments, Services, CronJobs), the Ensure* functions always update the spec to the desired state on every reconciliation, rather than comparing existing vs desired specs. This avoids the maintenance burden of a normalization layer that mirrors API-server defaulting logic. The approach trades a small number of no-op API writes for complete elimination of false-positive and false-negative spec comparisons. Server-assigned immutable fields (ClusterIP, ClusterIPs, IPFamilies on Services) are explicitly preserved before the update.",
+      "examples": [
+        {
+          "location": "internal/common/deployment/deployment.go:43-53",
+          "code": "\t// Always update the spec to the desired state. This avoids maintaining\n\t// a normalization layer to replicate API-server defaulting logic, which\n\t// would be an unmanageable maintenance burden (CC-0005).\n\texisting.Spec = deploy.Spec\n\tif err := c.Update(ctx, existing); err != nil {\n\t\treturn false, fmt.Errorf(\"updating Deployment %s/%s: %w\", deploy.Namespace, deploy.Name, err)\n\t}"
+        },
+        {
+          "location": "internal/common/job/job.go:128-134",
+          "code": "\t// Always update the spec to the desired state. This avoids maintaining\n\t// a normalization layer to replicate API-server defaulting logic\n\t// (CC-0005).\n\texisting.Spec = cronJob.Spec\n\tif err := c.Update(ctx, existing); err != nil {\n\t\treturn fmt.Errorf(\"updating CronJob %s/%s: %w\", cronJob.Namespace, cronJob.Name, err)\n\t}"
+        }
+      ]
+    }
+  ]
+}

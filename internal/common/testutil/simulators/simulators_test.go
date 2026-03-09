@@ -10,6 +10,8 @@ import (
 
 	. "github.com/onsi/gomega"
 
+	esov1beta1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1beta1"
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,6 +38,8 @@ func newScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = corev1.AddToScheme(s)
 	_ = batchv1.AddToScheme(s)
+	_ = mariadbv1alpha1.AddToScheme(s)
+	_ = esov1beta1.AddToScheme(s)
 	return s
 }
 
@@ -44,7 +48,9 @@ func newScheme() *runtime.Scheme {
 func TestSimulateMariaDBReady(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	mariadb := newUnstructured("k8s.mariadb.com", "v1alpha1", "MariaDB", "test-mariadb", "default")
+	mariadb := &mariadbv1alpha1.MariaDB{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-mariadb", Namespace: "default"},
+	}
 
 	c := fake.NewClientBuilder().
 		WithScheme(newScheme()).
@@ -55,34 +61,26 @@ func TestSimulateMariaDBReady(t *testing.T) {
 	err := SimulateMariaDBReady(context.Background(), c, client.ObjectKeyFromObject(mariadb), 3)
 	g.Expect(err).NotTo(HaveOccurred())
 
-	updated := newUnstructured("k8s.mariadb.com", "v1alpha1", "MariaDB", "test-mariadb", "default")
+	updated := &mariadbv1alpha1.MariaDB{}
 	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(mariadb), updated)).To(Succeed())
 
-	readyReplicas, found, err := unstructured.NestedInt64(updated.Object, "status", "readyReplicas")
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(found).To(BeTrue())
-	g.Expect(readyReplicas).To(BeEquivalentTo(3))
+	g.Expect(updated.Status.Replicas).To(BeEquivalentTo(3))
+	g.Expect(updated.Status.CurrentPrimaryPodIndex).NotTo(BeNil())
+	g.Expect(*updated.Status.CurrentPrimaryPodIndex).To(Equal(0))
+	g.Expect(updated.Status.Conditions).To(HaveLen(1))
 
-	primaryIdx, found, err := unstructured.NestedInt64(updated.Object, "status", "currentPrimaryPodIndex")
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(found).To(BeTrue())
-	g.Expect(primaryIdx).To(BeEquivalentTo(0))
-
-	conditions, found, err := unstructured.NestedSlice(updated.Object, "status", "conditions")
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(found).To(BeTrue())
-	g.Expect(conditions).To(HaveLen(1))
-
-	cond := conditions[0].(map[string]interface{})
-	g.Expect(cond["type"]).To(Equal("Ready"))
-	g.Expect(cond["status"]).To(Equal("True"))
-	g.Expect(cond["reason"]).To(Equal("MariaDBReady"))
+	cond := updated.Status.Conditions[0]
+	g.Expect(cond.Type).To(Equal("Ready"))
+	g.Expect(string(cond.Status)).To(Equal("True"))
+	g.Expect(cond.Reason).To(Equal("MariaDBReady"))
 }
 
 func TestSimulateMariaDBReady_idempotent(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	mariadb := newUnstructured("k8s.mariadb.com", "v1alpha1", "MariaDB", "test-mariadb", "default")
+	mariadb := &mariadbv1alpha1.MariaDB{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-mariadb", Namespace: "default"},
+	}
 
 	c := fake.NewClientBuilder().
 		WithScheme(newScheme()).
@@ -97,19 +95,18 @@ func TestSimulateMariaDBReady_idempotent(t *testing.T) {
 	g.Expect(SimulateMariaDBReady(ctx, c, key, 3)).To(Succeed())
 	g.Expect(SimulateMariaDBReady(ctx, c, key, 3)).To(Succeed())
 
-	updated := newUnstructured("k8s.mariadb.com", "v1alpha1", "MariaDB", "test-mariadb", "default")
+	updated := &mariadbv1alpha1.MariaDB{}
 	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
 
-	conditions, found, err := unstructured.NestedSlice(updated.Object, "status", "conditions")
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(found).To(BeTrue())
-	g.Expect(conditions).To(HaveLen(1), "expected exactly 1 condition after two calls")
+	g.Expect(updated.Status.Conditions).To(HaveLen(1), "expected exactly 1 condition after two calls")
 }
 
 func TestSimulateMariaDBReady_zeroReplicas(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	mariadb := newUnstructured("k8s.mariadb.com", "v1alpha1", "MariaDB", "test-mariadb", "default")
+	mariadb := &mariadbv1alpha1.MariaDB{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-mariadb", Namespace: "default"},
+	}
 
 	c := fake.NewClientBuilder().
 		WithScheme(newScheme()).
@@ -119,13 +116,10 @@ func TestSimulateMariaDBReady_zeroReplicas(t *testing.T) {
 
 	g.Expect(SimulateMariaDBReady(context.Background(), c, client.ObjectKeyFromObject(mariadb), 0)).To(Succeed())
 
-	updated := newUnstructured("k8s.mariadb.com", "v1alpha1", "MariaDB", "test-mariadb", "default")
+	updated := &mariadbv1alpha1.MariaDB{}
 	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(mariadb), updated)).To(Succeed())
 
-	readyReplicas, found, err := unstructured.NestedInt64(updated.Object, "status", "readyReplicas")
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(found).To(BeTrue())
-	g.Expect(readyReplicas).To(BeEquivalentTo(0))
+	g.Expect(updated.Status.Replicas).To(BeEquivalentTo(0))
 }
 
 func TestSimulateMariaDBReady_notFound(t *testing.T) {
@@ -247,7 +241,9 @@ func TestSimulateMemcachedReady_notFound(t *testing.T) {
 func TestSimulateExternalSecretSync(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	es := newUnstructured("external-secrets.io", "v1beta1", "ExternalSecret", "test-es", "default")
+	es := &esov1beta1.ExternalSecret{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-es", Namespace: "default"},
+	}
 
 	c := fake.NewClientBuilder().
 		WithScheme(newScheme()).
@@ -258,29 +254,24 @@ func TestSimulateExternalSecretSync(t *testing.T) {
 	err := SimulateExternalSecretSync(context.Background(), c, client.ObjectKeyFromObject(es))
 	g.Expect(err).NotTo(HaveOccurred())
 
-	updated := newUnstructured("external-secrets.io", "v1beta1", "ExternalSecret", "test-es", "default")
+	updated := &esov1beta1.ExternalSecret{}
 	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(es), updated)).To(Succeed())
 
-	refreshTime, found, err := unstructured.NestedString(updated.Object, "status", "refreshTime")
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(found).To(BeTrue())
-	g.Expect(refreshTime).NotTo(BeEmpty())
+	g.Expect(updated.Status.RefreshTime.IsZero()).To(BeFalse())
+	g.Expect(updated.Status.Conditions).To(HaveLen(1))
 
-	conditions, found, err := unstructured.NestedSlice(updated.Object, "status", "conditions")
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(found).To(BeTrue())
-	g.Expect(conditions).To(HaveLen(1))
-
-	cond := conditions[0].(map[string]interface{})
-	g.Expect(cond["type"]).To(Equal("Ready"))
-	g.Expect(cond["status"]).To(Equal("True"))
-	g.Expect(cond["reason"]).To(Equal("SecretSynced"))
+	cond := updated.Status.Conditions[0]
+	g.Expect(cond.Type).To(Equal(esov1beta1.ExternalSecretReady))
+	g.Expect(cond.Status).To(Equal(corev1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("SecretSynced"))
 }
 
 func TestSimulateExternalSecretSync_idempotent(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	es := newUnstructured("external-secrets.io", "v1beta1", "ExternalSecret", "test-es", "default")
+	es := &esov1beta1.ExternalSecret{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-es", Namespace: "default"},
+	}
 
 	c := fake.NewClientBuilder().
 		WithScheme(newScheme()).
@@ -294,13 +285,10 @@ func TestSimulateExternalSecretSync_idempotent(t *testing.T) {
 	g.Expect(SimulateExternalSecretSync(ctx, c, key)).To(Succeed())
 	g.Expect(SimulateExternalSecretSync(ctx, c, key)).To(Succeed())
 
-	updated := newUnstructured("external-secrets.io", "v1beta1", "ExternalSecret", "test-es", "default")
+	updated := &esov1beta1.ExternalSecret{}
 	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
 
-	conditions, found, err := unstructured.NestedSlice(updated.Object, "status", "conditions")
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(found).To(BeTrue())
-	g.Expect(conditions).To(HaveLen(1), "expected exactly 1 condition after two calls")
+	g.Expect(updated.Status.Conditions).To(HaveLen(1), "expected exactly 1 condition after two calls")
 }
 
 func TestSimulateExternalSecretSync_notFound(t *testing.T) {

@@ -1,0 +1,70 @@
+{
+  "feature_id": "CC-0005",
+  "title": "B002: Implement Kubernetes-interacting packages",
+  "date": "2026-03-05",
+  "verdict": "APPROVED",
+  "summary": "All five issues from the greptile-apps[bot] external review are correctly addressed: (1) re-fetch after c.Update in EnsureDeployment, EnsureDatabase, ensureUser, ensureGrant, and EnsureCertificate to avoid evaluating stale pre-update status; (2) ObservedGeneration guard added to IsDeploymentReady; (3) NodePort preservation in EnsureService matching by Port+Protocol; (4) owner reference verification in CreateImmutableConfigMap on AlreadyExists path. Tests added for all new behaviors. All unit tests pass, go vet clean, golangci-lint clean, gosec clean.",
+  "tests_checklist": [
+    {"item": "All existing unit tests pass (config, deployment packages)", "checked": true},
+    {"item": "New test: TestIsDeploymentReady_false_observedGenerationLag covers ObservedGeneration guard", "checked": true},
+    {"item": "New test: TestEnsureService_updatesPreservingNodePorts covers NodePort preservation", "checked": true},
+    {"item": "New test: TestCreateImmutableConfigMap_rejectsUnownedExisting covers owner verification", "checked": true},
+    {"item": "Existing TestIsDeploymentReady_true updated with matching Generation/ObservedGeneration", "checked": true},
+    {"item": "Edge cases covered (mismatched owner UID, generation lag with full replicas)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Re-fetch pattern applied consistently across all 5 Ensure* functions that evaluate readiness", "checked": true},
+    {"item": "Functions that return only error (EnsurePushSecret, EnsureCronJob, EnsureService) correctly omit re-fetch", "checked": true},
+    {"item": "ObservedGeneration guard scoped to Deployment (external CRDs may not expose it)", "checked": true},
+    {"item": "Error messages include %w wrapping throughout", "checked": true},
+    {"item": "Comments reference CC-0005 feature ID", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Owner reference check prevents acting on resources owned by another controller", "checked": true},
+    {"item": "No secrets exposed in error messages", "checked": true},
+    {"item": "gosec reports no issues", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Re-fetch pattern is the simplest correct fix for stale-status bug", "checked": true},
+    {"item": "NodePort preservation matches Port+Protocol (standard K8s matching semantics)", "checked": true},
+    {"item": "Owner check uses metav1.GetControllerOf consistent with SetControllerReference usage", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No unnecessary abstractions added", "checked": true},
+    {"item": "Changes are minimal and scoped to the reported issues", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Re-fetch errors return immediately with wrapped error", "checked": true},
+    {"item": "Owner mismatch returns error immediately (not silently ignored)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "controllerRef nil check before UID comparison in CreateImmutableConfigMap", "checked": true},
+    {"item": "ObservedGeneration guard prevents false-positive readiness during rollout", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "D2 (minor): In EnsureService NodePort preservation (deployment.go:79-88), if the caller omits Protocol (zero value \"\") but the existing port has Protocol \"TCP\" (set by API server), the Port+Protocol match will fail and the NodePort won't be preserved. Consider falling back to Port-only matching when Protocol is empty, or document that callers must always set Protocol."
+  ],
+  "next_steps": [],
+  "detected_patterns": [
+    {
+      "name": "Re-fetch after update before readiness evaluation",
+      "component": "internal/common/*/",
+      "category": "data-access",
+      "applies_when": "Writing an Ensure* function that updates an existing Kubernetes resource and then evaluates its readiness status (returns (bool, error) where bool indicates readiness)",
+      "description": "After calling c.Update on an existing resource, the in-memory object retains the status from the initial c.Get (pre-update). If readiness is evaluated against this stale status, it can return false-positive ready=true when the controller has not yet processed the spec change. The fix is to c.Get the object again after c.Update, before calling the Is*Ready function. Functions that only return error (no readiness evaluation) do not need the re-fetch.",
+      "examples": [
+        {
+          "location": "internal/common/deployment/deployment.go:42",
+          "code": "existing.Spec = deploy.Spec\nif err := c.Update(ctx, existing); err != nil {\n\treturn false, fmt.Errorf(\"updating Deployment %s/%s: %w\", deploy.Namespace, deploy.Name, err)\n}\n// Re-fetch to get the server-assigned Generation after the update (CC-0005).\nif err := c.Get(ctx, client.ObjectKeyFromObject(deploy), existing); err != nil {\n\treturn false, fmt.Errorf(\"re-fetching Deployment %s/%s after update: %w\", deploy.Namespace, deploy.Name, err)\n}\n\nreturn IsDeploymentReady(existing), nil"
+        },
+        {
+          "location": "internal/common/database/database.go:45",
+          "code": "existing.Spec = db.Spec\nif err := c.Update(ctx, existing); err != nil {\n\treturn false, fmt.Errorf(\"updating Database %s/%s: %w\", db.Namespace, db.Name, err)\n}\n// Re-fetch to avoid evaluating stale status from before the spec\n// update (CC-0005).\nif err := c.Get(ctx, client.ObjectKeyFromObject(db), existing); err != nil {\n\treturn false, fmt.Errorf(\"re-fetching Database %s/%s after update: %w\", db.Namespace, db.Name, err)\n}\n\nreturn IsDatabaseReady(existing), nil"
+        }
+      ]
+    }
+  ]
+}

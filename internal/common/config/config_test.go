@@ -5,10 +5,16 @@
 package config
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 // Feature: CC-0004
@@ -432,4 +438,150 @@ func TestInjectOsloPolicyConfig_emptyPathReturnsOriginalReference(t *testing.T) 
 	// Mutating result must therefore also mutate config (caller beware).
 	result["mutated"] = map[string]string{"key": "val"}
 	g.Expect(config).To(HaveKey("mutated"))
+}
+
+// Feature: CC-0005
+
+func newScheme() *runtime.Scheme {
+	s := runtime.NewScheme()
+	_ = corev1.AddToScheme(s)
+	return s
+}
+
+func testOwner() *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-owner",
+			Namespace: "default",
+			UID:       "test-uid",
+		},
+	}
+}
+
+func TestCreateImmutableConfigMap_creates(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner).Build()
+	ctx := context.Background()
+
+	data := map[string]string{"key": "value"}
+	name, err := CreateImmutableConfigMap(ctx, c, s, owner, "my-config", "default", data)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(name).To(HavePrefix("my-config-"))
+	g.Expect(name).NotTo(Equal("my-config-"))
+
+	// Verify the ConfigMap was actually created.
+	var cm corev1.ConfigMap
+	g.Expect(c.Get(ctx, client.ObjectKey{Name: name, Namespace: "default"}, &cm)).To(Succeed())
+	g.Expect(cm.Data).To(Equal(data))
+	g.Expect(*cm.Immutable).To(BeTrue())
+	g.Expect(cm.OwnerReferences).To(HaveLen(1))
+	g.Expect(cm.OwnerReferences[0].Name).To(Equal("test-owner"))
+}
+
+func TestCreateImmutableConfigMap_idempotent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner).Build()
+	ctx := context.Background()
+
+	data := map[string]string{"key": "value"}
+	name1, err := CreateImmutableConfigMap(ctx, c, s, owner, "my-config", "default", data)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	name2, err := CreateImmutableConfigMap(ctx, c, s, owner, "my-config", "default", data)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(name2).To(Equal(name1))
+}
+
+func TestCreateImmutableConfigMap_deterministic(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner).Build()
+	ctx := context.Background()
+
+	data := map[string]string{"a": "1", "b": "2"}
+	name1, err := CreateImmutableConfigMap(ctx, c, s, owner, "cfg", "default", data)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Second call with same data must produce the same name.
+	name2, err := CreateImmutableConfigMap(ctx, c, s, owner, "cfg", "default", data)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(name2).To(Equal(name1))
+}
+
+func TestCreateImmutableConfigMap_differentData(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner).Build()
+	ctx := context.Background()
+
+	name1, err := CreateImmutableConfigMap(ctx, c, s, owner, "cfg", "default", map[string]string{"a": "1"})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	name2, err := CreateImmutableConfigMap(ctx, c, s, owner, "cfg", "default", map[string]string{"a": "2"})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(name1).NotTo(Equal(name2))
+}
+
+func TestCreateImmutableConfigMap_newlineInValueIsUnambiguous(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	ctx := context.Background()
+
+	// A single key whose value contains an embedded newline that could look
+	// like a second key=value entry under a naive encoding (CC-0005).
+	c1 := fake.NewClientBuilder().WithScheme(s).WithObjects(owner).Build()
+	name1, err := CreateImmutableConfigMap(ctx, c1, s, owner, "cfg", "default",
+		map[string]string{"key1": "x\nb=y"})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Two separate keys whose naive encoding would collide with the above.
+	c2 := fake.NewClientBuilder().WithScheme(s).WithObjects(owner).Build()
+	name2, err := CreateImmutableConfigMap(ctx, c2, s, owner, "cfg", "default",
+		map[string]string{"key1": "x", "b": "y"})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(name1).NotTo(Equal(name2), "length-prefixed encoding must distinguish values with embedded newlines")
+}
+
+func TestCreateImmutableConfigMap_rejectsUnownedExisting(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	ctx := context.Background()
+
+	data := map[string]string{"key": "value"}
+
+	// Create once to learn the content-hashed name.
+	c1 := fake.NewClientBuilder().WithScheme(s).WithObjects(owner).Build()
+	name, err := CreateImmutableConfigMap(ctx, c1, s, owner, "my-config", "default", data)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Pre-create a ConfigMap with the same name but a different controller owner.
+	isController := true
+	conflicting := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "v1",
+				Kind:       "ConfigMap",
+				Name:       "other-owner",
+				UID:        "other-uid",
+				Controller: &isController,
+			}},
+		},
+	}
+
+	c2 := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, conflicting).Build()
+	_, err = CreateImmutableConfigMap(ctx, c2, s, owner, "my-config", "default", data)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("not owned by"))
 }

@@ -5,10 +5,20 @@
 package config
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"sort"
 	"strings"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 // Feature: CC-0004
@@ -100,6 +110,76 @@ func InjectSecrets(config map[string]map[string]string, secrets map[string]strin
 	return result
 }
 
+// Feature: CC-0005
+
+// hashTruncateLen is the number of hex characters kept from the SHA-256
+// content hash when building immutable ConfigMap name suffixes. 8 hex chars
+// (32 bits) yield a collision probability of ~1 in 4 billion per base name,
+// which is acceptable for ConfigMap naming (CC-0005).
+const hashTruncateLen = 8
+
+// CreateImmutableConfigMap creates an immutable ConfigMap with a content-hash
+// suffix appended to the base name. The hash ensures configuration changes
+// result in new ConfigMap names, triggering pod restarts. It returns the
+// actual name of the created ConfigMap (with hash suffix) (CC-0005).
+//
+// Note: Old ConfigMaps with the same baseName but different hash suffixes
+// accumulate during the owner's lifetime since GC only removes them when the
+// owner is deleted. Callers (reconcilers) should prune obsolete ConfigMaps
+// after rolling updates complete to avoid unbounded growth.
+func CreateImmutableConfigMap(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, baseName, namespace string, data map[string]string) (string, error) {
+	// Compute deterministic hash from data. Keys are sorted and encoded using
+	// length-prefixed format "len:key=len:value\n" to make each entry
+	// self-delimiting regardless of content (e.g. values with embedded
+	// newlines or '=' characters).
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	h := sha256.New()
+	for _, k := range keys {
+		_, _ = fmt.Fprintf(h, "%d:%s=%d:%s\n", len(k), k, len(data[k]), data[k])
+	}
+	hash := hex.EncodeToString(h.Sum(nil))[:hashTruncateLen]
+	name := fmt.Sprintf("%s-%s", baseName, hash)
+
+	immutable := true
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Data:      data,
+		Immutable: &immutable,
+	}
+
+	if err := controllerutil.SetControllerReference(owner, cm, scheme); err != nil {
+		return "", fmt.Errorf("setting owner reference on ConfigMap %s/%s: %w", namespace, name, err)
+	}
+
+	if err := c.Create(ctx, cm); err != nil {
+		if !errors.IsAlreadyExists(err) {
+			return "", fmt.Errorf("creating ConfigMap %s/%s: %w", namespace, name, err)
+		}
+		// Verify the existing ConfigMap is owned by the expected owner
+		// to guard against stale GC artefacts or accidental name
+		// collisions (CC-0005).
+		existingCM := &corev1.ConfigMap{}
+		if getErr := c.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, existingCM); getErr != nil {
+			return "", fmt.Errorf("fetching existing ConfigMap %s/%s: %w", namespace, name, getErr)
+		}
+		controllerRef := metav1.GetControllerOf(existingCM)
+		if controllerRef == nil || controllerRef.UID != owner.GetUID() {
+			return "", fmt.Errorf("existing ConfigMap %s/%s is not owned by %s/%s",
+				namespace, name, owner.GetNamespace(), owner.GetName())
+		}
+	}
+
+	return name, nil
+}
+
 // InjectOsloPolicyConfig returns a config map with oslo_policy configuration
 // injected. If policyFilePath is non-empty, it creates a deep copy of the
 // input map (via MergeDefaults), ensures the oslo_policy section exists, sets
@@ -110,6 +190,8 @@ func InjectOsloPolicyConfig(config map[string]map[string]string, policyFilePath 
 	if policyFilePath == "" {
 		return config
 	}
+	// MergeDefaults(config, nil) is used as a deep-copy operation: it copies
+	// all sections and keys from config into a new map with no defaults.
 	result := MergeDefaults(config, nil)
 	if result["oslo_policy"] == nil {
 		result["oslo_policy"] = make(map[string]string)

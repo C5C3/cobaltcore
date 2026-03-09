@@ -1,0 +1,99 @@
+{
+  "summary": "Addresses external review #8 by adding symmetric API-server default normalization for Deployment, Service, CronJob, and Job specs. Three new files in internal/common/normalize/ (deployment.go, service.go, cronjob.go) fill in well-known Kubernetes API-server defaults before spec comparison, preventing infinite update loops and spurious reconcile updates. Callers in deployment.go and job.go now DeepCopy and normalize both desired and existing specs before DeepEqual comparison. Comprehensive unit tests verify default-filling and explicit-value preservation for all new functions.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "All unit tests pass (13 tests in normalize/)", "checked": true},
+    {"item": "Default-filling verified for all API-server defaults per resource type", "checked": true},
+    {"item": "Explicit-value preservation tested (zero values like BackoffLimit=0 preserved)", "checked": true},
+    {"item": "Edge case: Recreate strategy does not get RollingUpdate params", "checked": true},
+    {"item": "Delegation verified (CronJobSpecDefaults calls JobSpecDefaults and PodSpecDefaults)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing normalize/podspec.go function pattern", "checked": true},
+    {"item": "SPDX headers on all new files", "checked": true},
+    {"item": "Feature: CC-0005 tag in all test files", "checked": true},
+    {"item": "Gomega dot import + NewGomegaWithT(t) pattern", "checked": true},
+    {"item": "Functions are small, single-responsibility (<20 lines each)", "checked": true},
+    {"item": "No dead code or commented-out code", "checked": true},
+    {"item": "golangci-lint and go vet pass with 0 issues", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No user input processed — pure normalization of API structs", "checked": true},
+    {"item": "No secrets or credentials handled", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Normalization functions in correct package (normalize/)", "checked": true},
+    {"item": "Hierarchical delegation: CronJobSpecDefaults → JobSpecDefaults → PodSpecDefaults", "checked": true},
+    {"item": "Symmetric normalization pattern: both desired and existing specs normalized before comparison", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "JobSpecDefaults extracted and reused by both CronJobSpecDefaults and RunJob (via PodSpecDefaults)", "checked": true},
+    {"item": "No over-engineering — only defaults that cause known comparison failures are included", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Nil pointer guards before dereferencing in all normalize functions", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "DeepCopy used on both specs before mutation, preventing caller state corruption", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Minor: IPFamilyPolicy (SingleStack) mentioned in external review was intentionally omitted from ServiceSpecDefaults — this is acceptable since IPFamilyPolicy behavior depends on cluster configuration, but could be revisited if spurious Service updates are observed in dual-stack clusters"
+  ],
+  "next_steps": [],
+  "detected_patterns": [
+    {
+      "name": "Symmetric DeepCopy-then-normalize before spec comparison",
+      "component": "internal/common/deployment, internal/common/job",
+      "category": "data-access",
+      "applies_when": "Comparing a desired Kubernetes resource spec against the existing server-returned spec to decide whether an update is needed",
+      "description": "Both the desired and existing specs are DeepCopied, then normalized via the appropriate normalize.*Defaults function, before being compared with apiequality.Semantic.DeepEqual. This prevents both false positives (spurious updates from API-server-injected defaults) and ensures neither the caller's object nor the cached existing object is mutated.",
+      "examples": [
+        {
+          "location": "internal/common/deployment/deployment.go:49",
+          "code": "desiredSpec := deploy.Spec.DeepCopy()\nnormalize.DeploymentSpecDefaults(desiredSpec)\nexistingSpec := existing.Spec.DeepCopy()\nnormalize.DeploymentSpecDefaults(existingSpec)\n\nif !apiequality.Semantic.DeepEqual(*existingSpec, *desiredSpec) {"
+        },
+        {
+          "location": "internal/common/job/job.go:110",
+          "code": "desiredSpec := cronJob.Spec.DeepCopy()\nnormalize.CronJobSpecDefaults(desiredSpec)\nexistingSpec := existing.Spec.DeepCopy()\nnormalize.CronJobSpecDefaults(existingSpec)\n\nif !apiequality.Semantic.DeepEqual(*existingSpec, *desiredSpec) {"
+        }
+      ]
+    },
+    {
+      "name": "Hierarchical normalize.*Defaults with delegation",
+      "component": "internal/common/normalize",
+      "category": "service-structure",
+      "applies_when": "Adding a new resource-type normalization function to the normalize/ package (e.g., StatefulSetSpecDefaults)",
+      "description": "Each resource-level normalize function fills in its own API-server defaults, then delegates to the next lower level. CronJobSpecDefaults calls JobSpecDefaults and PodSpecDefaults. DeploymentSpecDefaults calls PodSpecDefaults. This avoids duplication and ensures pod-level defaults are always applied regardless of which entry point is used. New resource normalizers must follow this delegation chain.",
+      "examples": [
+        {
+          "location": "internal/common/normalize/cronjob.go:15",
+          "code": "func CronJobSpecDefaults(spec *batchv1.CronJobSpec) {\n\tif spec.ConcurrencyPolicy == \"\" {\n\t\tspec.ConcurrencyPolicy = batchv1.AllowConcurrent\n\t}\n\t// ... cronjob-level defaults ...\n\tJobSpecDefaults(&spec.JobTemplate.Spec)\n\tPodSpecDefaults(&spec.JobTemplate.Spec.Template.Spec)\n}"
+        },
+        {
+          "location": "internal/common/normalize/deployment.go:16",
+          "code": "func DeploymentSpecDefaults(spec *appsv1.DeploymentSpec) {\n\tif spec.RevisionHistoryLimit == nil {\n\t\tv := int32(10)\n\t\tspec.RevisionHistoryLimit = &v\n\t}\n\t// ... deployment-level defaults ...\n\tPodSpecDefaults(&spec.Template.Spec)\n}"
+        }
+      ]
+    },
+    {
+      "name": "Normalize function test pair: defaults + preservesExplicitValues",
+      "component": "internal/common/normalize/*_test.go",
+      "category": "testing",
+      "applies_when": "Adding tests for a new normalize.*Defaults function",
+      "description": "Every normalize function has exactly two tests: TestXxxDefaults verifies that zero/nil fields are filled with correct API-server defaults (including delegation to lower-level normalizers), and TestXxxDefaults_preservesExplicitValues verifies that non-zero fields are left unchanged. Both use NewGomegaWithT(t) and gomega matchers.",
+      "examples": [
+        {
+          "location": "internal/common/normalize/deployment_test.go:19",
+          "code": "func TestDeploymentSpecDefaults(t *testing.T) {\n\tg := NewGomegaWithT(t)\n\tspec := &appsv1.DeploymentSpec{...}\n\tDeploymentSpecDefaults(spec)\n\tg.Expect(spec.RevisionHistoryLimit).NotTo(BeNil())\n\tg.Expect(*spec.RevisionHistoryLimit).To(Equal(int32(10)))\n\t// ...\n}"
+        },
+        {
+          "location": "internal/common/normalize/deployment_test.go:52",
+          "code": "func TestDeploymentSpecDefaults_preservesExplicitValues(t *testing.T) {\n\tg := NewGomegaWithT(t)\n\trevisionLimit := int32(5)\n\tspec := &appsv1.DeploymentSpec{RevisionHistoryLimit: &revisionLimit, ...}\n\tDeploymentSpecDefaults(spec)\n\tg.Expect(*spec.RevisionHistoryLimit).To(Equal(int32(5)))\n\t// ...\n}"
+        }
+      ]
+    }
+  ]
+}

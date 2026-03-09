@@ -5,11 +5,16 @@
 package policy
 
 import (
+	"context"
 	"testing"
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/c5c3/forge/internal/common/types"
 )
@@ -18,10 +23,9 @@ import (
 
 func TestRenderPolicyYAML(t *testing.T) {
 	tests := []struct {
-		name    string
-		rules   map[string]string
-		want    string
-		wantErr bool
+		name  string
+		rules map[string]string
+		want  string
 	}{
 		{
 			name:  "nil rules",
@@ -69,12 +73,8 @@ func TestRenderPolicyYAML(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			g := NewGomegaWithT(t)
 			got, err := RenderPolicyYAML(tt.rules)
-			if tt.wantErr {
-				g.Expect(err).To(HaveOccurred())
-			} else {
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(got).To(Equal(tt.want))
-			}
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(got).To(Equal(tt.want))
 		})
 	}
 }
@@ -374,4 +374,132 @@ func TestValidatePolicyRules_nilFldPathDefaultsToRules(t *testing.T) {
 	g.Expect(errs).To(HaveLen(1))
 	g.Expect(errs[0].Field).To(Equal("rules[compute:delete]"))
 	g.Expect(errs[0].Detail).To(Equal("rule value must not be empty"))
+}
+
+// Feature: CC-0005
+
+func newPolicyScheme() *runtime.Scheme {
+	s := runtime.NewScheme()
+	_ = corev1.AddToScheme(s)
+	return s
+}
+
+func TestLoadPolicyFromConfigMap_success(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newPolicyScheme()
+	ctx := context.Background()
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-policy",
+			Namespace: "default",
+		},
+		Data: map[string]string{
+			PolicyConfigMapKey: "compute:create: role:admin\ncompute:delete: role:admin\n",
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cm).Build()
+
+	rules, err := LoadPolicyFromConfigMap(ctx, c, client.ObjectKey{Name: "my-policy", Namespace: "default"})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(rules).To(Equal(map[string]string{
+		"compute:create": "role:admin",
+		"compute:delete": "role:admin",
+	}))
+}
+
+func TestLoadPolicyFromConfigMap_missingKey(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newPolicyScheme()
+	ctx := context.Background()
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-policy",
+			Namespace: "default",
+		},
+		Data: map[string]string{
+			"other.yaml": "some: data\n",
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cm).Build()
+
+	_, err := LoadPolicyFromConfigMap(ctx, c, client.ObjectKey{Name: "my-policy", Namespace: "default"})
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(PolicyConfigMapKey))
+}
+
+func TestLoadPolicyFromConfigMap_notFound(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newPolicyScheme()
+	ctx := context.Background()
+
+	c := fake.NewClientBuilder().WithScheme(s).Build()
+
+	_, err := LoadPolicyFromConfigMap(ctx, c, client.ObjectKey{Name: "missing", Namespace: "default"})
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("getting ConfigMap"))
+}
+
+func TestLoadPolicyFromConfigMap_emptyValue(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newPolicyScheme()
+	ctx := context.Background()
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "empty-policy",
+			Namespace: "default",
+		},
+		Data: map[string]string{
+			PolicyConfigMapKey: "",
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cm).Build()
+
+	_, err := LoadPolicyFromConfigMap(ctx, c, client.ObjectKey{Name: "empty-policy", Namespace: "default"})
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("empty or parsed to nil"))
+}
+
+func TestLoadPolicyFromConfigMap_nullYAML(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newPolicyScheme()
+	ctx := context.Background()
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "null-policy",
+			Namespace: "default",
+		},
+		Data: map[string]string{
+			PolicyConfigMapKey: "null\n",
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cm).Build()
+
+	_, err := LoadPolicyFromConfigMap(ctx, c, client.ObjectKey{Name: "null-policy", Namespace: "default"})
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("empty or parsed to nil"))
+}
+
+func TestLoadPolicyFromConfigMap_invalidYAML(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newPolicyScheme()
+	ctx := context.Background()
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "bad-policy",
+			Namespace: "default",
+		},
+		Data: map[string]string{
+			PolicyConfigMapKey: ": : : not valid yaml [[[",
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cm).Build()
+
+	_, err := LoadPolicyFromConfigMap(ctx, c, client.ObjectKey{Name: "bad-policy", Namespace: "default"})
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("parsing " + PolicyConfigMapKey))
 }
