@@ -2,8 +2,8 @@
   "feature_id": "CC-0030",
   "title": "Add cosign keyless signing to container images",
   "slug": "add-cosign-keyless-signing-to-container-images",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 🔧 small\n**Category:** infrastructure\n**Priority:** high\n**Source:** Proposed for 'Now that SBOM should be created and attested'\n\nAdd cosign-based container image signing to `.github/workflows/build-images.yaml` completing the supply chain security chain (build → push → SBOM → attest → sign).\n\n**Workflow changes (build-images.yaml):**\n1. Add `sigstore/cosign-installer` action (SHA-pinned with `# v<N>` comment) as an early step in both `build-base-images` and `build-service-images` jobs\n2. Add `cosign sign --yes` step after SBOM attestation in `build-base-images` for python-base (`@${{ steps.build-python-base.outputs.digest }}`) and venv-builder (`@${{ steps.build-venv-builder.outputs.digest }}`)\n3. Add `cosign sign --yes` step after SBOM attestation in `build-service-images` for service images (`${{ steps.tags.outputs.image }}@${{ steps.build-service.outputs.digest }}`)\n4. Guard all signing steps with `if: github.event_name != 'pull_request'` (matching existing attestation guards)\n5. No permission changes needed — existing `id-token: write` + `packages: write` are sufficient for keyless Fulcio/Rekor signing\n\n**Test updates (tests/container-images/verify_build_images_workflow.sh):**\n- Add yq-based assertions for `sigstore/cosign-installer` presence in both build jobs\n- Assert `cosign sign` steps exist with correct `if:` guards\n- Assert signing steps reference image digests\n- Follow existing PASS/FAIL counter pattern\n\n**Doc updates (docs/reference/build-images-workflow.md):**\n- Add `cosign verify` command examples with `--certificate-identity-regexp` and `--certificate-oidc-issuer` parameters\n- Place alongside existing `cosign verify-attestation` and `gh attestation verify` commands\n\n**Rationale:** Images currently receive CycloneDX SBOMs and Sigstore attestations (CC-0029) but lack independent identity signing. Image signing adds an identity assertion ('this image was produced by this workflow') on top of existing property assertions ('this image has this SBOM'). This is a standard supply chain security practice that completes the trust chain and enables downstream consumers to verify image provenance via `cosign verify`. Keyless signing via GitHub OIDC avoids key management overhead.\n\n**Affected Areas:**\n- .github/workflows/build-images.yaml\n- tests/container-images/verify_build_images_workflow.sh\n- docs/reference/build-images-workflow.md",
   "stories": [
@@ -328,6 +328,7 @@
       "description": "In .github/workflows/build-images.yaml, add to the build-base-images job: (1) a `sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4` step after the GHCR login step (before any build steps), (2) a 'Sign python-base' step with `cosign sign --yes ghcr.io/${{ steps.meta.outputs.owner }}/python-base@${{ steps.build-python-base.outputs.digest }}` immediately after the 'Attest SBOM for python-base' step, (3) a 'Sign venv-builder' step with `cosign sign --yes ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder@${{ steps.build-venv-builder.outputs.digest }}` immediately after the 'Attest SBOM for venv-builder' step. Both signing steps must have `if: github.event_name != 'pull_request'`. Add CC-0030 comment on the id-token permission line. No permission changes.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-018",
         "REQ-019",
@@ -341,6 +342,7 @@
       "description": "In .github/workflows/build-images.yaml, add to the build-service-images job: (1) a `sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4` step after the GHCR login step (before the build step), (2) a 'Sign service image' step with `cosign sign --yes ${{ steps.tags.outputs.image }}@${{ steps.build-service.outputs.digest }}` immediately after the 'Attest SBOM for service image' step. The signing step must have `if: github.event_name != 'pull_request'`. Add CC-0030 comment on the id-token permission line. No permission changes.",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-018",
         "REQ-020",
@@ -354,6 +356,7 @@
       "description": "In tests/container-images/verify_build_images_workflow.sh, add test function `test_cosign_installer_in_build_jobs` that: (1) uses yq to count steps matching 'sigstore/cosign-installer' in build-base-images (assert == 1) and build-service-images (assert == 1), (2) verifies the action is SHA-pinned (existing test_actions_pinned_to_sha already covers this generically). Follow existing test pattern (yq_count helper, assert_eq, PASS/FAIL counters). Register the test in the 'Run all tests' section at the bottom of the file. Add CC-0030 to the test function comment header.",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-018",
         "REQ-024"
@@ -365,6 +368,7 @@
       "description": "In tests/container-images/verify_build_images_workflow.sh, add test functions: (1) `test_cosign_sign_steps_exist` — use yq to count steps whose .name matches 'Sign *' and whose .run contains 'cosign sign' in build-base-images (assert == 2) and build-service-images (assert == 1). (2) `test_cosign_sign_steps_pr_skip_guard` — extract .if from all cosign sign steps in both jobs, assert each contains \"github.event_name != 'pull_request'\" (following the pattern of test_sbom_steps_pr_skip_guard). (3) `test_cosign_sign_references_digest` — extract .run from signing steps, assert python-base step contains 'build-python-base.outputs.digest', venv-builder step contains 'build-venv-builder.outputs.digest', service step contains 'build-service.outputs.digest' and 'steps.tags.outputs.image'. Register all tests in the 'Run all tests' section. Add CC-0030 to test comments.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-019",
         "REQ-020",
@@ -379,6 +383,7 @@
       "description": "In docs/reference/build-images-workflow.md: (1) Add a new '## Image Signing' section after '## SBOM Generation and Attestation' explaining cosign keyless signing (CC-0030), how it complements SBOM attestation (CC-0029), and the keyless OIDC approach. (2) Add a '### Verifying Signatures' subsection with `cosign verify` command example using `--certificate-identity-regexp` (matching the workflow file path pattern) and `--certificate-oidc-issuer https://token.actions.githubusercontent.com`. (3) Update the build-base-images step table to include cosign-installer (after login) and two Sign steps (after respective Attest steps). (4) Update the build-service-images step table to include cosign-installer (after login) and Sign step (after Attest). (5) Update the 'PR vs Push Behavior' table to add an 'Image signing' row showing 'Skipped' for PR and 'cosign keyless signing for every image' for Push. (6) Update the Action Pinning section to include the cosign-installer SHA. (7) Add signing tests to the 'Test Coverage' table.",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-025"
       ]
@@ -467,8 +472,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-03-08T22:58:51.816431"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-09T09:52:12.859561"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-09T12:40:01.321666"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/48",
+  "pr_number": 48,
   "execution_history": [
     {
       "run_id": "325eaae1-7927-40c8-b254-b89dca8212fe",
@@ -480,6 +495,50 @@
           "name": "prepare",
           "duration": 217.42436289787292,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "e377a8c0-b2e3-4d44-8dd1-49e936d50382",
+      "timestamp": "2026-03-09T10:15:59.183047",
+      "total_duration": 1265.8120942115784,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (2 tasks)",
+          "duration": 494.63353538513184,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (2 tasks)",
+          "duration": 278.54264545440674,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (1 tasks)",
+          "duration": 140.81128668785095,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0030] Code Review",
+          "duration": 220.3424355983734,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0030] Improvements",
+          "duration": 45.09988260269165,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0030] Simplify",
+          "duration": 86.38230848312378,
+          "type": "simplify",
           "status": "done"
         }
       ]

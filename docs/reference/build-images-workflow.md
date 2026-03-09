@@ -1,13 +1,13 @@
 ---
 title: Build Images Workflow
 quadrant: infrastructure
-feature: CC-0007, CC-0029, CC-0031
+feature: CC-0007, CC-0029, CC-0030, CC-0031
 ---
 
 # Build Images Workflow
 
 Reference documentation for the GitHub Actions build-images workflow (CC-0007, CC-0029,
-CC-0031) and the verify-container-images workflow (CC-0028). The build-images workflow
+CC-0030, CC-0031) and the verify-container-images workflow (CC-0028). The build-images workflow
 builds, tags, and publishes container images for OpenStack services to GHCR (GitHub
 Container Registry). Each pushed image receives OCI Image Spec annotations (CC-0031),
 a CycloneDX SBOM, and a Sigstore-signed attestation (CC-0029). The
@@ -56,7 +56,7 @@ permissions:
 permissions:
   contents: read
   packages: write
-  id-token: write       # CC-0029: Sigstore OIDC signing for SBOM attestation
+  id-token: write       # CC-0029, CC-0030: Sigstore OIDC signing for SBOM attestation and cosign signing
   attestations: write   # CC-0029: GitHub Attestations API
 
 # Verification jobs (verify-base-images, verify-service-images)
@@ -131,14 +131,17 @@ availability.
 | 3 | Normalize image owner | Shell script | Outputs lowercase `owner` value from `${{ github.repository_owner }}` for use in image references (CC-0007) |
 | 4 | Set up Buildx | `docker/setup-buildx-action@v4` | Enables multi-platform builds |
 | 5 | Login to GHCR | `docker/login-action@v4` | Authenticates with `GITHUB_TOKEN` |
-| 6 | Generate metadata for python-base | `docker/metadata-action@v5` | Produces OCI labels (title, description, licenses, vendor) for python-base (CC-0031) |
-| 7 | Build python-base | `docker/build-push-action@v7` | Context: `images/python-base`, multi-arch, push: true, tags: `:latest` and `:${{ github.sha }}`, labels from step 6 |
-| 8 | Generate SBOM for python-base | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed python-base image by digest. Output: `sbom-python-base.cyclonedx.json` (CC-0029) |
-| 9 | Attest SBOM for python-base | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
-| 10 | Generate metadata for venv-builder | `docker/metadata-action@v5` | Produces OCI labels (title, description, licenses, vendor) for venv-builder (CC-0031) |
-| 11 | Build venv-builder | `docker/build-push-action@v7` | Context: `images/venv-builder`, multi-arch, push: true, tags: `:latest` and `:${{ github.sha }}`, labels from step 10, `--build-context python-base=docker-image://...` |
-| 12 | Generate SBOM for venv-builder | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed venv-builder image by digest. Output: `sbom-venv-builder.cyclonedx.json` (CC-0029) |
-| 13 | Attest SBOM for venv-builder | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
+| 6 | Install cosign | `sigstore/cosign-installer@v4` | Installs cosign for image signing (CC-0030) |
+| 7 | Generate metadata for python-base | `docker/metadata-action@v5` | Produces OCI labels (title, description, licenses, vendor) for python-base (CC-0031) |
+| 8 | Build python-base | `docker/build-push-action@v7` | Context: `images/python-base`, multi-arch, push: true, tags: `:latest` and `:${{ github.sha }}`, labels from step 7 |
+| 9 | Generate SBOM for python-base | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed python-base image by digest. Output: `sbom-python-base.cyclonedx.json` (CC-0029) |
+| 10 | Attest SBOM for python-base | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
+| 11 | Sign python-base | Shell | Skipped on PRs. Signs python-base by digest with cosign keyless OIDC (`cosign sign --yes`) (CC-0030) |
+| 12 | Generate metadata for venv-builder | `docker/metadata-action@v5` | Produces OCI labels (title, description, licenses, vendor) for venv-builder (CC-0031) |
+| 13 | Build venv-builder | `docker/build-push-action@v7` | Context: `images/venv-builder`, multi-arch, push: true, tags: `:latest` and `:${{ github.sha }}`, labels from step 12, `--build-context python-base=docker-image://...` |
+| 14 | Generate SBOM for venv-builder | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed venv-builder image by digest. Output: `sbom-venv-builder.cyclonedx.json` (CC-0029) |
+| 15 | Attest SBOM for venv-builder | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
+| 16 | Sign venv-builder | Shell | Skipped on PRs. Signs venv-builder by digest with cosign keyless OIDC (`cosign sign --yes`) (CC-0030) |
 
 The `venv-builder` build uses a `docker-image://` build context pointing at the
 just-pushed `python-base` image (referenced by digest), ensuring its `FROM python-base`
@@ -219,11 +222,13 @@ Depends on `build-base-images` for image references (REQ-003) and on
 | 7 | Derive tags | Shell | Computes three image tags and the lowercase `image` path (see [Tag Schema](#tag-schema)) (REQ-005, CC-0029) |
 | 8 | Set up Buildx | `docker/setup-buildx-action@v4` | Enables multi-platform builds |
 | 9 | Login to GHCR | `docker/login-action@v4` | Authenticates with `GITHUB_TOKEN` |
-| 10 | Generate metadata for service image | `docker/metadata-action@v5` | Produces OCI labels and overrides version to the upstream release ref via `type=raw` strategy (CC-0031) |
-| 11 | Build service image | `docker/build-push-action@v7` | Builds with four named build contexts and three build args, conditional platform/push/load, labels from step 10 (REQ-006) |
-| 12 | Generate SBOM for service image | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed service image by digest. Output: `sbom-${{ matrix.service }}.cyclonedx.json` (CC-0029) |
-| 13 | Attest SBOM for service image | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
-| 14 | Verify service image (PR) | Shell (conditional) | On PRs only: runs `verify_keystone.sh` with the locally loaded image ref (CC-0028) |
+| 10 | Install cosign | `sigstore/cosign-installer@v4` | Installs cosign for image signing (CC-0030) |
+| 11 | Generate metadata for service image | `docker/metadata-action@v5` | Produces OCI labels and overrides version to the upstream release ref via `type=raw` strategy (CC-0031) |
+| 12 | Build service image | `docker/build-push-action@v7` | Builds with four named build contexts and three build args, conditional platform/push/load, labels from step 11 (REQ-006) |
+| 13 | Generate SBOM for service image | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed service image by digest. Output: `sbom-${{ matrix.service }}.cyclonedx.json` (CC-0029) |
+| 14 | Attest SBOM for service image | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
+| 15 | Sign service image | Shell | Skipped on PRs. Signs service image by digest with cosign keyless OIDC (`cosign sign --yes`) (CC-0030) |
+| 16 | Verify service image (PR) | Shell (conditional) | On PRs only: runs `verify_keystone.sh` with the locally loaded image ref (CC-0028) |
 
 **Build Contexts:**
 
@@ -333,7 +338,8 @@ The workflow behaves differently depending on the trigger event (REQ-006):
 | Service image tags | Computed but not published | Published to GHCR |
 | SBOM generation | Skipped (CC-0029) | CycloneDX JSON for every image |
 | SBOM attestation | Skipped (CC-0029) | Sigstore-signed, pushed to GHCR |
-| OIDC token request | None | Requested for Sigstore signing |
+| Cosign signing | Skipped (CC-0030) | Keyless signature for every image |
+| OIDC token request | None | Requested for Sigstore signing (CC-0029, CC-0030) |
 | Service image verification | Inline step in `build-service-images` | Separate `verify-service-images` job |
 | Verification image source | Locally loaded image (same runner) | Pulled from GHCR |
 
@@ -380,6 +386,7 @@ uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051  # v5 (CC-
 uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294  # v7
 uses: anchore/sbom-action@17ae1740179002c89186b61233e0f892c3118b11  # v0 (CC-0029)
 uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26  # v4 (CC-0029)
+uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad  # v4 (CC-0030)
 ```
 
 This prevents supply-chain attacks via tag mutation while remaining auditable through
@@ -436,7 +443,7 @@ SBOM attestation requires two additional job-level permissions beyond the existi
 
 | Permission | Purpose |
 | --- | --- |
-| `id-token: write` | Allows the GitHub Actions runner to request a short-lived Sigstore OIDC token for keyless signing |
+| `id-token: write` | Allows the GitHub Actions runner to request a short-lived Sigstore OIDC token for keyless signing (CC-0029, CC-0030) |
 | `attestations: write` | Grants access to the GitHub Attestations API for storing signed attestations |
 
 These permissions are granted only to `build-base-images` and `build-service-images`.
@@ -487,6 +494,73 @@ The `verify_build_images_workflow.sh` script validates SBOM/attestation configur
 | `test_sbom_attestation_steps_exist` | Attestation steps exist in both build jobs |
 | `test_sbom_attestation_push_to_registry` | All attestation steps have `push-to-registry: true` |
 | `test_sbom_steps_pr_skip_guard` | All SBOM/attestation steps have `github.event_name != 'pull_request'` guard |
+
+## Cosign Image Signing
+
+Every container image pushed to GHCR on non-PR events is signed with cosign keyless
+signing (CC-0030). This provides an independent signature layer alongside the SBOM
+attestation (CC-0029), enabling consumers to verify image provenance using standard
+Sigstore tooling.
+
+### How It Works
+
+Each build job (`build-base-images`, `build-service-images`) installs cosign via
+`sigstore/cosign-installer` and runs `cosign sign --yes` after the image is pushed:
+
+1. **cosign-installer** (`sigstore/cosign-installer@v4`) — Installs the `cosign` binary
+   on the runner.
+
+2. **cosign sign** — Signs the image by digest using Sigstore keyless OIDC. The `--yes`
+   flag confirms non-interactive mode. No signing keys are managed; the GitHub Actions
+   OIDC token binds the signature to the specific workflow run.
+
+This pattern is applied to all three image types:
+
+| Image | Job | Digest source |
+| --- | --- | --- |
+| `python-base` | `build-base-images` | `steps.build-python-base.outputs.digest` |
+| `venv-builder` | `build-base-images` | `steps.build-venv-builder.outputs.digest` |
+| Service (e.g., `keystone`) | `build-service-images` | `steps.build-service.outputs.digest` |
+
+### PR Behavior
+
+All cosign sign steps are guarded with `if: github.event_name != 'pull_request'`. On
+pull requests:
+
+- No images are signed — the PR guard applies to all cosign sign steps.
+- No OIDC token requests occur for signing.
+- The `id-token: write` permission (shared with SBOM attestation) is not exercised.
+
+### Required Permissions
+
+Cosign keyless signing reuses the same `id-token: write` permission required by SBOM
+attestation (CC-0029). No additional permissions are needed.
+
+### Verifying Signatures
+
+To verify that an image has a valid cosign signature:
+
+```bash
+cosign verify \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp "https://github.com/<owner>/<repo>/.github/workflows/build-images.yaml@refs/.*" \
+  ghcr.io/<owner>/<service>@sha256:<digest>
+```
+
+### Test Coverage
+
+The `verify_build_images_workflow.sh` script validates cosign signing configuration
+(CC-0030):
+
+| Test | Validates |
+| --- | --- |
+| `test_cosign_installer_in_build_base_images` | `sigstore/cosign-installer` step exists in `build-base-images` |
+| `test_cosign_installer_in_build_service_images` | `sigstore/cosign-installer` step exists in `build-service-images` |
+| `test_cosign_sign_steps_count` | 2 sign steps in `build-base-images`, 1 in `build-service-images` |
+| `test_cosign_sign_steps_pr_guard` | All sign steps have `github.event_name != 'pull_request'` guard |
+| `test_cosign_sign_steps_reference_digest` | Sign steps reference the correct digest output |
+| `test_cosign_sign_uses_yes_flag` | All sign steps use the `--yes` flag |
+| `test_cosign_id_token_permission_comment` | `id-token: write` comment references CC-0030 |
 
 ## OCI Annotations
 
@@ -746,7 +820,7 @@ non-zero, the job fails.
 
 | Script | Validates |
 | --- | --- |
-| `verify_build_images_workflow.sh` | Workflow structure: job names, dependency chain, trigger events, permissions, action pinning, concurrency, matrix strategy, SBOM/attestation configuration (CC-0029), OCI annotation configuration (CC-0031) |
+| `verify_build_images_workflow.sh` | Workflow structure: job names, dependency chain, trigger events, permissions, action pinning, concurrency, matrix strategy, SBOM/attestation configuration (CC-0029), cosign signing configuration (CC-0030), OCI annotation configuration (CC-0031) |
 | `verify_deviation_comments.sh` | DEVIATION comments in Dockerfiles cross-reference architecture docs |
 | `verify_release_config.sh` | `source-refs.yaml` and `extra-packages.yaml` structure and content validity |
 | `verify_spdx_headers.sh` | SPDX Apache-2.0 license headers present on all infrastructure files |

@@ -3,8 +3,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify build-images workflow structure, conventions, and correctness (CC-0007, CC-0029, CC-0031)
-# Requirements: REQ-001 through REQ-017
+# Verify build-images workflow structure, conventions, and correctness (CC-0007, CC-0029, CC-0030, CC-0031)
+# Requirements: REQ-001 through REQ-025
 # Usage: bash tests/container-images/verify_build_images_workflow.sh
 
 set -euo pipefail
@@ -1002,6 +1002,149 @@ test_dockerfile_static_labels_keystone() {
   assert_contains "keystone runtime stage has org.opencontainers.image.vendor" "$runtime_stage" 'org.opencontainers.image.vendor='
 }
 
+# --- CC-0030: cosign-installer step in build-base-images (REQ-018) ---
+test_cosign_installer_in_build_base_images() {
+  echo "Test: cosign-installer step exists in build-base-images (CC-0030, REQ-018)"
+
+  local installer_count
+  installer_count=$(yq_count '.jobs["build-base-images"]["steps"][] | select(.uses and (.uses | test("sigstore/cosign-installer"))) | .uses' "$WORKFLOW")
+  assert_eq "build-base-images has 1 cosign-installer step" "1" "$installer_count"
+}
+
+# --- CC-0030: cosign-installer step in build-service-images (REQ-018) ---
+test_cosign_installer_in_build_service_images() {
+  echo "Test: cosign-installer step exists in build-service-images (CC-0030, REQ-018)"
+
+  local installer_count
+  installer_count=$(yq_count '.jobs["build-service-images"]["steps"][] | select(.uses and (.uses | test("sigstore/cosign-installer"))) | .uses' "$WORKFLOW")
+  assert_eq "build-service-images has 1 cosign-installer step" "1" "$installer_count"
+}
+
+# --- CC-0030: cosign sign steps exist in both build jobs (REQ-019, REQ-020) ---
+test_cosign_sign_steps_count() {
+  echo "Test: cosign sign steps exist in both build jobs (CC-0030, REQ-019, REQ-020)"
+
+  # build-base-images should have 2 sign steps (python-base and venv-builder)
+  local base_sign_count
+  base_sign_count=$(yq_count '.jobs["build-base-images"]["steps"][] | select(.run and (.run | test("cosign sign"))) | .run' "$WORKFLOW")
+  assert_eq "build-base-images has 2 cosign sign steps" "2" "$base_sign_count"
+
+  # build-service-images should have 1 sign step
+  local service_sign_count
+  service_sign_count=$(yq_count '.jobs["build-service-images"]["steps"][] | select(.run and (.run | test("cosign sign"))) | .run' "$WORKFLOW")
+  assert_eq "build-service-images has 1 cosign sign step" "1" "$service_sign_count"
+}
+
+# --- CC-0030: cosign sign steps have PR-skip guard (REQ-021) ---
+test_cosign_sign_steps_pr_guard() {
+  echo "Test: cosign sign steps have PR-skip guard (CC-0030, REQ-021)"
+
+  # All cosign sign steps in build-base-images must have PR guard
+  local base_sign_ifs
+  base_sign_ifs=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.run and (.run | test("cosign sign"))) | .if' "$WORKFLOW" || true)
+
+  local all_guarded=true
+  while IFS= read -r val; do
+    [ -z "$val" ] && continue
+    if [[ "$val" != *"github.event_name != 'pull_request'"* ]]; then
+      echo "  FAIL: build-base-images cosign sign step missing PR guard: $val"
+      FAIL=$((FAIL + 1))
+      all_guarded=false
+    fi
+  done <<< "$base_sign_ifs"
+
+  if $all_guarded && [ -n "$base_sign_ifs" ]; then
+    echo "  PASS: all build-base-images cosign sign steps have PR-skip guard"
+    PASS=$((PASS + 1))
+  elif [ -z "$base_sign_ifs" ]; then
+    echo "  FAIL: build-base-images cosign sign steps not found or missing PR guard"
+    FAIL=$((FAIL + 1))
+  fi
+
+  # All cosign sign steps in build-service-images must have PR guard
+  local service_sign_ifs
+  service_sign_ifs=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.run and (.run | test("cosign sign"))) | .if' "$WORKFLOW" || true)
+
+  local service_all_guarded=true
+  while IFS= read -r val; do
+    [ -z "$val" ] && continue
+    if [[ "$val" != *"github.event_name != 'pull_request'"* ]]; then
+      echo "  FAIL: build-service-images cosign sign step missing PR guard: $val"
+      FAIL=$((FAIL + 1))
+      service_all_guarded=false
+    fi
+  done <<< "$service_sign_ifs"
+
+  if $service_all_guarded && [ -n "$service_sign_ifs" ]; then
+    echo "  PASS: all build-service-images cosign sign steps have PR-skip guard"
+    PASS=$((PASS + 1))
+  elif [ -z "$service_sign_ifs" ]; then
+    echo "  FAIL: build-service-images cosign sign steps not found or missing PR guard"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+# --- CC-0030: cosign sign steps reference digest (REQ-022) ---
+test_cosign_sign_steps_reference_digest() {
+  echo "Test: cosign sign steps reference correct digest (CC-0030, REQ-022)"
+
+  # python-base sign references build-python-base digest
+  local python_base_run
+  python_base_run=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.name == "Sign python-base") | .run' "$WORKFLOW" || true)
+  assert_contains "python-base sign references build-python-base digest" "$python_base_run" "build-python-base.outputs.digest"
+
+  # venv-builder sign references build-venv-builder digest
+  local venv_builder_run
+  venv_builder_run=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.name == "Sign venv-builder") | .run' "$WORKFLOW" || true)
+  assert_contains "venv-builder sign references build-venv-builder digest" "$venv_builder_run" "build-venv-builder.outputs.digest"
+
+  # service sign references build-service digest
+  local service_run
+  service_run=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.name == "Sign service image") | .run' "$WORKFLOW" || true)
+  assert_contains "service sign uses tags.outputs.image" "$service_run" "steps.tags.outputs.image"
+  assert_contains "service sign references build-service digest" "$service_run" "build-service.outputs.digest"
+}
+
+# --- CC-0030: cosign sign uses --yes flag (REQ-022) ---
+test_cosign_sign_uses_yes_flag() {
+  echo "Test: cosign sign steps use --yes flag (CC-0030, REQ-022)"
+
+  # All cosign sign run commands in build-base-images must contain --yes
+  local base_runs
+  base_runs=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.run and (.run | test("cosign sign"))) | .run' "$WORKFLOW" || true)
+
+  local all_yes=true
+  while IFS= read -r val; do
+    [ -z "$val" ] && continue
+    if [[ "$val" != *"--yes"* ]]; then
+      echo "  FAIL: build-base-images cosign sign step missing --yes flag: $val"
+      FAIL=$((FAIL + 1))
+      all_yes=false
+    fi
+  done <<< "$base_runs"
+
+  if $all_yes && [ -n "$base_runs" ]; then
+    echo "  PASS: all build-base-images cosign sign steps use --yes flag"
+    PASS=$((PASS + 1))
+  elif [ -z "$base_runs" ]; then
+    echo "  FAIL: no build-base-images cosign sign steps found"
+    FAIL=$((FAIL + 1))
+  fi
+
+  # service sign must contain --yes
+  local service_run
+  service_run=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.run and (.run | test("cosign sign"))) | .run' "$WORKFLOW" || true)
+  assert_contains "build-service-images cosign sign uses --yes flag" "$service_run" "--yes"
+}
+
+# --- CC-0030: id-token permission comment references CC-0030 (REQ-018) ---
+test_cosign_id_token_permission_comment() {
+  echo "Test: id-token permission comment references CC-0030 (CC-0030, REQ-018)"
+
+  # The id-token: write line itself (not other comments) should reference CC-0030
+  assert_file_contains "id-token permission references CC-0030" "$WORKFLOW" "id-token:.*CC-0030"
+}
+
 # --- Run all tests ---
 echo "=== Build images workflow verification tests ==="
 echo ""
@@ -1130,6 +1273,20 @@ echo ""
 test_dockerfile_static_labels_venv_builder
 echo ""
 test_dockerfile_static_labels_keystone
+echo ""
+test_cosign_installer_in_build_base_images
+echo ""
+test_cosign_installer_in_build_service_images
+echo ""
+test_cosign_sign_steps_count
+echo ""
+test_cosign_sign_steps_pr_guard
+echo ""
+test_cosign_sign_steps_reference_digest
+echo ""
+test_cosign_sign_uses_yes_flag
+echo ""
+test_cosign_id_token_permission_comment
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

@@ -1,0 +1,97 @@
+{
+  "feature_id": "CC-0030",
+  "title": "Add cosign keyless signing to container images",
+  "date": "2026-03-09",
+  "summary": "Adds cosign keyless signing to all container images in the build-images workflow, completing the supply chain security chain (build, push, SBOM, attest, sign). The sigstore/cosign-installer action is SHA-pinned and installed in both build jobs. Three cosign sign steps (python-base, venv-builder, service) use digest-based references and --yes flag for non-interactive mode. All signing steps are guarded with the same PR-skip condition as SBOM/attestation. Seven new test functions validate installer presence, step counts, PR guards, digest references, --yes flag usage, and permission comments. Documentation adds a complete Cosign Image Signing section with verify command examples and updated step/permission/behavior tables.",
+  "verdict": "APPROVED",
+  "review_process": {
+    "intent": "CC-0030 adds cosign keyless signing as the final step in the supply chain security chain for container images. Plan specifies: cosign-installer in both build jobs, sign steps after SBOM attestation, PR-skip guards, tests, and docs.",
+    "scope": "Changes limited to 4 files: build-images.yaml (workflow), verify_build_images_workflow.sh (tests), build-images-workflow.md (docs), progress tracker JSON. No scope creep.",
+    "verification": "All 158 tests pass (0 failures). No lintable source code (shell/YAML only). shellcheck not applicable to yq-based assertion scripts.",
+    "patterns": "Follows existing patterns exactly: SHA-pinned actions with version comments, PR-skip guard pattern, yq-based workflow test assertions, PASS/FAIL counter test structure.",
+    "tests": "7 new test functions covering all review criteria: installer presence (2 jobs), step counts, PR guards, digest references, --yes flag, permission comments. All code paths increment PASS or FAIL counters.",
+    "security": "cosign sign uses --yes (non-interactive), digest-based image references (immutable, no mutable tags), no new secrets or credentials, SHA-pinned action, reuses existing id-token: write permission.",
+    "complexity": "Minimal. Each sign step is a one-line shell command. cosign-installer is a zero-config action. No over-engineering.",
+    "completeness": "All 5 tasks (1.1, 1.2, 2.1, 2.2, 3.1) fully implemented. No stubs or placeholders.",
+    "prompt_quality": "No new prompt files. N/A."
+  },
+  "tests_checklist": [
+    {"item": "Tests exist and pass (158/158)", "checked": true},
+    {"item": "cosign-installer presence tested in both build jobs", "checked": true},
+    {"item": "Sign step counts tested (2 base + 1 service)", "checked": true},
+    {"item": "PR-skip guard tested on all sign steps", "checked": true},
+    {"item": "Digest references tested for all 3 sign steps", "checked": true},
+    {"item": "--yes flag tested on all sign steps", "checked": true},
+    {"item": "Permission comment CC-0030 reference tested", "checked": true},
+    {"item": "Existing tests still pass after changes", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns", "checked": true},
+    {"item": "No code duplication", "checked": true},
+    {"item": "Clear naming conventions", "checked": true},
+    {"item": "Minimal complexity", "checked": true},
+    {"item": "CC-0030 feature ID referenced in all comments", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Digest-based image references (no mutable tags)", "checked": true},
+    {"item": "--yes flag for non-interactive signing", "checked": true},
+    {"item": "No new secrets or credentials", "checked": true},
+    {"item": "cosign-installer SHA-pinned with version comment", "checked": true},
+    {"item": "Reuses existing id-token: write (no permission escalation)", "checked": true},
+    {"item": "PR builds skip signing (no signing artifacts for ephemeral builds)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "Step ordering correct (installer before sign, sign after attest)", "checked": true},
+    {"item": "Consistent with existing SBOM/attestation pattern", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unnecessary abstractions", "checked": true},
+    {"item": "No unused code", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early (test assertions are specific)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs validated (N/A — no user inputs)", "checked": true},
+    {"item": "Test functions handle empty yq results with explicit FAIL", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    {
+      "severity": "minor",
+      "check_id": "D4",
+      "description": "YAML snippet in Permissions section not updated with CC-0030 reference",
+      "location": "docs/reference/build-images-workflow.md:59",
+      "detail": "The YAML example block in the Permissions section still shows `id-token: write # CC-0029: Sigstore OIDC signing for SBOM attestation` while the actual workflow file and the permissions table at line 446 show `CC-0029, CC-0030`. Update the snippet comment to match: `id-token: write # CC-0029, CC-0030: Sigstore OIDC signing for SBOM attestation and cosign signing`.",
+      "fix": "Update line 59 of docs/reference/build-images-workflow.md to: `id-token: write       # CC-0029, CC-0030: Sigstore OIDC signing for SBOM attestation and cosign signing`"
+    }
+  ],
+  "external_review_patterns_checked": [
+    {
+      "pattern": "Enforce consistent error-handling pattern across all test cases",
+      "result": "PASS",
+      "detail": "All 7 new test functions use yq_count (with built-in error handling) or yq_raw with || true to prevent set -e from aborting. No command substitutions without exit-code capture."
+    },
+    {
+      "pattern": "Require explicit failure branch in test pass/fail logic",
+      "result": "PASS",
+      "detail": "All conditional blocks in new tests have both PASS and FAIL branches. The while-loop + if/elif pattern in test_cosign_sign_steps_pr_guard and test_cosign_sign_uses_yes_flag covers all code paths: empty input (elif FAIL), all pass (if PASS), some fail (FAIL in loop body)."
+    },
+    {
+      "pattern": "Unsanitized shell command output used in structured strings",
+      "result": "N/A",
+      "detail": "No shell command output is used in Docker tags, URLs, or structured strings in the new code."
+    },
+    {
+      "pattern": "Verify documented commands work end-to-end",
+      "result": "PASS",
+      "detail": "The cosign verify command in docs uses correct flags (--certificate-oidc-issuer, --certificate-identity-regexp) with standard placeholder format. The command structure matches cosign's documented API for GitHub Actions keyless verification."
+    }
+  ],
+  "next_steps": [],
+  "detected_patterns": []
+}
