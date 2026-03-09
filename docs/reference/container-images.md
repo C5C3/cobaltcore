@@ -1,7 +1,7 @@
 ---
 title: Container Images
 quadrant: infrastructure
-feature: CC-0006
+feature: CC-0006, CC-0031
 ---
 
 # Container Images
@@ -64,6 +64,12 @@ The foundational runtime image for all OpenStack service containers.
 rather than creating per-service users. This is a deliberate deviation from the architecture
 document — see [Design Deviations](#design-deviations) for rationale.
 
+**OCI labels (CC-0031):** The Dockerfile includes static `LABEL` instructions for baseline
+OCI Image Spec annotations (`title`, `description`, `licenses`, `vendor`). These are
+always present on locally-built images. In CI, `docker/metadata-action` supplements these
+with dynamic labels (created, revision, source, url, version) — see
+[Build Images Workflow — OCI Annotations](build-images-workflow.md#oci-annotations).
+
 ### venv-builder
 
 **Location:** `images/venv-builder/Dockerfile`
@@ -105,6 +111,9 @@ These packages are installed **without** the `--constraint` flag. The `venv-buil
 is release-independent — version constraints are release-specific and applied only in
 service Dockerfiles when installing the actual service.
 
+**OCI labels (CC-0031):** Same static `LABEL` pattern as `python-base` — title, description,
+licenses, and vendor are embedded in the Dockerfile for local build visibility.
+
 ## Service Images
 
 ### keystone
@@ -144,6 +153,12 @@ The Keystone identity service image uses a two-stage build:
 - Contains no build tools (`gcc`, `python3-dev`, `build-essential`, `uv` are absent)
 - Virtualenv at `/var/lib/openstack` with all Keystone dependencies
 - `keystone-manage` CLI available via `PATH`
+
+**OCI labels (CC-0031):** The `LABEL` instruction is placed in Stage 2 (runtime) before
+the `USER` instruction. Labels added in Stage 1 (build) are discarded by Docker's
+multi-stage build process — only the runtime stage labels appear on the final image. In
+CI, `docker/metadata-action` overrides `org.opencontainers.image.version` with the
+upstream OpenStack release version from `source-refs.yaml` via a `type=raw` tag strategy.
 
 ## Named Build Contexts
 

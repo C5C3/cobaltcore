@@ -69,6 +69,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # CC-0031: Generate OCI annotations for python-base
+      - name: Generate metadata for python-base
+        id: meta-python-base
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ghcr.io/${{ steps.meta.outputs.owner }}/python-base
+          labels: |
+            org.opencontainers.image.title=python-base
+            org.opencontainers.image.description=Python runtime base image for OpenStack services
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.vendor=SAP SE
+
       - name: Build and push python-base
         id: build-python-base
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
@@ -79,6 +91,7 @@ jobs:
           tags: |
             ghcr.io/${{ steps.meta.outputs.owner }}/python-base:latest
             ghcr.io/${{ steps.meta.outputs.owner }}/python-base:${{ github.sha }}
+          labels: ${{ steps.meta-python-base.outputs.labels }}
           cache-from: type=gha,scope=python-base
           cache-to: type=gha,mode=max,scope=python-base
 
@@ -101,6 +114,18 @@ jobs:
           sbom-path: sbom-python-base.cyclonedx.json
           push-to-registry: true
 
+      # CC-0031: Generate OCI annotations for venv-builder
+      - name: Generate metadata for venv-builder
+        id: meta-venv-builder
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder
+          labels: |
+            org.opencontainers.image.title=venv-builder
+            org.opencontainers.image.description=Python virtualenv builder image for OpenStack services
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.vendor=SAP SE
+
       - name: Build and push venv-builder
         id: build-venv-builder
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
@@ -113,6 +138,7 @@ jobs:
           tags: |
             ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder:latest
             ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder:${{ github.sha }}
+          labels: ${{ steps.meta-venv-builder.outputs.labels }}
           cache-from: type=gha,scope=venv-builder
           cache-to: type=gha,mode=max,scope=venv-builder
 
@@ -280,6 +306,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # CC-0031: Generate OCI annotations for service image.
+      # Uses raw version strategy to override org.opencontainers.image.version
+      # with the upstream OpenStack release version from source-refs.yaml.
+      - name: Generate metadata for service image
+        id: meta-service
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ steps.tags.outputs.image }}
+          tags: |
+            type=raw,value=${{ steps.source-ref.outputs.ref }}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.service }}
+            org.opencontainers.image.description=OpenStack ${{ matrix.service }} service
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.vendor=SAP SE
+
       - name: Build service image
         id: build-service
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
@@ -305,6 +347,7 @@ jobs:
             ${{ steps.tags.outputs.composite }}
             ${{ github.ref_name == 'main' && steps.tags.outputs.version || '' }}
             ${{ steps.tags.outputs.sha }}
+          labels: ${{ steps.meta-service.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.service }}-${{ matrix.release }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}-${{ matrix.release }}
 

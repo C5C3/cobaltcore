@@ -1,18 +1,18 @@
 ---
 title: Build Images Workflow
 quadrant: infrastructure
-feature: CC-0007, CC-0029
+feature: CC-0007, CC-0029, CC-0031
 ---
 
 # Build Images Workflow
 
-Reference documentation for the GitHub Actions build-images workflow (CC-0007, CC-0029)
-and the verify-container-images workflow (CC-0028). The build-images workflow builds,
-tags, and publishes container images for OpenStack services to GHCR (GitHub Container
-Registry). Each pushed image receives a CycloneDX SBOM and a Sigstore-signed attestation
-(CC-0029). The verify-container-images workflow runs static verification tests against
-container infrastructure files (Dockerfiles, workflows, release configs) without
-requiring Docker.
+Reference documentation for the GitHub Actions build-images workflow (CC-0007, CC-0029,
+CC-0031) and the verify-container-images workflow (CC-0028). The build-images workflow
+builds, tags, and publishes container images for OpenStack services to GHCR (GitHub
+Container Registry). Each pushed image receives OCI Image Spec annotations (CC-0031),
+a CycloneDX SBOM, and a Sigstore-signed attestation (CC-0029). The
+verify-container-images workflow runs static verification tests against container
+infrastructure files (Dockerfiles, workflows, release configs) without requiring Docker.
 
 ## File Locations
 
@@ -128,18 +128,21 @@ availability.
 | --- | --- | --- | --- |
 | 1 | Reject fork PRs | Shell (conditional) | Fails fast with `::error::` if the PR originates from a fork (CC-0007) |
 | 2 | Checkout | `actions/checkout@v6` | Checks out the repository |
-| 3 | Set up Buildx | `docker/setup-buildx-action@v4` | Enables multi-platform builds |
-| 4 | Login to GHCR | `docker/login-action@v4` | Authenticates with `GITHUB_TOKEN` |
-| 5 | Build python-base | `docker/build-push-action@v7` | Context: `images/python-base`, multi-arch, push: true, tags: `:latest` and `:${{ github.sha }}` |
-| 6 | Generate SBOM for python-base | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed python-base image by digest. Output: `sbom-python-base.cyclonedx.json` (CC-0029) |
-| 7 | Attest SBOM for python-base | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
-| 8 | Build venv-builder | `docker/build-push-action@v7` | Context: `images/venv-builder`, multi-arch, push: true, tags: `:latest` and `:${{ github.sha }}`, `--build-context python-base=docker-image://...` |
-| 9 | Generate SBOM for venv-builder | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed venv-builder image by digest. Output: `sbom-venv-builder.cyclonedx.json` (CC-0029) |
-| 10 | Attest SBOM for venv-builder | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
+| 3 | Normalize image owner | Shell script | Outputs lowercase `owner` value from `${{ github.repository_owner }}` for use in image references (CC-0007) |
+| 4 | Set up Buildx | `docker/setup-buildx-action@v4` | Enables multi-platform builds |
+| 5 | Login to GHCR | `docker/login-action@v4` | Authenticates with `GITHUB_TOKEN` |
+| 6 | Generate metadata for python-base | `docker/metadata-action@v5` | Produces OCI labels (title, description, licenses, vendor) for python-base (CC-0031) |
+| 7 | Build python-base | `docker/build-push-action@v7` | Context: `images/python-base`, multi-arch, push: true, tags: `:latest` and `:${{ github.sha }}`, labels from step 6 |
+| 8 | Generate SBOM for python-base | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed python-base image by digest. Output: `sbom-python-base.cyclonedx.json` (CC-0029) |
+| 9 | Attest SBOM for python-base | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
+| 10 | Generate metadata for venv-builder | `docker/metadata-action@v5` | Produces OCI labels (title, description, licenses, vendor) for venv-builder (CC-0031) |
+| 11 | Build venv-builder | `docker/build-push-action@v7` | Context: `images/venv-builder`, multi-arch, push: true, tags: `:latest` and `:${{ github.sha }}`, labels from step 10, `--build-context python-base=docker-image://...` |
+| 12 | Generate SBOM for venv-builder | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed venv-builder image by digest. Output: `sbom-venv-builder.cyclonedx.json` (CC-0029) |
+| 13 | Attest SBOM for venv-builder | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
 
 The `venv-builder` build uses a `docker-image://` build context pointing at the
 just-pushed `python-base` image (referenced by digest), ensuring its `FROM python-base`
-directive resolves to the exact image built in step 5.
+directive resolves to the exact image built in step 7.
 
 Each base image is tagged with both `:latest` (mutable convenience tag) and
 `:${{ github.sha }}` (immutable commit-pinned tag). The SHA tag provides an auditable
@@ -216,10 +219,11 @@ Depends on `build-base-images` for image references (REQ-003) and on
 | 7 | Derive tags | Shell | Computes three image tags and the lowercase `image` path (see [Tag Schema](#tag-schema)) (REQ-005, CC-0029) |
 | 8 | Set up Buildx | `docker/setup-buildx-action@v4` | Enables multi-platform builds |
 | 9 | Login to GHCR | `docker/login-action@v4` | Authenticates with `GITHUB_TOKEN` |
-| 10 | Build service image | `docker/build-push-action@v7` | Builds with four named build contexts and three build args, conditional platform/push/load (REQ-006) |
-| 11 | Generate SBOM for service image | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed service image by digest. Output: `sbom-${{ matrix.service }}.cyclonedx.json` (CC-0029) |
-| 12 | Attest SBOM for service image | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
-| 13 | Verify service image (PR) | Shell (conditional) | On PRs only: runs `verify_keystone.sh` with the locally loaded image ref (CC-0028) |
+| 10 | Generate metadata for service image | `docker/metadata-action@v5` | Produces OCI labels and overrides version to the upstream release ref via `type=raw` strategy (CC-0031) |
+| 11 | Build service image | `docker/build-push-action@v7` | Builds with four named build contexts and three build args, conditional platform/push/load, labels from step 10 (REQ-006) |
+| 12 | Generate SBOM for service image | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed service image by digest. Output: `sbom-${{ matrix.service }}.cyclonedx.json` (CC-0029) |
+| 13 | Attest SBOM for service image | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
+| 14 | Verify service image (PR) | Shell (conditional) | On PRs only: runs `verify_keystone.sh` with the locally loaded image ref (CC-0028) |
 
 **Build Contexts:**
 
@@ -260,7 +264,7 @@ Validates that built service images are functional by running `verify_keystone.s
 `build-service-images` to test every service independently.
 
 On PRs, the equivalent verification runs as an inline step within `build-service-images`
-(step 13 above) because `--load` makes the image available only on the same runner.
+(step 14 above) because `--load` makes the image available only on the same runner.
 
 | Property | Value |
 | --- | --- |
@@ -372,6 +376,7 @@ convention in `ci.yaml`:
 uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
 uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4
 uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2  # v4
+uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051  # v5 (CC-0031)
 uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294  # v7
 uses: anchore/sbom-action@17ae1740179002c89186b61233e0f892c3118b11  # v0 (CC-0029)
 uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26  # v4 (CC-0029)
@@ -483,6 +488,106 @@ The `verify_build_images_workflow.sh` script validates SBOM/attestation configur
 | `test_sbom_attestation_push_to_registry` | All attestation steps have `push-to-registry: true` |
 | `test_sbom_steps_pr_skip_guard` | All SBOM/attestation steps have `github.event_name != 'pull_request'` guard |
 
+## OCI Annotations
+
+Every container image receives OCI Image Spec annotations (CC-0031) via a two-layer
+approach: static `LABEL` instructions in Dockerfiles provide baseline metadata for local
+builds, while `docker/metadata-action` in CI generates dynamic labels that supplement the
+static ones at push time.
+
+### Static Dockerfile Labels
+
+Each Dockerfile includes a `LABEL` instruction with four OCI annotations that are always
+present, regardless of whether the image is built locally or in CI:
+
+| Label | Value (example for keystone) |
+| --- | --- |
+| `org.opencontainers.image.title` | `keystone` |
+| `org.opencontainers.image.description` | `OpenStack keystone service` |
+| `org.opencontainers.image.licenses` | `Apache-2.0` |
+| `org.opencontainers.image.vendor` | `SAP SE` |
+
+In `python-base` and `venv-builder`, the `LABEL` instruction is placed after the last
+`RUN` instruction. In `keystone`, the `LABEL` is placed in Stage 2 (runtime, `FROM
+python-base`) before the `USER` instruction — Stage 1 (build) labels are discarded by
+Docker's multi-stage build process.
+
+### CI Metadata Action
+
+In CI, each image has a `docker/metadata-action` step that generates OCI-compliant
+labels. The action auto-generates dynamic labels from the GitHub context:
+
+| Auto-generated label | Source |
+| --- | --- |
+| `org.opencontainers.image.created` | Build timestamp (ISO 8601) |
+| `org.opencontainers.image.revision` | `GITHUB_SHA` (40-character Git SHA) |
+| `org.opencontainers.image.source` | GitHub repository URL |
+| `org.opencontainers.image.url` | GitHub repository URL |
+| `org.opencontainers.image.version` | Git-derived version (or raw override for keystone) |
+
+The `labels` input of each metadata-action step provides the four custom labels (title,
+description, licenses, vendor). These supplement the auto-generated labels.
+
+**Metadata-action steps:**
+
+| Step ID | Job | Image input |
+| --- | --- | --- |
+| `meta-python-base` | `build-base-images` | `ghcr.io/${{ steps.meta.outputs.owner }}/python-base` |
+| `meta-venv-builder` | `build-base-images` | `ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder` |
+| `meta-service` | `build-service-images` | `${{ steps.tags.outputs.image }}` |
+
+Each metadata-action step's `outputs.labels` is wired into the corresponding
+`build-push-action` step via the `labels` input. At push time, CI-generated labels
+(created, revision, source, url, version) override any matching static Dockerfile labels,
+while the static labels serve as fallback for local builds where no metadata-action runs.
+
+### Keystone Version Override
+
+By default, `docker/metadata-action` derives `org.opencontainers.image.version` from the
+Git context (branch name or tag). For keystone, this would produce a Git-derived version
+rather than the upstream OpenStack release version (e.g., `28.0.0`).
+
+To ensure the OCI version annotation reflects the actual software version, the
+`meta-service` step uses a `type=raw` tag strategy:
+
+```yaml
+tags: |
+  type=raw,value=${{ steps.source-ref.outputs.ref }}
+```
+
+This overrides the version to match the value from `source-refs.yaml` (e.g., `28.0.0`).
+The base images (`python-base`, `venv-builder`) do not specify a `tags` input and use the
+default Git-derived version strategy, which is appropriate for infrastructure images
+without an upstream software version.
+
+> **Note:** The `tags` input on `docker/metadata-action` controls the
+> `org.opencontainers.image.version` label, not the image tags passed to
+> `docker/build-push-action`. Image tags continue to be computed by the "Derive tags"
+> step (see [Tag Schema](#tag-schema)). The metadata-action's tag strategies only
+> influence the OCI version annotation.
+
+### Test Coverage
+
+The `verify_build_images_workflow.sh` script validates OCI annotation configuration
+(CC-0031):
+
+| Test | Validates |
+| --- | --- |
+| `test_metadata_action_steps_exist_in_build_base_images` | `build-base-images` has `meta-python-base` and `meta-venv-builder` steps using `docker/metadata-action` |
+| `test_metadata_action_step_exists_in_build_service_images` | `build-service-images` has `meta-service` step using `docker/metadata-action` |
+| `test_service_metadata_uses_raw_version_strategy` | `meta-service` step uses `type=raw` with `steps.source-ref.outputs.ref` |
+| `test_base_metadata_steps_have_no_tags_override` | `meta-python-base` and `meta-venv-builder` do not specify a `tags` input |
+| `test_python_base_build_push_has_labels_input` | `build-python-base` step wires `steps.meta-python-base.outputs.labels` |
+| `test_venv_builder_build_push_has_labels_input` | `build-venv-builder` step wires `steps.meta-venv-builder.outputs.labels` |
+| `test_service_build_push_has_labels_input` | `build-service` step wires `steps.meta-service.outputs.labels` |
+| `test_metadata_action_labels_include_oci_title` | All 3 metadata-action steps include `org.opencontainers.image.title` |
+| `test_metadata_action_labels_include_oci_description` | All 3 metadata-action steps include `org.opencontainers.image.description` |
+| `test_metadata_action_labels_include_oci_licenses` | All 3 metadata-action steps include `org.opencontainers.image.licenses=Apache-2.0` |
+| `test_metadata_action_labels_include_oci_vendor` | All 3 metadata-action steps include `org.opencontainers.image.vendor` |
+| `test_dockerfile_static_labels_python_base` | `images/python-base/Dockerfile` has `LABEL` for title, description, licenses, vendor |
+| `test_dockerfile_static_labels_venv_builder` | `images/venv-builder/Dockerfile` has `LABEL` for title, description, licenses, vendor |
+| `test_dockerfile_static_labels_keystone` | `images/keystone/Dockerfile` has `LABEL` for title, description, licenses, vendor in Stage 2 |
+
 ## Adding a New Service
 
 To add a new service (e.g., `nova`) to the build matrix:
@@ -492,6 +597,8 @@ To add a new service (e.g., `nova`) to the build matrix:
 Add a Dockerfile at `images/<service>/Dockerfile` following the two-stage pattern in
 `images/keystone/Dockerfile`. The Dockerfile must use named build contexts
 (`python-base`, `venv-builder`, `<service>`, `upper-constraints`) — not hardcoded paths.
+Include a `LABEL` instruction in the runtime stage with OCI annotations (title,
+description, licenses, vendor) — see [OCI Annotations](#oci-annotations) (CC-0031).
 
 ### 2. Add the source ref
 
@@ -639,7 +746,7 @@ non-zero, the job fails.
 
 | Script | Validates |
 | --- | --- |
-| `verify_build_images_workflow.sh` | Workflow structure: job names, dependency chain, trigger events, permissions, action pinning, concurrency, matrix strategy, SBOM/attestation configuration (CC-0029) |
+| `verify_build_images_workflow.sh` | Workflow structure: job names, dependency chain, trigger events, permissions, action pinning, concurrency, matrix strategy, SBOM/attestation configuration (CC-0029), OCI annotation configuration (CC-0031) |
 | `verify_deviation_comments.sh` | DEVIATION comments in Dockerfiles cross-reference architecture docs |
 | `verify_release_config.sh` | `source-refs.yaml` and `extra-packages.yaml` structure and content validity |
 | `verify_spdx_headers.sh` | SPDX Apache-2.0 license headers present on all infrastructure files |

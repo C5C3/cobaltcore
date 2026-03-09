@@ -47,4 +47,11 @@ RUN if [ -n "${EXTRA_APT_PACKAGES}" ]; then \
     rm -rf /var/lib/apt/lists/*; \
     fi
 
+# CC-0031: Static OCI Image Spec annotations for local builds (runtime stage only).
+# CI-generated labels from docker/metadata-action supplement these at push time.
+LABEL org.opencontainers.image.title="keystone" \
+      org.opencontainers.image.description="OpenStack keystone service" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.vendor="SAP SE"
+
 USER openstack

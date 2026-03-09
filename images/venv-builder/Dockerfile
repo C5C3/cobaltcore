@@ -30,3 +30,10 @@ RUN uv pip install --prefix /var/lib/openstack \
     pymysql \
     python-memcached \
     uwsgi
+
+# CC-0031: Static OCI Image Spec annotations for local builds.
+# CI-generated labels from docker/metadata-action supplement these at push time.
+LABEL org.opencontainers.image.title="venv-builder" \
+      org.opencontainers.image.description="Python virtualenv builder image for OpenStack services" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.vendor="SAP SE"

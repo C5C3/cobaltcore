@@ -2,8 +2,8 @@
   "feature_id": "CC-0031",
   "title": "Add OCI Image Spec annotations to container images",
   "slug": "add-oci-image-spec-annotations-to-container-images",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 🔧 small\n**Category:** infrastructure\n**Priority:** medium\n**Source:** Proposed for 'Currently no OCI labels are being set on the container'\n\nAdd standard OCI annotations to python-base, venv-builder, and keystone container images using a two-layer approach:\n\n1. **CI-generated labels via `docker/metadata-action@v5`** (3 new steps in `.github/workflows/build-images.yaml`):\n   - `meta-python-base` step in `build-base-images` job before `build-python-base` step, generating OCI labels (title, description, source, url, version, created, revision, licenses, vendor)\n   - `meta-venv-builder` step in `build-base-images` job before `build-venv-builder` step, same label set\n   - `meta-keystone` step in `build-service-images` job before `build-service` step, with `version` overridden to `${{ steps.source-ref.outputs.ref }}` (upstream release version from source-refs.yaml) via `raw` version strategy\n   - Wire each metadata step's `labels` output into the corresponding `build-push-action` step via `labels: ${{ steps.<meta-step-id>.outputs.labels }}`\n\n2. **Static `LABEL` instructions in Dockerfiles** (3 files):\n   - Add `org.opencontainers.image.title`, `.description`, `.licenses=Apache-2.0`, `.vendor` as static LABELs to `images/python-base/Dockerfile`, `images/venv-builder/Dockerfile`, and `images/keystone/Dockerfile`\n   - These provide baseline metadata for local builds; CI-generated labels override them at push time\n\nExcluded: tag logic changes, custom/vendor-specific labels, base.name/base.digest annotations, Makefile changes, verify job changes.\n\n**Rationale:** Container images currently ship with zero metadata labels. This makes it impossible to trace a running image back to its source commit, repository, license, or build timestamp without external tooling. OCI annotations are the industry standard adopted by registries (Docker Hub, GHCR, Quay), vulnerability scanners, and audit tools. Adding them improves supply chain transparency, simplifies incident response (which commit produced this image?), and aligns with container best practices at minimal cost.\n\n**Affected Areas:**\n- .github/workflows/build-images.yaml\n- images/python-base/Dockerfile\n- images/venv-builder/Dockerfile\n- images/keystone/Dockerfile",
   "stories": [
@@ -256,6 +256,7 @@
       "title": "Add static OCI LABEL instructions to python-base, venv-builder, and keystone Dockerfiles (CC-0031, REQ-001, REQ-005)",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-005"
@@ -266,6 +267,7 @@
       "title": "Add docker/metadata-action steps for python-base and venv-builder in build-base-images job and wire labels output into build-push-action steps (CC-0031, REQ-002, REQ-004, REQ-005, REQ-006)",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-004",
@@ -278,6 +280,7 @@
       "title": "Add docker/metadata-action step for keystone in build-service-images job with raw version strategy overriding version to steps.source-ref.outputs.ref, and wire labels into build-service step (CC-0031, REQ-002, REQ-003, REQ-004, REQ-005, REQ-006)",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-003",
@@ -291,6 +294,7 @@
       "title": "Add CC-0031 verification tests to verify_build_images_workflow.sh: metadata-action step existence, labels wiring to build-push-action, keystone raw version strategy, OCI label keys in metadata-action, and static Dockerfile LABEL presence (CC-0031, REQ-001 through REQ-006)",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -304,6 +308,7 @@
       "title": "Update docs/reference/build-images-workflow.md with OCI Annotations section documenting metadata-action steps, labels wiring, and keystone version override; update docs/reference/container-images.md Dockerfile sections with static LABEL documentation (CC-0031)",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -431,8 +436,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-03-08T23:07:52.820801"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-08T23:09:51.491534"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-09T09:43:29.823013"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/46",
+  "pr_number": 46,
   "execution_history": [
     {
       "run_id": "22c7d25c-bf7a-462d-a42b-6b54112d6f39",
@@ -444,6 +459,50 @@
           "name": "prepare",
           "duration": 457.42329025268555,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "34d6d22c-5df0-4fa4-b25c-b1deff8b3f08",
+      "timestamp": "2026-03-08T23:30:33.369375",
+      "total_duration": 1097.904107093811,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (3 tasks)",
+          "duration": 234.64822125434875,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (1 tasks)",
+          "duration": 208.9367413520813,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (1 tasks)",
+          "duration": 223.5989978313446,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0031] Code Review",
+          "duration": 169.9121389389038,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0031] Improvements",
+          "duration": 216.22222018241882,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0031] Simplify",
+          "duration": 44.585787534713745,
+          "type": "simplify",
           "status": "done"
         }
       ]

@@ -23,3 +23,10 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-ins
 # and image layers. Each service image inherits this user via USER openstack.
 RUN groupadd -g 42424 openstack && \
     useradd -u 42424 -g 42424 -M -d /var/lib/openstack -s /usr/sbin/nologin openstack
+
+# CC-0031: Static OCI Image Spec annotations for local builds.
+# CI-generated labels from docker/metadata-action supplement these at push time.
+LABEL org.opencontainers.image.title="python-base" \
+      org.opencontainers.image.description="Python runtime base image for OpenStack services" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.vendor="SAP SE"

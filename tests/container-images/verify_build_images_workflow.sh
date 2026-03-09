@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify build-images workflow structure, conventions, and correctness (CC-0007, CC-0029)
+# Verify build-images workflow structure, conventions, and correctness (CC-0007, CC-0029, CC-0031)
 # Requirements: REQ-001 through REQ-017
 # Usage: bash tests/container-images/verify_build_images_workflow.sh
 
@@ -823,6 +823,185 @@ test_sbom_steps_pr_skip_guard() {
   fi
 }
 
+# --- CC-0031: metadata-action steps exist in build-base-images (REQ-002) ---
+test_metadata_action_steps_exist_in_build_base_images() {
+  echo "Test: metadata-action steps exist in build-base-images (CC-0031, REQ-002)"
+
+  local meta_count
+  meta_count=$(yq_count '.jobs["build-base-images"]["steps"][] | select(.uses and (.uses | test("docker/metadata-action"))) | .uses' "$WORKFLOW")
+  assert_eq "build-base-images has 2 docker/metadata-action steps" "2" "$meta_count"
+
+  local python_base_id venv_builder_id
+  python_base_id=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "meta-python-base") | .id' "$WORKFLOW" || true)
+  venv_builder_id=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "meta-venv-builder") | .id' "$WORKFLOW" || true)
+
+  assert_eq "meta-python-base step exists" "meta-python-base" "$python_base_id"
+  assert_eq "meta-venv-builder step exists" "meta-venv-builder" "$venv_builder_id"
+}
+
+# --- CC-0031: metadata-action step exists in build-service-images (REQ-002) ---
+test_metadata_action_step_exists_in_build_service_images() {
+  echo "Test: metadata-action step exists in build-service-images (CC-0031, REQ-002)"
+
+  local meta_count
+  meta_count=$(yq_count '.jobs["build-service-images"]["steps"][] | select(.uses and (.uses | test("docker/metadata-action"))) | .uses' "$WORKFLOW")
+  assert_eq "build-service-images has 1 docker/metadata-action step" "1" "$meta_count"
+
+  local keystone_id
+  keystone_id=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "meta-service") | .id' "$WORKFLOW" || true)
+  assert_eq "meta-service step exists" "meta-service" "$keystone_id"
+}
+
+# --- CC-0031: keystone metadata uses raw version strategy (REQ-003) ---
+test_service_metadata_uses_raw_version_strategy() {
+  echo "Test: service metadata uses raw version strategy (CC-0031, REQ-003)"
+
+  local tags_input
+  tags_input=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "meta-service") | .with.tags' "$WORKFLOW" || true)
+
+  assert_contains "meta-service tags input contains type=raw" "$tags_input" "type=raw"
+  assert_contains "meta-service tags input references source-ref output" "$tags_input" "steps.source-ref.outputs.ref"
+}
+
+# --- CC-0031: base metadata steps have no tags override (REQ-004) ---
+test_base_metadata_steps_have_no_tags_override() {
+  echo "Test: base metadata steps have no tags override (CC-0031, REQ-004)"
+
+  local python_base_tags venv_builder_tags
+  python_base_tags=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "meta-python-base") | .with.tags' "$WORKFLOW" || echo "null")
+  venv_builder_tags=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "meta-venv-builder") | .with.tags' "$WORKFLOW" || echo "null")
+
+  assert_eq "meta-python-base has no tags input" "null" "$python_base_tags"
+  assert_eq "meta-venv-builder has no tags input" "null" "$venv_builder_tags"
+}
+
+# --- CC-0031: python-base build-push-action has labels input (REQ-005) ---
+test_python_base_build_push_has_labels_input() {
+  echo "Test: python-base build-push-action has labels input (CC-0031, REQ-005)"
+
+  local labels
+  labels=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-python-base") | .with.labels' "$WORKFLOW" || true)
+
+  assert_contains "build-python-base labels references meta-python-base" "$labels" "steps.meta-python-base.outputs.labels"
+}
+
+# --- CC-0031: venv-builder build-push-action has labels input (REQ-005) ---
+test_venv_builder_build_push_has_labels_input() {
+  echo "Test: venv-builder build-push-action has labels input (CC-0031, REQ-005)"
+
+  local labels
+  labels=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-venv-builder") | .with.labels' "$WORKFLOW" || true)
+
+  assert_contains "build-venv-builder labels references meta-venv-builder" "$labels" "steps.meta-venv-builder.outputs.labels"
+}
+
+# --- CC-0031: service build-push-action has labels input (REQ-005) ---
+test_service_build_push_has_labels_input() {
+  echo "Test: service build-push-action has labels input (CC-0031, REQ-005)"
+
+  local labels
+  labels=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with.labels' "$WORKFLOW" || true)
+
+  assert_contains "build-service labels references meta-service" "$labels" "steps.meta-service.outputs.labels"
+}
+
+# --- CC-0031: metadata-action labels include OCI title (REQ-005) ---
+test_metadata_action_labels_include_oci_title() {
+  echo "Test: metadata-action labels include OCI title (CC-0031, REQ-005)"
+
+  local python_labels venv_labels keystone_labels
+  python_labels=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "meta-python-base") | .with.labels' "$WORKFLOW" || true)
+  venv_labels=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "meta-venv-builder") | .with.labels' "$WORKFLOW" || true)
+  keystone_labels=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "meta-service") | .with.labels' "$WORKFLOW" || true)
+
+  assert_contains "meta-python-base labels include OCI title" "$python_labels" "org.opencontainers.image.title"
+  assert_contains "meta-venv-builder labels include OCI title" "$venv_labels" "org.opencontainers.image.title"
+  assert_contains "meta-service labels include OCI title" "$keystone_labels" "org.opencontainers.image.title"
+}
+
+# --- CC-0031: metadata-action labels include OCI description (REQ-005) ---
+test_metadata_action_labels_include_oci_description() {
+  echo "Test: metadata-action labels include OCI description (CC-0031, REQ-005)"
+
+  local python_labels venv_labels keystone_labels
+  python_labels=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "meta-python-base") | .with.labels' "$WORKFLOW" || true)
+  venv_labels=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "meta-venv-builder") | .with.labels' "$WORKFLOW" || true)
+  keystone_labels=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "meta-service") | .with.labels' "$WORKFLOW" || true)
+
+  assert_contains "meta-python-base labels include OCI description" "$python_labels" "org.opencontainers.image.description"
+  assert_contains "meta-venv-builder labels include OCI description" "$venv_labels" "org.opencontainers.image.description"
+  assert_contains "meta-service labels include OCI description" "$keystone_labels" "org.opencontainers.image.description"
+}
+
+# --- CC-0031: metadata-action labels include OCI licenses (REQ-005) ---
+test_metadata_action_labels_include_oci_licenses() {
+  echo "Test: metadata-action labels include OCI licenses (CC-0031, REQ-005)"
+
+  local python_labels venv_labels keystone_labels
+  python_labels=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "meta-python-base") | .with.labels' "$WORKFLOW" || true)
+  venv_labels=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "meta-venv-builder") | .with.labels' "$WORKFLOW" || true)
+  keystone_labels=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "meta-service") | .with.labels' "$WORKFLOW" || true)
+
+  assert_contains "meta-python-base labels include Apache-2.0 license" "$python_labels" "org.opencontainers.image.licenses=Apache-2.0"
+  assert_contains "meta-venv-builder labels include Apache-2.0 license" "$venv_labels" "org.opencontainers.image.licenses=Apache-2.0"
+  assert_contains "meta-service labels include Apache-2.0 license" "$keystone_labels" "org.opencontainers.image.licenses=Apache-2.0"
+}
+
+# --- CC-0031: metadata-action labels include OCI vendor (REQ-005) ---
+test_metadata_action_labels_include_oci_vendor() {
+  echo "Test: metadata-action labels include OCI vendor (CC-0031, REQ-005)"
+
+  local python_labels venv_labels keystone_labels
+  python_labels=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "meta-python-base") | .with.labels' "$WORKFLOW" || true)
+  venv_labels=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "meta-venv-builder") | .with.labels' "$WORKFLOW" || true)
+  keystone_labels=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "meta-service") | .with.labels' "$WORKFLOW" || true)
+
+  assert_contains "meta-python-base labels include vendor" "$python_labels" "org.opencontainers.image.vendor"
+  assert_contains "meta-venv-builder labels include vendor" "$venv_labels" "org.opencontainers.image.vendor"
+  assert_contains "meta-service labels include vendor" "$keystone_labels" "org.opencontainers.image.vendor"
+}
+
+# --- CC-0031: static OCI labels in python-base Dockerfile (REQ-001) ---
+test_dockerfile_static_labels_python_base() {
+  echo "Test: python-base Dockerfile has static OCI labels (CC-0031, REQ-001)"
+
+  local dockerfile="$PROJECT_ROOT/images/python-base/Dockerfile"
+
+  assert_file_contains "python-base has org.opencontainers.image.title" "$dockerfile" 'org.opencontainers.image.title='
+  assert_file_contains "python-base has org.opencontainers.image.description" "$dockerfile" 'org.opencontainers.image.description='
+  assert_file_contains "python-base has org.opencontainers.image.licenses" "$dockerfile" 'org.opencontainers.image.licenses='
+  assert_file_contains "python-base has org.opencontainers.image.vendor" "$dockerfile" 'org.opencontainers.image.vendor='
+}
+
+# --- CC-0031: static OCI labels in venv-builder Dockerfile (REQ-001) ---
+test_dockerfile_static_labels_venv_builder() {
+  echo "Test: venv-builder Dockerfile has static OCI labels (CC-0031, REQ-001)"
+
+  local dockerfile="$PROJECT_ROOT/images/venv-builder/Dockerfile"
+
+  assert_file_contains "venv-builder has org.opencontainers.image.title" "$dockerfile" 'org.opencontainers.image.title='
+  assert_file_contains "venv-builder has org.opencontainers.image.description" "$dockerfile" 'org.opencontainers.image.description='
+  assert_file_contains "venv-builder has org.opencontainers.image.licenses" "$dockerfile" 'org.opencontainers.image.licenses='
+  assert_file_contains "venv-builder has org.opencontainers.image.vendor" "$dockerfile" 'org.opencontainers.image.vendor='
+}
+
+# --- CC-0031: static OCI labels in keystone Dockerfile runtime stage (REQ-001) ---
+test_dockerfile_static_labels_keystone() {
+  echo "Test: keystone Dockerfile has static OCI labels in runtime stage (CC-0031, REQ-001)"
+
+  local dockerfile="$PROJECT_ROOT/images/keystone/Dockerfile"
+
+  # Extract only the runtime stage (Stage 2: from 'FROM python-base' to end of file)
+  # to verify labels are in the correct stage, not the build stage.
+  local runtime_stage
+  runtime_stage=$(sed -n '/^FROM python-base/,$ p' "$dockerfile")
+
+  assert_contains "keystone runtime stage has org.opencontainers.image.title" "$runtime_stage" 'org.opencontainers.image.title='
+  assert_contains "keystone runtime stage has org.opencontainers.image.description" "$runtime_stage" 'org.opencontainers.image.description='
+  assert_contains "keystone runtime stage has org.opencontainers.image.licenses" "$runtime_stage" 'org.opencontainers.image.licenses='
+  assert_contains "keystone runtime stage has org.opencontainers.image.vendor" "$runtime_stage" 'org.opencontainers.image.vendor='
+}
+
 # --- Run all tests ---
 echo "=== Build images workflow verification tests ==="
 echo ""
@@ -923,6 +1102,34 @@ echo ""
 test_sbom_attestation_push_to_registry
 echo ""
 test_sbom_steps_pr_skip_guard
+echo ""
+test_metadata_action_steps_exist_in_build_base_images
+echo ""
+test_metadata_action_step_exists_in_build_service_images
+echo ""
+test_service_metadata_uses_raw_version_strategy
+echo ""
+test_base_metadata_steps_have_no_tags_override
+echo ""
+test_python_base_build_push_has_labels_input
+echo ""
+test_venv_builder_build_push_has_labels_input
+echo ""
+test_service_build_push_has_labels_input
+echo ""
+test_metadata_action_labels_include_oci_title
+echo ""
+test_metadata_action_labels_include_oci_description
+echo ""
+test_metadata_action_labels_include_oci_licenses
+echo ""
+test_metadata_action_labels_include_oci_vendor
+echo ""
+test_dockerfile_static_labels_python_base
+echo ""
+test_dockerfile_static_labels_venv_builder
+echo ""
+test_dockerfile_static_labels_keystone
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

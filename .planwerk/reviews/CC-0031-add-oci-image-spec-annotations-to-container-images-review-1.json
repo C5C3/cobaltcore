@@ -1,0 +1,77 @@
+{
+  "summary": "Adds OCI Image Spec annotations to python-base, venv-builder, and keystone container images via a two-layer approach: static LABEL instructions in Dockerfiles for local builds, and docker/metadata-action steps in CI for dynamic labels (created, revision, source, url, version). All three metadata-action uses are SHA-pinned with # v5 comment. The keystone metadata step overrides org.opencontainers.image.version with the upstream release ref via type=raw strategy. 13 new test functions in verify_build_images_workflow.sh validate step existence, labels wiring, version strategy, OCI label keys, and static Dockerfile LABEL presence. Reference docs updated in both build-images-workflow.md and container-images.md. All 142 tests pass (0 failures). No regressions in CC-0007/CC-0029 tests.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist for all new functionality", "checked": true},
+    {"item": "All 142 tests pass (0 failures)", "checked": true},
+    {"item": "No regressions in existing CC-0007/CC-0029 tests", "checked": true},
+    {"item": "Edge case: keystone labels verified in runtime stage only (not build stage)", "checked": true},
+    {"item": "Edge case: base images verified to NOT have tags override", "checked": true},
+    {"item": "Test functions follow shell-test-script-structure-with-passfail-counters pattern", "checked": true},
+    {"item": "All test assertions use shared assert_eq/assert_contains/assert_file_contains helpers with PASS/FAIL branches", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing workflow step patterns (SHA pinning, id naming, with inputs)", "checked": true},
+    {"item": "Follows existing Dockerfile LABEL syntax patterns", "checked": true},
+    {"item": "Test functions follow existing yq_raw/yq_count query patterns", "checked": true},
+    {"item": "No code duplication beyond what is inherent in the three-image pattern", "checked": true},
+    {"item": "Clear CC-0031 feature ID comments on all new code blocks", "checked": true},
+    {"item": "No dead code or commented-out code", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No secrets or credentials introduced", "checked": true},
+    {"item": "metadata-action pinned to full SHA (c299e40c65443455700f0fdfc63efafe5b349051)", "checked": true},
+    {"item": "No user input flows into labels (all values are static or from trusted GitHub context)", "checked": true},
+    {"item": "No path traversal or injection risks", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Two-layer approach (static + CI-generated) is minimal and appropriate", "checked": true},
+    {"item": "No changes to tag derivation logic, verify job, SBOM/attestation, or Makefile", "checked": true},
+    {"item": "Metadata steps placed before corresponding build-push-action steps", "checked": true},
+    {"item": "Labels wired via outputs.labels (standard docker/metadata-action pattern)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "Only four OCI labels per image (title, description, licenses, vendor) — no unnecessary labels", "checked": true},
+    {"item": "No custom scripting — uses docker/metadata-action as intended", "checked": true},
+    {"item": "No future-proofing abstractions", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "yq_count has error handling for yq parse failures", "checked": true},
+    {"item": "yq_raw calls use || true or || echo null for graceful empty-result handling", "checked": true},
+    {"item": "Test script exits non-zero on any FAIL count > 0", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Static Dockerfile labels provide fallback when CI metadata-action is not available", "checked": true},
+    {"item": "Keystone test extracts runtime stage only via sed to avoid false positives from build stage", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "D2 (minor): Rename step ID `meta-keystone` to `meta-service` in build-service-images job — the job uses a matrix strategy and the step generates metadata for `${{ matrix.service }}`, not just keystone. When a second service (e.g., nova) is added to the matrix, a step named `meta-keystone` generating metadata for nova would be confusing. This also applies to the `labels: ${{ steps.meta-keystone.outputs.labels }}` reference in `build-service`. Note: this is cosmetic and does NOT affect correctness since each matrix entry runs in its own runner.",
+    "D2 (minor): The static Dockerfile description for keystone says `OpenStack Keystone identity service` (capitalized, with 'identity'), while the CI metadata-action template produces `OpenStack keystone service` (lowercase, no 'identity'). Since CI labels override static ones at push time, the pushed image will have the generic description. Consider using `OpenStack ${{ matrix.service }} identity service` in the metadata-action template, or accept the simpler generic form and update the Dockerfile to match for consistency."
+  ],
+  "next_steps": [
+    "Merge to main — implementation is complete and all checks pass",
+    "When adding a second service to the matrix, consider renaming meta-keystone to meta-service (see suggested improvements)"
+  ],
+  "detected_patterns": [
+    {
+      "name": "Two-layer OCI annotation approach (static Dockerfile LABEL + CI metadata-action)",
+      "component": "images/*/Dockerfile + .github/workflows/build-images.yaml",
+      "category": "configuration",
+      "applies_when": "Adding a new container image to the build pipeline that should carry OCI Image Spec annotations",
+      "description": "Every container image uses a two-layer OCI annotation approach: (1) static LABEL instructions in the Dockerfile provide four baseline annotations (title, description, licenses=Apache-2.0, vendor=SAP SE) that are always present on locally-built images, and (2) a docker/metadata-action step in the CI workflow generates dynamic labels (created, revision, source, url, version) that supplement the static ones at push time. The metadata-action step is placed immediately before the corresponding build-push-action step, and the build-push-action step wires `labels: ${{ steps.<meta-step-id>.outputs.labels }}`. For service images with an upstream software version, the metadata-action uses `type=raw,value=${{ steps.source-ref.outputs.ref }}` to override the version annotation. In multi-stage Dockerfiles, the LABEL instruction is placed in the runtime stage only (build stage labels are discarded).",
+      "examples": [
+        {
+          "location": "images/python-base/Dockerfile:27-32",
+          "code": "# CC-0031: Static OCI Image Spec annotations for local builds.\n# CI-generated labels from docker/metadata-action supplement these at push time.\nLABEL org.opencontainers.image.title=\"python-base\" \\\n      org.opencontainers.image.description=\"Python runtime base image for OpenStack services\" \\\n      org.opencontainers.image.licenses=\"Apache-2.0\" \\\n      org.opencontainers.image.vendor=\"SAP SE\""
+        },
+        {
+          "location": ".github/workflows/build-images.yaml:73-84",
+          "code": "# CC-0031: Generate OCI annotations for python-base\n- name: Generate metadata for python-base\n  id: meta-python-base\n  uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5\n  with:\n    images: ghcr.io/${{ steps.meta.outputs.owner }}/python-base\n    labels: |\n      org.opencontainers.image.title=python-base\n      org.opencontainers.image.description=Python runtime base image for OpenStack services\n      org.opencontainers.image.licenses=Apache-2.0\n      org.opencontainers.image.vendor=SAP SE"
+        }
+      ]
+    }
+  ]
+}
