@@ -1,0 +1,64 @@
+{
+  "feature_id": "CC-0027",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer identifies four issues: (1) the Dockerfile's runtime stage never declares or uses `ARG EXTRA_APT_PACKAGES`, so the build arg passed by CI is silently ignored and apt packages remain hardcoded; (2) `extra-packages.yaml` still lists the incorrect `libldap-2.5-0` instead of `libldap2`; (3) the build-wiring test doesn't verify `EXTRA_APT_PACKAGES` is declared in the Dockerfile, which would have caught issue #1; and (4) the documented `pip_packages: []` field is missing from the YAML file despite being shown in the schema docs.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-07T00:11:19Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**`EXTRA_APT_PACKAGES` build arg not wired into runtime stage**\n\nThe PR description states: *\"declare the three ARGs and… replace the hardcoded apt package list with `${EXTRA_APT_PACKAGES}`\"*. The CI workflow resolves and passes `EXTRA_APT_PACKAGES` as a build arg, but the Dockerfile never declares `ARG EXTRA_APT_PACKAGES` in Stage 2 nor uses it. The apt packages remain hardcoded, meaning `apt_packages` entries in `extra-packages.yaml` are completely ignored at build time — exactly the drift risk this PR aimed to eliminate.\n\nThe runtime stage must declare the ARG **after** its `FROM` (ARGs do not cross stage boundaries in Docker) and use it in the install command:\n\n```dockerfile\n# ---------- Stage 2: runtime ----------\nFROM python-base\n\nARG EXTRA_APT_PACKAGES=\"\"\n\n# DEVIATION from architecture/docs/08-container-images/01-build-pipeline.md:\n# Uses the generic 'openstack' user (UID/GID 42424) from python-base instead\n# of a per-service user. See python-base/Dockerfile for rationale.\n\nCOPY --from=build --link /var/lib/openstack /var/lib/openstack\n\n# Runtime system packages required by Keystone\nRUN DEBIAN_FRONTEND=noninteractive apt-get update && \\\n    apt-get install -y --no-install-recommends $EXTRA_APT_PACKAGES && \\\n    rm -rf /var/lib/apt/lists/*\n\nUSER openstack\n```\n\nWithout this change, passing `--build-arg EXTRA_APT_PACKAGES=...` from the workflow has no effect on the built image.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: images/keystone/Dockerfile\nLine: 38-43\n\nComment:\n**`EXTRA_APT_PACKAGES` build arg not wired into runtime stage**\n\nThe PR description states: *\"declare the three ARGs and… replace the hardcoded apt package list with `${EXTRA_APT_PACKAGES}`\"*. The CI workflow resolves and passes `EXTRA_APT_PACKAGES` as a build arg, but the Dockerfile never declares `ARG EXTRA_APT_PACKAGES` in Stage 2 nor uses it. The apt packages remain hardcoded, meaning `apt_packages` entries in `extra-packages.yaml` are completely ignored at build time — exactly the drift risk this PR aimed to eliminate.\n\nThe runtime stage must declare the ARG **after** its `FROM` (ARGs do not cross stage boundaries in Docker) and use it in the install command:\n\n```dockerfile\n# ---------- Stage 2: runtime ----------\nFROM python-base\n\nARG EXTRA_APT_PACKAGES=\"\"\n\n# DEVIATION from architecture/docs/08-container-images/01-build-pipeline.md:\n# Uses the generic 'openstack' user (UID/GID 42424) from python-base instead\n# of a per-service user. See python-base/Dockerfile for rationale.\n\nCOPY --from=build --link /var/lib/openstack /var/lib/openstack\n\n# Runtime system packages required by Keystone\nRUN DEBIAN_FRONTEND=noninteractive apt-get update && \\\n    apt-get install -y --no-install-recommends $EXTRA_APT_PACKAGES && \\\n    rm -rf /var/lib/apt/lists/*\n\nUSER openstack\n```\n\nWithout this change, passing `--build-arg EXTRA_APT_PACKAGES=...` from the workflow has no effect on the built image.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "images/keystone/Dockerfile",
+      "line": 43,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-07T00:11:15Z",
+      "id": null,
+      "resolution": "RESOLVED: The Dockerfile Stage 2 now declares 'ARG EXTRA_APT_PACKAGES=\"\"' after the 'FROM python-base' line and the apt-get install command uses ${EXTRA_APT_PACKAGES} instead of the four hardcoded package names. The fix matches the reviewer's suggested code almost exactly."
+    },
+    {
+      "body": "**`libldap-2.5-0` not fixed to `libldap2`**\n\nOne of the stated goals of this PR is *\"fixing the incorrect libldap-2.5-0 to libldap2\"* (`libldap-2.5-0` does not exist as an Ubuntu Noble package). The `docs/reference/container-images.md` diff correctly shows the fix, and the Dockerfile's hardcoded list already uses `libldap2`, but the actual source-of-truth YAML file was never updated. Once `EXTRA_APT_PACKAGES` is properly wired into the Dockerfile (see the companion comment on `images/keystone/Dockerfile`), this stale entry will cause `apt-get install` to fail at build time.\n\n```suggestion\n    - libldap2\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: releases/2025.2/extra-packages.yaml\nLine: 19\n\nComment:\n**`libldap-2.5-0` not fixed to `libldap2`**\n\nOne of the stated goals of this PR is *\"fixing the incorrect libldap-2.5-0 to libldap2\"* (`libldap-2.5-0` does not exist as an Ubuntu Noble package). The `docs/reference/container-images.md` diff correctly shows the fix, and the Dockerfile's hardcoded list already uses `libldap2`, but the actual source-of-truth YAML file was never updated. Once `EXTRA_APT_PACKAGES` is properly wired into the Dockerfile (see the companion comment on `images/keystone/Dockerfile`), this stale entry will cause `apt-get install` to fail at build time.\n\n```suggestion\n    - libldap2\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "releases/2025.2/extra-packages.yaml",
+      "line": 19,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-07T00:11:16Z",
+      "id": null,
+      "resolution": "RESOLVED: In releases/2025.2/extra-packages.yaml, 'libldap-2.5-0' was changed to 'libldap2'. The docs (container-images.md) were already correct and remain consistent."
+    },
+    {
+      "body": "**`test_extra_packages_build_wiring` doesn't verify `EXTRA_APT_PACKAGES` wiring**\n\nThe new test confirms that the Dockerfile declares `ARG PIP_EXTRAS` and `ARG PIP_PACKAGES`, and that the CI workflow references `extra-packages.yaml`. However, it has no check for `ARG EXTRA_APT_PACKAGES` in Stage 2 of the Dockerfile. Had this check existed, it would have caught that the apt-packages half of the wiring is missing (see the comment on `images/keystone/Dockerfile`). Consider adding:\n\n```bash\n  # Verify Dockerfile declares ARG EXTRA_APT_PACKAGES (runtime stage)\n  if grep -q '^ARG EXTRA_APT_PACKAGES=' \"$dockerfile\"; then\n    echo \"  PASS: Dockerfile declares ARG EXTRA_APT_PACKAGES\"\n    PASS=$((PASS + 1))\n  else\n    echo \"  FAIL: Dockerfile missing ARG EXTRA_APT_PACKAGES\"\n    FAIL=$((FAIL + 1))\n  fi\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: tests/container-images/verify_release_config.sh\nLine: 178-203\n\nComment:\n**`test_extra_packages_build_wiring` doesn't verify `EXTRA_APT_PACKAGES` wiring**\n\nThe new test confirms that the Dockerfile declares `ARG PIP_EXTRAS` and `ARG PIP_PACKAGES`, and that the CI workflow references `extra-packages.yaml`. However, it has no check for `ARG EXTRA_APT_PACKAGES` in Stage 2 of the Dockerfile. Had this check existed, it would have caught that the apt-packages half of the wiring is missing (see the comment on `images/keystone/Dockerfile`). Consider adding:\n\n```bash\n  # Verify Dockerfile declares ARG EXTRA_APT_PACKAGES (runtime stage)\n  if grep -q '^ARG EXTRA_APT_PACKAGES=' \"$dockerfile\"; then\n    echo \"  PASS: Dockerfile declares ARG EXTRA_APT_PACKAGES\"\n    PASS=$((PASS + 1))\n  else\n    echo \"  FAIL: Dockerfile missing ARG EXTRA_APT_PACKAGES\"\n    FAIL=$((FAIL + 1))\n  fi\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "tests/container-images/verify_release_config.sh",
+      "line": 203,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-07T00:11:17Z",
+      "id": null,
+      "resolution": "RESOLVED: The test_extra_packages_build_wiring function now includes a check for 'ARG EXTRA_APT_PACKAGES=' in the Dockerfile, matching the reviewer's suggestion. Additionally, a new test_no_hardcoded_apt_packages function was added that verifies no apt package names from extra-packages.yaml appear hardcoded in the Dockerfile's apt-get install lines."
+    },
+    {
+      "body": "**`pip_packages` field absent despite being documented**\n\nThe docs example in `docs/reference/container-images.md` (and the `pip_packages` key description table) shows `pip_packages: []` as a required field of the schema. The PR description likewise states the file should be restructured to include `pip_packages (standalone packages, initially empty)`. The field is missing from the actual YAML, which creates a discrepancy between the schema docs and the real file. While the CI workflow handles the absence gracefully (via `// []`), it's cleaner to include the explicit empty list so the file is self-documenting for future editors.\n\n```suggestion\n  pip_packages: []\n```\n\n(Insert after the `oauth1` line.)\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: releases/2025.2/extra-packages.yaml\nLine: 16\n\nComment:\n**`pip_packages` field absent despite being documented**\n\nThe docs example in `docs/reference/container-images.md` (and the `pip_packages` key description table) shows `pip_packages: []` as a required field of the schema. The PR description likewise states the file should be restructured to include `pip_packages (standalone packages, initially empty)`. The field is missing from the actual YAML, which creates a discrepancy between the schema docs and the real file. While the CI workflow handles the absence gracefully (via `// []`), it's cleaner to include the explicit empty list so the file is self-documenting for future editors.\n\n```suggestion\n  pip_packages: []\n```\n\n(Insert after the `oauth1` line.)\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "releases/2025.2/extra-packages.yaml",
+      "line": 16,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-07T00:11:18Z",
+      "id": null,
+      "resolution": "RESOLVED: The extra-packages.yaml now includes 'pip_packages: []' as an explicit empty list under the keystone service entry, making the file self-documenting and consistent with the schema documented in container-images.md."
+    }
+  ],
+  "resolution_summary": "All four review comments were fully addressed. The Dockerfile Stage 2 now declares ARG EXTRA_APT_PACKAGES and uses it in the apt-get install command (replacing the hardcoded package list). The extra-packages.yaml was corrected to use libldap2 and to include pip_packages: []. The test suite was expanded with an EXTRA_APT_PACKAGES ARG check and a new test_no_hardcoded_apt_packages test. Beyond the directly mentioned locations, the extra-packages.yaml schema was restructured (pip_packages renamed to pip_extras with bare extra names, pip_packages repurposed for standalone packages), Dockerfile Stage 1 was parameterized with ARG PIP_EXTRAS and ARG PIP_PACKAGES, and both reference docs (container-images.md, build-images-workflow.md) were updated to reflect the new schema and build arg wiring.",
+  "github_review_id": 3906699941
+}

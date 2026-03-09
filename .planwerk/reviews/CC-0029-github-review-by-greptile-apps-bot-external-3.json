@@ -1,0 +1,36 @@
+{
+  "feature_id": "CC-0029",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer identified that the `else` branch in the SBOM PR-guard test double-counts FAIL: once inside the `while` loop for each unguarded step, then again in the `else` branch. Fix by changing `else` to `elif [ -z \"$base_sbom_ifs\" ]` (and likewise for the `service_sbom_ifs` block) so only the \"no results found\" case gets an extra FAIL, matching the pattern used in `test_sbom_format_cyclonedx_json` and `test_sbom_attestation_push_to_registry`.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-08T19:57:06Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 3,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**`else` branch double-counts FAIL when a guard is missing**\n\nThe `else` branch fires for two distinct scenarios:\n\n1. `base_sbom_ifs` is empty — FAIL has not yet been incremented, so incrementing here is correct.\n2. `all_guarded=false` — FAIL was **already incremented** inside the while loop (once per step missing the guard). The `else` branch then increments FAIL a second time for the same failure event, overcounting.\n\nBoth the `test_sbom_format_cyclonedx_json` and `test_sbom_attestation_push_to_registry` functions correctly avoid this by using `elif [ -z \"$base_formats\" ]` / `elif [ -z \"$base_push_values\" ]` instead of a plain `else`, so only the truly unhandled \"no results\" case increments an extra FAIL. This function should follow the same pattern.\n\nThe same double-count problem exists for the `service_sbom_ifs` block (lines 761–777).\n\n```suggestion\n  if $all_guarded && [ -n \"$base_sbom_ifs\" ]; then\n    echo \"  PASS: all build-base-images SBOM/attestation steps have PR-skip guard\"\n    PASS=$((PASS + 1))\n  elif [ -z \"$base_sbom_ifs\" ]; then\n    echo \"  FAIL: build-base-images SBOM/attestation steps not found or missing PR guard\"\n    FAIL=$((FAIL + 1))\n  fi\n\n  # All SBOM steps in build-service-images must have PR guard\n  local service_sbom_ifs\n  service_sbom_ifs=$(yq_raw '.jobs[\"build-service-images\"][\"steps\"][] | select(.uses and (.uses | test(\"anchore/sbom-action|actions/attest-sbom\"))) | .if' \"$WORKFLOW\" 2>/dev/null || true)\n\n  local service_all_guarded=true\n  while IFS= read -r val; do\n    [ -z \"$val\" ] && continue\n    if [[ \"$val\" != *\"github.event_name != 'pull_request'\"* ]]; then\n      echo \"  FAIL: build-service-images SBOM/attestation step missing PR guard: $val\"\n      FAIL=$((FAIL + 1))\n      service_all_guarded=false\n    fi\n  done <<< \"$service_sbom_ifs\"\n\n  if $service_all_guarded && [ -n \"$service_sbom_ifs\" ]; then\n    echo \"  PASS: all build-service-images SBOM/attestation steps have PR-skip guard\"\n    PASS=$((PASS + 1))\n  elif [ -z \"$service_sbom_ifs\" ]; then\n    echo \"  FAIL: build-service-images SBOM/attestation steps not found or missing PR guard\"\n    FAIL=$((FAIL + 1))\n  fi\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: tests/container-images/verify_build_images_workflow.sh\nLine: 749-777\n\nComment:\n**`else` branch double-counts FAIL when a guard is missing**\n\nThe `else` branch fires for two distinct scenarios:\n\n1. `base_sbom_ifs` is empty — FAIL has not yet been incremented, so incrementing here is correct.\n2. `all_guarded=false` — FAIL was **already incremented** inside the while loop (once per step missing the guard). The `else` branch then increments FAIL a second time for the same failure event, overcounting.\n\nBoth the `test_sbom_format_cyclonedx_json` and `test_sbom_attestation_push_to_registry` functions correctly avoid this by using `elif [ -z \"$base_formats\" ]` / `elif [ -z \"$base_push_values\" ]` instead of a plain `else`, so only the truly unhandled \"no results\" case increments an extra FAIL. This function should follow the same pattern.\n\nThe same double-count problem exists for the `service_sbom_ifs` block (lines 761–777).\n\n```suggestion\n  if $all_guarded && [ -n \"$base_sbom_ifs\" ]; then\n    echo \"  PASS: all build-base-images SBOM/attestation steps have PR-skip guard\"\n    PASS=$((PASS + 1))\n  elif [ -z \"$base_sbom_ifs\" ]; then\n    echo \"  FAIL: build-base-images SBOM/attestation steps not found or missing PR guard\"\n    FAIL=$((FAIL + 1))\n  fi\n\n  # All SBOM steps in build-service-images must have PR guard\n  local service_sbom_ifs\n  service_sbom_ifs=$(yq_raw '.jobs[\"build-service-images\"][\"steps\"][] | select(.uses and (.uses | test(\"anchore/sbom-action|actions/attest-sbom\"))) | .if' \"$WORKFLOW\" 2>/dev/null || true)\n\n  local service_all_guarded=true\n  while IFS= read -r val; do\n    [ -z \"$val\" ] && continue\n    if [[ \"$val\" != *\"github.event_name != 'pull_request'\"* ]]; then\n      echo \"  FAIL: build-service-images SBOM/attestation step missing PR guard: $val\"\n      FAIL=$((FAIL + 1))\n      service_all_guarded=false\n    fi\n  done <<< \"$service_sbom_ifs\"\n\n  if $service_all_guarded && [ -n \"$service_sbom_ifs\" ]; then\n    echo \"  PASS: all build-service-images SBOM/attestation steps have PR-skip guard\"\n    PASS=$((PASS + 1))\n  elif [ -z \"$service_sbom_ifs\" ]; then\n    echo \"  FAIL: build-service-images SBOM/attestation steps not found or missing PR guard\"\n    FAIL=$((FAIL + 1))\n  fi\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "tests/container-images/verify_build_images_workflow.sh",
+      "line": 777,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-08T19:57:05Z",
+      "id": null,
+      "resolution": ""
+    }
+  ],
+  "github_review_id": 3911947480
+}

@@ -1,0 +1,55 @@
+{
+  "feature_id": "CC-0029",
+  "title": "Add CycloneDX SBOM and Sigstore attestation to CI",
+  "date": "2026-03-08",
+  "summary": "Addresses two external review findings: (1) fixes yq output format mismatch in grep assertions — changed from grep -c '\"uses\":' on YAML output to yq_raw + grep -c . across 4 locations in 2 test functions; (2) corrects documentation to distinguish permission-granted from permission-exercised for id-token: write on PR builds. Both fixes are accurate, complete, and all 105 tests pass.",
+  "verdict": "APPROVED",
+  "review_steps": {
+    "1_INTENT": "Address greptile-apps[bot] external review feedback: fix false-passing yq/grep format mismatch in test assertions and correct misleading permission documentation for PR builds.",
+    "2_SCOPE": "Changes are tightly scoped to exactly the 2 files with substantive fixes (verify_build_images_workflow.sh, build-images-workflow.md) plus 3 planwerk tracking/pattern files. No scope creep.",
+    "3_VERIFICATION": "bash tests/container-images/verify_build_images_workflow.sh — 105 passed, 0 failed. Not applicable: mypy, ruff, golangci-lint (shell script + markdown changes only).",
+    "4_PATTERNS": "yq_raw helper is used consistently across all 71 yq invocations in the test file. No instances of the old grep -c '\"uses\":' pattern remain. The || echo \"0\" fallback is pre-existing and consistent with the pattern elsewhere in the file.",
+    "5_TESTS": "All 4 counting assertions in test_sbom_generation_steps_exist and test_sbom_attestation_steps_exist now correctly count action occurrences using yq_raw to extract .uses values as raw strings, then grep -c . to count non-empty lines.",
+    "6_SECURITY": "Documentation now accurately describes the security posture: id-token: write IS granted at job level on PRs but not exercised because SBOM/attestation steps are skipped. This is an important distinction for security auditors assessing attack surface.",
+    "7_COMPLEXITY": "Minimal changes — 4 line substitutions in tests, 1 line change in docs. Simplest possible fix.",
+    "8_COMPLETENESS": "Both external review findings fully addressed. No stubs or TODOs remain.",
+    "9_PROMPT_QUALITY": "No new prompt files. N/A."
+  },
+  "tests_checklist": [
+    {"item": "All 105 existing tests pass", "checked": true},
+    {"item": "Fixed yq/grep format mismatch in 4 counting assertions", "checked": true},
+    {"item": "No remaining instances of old grep -c '\"uses\":' anti-pattern", "checked": true},
+    {"item": "test_sbom_generation_steps_exist correctly counts 2 base + 1 service SBOM steps", "checked": true},
+    {"item": "test_sbom_attestation_steps_exist correctly counts 2 base + 1 service attestation steps", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Uses existing yq_raw helper consistently (71 invocations, no plain yq calls)", "checked": true},
+    {"item": "grep -c . pattern is idiomatic for counting non-empty output lines", "checked": true},
+    {"item": "Change is minimal — 4 line substitutions in tests, 1 in docs", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Documentation accurately distinguishes permission-granted from permission-exercised", "checked": true},
+    {"item": "id-token: write scope correctly described as granted but not exercised on PRs", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is minimal fix for the reported issues", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code introduced", "checked": true},
+    {"item": "No unnecessary abstractions added", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Test assertions fail correctly when counts mismatch", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "yq stderr redirected to /dev/null with fallback || echo \"0\"", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Minor: The `|| echo \"0\"` fallback on grep -c . produces double output (\"0\\n0\") in the zero-match case because grep -c already outputs \"0\" before exiting 1. Consider `|| true` instead of `|| echo \"0\"` since grep -c already writes the count. This is pre-existing (not introduced by this change) and only affects error message clarity, not test correctness."
+  ],
+  "next_steps": [],
+  "detected_patterns": []
+}

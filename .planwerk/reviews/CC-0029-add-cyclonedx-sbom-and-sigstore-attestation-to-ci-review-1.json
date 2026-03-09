@@ -1,0 +1,59 @@
+{
+  "summary": "Adds CycloneDX SBOM generation (anchore/sbom-action) and Sigstore attestation (actions/attest-sbom) to the build-images workflow for all three image types (python-base, venv-builder, service). Both actions are SHA-pinned with version comments. id-token:write and attestations:write permissions added to build jobs only. All 6 SBOM/attestation steps guarded with PR-skip condition. 9 new test functions validate permissions, step existence, format, digest references, push-to-registry, and PR guards — all 105 tests pass. Reference docs updated with comprehensive SBOM/attestation section. Docs also corrected stale action version references (v3→v4, v6→v7) to match actual workflow SHAs.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (105/105, 0 failures)", "checked": true},
+    {"item": "SBOM permission tests cover both build jobs and negative case for verify jobs", "checked": true},
+    {"item": "SBOM step existence validated (2 in base, 1 in service for both generation and attestation)", "checked": true},
+    {"item": "CycloneDX format validated for all SBOM steps", "checked": true},
+    {"item": "Digest reference correctness validated for all 3 image types", "checked": true},
+    {"item": "push-to-registry: true validated for all attestation steps", "checked": true},
+    {"item": "PR-skip guard validated on all SBOM/attestation steps in both jobs", "checked": true},
+    {"item": "Existing tests (test_actions_pinned_to_sha, test_actions_have_version_comments, test_run_blocks_use_env_vars) pass unmodified", "checked": true},
+    {"item": "All new test functions invoked in run-all-tests section", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (yq_raw helper, assert_eq/assert_contains, while-loop for multi-value checks)", "checked": true},
+    {"item": "No code duplication — shared assertion helpers from tests/lib/assertions.sh used consistently", "checked": true},
+    {"item": "Clear naming — test functions named descriptively with CC-0029 and REQ references", "checked": true},
+    {"item": "No dead code or commented-out code", "checked": true},
+    {"item": "Step names descriptive and consistent (Generate SBOM for X / Attest SBOM for X)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "id-token:write and attestations:write scoped to build jobs only — not verify jobs (least privilege)", "checked": true},
+    {"item": "No secrets or credentials exposed in workflow steps", "checked": true},
+    {"item": "SHA-pinned actions prevent supply-chain attacks via tag mutation", "checked": true},
+    {"item": "SBOM/attestation steps use Sigstore keyless OIDC — no managed signing keys", "checked": true},
+    {"item": "Service image SBOM uses steps.tags.outputs.image (from env vars, not direct expression injection)", "checked": true},
+    {"item": "New image output added via env var interpolation, consistent with existing expression injection defense pattern", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Implementation aligns with architecture/docs/08-container-images/04-sbom.md GitHub Actions Integration section", "checked": true},
+    {"item": "CycloneDX JSON format matches architecture doc specification", "checked": true},
+    {"item": "Sigstore keyless OIDC signing matches architecture doc design", "checked": true},
+    {"item": "PR-skip behavior matches architecture doc (No SBOM on PRs)", "checked": true},
+    {"item": "Solution is minimal — no scope creep beyond SBOM generation and attestation", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated workflow steps — each image type has exactly one SBOM+attest pair", "checked": true},
+    {"item": "No unnecessary abstractions or indirection", "checked": true},
+    {"item": "image output added to tags step only because SBOM step needs it (justified addition)", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "SBOM generation references image by digest — fails immediately if build step didn't produce output", "checked": true},
+    {"item": "Attestation references SBOM file by name — fails if generation step didn't run", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "PR guard prevents unnecessary SBOM/attestation on ephemeral builds", "checked": true},
+    {"item": "Verification tests validate negative case (verify jobs do NOT have SBOM permissions)", "checked": true},
+    {"item": "yq queries use 2>/dev/null || echo fallback to handle missing keys gracefully in tests", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "D2 (minor): The cosign verify-attestation example in docs/reference/build-images-workflow.md uses --certificate-identity-regexp '.*' which accepts any signer identity. Consider using a more specific pattern like the architecture doc's 'https://github.com/c5c3/.*' to guide consumers toward secure verification defaults. Not blocking — it's a generic placeholder example."
+  ],
+  "next_steps": [],
+  "detected_patterns": []
+}

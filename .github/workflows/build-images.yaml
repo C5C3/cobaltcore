@@ -1,0 +1,454 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+name: Build Images
+
+"on":
+  push:
+    branches:
+      - main
+      - stable/**
+    paths:
+      - images/**
+      - releases/**
+      - patches/**
+      - scripts/**
+      - tests/container-images/**
+      - .github/workflows/build-images.yaml
+  pull_request:
+    paths:
+      - images/**
+      - releases/**
+      - patches/**
+      - scripts/**
+      - tests/container-images/**
+      - .github/workflows/build-images.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.ref }}-${{ github.workflow }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-base-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write       # CC-0029, CC-0030: Sigstore OIDC signing for SBOM attestation and cosign signing
+      attestations: write   # CC-0029: GitHub Attestations API
+    outputs:
+      python-base-image: ghcr.io/${{ steps.meta.outputs.owner }}/python-base@${{ steps.build-python-base.outputs.digest }}
+      venv-builder-image: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder@${{ steps.build-venv-builder.outputs.digest }}
+    steps:
+      # CC-0007: Fork PRs receive a read-only GITHUB_TOKEN that cannot push
+      # to GHCR. Since base images must be pushed (docker-image:// URIs require
+      # registry availability), fork PRs are unsupported. Fail fast with a
+      # clear message rather than failing mid-build with a cryptic 403.
+      - name: Reject fork PRs
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "::error::Fork PRs are not supported. Base images must be pushed to GHCR, which requires packages:write. Fork PRs receive a read-only GITHUB_TOKEN. Please open your PR from a branch in the upstream repository."
+          exit 1
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Normalize image owner
+        id: meta
+        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
+
+      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # CC-0030: Install cosign for image signing
+      - uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4
+
+      # CC-0031: Generate OCI annotations for python-base
+      - name: Generate metadata for python-base
+        id: meta-python-base
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
+        with:
+          images: ghcr.io/${{ steps.meta.outputs.owner }}/python-base
+          labels: |
+            org.opencontainers.image.title=python-base
+            org.opencontainers.image.description=Python runtime base image for OpenStack services
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.vendor=SAP SE
+
+      - name: Build and push python-base
+        id: build-python-base
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
+        with:
+          context: images/python-base
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ steps.meta.outputs.owner }}/python-base:latest
+            ghcr.io/${{ steps.meta.outputs.owner }}/python-base:${{ github.sha }}
+          labels: ${{ steps.meta-python-base.outputs.labels }}
+          cache-from: type=gha,scope=python-base
+          cache-to: type=gha,mode=max,scope=python-base
+
+      # CC-0029: Generate and attest SBOM for python-base
+      - name: Generate SBOM for python-base
+        if: github.event_name != 'pull_request'
+        uses: anchore/sbom-action@17ae1740179002c89186b61233e0f892c3118b11 # v0
+        with:
+          image: ghcr.io/${{ steps.meta.outputs.owner }}/python-base@${{ steps.build-python-base.outputs.digest }}
+          format: cyclonedx-json
+          output-file: sbom-python-base.cyclonedx.json
+          upload-artifact: false
+
+      - name: Attest SBOM for python-base
+        if: github.event_name != 'pull_request'
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4
+        with:
+          subject-name: ghcr.io/${{ steps.meta.outputs.owner }}/python-base
+          subject-digest: ${{ steps.build-python-base.outputs.digest }}
+          sbom-path: sbom-python-base.cyclonedx.json
+          push-to-registry: true
+
+      # CC-0030: Sign python-base with cosign keyless signing
+      - name: Sign python-base
+        if: github.event_name != 'pull_request'
+        run: cosign sign --yes ghcr.io/${{ steps.meta.outputs.owner }}/python-base@${{ steps.build-python-base.outputs.digest }}
+
+      # CC-0031: Generate OCI annotations for venv-builder
+      - name: Generate metadata for venv-builder
+        id: meta-venv-builder
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
+        with:
+          images: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder
+          labels: |
+            org.opencontainers.image.title=venv-builder
+            org.opencontainers.image.description=Python virtualenv builder image for OpenStack services
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.vendor=SAP SE
+
+      - name: Build and push venv-builder
+        id: build-venv-builder
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
+        with:
+          context: images/venv-builder
+          build-contexts: |
+            python-base=docker-image://ghcr.io/${{ steps.meta.outputs.owner }}/python-base@${{ steps.build-python-base.outputs.digest }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder:latest
+            ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder:${{ github.sha }}
+          labels: ${{ steps.meta-venv-builder.outputs.labels }}
+          cache-from: type=gha,scope=venv-builder
+          cache-to: type=gha,mode=max,scope=venv-builder
+
+      # CC-0029: Generate and attest SBOM for venv-builder
+      - name: Generate SBOM for venv-builder
+        if: github.event_name != 'pull_request'
+        uses: anchore/sbom-action@17ae1740179002c89186b61233e0f892c3118b11 # v0
+        with:
+          image: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder@${{ steps.build-venv-builder.outputs.digest }}
+          format: cyclonedx-json
+          output-file: sbom-venv-builder.cyclonedx.json
+          upload-artifact: false
+
+      - name: Attest SBOM for venv-builder
+        if: github.event_name != 'pull_request'
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4
+        with:
+          subject-name: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder
+          subject-digest: ${{ steps.build-venv-builder.outputs.digest }}
+          sbom-path: sbom-venv-builder.cyclonedx.json
+          push-to-registry: true
+
+      # CC-0030: Sign venv-builder with cosign keyless signing
+      - name: Sign venv-builder
+        if: github.event_name != 'pull_request'
+        run: cosign sign --yes ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder@${{ steps.build-venv-builder.outputs.digest }}
+
+  verify-base-images:
+    needs: [build-base-images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull base images
+        env:
+          PYTHON_BASE_IMAGE: ${{ needs.build-base-images.outputs.python-base-image }}
+          VENV_BUILDER_IMAGE: ${{ needs.build-base-images.outputs.venv-builder-image }}
+        run: |
+          docker pull "$PYTHON_BASE_IMAGE"
+          docker pull "$VENV_BUILDER_IMAGE"
+
+      - name: Verify python-base image
+        env:
+          PYTHON_BASE_IMAGE: ${{ needs.build-base-images.outputs.python-base-image }}
+        run: bash tests/container-images/verify_python_base.sh "$PYTHON_BASE_IMAGE"
+
+      - name: Verify venv-builder image
+        env:
+          VENV_BUILDER_IMAGE: ${{ needs.build-base-images.outputs.venv-builder-image }}
+        run: bash tests/container-images/verify_venv_builder.sh "$VENV_BUILDER_IMAGE"
+
+  build-service-images:
+    needs: [build-base-images, verify-base-images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write       # CC-0029, CC-0030: Sigstore OIDC signing for SBOM attestation and cosign signing
+      attestations: write   # CC-0029: GitHub Attestations API
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [keystone]
+        release: ["2025.2"]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Resolve source ref
+        id: source-ref
+        env:
+          MATRIX_SERVICE: ${{ matrix.service }}
+          MATRIX_RELEASE: ${{ matrix.release }}
+        run: |
+          ref=$(yq ".\"${MATRIX_SERVICE}\"" "releases/${MATRIX_RELEASE}/source-refs.yaml")
+          if [ -z "$ref" ] || [ "$ref" = "null" ]; then
+            echo "::error::No source-ref found for '${MATRIX_SERVICE}' in releases/${MATRIX_RELEASE}/source-refs.yaml"
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "Resolved ${MATRIX_SERVICE} source ref: $ref"
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          repository: openstack/${{ matrix.service }}
+          ref: ${{ steps.source-ref.outputs.ref }}
+          path: src/${{ matrix.service }}
+          fetch-depth: 1
+
+      - name: Apply patches
+        if: hashFiles(format('patches/{0}/{1}/*.patch', matrix.service, matrix.release)) != ''
+        env:
+          MATRIX_SERVICE: ${{ matrix.service }}
+          MATRIX_RELEASE: ${{ matrix.release }}
+        run: git -C "src/${MATRIX_SERVICE}" apply "${GITHUB_WORKSPACE}/patches/${MATRIX_SERVICE}/${MATRIX_RELEASE}"/*.patch
+
+      - name: Apply constraint overrides
+        env:
+          MATRIX_RELEASE: ${{ matrix.release }}
+        run: scripts/apply-constraint-overrides.sh "$MATRIX_RELEASE"
+
+      - name: Resolve extra packages
+        id: extra-pkgs
+        env:
+          MATRIX_SERVICE: ${{ matrix.service }}
+          MATRIX_RELEASE: ${{ matrix.release }}
+        run: |
+          EXTRAS_FILE="releases/${MATRIX_RELEASE}/extra-packages.yaml"
+          if [ ! -f "$EXTRAS_FILE" ]; then
+            echo "::error::Missing ${EXTRAS_FILE}. Each release directory must contain an extra-packages.yaml file (see docs/reference/build-images-workflow.md#adding-a-new-release)."
+            exit 1
+          fi
+
+          pip_extras=$(yq -r ".\"${MATRIX_SERVICE}\".pip_extras // [] | join(\",\")" "$EXTRAS_FILE")
+          echo "pip-extras=${pip_extras}" >> "$GITHUB_OUTPUT"
+
+          pip_packages=$(yq -r ".\"${MATRIX_SERVICE}\".pip_packages // [] | join(\" \")" "$EXTRAS_FILE")
+          echo "pip-packages=${pip_packages}" >> "$GITHUB_OUTPUT"
+
+          apt_packages=$(yq -r ".\"${MATRIX_SERVICE}\".apt_packages // [] | join(\" \")" "$EXTRAS_FILE")
+          echo "apt-packages=${apt_packages}" >> "$GITHUB_OUTPUT"
+
+          echo "Resolved pip extras: ${pip_extras}"
+          echo "Resolved pip packages: ${pip_packages}"
+          echo "Resolved apt packages: ${apt_packages}"
+
+      - name: Derive tags
+        id: tags
+        env:
+          VERSION: ${{ steps.source-ref.outputs.ref }}
+          MATRIX_SERVICE: ${{ matrix.service }}
+          MATRIX_RELEASE: ${{ matrix.release }}
+          IMAGE_OWNER: ${{ github.repository_owner }}
+        run: |
+          IMAGE_OWNER="${IMAGE_OWNER,,}"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          BRANCH="${GITHUB_REF_NAME//\//-}"
+
+          PATCH_DIR="patches/${MATRIX_SERVICE}/${MATRIX_RELEASE}"
+          if [ -d "$PATCH_DIR" ]; then
+            PATCH_COUNT=$(find "$PATCH_DIR" -name '*.patch' -type f | wc -l | xargs)
+          else
+            PATCH_COUNT=0
+          fi
+
+          IMAGE="ghcr.io/${IMAGE_OWNER}/${MATRIX_SERVICE}"
+          COMPOSITE="${VERSION}-p${PATCH_COUNT}-${BRANCH}-${SHORT_SHA}"
+
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "composite=${IMAGE}:${COMPOSITE}" >> "$GITHUB_OUTPUT"
+          echo "version=${IMAGE}:${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "sha=${IMAGE}:${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "Tags: ${COMPOSITE}, ${VERSION}, ${SHORT_SHA}"
+
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
+
+      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # CC-0030: Install cosign for image signing
+      - uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4
+
+      # CC-0031: Generate OCI annotations for service image.
+      # Uses raw version strategy to override org.opencontainers.image.version
+      # with the upstream OpenStack release version from source-refs.yaml.
+      - name: Generate metadata for service image
+        id: meta-service
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
+        with:
+          images: ${{ steps.tags.outputs.image }}
+          tags: |
+            type=raw,value=${{ steps.source-ref.outputs.ref }}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.service }}
+            org.opencontainers.image.description=OpenStack ${{ matrix.service }} service
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.vendor=SAP SE
+
+      - name: Build service image
+        id: build-service
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
+        with:
+          context: images/${{ matrix.service }}
+          file: images/${{ matrix.service }}/Dockerfile
+          build-args: |
+            PIP_EXTRAS=${{ steps.extra-pkgs.outputs.pip-extras }}
+            PIP_PACKAGES=${{ steps.extra-pkgs.outputs.pip-packages }}
+            EXTRA_APT_PACKAGES=${{ steps.extra-pkgs.outputs.apt-packages }}
+          build-contexts: |
+            python-base=docker-image://${{ needs.build-base-images.outputs.python-base-image }}
+            venv-builder=docker-image://${{ needs.build-base-images.outputs.venv-builder-image }}
+            ${{ matrix.service }}=src/${{ matrix.service }}
+            upper-constraints=releases/${{ matrix.release }}/
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          load: ${{ github.event_name == 'pull_request' }}
+          push: ${{ github.event_name != 'pull_request' }}
+          # CC-0007: The version-only tag (e.g. keystone:28.0.0) is restricted
+          # to main to prevent silent overwrites across branches. The composite
+          # tag already encodes branch, so stable/** builds remain identifiable.
+          tags: |
+            ${{ steps.tags.outputs.composite }}
+            ${{ github.ref_name == 'main' && steps.tags.outputs.version || '' }}
+            ${{ steps.tags.outputs.sha }}
+          labels: ${{ steps.meta-service.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.service }}-${{ matrix.release }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}-${{ matrix.release }}
+
+      # CC-0029: Generate and attest SBOM for service image
+      - name: Generate SBOM for service image
+        if: github.event_name != 'pull_request'
+        uses: anchore/sbom-action@17ae1740179002c89186b61233e0f892c3118b11 # v0
+        with:
+          image: ${{ steps.tags.outputs.image }}@${{ steps.build-service.outputs.digest }}
+          format: cyclonedx-json
+          output-file: sbom-${{ matrix.service }}.cyclonedx.json
+          upload-artifact: false
+
+      - name: Attest SBOM for service image
+        if: github.event_name != 'pull_request'
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4
+        with:
+          subject-name: ${{ steps.tags.outputs.image }}
+          subject-digest: ${{ steps.build-service.outputs.digest }}
+          sbom-path: sbom-${{ matrix.service }}.cyclonedx.json
+          push-to-registry: true
+
+      # CC-0030: Sign service image with cosign keyless signing
+      - name: Sign service image
+        if: github.event_name != 'pull_request'
+        run: cosign sign --yes ${{ steps.tags.outputs.image }}@${{ steps.build-service.outputs.digest }}
+
+      - name: Verify service image (PR)
+        if: github.event_name == 'pull_request'
+        env:
+          IMAGE_REF: ${{ steps.tags.outputs.composite }}
+        run: bash tests/container-images/verify_${{ matrix.service }}.sh "$IMAGE_REF"
+
+  verify-service-images:
+    if: github.event_name != 'pull_request'
+    needs: [build-service-images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [keystone]
+        release: ["2025.2"]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # NOTE: This tag derivation MUST stay in sync with the 'Derive tags' step
+      # in build-service-images. If the tag format changes there, update this
+      # step too — otherwise verify-service-images pulls a ref that was never pushed.
+      - name: Derive image ref
+        id: tags
+        env:
+          MATRIX_SERVICE: ${{ matrix.service }}
+          MATRIX_RELEASE: ${{ matrix.release }}
+          IMAGE_OWNER: ${{ github.repository_owner }}
+        run: |
+          IMAGE_OWNER="${IMAGE_OWNER,,}"
+          VERSION=$(yq ".\"${MATRIX_SERVICE}\"" "releases/${MATRIX_RELEASE}/source-refs.yaml")
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            echo "::error::No source-ref found for '${MATRIX_SERVICE}' in releases/${MATRIX_RELEASE}/source-refs.yaml"
+            exit 1
+          fi
+          SHORT_SHA="${GITHUB_SHA::7}"
+          BRANCH="${GITHUB_REF_NAME//\//-}"
+          PATCH_DIR="patches/${MATRIX_SERVICE}/${MATRIX_RELEASE}"
+          if [ -d "$PATCH_DIR" ]; then
+            PATCH_COUNT=$(find "$PATCH_DIR" -name '*.patch' -type f | wc -l | xargs)
+          else
+            PATCH_COUNT=0
+          fi
+          IMAGE="ghcr.io/${IMAGE_OWNER}/${MATRIX_SERVICE}"
+          echo "image-ref=${IMAGE}:${VERSION}-p${PATCH_COUNT}-${BRANCH}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Pull and verify service image
+        env:
+          IMAGE_REF: ${{ steps.tags.outputs.image-ref }}
+        run: |
+          docker pull "$IMAGE_REF"
+          bash tests/container-images/verify_${{ matrix.service }}.sh "$IMAGE_REF"

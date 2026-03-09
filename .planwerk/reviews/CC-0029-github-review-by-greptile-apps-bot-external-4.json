@@ -1,0 +1,46 @@
+{
+  "feature_id": "CC-0029",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer wants two changes to the SBOM/attestation docs: (1) Reword the PR behavior bullet to explain that the `if: github.event_name != 'pull_request'` guard skips SBOMs uniformly for all images, not just because service images aren't pushed—since base images are pushed on PRs but still skip SBOM generation. (2) Fix the `cosign verify-attestation --type cyclonedx` example, as `cyclonedx` isn't a valid cosign shorthand—use the full predicate URI `https://cyclonedx.org/bom` or recommend `gh attestation` tooling instead.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-08T20:09:28Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 4,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**Misleading parenthetical in PR Behavior bullet**\n\nThe parenthetical explanation `(service images are not pushed to GHCR on PRs)` implies the sole reason SBOMs are skipped on PRs is because service images aren't pushed. However, base images **are** always pushed to GHCR on PRs (as the next paragraph correctly states), yet base image SBOM generation is also skipped. The parenthetical therefore gives an inaccurate picture of the general rule.\n\nThe next paragraph explains the actual reason correctly: the PR guard applies uniformly to all SBOM/attestation steps regardless of whether the image is pushed. The first bullet should reflect this:\n\n```suggestion\n- No SBOMs are generated or attested — the `if: github.event_name != 'pull_request'` guard applies uniformly to all SBOM/attestation steps, including for base images which are pushed on PRs.\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: docs/reference/build-images-workflow.md\nLine: 417\n\nComment:\n**Misleading parenthetical in PR Behavior bullet**\n\nThe parenthetical explanation `(service images are not pushed to GHCR on PRs)` implies the sole reason SBOMs are skipped on PRs is because service images aren't pushed. However, base images **are** always pushed to GHCR on PRs (as the next paragraph correctly states), yet base image SBOM generation is also skipped. The parenthetical therefore gives an inaccurate picture of the general rule.\n\nThe next paragraph explains the actual reason correctly: the PR guard applies uniformly to all SBOM/attestation steps regardless of whether the image is pushed. The first bullet should reflect this:\n\n```suggestion\n- No SBOMs are generated or attested — the `if: github.event_name != 'pull_request'` guard applies uniformly to all SBOM/attestation steps, including for base images which are pushed on PRs.\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "docs/reference/build-images-workflow.md",
+      "line": 417,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-08T20:09:26Z",
+      "id": null,
+      "resolution": "Line 417: The misleading parenthetical '(service images are not pushed to GHCR on PRs)' was replaced with the reviewer's suggested wording: 'No SBOMs are generated or attested — the `if: github.event_name != 'pull_request'` guard applies uniformly to all SBOM/attestation steps, including for base images which are pushed on PRs.' This accurately conveys that the PR guard applies uniformly regardless of whether images are pushed."
+    },
+    {
+      "body": "**`cosign verify-attestation --type cyclonedx` may not be valid**\n\nThe `--type` flag in `cosign verify-attestation` expects a predicate type URI or a recognized shorthand (e.g., `slsaprovenance`, `slsaprovenance1`, `link`, `vuln`). `cyclonedx` is not a standard shorthand in cosign; the correct predicate type URI for a CycloneDX SBOM is typically `https://cyclonedx.org/bom`.\n\nAdditionally, attestations created by `actions/attest-sbom` are stored as GitHub Attestations using DSSE bundles. The recommended extraction path for GitHub Attestations is through the GitHub Attestation API or `gh attestation` tooling rather than raw `cosign verify-attestation`.\n\nIf a cosign-based extraction example is intended, consider replacing `--type cyclonedx` with the full predicate type URI that `actions/attest-sbom` actually writes, or add a note that this command requires verifying the exact predicate type used by the action at runtime.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: docs/reference/build-images-workflow.md\nLine: 452-457\n\nComment:\n**`cosign verify-attestation --type cyclonedx` may not be valid**\n\nThe `--type` flag in `cosign verify-attestation` expects a predicate type URI or a recognized shorthand (e.g., `slsaprovenance`, `slsaprovenance1`, `link`, `vuln`). `cyclonedx` is not a standard shorthand in cosign; the correct predicate type URI for a CycloneDX SBOM is typically `https://cyclonedx.org/bom`.\n\nAdditionally, attestations created by `actions/attest-sbom` are stored as GitHub Attestations using DSSE bundles. The recommended extraction path for GitHub Attestations is through the GitHub Attestation API or `gh attestation` tooling rather than raw `cosign verify-attestation`.\n\nIf a cosign-based extraction example is intended, consider replacing `--type cyclonedx` with the full predicate type URI that `actions/attest-sbom` actually writes, or add a note that this command requires verifying the exact predicate type used by the action at runtime.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "docs/reference/build-images-workflow.md",
+      "line": 457,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-08T20:09:27Z",
+      "id": null,
+      "resolution": "Lines 452-457: The invalid `cosign verify-attestation --type cyclonedx` example was completely removed and replaced with two `gh attestation` commands: (1) `gh attestation verify` for basic verification, and (2) `gh attestation verify --format json | jq` to extract the SBOM predicate using the correct predicate type URI `https://cyclonedx.org/bom`. This addresses both concerns — using the recommended GitHub Attestation tooling instead of raw cosign, and using the correct CycloneDX predicate type URI."
+    }
+  ],
+  "resolution_summary": "Both review comments on docs/reference/build-images-workflow.md were addressed. The misleading parenthetical about PR behavior was replaced with accurate wording explaining the uniform PR guard, and the invalid cosign verify-attestation example was replaced with the recommended gh attestation tooling using the correct CycloneDX predicate type URI. All changes were confined to the file mentioned in the review feedback.",
+  "github_review_id": 3911963449
+}

@@ -1,0 +1,39 @@
+{
+  "feature_id": "CC-0027",
+  "title": "Wire extra-packages.yaml as Docker build source of truth",
+  "date": "2026-03-07",
+  "summary": "Single-line fix: added -F flag to grep -qw at line 209 of verify_release_config.sh, making package name matching use fixed-string mode instead of regex. This prevents false positives where dots in package names like libapache2-mod-wsgi-py3 would match any character. All 13 tests pass. The fix exactly matches the external reviewer's suggestion.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "All tests pass (13/13, exit 0)", "checked": true},
+    {"item": "Edge cases covered (regex metacharacters in package names)", "checked": true},
+    {"item": "No test regressions", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns", "checked": true},
+    {"item": "Minimal change — single flag addition", "checked": true},
+    {"item": "No scope creep", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No injection risks introduced", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unnecessary additions", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Package name matching is now robust against regex metacharacters", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": []
+}

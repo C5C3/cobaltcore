@@ -1,0 +1,862 @@
+{
+  "feature_id": "CC-0006",
+  "title": "C001: Add Keystone container image and release config",
+  "slug": "c001-add-keystone-container-image-and-release",
+  "status": "completed",
+  "phase": "awaiting_external_review",
+  "summary": "",
+  "description": "**Size:** 🔨 medium\n**Category:** infrastructure\n**Priority:** high\n**Feature ID:** S006\n\n## Summary\n\nImplement the container image build infrastructure for Keystone. This creates three Dockerfiles (`python-base`, `venv-builder`, `keystone`) following the multi-stage build pattern from `architecture/docs/08-container-images/`, the release configuration for OpenStack 2025.2 (`source-refs.yaml`, `upper-constraints.txt`, `extra-packages.yaml`), the constraint override script, and verifies the Keystone image builds successfully with `keystone-manage --version`.\n\n## Scope\n\n**Included:**\n- `images/python-base/Dockerfile` — Ubuntu Noble base with Python 3.12, runtime libs, PATH, generic `openstack` service user UID/GID 42424, non-root\n- `images/venv-builder/Dockerfile` — Build dependencies, `uv` (pinned via `COPY --from=ghcr.io/astral-sh/uv:0.6.3`), virtualenv at `/var/lib/openstack/`, common base packages\n- `images/keystone/Dockerfile` — Multi-stage build: Stage 1 (`venv-builder`) installs Keystone via `uv pip install` with `--constraint` and extras from `extra-packages.yaml`; Stage 2 (`python-base`) copies venv, adds Keystone runtime system packages. Source and constraints passed as named build contexts (`--build-context`)\n- `releases/2025.2/source-refs.yaml` — Git refs for Keystone (initially `keystone: \"28.0.0\"`)\n- `releases/2025.2/upper-constraints.txt` — Python dependency pins committed from OpenStack `stable/2025.2` branch\n- `releases/2025.2/extra-packages.yaml` — Combined per-service Python extras and apt runtime packages\n- `scripts/apply-constraint-overrides.sh` — Merges `overrides/<release>/constraints.txt` into `upper-constraints.txt`\n- Local image build verification: `docker build` succeeds, `keystone-manage --version` runs\n- Remove `.gitkeep` from `images/` and `releases/` (no longer needed)\n\n**Excluded:**\n- GitHub Actions CI workflow for image builds (S007)\n- Multi-arch support (S007)\n- GHCR push and tag schema (S007)\n- Other service Dockerfiles (nova, neutron, glance, cinder, placement) — Keystone-first strategy\n- `patches/` directory structure — no patches needed yet\n- `overrides/` directory with actual constraint override files — script handles the logic; files added when needed\n- SBOM generation and signing (documented in `architecture/docs/08-container-images/04-sbom.md`)\n- Makefile `docker-build` target implementation (follow-up or part of S007)\n\n## Resolved Decisions\n\n1. **Service user**: Generic `openstack` user/group (UID/GID 42424) created in `python-base`. All service images inherit via `USER openstack`. This is a **deviation** from the architecture doc's Keystone Dockerfile example which creates a per-service `keystone` user — the deviation should be documented with a `# DEVIATION` comment.\n\n2. **`extra-packages.yaml` format**: Combined schema with both Python extras and apt runtime packages per service:\n   ```yaml\n   keystone:\n     pip_packages:\n       - \"keystone[ldap]\"\n       - \"keystone[memcache_pool]\"\n       - \"keystone[oauth1]\"\n     apt_packages:\n       - libapache2-mod-wsgi-py3\n       - libldap-2.5-0\n       - libsasl2-2\n       - libxml2\n   ```\n\n3. **`upper-constraints.txt`**: Committed in the repo at `releases/2025.2/upper-constraints.txt`, sourced from OpenStack's `requirements` repo `stable/2025.2` branch. Renovate can track updates.\n\n## Visualization\n\n```mermaid\nflowchart TD\n    subgraph BaseImages[\"Base Images\"]\n        UB[\"ubuntu:noble\"]\n        PB[\"images/python-base/Dockerfile\"]\n        VB[\"images/venv-builder/Dockerfile\"]\n        UB --> PB\n        PB --> VB\n    end\n\n    subgraph ReleaseConfig[\"releases/2025.2/\"]\n        SR[\"source-refs.yaml\"]\n        UC[\"upper-constraints.txt\"]\n        EP[\"extra-packages.yaml\"]\n    end\n\n    subgraph Scripts[\"scripts/\"]\n        AO[\"apply-constraint-overrides.sh\"]\n    end\n\n    subgraph KeystoneBuild[\"images/keystone/Dockerfile\"]\n        S1[\"Stage 1: FROM venv-builder AS build\"]\n        S2[\"Stage 2: FROM python-base\"]\n        S1 -->|\"COPY --from=build --link /var/lib/openstack\"| S2\n    end\n\n    VB --> S1\n    PB --> S2\n    UC -->|\"--constraint via named build context\"| S1\n    EP -->|\"pip extras + apt packages\"| S1\n    SR -->|\"git ref for CI checkout\"| S1\n    AO -->|\"merges overrides into\"| UC\n\n    S2 --> VERIFY[\"keystone-manage --version\"]\n```\n\n```mermaid\nsequenceDiagram\n    participant Dev as Developer\n    participant Docker as Docker Build\n    participant PB as python-base\n    participant VB as venv-builder\n    participant KS as keystone Stage 1\n    participant RT as keystone Stage 2\n\n    Dev->>Docker: docker build images/python-base\n    Docker->>PB: FROM ubuntu:noble + Python 3.12 + runtime libs + openstack user 42424\n    Dev->>Docker: docker build images/venv-builder\n    Docker->>VB: FROM python-base + uv 0.6.3 + build-essential + venv\n    Dev->>Docker: docker build images/keystone --build-context keystone=src/ --build-context upper-constraints=releases/2025.2/\n    Docker->>KS: FROM venv-builder AS build + bind-mount source + uv pip install\n    KS-->>RT: COPY --from=build --link /var/lib/openstack\n    Docker->>RT: FROM python-base + apt runtime packages + USER openstack\n    Dev->>RT: keystone-manage --version\n    RT-->>Dev: 28.0.0\n```\n\n## Key Components\n\n- **`images/python-base/Dockerfile`**: Ubuntu Noble 24.04 LTS runtime base. Installs `ca-certificates`, `netbase`, `python3`, `sudo`, `tzdata`. Sets `ENV PATH=/var/lib/openstack/bin:$PATH`, `ENV LANG=C.UTF-8`. Creates generic `openstack` user/group (UID/GID 42424). All service images inherit from this. SPDX header required.\n\n- **`images/venv-builder/Dockerfile`**: Build-time image extending `python-base`. Adds `build-essential`, `git`, `libffi-dev`, `libpq-dev`, `libssl-dev`, `python3-dev`, `python3-venv`. Copies `uv` binary from `ghcr.io/astral-sh/uv:0.6.3`. Creates virtualenv at `/var/lib/openstack`. Pre-installs common packages (`cryptography`, `pymysql`, `python-memcached`, `uwsgi`) with constraints. SPDX header required.\n\n- **`images/keystone/Dockerfile`**: Multi-stage build, release-independent. Stage 1 (`FROM venv-builder AS build`): bind-mounts Keystone source and `upper-constraints.txt` via `--mount=type=bind,from=<context>`, runs `uv pip install --constraint` with extras from `extra-packages.yaml`. Stage 2 (`FROM python-base`): `COPY --from=build --link /var/lib/openstack /var/lib/openstack`, installs Keystone-specific runtime apt packages (`libapache2-mod-wsgi-py3`, `libldap-2.5-0`, `libsasl2-2`, `libxml2`), sets `USER openstack`. SPDX header required. Includes `# DEVIATION` comment explaining generic user vs per-service user.\n\n- **`releases/2025.2/source-refs.yaml`**: YAML mapping component names to git refs. Initially `keystone: \"28.0.0\"`. Single source of truth for what version is built per release. Renovate tracks updates via custom regex manager.\n\n- **`releases/2025.2/upper-constraints.txt`**: Pinned Python dependency versions from OpenStack `requirements` repo, `stable/2025.2` branch. ~500 lines. Ensures reproducible builds.\n\n- **`releases/2025.2/extra-packages.yaml`**: Per-service map with two sections: `pip_packages` (Python extras/packages to install alongside the service) and `apt_packages` (runtime system packages for the final image). Initially populated for Keystone only.\n\n- **`scripts/apply-constraint-overrides.sh`**: Bash script reading `overrides/<release>/constraints.txt` and applying line-by-line overrides to `upper-constraints.txt`. Supports version replacement (`cryptography===44.0.1`) and package removal (`-oslo.messaging`). Idempotent — no-op when override file doesn't exist. SPDX header required.",
+  "stories": [
+    {
+      "title": "CI/CD engineer builds reproducible Keystone container images",
+      "role": "CI/CD engineer",
+      "want": "to build Keystone container images using a multi-stage Docker build with pinned dependencies",
+      "so_that": "every build produces identical, lightweight images suitable for production deployment",
+      "criteria": [
+        "images/python-base/Dockerfile, images/venv-builder/Dockerfile, and images/keystone/Dockerfile exist and follow the documented multi-stage build pattern from architecture/docs/08-container-images/01-build-pipeline.md",
+        "keystone Dockerfile uses named build contexts (--build-context) for source code and upper-constraints.txt, not COPY or git clone",
+        "Final keystone image contains only runtime dependencies — no gcc, python3-dev, uv, or other build tools",
+        "All Dockerfiles include SPDX Apache-2.0 license headers matching the convention in .github/workflows/ci.yaml"
+      ]
+    },
+    {
+      "title": "Developer verifies local Keystone image build",
+      "role": "developer",
+      "want": "to build the Keystone container image locally and verify it works",
+      "so_that": "I can test changes to Dockerfiles or dependencies before pushing to CI",
+      "criteria": [
+        "docker build succeeds for python-base, venv-builder, and keystone images in sequence",
+        "keystone-manage --version returns a valid version string when run in the built container",
+        "Build uses uv for fast Python package installation instead of pip",
+        "Final image runs as non-root openstack user (UID/GID 42424)"
+      ]
+    },
+    {
+      "title": "Release engineer manages OpenStack 2025.2 release configuration",
+      "role": "release engineer",
+      "want": "to define version pins and package lists for the OpenStack 2025.2 release in structured configuration files",
+      "so_that": "builds are reproducible and the release configuration is the single source of truth for what gets built",
+      "criteria": [
+        "releases/2025.2/source-refs.yaml maps keystone to version '28.0.0' as a YAML key-value pair",
+        "releases/2025.2/upper-constraints.txt contains pinned Python dependency versions from OpenStack requirements stable/2025.2 branch",
+        "releases/2025.2/extra-packages.yaml defines pip_packages (Python extras) and apt_packages (runtime system packages) for Keystone",
+        "Adding a new service or updating a version requires only editing existing configuration files, not Dockerfiles"
+      ]
+    },
+    {
+      "title": "Operations engineer applies constraint overrides for security patches",
+      "role": "operations engineer",
+      "want": "to selectively override Python dependency version pins without replacing the entire constraints file",
+      "so_that": "I can quickly apply security fixes or version bumps for individual packages per release",
+      "criteria": [
+        "scripts/apply-constraint-overrides.sh exists and is executable with a shebang line",
+        "Script is idempotent: exits 0 with no changes when overrides/<release>/constraints.txt does not exist",
+        "Script supports version replacement (package===version) and package removal (-package) syntaxes",
+        "Script skips comment lines (starting with #) and blank lines in override files",
+        "All scenarios are covered by shell tests in tests/scripts/test_apply_constraint_overrides.sh"
+      ]
+    },
+    {
+      "title": "Security engineer audits container images for compliance",
+      "role": "security engineer",
+      "want": "to verify container images follow supply chain security best practices",
+      "so_that": "images meet compliance requirements for non-root execution, minimal attack surface, and license tracking",
+      "criteria": [
+        "All new files (Dockerfiles, YAML configs, shell scripts) include SPDX-FileCopyrightText and SPDX-License-Identifier headers",
+        "Final image runs as non-root openstack user (UID 42424, GID 42424) with nologin shell",
+        "Deviation from per-service user to generic openstack user is documented with a DEVIATION comment referencing the architecture doc",
+        "Build dependencies (gcc, python3-dev, build-essential) are not present in the final runtime image"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "description": "The python-base Dockerfile SHALL provide an Ubuntu Noble 24.04 LTS runtime base with Python 3.12, essential runtime libraries (ca-certificates, netbase, python3, sudo, tzdata), ENV PATH=/var/lib/openstack/bin:$PATH, ENV LANG=C.UTF-8, and a generic openstack user/group with UID/GID 42424",
+      "priority": "SHALL",
+      "rationale": "All OpenStack service images inherit from python-base; it establishes the shared runtime environment, PATH for the virtualenv, and the non-root service user",
+      "scenarios": [
+        {
+          "name": "Image builds successfully from ubuntu:noble",
+          "when": "docker build is run on images/python-base/Dockerfile",
+          "then": "the build succeeds and produces an image based on Ubuntu Noble 24.04 LTS with python3 available",
+          "and_then": [
+            "ca-certificates, netbase, sudo, tzdata are installed",
+            "apt lists are cleaned up (rm -rf /var/lib/apt/lists/*)"
+          ]
+        },
+        {
+          "name": "PATH includes virtualenv bin directory",
+          "when": "echo $PATH is run in the python-base image",
+          "then": "PATH starts with /var/lib/openstack/bin",
+          "and_then": [
+            "LANG is set to C.UTF-8"
+          ]
+        },
+        {
+          "name": "Generic openstack user exists with correct IDs",
+          "when": "id openstack is run in the image",
+          "then": "user openstack exists with UID 42424 and GID 42424",
+          "and_then": [
+            "the user has nologin shell (/usr/sbin/nologin)",
+            "the openstack group exists with GID 42424"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "description": "The venv-builder Dockerfile SHALL extend python-base with build dependencies (build-essential, git, libffi-dev, libpq-dev, libssl-dev, python3-dev, python3-venv), uv 0.6.3 copied from ghcr.io/astral-sh/uv:0.6.3, a virtualenv at /var/lib/openstack, and pre-installed common base packages (cryptography, pymysql, python-memcached, uwsgi)",
+      "priority": "SHALL",
+      "rationale": "The venv-builder provides the shared build environment for all service images; common base packages reduce per-service build time and ensure consistent versions",
+      "scenarios": [
+        {
+          "name": "Image extends python-base with build tools",
+          "when": "docker build is run on images/venv-builder/Dockerfile",
+          "then": "the build succeeds using python-base as the base image with build-essential, git, libffi-dev, libpq-dev, libssl-dev, python3-dev, python3-venv installed",
+          "and_then": [
+            "apt lists are cleaned up"
+          ]
+        },
+        {
+          "name": "uv binary is available at pinned version",
+          "when": "uv --version is run in the venv-builder image",
+          "then": "the output shows version 0.6.3",
+          "and_then": [
+            "uv and uvx binaries are copied from ghcr.io/astral-sh/uv:0.6.3 to /bin/"
+          ]
+        },
+        {
+          "name": "Virtualenv and common packages are ready",
+          "when": "/var/lib/openstack/bin/python3 is checked",
+          "then": "the virtualenv exists at /var/lib/openstack with python3 executable",
+          "and_then": [
+            "cryptography, pymysql, python-memcached, and uwsgi are installed in the virtualenv"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "description": "The keystone Dockerfile SHALL implement a release-independent multi-stage build: Stage 1 (FROM venv-builder AS build) bind-mounts source code and upper-constraints.txt via named build contexts and installs Keystone with uv pip install --constraint; Stage 2 (FROM python-base) copies the virtualenv via COPY --from=build --link, installs Keystone runtime apt packages, and sets USER openstack",
+      "priority": "SHALL",
+      "rationale": "Release-independent Dockerfiles ensure the same Dockerfile builds any OpenStack release; build contexts decouple the Dockerfile from specific versions",
+      "scenarios": [
+        {
+          "name": "Stage 1 installs Keystone via named build contexts",
+          "when": "docker build is run with --build-context keystone=<source-dir> --build-context upper-constraints=<constraints-dir>",
+          "then": "Stage 1 uses --mount=type=bind,from=keystone and --mount=type=bind,from=upper-constraints to install Keystone with uv pip install --constraint",
+          "and_then": [
+            "Keystone extras from extra-packages.yaml are installed alongside the base package"
+          ]
+        },
+        {
+          "name": "Stage 2 copies virtualenv and adds runtime packages",
+          "when": "the final image layer is inspected",
+          "then": "COPY --from=build --link /var/lib/openstack /var/lib/openstack copies the compiled virtualenv",
+          "and_then": [
+            "libapache2-mod-wsgi-py3, libldap-2.5-0, libsasl2-2, libxml2 are installed via apt"
+          ]
+        },
+        {
+          "name": "Final image uses non-root openstack user",
+          "when": "the container starts with default user",
+          "then": "the process runs as the openstack user (inherited from python-base)",
+          "and_then": [
+            "USER openstack directive is set in the Dockerfile"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "description": "The file releases/2025.2/source-refs.yaml SHALL be a YAML mapping of component names to git refs, initially containing only keystone: '28.0.0', serving as the single source of truth for which version of each component is built",
+      "priority": "SHALL",
+      "rationale": "Centralizes version information per release; the CI pipeline reads this file to resolve which git ref to check out and build for each service",
+      "scenarios": [
+        {
+          "name": "Keystone ref maps to 28.0.0",
+          "when": "releases/2025.2/source-refs.yaml is parsed as YAML",
+          "then": "the key 'keystone' maps to the string value '28.0.0'",
+          "and_then": [
+            "the file is valid YAML parseable by yq"
+          ]
+        },
+        {
+          "name": "Format supports tags, branches, and SHAs",
+          "when": "a new service entry is added with a branch ref like 'stable/2025.2' or a 40-char commit SHA",
+          "then": "the YAML format accepts arbitrary string values for refs",
+          "and_then": [
+            "adding a service is a single-line addition"
+          ]
+        },
+        {
+          "name": "File has SPDX header as YAML comment",
+          "when": "the raw file content is examined",
+          "then": "it starts with SPDX-FileCopyrightText and SPDX-License-Identifier as # comments before the YAML content",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "description": "The file releases/2025.2/extra-packages.yaml SHALL define per-service packages using a combined schema with pip_packages (Python extras to install via uv pip) and apt_packages (runtime system packages for the final image), initially populated for Keystone only",
+      "priority": "SHALL",
+      "rationale": "Separating pip extras and apt packages per service keeps the Dockerfiles release-independent while centralizing what each service needs",
+      "scenarios": [
+        {
+          "name": "Keystone pip packages include OpenStack extras",
+          "when": "releases/2025.2/extra-packages.yaml is parsed",
+          "then": "keystone.pip_packages contains 'keystone[ldap]', 'keystone[memcache_pool]', 'keystone[oauth1]'",
+          "and_then": [
+            "the list is a valid YAML sequence"
+          ]
+        },
+        {
+          "name": "Keystone apt packages list runtime dependencies",
+          "when": "releases/2025.2/extra-packages.yaml is parsed",
+          "then": "keystone.apt_packages contains libapache2-mod-wsgi-py3, libldap-2.5-0, libsasl2-2, libxml2",
+          "and_then": []
+        },
+        {
+          "name": "Schema supports adding new services",
+          "when": "a new top-level key (e.g., 'nova') is added with pip_packages and apt_packages sections",
+          "then": "the file remains valid YAML and existing entries are unaffected",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "description": "The file releases/2025.2/upper-constraints.txt SHALL be committed from the OpenStack requirements repository stable/2025.2 branch, containing pinned Python dependency versions using the === separator format",
+      "priority": "SHALL",
+      "rationale": "Pinned constraints ensure reproducible builds across environments and time; committing in-repo enables version control tracking and Renovate automation for updates",
+      "scenarios": [
+        {
+          "name": "Content matches upstream source",
+          "when": "releases/2025.2/upper-constraints.txt content is compared with the OpenStack requirements repo stable/2025.2 branch",
+          "then": "the content matches the upstream upper-constraints.txt file",
+          "and_then": []
+        },
+        {
+          "name": "Version pins use === separator",
+          "when": "the file format is inspected",
+          "then": "dependency version pins use the === separator (e.g., oslo.config===9.7.0)",
+          "and_then": [
+            "the file contains hundreds of pinned packages"
+          ]
+        },
+        {
+          "name": "File is compatible with uv pip install --constraint",
+          "when": "the file is passed to uv pip install --constraint",
+          "then": "uv accepts the file format and uses it to constrain package resolution",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "description": "The script scripts/apply-constraint-overrides.sh SHALL read overrides/<release>/constraints.txt and apply line-by-line overrides to upper-constraints.txt, supporting version replacement (package===version) and package removal (-package), skipping comments and blank lines, and exiting cleanly (code 0) when no override file exists",
+      "priority": "SHALL",
+      "rationale": "Enables targeted dependency overrides for CVE fixes and compatibility patches without replacing the entire constraints file; idempotent behavior ensures safe re-runs",
+      "scenarios": [
+        {
+          "name": "No override file exits cleanly",
+          "when": "the script is called with a release that has no overrides/<release>/constraints.txt file",
+          "then": "the script exits with code 0 without modifying upper-constraints.txt",
+          "and_then": []
+        },
+        {
+          "name": "Version replacement updates matching constraint line",
+          "when": "the override file contains 'cryptography===44.0.1' and upper-constraints.txt contains 'cryptography===44.0.0'",
+          "then": "the cryptography line in upper-constraints.txt is replaced with 'cryptography===44.0.1'",
+          "and_then": [
+            "the script outputs 'Updated constraint: cryptography===44.0.1'"
+          ]
+        },
+        {
+          "name": "Package removal deletes matching constraint line",
+          "when": "the override file contains '-oslo.messaging' and upper-constraints.txt contains 'oslo.messaging===14.9.0'",
+          "then": "the oslo.messaging line is completely removed from upper-constraints.txt",
+          "and_then": [
+            "the script outputs 'Removed constraint: oslo.messaging'"
+          ]
+        },
+        {
+          "name": "Comments and blank lines are ignored",
+          "when": "the override file contains lines starting with # and empty/whitespace-only lines",
+          "then": "those lines are skipped without modifying upper-constraints.txt",
+          "and_then": [
+            "only non-comment, non-blank lines are processed as overrides"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "description": "All new files created in this feature SHALL include the SPDX Apache-2.0 license header with SAP copyright notice, following the convention established in .github/workflows/ci.yaml",
+      "priority": "SHALL",
+      "rationale": "License compliance requirement; the project convention uses SPDX headers on all source files (confirmed in ci.yaml, chainsaw-config.yaml)",
+      "scenarios": [
+        {
+          "name": "Dockerfiles have SPDX header as first comments",
+          "when": "any Dockerfile in images/*/ is examined",
+          "then": "it starts with '# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company' and '# SPDX-License-Identifier: Apache-2.0'",
+          "and_then": []
+        },
+        {
+          "name": "YAML config files have SPDX header",
+          "when": "source-refs.yaml or extra-packages.yaml in releases/2025.2/ is examined",
+          "then": "the file starts with the SPDX comment block using # prefix before the YAML content",
+          "and_then": []
+        },
+        {
+          "name": "Shell script has SPDX header after shebang",
+          "when": "scripts/apply-constraint-overrides.sh is examined",
+          "then": "it starts with #!/bin/bash on line 1, followed by the SPDX comment block",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-009",
+      "description": "The Keystone container image SHALL build successfully from the three-layer Dockerfile chain (python-base, venv-builder, keystone) and the keystone-manage --version command SHALL execute successfully in the final image",
+      "priority": "SHALL",
+      "rationale": "Build verification confirms the entire Dockerfile chain, release configuration, and dependency resolution work correctly before CI automation is added in S007",
+      "scenarios": [
+        {
+          "name": "All three images build without errors",
+          "when": "docker build is run sequentially for python-base, venv-builder, and keystone (with Keystone 28.0.0 source and upper-constraints.txt as build contexts)",
+          "then": "all three builds complete successfully without errors",
+          "and_then": []
+        },
+        {
+          "name": "keystone-manage --version succeeds",
+          "when": "docker run --rm <keystone-image> keystone-manage --version is executed",
+          "then": "the command outputs a version string and exits with code 0",
+          "and_then": []
+        },
+        {
+          "name": "Final image excludes build dependencies",
+          "when": "gcc and python3-dev availability is checked in the final keystone image",
+          "then": "neither gcc nor python3-dev is installed in the final image",
+          "and_then": [
+            "the final image is significantly smaller than the build stage"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-010",
+      "description": "The deviation from the architecture doc's per-service user pattern to a generic openstack user SHALL be documented with DEVIATION comments in python-base and keystone Dockerfiles, referencing the architecture doc section",
+      "priority": "SHALL",
+      "rationale": "Architecture deviations must be traceable; the project convention uses DEVIATION comments in the Makefile for similar documentation",
+      "scenarios": [
+        {
+          "name": "python-base documents generic user creation deviation",
+          "when": "images/python-base/Dockerfile is examined",
+          "then": "a DEVIATION comment block explains why a generic 'openstack' user is created instead of per-service users (e.g., 'keystone')",
+          "and_then": [
+            "the comment references architecture/docs/08-container-images/"
+          ]
+        },
+        {
+          "name": "keystone Dockerfile notes inherited generic user",
+          "when": "images/keystone/Dockerfile is examined",
+          "then": "a DEVIATION comment explains that it uses the generic openstack user from python-base instead of creating a per-service keystone user as shown in the architecture doc example",
+          "and_then": []
+        },
+        {
+          "name": "DEVIATION comment follows project convention",
+          "when": "the DEVIATION comment format is compared to the Makefile's deviation comments",
+          "then": "the comment starts with '# DEVIATION from architecture/docs/...' followed by an explanation",
+          "and_then": []
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1.1",
+      "title": "Create images/python-base/Dockerfile: Ubuntu Noble base with Python 3.12, runtime libs (ca-certificates, netbase, python3, sudo, tzdata), ENV PATH and LANG, generic openstack user/group (UID/GID 42424, nologin shell), SPDX header, DEVIATION comment explaining generic user vs per-service user (REQ-001, REQ-008, REQ-010)",
+      "level": 1,
+      "estimate_minutes": 15,
+      "status": "done",
+      "requirements": [
+        "REQ-001",
+        "REQ-008",
+        "REQ-010"
+      ]
+    },
+    {
+      "id": "1.2",
+      "title": "Create images/venv-builder/Dockerfile: FROM python-base, install build-essential/git/libffi-dev/libpq-dev/libssl-dev/python3-dev/python3-venv, COPY --from=ghcr.io/astral-sh/uv:0.6.3 /uv /uvx /bin/, create virtualenv at /var/lib/openstack via python3 -m venv, pre-install common packages (cryptography, pymysql, python-memcached, uwsgi) with uv pip install --prefix, SPDX header (REQ-002, REQ-008)",
+      "level": 1,
+      "estimate_minutes": 15,
+      "status": "done",
+      "requirements": [
+        "REQ-002",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "1.3",
+      "title": "Create releases/2025.2/source-refs.yaml with keystone: '28.0.0' and releases/2025.2/extra-packages.yaml with keystone.pip_packages (keystone[ldap], keystone[memcache_pool], keystone[oauth1]) and keystone.apt_packages (libapache2-mod-wsgi-py3, libldap-2.5-0, libsasl2-2, libxml2), both with SPDX headers (REQ-004, REQ-005, REQ-008)",
+      "level": 1,
+      "estimate_minutes": 15,
+      "status": "done",
+      "requirements": [
+        "REQ-004",
+        "REQ-005",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "1.4",
+      "title": "Fetch upper-constraints.txt from OpenStack requirements repo stable/2025.2 branch (https://raw.githubusercontent.com/openstack/requirements/stable/2025.2/upper-constraints.txt) and commit as releases/2025.2/upper-constraints.txt (REQ-006)",
+      "level": 1,
+      "estimate_minutes": 15,
+      "status": "done",
+      "requirements": [
+        "REQ-006"
+      ]
+    },
+    {
+      "id": "1.5",
+      "title": "Create scripts/apply-constraint-overrides.sh (shebang, SPDX header, argument parsing for release, idempotent no-op when override file absent, while-read loop processing version replacements via sed and package removals via sed -d, skip comments/blanks, echo actions). Write shell tests in tests/scripts/test_apply_constraint_overrides.sh covering: no override file, version replacement, package removal, comments/blanks skipped, multiple overrides in one run (REQ-007, REQ-008)",
+      "level": 1,
+      "estimate_minutes": 25,
+      "status": "done",
+      "requirements": [
+        "REQ-007",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "2.1",
+      "title": "Create images/keystone/Dockerfile: Stage 1 (FROM venv-builder AS build) with --mount=type=bind,from=upper-constraints and --mount=type=bind,from=keystone for uv pip install --constraint with Keystone extras; Stage 2 (FROM python-base) with COPY --from=build --link /var/lib/openstack, apt install runtime packages (libapache2-mod-wsgi-py3, libldap-2.5-0, libsasl2-2, libxml2), USER openstack. Include SPDX header and DEVIATION comment for generic user (REQ-003, REQ-008, REQ-010)",
+      "level": 2,
+      "estimate_minutes": 20,
+      "status": "done",
+      "requirements": [
+        "REQ-003",
+        "REQ-008",
+        "REQ-010"
+      ]
+    },
+    {
+      "id": "2.2",
+      "title": "Remove .gitkeep placeholder files from images/ and releases/ directories — no longer needed now that actual Dockerfiles and release configuration files exist (S006)",
+      "level": 2,
+      "estimate_minutes": 5,
+      "status": "done"
+    },
+    {
+      "id": "3.1",
+      "title": "Verify complete image build chain locally: (1) docker build images/python-base -t c5c3/python-base:3.12-noble, (2) docker build images/venv-builder -t c5c3/venv-builder:3.12-noble, (3) git clone openstack/keystone at tag 28.0.0, (4) docker build images/keystone with --build-context keystone=src/keystone --build-context upper-constraints=releases/2025.2/, (5) docker run --rm keystone-manage --version succeeds, (6) verify non-root user and absence of build tools in final image (REQ-009)",
+      "level": 3,
+      "estimate_minutes": 25,
+      "status": "done",
+      "requirements": [
+        "REQ-009"
+      ]
+    },
+    {
+      "id": "4.1",
+      "title": "Write reference documentation at docs/reference/container-images.md (S006): Dockerfile hierarchy (python-base → venv-builder → service), base image contents and ENV vars, release config file formats (source-refs.yaml, upper-constraints.txt, extra-packages.yaml), named build context usage pattern, apply-constraint-overrides.sh usage and override format, local build instructions for developer verification",
+      "level": 4,
+      "estimate_minutes": 20,
+      "status": "done"
+    }
+  ],
+  "test_specifications": [
+    {
+      "test_file": "tests/scripts/test_apply_constraint_overrides.sh",
+      "test_function": "test_no_override_file_exits_cleanly",
+      "story": "Operations engineer applies constraint overrides for security patches",
+      "expected": "Script exits with code 0 and upper-constraints.txt is unmodified when overrides/<release>/constraints.txt does not exist",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "tests/scripts/test_apply_constraint_overrides.sh",
+      "test_function": "test_version_replacement_updates_constraint",
+      "story": "Operations engineer applies constraint overrides for security patches",
+      "expected": "Line 'cryptography===44.0.0' in upper-constraints.txt is replaced with 'cryptography===44.0.1' when override contains 'cryptography===44.0.1'",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "tests/scripts/test_apply_constraint_overrides.sh",
+      "test_function": "test_package_removal_deletes_line",
+      "story": "Operations engineer applies constraint overrides for security patches",
+      "expected": "Line 'oslo.messaging===14.9.0' is removed from upper-constraints.txt when override contains '-oslo.messaging'",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "tests/scripts/test_apply_constraint_overrides.sh",
+      "test_function": "test_comments_and_blanks_skipped",
+      "story": "Operations engineer applies constraint overrides for security patches",
+      "expected": "Lines starting with # and empty lines in override file are skipped; upper-constraints.txt is unchanged for those entries",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "tests/scripts/test_apply_constraint_overrides.sh",
+      "test_function": "test_multiple_overrides_applied_in_single_run",
+      "story": "Operations engineer applies constraint overrides for security patches",
+      "expected": "Two version replacements and one package removal in a single override file are all applied correctly",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "tests/container-images/verify_python_base.sh",
+      "test_function": "test_python3_available",
+      "story": "CI/CD engineer builds reproducible Keystone container images",
+      "expected": "python3 --version succeeds in the python-base container and shows Python 3.12.x",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "tests/container-images/verify_python_base.sh",
+      "test_function": "test_openstack_user_uid_gid",
+      "story": "Security engineer audits container images for compliance",
+      "expected": "id openstack shows uid=42424(openstack) gid=42424(openstack) in the python-base container",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "tests/container-images/verify_python_base.sh",
+      "test_function": "test_path_includes_venv_bin",
+      "story": "CI/CD engineer builds reproducible Keystone container images",
+      "expected": "echo $PATH starts with /var/lib/openstack/bin in the python-base container",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "tests/container-images/verify_venv_builder.sh",
+      "test_function": "test_uv_version_is_pinned",
+      "story": "CI/CD engineer builds reproducible Keystone container images",
+      "expected": "uv --version outputs '0.6.3' in the venv-builder container",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "tests/container-images/verify_venv_builder.sh",
+      "test_function": "test_virtualenv_exists",
+      "story": "CI/CD engineer builds reproducible Keystone container images",
+      "expected": "/var/lib/openstack/bin/python3 exists and is executable in the venv-builder container",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "tests/container-images/verify_venv_builder.sh",
+      "test_function": "test_common_packages_installed",
+      "story": "CI/CD engineer builds reproducible Keystone container images",
+      "expected": "/var/lib/openstack/bin/pip list shows cryptography, pymysql, python-memcached, and uwsgi",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "tests/container-images/verify_keystone.sh",
+      "test_function": "test_keystone_manage_version",
+      "story": "Developer verifies local Keystone image build",
+      "expected": "docker run --rm <image> keystone-manage --version outputs a version string and exits with code 0",
+      "requirement_id": "REQ-009"
+    },
+    {
+      "test_file": "tests/container-images/verify_keystone.sh",
+      "test_function": "test_runs_as_openstack_user",
+      "story": "Security engineer audits container images for compliance",
+      "expected": "docker run --rm <image> whoami outputs 'openstack'",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "tests/container-images/verify_keystone.sh",
+      "test_function": "test_no_build_tools_in_final_image",
+      "story": "Security engineer audits container images for compliance",
+      "expected": "which gcc and dpkg -l python3-dev both return non-zero exit codes in the keystone container",
+      "requirement_id": "REQ-009"
+    },
+    {
+      "test_file": "tests/container-images/verify_keystone.sh",
+      "test_function": "test_runtime_apt_packages_installed",
+      "story": "CI/CD engineer builds reproducible Keystone container images",
+      "expected": "dpkg -l shows libapache2-mod-wsgi-py3, libldap-2.5-0, libsasl2-2, libxml2 are installed",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "tests/container-images/verify_spdx_headers.sh",
+      "test_function": "test_all_dockerfiles_have_spdx",
+      "story": "Security engineer audits container images for compliance",
+      "expected": "All Dockerfiles in images/*/Dockerfile start with SPDX-FileCopyrightText and SPDX-License-Identifier comment lines",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "tests/container-images/verify_spdx_headers.sh",
+      "test_function": "test_yaml_configs_have_spdx",
+      "story": "Security engineer audits container images for compliance",
+      "expected": "releases/2025.2/source-refs.yaml and releases/2025.2/extra-packages.yaml start with SPDX header comments",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "tests/container-images/verify_spdx_headers.sh",
+      "test_function": "test_script_has_spdx_after_shebang",
+      "story": "Security engineer audits container images for compliance",
+      "expected": "scripts/apply-constraint-overrides.sh has #!/bin/bash on line 1 followed by SPDX header block",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "tests/container-images/verify_release_config.sh",
+      "test_function": "test_source_refs_valid_yaml_with_keystone",
+      "story": "Release engineer manages OpenStack 2025.2 release configuration",
+      "expected": "releases/2025.2/source-refs.yaml is valid YAML and yq '.keystone' outputs '28.0.0'",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "tests/container-images/verify_release_config.sh",
+      "test_function": "test_extra_packages_valid_yaml_structure",
+      "story": "Release engineer manages OpenStack 2025.2 release configuration",
+      "expected": "releases/2025.2/extra-packages.yaml is valid YAML with keystone.pip_packages (3 items) and keystone.apt_packages (4 items)",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "tests/container-images/verify_deviation_comments.sh",
+      "test_function": "test_python_base_deviation_comment",
+      "story": "Security engineer audits container images for compliance",
+      "expected": "images/python-base/Dockerfile contains '# DEVIATION' text explaining generic openstack user choice",
+      "requirement_id": "REQ-010"
+    },
+    {
+      "test_file": "tests/container-images/verify_deviation_comments.sh",
+      "test_function": "test_keystone_deviation_comment",
+      "story": "Security engineer audits container images for compliance",
+      "expected": "images/keystone/Dockerfile contains '# DEVIATION' text about generic user vs per-service keystone user",
+      "requirement_id": "REQ-010"
+    }
+  ],
+  "affected_files": [],
+  "similar_patterns": [],
+  "review_criteria": [
+    "All three Dockerfiles follow the multi-stage build pattern documented in architecture/docs/08-container-images/01-build-pipeline.md — python-base matches the Base Images section, venv-builder matches the venv-builder section, keystone matches the Service Dockerfile section",
+    "All new files include SPDX Apache-2.0 license headers with 'Copyright 2026 SAP SE or an SAP affiliate company' matching the convention established in .github/workflows/ci.yaml",
+    "DEVIATION comments are present in python-base and keystone Dockerfiles referencing architecture/docs/08-container-images/, following the comment style used in the Makefile",
+    "keystone Dockerfile uses --mount=type=bind with named build contexts (from=keystone, from=upper-constraints) for source code and constraints — not COPY or git clone inside the Dockerfile",
+    "scripts/apply-constraint-overrides.sh passes all 5 shell test cases: no-op when missing, version replacement, package removal, comment/blank skipping, multiple overrides",
+    "Local image build chain succeeds end-to-end: python-base → venv-builder → keystone with Keystone 28.0.0 source, and keystone-manage --version runs successfully in the final container",
+    "Final keystone image runs as non-root openstack user (UID/GID 42424) and contains zero build dependencies (no gcc, python3-dev, build-essential, uv)",
+    "Release config files follow documented formats: source-refs.yaml is valid YAML with keystone: '28.0.0', upper-constraints.txt uses === separator, extra-packages.yaml uses combined pip_packages/apt_packages schema",
+    ".gitkeep files are removed from images/ and releases/ directories"
+  ],
+  "implementation_notes": "Architectural decisions: (1) Generic openstack user (UID/GID 42424) in python-base instead of per-service users — reduces complexity and image layers, documented with DEVIATION comments following the Makefile convention. (2) venv-builder pre-installs common packages (cryptography, pymysql, python-memcached, uwsgi) WITHOUT --constraint flag, matching the architecture doc pattern — constraints are release-specific and venv-builder is release-independent; service Dockerfiles apply constraints when installing the actual service. (3) Keystone extras (ldap, memcache_pool, oauth1) and runtime apt packages are defined in extra-packages.yaml rather than hardcoded in the Dockerfile, keeping the Dockerfile release-independent. (4) upper-constraints.txt is committed as-is from OpenStack requirements repo rather than generated — enables Renovate tracking and git diff for constraint changes.\n\nPotential pitfalls: (1) The FROM lines in venv-builder and keystone reference local image names (python-base, venv-builder) that must be built first — the local tag names must match. For CI (S007), these will reference ghcr.io/c5c3/ prefixed names. (2) The keystone Dockerfile's --mount=type=bind,from=keystone expects the build context name to match exactly — docker build must be invoked with --build-context keystone=<path>. (3) upper-constraints.txt from OpenStack may contain packages that conflict with uv's resolver — monitor for resolution errors during build verification. (4) The apply-constraint-overrides.sh uses sed for in-place editing — the sed -i syntax differs between GNU and BSD sed; ensure the script uses GNU sed (which is default on Ubuntu/CI runners).\n\nFiles and patterns to follow: Makefile lines 1-12 for DEVIATION comment style. .github/workflows/ci.yaml lines 1-3 for SPDX header format. architecture/docs/08-container-images/01-build-pipeline.md lines 61-75 for python-base pattern, lines 82-108 for venv-builder pattern, lines 113-140 for keystone Dockerfile pattern. architecture/docs/08-container-images/03-patching.md lines 301-328 for apply-constraint-overrides.sh reference implementation.",
+  "status_history": {
+    "draft": {
+      "github_account": "berendt",
+      "timestamp": "2026-02-22T20:42:36.263712"
+    },
+    "elaborated": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-06T09:43:31.202774"
+    },
+    "preparing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-06T10:04:25.584851"
+    },
+    "prepared": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-06T10:15:39.377958"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-06T10:33:41.938557"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-06T16:26:46.840259"
+    }
+  },
+  "github_pr": "https://github.com/C5C3/forge/pull/29",
+  "pr_number": 29,
+  "execution_history": [
+    {
+      "run_id": "f3ce0295-d9e7-4d9f-81d2-bb345346571a",
+      "timestamp": "2026-03-06T10:15:39.377985",
+      "total_duration": 662.6655690670013,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "prepare",
+          "duration": 662.6655690670013,
+          "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "fd1dc8d6-9d3a-44cc-9fc5-39152c930f32",
+      "timestamp": "2026-03-06T11:04:16.404397",
+      "total_duration": 1603.8742518424988,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (5 tasks)",
+          "duration": 346.24570870399475,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (2 tasks)",
+          "duration": 112.7662034034729,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (1 tasks)",
+          "duration": 251.1956102848053,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (1 tasks)",
+          "duration": 292.6416714191437,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0006] Code Review",
+          "duration": 246.7360396385193,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0006] Improvements",
+          "duration": 267.7794086933136,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0006] Simplify",
+          "duration": 86.50960969924927,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "a85c4e81-ea71-40ba-82e5-099ae78b9279",
+      "timestamp": "2026-03-06T12:00:50.453610",
+      "total_duration": 431.89906430244446,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 431.89906430244446,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "3a56058b-4226-41f6-a981-237df94c3f24",
+      "timestamp": "2026-03-06T12:18:09.910400",
+      "total_duration": 406.81324458122253,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 406.81324458122253,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "cf303199-adc7-4747-88bd-a80ffd7e9c23",
+      "timestamp": "2026-03-06T12:31:18.568100",
+      "total_duration": 359.337824344635,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #3",
+          "duration": 359.337824344635,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "54cb4040-4ca0-4592-bb4f-d48b6da3b47c",
+      "timestamp": "2026-03-06T12:54:49.487857",
+      "total_duration": 188.9772686958313,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #4",
+          "duration": 188.9772686958313,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "a164cc4e-9c9e-4c7a-a7c5-c634036a53e6",
+      "timestamp": "2026-03-06T13:21:21.063325",
+      "total_duration": 464.68028259277344,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #5",
+          "duration": 464.68028259277344,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "b7161ea5-1cb2-44b4-bb99-27783726a462",
+      "timestamp": "2026-03-06T13:35:02.872181",
+      "total_duration": 220.9514172077179,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #6",
+          "duration": 220.9514172077179,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "4b23d11c-17b4-4c2f-ac70-01e174a67370",
+      "timestamp": "2026-03-06T13:48:38.468163",
+      "total_duration": 324.2645456790924,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #7",
+          "duration": 324.2645456790924,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "3e585612-549b-4eb7-b74a-dee3a6ddd51c",
+      "timestamp": "2026-03-06T14:04:04.697591",
+      "total_duration": 325.5128345489502,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #8",
+          "duration": 325.5128345489502,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "7416a660-f2a5-4db8-83be-e5da8149b0d9",
+      "timestamp": "2026-03-06T14:22:17.605067",
+      "total_duration": 259.9385540485382,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #9",
+          "duration": 259.9385540485382,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    }
+  ]
+}

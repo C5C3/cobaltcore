@@ -1,0 +1,79 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+name: Cleanup Images
+
+"on":
+  schedule:
+    # Daily at 03:00 UTC
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      older-than:
+        description: "Minimum age of images to delete (e.g. '7 days', '1 month')"
+        required: false
+        default: "7 days"
+        type: string
+      keep-n-tagged:
+        description: "Minimum number of tagged images to keep per package"
+        required: false
+        default: "10"
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  cleanup-base-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [python-base, venv-builder]
+    steps:
+      - name: Delete untagged images
+        uses: dataaxiom/ghcr-cleanup-action@cd0cdb900b5dbf3a6f2cc869f0dbb0b8211f50c4 # v1
+        with:
+          package: ${{ matrix.package }}
+          delete-untagged: true
+          delete-ghost-images: true
+          delete-partial-images: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Delete old SHA-tagged images
+        uses: dataaxiom/ghcr-cleanup-action@cd0cdb900b5dbf3a6f2cc869f0dbb0b8211f50c4 # v1
+        with:
+          package: ${{ matrix.package }}
+          exclude-tags: latest
+          keep-n-tagged: ${{ inputs.keep-n-tagged || '10' }}
+          older-than: ${{ inputs.older-than || '7 days' }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  cleanup-service-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [keystone]
+    steps:
+      - name: Delete untagged images
+        uses: dataaxiom/ghcr-cleanup-action@cd0cdb900b5dbf3a6f2cc869f0dbb0b8211f50c4 # v1
+        with:
+          package: ${{ matrix.package }}
+          delete-untagged: true
+          delete-ghost-images: true
+          delete-partial-images: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Delete old tagged images
+        uses: dataaxiom/ghcr-cleanup-action@cd0cdb900b5dbf3a6f2cc869f0dbb0b8211f50c4 # v1
+        with:
+          package: ${{ matrix.package }}
+          exclude-tags: "*.*.*"
+          keep-n-tagged: ${{ inputs.keep-n-tagged || '10' }}
+          older-than: ${{ inputs.older-than || '7 days' }}
+          token: ${{ secrets.GITHUB_TOKEN }}

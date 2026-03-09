@@ -1,0 +1,700 @@
+{
+  "feature_id": "CC-0027",
+  "title": "Wire extra-packages.yaml as Docker build source of truth",
+  "slug": "wire-extra-packages-yaml-as-docker-build-source",
+  "status": "completed",
+  "phase": "awaiting_external_review",
+  "summary": "",
+  "description": "**Size:** 📦 medium\n**Category:** infrastructure\n**Priority:** high\n**Source:** Proposed for 'There is releases/2025.2/extra-packages.yaml. JEdoc'\n\nRestructure releases/2025.2/extra-packages.yaml into pip_extras (bare extras: ldap, memcache_pool, oauth1), pip_packages (standalone packages, initially empty), and apt_packages (runtime: libapache2-mod-wsgi-py3, libldap2, libsasl2-2, libxml2) — fixing the incorrect libldap-2.5-0 to libldap2. Add a 'Resolve extra packages' step in .github/workflows/build-images.yaml (build-service-images job, after the existing 'Resolve source ref' step) that uses yq to extract all three fields per service from extra-packages.yaml and writes them to $GITHUB_OUTPUT. Pass these as --build-arg PIP_EXTRAS, PIP_PACKAGES, and EXTRA_APT_PACKAGES to docker/build-push-action. In images/keystone/Dockerfile, declare the three ARGs and replace the hardcoded [ldap,memcache_pool,oauth1] with [${PIP_EXTRAS}], add ${PIP_PACKAGES} to uv pip install, and replace the hardcoded apt package list with ${EXTRA_APT_PACKAGES}. Update tests/container-images/verify_release_config.sh: remove the now-obsolete test_extra_packages_match_dockerfile function and update test_extra_packages_valid_yaml_structure to validate the new field names (pip_extras, pip_packages, apt_packages), non-empty pip_extras and apt_packages, and valid package name patterns.\n\n**Rationale:** extra-packages.yaml exists but is completely ignored by the build pipeline — packages are independently hardcoded in the Dockerfile, creating silent drift risk and a false sense of configuration. The file also contains libldap-2.5-0 which does not exist as an Ubuntu Noble package (correct name: libldap2). Making the YAML the single source of truth eliminates duplication, prevents drift, and ensures release-specific package declarations actually reach the built images.\n\n**Affected Areas:**\n- releases/2025.2/extra-packages.yaml\n- .github/workflows/build-images.yaml\n- images/keystone/Dockerfile\n- tests/container-images/verify_release_config.sh",
+  "stories": [
+    {
+      "title": "CI pipeline consumes extra-packages.yaml during service image builds",
+      "role": "CI engineer",
+      "want": "the build-images workflow to read pip_extras, pip_packages, and apt_packages from extra-packages.yaml and pass them as Docker build arguments",
+      "so_that": "extra-packages.yaml is the single source of truth for per-service packages, eliminating silent drift between YAML and Dockerfile",
+      "criteria": [
+        "build-service-images job has a 'Resolve extra packages' step after 'Resolve source ref' that extracts all three fields via yq",
+        "Extracted values are written to $GITHUB_OUTPUT as pip-extras, pip-packages, and apt-packages",
+        "docker/build-push-action receives --build-arg PIP_EXTRAS, PIP_PACKAGES, and EXTRA_APT_PACKAGES",
+        "Workflow fails with ::error:: if pip_extras or apt_packages are missing or null for the matrix service"
+      ]
+    },
+    {
+      "title": "Dockerfile accepts package lists via build arguments instead of hardcoding them",
+      "role": "CI engineer",
+      "want": "the keystone Dockerfile to declare ARG PIP_EXTRAS, ARG PIP_PACKAGES, and ARG EXTRA_APT_PACKAGES and use them in the uv pip install and apt-get install commands",
+      "so_that": "the Dockerfile is release-independent and package lists are injected by the CI pipeline",
+      "criteria": [
+        "Stage 1 (build) declares ARG PIP_EXTRAS and ARG PIP_PACKAGES before the RUN instruction",
+        "uv pip install uses /tmp/keystone-build[${PIP_EXTRAS}] instead of hardcoded [ldap,memcache_pool,oauth1]",
+        "uv pip install includes ${PIP_PACKAGES} as additional install targets (handles empty gracefully)",
+        "Stage 2 (runtime) declares ARG EXTRA_APT_PACKAGES before the apt-get RUN instruction",
+        "apt-get install uses ${EXTRA_APT_PACKAGES} instead of the hardcoded package list",
+        "No hardcoded package names remain in the Dockerfile (ldap, memcache_pool, oauth1, libapache2-mod-wsgi-py3, etc.)"
+      ]
+    },
+    {
+      "title": "Release engineer manages per-service packages by editing only extra-packages.yaml",
+      "role": "release engineer",
+      "want": "extra-packages.yaml to use a clear schema with pip_extras (bare extra names), pip_packages (standalone packages), and apt_packages (runtime system packages)",
+      "so_that": "I can add, remove, or modify service packages in one place without touching Dockerfiles or workflow files",
+      "criteria": [
+        "pip_extras contains bare extra names (ldap, memcache_pool, oauth1) — not wrapped in keystone[...] format",
+        "pip_packages is an empty list (initially) — ready for standalone packages in the future",
+        "apt_packages contains valid Ubuntu Noble package names (libldap2 instead of incorrect libldap-2.5-0)",
+        "Header comment reflects that this file IS the consumed source of truth (no WARNING about manual sync)"
+      ]
+    },
+    {
+      "title": "CI tests validate the restructured extra-packages.yaml schema",
+      "role": "developer",
+      "want": "verify_release_config.sh to validate the new pip_extras/pip_packages/apt_packages fields and remove the obsolete Dockerfile-matching test",
+      "so_that": "malformed configurations are caught before builds and the test suite reflects the new architecture",
+      "criteria": [
+        "test_extra_packages_valid_yaml_structure validates field names pip_extras, pip_packages, apt_packages",
+        "Test asserts pip_extras is non-empty and apt_packages is non-empty",
+        "Test validates package name patterns (pip_extras: alphanumeric+underscore; apt_packages: valid dpkg names)",
+        "test_extra_packages_match_dockerfile function is removed entirely",
+        "Test runner no longer calls test_extra_packages_match_dockerfile",
+        "Total test count in the script adjusts accordingly"
+      ]
+    },
+    {
+      "title": "Reference documentation reflects the new extra-packages.yaml schema and workflow step",
+      "role": "developer",
+      "want": "docs/reference/container-images.md and docs/reference/build-images-workflow.md to describe the new schema and CI integration",
+      "so_that": "contributors understand the current format and know that extra-packages.yaml is consumed by the build pipeline",
+      "criteria": [
+        "docs/reference/container-images.md shows the new pip_extras/pip_packages/apt_packages schema with correct examples",
+        "docs/reference/container-images.md shows libldap2 (not libldap-2.5-0) in apt_packages",
+        "docs/reference/build-images-workflow.md documents the 'Resolve extra packages' step in the build-service-images steps table",
+        "docs/reference/build-images-workflow.md documents the build-args passed to docker/build-push-action"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "description": "releases/2025.2/extra-packages.yaml SHALL use a restructured schema with pip_extras (bare extra names list), pip_packages (standalone packages list, may be empty), and apt_packages (runtime system packages list) per service",
+      "priority": "SHALL",
+      "rationale": "The current pip_packages field contains full keystone[extra] entries which conflate service identity with extra names; restructuring into pip_extras (bare names) and pip_packages (standalone) enables clean injection into Dockerfile ARGs",
+      "scenarios": [
+        {
+          "name": "Schema has correct field names",
+          "when": "releases/2025.2/extra-packages.yaml is parsed",
+          "then": "the keystone entry has fields pip_extras, pip_packages, and apt_packages",
+          "and_then": [
+            "no pip_packages field exists in the old format (keystone[...] entries)"
+          ]
+        },
+        {
+          "name": "pip_extras contains bare extra names",
+          "when": "keystone.pip_extras is read",
+          "then": "the list contains bare names: ldap, memcache_pool, oauth1",
+          "and_then": [
+            "no entry contains brackets or the service name prefix"
+          ]
+        },
+        {
+          "name": "pip_packages is initially empty",
+          "when": "keystone.pip_packages is read",
+          "then": "the list is empty ([])",
+          "and_then": [
+            "the field exists and is a valid YAML sequence"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "description": "apt_packages in extra-packages.yaml SHALL contain valid Ubuntu Noble package names, correcting libldap-2.5-0 to libldap2",
+      "priority": "SHALL",
+      "rationale": "libldap-2.5-0 does not exist as an Ubuntu Noble package; the correct runtime package name is libldap2, which is already used in the current Dockerfile",
+      "scenarios": [
+        {
+          "name": "libldap2 is present",
+          "when": "keystone.apt_packages is read",
+          "then": "the list contains libldap2",
+          "and_then": []
+        },
+        {
+          "name": "libldap-2.5-0 is absent",
+          "when": "keystone.apt_packages is read",
+          "then": "the list does NOT contain libldap-2.5-0",
+          "and_then": []
+        },
+        {
+          "name": "All apt package names match valid dpkg naming pattern",
+          "when": "each entry in keystone.apt_packages is validated",
+          "then": "each name matches the pattern [a-z0-9][a-z0-9.+\\-]+ (dpkg package naming convention)",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "description": "The CI workflow SHALL add a 'Resolve extra packages' step in build-service-images (after 'Resolve source ref') that extracts pip_extras, pip_packages, and apt_packages from extra-packages.yaml via yq and writes them to $GITHUB_OUTPUT",
+      "priority": "SHALL",
+      "rationale": "Follows the established yq-based resolution pattern from source-ref extraction, ensuring the YAML values reach the Docker build",
+      "scenarios": [
+        {
+          "name": "yq extracts pip_extras as comma-separated string",
+          "when": "the 'Resolve extra packages' step runs for keystone",
+          "then": "pip-extras output contains 'ldap,memcache_pool,oauth1'",
+          "and_then": []
+        },
+        {
+          "name": "yq extracts pip_packages as space-separated string",
+          "when": "the 'Resolve extra packages' step runs for keystone",
+          "then": "pip-packages output is empty (no standalone packages yet)",
+          "and_then": []
+        },
+        {
+          "name": "yq extracts apt_packages as space-separated string",
+          "when": "the 'Resolve extra packages' step runs for keystone",
+          "then": "apt-packages output contains 'libapache2-mod-wsgi-py3 libldap2 libsasl2-2 libxml2'",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "description": "The CI workflow SHALL fail with a descriptive ::error:: message if pip_extras or apt_packages are missing or null for a matrix service in extra-packages.yaml",
+      "priority": "SHALL",
+      "rationale": "Silent fallback to empty package lists would produce broken images; fail-fast behavior matches the existing source-ref null-check pattern",
+      "scenarios": [
+        {
+          "name": "Missing pip_extras fails the step",
+          "when": "extra-packages.yaml has no pip_extras field for the matrix service",
+          "then": "the step exits with code 1 and emits ::error:: with the service name and file path",
+          "and_then": []
+        },
+        {
+          "name": "Null pip_extras fails the step",
+          "when": "extra-packages.yaml has pip_extras: null for the matrix service",
+          "then": "the step exits with code 1 and emits ::error:: with the service name and file path",
+          "and_then": []
+        },
+        {
+          "name": "Missing apt_packages fails the step",
+          "when": "extra-packages.yaml has no apt_packages field for the matrix service",
+          "then": "the step exits with code 1 and emits ::error:: with the service name and file path",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "description": "The CI workflow SHALL pass PIP_EXTRAS, PIP_PACKAGES, and EXTRA_APT_PACKAGES as --build-arg values to docker/build-push-action for service image builds",
+      "priority": "SHALL",
+      "rationale": "Docker build arguments are the mechanism to inject CI-resolved values into the Dockerfile without hardcoding",
+      "scenarios": [
+        {
+          "name": "build-args are present in docker/build-push-action",
+          "when": "the 'Build service image' step is configured",
+          "then": "it includes build-args with PIP_EXTRAS, PIP_PACKAGES, and EXTRA_APT_PACKAGES referencing the extra-packages step outputs",
+          "and_then": []
+        },
+        {
+          "name": "Empty PIP_PACKAGES is handled gracefully",
+          "when": "pip_packages is empty in extra-packages.yaml",
+          "then": "PIP_PACKAGES build-arg is passed as an empty string",
+          "and_then": [
+            "the Dockerfile uv pip install command handles the empty value without error"
+          ]
+        },
+        {
+          "name": "build-args reference correct step ID",
+          "when": "the build-args reference step outputs",
+          "then": "they use steps.extra-packages.outputs.pip-extras, steps.extra-packages.outputs.pip-packages, steps.extra-packages.outputs.apt-packages",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "description": "The keystone Dockerfile SHALL declare ARG PIP_EXTRAS, ARG PIP_PACKAGES, ARG EXTRA_APT_PACKAGES and use them in place of all hardcoded package lists",
+      "priority": "SHALL",
+      "rationale": "Replacing hardcoded values with ARGs makes the Dockerfile fully parameterized by CI, eliminating drift between YAML and build",
+      "scenarios": [
+        {
+          "name": "Build stage uses PIP_EXTRAS for extras",
+          "when": "the Dockerfile build stage runs uv pip install",
+          "then": "it uses /tmp/keystone-build[${PIP_EXTRAS}] instead of hardcoded [ldap,memcache_pool,oauth1]",
+          "and_then": []
+        },
+        {
+          "name": "Build stage includes PIP_PACKAGES as additional targets",
+          "when": "the Dockerfile build stage runs uv pip install",
+          "then": "it includes ${PIP_PACKAGES} as additional install targets after the service[extras] argument",
+          "and_then": [
+            "empty PIP_PACKAGES results in no additional packages being installed"
+          ]
+        },
+        {
+          "name": "Runtime stage uses EXTRA_APT_PACKAGES",
+          "when": "the Dockerfile runtime stage runs apt-get install",
+          "then": "it uses ${EXTRA_APT_PACKAGES} instead of the hardcoded package list",
+          "and_then": [
+            "no hardcoded apt package names remain in the Dockerfile"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "description": "test_extra_packages_valid_yaml_structure in verify_release_config.sh SHALL validate the new field names (pip_extras, pip_packages, apt_packages), non-empty pip_extras and apt_packages, and valid package name patterns",
+      "priority": "SHALL",
+      "rationale": "Tests must validate the new schema to prevent regressions; the old field-name-based assertions must be replaced",
+      "scenarios": [
+        {
+          "name": "Test validates pip_extras field exists and is non-empty",
+          "when": "verify_release_config.sh runs test_extra_packages_valid_yaml_structure",
+          "then": "it asserts keystone.pip_extras has at least 1 item",
+          "and_then": []
+        },
+        {
+          "name": "Test validates apt_packages field exists and is non-empty",
+          "when": "verify_release_config.sh runs test_extra_packages_valid_yaml_structure",
+          "then": "it asserts keystone.apt_packages has at least 1 item",
+          "and_then": []
+        },
+        {
+          "name": "Test validates pip_extras entries are bare names",
+          "when": "verify_release_config.sh runs test_extra_packages_valid_yaml_structure",
+          "then": "it asserts each pip_extras entry matches ^[a-z][a-z0-9_]*$ (no brackets or service prefix)",
+          "and_then": []
+        },
+        {
+          "name": "Test validates apt_packages entries match dpkg naming",
+          "when": "verify_release_config.sh runs test_extra_packages_valid_yaml_structure",
+          "then": "it asserts each apt_packages entry matches ^[a-z0-9][a-z0-9.+\\-]+$ (valid dpkg package name)",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "description": "The obsolete test_extra_packages_match_dockerfile function SHALL be removed from verify_release_config.sh",
+      "priority": "SHALL",
+      "rationale": "Since the Dockerfile no longer hardcodes packages, comparing YAML entries to Dockerfile content is meaningless and would fail",
+      "scenarios": [
+        {
+          "name": "Function is removed",
+          "when": "verify_release_config.sh is inspected",
+          "then": "test_extra_packages_match_dockerfile function does not exist",
+          "and_then": []
+        },
+        {
+          "name": "Function is not called",
+          "when": "the test runner section of verify_release_config.sh executes",
+          "then": "test_extra_packages_match_dockerfile is not invoked",
+          "and_then": []
+        },
+        {
+          "name": "Test script still passes",
+          "when": "verify_release_config.sh is run after removal",
+          "then": "exit code is 0 with updated pass count (no reference to missing function)",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-009",
+      "description": "Reference documentation SHALL be updated to describe the new extra-packages.yaml schema and the 'Resolve extra packages' CI workflow step",
+      "priority": "SHALL",
+      "rationale": "Outdated documentation describing the old pip_packages format and missing the CI integration step would mislead contributors",
+      "scenarios": [
+        {
+          "name": "container-images.md shows new schema",
+          "when": "docs/reference/container-images.md is read",
+          "then": "the extra-packages.yaml section shows pip_extras, pip_packages, and apt_packages fields",
+          "and_then": [
+            "libldap2 is shown instead of libldap-2.5-0",
+            "pip_extras shows bare names, not keystone[extra] format"
+          ]
+        },
+        {
+          "name": "build-images-workflow.md documents new step",
+          "when": "docs/reference/build-images-workflow.md is read",
+          "then": "the build-service-images steps table includes 'Resolve extra packages' after 'Resolve source ref'",
+          "and_then": [
+            "build-args section documents PIP_EXTRAS, PIP_PACKAGES, EXTRA_APT_PACKAGES"
+          ]
+        },
+        {
+          "name": "container-images.md Dockerfile example updated",
+          "when": "docs/reference/container-images.md keystone Dockerfile section is read",
+          "then": "the uv pip install line shows ARG-based extras, not hardcoded [ldap,memcache_pool,oauth1]",
+          "and_then": [
+            "the apt-get install line shows ARG-based packages, not hardcoded list"
+          ]
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1.1",
+      "title": "Restructure releases/2025.2/extra-packages.yaml: rename pip_packages to pip_extras with bare names (ldap, memcache_pool, oauth1), add empty pip_packages list, fix libldap-2.5-0 to libldap2, replace WARNING comment with single-source-of-truth header (REQ-001, REQ-002)",
+      "level": 1,
+      "estimate_minutes": 10,
+      "status": "done",
+      "requirements": [
+        "REQ-001",
+        "REQ-002"
+      ]
+    },
+    {
+      "id": "1.2",
+      "title": "Update images/keystone/Dockerfile: declare ARG PIP_EXTRAS and ARG PIP_PACKAGES in build stage, ARG EXTRA_APT_PACKAGES in runtime stage; replace hardcoded [ldap,memcache_pool,oauth1] with [${PIP_EXTRAS}], add ${PIP_PACKAGES} to uv pip install, replace hardcoded apt package list with ${EXTRA_APT_PACKAGES} (REQ-006)",
+      "level": 1,
+      "estimate_minutes": 15,
+      "status": "done",
+      "requirements": [
+        "REQ-006"
+      ]
+    },
+    {
+      "id": "2.1",
+      "title": "Add 'Resolve extra packages' step in .github/workflows/build-images.yaml build-service-images job after 'Resolve source ref': use yq to extract pip_extras (join with comma), pip_packages (join with space), apt_packages (join with space) from extra-packages.yaml, write to $GITHUB_OUTPUT with null/empty checks and ::error:: messages (REQ-003, REQ-004)",
+      "level": 2,
+      "estimate_minutes": 15,
+      "status": "done",
+      "requirements": [
+        "REQ-003",
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "2.2",
+      "title": "Add build-args (PIP_EXTRAS, PIP_PACKAGES, EXTRA_APT_PACKAGES) to the docker/build-push-action step in build-service-images job, referencing steps.extra-packages.outputs (REQ-005)",
+      "level": 2,
+      "estimate_minutes": 10,
+      "status": "done",
+      "requirements": [
+        "REQ-005"
+      ]
+    },
+    {
+      "id": "3.1",
+      "title": "Update test_extra_packages_valid_yaml_structure in tests/container-images/verify_release_config.sh: validate new field names (pip_extras, pip_packages, apt_packages), assert pip_extras count >= 1 and apt_packages count >= 1, add pattern validation for pip_extras entries (^[a-z][a-z0-9_]*$) and apt_packages entries (^[a-z0-9][a-z0-9.+-]+$) (REQ-007)",
+      "level": 3,
+      "estimate_minutes": 20,
+      "status": "done",
+      "requirements": [
+        "REQ-007"
+      ]
+    },
+    {
+      "id": "3.2",
+      "title": "Remove test_extra_packages_match_dockerfile function and its invocation from tests/container-images/verify_release_config.sh (REQ-008)",
+      "level": 3,
+      "estimate_minutes": 5,
+      "status": "done",
+      "requirements": [
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "4.1",
+      "title": "Update docs/reference/container-images.md: replace extra-packages.yaml section with new pip_extras/pip_packages/apt_packages schema, update example YAML, fix libldap-2.5-0 to libldap2, update keystone Dockerfile example to show ARG-based usage, update field description table (REQ-009)",
+      "level": 4,
+      "estimate_minutes": 15,
+      "status": "done",
+      "requirements": [
+        "REQ-009"
+      ]
+    },
+    {
+      "id": "4.2",
+      "title": "Update docs/reference/build-images-workflow.md: add 'Resolve extra packages' step to build-service-images steps table (step 3, after 'Resolve source ref'), document build-args (PIP_EXTRAS, PIP_PACKAGES, EXTRA_APT_PACKAGES) in the Build Contexts or a new Build Arguments section, update step numbering (REQ-009)",
+      "level": 4,
+      "estimate_minutes": 15,
+      "status": "done",
+      "requirements": [
+        "REQ-009"
+      ]
+    }
+  ],
+  "test_specifications": [
+    {
+      "test_file": "tests/container-images/verify_release_config.sh",
+      "test_function": "test_extra_packages_valid_yaml_structure (pip_extras field exists)",
+      "story": "CI tests validate the restructured extra-packages.yaml schema",
+      "expected": "yq '.keystone.pip_extras | length' returns >= 1, asserting pip_extras exists and is non-empty",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "tests/container-images/verify_release_config.sh",
+      "test_function": "test_extra_packages_valid_yaml_structure (pip_packages field exists)",
+      "story": "CI tests validate the restructured extra-packages.yaml schema",
+      "expected": "yq '.keystone.pip_packages' returns a valid (possibly empty) sequence, not null",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "tests/container-images/verify_release_config.sh",
+      "test_function": "test_extra_packages_valid_yaml_structure (apt_packages field exists and non-empty)",
+      "story": "CI tests validate the restructured extra-packages.yaml schema",
+      "expected": "yq '.keystone.apt_packages | length' returns >= 1, asserting apt_packages exists and is non-empty",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "tests/container-images/verify_release_config.sh",
+      "test_function": "test_extra_packages_valid_yaml_structure (pip_extras are bare names)",
+      "story": "Release engineer manages per-service packages by editing only extra-packages.yaml",
+      "expected": "Each pip_extras entry matches ^[a-z][a-z0-9_]*$ — no brackets, no service name prefix",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "tests/container-images/verify_release_config.sh",
+      "test_function": "test_extra_packages_valid_yaml_structure (apt_packages valid dpkg names)",
+      "story": "CI tests validate the restructured extra-packages.yaml schema",
+      "expected": "Each apt_packages entry matches ^[a-z0-9][a-z0-9.+-]+$ — valid dpkg package naming",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "tests/container-images/verify_release_config.sh",
+      "test_function": "test_extra_packages_valid_yaml_structure (libldap2 present)",
+      "story": "Release engineer manages per-service packages by editing only extra-packages.yaml",
+      "expected": "keystone.apt_packages contains libldap2 (not libldap-2.5-0)",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "tests/container-images/verify_release_config.sh",
+      "test_function": "test_extra_packages_match_dockerfile removed",
+      "story": "CI tests validate the restructured extra-packages.yaml schema",
+      "expected": "Function test_extra_packages_match_dockerfile does not exist in the file; grep returns no match",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "tests/container-images/verify_release_config.sh",
+      "test_function": "test script runs successfully with 2 test functions (source-refs + extra-packages schema)",
+      "story": "CI tests validate the restructured extra-packages.yaml schema",
+      "expected": "Script exits 0 with all assertions passing; no reference to match_dockerfile in output",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": ".github/workflows/build-images.yaml",
+      "test_function": "Resolve extra packages step (manual/CI verification)",
+      "story": "CI pipeline consumes extra-packages.yaml during service image builds",
+      "expected": "Step uses yq to extract pip_extras (joined by comma), pip_packages (joined by space), apt_packages (joined by space) and writes to $GITHUB_OUTPUT",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": ".github/workflows/build-images.yaml",
+      "test_function": "Resolve extra packages step null check (manual/CI verification)",
+      "story": "CI pipeline consumes extra-packages.yaml during service image builds",
+      "expected": "Step exits 1 with ::error:: if pip_extras or apt_packages are empty or null",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": ".github/workflows/build-images.yaml",
+      "test_function": "Build service image step has build-args (manual/CI verification)",
+      "story": "CI pipeline consumes extra-packages.yaml during service image builds",
+      "expected": "docker/build-push-action includes build-args: PIP_EXTRAS, PIP_PACKAGES, EXTRA_APT_PACKAGES referencing extra-packages step outputs",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "images/keystone/Dockerfile",
+      "test_function": "Dockerfile declares ARGs (manual verification)",
+      "story": "Dockerfile accepts package lists via build arguments instead of hardcoding them",
+      "expected": "Dockerfile contains ARG PIP_EXTRAS, ARG PIP_PACKAGES in build stage and ARG EXTRA_APT_PACKAGES in runtime stage",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "images/keystone/Dockerfile",
+      "test_function": "Dockerfile uses ARG variables (manual verification)",
+      "story": "Dockerfile accepts package lists via build arguments instead of hardcoding them",
+      "expected": "uv pip install uses [${PIP_EXTRAS}] and ${PIP_PACKAGES}; apt-get uses ${EXTRA_APT_PACKAGES}; no hardcoded package names remain",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "docs/reference/container-images.md",
+      "test_function": "Documentation shows new schema (manual verification)",
+      "story": "Reference documentation reflects the new extra-packages.yaml schema and workflow step",
+      "expected": "extra-packages.yaml section shows pip_extras/pip_packages/apt_packages fields with libldap2 and bare extra names",
+      "requirement_id": "REQ-009"
+    },
+    {
+      "test_file": "docs/reference/build-images-workflow.md",
+      "test_function": "Documentation shows new CI step (manual verification)",
+      "story": "Reference documentation reflects the new extra-packages.yaml schema and workflow step",
+      "expected": "build-service-images steps table includes 'Resolve extra packages' step and build-args documentation",
+      "requirement_id": "REQ-009"
+    }
+  ],
+  "affected_files": [],
+  "similar_patterns": [],
+  "review_criteria": [
+    "extra-packages.yaml uses pip_extras (bare names), pip_packages (empty list), apt_packages — old pip_packages format with keystone[...] entries is gone",
+    "apt_packages contains libldap2, not libldap-2.5-0; all package names are valid dpkg names installable on Ubuntu Noble",
+    "CI workflow 'Resolve extra packages' step follows the same yq + null-check + $GITHUB_OUTPUT pattern as 'Resolve source ref'",
+    "CI workflow passes all three build-args (PIP_EXTRAS, PIP_PACKAGES, EXTRA_APT_PACKAGES) to docker/build-push-action",
+    "Dockerfile contains no hardcoded package names — all package lists come from ARG variables; empty PIP_PACKAGES does not break uv pip install",
+    "test_extra_packages_match_dockerfile is completely removed (function definition and invocation); test_extra_packages_valid_yaml_structure validates new field names and patterns",
+    "verify_release_config.sh passes (exit 0) with all assertions succeeding for the restructured YAML",
+    "docs/reference/container-images.md and docs/reference/build-images-workflow.md reflect the new schema and CI step without referencing the old format"
+  ],
+  "implementation_notes": "Architectural decisions and patterns:\n\n1. **yq extraction pattern**: Follow the established `source-ref` resolution pattern in build-images.yaml (env vars for matrix values, yq query, null check, $GITHUB_OUTPUT). The new step should use the same structure including the descriptive echo at the end.\n\n2. **Join strategy for yq output**: pip_extras use comma-join (`.pip_extras | join(\",\")`) because they become a single [extra1,extra2] bracket expression. pip_packages and apt_packages use space-join (`.pip_packages | join(\" \")` / `.apt_packages | join(\" \")`) because they are separate shell arguments.\n\n3. **Dockerfile ARG placement**: PIP_EXTRAS and PIP_PACKAGES must be declared in Stage 1 (build) before the RUN instruction that uses them. EXTRA_APT_PACKAGES must be declared in Stage 2 (runtime) before the apt-get RUN instruction. ARGs are stage-scoped in multi-stage builds.\n\n4. **Empty PIP_PACKAGES handling**: When PIP_PACKAGES is empty, the uv pip install command becomes `uv pip install ... \"/tmp/keystone-build[${PIP_EXTRAS}]\" ` — the trailing empty string is harmless because shell word splitting on an unquoted empty variable produces no additional arguments.\n\n5. **EXTRA_APT_PACKAGES must be unquoted**: The apt-get install command uses `${EXTRA_APT_PACKAGES}` (unquoted) to allow shell word splitting into separate package arguments. This is intentional — quoting would pass the entire space-separated string as a single argument to apt.\n\n6. **Header comment update**: Replace the WARNING block in extra-packages.yaml with a comment stating this file is the consumed source of truth for per-service packages in the Docker build.\n\n7. **Architecture doc divergence**: architecture/docs/08-container-images/01-build-pipeline.md still references libldap-2.5-0 in its example — this is read-only reference material and is NOT modified by this feature.\n\nKey files:\n- releases/2025.2/extra-packages.yaml (restructure schema)\n- .github/workflows/build-images.yaml (add step + build-args, lines ~96-189)\n- images/keystone/Dockerfile (ARGs + variable substitution)\n- tests/container-images/verify_release_config.sh (update + remove tests)\n- tests/lib/assertions.sh (existing assertion helpers — use assert_eq)\n- docs/reference/container-images.md (update schema docs)\n- docs/reference/build-images-workflow.md (add step docs)\n\nRisks:\n- If yq is not available in the CI runner, the 'Resolve extra packages' step will fail. Mitigation: yq is already used by the existing 'Resolve source ref' step, so it is guaranteed to be available.\n- If PIP_EXTRAS is empty and no null check fires, the Dockerfile would install keystone[] which may cause uv to error. Mitigation: REQ-004 requires fail-fast on empty/null pip_extras.\n- The unquoted ${EXTRA_APT_PACKAGES} in apt-get install relies on shell word splitting. If a package name contained spaces (invalid for dpkg), it would break. Mitigation: REQ-007 validates package names match dpkg naming conventions (no spaces).",
+  "status_history": {
+    "proposed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-06T23:28:20.883570"
+    },
+    "preparing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-06T23:34:05.654804"
+    },
+    "prepared": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-06T23:39:04.806563"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-06T23:39:57.345236"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-07T15:50:44.049368"
+    }
+  },
+  "github_pr": "https://github.com/C5C3/forge/pull/36",
+  "pr_number": 36,
+  "execution_history": [
+    {
+      "run_id": "2642738a-9c61-4d73-b8d0-535a126e29ce",
+      "timestamp": "2026-03-06T23:39:04.806589",
+      "total_duration": 296.6680018901825,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "prepare",
+          "duration": 296.6680018901825,
+          "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "92ebab3e-da82-4486-92fc-ef69f9baaa80",
+      "timestamp": "2026-03-07T00:06:18.630550",
+      "total_duration": 1398.1663632392883,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (2 tasks)",
+          "duration": 368.2564272880554,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (2 tasks)",
+          "duration": 141.83717679977417,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (2 tasks)",
+          "duration": 184.23026847839355,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (2 tasks)",
+          "duration": 215.36779642105103,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0027] Code Review",
+          "duration": 183.25488352775574,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0027] Improvements",
+          "duration": 232.2460331916809,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0027] Simplify",
+          "duration": 72.97377753257751,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "babf90ac-4409-4a0b-90a1-b06d1b51e24d",
+      "timestamp": "2026-03-07T00:21:22.513460",
+      "total_duration": 425.72520685195923,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 425.72520685195923,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "c4e0b160-8e91-4a94-859d-23d1dcce71ee",
+      "timestamp": "2026-03-07T07:31:35.376279",
+      "total_duration": 245.68145322799683,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 245.68145322799683,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "a04fa2ae-95ce-4b6f-93e4-82fbcd3e95a8",
+      "timestamp": "2026-03-07T08:11:00.597109",
+      "total_duration": 430.81388330459595,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #3",
+          "duration": 430.81388330459595,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "98b0578d-bfd6-494b-a8b4-9e03edb8e3d4",
+      "timestamp": "2026-03-07T08:41:30.864284",
+      "total_duration": 202.80851030349731,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #4",
+          "duration": 202.80851030349731,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "277c083a-d113-4ff6-b920-5f9b7a59ad4c",
+      "timestamp": "2026-03-07T09:34:46.845442",
+      "total_duration": 194.55548310279846,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #5",
+          "duration": 194.55548310279846,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    }
+  ]
+}

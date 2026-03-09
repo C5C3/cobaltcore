@@ -1,0 +1,46 @@
+{
+  "feature_id": "CC-0006",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "Two changes requested: (1) In `docs/reference/container-images.md:309`, update the stale description of the constraints file path from \"current directory\" to `releases/<release>/upper-constraints.txt` to match the actual script behavior. (2) In `images/python-base/Dockerfile:17`, prepend `DEBIAN_FRONTEND=noninteractive` to the `apt-get` `RUN` step to prevent potential interactive `tzdata` prompts during Docker builds.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-06T13:28:07Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 6,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**Stale description of script's file location**\n\nThis sentence says the script reads `upper-constraints.txt` \"from the current directory\", which was accurate for the original implementation but is no longer correct. The script now resolves `CONSTRAINTS=\"releases/${RELEASE}/upper-constraints.txt\"` (line 16 of the script), so the file read is at `releases/<release>/upper-constraints.txt` relative to the current working directory — not directly at `./upper-constraints.txt`.\n\n```suggestion\nThe script reads `releases/<release>/upper-constraints.txt` relative to the current working\ndirectory (must be invoked from the repository root) and modifies it in-place. It uses GNU\n`sed -i` for modifications (default on Ubuntu/CI runners — BSD `sed` is not supported).\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: docs/reference/container-images.md\nLine: 307-309\n\nComment:\n**Stale description of script's file location**\n\nThis sentence says the script reads `upper-constraints.txt` \"from the current directory\", which was accurate for the original implementation but is no longer correct. The script now resolves `CONSTRAINTS=\"releases/${RELEASE}/upper-constraints.txt\"` (line 16 of the script), so the file read is at `releases/<release>/upper-constraints.txt` relative to the current working directory — not directly at `./upper-constraints.txt`.\n\n```suggestion\nThe script reads `releases/<release>/upper-constraints.txt` relative to the current working\ndirectory (must be invoked from the repository root) and modifies it in-place. It uses GNU\n`sed -i` for modifications (default on Ubuntu/CI runners — BSD `sed` is not supported).\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "docs/reference/container-images.md",
+      "line": 309,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-06T13:28:05Z",
+      "id": null,
+      "resolution": "The description at docs/reference/container-images.md:307-309 was updated from stating the script reads `upper-constraints.txt` from the current directory to correctly stating it reads `releases/<release>/upper-constraints.txt` relative to the current working directory, with a note that it must be invoked from the repository root. The suggested text was applied verbatim."
+    },
+    {
+      "body": "**`tzdata` install may prompt without `DEBIAN_FRONTEND=noninteractive`**\n\n`tzdata` is known to present interactive prompts for geographic area and timezone when installed via `apt-get` if `DEBIAN_FRONTEND` is not set. Docker builds have no TTY, so `tzdata` usually defaults to UTC without hanging, but the behaviour is environment-dependent and has caused silent build failures on some CI runners. Setting `DEBIAN_FRONTEND=noninteractive` for the duration of this `RUN` step makes the behaviour explicit and portable.\n\n```suggestion\nRUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends \\\n    ca-certificates \\\n    netbase \\\n    python3 \\\n    sudo \\\n    tzdata \\\n    && rm -rf /var/lib/apt/lists/*\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: images/python-base/Dockerfile\nLine: 11-17\n\nComment:\n**`tzdata` install may prompt without `DEBIAN_FRONTEND=noninteractive`**\n\n`tzdata` is known to present interactive prompts for geographic area and timezone when installed via `apt-get` if `DEBIAN_FRONTEND` is not set. Docker builds have no TTY, so `tzdata` usually defaults to UTC without hanging, but the behaviour is environment-dependent and has caused silent build failures on some CI runners. Setting `DEBIAN_FRONTEND=noninteractive` for the duration of this `RUN` step makes the behaviour explicit and portable.\n\n```suggestion\nRUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends \\\n    ca-certificates \\\n    netbase \\\n    python3 \\\n    sudo \\\n    tzdata \\\n    && rm -rf /var/lib/apt/lists/*\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "images/python-base/Dockerfile",
+      "line": 17,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-06T13:28:06Z",
+      "id": null,
+      "resolution": "The `RUN` instruction at images/python-base/Dockerfile:11 was updated to prepend `DEBIAN_FRONTEND=noninteractive` before `apt-get update`, making the tzdata installation explicitly non-interactive. The suggested code was applied verbatim."
+    }
+  ],
+  "resolution_summary": "Both review comments were addressed exactly as suggested. Comment [0] about the stale file location description in container-images.md was fixed by updating lines 307-309 to reference `releases/<release>/upper-constraints.txt` with the repository root invocation requirement. Comment [1] about the tzdata interactive prompt risk in the Dockerfile was fixed by prepending `DEBIAN_FRONTEND=noninteractive` to the `apt-get` command on line 11.",
+  "github_review_id": 3903723272
+}

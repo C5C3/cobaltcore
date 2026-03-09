@@ -1,0 +1,46 @@
+{
+  "feature_id": "CC-0006",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer identified that `set -euo pipefail` causes unguarded `docker run` command substitutions to silently abort the script on failure—before any assert functions can record a FAIL. This affects Tests 1 and 3 in `verify_venv_builder.sh` and Tests 2 and 4 in `verify_keystone.sh`. The fix is to apply the same `|| exit_code=$?` idiom already used elsewhere in these files, capturing the exit code without triggering `set -e`.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-06T13:56:34Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 8,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**`set -e` aborts Tests 1 and 3 before recording FAIL**\n\nWith `set -euo pipefail` active, if `docker run` exits non-zero inside a command substitution assignment, bash exits the script immediately — before `assert_contains` ever runs. This means the tests silently abort instead of recording a FAIL.\n\nThis is the same root cause fixed in Test 2 of this file (via `|| exit_code=$?`) and in `verify_python_base.sh` Test 1, but the fix was not applied here.\n\n**Test 1 (`uv --version`)** — if uv is missing from the image, the command exits non-zero, `set -e` fires, and the failure is never recorded:\n\n```bash\nlocal version exit_code=0\nversion=$(docker run --rm \"$IMAGE\" uv --version 2>&1) || exit_code=$?\n\nassert_eq \"uv --version exits 0\" \"0\" \"$exit_code\"\nassert_contains \"uv version is 0.6.3\" \"$version\" \"0.6.3\"\n```\n\n**Test 3 (`pip list`)** — if `/var/lib/openstack/bin/pip` is absent, the same abort occurs:\n\n```bash\nlocal pip_list exit_code=0\npip_list=$(docker run --rm \"$IMAGE\" /var/lib/openstack/bin/pip list 2>&1) || exit_code=$?\n\nassert_eq \"pip list exits 0\" \"0\" \"$exit_code\"\nassert_contains \"cryptography installed\" \"$pip_list\" \"cryptography\"\nassert_contains \"pymysql installed\" \"$pip_list\" \"PyMySQL\"\nassert_contains \"python-memcached installed\" \"$pip_list\" \"python-memcached\"\nassert_contains \"uwsgi installed\" \"$pip_list\" \"uWSGI\"\n```\n\nBoth of these are exactly the failure scenarios the tests are designed to catch — a silent abort turns a detectable regression into a false pass (the test counter shows 0 failures because the counters are never reached).\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: tests/container-images/verify_venv_builder.sh\nLine: 30-55\n\nComment:\n**`set -e` aborts Tests 1 and 3 before recording FAIL**\n\nWith `set -euo pipefail` active, if `docker run` exits non-zero inside a command substitution assignment, bash exits the script immediately — before `assert_contains` ever runs. This means the tests silently abort instead of recording a FAIL.\n\nThis is the same root cause fixed in Test 2 of this file (via `|| exit_code=$?`) and in `verify_python_base.sh` Test 1, but the fix was not applied here.\n\n**Test 1 (`uv --version`)** — if uv is missing from the image, the command exits non-zero, `set -e` fires, and the failure is never recorded:\n\n```bash\nlocal version exit_code=0\nversion=$(docker run --rm \"$IMAGE\" uv --version 2>&1) || exit_code=$?\n\nassert_eq \"uv --version exits 0\" \"0\" \"$exit_code\"\nassert_contains \"uv version is 0.6.3\" \"$version\" \"0.6.3\"\n```\n\n**Test 3 (`pip list`)** — if `/var/lib/openstack/bin/pip` is absent, the same abort occurs:\n\n```bash\nlocal pip_list exit_code=0\npip_list=$(docker run --rm \"$IMAGE\" /var/lib/openstack/bin/pip list 2>&1) || exit_code=$?\n\nassert_eq \"pip list exits 0\" \"0\" \"$exit_code\"\nassert_contains \"cryptography installed\" \"$pip_list\" \"cryptography\"\nassert_contains \"pymysql installed\" \"$pip_list\" \"PyMySQL\"\nassert_contains \"python-memcached installed\" \"$pip_list\" \"python-memcached\"\nassert_contains \"uwsgi installed\" \"$pip_list\" \"uWSGI\"\n```\n\nBoth of these are exactly the failure scenarios the tests are designed to catch — a silent abort turns a detectable regression into a false pass (the test counter shows 0 failures because the counters are never reached).\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "tests/container-images/verify_venv_builder.sh",
+      "line": 55,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-06T13:56:27Z",
+      "id": null,
+      "resolution": "Applied the '|| exit_code=$?' guard to Test 1 (uv --version) and Test 3 (pip list) in verify_venv_builder.sh. Both command substitutions now capture the exit code instead of allowing set -e to abort, and an assert_eq check for exit code 0 was added before the existing assert_contains calls."
+    },
+    {
+      "body": "**`set -e` can abort Tests 2 and 4 before recording FAIL**\n\n`whoami_output=$(docker run ...)` and `dpkg_output=$(docker run ...)` are unguarded command substitution assignments under `set -euo pipefail`. If `docker run` exits non-zero (e.g. the image can't start, or a security policy prevents execution), bash terminates immediately before the `assert_eq` / `assert_contains` calls increment `$FAIL`.\n\nThis is the same pattern fixed in Test 1 of this file and in `verify_python_base.sh`. The `|| exit_code=$?` idiom prevents `set -e` from triggering while still capturing the real exit status:\n\n```bash\n# Test 2\ntest_runs_as_openstack_user() {\n  echo \"Test: container runs as openstack user\"\n  local whoami_output exit_code=0\n  whoami_output=$(docker run --rm \"$IMAGE\" whoami 2>&1) || exit_code=$?\n\n  assert_eq \"whoami exits 0\" \"0\" \"$exit_code\"\n  assert_eq \"whoami outputs openstack\" \"openstack\" \"$whoami_output\"\n}\n```\n\n```bash\n# Test 4\ntest_runtime_apt_packages_installed() {\n  echo \"Test: runtime apt packages are installed\"\n  local dpkg_output exit_code=0\n  dpkg_output=$(docker run --rm \"$IMAGE\" dpkg -l 2>&1) || exit_code=$?\n\n  assert_eq \"dpkg -l exits 0\" \"0\" \"$exit_code\"\n  for pkg in libapache2-mod-wsgi-py3 libldap-2.5-0 libsasl2-2 libxml2; do\n    assert_contains \"$pkg is installed\" \"$dpkg_output\" \"$pkg\"\n  done\n}\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: tests/container-images/verify_keystone.sh\nLine: 39-70\n\nComment:\n**`set -e` can abort Tests 2 and 4 before recording FAIL**\n\n`whoami_output=$(docker run ...)` and `dpkg_output=$(docker run ...)` are unguarded command substitution assignments under `set -euo pipefail`. If `docker run` exits non-zero (e.g. the image can't start, or a security policy prevents execution), bash terminates immediately before the `assert_eq` / `assert_contains` calls increment `$FAIL`.\n\nThis is the same pattern fixed in Test 1 of this file and in `verify_python_base.sh`. The `|| exit_code=$?` idiom prevents `set -e` from triggering while still capturing the real exit status:\n\n```bash\n# Test 2\ntest_runs_as_openstack_user() {\n  echo \"Test: container runs as openstack user\"\n  local whoami_output exit_code=0\n  whoami_output=$(docker run --rm \"$IMAGE\" whoami 2>&1) || exit_code=$?\n\n  assert_eq \"whoami exits 0\" \"0\" \"$exit_code\"\n  assert_eq \"whoami outputs openstack\" \"openstack\" \"$whoami_output\"\n}\n```\n\n```bash\n# Test 4\ntest_runtime_apt_packages_installed() {\n  echo \"Test: runtime apt packages are installed\"\n  local dpkg_output exit_code=0\n  dpkg_output=$(docker run --rm \"$IMAGE\" dpkg -l 2>&1) || exit_code=$?\n\n  assert_eq \"dpkg -l exits 0\" \"0\" \"$exit_code\"\n  for pkg in libapache2-mod-wsgi-py3 libldap-2.5-0 libsasl2-2 libxml2; do\n    assert_contains \"$pkg is installed\" \"$dpkg_output\" \"$pkg\"\n  done\n}\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "tests/container-images/verify_keystone.sh",
+      "line": 70,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-06T13:56:31Z",
+      "id": null,
+      "resolution": "Applied the '|| exit_code=$?' guard to Test 2 (whoami) and Test 4 (dpkg -l) in verify_keystone.sh. Both command substitutions now capture the exit code instead of allowing set -e to abort, and an assert_eq check for exit code 0 was added before the existing assertions."
+    }
+  ],
+  "resolution_summary": "Both review comments about unguarded command substitution assignments under set -euo pipefail were addressed. The '|| exit_code=$?' idiom was applied to all four flagged locations across both files, and assert_eq checks for exit code 0 were added before the existing assertions. No changes were made to files or locations outside those mentioned in the review.",
+  "github_review_id": 3903851211
+}

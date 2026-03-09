@@ -1,0 +1,547 @@
+{
+  "feature_id": "CC-0030",
+  "title": "Add cosign keyless signing to container images",
+  "slug": "add-cosign-keyless-signing-to-container-images",
+  "status": "completed",
+  "phase": "awaiting_external_review",
+  "summary": "",
+  "description": "**Size:** 🔧 small\n**Category:** infrastructure\n**Priority:** high\n**Source:** Proposed for 'Now that SBOM should be created and attested'\n\nAdd cosign-based container image signing to `.github/workflows/build-images.yaml` completing the supply chain security chain (build → push → SBOM → attest → sign).\n\n**Workflow changes (build-images.yaml):**\n1. Add `sigstore/cosign-installer` action (SHA-pinned with `# v<N>` comment) as an early step in both `build-base-images` and `build-service-images` jobs\n2. Add `cosign sign --yes` step after SBOM attestation in `build-base-images` for python-base (`@${{ steps.build-python-base.outputs.digest }}`) and venv-builder (`@${{ steps.build-venv-builder.outputs.digest }}`)\n3. Add `cosign sign --yes` step after SBOM attestation in `build-service-images` for service images (`${{ steps.tags.outputs.image }}@${{ steps.build-service.outputs.digest }}`)\n4. Guard all signing steps with `if: github.event_name != 'pull_request'` (matching existing attestation guards)\n5. No permission changes needed — existing `id-token: write` + `packages: write` are sufficient for keyless Fulcio/Rekor signing\n\n**Test updates (tests/container-images/verify_build_images_workflow.sh):**\n- Add yq-based assertions for `sigstore/cosign-installer` presence in both build jobs\n- Assert `cosign sign` steps exist with correct `if:` guards\n- Assert signing steps reference image digests\n- Follow existing PASS/FAIL counter pattern\n\n**Doc updates (docs/reference/build-images-workflow.md):**\n- Add `cosign verify` command examples with `--certificate-identity-regexp` and `--certificate-oidc-issuer` parameters\n- Place alongside existing `cosign verify-attestation` and `gh attestation verify` commands\n\n**Rationale:** Images currently receive CycloneDX SBOMs and Sigstore attestations (CC-0029) but lack independent identity signing. Image signing adds an identity assertion ('this image was produced by this workflow') on top of existing property assertions ('this image has this SBOM'). This is a standard supply chain security practice that completes the trust chain and enables downstream consumers to verify image provenance via `cosign verify`. Keyless signing via GitHub OIDC avoids key management overhead.\n\n**Affected Areas:**\n- .github/workflows/build-images.yaml\n- tests/container-images/verify_build_images_workflow.sh\n- docs/reference/build-images-workflow.md",
+  "stories": [
+    {
+      "title": "Image consumer can verify image provenance via cosign",
+      "role": "image consumer",
+      "want": "container images pushed to GHCR to be signed with a Sigstore keyless identity",
+      "so_that": "I can verify that images were produced by the expected GitHub Actions workflow before deploying them",
+      "criteria": [
+        "Running `cosign verify` with the correct `--certificate-identity-regexp` and `--certificate-oidc-issuer` against a pushed image succeeds",
+        "The signature is bound to the GitHub Actions workflow OIDC identity (no static keys)",
+        "Signatures are present on all three image types: python-base, venv-builder, and service images",
+        "Signatures are recorded in Rekor transparency log for auditability"
+      ]
+    },
+    {
+      "title": "CI pipeline signs images after SBOM attestation",
+      "role": "CI pipeline",
+      "want": "to sign every pushed container image with cosign keyless signing after SBOM attestation completes",
+      "so_that": "the supply chain security chain is complete: build → push → SBOM → attest → sign",
+      "criteria": [
+        "cosign sign steps execute after SBOM attestation steps in both build-base-images and build-service-images jobs",
+        "Signing uses digest references (not mutable tags) to ensure the exact built image is signed",
+        "cosign sign uses the `--yes` flag for non-interactive keyless operation",
+        "No new permissions are added — existing `id-token: write` and `packages: write` are sufficient"
+      ]
+    },
+    {
+      "title": "PR builds skip image signing",
+      "role": "contributor",
+      "want": "pull request builds to skip image signing entirely",
+      "so_that": "PR CI time is not increased and no signing artifacts are created for ephemeral PR builds",
+      "criteria": [
+        "All cosign sign steps have `if: github.event_name != 'pull_request'` guard",
+        "cosign-installer still runs on PRs (it's a lightweight install and other future steps may need it, or it can be guarded too — matching the pattern of SBOM steps)",
+        "No OIDC token requests occur for signing on PRs",
+        "PR builds continue to produce the same outputs as before this change"
+      ]
+    },
+    {
+      "title": "Security auditor can verify signing configuration in workflow tests",
+      "role": "security auditor",
+      "want": "automated tests to verify that cosign signing is correctly configured in the workflow",
+      "so_that": "signing cannot be accidentally removed or misconfigured without test failures",
+      "criteria": [
+        "Tests assert cosign-installer action is present and SHA-pinned in both build jobs",
+        "Tests assert cosign sign steps exist in both build jobs with correct count (2 in base, 1 in service)",
+        "Tests assert all signing steps have the PR-skip guard",
+        "Tests assert signing steps reference image digests (not tags)",
+        "Tests follow existing PASS/FAIL counter pattern and use shared assertion helpers"
+      ]
+    },
+    {
+      "title": "Operator can follow documentation to verify image signatures",
+      "role": "operator",
+      "want": "reference documentation with cosign verify command examples",
+      "so_that": "I can verify image signatures without reading the workflow source code",
+      "criteria": [
+        "Documentation includes `cosign verify` command with `--certificate-identity-regexp` and `--certificate-oidc-issuer` parameters",
+        "Documentation is placed alongside existing `gh attestation verify` commands in the same reference doc",
+        "Command examples use placeholder values that match the project's GHCR naming convention",
+        "Documentation explains the relationship between SBOM attestation (CC-0029) and image signing (CC-0030)"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-018",
+      "description": "The workflow SHALL install the sigstore/cosign-installer action (SHA-pinned with version comment) in both build-base-images and build-service-images jobs",
+      "priority": "SHALL",
+      "rationale": "cosign binary must be available on the runner before signing steps can execute; SHA pinning prevents supply-chain attacks per project convention",
+      "scenarios": [
+        {
+          "name": "cosign-installer present in build-base-images",
+          "when": "the build-base-images job runs",
+          "then": "the sigstore/cosign-installer action is executed as a step",
+          "and_then": [
+            "the action reference is SHA-pinned to a 40-character hex digest",
+            "a version comment (# v<N>) is present on the same line"
+          ]
+        },
+        {
+          "name": "cosign-installer present in build-service-images",
+          "when": "the build-service-images job runs",
+          "then": "the sigstore/cosign-installer action is executed as a step",
+          "and_then": [
+            "the action reference is SHA-pinned to a 40-character hex digest",
+            "a version comment (# v<N>) is present on the same line"
+          ]
+        },
+        {
+          "name": "cosign-installer uses consistent version across jobs",
+          "when": "both build jobs reference cosign-installer",
+          "then": "both use the same SHA-pinned version",
+          "and_then": [
+            "no version mismatch between jobs"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-019",
+      "description": "The workflow SHALL sign python-base and venv-builder images with cosign after SBOM attestation in build-base-images job",
+      "priority": "SHALL",
+      "rationale": "Base images are the foundation of all service images; signing them provides the first link in the trust chain",
+      "scenarios": [
+        {
+          "name": "python-base image signed after attestation",
+          "when": "the SBOM attestation for python-base completes on a push event",
+          "then": "cosign sign --yes is executed against ghcr.io/<owner>/python-base@<digest>",
+          "and_then": [
+            "the signature is recorded in Rekor transparency log",
+            "the signing step uses the digest from steps.build-python-base.outputs.digest"
+          ]
+        },
+        {
+          "name": "venv-builder image signed after attestation",
+          "when": "the SBOM attestation for venv-builder completes on a push event",
+          "then": "cosign sign --yes is executed against ghcr.io/<owner>/venv-builder@<digest>",
+          "and_then": [
+            "the signature is recorded in Rekor transparency log",
+            "the signing step uses the digest from steps.build-venv-builder.outputs.digest"
+          ]
+        },
+        {
+          "name": "Base image signing steps are in correct order",
+          "when": "the build-base-images job step list is examined",
+          "then": "each cosign sign step appears after the corresponding Attest SBOM step",
+          "and_then": [
+            "python-base sign after python-base attest",
+            "venv-builder sign after venv-builder attest"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-020",
+      "description": "The workflow SHALL sign service images with cosign after SBOM attestation in build-service-images job",
+      "priority": "SHALL",
+      "rationale": "Service images are the final artifacts consumed by deployment systems; signing them completes the trust chain",
+      "scenarios": [
+        {
+          "name": "Service image signed after attestation",
+          "when": "the SBOM attestation for a service image completes on a push event",
+          "then": "cosign sign --yes is executed against <image>@<digest>",
+          "and_then": [
+            "the image reference uses steps.tags.outputs.image for the image name",
+            "the digest uses steps.build-service.outputs.digest"
+          ]
+        },
+        {
+          "name": "Service image signing step is in correct order",
+          "when": "the build-service-images job step list is examined",
+          "then": "the cosign sign step appears after the Attest SBOM for service image step",
+          "and_then": [
+            "signing is the last supply-chain step before PR verification"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-021",
+      "description": "All cosign signing steps SHALL be guarded with if: github.event_name != 'pull_request'",
+      "priority": "SHALL",
+      "rationale": "PR builds should not create signing artifacts for ephemeral images; matches existing SBOM/attestation guard pattern",
+      "scenarios": [
+        {
+          "name": "Signing skipped on pull requests",
+          "when": "the workflow runs on a pull_request event",
+          "then": "all cosign sign steps are skipped",
+          "and_then": [
+            "no OIDC token is requested for signing",
+            "no Rekor entries are created"
+          ]
+        },
+        {
+          "name": "Signing executes on push events",
+          "when": "the workflow runs on a push event to main or stable/**",
+          "then": "all cosign sign steps execute",
+          "and_then": [
+            "images are signed with keyless identity"
+          ]
+        },
+        {
+          "name": "Guard syntax matches existing convention",
+          "when": "the signing step if-condition is examined",
+          "then": "it uses exactly github.event_name != 'pull_request'",
+          "and_then": [
+            "consistent with SBOM generation and attestation guards"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-022",
+      "description": "Cosign signing SHALL use digest references, not mutable tags, to identify images",
+      "priority": "SHALL",
+      "rationale": "Tag-based references are mutable and could be replaced between push and sign; digest references guarantee the exact image built is the one signed",
+      "scenarios": [
+        {
+          "name": "Base image signing uses digest output",
+          "when": "the cosign sign step for python-base executes",
+          "then": "the image reference includes @${{ steps.build-python-base.outputs.digest }}",
+          "and_then": [
+            "no tag-based reference is used"
+          ]
+        },
+        {
+          "name": "Service image signing uses digest output",
+          "when": "the cosign sign step for a service image executes",
+          "then": "the image reference includes @${{ steps.build-service.outputs.digest }}",
+          "and_then": [
+            "the image name comes from steps.tags.outputs.image"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-023",
+      "description": "No additional workflow permissions SHALL be required for cosign keyless signing",
+      "priority": "SHALL",
+      "rationale": "Cosign keyless signing uses Fulcio/Rekor via GitHub OIDC; the existing id-token: write and packages: write permissions are sufficient",
+      "scenarios": [
+        {
+          "name": "Existing permissions unchanged",
+          "when": "the workflow permissions are examined after adding signing",
+          "then": "build-base-images and build-service-images have the same permissions as before",
+          "and_then": [
+            "id-token: write (already present for CC-0029)",
+            "packages: write (already present for image push)",
+            "no new permission keys added"
+          ]
+        },
+        {
+          "name": "Verify jobs still have no signing permissions",
+          "when": "verify-base-images and verify-service-images permissions are examined",
+          "then": "they still have only contents: read and packages: read",
+          "and_then": [
+            "no id-token or attestations permissions on verify jobs"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-024",
+      "description": "Verification tests SHALL assert cosign-installer and signing step configuration in the workflow",
+      "priority": "SHALL",
+      "rationale": "Automated tests prevent accidental removal or misconfiguration of signing steps; maintains the existing test pattern",
+      "scenarios": [
+        {
+          "name": "Tests detect missing cosign-installer",
+          "when": "sigstore/cosign-installer is removed from a build job",
+          "then": "the test script fails with a descriptive FAIL message",
+          "and_then": [
+            "the test uses yq to check for the action in the steps array"
+          ]
+        },
+        {
+          "name": "Tests detect missing cosign sign step",
+          "when": "a cosign sign step is removed from a build job",
+          "then": "the test script fails with a descriptive FAIL message",
+          "and_then": [
+            "the test checks for the correct number of signing steps per job"
+          ]
+        },
+        {
+          "name": "Tests detect missing PR guard on signing step",
+          "when": "a cosign sign step is present but lacks the PR-skip if-guard",
+          "then": "the test script fails with a descriptive FAIL message",
+          "and_then": [
+            "the test checks that all signing steps have the guard"
+          ]
+        },
+        {
+          "name": "Tests detect signing steps without digest references",
+          "when": "a cosign sign step uses a tag instead of a digest",
+          "then": "the test script fails with a descriptive FAIL message",
+          "and_then": [
+            "the test checks that run blocks contain digest references"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-025",
+      "description": "Reference documentation SHALL include cosign verify command examples for verifying image signatures",
+      "priority": "SHALL",
+      "rationale": "Operators need clear instructions to verify image signatures; documentation must be self-contained alongside existing attestation verification commands",
+      "scenarios": [
+        {
+          "name": "cosign verify command documented",
+          "when": "an operator reads the build-images-workflow.md reference doc",
+          "then": "they find a cosign verify command example with --certificate-identity-regexp and --certificate-oidc-issuer parameters",
+          "and_then": [
+            "the command uses placeholder values matching project GHCR naming convention"
+          ]
+        },
+        {
+          "name": "Documentation placed alongside existing verification commands",
+          "when": "an operator looks for verification instructions",
+          "then": "cosign verify is in the same section as gh attestation verify",
+          "and_then": [
+            "the relationship between attestation and signing is explained"
+          ]
+        },
+        {
+          "name": "Signing section added to workflow summary tables",
+          "when": "the build job step tables in docs are reviewed",
+          "then": "cosign sign steps are listed in the step tables for both build jobs",
+          "and_then": [
+            "cosign-installer step is also listed",
+            "step numbering is updated"
+          ]
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1.1",
+      "title": "Add cosign-installer and cosign sign steps to build-base-images job in build-images.yaml (REQ-018, REQ-019, REQ-021, REQ-022)",
+      "description": "In .github/workflows/build-images.yaml, add to the build-base-images job: (1) a `sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4` step after the GHCR login step (before any build steps), (2) a 'Sign python-base' step with `cosign sign --yes ghcr.io/${{ steps.meta.outputs.owner }}/python-base@${{ steps.build-python-base.outputs.digest }}` immediately after the 'Attest SBOM for python-base' step, (3) a 'Sign venv-builder' step with `cosign sign --yes ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder@${{ steps.build-venv-builder.outputs.digest }}` immediately after the 'Attest SBOM for venv-builder' step. Both signing steps must have `if: github.event_name != 'pull_request'`. Add CC-0030 comment on the id-token permission line. No permission changes.",
+      "level": 1,
+      "estimate_minutes": 15,
+      "status": "done",
+      "requirements": [
+        "REQ-018",
+        "REQ-019",
+        "REQ-021",
+        "REQ-022"
+      ]
+    },
+    {
+      "id": "1.2",
+      "title": "Add cosign-installer and cosign sign step to build-service-images job in build-images.yaml (REQ-018, REQ-020, REQ-021, REQ-022)",
+      "description": "In .github/workflows/build-images.yaml, add to the build-service-images job: (1) a `sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4` step after the GHCR login step (before the build step), (2) a 'Sign service image' step with `cosign sign --yes ${{ steps.tags.outputs.image }}@${{ steps.build-service.outputs.digest }}` immediately after the 'Attest SBOM for service image' step. The signing step must have `if: github.event_name != 'pull_request'`. Add CC-0030 comment on the id-token permission line. No permission changes.",
+      "level": 1,
+      "estimate_minutes": 10,
+      "status": "done",
+      "requirements": [
+        "REQ-018",
+        "REQ-020",
+        "REQ-021",
+        "REQ-022"
+      ]
+    },
+    {
+      "id": "2.1",
+      "title": "Add verification tests for cosign-installer presence in both build jobs (REQ-018, REQ-024)",
+      "description": "In tests/container-images/verify_build_images_workflow.sh, add test function `test_cosign_installer_in_build_jobs` that: (1) uses yq to count steps matching 'sigstore/cosign-installer' in build-base-images (assert == 1) and build-service-images (assert == 1), (2) verifies the action is SHA-pinned (existing test_actions_pinned_to_sha already covers this generically). Follow existing test pattern (yq_count helper, assert_eq, PASS/FAIL counters). Register the test in the 'Run all tests' section at the bottom of the file. Add CC-0030 to the test function comment header.",
+      "level": 2,
+      "estimate_minutes": 15,
+      "status": "done",
+      "requirements": [
+        "REQ-018",
+        "REQ-024"
+      ]
+    },
+    {
+      "id": "2.2",
+      "title": "Add verification tests for cosign sign steps: count, PR guard, and digest references (REQ-019, REQ-020, REQ-021, REQ-022, REQ-024)",
+      "description": "In tests/container-images/verify_build_images_workflow.sh, add test functions: (1) `test_cosign_sign_steps_exist` — use yq to count steps whose .name matches 'Sign *' and whose .run contains 'cosign sign' in build-base-images (assert == 2) and build-service-images (assert == 1). (2) `test_cosign_sign_steps_pr_skip_guard` — extract .if from all cosign sign steps in both jobs, assert each contains \"github.event_name != 'pull_request'\" (following the pattern of test_sbom_steps_pr_skip_guard). (3) `test_cosign_sign_references_digest` — extract .run from signing steps, assert python-base step contains 'build-python-base.outputs.digest', venv-builder step contains 'build-venv-builder.outputs.digest', service step contains 'build-service.outputs.digest' and 'steps.tags.outputs.image'. Register all tests in the 'Run all tests' section. Add CC-0030 to test comments.",
+      "level": 2,
+      "estimate_minutes": 20,
+      "status": "done",
+      "requirements": [
+        "REQ-019",
+        "REQ-020",
+        "REQ-021",
+        "REQ-022",
+        "REQ-024"
+      ]
+    },
+    {
+      "id": "3.1",
+      "title": "Update reference documentation with cosign signing section and verify commands (REQ-025)",
+      "description": "In docs/reference/build-images-workflow.md: (1) Add a new '## Image Signing' section after '## SBOM Generation and Attestation' explaining cosign keyless signing (CC-0030), how it complements SBOM attestation (CC-0029), and the keyless OIDC approach. (2) Add a '### Verifying Signatures' subsection with `cosign verify` command example using `--certificate-identity-regexp` (matching the workflow file path pattern) and `--certificate-oidc-issuer https://token.actions.githubusercontent.com`. (3) Update the build-base-images step table to include cosign-installer (after login) and two Sign steps (after respective Attest steps). (4) Update the build-service-images step table to include cosign-installer (after login) and Sign step (after Attest). (5) Update the 'PR vs Push Behavior' table to add an 'Image signing' row showing 'Skipped' for PR and 'cosign keyless signing for every image' for Push. (6) Update the Action Pinning section to include the cosign-installer SHA. (7) Add signing tests to the 'Test Coverage' table.",
+      "level": 3,
+      "estimate_minutes": 20,
+      "status": "done",
+      "requirements": [
+        "REQ-025"
+      ]
+    }
+  ],
+  "test_specifications": [
+    {
+      "test_file": "tests/container-images/verify_build_images_workflow.sh",
+      "test_function": "test_cosign_installer_in_build_base_images",
+      "story": "Security auditor can verify signing configuration in workflow tests",
+      "expected": "Should detect sigstore/cosign-installer action in build-base-images job steps, SHA-pinned with version comment",
+      "requirement_id": "REQ-018"
+    },
+    {
+      "test_file": "tests/container-images/verify_build_images_workflow.sh",
+      "test_function": "test_cosign_installer_in_build_service_images",
+      "story": "Security auditor can verify signing configuration in workflow tests",
+      "expected": "Should detect sigstore/cosign-installer action in build-service-images job steps, SHA-pinned with version comment",
+      "requirement_id": "REQ-018"
+    },
+    {
+      "test_file": "tests/container-images/verify_build_images_workflow.sh",
+      "test_function": "test_cosign_sign_steps_in_build_base_images",
+      "story": "CI pipeline signs images after SBOM attestation",
+      "expected": "Should find exactly 2 cosign sign steps in build-base-images (one for python-base, one for venv-builder)",
+      "requirement_id": "REQ-019"
+    },
+    {
+      "test_file": "tests/container-images/verify_build_images_workflow.sh",
+      "test_function": "test_cosign_sign_step_in_build_service_images",
+      "story": "CI pipeline signs images after SBOM attestation",
+      "expected": "Should find exactly 1 cosign sign step in build-service-images",
+      "requirement_id": "REQ-020"
+    },
+    {
+      "test_file": "tests/container-images/verify_build_images_workflow.sh",
+      "test_function": "test_cosign_sign_steps_pr_skip_guard",
+      "story": "PR builds skip image signing",
+      "expected": "All cosign sign steps in both build jobs should have if: github.event_name != 'pull_request' guard",
+      "requirement_id": "REQ-021"
+    },
+    {
+      "test_file": "tests/container-images/verify_build_images_workflow.sh",
+      "test_function": "test_cosign_sign_references_digest_base_images",
+      "story": "CI pipeline signs images after SBOM attestation",
+      "expected": "Base image signing steps should reference build-python-base.outputs.digest and build-venv-builder.outputs.digest respectively",
+      "requirement_id": "REQ-022"
+    },
+    {
+      "test_file": "tests/container-images/verify_build_images_workflow.sh",
+      "test_function": "test_cosign_sign_references_digest_service_images",
+      "story": "CI pipeline signs images after SBOM attestation",
+      "expected": "Service image signing step should reference steps.tags.outputs.image and steps.build-service.outputs.digest",
+      "requirement_id": "REQ-022"
+    },
+    {
+      "test_file": "tests/container-images/verify_build_images_workflow.sh",
+      "test_function": "test_permissions_unchanged_after_signing",
+      "story": "CI pipeline signs images after SBOM attestation",
+      "expected": "Existing id-token: write and packages: write permissions on build jobs remain unchanged; no new permissions added. Note: this is already covered by existing test_sbom_permissions tests and test_verify_jobs_no_sbom_permissions — no new test needed, just verify existing tests still pass.",
+      "requirement_id": "REQ-023"
+    }
+  ],
+  "affected_files": [],
+  "similar_patterns": [],
+  "review_criteria": [
+    "All cosign sign steps use `--yes` flag and digest-based image references (no mutable tags)",
+    "sigstore/cosign-installer is SHA-pinned with `# v4` version comment, matching project convention for action pinning",
+    "All 3 signing steps (2 base + 1 service) have `if: github.event_name != 'pull_request'` guard, matching SBOM/attestation guards",
+    "No workflow permission changes — existing `id-token: write` + `packages: write` are sufficient for Fulcio/Rekor keyless signing",
+    "All new test functions follow existing patterns: yq-based queries, assert_eq/assert_contains helpers, PASS/FAIL counters, registered in 'Run all tests' section",
+    "Existing tests (`test_sbom_*`, `test_actions_pinned_to_sha`, `test_actions_have_version_comments`) still pass after changes",
+    "Documentation includes complete `cosign verify` command with `--certificate-identity-regexp` and `--certificate-oidc-issuer` parameters",
+    "Step ordering is correct: cosign-installer before signing steps, signing steps after corresponding SBOM attestation steps"
+  ],
+  "implementation_notes": "This feature adds cosign keyless signing as the final step in the supply chain security chain (build → push → SBOM → attest → sign). The implementation follows the exact same patterns established by CC-0029 for SBOM/attestation:\n\n**Action pinning:** `sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4` — matches the SHA-pinned with version comment convention used by all other actions in the workflow.\n\n**Step ordering in build-base-images:** cosign-installer (early, after login) → ... → Build python-base → Generate SBOM → Attest SBOM → **Sign python-base** → Build venv-builder → Generate SBOM → Attest SBOM → **Sign venv-builder**. The cosign-installer only needs to run once per job.\n\n**Step ordering in build-service-images:** cosign-installer (early, after login) → ... → Build service → Generate SBOM → Attest SBOM → **Sign service image** → Verify (PR only).\n\n**Signing command pattern:** `cosign sign --yes ghcr.io/<owner>/<image>@<digest>`. The `--yes` flag enables non-interactive keyless mode (Fulcio/Rekor). The `COSIGN_EXPERIMENTAL` env var is NOT needed for cosign v2+ — keyless is the default.\n\n**Permissions:** No changes needed. cosign keyless signing requires: (1) `id-token: write` for OIDC token request → already present for CC-0029, (2) `packages: write` for pushing the signature to GHCR OCI registry → already present for image push. The id-token permission comment should be updated to reference both CC-0029 and CC-0030.\n\n**PR guard:** `if: github.event_name != 'pull_request'` — same guard used by all SBOM/attestation steps.\n\n**Risks:** (1) cosign-installer action version may have breaking changes — mitigated by SHA pinning. (2) Fulcio/Rekor service availability — transient failures would fail the workflow; this is acceptable as signing is mandatory for production builds. (3) Race condition between push and sign is not a concern because both use digest references.\n\n**Key files:**\n- `.github/workflows/build-images.yaml` — main workflow file\n- `tests/container-images/verify_build_images_workflow.sh` — workflow structure tests\n- `tests/lib/assertions.sh` — shared assertion helpers (read-only, not modified)\n- `docs/reference/build-images-workflow.md` — reference documentation",
+  "status_history": {
+    "proposed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-08T22:44:08.085924"
+    },
+    "preparing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-08T22:55:12.082286"
+    },
+    "prepared": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-08T22:58:51.816431"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-09T09:52:12.859561"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-09T12:40:01.321666"
+    }
+  },
+  "github_pr": "https://github.com/C5C3/forge/pull/48",
+  "pr_number": 48,
+  "execution_history": [
+    {
+      "run_id": "325eaae1-7927-40c8-b254-b89dca8212fe",
+      "timestamp": "2026-03-08T22:58:51.816456",
+      "total_duration": 217.42436289787292,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "prepare",
+          "duration": 217.42436289787292,
+          "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "e377a8c0-b2e3-4d44-8dd1-49e936d50382",
+      "timestamp": "2026-03-09T10:15:59.183047",
+      "total_duration": 1265.8120942115784,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (2 tasks)",
+          "duration": 494.63353538513184,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (2 tasks)",
+          "duration": 278.54264545440674,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (1 tasks)",
+          "duration": 140.81128668785095,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0030] Code Review",
+          "duration": 220.3424355983734,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0030] Improvements",
+          "duration": 45.09988260269165,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0030] Simplify",
+          "duration": 86.38230848312378,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "feature_id": "CC-0006",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer wants the `pip install` example in `docs/reference/container-images.md` (around line 176) updated to use the combined PEP 508 extras form (`\"/tmp/keystone[ldap,memcache_pool,oauth1]\"`) instead of the old pattern with separate positional/extras arguments, so the docs match the actual `images/keystone/Dockerfile`.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-06T12:37:19Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 4,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "The code example here shows the old install pattern — `/tmp/keystone` as a separate positional argument followed by three distinct `\"keystone[extra]\"` strings. However, the actual `images/keystone/Dockerfile` (line 16) was updated to use the combined PEP 508 form:\n\n```dockerfile\n        \"/tmp/keystone[ldap,memcache_pool,oauth1]\"\n```\n\nThis documentation example should be updated to match the implementation, so developers referencing this doc will follow the correct pattern.\n\n```suggestion\n        --constraint /tmp/upper-constraints.txt \\\n        \"/tmp/keystone[ldap,memcache_pool,oauth1]\"\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: docs/reference/container-images.md\nLine: 173-176\n\nComment:\nThe code example here shows the old install pattern — `/tmp/keystone` as a separate positional argument followed by three distinct `\"keystone[extra]\"` strings. However, the actual `images/keystone/Dockerfile` (line 16) was updated to use the combined PEP 508 form:\n\n```dockerfile\n        \"/tmp/keystone[ldap,memcache_pool,oauth1]\"\n```\n\nThis documentation example should be updated to match the implementation, so developers referencing this doc will follow the correct pattern.\n\n```suggestion\n        --constraint /tmp/upper-constraints.txt \\\n        \"/tmp/keystone[ldap,memcache_pool,oauth1]\"\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "docs/reference/container-images.md",
+      "line": 176,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-06T12:37:19Z",
+      "id": null,
+      "resolution": ""
+    }
+  ],
+  "github_review_id": 3903500523
+}

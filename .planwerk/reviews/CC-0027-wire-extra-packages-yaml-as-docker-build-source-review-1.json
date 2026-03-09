@@ -1,0 +1,155 @@
+{
+  "summary": "CC-0027 partially wires extra-packages.yaml as Docker build source of truth. PIP_EXTRAS and PIP_PACKAGES are correctly wired end-to-end (YAML -> CI workflow -> Dockerfile ARG -> uv pip install). However, three critical plan requirements are NOT implemented: (1) libldap-2.5-0 is NOT fixed to libldap2 in the YAML, (2) the Dockerfile does NOT declare ARG EXTRA_APT_PACKAGES and still hardcodes the apt package list, making apt_packages in the YAML a dead config, and (3) the pip_packages field is missing from the YAML entirely. The CI workflow correctly extracts and passes all three build-args, but the Dockerfile only consumes two of them. The docs claim EXTRA_APT_PACKAGES is consumed in stage 2, which is factually false.",
+  "verdict": "BLOCKED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass", "checked": true},
+    {"item": "Edge cases are covered (empty pip_packages, missing fields)", "checked": true},
+    {"item": "Test validates all three Dockerfile ARGs", "checked": false},
+    {"item": "Test validates EXTRA_APT_PACKAGES wiring", "checked": false},
+    {"item": "Pattern validation covers pip_extras, pip_packages, apt_packages", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (shell test structure)", "checked": true},
+    {"item": "CI step follows Resolve source ref pattern", "checked": true},
+    {"item": "No dead code", "checked": true},
+    {"item": "Clear naming", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Matrix variables used via env (no direct interpolation in run)", "checked": true},
+    {"item": "yq input properly quoted", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "Shell variables quoted to prevent word splitting", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "YAML is single source of truth for pip extras", "checked": true},
+    {"item": "YAML is single source of truth for apt packages", "checked": false},
+    {"item": "Dockerfile is release-independent", "checked": false},
+    {"item": "Solution is as simple as possible", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": false},
+    {"item": "No unused features", "checked": false}
+  ],
+  "fail_fast_checklist": [
+    {"item": "CI fails if pip_extras missing", "checked": true},
+    {"item": "CI fails if apt_packages missing", "checked": true},
+    {"item": "Tests catch invalid package name patterns", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Empty PIP_EXTRAS handled in Dockerfile (conditional bracket append)", "checked": true},
+    {"item": "Empty PIP_PACKAGES handled (unquoted $PIP_PACKAGES expands to nothing)", "checked": true},
+    {"item": "yq null fallback with // []", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [
+    {
+      "severity": "BLOCKER",
+      "check_id": "FC1",
+      "description": "Dockerfile does not declare ARG EXTRA_APT_PACKAGES and still hardcodes the apt package list. The CI workflow passes EXTRA_APT_PACKAGES as a build-arg but the Dockerfile silently ignores it because no ARG declaration exists. apt_packages in extra-packages.yaml is a dead config — changes to it have zero effect on the built image. This directly contradicts the plan requirement: 'declare ARG EXTRA_APT_PACKAGES in runtime stage; replace the hardcoded apt package list with ${EXTRA_APT_PACKAGES}'.",
+      "location": "images/keystone/Dockerfile:37-43",
+      "fix": "Add 'ARG EXTRA_APT_PACKAGES=\"\"' before the RUN apt-get line in stage 2 and replace the hardcoded package list with ${EXTRA_APT_PACKAGES}. Example:\n\nARG EXTRA_APT_PACKAGES=\"\"\nRUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends \\\n    ${EXTRA_APT_PACKAGES} \\\n    && rm -rf /var/lib/apt/lists/*"
+    },
+    {
+      "severity": "BLOCKER",
+      "check_id": "C1",
+      "description": "extra-packages.yaml still contains libldap-2.5-0 instead of libldap2. The plan explicitly requires 'fixing the incorrect libldap-2.5-0 to libldap2'. The Dockerfile (line 40) and docs already use libldap2, creating the exact kind of drift this feature was designed to eliminate.",
+      "location": "releases/2025.2/extra-packages.yaml:19",
+      "fix": "Change '- libldap-2.5-0' to '- libldap2'"
+    },
+    {
+      "severity": "BLOCKER",
+      "check_id": "FC1",
+      "description": "extra-packages.yaml is missing the pip_packages field. The plan requires 'add empty pip_packages list'. The docs show 'pip_packages: []' in the example YAML. The CI workflow reads .pip_packages and the Dockerfile accepts ARG PIP_PACKAGES, but the YAML doesn't declare the field.",
+      "location": "releases/2025.2/extra-packages.yaml:16-17",
+      "fix": "Add 'pip_packages: []' between pip_extras and apt_packages sections:\n\n  pip_extras:\n    - ldap\n    - memcache_pool\n    - oauth1\n  pip_packages: []\n  apt_packages:\n    ..."
+    }
+  ],
+  "issues_found": [
+    {
+      "id": "B1",
+      "severity": "blocker",
+      "check_id": "FC1",
+      "file": "images/keystone/Dockerfile",
+      "line": "37-43",
+      "description": "Missing ARG EXTRA_APT_PACKAGES — apt packages still hardcoded. The Dockerfile does not use the EXTRA_APT_PACKAGES build-arg passed by CI, meaning apt_packages in extra-packages.yaml has no effect. The task required all three ARGs and all three package lists to be injected from YAML.",
+      "fix": "Declare ARG EXTRA_APT_PACKAGES in runtime stage, replace hardcoded apt package list with ${EXTRA_APT_PACKAGES}"
+    },
+    {
+      "id": "B2",
+      "severity": "blocker",
+      "check_id": "C1",
+      "file": "releases/2025.2/extra-packages.yaml",
+      "line": "19",
+      "description": "libldap-2.5-0 not fixed to libldap2. Plan explicitly requires this fix. Dockerfile already uses libldap2 — current state has the exact drift this feature was supposed to eliminate.",
+      "fix": "Change '- libldap-2.5-0' to '- libldap2'"
+    },
+    {
+      "id": "B3",
+      "severity": "blocker",
+      "check_id": "FC1",
+      "file": "releases/2025.2/extra-packages.yaml",
+      "line": "16-17",
+      "description": "Missing pip_packages field. Plan says 'add empty pip_packages list'. Docs show pip_packages: []. YAML doesn't declare it.",
+      "fix": "Add 'pip_packages: []' between pip_extras and apt_packages"
+    },
+    {
+      "id": "B4",
+      "severity": "blocker",
+      "check_id": "DA3",
+      "file": "docs/reference/build-images-workflow.md",
+      "line": "184-185",
+      "description": "Docs claim 'EXTRA_APT_PACKAGES is consumed in the runtime stage (stage 2)' but the Dockerfile never declares or uses this ARG. Docs describe non-existent functionality.",
+      "fix": "Will be resolved by fixing B1 (implementing EXTRA_APT_PACKAGES in Dockerfile). After that, docs become accurate."
+    },
+    {
+      "id": "B5",
+      "severity": "blocker",
+      "check_id": "TE2",
+      "file": "tests/container-images/verify_release_config.sh",
+      "line": "178-194",
+      "description": "test_extra_packages_build_wiring checks for ARG PIP_EXTRAS and ARG PIP_PACKAGES in the Dockerfile but does NOT check for ARG EXTRA_APT_PACKAGES. This gap allowed the missing EXTRA_APT_PACKAGES implementation (B1) to go undetected. All three ARGs should be verified.",
+      "fix": "Add a check: if grep -q '^ARG EXTRA_APT_PACKAGES=' \"$dockerfile\"; then PASS; else FAIL"
+    },
+    {
+      "id": "M1",
+      "severity": "major",
+      "check_id": "DA3",
+      "file": "docs/reference/container-images.md",
+      "line": "123-128",
+      "description": "Stage 2 documentation does not mention EXTRA_APT_PACKAGES ARG. When B1 is fixed, the docs should describe the ARG in stage 2 similarly to how PIP_EXTRAS and PIP_PACKAGES are described for stage 1.",
+      "fix": "Add bullet point in Stage 2 section: 'Declares ARG EXTRA_APT_PACKAGES for build-time injection of runtime system packages from extra-packages.yaml'"
+    },
+    {
+      "id": "M2",
+      "severity": "major",
+      "check_id": "Q3",
+      "file": "tests/container-images/verify_release_config.sh",
+      "line": "139-162",
+      "description": "test_extra_packages_bare_extras (no-brackets check) is fully redundant with the ^[a-z][a-z0-9_]*$ pattern validation already in test_extra_packages_valid_yaml_structure. Any entry containing brackets would already fail the pattern check. The test adds no additional coverage.",
+      "fix": "Consider removing test_extra_packages_bare_extras entirely — the pattern validation subsumes it. Alternatively, keep it as an explicit semantic test but acknowledge the overlap."
+    },
+    {
+      "id": "M3",
+      "severity": "minor",
+      "check_id": "D2",
+      "file": "releases/2025.2/extra-packages.yaml",
+      "line": "5-11",
+      "description": "Header comment describes pip_extras and apt_packages but does not mention the pip_packages field. When pip_packages: [] is added (B3), the comment should also describe it.",
+      "fix": "Add a comment line: '# pip_packages: standalone pip packages to install alongside the service (initially empty).'"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a test that the Dockerfile does NOT contain hardcoded package names (grep for known packages like 'ldap' or 'libapache2' in apt-get lines) to prevent regression back to hardcoded values",
+    "The 'Resolve extra packages' CI step uses a different null-handling pattern than 'Resolve source ref' (empty string check vs explicit null comparison). Consider aligning for consistency, though both work correctly"
+  ],
+  "next_steps": [
+    "Fix B2: Change libldap-2.5-0 to libldap2 in releases/2025.2/extra-packages.yaml",
+    "Fix B3: Add pip_packages: [] to releases/2025.2/extra-packages.yaml",
+    "Fix B1: Add ARG EXTRA_APT_PACKAGES in Dockerfile stage 2, replace hardcoded apt package list with ${EXTRA_APT_PACKAGES}",
+    "Fix B5: Add ARG EXTRA_APT_PACKAGES check to test_extra_packages_build_wiring",
+    "Fix M1: Update container-images.md Stage 2 description to mention EXTRA_APT_PACKAGES ARG",
+    "Re-run verify_release_config.sh to confirm all tests pass after fixes",
+    "Request re-review"
+  ],
+  "detected_patterns": []
+}

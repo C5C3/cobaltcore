@@ -1,0 +1,55 @@
+{
+  "feature_id": "CC-0006",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer requests three changes: (1) in the Keystone Dockerfile, combine the local source path with its extras into a single `uv pip install` argument (`\"/tmp/keystone[ldap,memcache_pool,oauth1]\"`) instead of passing them separately, to avoid ambiguous PyPI resolution; (2) in the constraint overrides test, add `assert_file_not_contains` checks in Test 5 to verify that old `cryptography` and `keystoneauth1` versions are actually removed, matching the pattern already used in Test 2; (3) in `apply-constraint-overrides.sh`, add a pre-flight existence check for `$CONSTRAINTS` (mirroring the existing `$OVERRIDES` guard) so the script fails with a clear error instead of a cryptic `sed` message when run from the wrong directory.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-06T12:24:24Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 3,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**Extras should be co-located with the local source path**\n\n`/tmp/keystone` (local source) and `\"keystone[ldap]\"` etc. (PyPI references with extras) are passed as separate, independent arguments to `uv pip install`. While uv/pip correctly de-duplicates these in practice — recognising that `keystone` is already satisfied by the local path and only installing the extra dependencies — the conventional way to install a local package with extras is to reference the path directly with brackets:\n\n```suggestion\n    uv pip install --prefix /var/lib/openstack \\\n        --constraint /tmp/upper-constraints.txt \\\n        \"/tmp/keystone[ldap,memcache_pool,oauth1]\"\n```\n\nThe single-argument form leaves no room for ambiguity: uv cannot inadvertently resolve `keystone[ldap]` from PyPI if the local source is unexpectedly absent or if the version does not satisfy the constraint at resolution time. It also aligns with the standard `pip install /path/to/package[extra]` idiom documented in PEP 508.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: images/keystone/Dockerfile\nLine: 14-19\n\nComment:\n**Extras should be co-located with the local source path**\n\n`/tmp/keystone` (local source) and `\"keystone[ldap]\"` etc. (PyPI references with extras) are passed as separate, independent arguments to `uv pip install`. While uv/pip correctly de-duplicates these in practice — recognising that `keystone` is already satisfied by the local path and only installing the extra dependencies — the conventional way to install a local package with extras is to reference the path directly with brackets:\n\n```suggestion\n    uv pip install --prefix /var/lib/openstack \\\n        --constraint /tmp/upper-constraints.txt \\\n        \"/tmp/keystone[ldap,memcache_pool,oauth1]\"\n```\n\nThe single-argument form leaves no room for ambiguity: uv cannot inadvertently resolve `keystone[ldap]` from PyPI if the local source is unexpectedly absent or if the version does not satisfy the constraint at resolution time. It also aligns with the standard `pip install /path/to/package[extra]` idiom documented in PEP 508.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "images/keystone/Dockerfile",
+      "line": 19,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-06T12:24:21Z",
+      "id": null,
+      "resolution": "Fixed: consolidated the separate /tmp/keystone and individual \"keystone[ldap]\" etc. arguments into a single \"/tmp/keystone[ldap,memcache_pool,oauth1]\" argument on line 16 of the Dockerfile, exactly matching the reviewer's suggestion."
+    },
+    {
+      "body": "**Test 5 missing `assert_file_not_contains` for replaced versions**\n\nTest 2 (single replacement) asserts both that the new value is present *and* that the old value is absent. Test 5 (multiple overrides) only checks for the new values' presence and `oslo.messaging`'s removal — it does not verify that the old `cryptography===44.0.0` and `keystoneauth1===5.10.0` entries were actually deleted before the new lines were appended.\n\nWithout these negative assertions, a bug where `sed -i` silently fails to delete existing pins would not be caught by this test (the `assert_file_contains` checks would still pass as long as the new line was appended, even if the old one remained, creating a duplicate).\n\n```suggestion\n  assert_file_contains \"cryptography updated\" \"$workdir/upper-constraints.txt\" \"^cryptography===44.0.1$\"\n  assert_file_not_contains \"old cryptography removed\" \"$workdir/upper-constraints.txt\" \"cryptography===44.0.0\"\n  assert_file_not_contains \"oslo.messaging removed\" \"$workdir/upper-constraints.txt\" \"oslo.messaging\"\n  assert_file_contains \"keystoneauth1 updated\" \"$workdir/upper-constraints.txt\" \"^keystoneauth1===5.11.0$\"\n  assert_file_not_contains \"old keystoneauth1 removed\" \"$workdir/upper-constraints.txt\" \"keystoneauth1===5.10.0\"\n  assert_file_contains \"oslo.config untouched\" \"$workdir/upper-constraints.txt\" \"^oslo.config===9.7.0$\"\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: tests/scripts/test_apply_constraint_overrides.sh\nLine: 127-131\n\nComment:\n**Test 5 missing `assert_file_not_contains` for replaced versions**\n\nTest 2 (single replacement) asserts both that the new value is present *and* that the old value is absent. Test 5 (multiple overrides) only checks for the new values' presence and `oslo.messaging`'s removal — it does not verify that the old `cryptography===44.0.0` and `keystoneauth1===5.10.0` entries were actually deleted before the new lines were appended.\n\nWithout these negative assertions, a bug where `sed -i` silently fails to delete existing pins would not be caught by this test (the `assert_file_contains` checks would still pass as long as the new line was appended, even if the old one remained, creating a duplicate).\n\n```suggestion\n  assert_file_contains \"cryptography updated\" \"$workdir/upper-constraints.txt\" \"^cryptography===44.0.1$\"\n  assert_file_not_contains \"old cryptography removed\" \"$workdir/upper-constraints.txt\" \"cryptography===44.0.0\"\n  assert_file_not_contains \"oslo.messaging removed\" \"$workdir/upper-constraints.txt\" \"oslo.messaging\"\n  assert_file_contains \"keystoneauth1 updated\" \"$workdir/upper-constraints.txt\" \"^keystoneauth1===5.11.0$\"\n  assert_file_not_contains \"old keystoneauth1 removed\" \"$workdir/upper-constraints.txt\" \"keystoneauth1===5.10.0\"\n  assert_file_contains \"oslo.config untouched\" \"$workdir/upper-constraints.txt\" \"^oslo.config===9.7.0$\"\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "tests/scripts/test_apply_constraint_overrides.sh",
+      "line": 131,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-06T12:24:22Z",
+      "id": null,
+      "resolution": "Fixed: added assert_file_not_contains checks for \"cryptography===44.0.0\" (line 129) and \"keystoneauth1===5.10.0\" (line 132) in Test 5, interleaved with the existing positive assertions, exactly matching the reviewer's suggested ordering."
+    },
+    {
+      "body": "**Missing pre-flight validation for `upper-constraints.txt`**\n\n`CONSTRAINTS` is a bare filename with no path. If the script is invoked from any directory other than the repo root, `sed -i` will fail with a cryptic error like `sed: can't read upper-constraints.txt: No such file or directory` rather than a message pointing the user to the root cause.\n\nAdding an explicit existence check immediately after the `OVERRIDES` variable gives a much clearer failure:\n\n```bash\nif [ ! -f \"$CONSTRAINTS\" ]; then\n  echo \"Error: '$CONSTRAINTS' not found. Run this script from the repository root.\" >&2\n  exit 1\nfi\n```\n\nA similar guard already exists for `$OVERRIDES` (line 19). Applying the same pattern to `$CONSTRAINTS` makes the script's preconditions symmetric and easier to diagnose.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: scripts/apply-constraint-overrides.sh\nLine: 13-17\n\nComment:\n**Missing pre-flight validation for `upper-constraints.txt`**\n\n`CONSTRAINTS` is a bare filename with no path. If the script is invoked from any directory other than the repo root, `sed -i` will fail with a cryptic error like `sed: can't read upper-constraints.txt: No such file or directory` rather than a message pointing the user to the root cause.\n\nAdding an explicit existence check immediately after the `OVERRIDES` variable gives a much clearer failure:\n\n```bash\nif [ ! -f \"$CONSTRAINTS\" ]; then\n  echo \"Error: '$CONSTRAINTS' not found. Run this script from the repository root.\" >&2\n  exit 1\nfi\n```\n\nA similar guard already exists for `$OVERRIDES` (line 19). Applying the same pattern to `$CONSTRAINTS` makes the script's preconditions symmetric and easier to diagnose.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "scripts/apply-constraint-overrides.sh",
+      "line": 17,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-06T12:24:23Z",
+      "id": null,
+      "resolution": "Fixed: added a pre-flight existence check for $CONSTRAINTS (lines 19-22) immediately after the OVERRIDES variable assignment, following the same pattern as the existing $OVERRIDES guard, with a clear error message directing the user to run from the repository root."
+    }
+  ],
+  "resolution_summary": "All three review comments were addressed exactly as suggested. The Dockerfile was updated to co-locate extras with the local source path in a single argument, the constraint override script gained a pre-flight validation check for upper-constraints.txt, and Test 5 was strengthened with assert_file_not_contains checks for replaced versions. No changes were made to files or locations beyond those directly mentioned in the review feedback.",
+  "github_review_id": 3903430177
+}

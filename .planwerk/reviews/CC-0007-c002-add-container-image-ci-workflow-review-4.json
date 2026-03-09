@@ -1,0 +1,49 @@
+{
+  "feature_id": "CC-0007",
+  "title": "C002: Add container image CI workflow",
+  "date": "2026-03-06",
+  "summary": "Review #3 feedback from greptile-apps[bot] addressed: `fail-fast: false` added to both `build-service-images` and `smoke-test` matrix strategy blocks. Two review pattern files persisted capturing lessons learned (immutable tags, fail-fast). YAML validates, all 67 verification tests pass. Change is minimal (2 lines in workflow) and correctly scoped.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Verification tests exist and pass (67/67)", "checked": true},
+    {"item": "YAML validates with yq", "checked": true},
+    {"item": "Edge cases covered (tag derivation, patch counting, branch sanitization)", "checked": true},
+    {"item": "Security tests present (expression injection defense, fork PR rejection)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing ci.yaml workflow conventions (SPDX, quoted on, permissions, concurrency)", "checked": true},
+    {"item": "Change is minimal — only fail-fast: false added, no scope creep", "checked": true},
+    {"item": "Review pattern files well-structured with detection hints and examples", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No expression injection risks (run blocks use env vars)", "checked": true},
+    {"item": "GITHUB_TOKEN permissions scoped per-job (packages: write only where needed)", "checked": true},
+    {"item": "Fork PRs rejected with clear error (read-only GITHUB_TOKEN cannot push)", "checked": true},
+    {"item": "Actions pinned to full 40-char commit SHAs", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "fail-fast: false correctly placed on both matrix jobs", "checked": true},
+    {"item": "Review patterns correctly capture lessons for future reviews", "checked": true},
+    {"item": "External review JSON accurately documents addressed feedback", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unnecessary additions beyond review feedback", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early (fork PR rejection, timeout-minutes on all jobs)", "checked": true},
+    {"item": "Matrix failures no longer cancel siblings (fail-fast: false)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs validated (env vars for matrix values, hashFiles guard for patches)", "checked": true},
+    {"item": "Idempotent steps (apply-constraint-overrides.sh exits 0 when no overrides)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Minor: Consider adding a test assertion in verify_build_images_workflow.sh to verify fail-fast: false on matrix jobs (e.g., `yq '.jobs[\"build-service-images\"][\"strategy\"][\"fail-fast\"]' == 'false'`). Currently the property is set but not verified by the test suite. Non-blocking since the review pattern documents the requirement."
+  ],
+  "next_steps": [],
+  "detected_patterns": []
+}

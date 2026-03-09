@@ -1,0 +1,48 @@
+{
+  "feature_id": "CC-0029",
+  "title": "Add CycloneDX SBOM and Sigstore attestation to CI",
+  "date": "2026-03-08",
+  "summary": "Review #2 feedback from greptile-apps[bot] was addressed: else/elif branches added to test_sbom_format_cyclonedx_json and test_sbom_steps_pr_skip_guard to prevent silent failure modes when yq queries return empty results. New review pattern 'require-explicit-failure-branch-in-test-passfail-logic' correctly captures the lesson. However, the identical pattern in test_sbom_attestation_push_to_registry (line 717-720) was missed — it still has a PASS-only if-block with no else/elif for FAIL when base_push_values is empty.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "All 105 tests pass", "checked": true},
+    {"item": "External review feedback (test_sbom_format_cyclonedx_json elif) addressed", "checked": true},
+    {"item": "External review feedback (test_sbom_steps_pr_skip_guard else branches) addressed", "checked": true},
+    {"item": "Same fix applied consistently to all identical patterns in CC-0029 test functions", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns", "checked": true},
+    {"item": "Changes are minimal and targeted", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No secrets or credentials exposed", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code introduced", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early with explicit FAIL branches", "checked": false}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs validated", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "id": "PC3",
+      "severity": "major",
+      "description": "test_sbom_attestation_push_to_registry has same silent failure mode that was just fixed in test_sbom_format_cyclonedx_json and test_sbom_steps_pr_skip_guard. The if-block at line 717 increments PASS but has no else/elif to increment FAIL when base_push_values is empty. This directly violates the new review pattern 'require-explicit-failure-branch-in-test-passfail-logic' created in this same diff.",
+      "location": "tests/container-images/verify_build_images_workflow.sh:717-720",
+      "fix": "Add an else branch: `else\\n    echo \"  FAIL: build-base-images attestation push-to-registry not found or not true\"\\n    FAIL=$((FAIL + 1))` after the PASS block at line 719, replacing the bare `fi` at line 720."
+    }
+  ],
+  "suggested_improvements": [],
+  "next_steps": [
+    "Add else branch to test_sbom_attestation_push_to_registry (line 717-720) matching the pattern applied to test_sbom_steps_pr_skip_guard"
+  ],
+  "detected_patterns": []
+}

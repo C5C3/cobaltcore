@@ -1,0 +1,92 @@
+{
+  "feature_id": "CC-0028",
+  "title": "Integrate container image test scripts into CI",
+  "date": "2026-03-07",
+  "summary": "Integrates 8 existing container image test scripts into CI by creating a new verify-container-images.yaml workflow for 5 static tests, adding verify-base-images and verify-service-images jobs to build-images.yaml, replacing the smoke-test job with verify_keystone.sh, adding assert_not_empty to assertions.sh, fixing the stale uv version in verify_venv_builder.sh (0.6.3 → 0.10.8), refactoring verify_keystone.sh to use assert_not_empty, updating verify_build_images_workflow.sh for the new 4-job structure, and documenting the full verification coverage in build-images-workflow.md.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "All 5 static test scripts pass (133 total assertions, 0 failures)", "checked": true},
+    {"item": "verify_build_images_workflow.sh updated for 4-job structure (83 assertions)", "checked": true},
+    {"item": "verify_venv_builder.sh expects uv 0.10.8 matching Dockerfile", "checked": true},
+    {"item": "verify_keystone.sh uses assert_not_empty instead of manual pass/fail", "checked": true},
+    {"item": "New test_verify_base_images_job function covers needs, timeout, runner, permissions", "checked": true},
+    {"item": "Edge cases: test scripts handle yq failures with || echo null fallbacks", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing shell test script PASS/FAIL counter pattern", "checked": true},
+    {"item": "assert_not_empty follows assert_eq/assert_contains function signature convention", "checked": true},
+    {"item": "verify-container-images.yaml follows SPDX header and structure convention", "checked": true},
+    {"item": "Consistent naming: smoke-test → verify-service-images rename applied throughout", "checked": true},
+    {"item": "No dead code or commented-out code", "checked": true},
+    {"item": "Functions do one thing, within size limits", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No direct ${{ matrix.* }} interpolation in run: blocks (expression injection defense)", "checked": true},
+    {"item": "Verification jobs use packages: read not packages: write (least privilege)", "checked": true},
+    {"item": "All actions SHA-pinned with version comments", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "GHCR login uses GITHUB_TOKEN (not PAT)", "checked": true},
+    {"item": "Top-level permissions restricted to contents: read", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Static tests separated from Docker-based tests in different workflows", "checked": true},
+    {"item": "Dependency chain correct: build-base → verify-base → build-service → verify-service", "checked": true},
+    {"item": "PR inline step vs push job split maintained for service verification", "checked": true},
+    {"item": "Solution is minimal — reuses existing scripts without modification (except planned fixes)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code — assert_not_empty reuses PASS/FAIL counter pattern", "checked": true},
+    {"item": "No unnecessary abstractions added", "checked": true},
+    {"item": "No future-proofing beyond current requirements", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "verify-base-images blocks build-service-images (catches base image regressions early)", "checked": true},
+    {"item": "Test scripts exit 1 on any FAIL count > 0", "checked": true},
+    {"item": "yq null/empty validation in source-ref and tag derivation steps", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "set -euo pipefail in all test scripts", "checked": true},
+    {"item": "Exit code guard pattern (|| exit_code=$?) used consistently in Docker-based tests", "checked": true},
+    {"item": "yq commands use 2>/dev/null with || fallback", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "id": "D2-1",
+      "severity": "minor",
+      "check_id": "Q4",
+      "file": "tests/container-images/verify_build_images_workflow.sh",
+      "lines": "65,393,436,525",
+      "description": "Local variables still use smoke_* naming (smoke_perms, smoke_timeout, smoke_runner, smoke_fail_fast) despite now referencing verify-service-images job. Naming does not match the entity they reference.",
+      "fix": "Rename local variables to verify_service_perms, verify_service_timeout, verify_service_runner, verify_service_fail_fast. Cosmetic only — does not affect functionality."
+    },
+    {
+      "id": "D2-2",
+      "severity": "minor",
+      "check_id": "D2",
+      "file": "docs/reference/build-images-workflow.md",
+      "lines": "122-123",
+      "description": "The build-base-images steps table references docker/login-action as v3 and docker/setup-buildx-action as v3, but the workflow file now uses v4 SHAs for docker/login-action. This predates this PR's changes (the table is from CC-0007) and is technically out of scope, but the new verify-base-images and verify-service-images documentation correctly references v4.",
+      "fix": "Out of scope for CC-0028. Could be addressed in a separate documentation sync PR."
+    },
+    {
+      "id": "D2-3",
+      "severity": "minor",
+      "check_id": "PF4",
+      "file": ".github/workflows/verify-container-images.yaml",
+      "lines": "31-33",
+      "description": "yq binary download does not verify SHA256 checksum. While the URL is pinned to a specific version (v4.45.1) and uses HTTPS, checksum verification would add defense-in-depth against supply chain compromise.",
+      "fix": "Add a checksum verification step after download: echo '<expected_sha256>  /usr/local/bin/yq' | sha256sum -c. Low priority — common pattern in GHA workflows to skip this."
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding SHA256 checksum verification for the yq binary download in verify-container-images.yaml (defense-in-depth)",
+    "Rename smoke_* local variables in verify_build_images_workflow.sh to verify_service_* for naming consistency"
+  ],
+  "next_steps": [
+    "Merge PR after approval — all blocking and major checks pass",
+    "Monitor first CI run on main to confirm all test scripts execute successfully in the GitHub Actions environment"
+  ],
+  "detected_patterns": []
+}
