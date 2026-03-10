@@ -1,0 +1,45 @@
+{
+  "feature_id": "CC-0032",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "Looking at the review summary I already provided, it fully captures the reviewer's two requested changes. Let me now implement the fixes.\n\nLet me first read the relevant files.\n\n\n\n\nThe user asked me to **summarize** the code review, not implement fixes. My summary is already complete and accurate. Let me re-state it clearly:\n\n**Review Summary:** The reviewer raises two issues: (1) The Grype scan steps pass both `sbom` and `image` inputs simultaneously (one as empty string), relying on undocumented internal behavior of `anchore/scan-action` to ignore empty strings — the reviewer wants only the relevant input provided, not both with one empty. (2) The `test_grype_sbom_input_wiring` test only checks that the SBOM filename exists in the value but doesn't verify the push-only conditional guard (`event_name != 'pull_request'`), so the test would still pass if the conditional were accidentally removed — the reviewer wants assertions added to validate the conditional expression itself for all three images.\n\n<promise>IMPLEMENTATION_COMPLETE</promise>",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-09T22:08:34Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 3,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**Both `sbom` and `image` inputs always provided simultaneously**\n\nAll three Grype scan steps pass both `sbom:` and `image:` to `anchore/scan-action`, with one always being an empty string (`''`):\n\n```yaml\nsbom: ${{ github.event_name != 'pull_request' && 'sbom-python-base.cyclonedx.json' || '' }}\nimage: ${{ github.event_name == 'pull_request' && format('ghcr.io/{0}/python-base@{1}', ...) || '' }}\n```\n\nWhen `github.event_name == 'pull_request'`, the action receives `sbom: \"\"` **and** `image: \"ghcr.io/...\"`. GitHub Actions passes the empty string as an actual input value — the action sees it, it is not the same as the input being absent.\n\nWhether this works depends on `anchore/scan-action@v7` treating `\"\"` as \"not provided\" (a truthy check in JavaScript, e.g. `if (inputs.sbom)`). This is likely the case, but it's an **implicit contract with the action's internal implementation** rather than the documented interface, which shows `sbom` and `image` as mutually exclusive inputs.\n\nIf a future version of `anchore/scan-action` adds a mutual-exclusion guard (`if (sbom && image) throw`), or checks `sbom !== ''` instead of just `!!sbom`, the workflow would silently misbehave. The explicit pattern recommended by the action is to use only one input, not both with one being empty.\n\nThe same issue exists identically on the `venv-builder` and `service` scan steps.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: .github/workflows/build-images.yaml\nLine: 118-122\n\nComment:\n**Both `sbom` and `image` inputs always provided simultaneously**\n\nAll three Grype scan steps pass both `sbom:` and `image:` to `anchore/scan-action`, with one always being an empty string (`''`):\n\n```yaml\nsbom: ${{ github.event_name != 'pull_request' && 'sbom-python-base.cyclonedx.json' || '' }}\nimage: ${{ github.event_name == 'pull_request' && format('ghcr.io/{0}/python-base@{1}', ...) || '' }}\n```\n\nWhen `github.event_name == 'pull_request'`, the action receives `sbom: \"\"` **and** `image: \"ghcr.io/...\"`. GitHub Actions passes the empty string as an actual input value — the action sees it, it is not the same as the input being absent.\n\nWhether this works depends on `anchore/scan-action@v7` treating `\"\"` as \"not provided\" (a truthy check in JavaScript, e.g. `if (inputs.sbom)`). This is likely the case, but it's an **implicit contract with the action's internal implementation** rather than the documented interface, which shows `sbom` and `image` as mutually exclusive inputs.\n\nIf a future version of `anchore/scan-action` adds a mutual-exclusion guard (`if (sbom && image) throw`), or checks `sbom !== ''` instead of just `!!sbom`, the workflow would silently misbehave. The explicit pattern recommended by the action is to use only one input, not both with one being empty.\n\nThe same issue exists identically on the `venv-builder` and `service` scan steps.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": ".github/workflows/build-images.yaml",
+      "line": 122,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-09T22:08:32Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "**`test_grype_sbom_input_wiring` does not validate the push-only conditional guard**\n\nThe test checks that each SBOM expression contains the expected filename:\n\n```bash\nassert_contains \"python-base Grype scan references sbom-python-base.cyclonedx.json\" \"$python_sbom\" \"sbom-python-base.cyclonedx.json\"\n```\n\nThis passes as long as `sbom-python-base.cyclonedx.json` appears anywhere in the extracted YAML value. It would still pass if the push-conditional was accidentally dropped — e.g., if the `sbom` input were changed from:\n\n```yaml\nsbom: ${{ github.event_name != 'pull_request' && 'sbom-python-base.cyclonedx.json' || '' }}\n```\n\nto the unconditional:\n\n```yaml\nsbom: sbom-python-base.cyclonedx.json\n```\n\nIn that scenario this test passes, but every PR build would fail at runtime because `sbom-python-base.cyclonedx.json` does not exist on PRs (the SBOM generation step is guarded with `if: github.event_name != 'pull_request'`).\n\nConsider adding an assertion for the conditional expression itself, for example:\n\n```bash\nassert_contains \"python-base Grype sbom input has push-only conditional\" \"$python_sbom\" \"event_name != 'pull_request'\"\n```\n\nThe same gap exists for `venv_sbom` and `service_sbom`.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: tests/container-images/verify_build_images_workflow.sh\nLine: 1247-1263\n\nComment:\n**`test_grype_sbom_input_wiring` does not validate the push-only conditional guard**\n\nThe test checks that each SBOM expression contains the expected filename:\n\n```bash\nassert_contains \"python-base Grype scan references sbom-python-base.cyclonedx.json\" \"$python_sbom\" \"sbom-python-base.cyclonedx.json\"\n```\n\nThis passes as long as `sbom-python-base.cyclonedx.json` appears anywhere in the extracted YAML value. It would still pass if the push-conditional was accidentally dropped — e.g., if the `sbom` input were changed from:\n\n```yaml\nsbom: ${{ github.event_name != 'pull_request' && 'sbom-python-base.cyclonedx.json' || '' }}\n```\n\nto the unconditional:\n\n```yaml\nsbom: sbom-python-base.cyclonedx.json\n```\n\nIn that scenario this test passes, but every PR build would fail at runtime because `sbom-python-base.cyclonedx.json` does not exist on PRs (the SBOM generation step is guarded with `if: github.event_name != 'pull_request'`).\n\nConsider adding an assertion for the conditional expression itself, for example:\n\n```bash\nassert_contains \"python-base Grype sbom input has push-only conditional\" \"$python_sbom\" \"event_name != 'pull_request'\"\n```\n\nThe same gap exists for `venv_sbom` and `service_sbom`.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "tests/container-images/verify_build_images_workflow.sh",
+      "line": 1263,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-09T22:08:33Z",
+      "id": null,
+      "resolution": ""
+    }
+  ],
+  "github_review_id": 3918505453
+}

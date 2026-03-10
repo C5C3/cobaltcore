@@ -1,0 +1,46 @@
+{
+  "feature_id": "CC-0032",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "**Review Summary:**\n\n1. The DECISION comment explaining why `anchore/scan-action` and `severity-cutoff` are used instead of the spec's `anchore/grype-action` and `fail-on` only appears on the `python-base` scan step — add it (or a cross-reference) to the `venv-builder` and service image scan steps too, or move it to a single workflow-level comment.\n\n2. The SHA-pinning tests for `anchore/scan-action` and `github/codeql-action/upload-sarif` only validate the 40-char hex SHA but don't check for the inline version comments (`# v7` and `# v3`), even though the documentation claims they do — add version comment assertions to match the docs.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-09T21:34:20Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "The DECISION comment explaining the spec deviation (`anchore/grype-action` → `anchore/scan-action`, `fail-on` → `severity-cutoff`) is present only on the `python-base` scan step. The `venv-builder` scan step (~line 183) and the service image scan step (~line 418) do not include this explanation, making the rationale for the spec deviation inconsistent across all three scan step insertions.\n\nEither add the DECISION comment (or at minimum a reference like `# See DECISION comment on Scan python-base step above`) to the other two scan steps, or move it to a single workflow-level block comment near the top of the `build-base-images` job for consistency.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: .github/workflows/build-images.yaml\nLine: 112-114\n\nComment:\nThe DECISION comment explaining the spec deviation (`anchore/grype-action` → `anchore/scan-action`, `fail-on` → `severity-cutoff`) is present only on the `python-base` scan step. The `venv-builder` scan step (~line 183) and the service image scan step (~line 418) do not include this explanation, making the rationale for the spec deviation inconsistent across all three scan step insertions.\n\nEither add the DECISION comment (or at minimum a reference like `# See DECISION comment on Scan python-base step above`) to the other two scan steps, or move it to a single workflow-level block comment near the top of the `build-base-images` job for consistency.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": ".github/workflows/build-images.yaml",
+      "line": 114,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-09T21:34:18Z",
+      "id": null,
+      "resolution": "Added '# See DECISION comment on Scan python-base step above' reference comment to both the venv-builder scan step (build-images.yaml:184) and the service image scan step (build-images.yaml:420), following the reviewer's suggested minimal-reference approach for consistency across all three scan step insertions."
+    },
+    {
+      "body": "Both `test_grype_scan_action_sha_pinned` and `test_sarif_upload_action_sha_pinned` validate only the 40-character hex SHA pattern (`[0-9a-f]{40}`), but do not check for the inline version comments (`# v7` and `# v3`, respectively).\n\nThe documentation table in `docs/reference/build-images-workflow.md` (lines 681 and 690) explicitly states that these tests validate the version comments:\n- `test_grype_scan_action_sha_pinned`: \"`anchore/scan-action` is SHA-pinned with `# v7` version comment\"\n- `test_sarif_upload_action_sha_pinned`: \"`github/codeql-action/upload-sarif` is SHA-pinned with `# v3` version comment\"\n\nThis is inaccurate. Add version comment validation to each test, for example:\n\n```bash\n# Inside test_grype_scan_action_sha_pinned, after the SHA validation loop:\nassert_file_contains \"anchore/scan-action pin has # v7 version comment\" \"$WORKFLOW\" \"anchore/scan-action@[0-9a-f]\\\\{40\\\\}[[:space:]]*# v7\"\n```\n\nApply the same pattern to `test_sarif_upload_action_sha_pinned` for the `# v3` comment.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: tests/container-images/verify_build_images_workflow.sh\nLine: 1175-1199\n\nComment:\nBoth `test_grype_scan_action_sha_pinned` and `test_sarif_upload_action_sha_pinned` validate only the 40-character hex SHA pattern (`[0-9a-f]{40}`), but do not check for the inline version comments (`# v7` and `# v3`, respectively).\n\nThe documentation table in `docs/reference/build-images-workflow.md` (lines 681 and 690) explicitly states that these tests validate the version comments:\n- `test_grype_scan_action_sha_pinned`: \"`anchore/scan-action` is SHA-pinned with `# v7` version comment\"\n- `test_sarif_upload_action_sha_pinned`: \"`github/codeql-action/upload-sarif` is SHA-pinned with `# v3` version comment\"\n\nThis is inaccurate. Add version comment validation to each test, for example:\n\n```bash\n# Inside test_grype_scan_action_sha_pinned, after the SHA validation loop:\nassert_file_contains \"anchore/scan-action pin has # v7 version comment\" \"$WORKFLOW\" \"anchore/scan-action@[0-9a-f]\\\\{40\\\\}[[:space:]]*# v7\"\n```\n\nApply the same pattern to `test_sarif_upload_action_sha_pinned` for the `# v3` comment.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "tests/container-images/verify_build_images_workflow.sh",
+      "line": 1199,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-09T21:34:19Z",
+      "id": null,
+      "resolution": "Added assert_file_contains validation for inline version comments to both tests: test_grype_scan_action_sha_pinned now validates '# v7' after the SHA pattern (verify_build_images_workflow.sh:1200-1201), and test_sarif_upload_action_sha_pinned now validates '# v3' after the SHA pattern (verify_build_images_workflow.sh:1400-1401), matching the exact pattern suggested by the reviewer."
+    }
+  ],
+  "resolution_summary": "Both review comments were addressed. For comment [0], a reference comment ('# See DECISION comment on Scan python-base step above') was added to the venv-builder scan step (~line 184) and the service image scan step (~line 420) in build-images.yaml, making the spec deviation rationale traceable from all three scan step locations. For comment [1], version comment validation was added to both test_grype_scan_action_sha_pinned (line 1200-1201: assert for '# v7') and test_sarif_upload_action_sha_pinned (line 1400-1401: assert for '# v3') in verify_build_images_workflow.sh, aligning the tests with what the documentation table already claimed they validated. No additional files beyond those mentioned in the review were modified.",
+  "github_review_id": 3918353843
+}

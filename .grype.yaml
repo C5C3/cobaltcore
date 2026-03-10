@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# CC-0032: Grype vulnerability scanner configuration
+# Purpose: Suppress known-accepted CVEs that have been reviewed and deemed
+# non-exploitable or acceptable in this project's context.
+#
+# To suppress a CVE, replace `ignore: []` below with a list:
+#
+#   ignore:
+#     # <justification why this CVE is acceptable>
+#     - vulnerability: CVE-YYYY-NNNNN
+#       fix-state: "not-fixed"        # Optional: "fixed", "not-fixed", "wont-fix", or "unknown"
+#
+# Example:
+#   ignore:
+#     # Not exploitable in our container context — no network exposure
+#     - vulnerability: CVE-2024-00000
+#       fix-state: "not-fixed"
+
+ignore: []

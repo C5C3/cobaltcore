@@ -1,16 +1,17 @@
 ---
 title: Build Images Workflow
 quadrant: infrastructure
-feature: CC-0007, CC-0029, CC-0030, CC-0031
+feature: CC-0007, CC-0029, CC-0030, CC-0031, CC-0032
 ---
 
 # Build Images Workflow
 
 Reference documentation for the GitHub Actions build-images workflow (CC-0007, CC-0029,
-CC-0030, CC-0031) and the verify-container-images workflow (CC-0028). The build-images workflow
-builds, tags, and publishes container images for OpenStack services to GHCR (GitHub
-Container Registry). Each pushed image receives OCI Image Spec annotations (CC-0031),
-a CycloneDX SBOM, and a Sigstore-signed attestation (CC-0029). The
+CC-0030, CC-0031, CC-0032) and the verify-container-images workflow (CC-0028). The
+build-images workflow builds, tags, and publishes container images for OpenStack services
+to GHCR (GitHub Container Registry). Each pushed image receives OCI Image Spec
+annotations (CC-0031), a CycloneDX SBOM, a Sigstore-signed attestation (CC-0029), and a
+Grype vulnerability scan with SARIF upload to the GitHub Security tab (CC-0032). The
 verify-container-images workflow runs static verification tests against container
 infrastructure files (Dockerfiles, workflows, release configs) without requiring Docker.
 
@@ -56,8 +57,9 @@ permissions:
 permissions:
   contents: read
   packages: write
-  id-token: write       # CC-0029, CC-0030: Sigstore OIDC signing for SBOM attestation and cosign signing
-  attestations: write   # CC-0029: GitHub Attestations API
+  id-token: write         # CC-0029, CC-0030: Sigstore OIDC signing for SBOM attestation and cosign signing
+  attestations: write     # CC-0029: GitHub Attestations API
+  security-events: write  # CC-0032: GitHub Security tab SARIF upload
 
 # Verification jobs (verify-base-images, verify-service-images)
 permissions:
@@ -70,9 +72,11 @@ permissions:
 `id-token: write` enables Sigstore keyless OIDC signing — the GitHub Actions runner
 requests a short-lived OIDC token bound to the workflow identity, which Sigstore uses to
 sign the attestation without managing keys (CC-0029). `attestations: write` grants
-access to the GitHub Attestations API for storing signed attestations. The verification
-jobs (`verify-base-images`, `verify-service-images`) do **not** receive `id-token` or
-`attestations` permissions — they only need `contents: read` (for checkout and test
+access to the GitHub Attestations API for storing signed attestations.
+`security-events: write` allows uploading Grype vulnerability scan results in SARIF
+format to the GitHub Security tab (CC-0032). The verification jobs (`verify-base-images`,
+`verify-service-images`) do **not** receive `id-token`, `attestations`, or
+`security-events` permissions — they only need `contents: read` (for checkout and test
 scripts) and `packages: read` (for pulling images from GHCR), following the principle of
 least privilege (CC-0028).
 
@@ -135,13 +139,17 @@ availability.
 | 7 | Generate metadata for python-base | `docker/metadata-action@v5` | Produces OCI labels (title, description, licenses, vendor) for python-base (CC-0031) |
 | 8 | Build python-base | `docker/build-push-action@v7` | Context: `images/python-base`, multi-arch, push: true, tags: `:latest` and `:${{ github.sha }}`, labels from step 7 |
 | 9 | Generate SBOM for python-base | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed python-base image by digest. Output: `sbom-python-base.cyclonedx.json` (CC-0029) |
-| 10 | Attest SBOM for python-base | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
-| 11 | Sign python-base | Shell | Skipped on PRs. Signs python-base by digest with cosign keyless OIDC (`cosign sign --yes`) (CC-0030) |
-| 12 | Generate metadata for venv-builder | `docker/metadata-action@v5` | Produces OCI labels (title, description, licenses, vendor) for venv-builder (CC-0031) |
-| 13 | Build venv-builder | `docker/build-push-action@v7` | Context: `images/venv-builder`, multi-arch, push: true, tags: `:latest` and `:${{ github.sha }}`, labels from step 12, `--build-context python-base=docker-image://...` |
-| 14 | Generate SBOM for venv-builder | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed venv-builder image by digest. Output: `sbom-venv-builder.cyclonedx.json` (CC-0029) |
-| 15 | Attest SBOM for venv-builder | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
-| 16 | Sign venv-builder | Shell | Skipped on PRs. Signs venv-builder by digest with cosign keyless OIDC (`cosign sign --yes`) (CC-0030) |
+| 10 | Scan python-base for vulnerabilities | `anchore/scan-action@v7` | Scans via SBOM on push, via image on PR. Reports high/critical CVEs without failing the build (`fail-build: false`). Output: SARIF (CC-0032) |
+| 11 | Upload SARIF for python-base | `github/codeql-action/upload-sarif@v3` | Runs always when SARIF output exists (`if: always() && outputs.sarif != ''`). Uploads Grype results to GitHub Security tab with category `grype-python-base` (CC-0032) |
+| 12 | Attest SBOM for python-base | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
+| 13 | Sign python-base | Shell | Skipped on PRs. Signs python-base by digest with cosign keyless OIDC (`cosign sign --yes`) (CC-0030) |
+| 14 | Generate metadata for venv-builder | `docker/metadata-action@v5` | Produces OCI labels (title, description, licenses, vendor) for venv-builder (CC-0031) |
+| 15 | Build venv-builder | `docker/build-push-action@v7` | Context: `images/venv-builder`, multi-arch, push: true, tags: `:latest` and `:${{ github.sha }}`, labels from step 14, `--build-context python-base=docker-image://...` |
+| 16 | Generate SBOM for venv-builder | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed venv-builder image by digest. Output: `sbom-venv-builder.cyclonedx.json` (CC-0029) |
+| 17 | Scan venv-builder for vulnerabilities | `anchore/scan-action@v7` | Scans via SBOM on push, via image on PR. Reports high/critical CVEs without failing the build (`fail-build: false`). Output: SARIF (CC-0032) |
+| 18 | Upload SARIF for venv-builder | `github/codeql-action/upload-sarif@v3` | Runs always when SARIF output exists (`if: always() && outputs.sarif != ''`). Uploads Grype results to GitHub Security tab with category `grype-venv-builder` (CC-0032) |
+| 19 | Attest SBOM for venv-builder | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
+| 20 | Sign venv-builder | Shell | Skipped on PRs. Signs venv-builder by digest with cosign keyless OIDC (`cosign sign --yes`) (CC-0030) |
 
 The `venv-builder` build uses a `docker-image://` build context pointing at the
 just-pushed `python-base` image (referenced by digest), ensuring its `FROM python-base`
@@ -226,9 +234,11 @@ Depends on `build-base-images` for image references (REQ-003) and on
 | 11 | Generate metadata for service image | `docker/metadata-action@v5` | Produces OCI labels and overrides version to the upstream release ref via `type=raw` strategy (CC-0031) |
 | 12 | Build service image | `docker/build-push-action@v7` | Builds with four named build contexts and three build args, conditional platform/push/load, labels from step 11 (REQ-006) |
 | 13 | Generate SBOM for service image | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed service image by digest. Output: `sbom-${{ matrix.service }}.cyclonedx.json` (CC-0029) |
-| 14 | Attest SBOM for service image | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
-| 15 | Sign service image | Shell | Skipped on PRs. Signs service image by digest with cosign keyless OIDC (`cosign sign --yes`) (CC-0030) |
-| 16 | Verify service image (PR) | Shell (conditional) | On PRs only: runs `verify_${{ matrix.service }}.sh` with the locally loaded image ref (CC-0028) |
+| 14 | Scan service image for vulnerabilities | `anchore/scan-action@v7` | Scans via SBOM on push, via composite tag on PR. Reports high/critical CVEs without failing the build (`fail-build: false`). Output: SARIF (CC-0032) |
+| 15 | Upload SARIF for service image | `github/codeql-action/upload-sarif@v3` | Runs always when SARIF output exists (`if: always() && outputs.sarif != ''`). Uploads Grype results to GitHub Security tab with category `grype-${{ matrix.service }}` (CC-0032) |
+| 16 | Attest SBOM for service image | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
+| 17 | Sign service image | Shell | Skipped on PRs. Signs service image by digest with cosign keyless OIDC (`cosign sign --yes`) (CC-0030) |
+| 18 | Verify service image (PR) | Shell (conditional) | On PRs only: runs `verify_${{ matrix.service }}.sh` with the locally loaded image ref (CC-0028) |
 
 **Build Contexts:**
 
@@ -337,6 +347,7 @@ The workflow behaves differently depending on the trigger event (REQ-006):
 | Service image push | No (`push: false`, `load: true`) | Yes (`push: true`) |
 | Service image tags | Computed but not published | Published to GHCR |
 | SBOM generation | Skipped (CC-0029) | CycloneDX JSON for every image |
+| Vulnerability scanning | Image-based scan via `image:` input (CC-0032) | SBOM-based scan via `sbom:` input (CC-0032) |
 | SBOM attestation | Skipped (CC-0029) | Sigstore-signed, pushed to GHCR |
 | Cosign signing | Skipped (CC-0030) | Keyless signature for every image |
 | OIDC token request | None | Requested for Sigstore signing (CC-0029, CC-0030) |
@@ -385,7 +396,9 @@ uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2  # v4
 uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051  # v5 (CC-0031)
 uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294  # v7
 uses: anchore/sbom-action@17ae1740179002c89186b61233e0f892c3118b11  # v0 (CC-0029)
+uses: anchore/scan-action@7037fa011853d5a11690026fb85feee79f4c946c  # v7 (CC-0032)
 uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26  # v4 (CC-0029)
+uses: github/codeql-action/upload-sarif@820e3160e279568db735cee8ed8f8e77a6da7818  # v3 (CC-0032)
 uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad  # v4 (CC-0030)
 ```
 
@@ -561,6 +574,131 @@ The `verify_build_images_workflow.sh` script validates cosign signing configurat
 | `test_cosign_sign_steps_reference_digest` | Sign steps reference the correct digest output |
 | `test_cosign_sign_uses_yes_flag` | All sign steps use the `--yes` flag |
 | `test_cosign_id_token_permission_comment` | `id-token: write` comment references CC-0030 |
+
+## Vulnerability Scanning
+
+Every container image is scanned for known CVEs using Grype (via `anchore/scan-action`)
+on every push and pull request (CC-0032). Unlike SBOM generation, attestation, and cosign
+signing (which are skipped on PRs), vulnerability scanning runs on **both** event types
+to provide immediate feedback on high-severity CVEs before merging.
+
+### How It Works
+
+After each image build (and SBOM generation on push), two additional steps run:
+
+1. **Grype scan** (`anchore/scan-action`) — Scans the image for known CVEs. On push
+   events, Grype consumes the CycloneDX SBOM file (faster, offline-capable). On PR
+   events, Grype scans the image directly (since SBOM generation is skipped on PRs).
+   The scan uses `severity-cutoff: high` with `fail-build: false`. All CVEs at or above
+   high severity are reported in SARIF but do not currently fail the build. Build failure
+   on high/critical CVEs will be activated later.
+
+2. **SARIF upload** (`github/codeql-action/upload-sarif`) — Uploads Grype results to the
+   GitHub Security tab in SARIF format. Each upload uses a unique `category` value to
+   distinguish findings per image. The upload step runs with `if: always()` and a guard
+   that checks for non-empty SARIF output, ensuring the upload is skipped cleanly if the
+   scan step crashes without producing output.
+
+This pattern is applied to all three image types:
+
+| Image | Step ID (SBOM / push) | Step ID (image / PR) | SARIF category | Job |
+| --- | --- | --- | --- | --- |
+| `python-base` | `grype-python-base-sbom` | `grype-python-base-image` | `grype-python-base` | `build-base-images` |
+| `venv-builder` | `grype-venv-builder-sbom` | `grype-venv-builder-image` | `grype-venv-builder` | `build-base-images` |
+| Service (e.g., `keystone`) | `grype-service-sbom` | `grype-service-image` | `grype-${{ matrix.service }}` | `build-service-images` |
+
+### Scan Input: PR vs Push
+
+Each image has two separate Grype scan steps — one for push events (SBOM-based) and one
+for PR events (image-based) — because `anchore/scan-action` documents `sbom` and `image`
+as mutually exclusive inputs. Each step uses an `if:` guard to run in the correct context:
+
+| Step suffix | `if:` guard | Input | Source |
+| --- | --- | --- | --- |
+| `-sbom` | `github.event_name != 'pull_request'` | `sbom:` | CycloneDX SBOM file (e.g., `sbom-python-base.cyclonedx.json`) |
+| `-image` | `github.event_name == 'pull_request'` | `image:` | Image reference (registry digest for base images, composite tag for service images) |
+
+The SARIF upload step uses a fallback expression (`steps.<id>-sbom.outputs.sarif ||
+steps.<id>-image.outputs.sarif`) to reference whichever step produced output, since
+exactly one of the two steps runs per event type.
+
+For base images on PRs, the image is referenced by digest from GHCR (base images are
+always pushed). For service images on PRs, the image is referenced by the composite tag
+from `steps.tags.outputs.composite` (service images use `load: true` on PRs, making them
+available locally).
+
+### Severity Threshold
+
+All Grype scan steps use `severity-cutoff: high` with `fail-build: false`:
+
+- **Critical** and **High** severity CVEs are reported in SARIF but do not currently
+  fail the build (build failure will be activated later)
+- **Medium** and **Low** severity CVEs are reported in SARIF but do not block the build
+- All findings are visible in the GitHub Security tab regardless of severity
+
+### CVE Suppression
+
+A `.grype.yaml` configuration file at the repository root allows suppression of
+known-accepted CVEs (CC-0032). Grype automatically reads this file from the working
+directory (default behavior — no explicit configuration needed).
+
+```yaml
+# .grype.yaml — add entries to suppress false positives
+ignore:
+  - id: CVE-YYYY-NNNNN
+    reason: "<justification>"
+    fix-state: "not-fixed"
+```
+
+The ignore list is initially empty. To add a CVE suppression, append an entry with the
+CVE identifier, a justification explaining why the CVE is acceptable, and optionally a
+`fix-state` field (`fixed`, `not-fixed`, `wont-fix`, or `unknown`). This prevents
+false-positive build failures on unfixable base-image vulnerabilities without disabling
+scanning entirely.
+
+### SARIF Integration
+
+Grype scan results are uploaded to the GitHub Security tab via
+`github/codeql-action/upload-sarif`:
+
+- Each image has a unique SARIF `category` value (e.g., `grype-python-base`,
+  `grype-venv-builder`, `grype-<service>`) for per-image categorization in the Security
+  dashboard
+- Upload steps use `if: always()` with a guard for non-empty SARIF output, ensuring
+  clean skip when a scan step crashes without producing output
+- Results appear in the repository's **Security > Code scanning alerts** tab
+
+### Required Permissions
+
+SARIF upload requires `security-events: write` permission on both `build-base-images`
+and `build-service-images` jobs (CC-0032). Verification jobs (`verify-base-images`,
+`verify-service-images`) do not receive this permission (least privilege).
+
+### Test Coverage
+
+The `verify_build_images_workflow.sh` script validates vulnerability scanning
+configuration (CC-0032):
+
+| Test | Validates |
+| --- | --- |
+| `test_grype_scan_steps_in_build_base_images` | 4 `anchore/scan-action` steps exist in `build-base-images` (2 per image: SBOM + image) |
+| `test_grype_scan_step_in_build_service_images` | 2 `anchore/scan-action` steps exist in `build-service-images` (SBOM + image) |
+| `test_grype_scan_action_sha_pinned` | `anchore/scan-action` is SHA-pinned with `# v7` version comment |
+| `test_grype_scan_steps_cover_both_contexts` | Each image has both a push-context (SBOM) and PR-context (image) scan step with appropriate `if:` guards |
+| `test_grype_sbom_input_wiring` | SBOM input references correct filenames (`sbom-python-base.cyclonedx.json`, etc.) |
+| `test_grype_image_input_wiring` | Image input references correct image refs for PR context |
+| `test_grype_severity_threshold` | All Grype steps use `severity-cutoff: high` |
+| `test_grype_fail_build_false` | All Grype steps use `fail-build: false` |
+| `test_grype_output_format_sarif` | All Grype steps use `output-format: sarif` |
+| `test_sarif_upload_steps_exist` | 2 `upload-sarif` steps in `build-base-images`, 1 in `build-service-images` |
+| `test_sarif_upload_categories` | SARIF upload categories match image names (`grype-python-base`, etc.) |
+| `test_sarif_upload_always_condition` | All SARIF upload steps have `if: always()` with SARIF output guard |
+| `test_sarif_upload_action_sha_pinned` | `github/codeql-action/upload-sarif` is SHA-pinned with `# v3` version comment |
+| `test_sarif_upload_references_grype_output` | SARIF upload `sarif_file` references Grype step output |
+| `test_security_events_permission_build_base_images` | `build-base-images` has `security-events: write` |
+| `test_security_events_permission_build_service_images` | `build-service-images` has `security-events: write` |
+| `test_verify_jobs_no_security_events_permission` | Verify jobs do **not** have `security-events` permission |
+| `test_security_events_permission_comment` | `security-events` permission comment references CC-0032 |
 
 ## OCI Annotations
 
@@ -820,7 +958,7 @@ non-zero, the job fails.
 
 | Script | Validates |
 | --- | --- |
-| `verify_build_images_workflow.sh` | Workflow structure: job names, dependency chain, trigger events, permissions, action pinning, concurrency, matrix strategy, SBOM/attestation configuration (CC-0029), cosign signing configuration (CC-0030), OCI annotation configuration (CC-0031) |
+| `verify_build_images_workflow.sh` | Workflow structure: job names, dependency chain, trigger events, permissions, action pinning, concurrency, matrix strategy, SBOM/attestation configuration (CC-0029), cosign signing configuration (CC-0030), OCI annotation configuration (CC-0031), vulnerability scanning configuration (CC-0032) |
 | `verify_deviation_comments.sh` | DEVIATION comments in Dockerfiles cross-reference architecture docs |
 | `verify_release_config.sh` | `source-refs.yaml` and `extra-packages.yaml` structure and content validity |
 | `verify_spdx_headers.sh` | SPDX Apache-2.0 license headers present on all infrastructure files |
@@ -842,7 +980,7 @@ signals in GitHub's check status UI. The Docker-based image verification tests
 
 ## Verification Coverage Summary
 
-The following table summarizes which test scripts run where (CC-0028, CC-0029):
+The following table summarizes which test scripts run where (CC-0028, CC-0029, CC-0032):
 
 | Test Script | verify-container-images.yaml | build-images.yaml | Requires Docker |
 | --- | --- | --- | --- |

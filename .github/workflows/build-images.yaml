@@ -41,6 +41,7 @@ jobs:
       packages: write
       id-token: write       # CC-0029, CC-0030: Sigstore OIDC signing for SBOM attestation and cosign signing
       attestations: write   # CC-0029: GitHub Attestations API
+      security-events: write  # CC-0032: GitHub Security tab SARIF upload
     outputs:
       python-base-image: ghcr.io/${{ steps.meta.outputs.owner }}/python-base@${{ steps.build-python-base.outputs.digest }}
       venv-builder-image: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder@${{ steps.build-venv-builder.outputs.digest }}
@@ -108,6 +109,41 @@ jobs:
           output-file: sbom-python-base.cyclonedx.json
           upload-artifact: false
 
+      # CC-0032: Scan python-base for vulnerabilities
+      # DECISION: anchore/grype-action does not exist — using anchore/scan-action (the real Grype GitHub Action).
+      # Input "fail-on" from spec maps to "severity-cutoff". Reviewer: please verify.
+      # Split into two steps to avoid passing both sbom and image inputs simultaneously.
+      # anchore/scan-action documents sbom and image as mutually exclusive inputs.
+      - name: Scan python-base for vulnerabilities (SBOM)
+        if: github.event_name != 'pull_request'
+        id: grype-python-base-sbom
+        uses: anchore/scan-action@7037fa011853d5a11690026fb85feee79f4c946c # v7
+        with:
+          sbom: sbom-python-base.cyclonedx.json
+          severity-cutoff: high
+          fail-build: false
+          output-format: sarif
+
+      - name: Scan python-base for vulnerabilities (image)
+        if: github.event_name == 'pull_request'
+        id: grype-python-base-image
+        uses: anchore/scan-action@7037fa011853d5a11690026fb85feee79f4c946c # v7
+        with:
+          image: ghcr.io/${{ steps.meta.outputs.owner }}/python-base@${{ steps.build-python-base.outputs.digest }}
+          severity-cutoff: high
+          fail-build: false
+          output-format: sarif
+
+      - name: Upload SARIF for python-base
+        if: >-
+          always() &&
+          (steps.grype-python-base-sbom.outputs.sarif != '' ||
+           steps.grype-python-base-image.outputs.sarif != '')
+        uses: github/codeql-action/upload-sarif@820e3160e279568db735cee8ed8f8e77a6da7818 # v3
+        with:
+          sarif_file: ${{ steps.grype-python-base-sbom.outputs.sarif || steps.grype-python-base-image.outputs.sarif }}
+          category: grype-python-base
+
       - name: Attest SBOM for python-base
         if: github.event_name != 'pull_request'
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4
@@ -159,6 +195,38 @@ jobs:
           format: cyclonedx-json
           output-file: sbom-venv-builder.cyclonedx.json
           upload-artifact: false
+
+      # CC-0032: Scan venv-builder for vulnerabilities
+      # See DECISION comment on Scan python-base step above
+      - name: Scan venv-builder for vulnerabilities (SBOM)
+        if: github.event_name != 'pull_request'
+        id: grype-venv-builder-sbom
+        uses: anchore/scan-action@7037fa011853d5a11690026fb85feee79f4c946c # v7
+        with:
+          sbom: sbom-venv-builder.cyclonedx.json
+          severity-cutoff: high
+          fail-build: false
+          output-format: sarif
+
+      - name: Scan venv-builder for vulnerabilities (image)
+        if: github.event_name == 'pull_request'
+        id: grype-venv-builder-image
+        uses: anchore/scan-action@7037fa011853d5a11690026fb85feee79f4c946c # v7
+        with:
+          image: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder@${{ steps.build-venv-builder.outputs.digest }}
+          severity-cutoff: high
+          fail-build: false
+          output-format: sarif
+
+      - name: Upload SARIF for venv-builder
+        if: >-
+          always() &&
+          (steps.grype-venv-builder-sbom.outputs.sarif != '' ||
+           steps.grype-venv-builder-image.outputs.sarif != '')
+        uses: github/codeql-action/upload-sarif@820e3160e279568db735cee8ed8f8e77a6da7818 # v3
+        with:
+          sarif_file: ${{ steps.grype-venv-builder-sbom.outputs.sarif || steps.grype-venv-builder-image.outputs.sarif }}
+          category: grype-venv-builder
 
       - name: Attest SBOM for venv-builder
         if: github.event_name != 'pull_request'
@@ -217,6 +285,7 @@ jobs:
       packages: write
       id-token: write       # CC-0029, CC-0030: Sigstore OIDC signing for SBOM attestation and cosign signing
       attestations: write   # CC-0029: GitHub Attestations API
+      security-events: write  # CC-0032: GitHub Security tab SARIF upload
     strategy:
       fail-fast: false
       matrix:
@@ -376,6 +445,38 @@ jobs:
           format: cyclonedx-json
           output-file: sbom-${{ matrix.service }}.cyclonedx.json
           upload-artifact: false
+
+      # CC-0032: Scan service image for vulnerabilities
+      # See DECISION comment on Scan python-base step above
+      - name: Scan service image for vulnerabilities (SBOM)
+        if: github.event_name != 'pull_request'
+        id: grype-service-sbom
+        uses: anchore/scan-action@7037fa011853d5a11690026fb85feee79f4c946c # v7
+        with:
+          sbom: sbom-${{ matrix.service }}.cyclonedx.json
+          severity-cutoff: high
+          fail-build: false
+          output-format: sarif
+
+      - name: Scan service image for vulnerabilities (image)
+        if: github.event_name == 'pull_request'
+        id: grype-service-image
+        uses: anchore/scan-action@7037fa011853d5a11690026fb85feee79f4c946c # v7
+        with:
+          image: ${{ steps.tags.outputs.composite }}
+          severity-cutoff: high
+          fail-build: false
+          output-format: sarif
+
+      - name: Upload SARIF for service image
+        if: >-
+          always() &&
+          (steps.grype-service-sbom.outputs.sarif != '' ||
+           steps.grype-service-image.outputs.sarif != '')
+        uses: github/codeql-action/upload-sarif@820e3160e279568db735cee8ed8f8e77a6da7818 # v3
+        with:
+          sarif_file: ${{ steps.grype-service-sbom.outputs.sarif || steps.grype-service-image.outputs.sarif }}
+          category: grype-${{ matrix.service }}
 
       - name: Attest SBOM for service image
         if: github.event_name != 'pull_request'

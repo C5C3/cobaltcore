@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify build-images workflow structure, conventions, and correctness (CC-0007, CC-0029, CC-0030, CC-0031)
+# Verify build-images workflow structure, conventions, and correctness (CC-0007, CC-0029, CC-0030, CC-0031, CC-0032)
 # Requirements: REQ-001 through REQ-025
 # Usage: bash tests/container-images/verify_build_images_workflow.sh
 
@@ -1145,6 +1145,392 @@ test_cosign_id_token_permission_comment() {
   assert_file_contains "id-token permission references CC-0030" "$WORKFLOW" "id-token:.*CC-0030"
 }
 
+# =====================================================================
+# CC-0032: Grype vulnerability scanning verification tests
+# =====================================================================
+
+# --- CC-0032: Grype scan steps exist in build-base-images (REQ-001) ---
+test_grype_scan_steps_in_build_base_images() {
+  echo "Test: Grype scan steps exist in build-base-images (CC-0032, REQ-001)"
+
+  local scan_count
+  scan_count=$(yq_count '.jobs["build-base-images"]["steps"][] | select(.uses and (.uses | test("anchore/scan-action"))) | .uses' "$WORKFLOW")
+  assert_eq "build-base-images has 4 Grype scan steps" "4" "$scan_count"
+}
+
+# --- CC-0032: Grype scan step exists in build-service-images (REQ-001) ---
+test_grype_scan_step_in_build_service_images() {
+  echo "Test: Grype scan step exists in build-service-images (CC-0032, REQ-001)"
+
+  local scan_count
+  scan_count=$(yq_count '.jobs["build-service-images"]["steps"][] | select(.uses and (.uses | test("anchore/scan-action"))) | .uses' "$WORKFLOW")
+  assert_eq "build-service-images has 2 Grype scan steps" "2" "$scan_count"
+}
+
+# --- CC-0032: anchore/scan-action is SHA-pinned (REQ-010) ---
+test_grype_scan_action_sha_pinned() {
+  echo "Test: anchore/scan-action is SHA-pinned (CC-0032, REQ-010)"
+
+  # Collect all anchore/scan-action uses from both build jobs
+  local uses_values
+  uses_values=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.uses and (.uses | test("anchore/scan-action"))) | .uses' "$WORKFLOW" || true)
+  uses_values+=$'\n'
+  uses_values+=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.uses and (.uses | test("anchore/scan-action"))) | .uses' "$WORKFLOW" || true)
+
+  local all_pinned=true
+  local found=false
+  while IFS= read -r val; do
+    [ -z "$val" ] && continue
+    found=true
+    if [[ ! "$val" =~ anchore/scan-action@[0-9a-f]{40} ]]; then
+      echo "  FAIL: anchore/scan-action not SHA-pinned: $val"
+      FAIL=$((FAIL + 1))
+      all_pinned=false
+    fi
+  done <<< "$uses_values"
+
+  if $all_pinned && $found; then
+    echo "  PASS: all anchore/scan-action uses are SHA-pinned"
+    PASS=$((PASS + 1))
+  elif ! $found; then
+    echo "  FAIL: no anchore/scan-action uses found"
+    FAIL=$((FAIL + 1))
+  fi
+
+  # Validate inline version comment (CC-0032, REQ-010)
+  assert_file_contains "anchore/scan-action pin has # v7 version comment" "$WORKFLOW" "anchore/scan-action@[0-9a-f]\{40\}[[:space:]]*# v7"
+}
+
+# --- CC-0032: Grype scan covers both push and PR contexts (REQ-004) ---
+test_grype_scan_steps_cover_both_contexts() {
+  echo "Test: Grype scan steps cover both push and PR contexts (CC-0032, REQ-004)"
+
+  # Each image must have both a push-context (SBOM) and a PR-context (image) scan step.
+  # This ensures scanning always runs regardless of event type, while keeping
+  # sbom and image as mutually exclusive inputs per anchore/scan-action docs.
+
+  # build-base-images: verify push (SBOM) and PR (image) steps exist for python-base
+  local python_sbom_if
+  python_sbom_if=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "grype-python-base-sbom") | .if' "$WORKFLOW" || true)
+  assert_contains "python-base SBOM scan has push-only guard" "$python_sbom_if" "!= 'pull_request'"
+
+  local python_image_if
+  python_image_if=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "grype-python-base-image") | .if' "$WORKFLOW" || true)
+  assert_contains "python-base image scan has PR-only guard" "$python_image_if" "== 'pull_request'"
+
+  # build-base-images: verify push (SBOM) and PR (image) steps exist for venv-builder
+  local venv_sbom_if
+  venv_sbom_if=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "grype-venv-builder-sbom") | .if' "$WORKFLOW" || true)
+  assert_contains "venv-builder SBOM scan has push-only guard" "$venv_sbom_if" "!= 'pull_request'"
+
+  local venv_image_if
+  venv_image_if=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "grype-venv-builder-image") | .if' "$WORKFLOW" || true)
+  assert_contains "venv-builder image scan has PR-only guard" "$venv_image_if" "== 'pull_request'"
+
+  # build-service-images: verify push (SBOM) and PR (image) steps exist for service
+  local service_sbom_if
+  service_sbom_if=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "grype-service-sbom") | .if' "$WORKFLOW" || true)
+  assert_contains "service SBOM scan has push-only guard" "$service_sbom_if" "!= 'pull_request'"
+
+  local service_image_if
+  service_image_if=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "grype-service-image") | .if' "$WORKFLOW" || true)
+  assert_contains "service image scan has PR-only guard" "$service_image_if" "== 'pull_request'"
+}
+
+# --- CC-0032: Grype scan SBOM input references correct files (REQ-002) ---
+test_grype_sbom_input_wiring() {
+  echo "Test: Grype scan SBOM input references correct SBOM files (CC-0032, REQ-002)"
+
+  # python-base SBOM scan must reference sbom-python-base.cyclonedx.json
+  local python_sbom
+  python_sbom=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "grype-python-base-sbom") | .with.sbom' "$WORKFLOW" || true)
+  assert_contains "python-base Grype scan references sbom-python-base.cyclonedx.json" "$python_sbom" "sbom-python-base.cyclonedx.json"
+
+  # python-base SBOM scan must have push-only conditional guard
+  local python_sbom_if
+  python_sbom_if=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "grype-python-base-sbom") | .if' "$WORKFLOW" || true)
+  assert_contains "python-base Grype sbom input has push-only conditional" "$python_sbom_if" "event_name != 'pull_request'"
+
+  # venv-builder SBOM scan must reference sbom-venv-builder.cyclonedx.json
+  local venv_sbom
+  venv_sbom=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "grype-venv-builder-sbom") | .with.sbom' "$WORKFLOW" || true)
+  assert_contains "venv-builder Grype scan references sbom-venv-builder.cyclonedx.json" "$venv_sbom" "sbom-venv-builder.cyclonedx.json"
+
+  # venv-builder SBOM scan must have push-only conditional guard
+  local venv_sbom_if
+  venv_sbom_if=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "grype-venv-builder-sbom") | .if' "$WORKFLOW" || true)
+  assert_contains "venv-builder Grype sbom input has push-only conditional" "$venv_sbom_if" "event_name != 'pull_request'"
+
+  # service SBOM scan must reference sbom-{service}.cyclonedx.json
+  local service_sbom
+  service_sbom=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "grype-service-sbom") | .with.sbom' "$WORKFLOW" || true)
+  assert_contains "service Grype scan references matrix.service SBOM filename" "$service_sbom" "matrix.service"
+  assert_contains "service Grype scan SBOM input is cyclonedx.json format" "$service_sbom" "cyclonedx.json"
+
+  # service SBOM scan must have push-only conditional guard
+  local service_sbom_if
+  service_sbom_if=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "grype-service-sbom") | .if' "$WORKFLOW" || true)
+  assert_contains "service Grype sbom input has push-only conditional" "$service_sbom_if" "event_name != 'pull_request'"
+}
+
+# --- CC-0032: Grype scan image input wiring for PR context (REQ-003) ---
+test_grype_image_input_wiring() {
+  echo "Test: Grype scan image input wiring for PR context (CC-0032, REQ-003)"
+
+  # python-base image scan must reference python-base image
+  local python_image
+  python_image=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "grype-python-base-image") | .with.image' "$WORKFLOW" || true)
+  assert_contains "python-base Grype scan image input references python-base" "$python_image" "python-base"
+  assert_contains "python-base Grype scan image input references build-python-base digest" "$python_image" "build-python-base.outputs.digest"
+
+  # venv-builder image scan must reference venv-builder image
+  local venv_image
+  venv_image=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "grype-venv-builder-image") | .with.image' "$WORKFLOW" || true)
+  assert_contains "venv-builder Grype scan image input references venv-builder" "$venv_image" "venv-builder"
+  assert_contains "venv-builder Grype scan image input references build-venv-builder digest" "$venv_image" "build-venv-builder.outputs.digest"
+
+  # service image scan must reference composite tag
+  local service_image
+  service_image=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "grype-service-image") | .with.image' "$WORKFLOW" || true)
+  assert_contains "service Grype scan image input references composite tag" "$service_image" "tags.outputs.composite"
+}
+
+# --- CC-0032: Grype scan severity threshold is high (REQ-005) ---
+test_grype_severity_threshold() {
+  echo "Test: Grype scan severity-cutoff is high (CC-0032, REQ-005)"
+
+  # All Grype scan steps (both SBOM and image variants) must have severity-cutoff: high
+  local python_sbom_severity
+  python_sbom_severity=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "grype-python-base-sbom") | .with["severity-cutoff"]' "$WORKFLOW" || true)
+  assert_eq "python-base (sbom) Grype severity-cutoff is high" "high" "$python_sbom_severity"
+
+  local python_image_severity
+  python_image_severity=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "grype-python-base-image") | .with["severity-cutoff"]' "$WORKFLOW" || true)
+  assert_eq "python-base (image) Grype severity-cutoff is high" "high" "$python_image_severity"
+
+  local venv_sbom_severity
+  venv_sbom_severity=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "grype-venv-builder-sbom") | .with["severity-cutoff"]' "$WORKFLOW" || true)
+  assert_eq "venv-builder (sbom) Grype severity-cutoff is high" "high" "$venv_sbom_severity"
+
+  local venv_image_severity
+  venv_image_severity=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "grype-venv-builder-image") | .with["severity-cutoff"]' "$WORKFLOW" || true)
+  assert_eq "venv-builder (image) Grype severity-cutoff is high" "high" "$venv_image_severity"
+
+  local service_sbom_severity
+  service_sbom_severity=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "grype-service-sbom") | .with["severity-cutoff"]' "$WORKFLOW" || true)
+  assert_eq "service (sbom) Grype severity-cutoff is high" "high" "$service_sbom_severity"
+
+  local service_image_severity
+  service_image_severity=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "grype-service-image") | .with["severity-cutoff"]' "$WORKFLOW" || true)
+  assert_eq "service (image) Grype severity-cutoff is high" "high" "$service_image_severity"
+}
+
+# --- CC-0032: Grype scan fail-build is false (REQ-005) ---
+test_grype_fail_build_false() {
+  echo "Test: Grype scan fail-build is false (CC-0032, REQ-005)"
+
+  # All Grype scan steps must have fail-build: false (non-blocking scan, to be activated later)
+  local python_sbom_fail
+  python_sbom_fail=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "grype-python-base-sbom") | .with["fail-build"]' "$WORKFLOW" || true)
+  assert_eq "python-base (sbom) Grype fail-build is false" "false" "$python_sbom_fail"
+
+  local python_image_fail
+  python_image_fail=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "grype-python-base-image") | .with["fail-build"]' "$WORKFLOW" || true)
+  assert_eq "python-base (image) Grype fail-build is false" "false" "$python_image_fail"
+
+  local venv_sbom_fail
+  venv_sbom_fail=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "grype-venv-builder-sbom") | .with["fail-build"]' "$WORKFLOW" || true)
+  assert_eq "venv-builder (sbom) Grype fail-build is false" "false" "$venv_sbom_fail"
+
+  local venv_image_fail
+  venv_image_fail=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "grype-venv-builder-image") | .with["fail-build"]' "$WORKFLOW" || true)
+  assert_eq "venv-builder (image) Grype fail-build is false" "false" "$venv_image_fail"
+
+  local service_sbom_fail
+  service_sbom_fail=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "grype-service-sbom") | .with["fail-build"]' "$WORKFLOW" || true)
+  assert_eq "service (sbom) Grype fail-build is false" "false" "$service_sbom_fail"
+
+  local service_image_fail
+  service_image_fail=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "grype-service-image") | .with["fail-build"]' "$WORKFLOW" || true)
+  assert_eq "service (image) Grype fail-build is false" "false" "$service_image_fail"
+}
+
+# --- CC-0032: SARIF upload steps exist in both build jobs (REQ-006) ---
+test_sarif_upload_steps_exist() {
+  echo "Test: SARIF upload steps exist in both build jobs (CC-0032, REQ-006)"
+
+  local base_sarif_count
+  base_sarif_count=$(yq_count '.jobs["build-base-images"]["steps"][] | select(.uses and (.uses | test("codeql-action/upload-sarif"))) | .uses' "$WORKFLOW")
+  assert_eq "build-base-images has 2 SARIF upload steps" "2" "$base_sarif_count"
+
+  local service_sarif_count
+  service_sarif_count=$(yq_count '.jobs["build-service-images"]["steps"][] | select(.uses and (.uses | test("codeql-action/upload-sarif"))) | .uses' "$WORKFLOW")
+  assert_eq "build-service-images has 1 SARIF upload step" "1" "$service_sarif_count"
+}
+
+# --- CC-0032: SARIF upload categories are correct (REQ-006) ---
+test_sarif_upload_categories() {
+  echo "Test: SARIF upload categories match image names (CC-0032, REQ-006)"
+
+  # python-base SARIF upload category
+  local python_category
+  python_category=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.name and (.name | test("Upload SARIF for python-base"))) | .with.category' "$WORKFLOW" || true)
+  assert_eq "python-base SARIF category is grype-python-base" "grype-python-base" "$python_category"
+
+  # venv-builder SARIF upload category
+  local venv_category
+  venv_category=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.name and (.name | test("Upload SARIF for venv-builder"))) | .with.category' "$WORKFLOW" || true)
+  assert_eq "venv-builder SARIF category is grype-venv-builder" "grype-venv-builder" "$venv_category"
+
+  # service SARIF upload category must reference matrix.service
+  local service_category
+  service_category=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.name and (.name | test("Upload SARIF for service"))) | .with.category' "$WORKFLOW" || true)
+  assert_contains "service SARIF category references matrix.service" "$service_category" "matrix.service"
+}
+
+# --- CC-0032: SARIF upload steps have if: always() (REQ-006) ---
+test_sarif_upload_always_condition() {
+  echo "Test: SARIF upload steps have if: always() with output guard (CC-0032, REQ-006)"
+
+  # Check each SARIF upload step in build-base-images individually
+  local python_if
+  python_if=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.name and (.name | test("Upload SARIF for python-base"))) | .if' "$WORKFLOW" || true)
+  assert_contains "python-base SARIF upload has always() condition" "$python_if" "always()"
+  assert_contains "python-base SARIF upload has output guard" "$python_if" "outputs.sarif"
+
+  local venv_if
+  venv_if=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.name and (.name | test("Upload SARIF for venv-builder"))) | .if' "$WORKFLOW" || true)
+  assert_contains "venv-builder SARIF upload has always() condition" "$venv_if" "always()"
+  assert_contains "venv-builder SARIF upload has output guard" "$venv_if" "outputs.sarif"
+
+  local service_if
+  service_if=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.uses and (.uses | test("codeql-action/upload-sarif"))) | .if' "$WORKFLOW" || true)
+  assert_contains "build-service-images SARIF upload has always() condition" "$service_if" "always()"
+  assert_contains "build-service-images SARIF upload has output guard" "$service_if" "outputs.sarif"
+}
+
+# --- CC-0032: upload-sarif action is SHA-pinned (REQ-010) ---
+test_sarif_upload_action_sha_pinned() {
+  echo "Test: upload-sarif action is SHA-pinned (CC-0032, REQ-010)"
+
+  # Collect all upload-sarif uses from both build jobs
+  local uses_values
+  uses_values=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.uses and (.uses | test("codeql-action/upload-sarif"))) | .uses' "$WORKFLOW" || true)
+  uses_values+=$'\n'
+  uses_values+=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.uses and (.uses | test("codeql-action/upload-sarif"))) | .uses' "$WORKFLOW" || true)
+
+  local all_pinned=true
+  local found=false
+  while IFS= read -r val; do
+    [ -z "$val" ] && continue
+    found=true
+    if [[ ! "$val" =~ codeql-action/upload-sarif@[0-9a-f]{40} ]]; then
+      echo "  FAIL: upload-sarif action not SHA-pinned: $val"
+      FAIL=$((FAIL + 1))
+      all_pinned=false
+    fi
+  done <<< "$uses_values"
+
+  if $all_pinned && $found; then
+    echo "  PASS: all upload-sarif action uses are SHA-pinned"
+    PASS=$((PASS + 1))
+  elif ! $found; then
+    echo "  FAIL: no upload-sarif action uses found"
+    FAIL=$((FAIL + 1))
+  fi
+
+  # Validate inline version comment (CC-0032, REQ-010)
+  assert_file_contains "upload-sarif pin has # v3 version comment" "$WORKFLOW" "codeql-action/upload-sarif@[0-9a-f]\{40\}[[:space:]]*# v3"
+}
+
+# --- CC-0032: security-events permission on build-base-images (REQ-007) ---
+test_security_events_permission_build_base_images() {
+  echo "Test: build-base-images has security-events: write permission (CC-0032, REQ-007)"
+
+  local perm
+  perm=$(yq_raw '.jobs["build-base-images"]["permissions"]["security-events"]' "$WORKFLOW" || true)
+  assert_eq "build-base-images security-events permission is write" "write" "$perm"
+}
+
+# --- CC-0032: security-events permission on build-service-images (REQ-007) ---
+test_security_events_permission_build_service_images() {
+  echo "Test: build-service-images has security-events: write permission (CC-0032, REQ-007)"
+
+  local perm
+  perm=$(yq_raw '.jobs["build-service-images"]["permissions"]["security-events"]' "$WORKFLOW" || true)
+  assert_eq "build-service-images security-events permission is write" "write" "$perm"
+}
+
+# --- CC-0032: verify jobs do NOT have security-events permission (REQ-009) ---
+test_verify_jobs_no_security_events_permission() {
+  echo "Test: verify jobs do not have security-events permission (CC-0032, REQ-009)"
+
+  local verify_base_perm
+  verify_base_perm=$(yq_raw '.jobs["verify-base-images"]["permissions"]["security-events"] // "null"' "$WORKFLOW" || true)
+  assert_eq "verify-base-images has no security-events permission" "null" "$verify_base_perm"
+
+  local verify_service_perm
+  verify_service_perm=$(yq_raw '.jobs["verify-service-images"]["permissions"]["security-events"] // "null"' "$WORKFLOW" || true)
+  assert_eq "verify-service-images has no security-events permission" "null" "$verify_service_perm"
+}
+
+# --- CC-0032: security-events permission comment references CC-0032 (REQ-007) ---
+test_security_events_permission_comment() {
+  echo "Test: security-events permission comment references CC-0032 (CC-0032, REQ-007)"
+
+  assert_file_contains "security-events permission references CC-0032" "$WORKFLOW" "security-events:.*CC-0032"
+}
+
+# --- CC-0032: Grype scan output format is sarif (REQ-006) ---
+test_grype_output_format_sarif() {
+  echo "Test: Grype scan output-format is sarif (CC-0032, REQ-006)"
+
+  local python_sbom_format
+  python_sbom_format=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "grype-python-base-sbom") | .with["output-format"]' "$WORKFLOW" || true)
+  assert_eq "python-base (sbom) Grype output-format is sarif" "sarif" "$python_sbom_format"
+
+  local python_image_format
+  python_image_format=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "grype-python-base-image") | .with["output-format"]' "$WORKFLOW" || true)
+  assert_eq "python-base (image) Grype output-format is sarif" "sarif" "$python_image_format"
+
+  local venv_sbom_format
+  venv_sbom_format=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "grype-venv-builder-sbom") | .with["output-format"]' "$WORKFLOW" || true)
+  assert_eq "venv-builder (sbom) Grype output-format is sarif" "sarif" "$venv_sbom_format"
+
+  local venv_image_format
+  venv_image_format=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "grype-venv-builder-image") | .with["output-format"]' "$WORKFLOW" || true)
+  assert_eq "venv-builder (image) Grype output-format is sarif" "sarif" "$venv_image_format"
+
+  local service_sbom_format
+  service_sbom_format=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "grype-service-sbom") | .with["output-format"]' "$WORKFLOW" || true)
+  assert_eq "service (sbom) Grype output-format is sarif" "sarif" "$service_sbom_format"
+
+  local service_image_format
+  service_image_format=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "grype-service-image") | .with["output-format"]' "$WORKFLOW" || true)
+  assert_eq "service (image) Grype output-format is sarif" "sarif" "$service_image_format"
+}
+
+# --- CC-0032: SARIF upload references Grype step output (REQ-006) ---
+test_sarif_upload_references_grype_output() {
+  echo "Test: SARIF upload sarif_file references Grype step output (CC-0032, REQ-006)"
+
+  # SARIF upload uses || expression to pick output from whichever scan step ran
+  local python_sarif_file
+  python_sarif_file=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.name and (.name | test("Upload SARIF for python-base"))) | .with.sarif_file' "$WORKFLOW" || true)
+  assert_contains "python-base SARIF upload references grype-python-base-sbom output" "$python_sarif_file" "grype-python-base-sbom.outputs.sarif"
+  assert_contains "python-base SARIF upload references grype-python-base-image output" "$python_sarif_file" "grype-python-base-image.outputs.sarif"
+
+  local venv_sarif_file
+  venv_sarif_file=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.name and (.name | test("Upload SARIF for venv-builder"))) | .with.sarif_file' "$WORKFLOW" || true)
+  assert_contains "venv-builder SARIF upload references grype-venv-builder-sbom output" "$venv_sarif_file" "grype-venv-builder-sbom.outputs.sarif"
+  assert_contains "venv-builder SARIF upload references grype-venv-builder-image output" "$venv_sarif_file" "grype-venv-builder-image.outputs.sarif"
+
+  local service_sarif_file
+  service_sarif_file=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.name and (.name | test("Upload SARIF for service"))) | .with.sarif_file' "$WORKFLOW" || true)
+  assert_contains "service SARIF upload references grype-service-sbom output" "$service_sarif_file" "grype-service-sbom.outputs.sarif"
+  assert_contains "service SARIF upload references grype-service-image output" "$service_sarif_file" "grype-service-image.outputs.sarif"
+}
+
 # --- Run all tests ---
 echo "=== Build images workflow verification tests ==="
 echo ""
@@ -1287,6 +1673,42 @@ echo ""
 test_cosign_sign_uses_yes_flag
 echo ""
 test_cosign_id_token_permission_comment
+echo ""
+test_grype_scan_steps_in_build_base_images
+echo ""
+test_grype_scan_step_in_build_service_images
+echo ""
+test_grype_scan_action_sha_pinned
+echo ""
+test_grype_scan_steps_cover_both_contexts
+echo ""
+test_grype_sbom_input_wiring
+echo ""
+test_grype_image_input_wiring
+echo ""
+test_grype_severity_threshold
+echo ""
+test_grype_fail_build_false
+echo ""
+test_sarif_upload_steps_exist
+echo ""
+test_sarif_upload_categories
+echo ""
+test_sarif_upload_always_condition
+echo ""
+test_sarif_upload_action_sha_pinned
+echo ""
+test_security_events_permission_build_base_images
+echo ""
+test_security_events_permission_build_service_images
+echo ""
+test_verify_jobs_no_security_events_permission
+echo ""
+test_security_events_permission_comment
+echo ""
+test_grype_output_format_sarif
+echo ""
+test_sarif_upload_references_grype_output
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

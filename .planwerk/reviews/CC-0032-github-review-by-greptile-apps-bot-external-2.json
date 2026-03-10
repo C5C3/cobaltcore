@@ -1,0 +1,45 @@
+{
+  "feature_id": "CC-0032",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "Two issues to fix:\n\n1. **Swap requirement IDs in test functions**: `test_grype_scan_action_sha_pinned` is mislabeled as REQ-004 (should be REQ-010) and `test_grype_scan_steps_no_pr_guard` is mislabeled as REQ-010 (should be REQ-004) — they're backwards, breaking requirement traceability.\n\n2. **Fix misleading \"uncomment to use\" comment in `.grype.yaml`**: The indented example would produce invalid YAML if literally uncommented (wrong indentation + duplicate `ignore:` key). Rephrase to instruct users to *replace* the `ignore: []` line instead.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-09T21:49:09Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 2,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**Requirement IDs swapped between SHA-pinning and no-PR-guard tests**\n\n`test_grype_scan_action_sha_pinned` labels itself `REQ-004` in both its function header comment and echo statement (lines 1170, 1172, 1200), while `test_grype_scan_steps_no_pr_guard` labels itself `REQ-010` (line 1204, 1206). These are backwards.\n\nAccording to the plan tracker (`.planwerk/progress/CC-0032-add-grype-vulnerability-scanning-to-build-workflow.json`), the test entry mapped to REQ-010 is the SHA-pinning test (`test_grype_action_sha_pinned`, `expected: \"All anchore/grype-action … uses entries should be SHA-pinned … with a version comment\"`). And task 2.1's description explicitly says the no-PR-guard test should echo `\"(CC-0032, REQ-004)\"`.\n\nCurrent state:\n- SHA-pinning test → `REQ-004` ❌ (should be REQ-010)\n- No-PR-guard test → `REQ-010` ❌ (should be REQ-004)\n\nAny requirement coverage report built from these echo outputs will show REQ-004 covered by a SHA-pinning assertion, and REQ-010 covered by a PR-guard assertion — exactly the opposite of what the requirements specify. This breaks traceability between requirements and their verifying tests.\n\n```suggestion\n# --- CC-0032: anchore/scan-action is SHA-pinned (REQ-010) ---\ntest_grype_scan_action_sha_pinned() {\n  echo \"Test: anchore/scan-action is SHA-pinned (CC-0032, REQ-010)\"\n```\n\nAnd correspondingly on line 1200:\n```\n  # Validate inline version comment (CC-0032, REQ-010)\n```\n\nAnd on line 1204–1206:\n```\n# --- CC-0032: Grype scan steps have no PR-skip guard (REQ-004) ---\ntest_grype_scan_steps_no_pr_guard() {\n  echo \"Test: Grype scan steps have no PR-skip guard (CC-0032, REQ-004)\"\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: tests/container-images/verify_build_images_workflow.sh\nLine: 1170-1206\n\nComment:\n**Requirement IDs swapped between SHA-pinning and no-PR-guard tests**\n\n`test_grype_scan_action_sha_pinned` labels itself `REQ-004` in both its function header comment and echo statement (lines 1170, 1172, 1200), while `test_grype_scan_steps_no_pr_guard` labels itself `REQ-010` (line 1204, 1206). These are backwards.\n\nAccording to the plan tracker (`.planwerk/progress/CC-0032-add-grype-vulnerability-scanning-to-build-workflow.json`), the test entry mapped to REQ-010 is the SHA-pinning test (`test_grype_action_sha_pinned`, `expected: \"All anchore/grype-action … uses entries should be SHA-pinned … with a version comment\"`). And task 2.1's description explicitly says the no-PR-guard test should echo `\"(CC-0032, REQ-004)\"`.\n\nCurrent state:\n- SHA-pinning test → `REQ-004` ❌ (should be REQ-010)\n- No-PR-guard test → `REQ-010` ❌ (should be REQ-004)\n\nAny requirement coverage report built from these echo outputs will show REQ-004 covered by a SHA-pinning assertion, and REQ-010 covered by a PR-guard assertion — exactly the opposite of what the requirements specify. This breaks traceability between requirements and their verifying tests.\n\n```suggestion\n# --- CC-0032: anchore/scan-action is SHA-pinned (REQ-010) ---\ntest_grype_scan_action_sha_pinned() {\n  echo \"Test: anchore/scan-action is SHA-pinned (CC-0032, REQ-010)\"\n```\n\nAnd correspondingly on line 1200:\n```\n  # Validate inline version comment (CC-0032, REQ-010)\n```\n\nAnd on line 1204–1206:\n```\n# --- CC-0032: Grype scan steps have no PR-skip guard (REQ-004) ---\ntest_grype_scan_steps_no_pr_guard() {\n  echo \"Test: Grype scan steps have no PR-skip guard (CC-0032, REQ-004)\"\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "tests/container-images/verify_build_images_workflow.sh",
+      "line": 1206,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-09T21:49:07Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "**\"Uncomment to use\" example would produce invalid YAML**\n\nThe example block is indented by two spaces inside the comments:\n\n```yaml\n# Example (uncomment to use):\n#   ignore:\n#     - id: CVE-2024-00000\n```\n\nIf a developer follows the instruction literally and uncomments these lines, the result would be:\n\n```yaml\n  ignore:               # ← 2-space indent → NOT a top-level key (invalid YAML)\n    - id: CVE-2024-00000\n      ...\n\nignore: []              # ← duplicate top-level key\n```\n\nYAML top-level keys must have zero indentation, so the uncommented block would be a parse error. Additionally, a second `ignore:` key would duplicate the one already at the bottom, which YAML parsers typically reject or only honour one of.\n\nConsider rephrasing the comment to avoid the \"uncomment\" framing:\n\n```suggestion\n# To suppress a CVE, replace `ignore: []` above with a list:\n#\n#   ignore:\n#     - id: CVE-YYYY-NNNNN          # CVE identifier\n#       reason: \"<justification>\"     # Why this CVE is acceptable\n#       fix-state: \"not-fixed\"        # Optional: \"fixed\", \"not-fixed\", \"wont-fix\", or \"unknown\"\n#\n# Example:\n#   ignore:\n#     - id: CVE-2024-00000\n#       reason: \"Not exploitable in our container context — no network exposure\"\n#       fix-state: \"not-fixed\"\n\nignore: []\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: .grype.yaml\nLine: 14-20\n\nComment:\n**\"Uncomment to use\" example would produce invalid YAML**\n\nThe example block is indented by two spaces inside the comments:\n\n```yaml\n# Example (uncomment to use):\n#   ignore:\n#     - id: CVE-2024-00000\n```\n\nIf a developer follows the instruction literally and uncomments these lines, the result would be:\n\n```yaml\n  ignore:               # ← 2-space indent → NOT a top-level key (invalid YAML)\n    - id: CVE-2024-00000\n      ...\n\nignore: []              # ← duplicate top-level key\n```\n\nYAML top-level keys must have zero indentation, so the uncommented block would be a parse error. Additionally, a second `ignore:` key would duplicate the one already at the bottom, which YAML parsers typically reject or only honour one of.\n\nConsider rephrasing the comment to avoid the \"uncomment\" framing:\n\n```suggestion\n# To suppress a CVE, replace `ignore: []` above with a list:\n#\n#   ignore:\n#     - id: CVE-YYYY-NNNNN          # CVE identifier\n#       reason: \"<justification>\"     # Why this CVE is acceptable\n#       fix-state: \"not-fixed\"        # Optional: \"fixed\", \"not-fixed\", \"wont-fix\", or \"unknown\"\n#\n# Example:\n#   ignore:\n#     - id: CVE-2024-00000\n#       reason: \"Not exploitable in our container context — no network exposure\"\n#       fix-state: \"not-fixed\"\n\nignore: []\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": ".grype.yaml",
+      "line": 20,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-09T21:49:08Z",
+      "id": null,
+      "resolution": ""
+    }
+  ],
+  "github_review_id": 3918414701
+}
