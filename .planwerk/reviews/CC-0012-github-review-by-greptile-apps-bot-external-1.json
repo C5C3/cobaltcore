@@ -1,0 +1,63 @@
+{
+  "feature_id": "CC-0012",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer wants four changes to the envtest setup and integration tests:\n\n1. **Await the manager goroutine in cleanup** — add a `mgrStopped` channel so `t.Cleanup` blocks on manager shutdown before calling `env.Stop()`, preventing port-conflict races between sequential tests.\n2. **Disable metrics and health-probe servers** — pass `Metrics: {BindAddress: \"0\"}` and `HealthProbeBindAddress: \"0\"` to `ctrl.NewManager` to avoid port collisions in CI and across per-test managers.\n3. **Use a direct API client instead of the manager's caching client** — replace `mgr.GetClient()` with `client.New(cfg, ...)` for test assertions, matching the project's existing pattern and avoiding flaky cache-miss failures.\n4. **Rename misleading test** — change `TestIntegration_CELRejectsReplicasZero` to `TestIntegration_CELRejectsReplicasBelowMinimum` since it actually tests `-1`, not `0`.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-10T14:04:49Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**Manager goroutine not awaited in cleanup**\n\nThe cleanup calls `cancel()` and then `env.Stop()`, but it does not wait for the `mgr.Start(ctx)` goroutine to exit. Because each integration test starts its own manager, the previous test's manager may still be holding the metrics port (`:8080`) and the health-probe port (`:8081`) when the next test calls `ctrl.NewManager`. This is a sequential-test race: `cancel()` signals shutdown, but the goroutine is not joined before ports are released.\n\nThe go routine started at line 86 needs a synchronization point so cleanup can block until the manager has fully stopped:\n\n```go\nmgrStopped := make(chan struct{})\ngo func() {\n    defer close(mgrStopped)\n    if err := mgr.Start(ctx); err != nil {\n        t.Errorf(\"manager exited with error: %v\", err)\n    }\n}()\n\n// ... waitForWebhookServer ...\n\nt.Cleanup(func() {\n    cancel()\n    <-mgrStopped // ensure ports are released before env.Stop\n    if err := env.Stop(); err != nil {\n        t.Errorf(\"failed to stop Keystone envtest environment: %v\", err)\n    }\n})\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: operators/keystone/internal/testutil/envtest_setup.go\nLine: 86-108\n\nComment:\n**Manager goroutine not awaited in cleanup**\n\nThe cleanup calls `cancel()` and then `env.Stop()`, but it does not wait for the `mgr.Start(ctx)` goroutine to exit. Because each integration test starts its own manager, the previous test's manager may still be holding the metrics port (`:8080`) and the health-probe port (`:8081`) when the next test calls `ctrl.NewManager`. This is a sequential-test race: `cancel()` signals shutdown, but the goroutine is not joined before ports are released.\n\nThe go routine started at line 86 needs a synchronization point so cleanup can block until the manager has fully stopped:\n\n```go\nmgrStopped := make(chan struct{})\ngo func() {\n    defer close(mgrStopped)\n    if err := mgr.Start(ctx); err != nil {\n        t.Errorf(\"manager exited with error: %v\", err)\n    }\n}()\n\n// ... waitForWebhookServer ...\n\nt.Cleanup(func() {\n    cancel()\n    <-mgrStopped // ensure ports are released before env.Stop\n    if err := env.Stop(); err != nil {\n        t.Errorf(\"failed to stop Keystone envtest environment: %v\", err)\n    }\n})\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "operators/keystone/internal/testutil/envtest_setup.go",
+      "line": 108,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-10T14:04:45Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "**Missing metrics and health-probe server disable**\n\nThe manager is created without disabling the default metrics server (`:8080`) and health-probe server (`:8081`). In CI environments where either port is already in use, `ctrl.NewManager` will fail. More importantly, because each test creates a new manager (there is no shared setup with `TestMain`), these ports are re-bound on every `setupEnvTest` call.\n\nThe established pattern for test managers is to disable both listeners:\n\n```go\nmgr, err := ctrl.NewManager(cfg, ctrl.Options{\n    Scheme: s,\n    WebhookServer: webhook.NewServer(webhook.Options{\n        Host:    env.WebhookInstallOptions.LocalServingHost,\n        Port:    env.WebhookInstallOptions.LocalServingPort,\n        CertDir: env.WebhookInstallOptions.LocalServingCertDir,\n    }),\n    Metrics:                metricsserver.Options{BindAddress: \"0\"},\n    HealthProbeBindAddress: \"0\",\n})\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: operators/keystone/internal/testutil/envtest_setup.go\nLine: 73-82\n\nComment:\n**Missing metrics and health-probe server disable**\n\nThe manager is created without disabling the default metrics server (`:8080`) and health-probe server (`:8081`). In CI environments where either port is already in use, `ctrl.NewManager` will fail. More importantly, because each test creates a new manager (there is no shared setup with `TestMain`), these ports are re-bound on every `setupEnvTest` call.\n\nThe established pattern for test managers is to disable both listeners:\n\n```go\nmgr, err := ctrl.NewManager(cfg, ctrl.Options{\n    Scheme: s,\n    WebhookServer: webhook.NewServer(webhook.Options{\n        Host:    env.WebhookInstallOptions.LocalServingHost,\n        Port:    env.WebhookInstallOptions.LocalServingPort,\n        CertDir: env.WebhookInstallOptions.LocalServingCertDir,\n    }),\n    Metrics:                metricsserver.Options{BindAddress: \"0\"},\n    HealthProbeBindAddress: \"0\",\n})\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "operators/keystone/internal/testutil/envtest_setup.go",
+      "line": 82,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-10T14:04:46Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "**Caching client diverges from project's established test pattern**\n\n`mgr.GetClient()` returns the manager's caching (informer-backed) client. In controller-runtime v0.23.x the cache does **not** fall back to the API server on a cache miss — if the informer has not yet processed a freshly created object, the immediately following `c.Get()` in the tests will return `not found`, making tests intermittently flaky.\n\nThe project's canonical pattern in `internal/common/testutil/envtest/setup.go` (line 46) uses a direct client:\n\n```go\nc, err := client.New(cfg, client.Options{Scheme: s})\n```\n\nA direct client always goes to the API server and is the correct choice for the synchronous `Create → Get` assertions used throughout the integration tests. The manager's client is only needed by the webhook server itself, not by the test assertions.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: operators/keystone/internal/testutil/envtest_setup.go\nLine: 119-122\n\nComment:\n**Caching client diverges from project's established test pattern**\n\n`mgr.GetClient()` returns the manager's caching (informer-backed) client. In controller-runtime v0.23.x the cache does **not** fall back to the API server on a cache miss — if the informer has not yet processed a freshly created object, the immediately following `c.Get()` in the tests will return `not found`, making tests intermittently flaky.\n\nThe project's canonical pattern in `internal/common/testutil/envtest/setup.go` (line 46) uses a direct client:\n\n```go\nc, err := client.New(cfg, client.Options{Scheme: s})\n```\n\nA direct client always goes to the API server and is the correct choice for the synchronous `Create → Get` assertions used throughout the integration tests. The manager's client is only needed by the webhook server itself, not by the test assertions.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "operators/keystone/internal/testutil/envtest_setup.go",
+      "line": 122,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-10T14:04:47Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "**Test name says \"Zero\" but tests `-1` — misleading for future maintainers**\n\nThe function is named `TestIntegration_CELRejectsReplicasZero` but the actual input under test is `Replicas = -1`. The choice of `-1` is correct and well-explained in the comment (the defaulting webhook converts `0` to `3`, so `0` cannot reach the CEL/validation layer), but the name implies the zero value is being tested.\n\nConsider renaming to `TestIntegration_CELRejectsReplicasBelowMinimum` to match the other minimum-value tests and remove ambiguity:\n\n```suggestion\nfunc TestIntegration_CELRejectsReplicasBelowMinimum(t *testing.T) {\n\ttestutil.SkipIfEnvTestUnavailable(t)\n\tg := NewGomegaWithT(t)\n\n\tc, ctx, _ := setupEnvTest(t)\n\n\tns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: \"test-cel-replicas-\"}}\n\tg.Expect(c.Create(ctx, ns)).To(Succeed())\n\n\t// Use -1 because the defaulting webhook converts 0 to 3. The\n\t// kubebuilder:validation:Minimum=1 CRD schema rule and the validating\n\t// webhook both reject negative values.\n\tk := validIntegrationKeystone(\"replicas-neg\", ns.Name)\n\tk.Spec.Replicas = -1\n\n\terr := c.Create(ctx, k)\n\tg.Expect(err).To(HaveOccurred(), \"negative replicas should be rejected\")\n\tg.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),\n\t\tfmt.Sprintf(\"expected Invalid or Forbidden status error, got: %v\", err))\n}\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: operators/keystone/api/v1alpha1/integration_test.go\nLine: 176-195\n\nComment:\n**Test name says \"Zero\" but tests `-1` — misleading for future maintainers**\n\nThe function is named `TestIntegration_CELRejectsReplicasZero` but the actual input under test is `Replicas = -1`. The choice of `-1` is correct and well-explained in the comment (the defaulting webhook converts `0` to `3`, so `0` cannot reach the CEL/validation layer), but the name implies the zero value is being tested.\n\nConsider renaming to `TestIntegration_CELRejectsReplicasBelowMinimum` to match the other minimum-value tests and remove ambiguity:\n\n```suggestion\nfunc TestIntegration_CELRejectsReplicasBelowMinimum(t *testing.T) {\n\ttestutil.SkipIfEnvTestUnavailable(t)\n\tg := NewGomegaWithT(t)\n\n\tc, ctx, _ := setupEnvTest(t)\n\n\tns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: \"test-cel-replicas-\"}}\n\tg.Expect(c.Create(ctx, ns)).To(Succeed())\n\n\t// Use -1 because the defaulting webhook converts 0 to 3. The\n\t// kubebuilder:validation:Minimum=1 CRD schema rule and the validating\n\t// webhook both reject negative values.\n\tk := validIntegrationKeystone(\"replicas-neg\", ns.Name)\n\tk.Spec.Replicas = -1\n\n\terr := c.Create(ctx, k)\n\tg.Expect(err).To(HaveOccurred(), \"negative replicas should be rejected\")\n\tg.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),\n\t\tfmt.Sprintf(\"expected Invalid or Forbidden status error, got: %v\", err))\n}\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>\n\n<sub>Note: If this suggestion doesn't match your team's coding style, reply to this and let me know. I'll remember it for next time!</sub>",
+      "path": "operators/keystone/api/v1alpha1/integration_test.go",
+      "line": 195,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-10T14:04:48Z",
+      "id": null,
+      "resolution": ""
+    }
+  ],
+  "github_review_id": 3922672440
+}

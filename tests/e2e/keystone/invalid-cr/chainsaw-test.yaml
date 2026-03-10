@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E tests for Keystone CRD webhook validation rejection (CC-0012).
+# Verifies that the validating webhook correctly rejects invalid CR specs
+# with HTTP 422 responses containing descriptive field-level errors.
+apiVersion: chainsaw.kyverno.io/v1alpha2
+kind: Test
+metadata:
+  name: keystone-invalid-cr
+spec:
+  steps:
+  # REQ-008 (CC-0012): Invalid cron expression must be rejected.
+  - name: invalid-cron-expression-rejected
+    try:
+    - apply:
+        file: 00-invalid-cron.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'rotationSchedule')): true
+            (contains($error, 'invalid cron expression')): true
+  # REQ-009 (CC-0012): Duplicate plugin configSection must be rejected.
+  - name: duplicate-plugin-config-section-rejected
+    try:
+    - apply:
+        file: 01-duplicate-plugins.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'configSection')): true
+            (contains($error, 'Duplicate value')): true

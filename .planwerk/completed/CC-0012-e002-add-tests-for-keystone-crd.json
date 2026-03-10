@@ -2,8 +2,8 @@
   "feature_id": "CC-0012",
   "title": "E002: Add tests for Keystone CRD",
   "slug": "e002-add-tests-for-keystone-crd",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 🔨 medium\n**Category:** backend\n**Priority:** high\n**Feature ID:** CC-0012\n\n## Summary\n\nCC-0012 adds two test layers for the Keystone CRD and webhooks. First, envtest integration tests (`//go:build integration`) verify that the generated CRD installs correctly, that a valid `Keystone` CR is accepted by the API server, that invalid CRs are rejected by CEL schema validation rules (mutual exclusivity constraints, minimum values), and that the webhook defaulter populates zero-valued fields. Second, a Chainsaw E2E test at `tests/e2e/keystone/invalid-cr/` deploys the operator to a real cluster and asserts HTTP 422 rejection for invalid cron expressions in `fernet.rotationSchedule` and duplicate `configSection` values in `plugins`. Webhook registration is wired into `main.go` to unblock E2E testing.\n\n## Scope\n\n**Included:**\n- Wire `(&keystonev1alpha1.KeystoneWebhook{}).SetupWebhookWithManager(mgr)` in `operators/keystone/main.go` (resolving the existing `TODO(CC-0012)`)\n- Generate webhook manifests via `controller-gen webhook` to create `operators/keystone/config/webhook/` (prerequisite for envtest `WebhookInstallOptions`)\n- envtest integration test file `operators/keystone/api/v1alpha1/integration_test.go` with `//go:build integration` tag\n- Test: CRD installs successfully in envtest (API resource discoverable)\n- Test: Valid `Keystone` CR accepted (using `validKeystone()` pattern from existing `keystone_webhook_test.go`)\n- Test: Invalid CRs rejected by CRD CEL rules (database clusterRef/host exclusivity, cache clusterRef/servers exclusivity, replicas < 1, maxActiveKeys < 3, policyOverrides empty)\n- Test: Webhook defaulter sets `replicas=3`, `cache.backend=\"dogpile.cache.pymemcache\"`, `bootstrap.adminUser=\"admin\"`, `bootstrap.region=\"RegionOne\"`, `fernet.maxActiveKeys=3` when zero-valued\n- Dedicated Keystone envtest helper `operators/keystone/internal/testutil/envtest_setup.go` wrapping `envtest.Environment` with `WebhookInstallOptions`\n- Chainsaw test directory `tests/e2e/keystone/invalid-cr/` with `chainsaw-test.yaml` (API `v1alpha2`, matching `tests/e2e/chainsaw-config.yaml`)\n- Chainsaw test case: apply CR with invalid cron expression → expect HTTP 422\n- Chainsaw test case: apply CR with duplicate plugin `configSection` → expect HTTP 422\n- Keystone scheme registration local to the integration test (not modifying `SharedScheme()`)\n\n**Excluded:**\n- Reconciler integration tests (CC-0014, depends on CC-0013)\n- Full Chainsaw E2E suite — basic-deployment, fernet-rotation, scale, etc. (CC-0016, depends on CC-0013)\n- Modifying `SharedScheme()` in `internal/common/testutil/envtest/setup.go` (YAGNI — only Keystone tests need the Keystone scheme)\n- CI pipeline changes for `test-integration` or `e2e` jobs (separate task)\n- Makefile target updates (separate task)\n- Controller/reconciler implementation (CC-0013)\n\n## Visualization\n\n```mermaid\nflowchart TD\n    subgraph envtest[\"envtest Integration Tests\"]\n        CRD[\"Install Keystone CRD\"] --> REG[\"Verify CRD Registration\"]\n        CRD --> VALID[\"Create Valid CR\"]\n        CRD --> INVALID[\"Create Invalid CRs\"]\n        CRD --> WH[\"Start Webhook Server\"]\n        VALID --> ACCEPT[\"Assert: Accepted\"]\n        INVALID --> REJECT[\"Assert: Rejected by CEL\"]\n        WH --> DEFAULT[\"Create Zero-Value CR\"]\n        DEFAULT --> VERIFY[\"Assert: Fields Defaulted\"]\n    end\n\n    subgraph chainsaw[\"Chainsaw E2E - invalid-cr/\"]\n        DEPLOY[\"Deploy Operator + Webhook\"] --> CRON[\"Apply CR: Bad Cron\"]\n        DEPLOY --> DUP[\"Apply CR: Duplicate Plugins\"]\n        CRON --> ERR1[\"Assert: HTTP 422\"]\n        DUP --> ERR2[\"Assert: HTTP 422\"]\n    end\n\n    subgraph sources[\"Source Artifacts\"]\n        TYPES[\"keystone_types.go\"] --> CRDYAML[\"CRD YAML\"]\n        WEBHOOK[\"keystone_webhook.go\"] --> WHCONFIG[\"Webhook Config\"]\n        MAIN[\"main.go wiring\"] --> DEPLOY\n        CRDYAML --> CRD\n        WHCONFIG --> WH\n        CRDYAML --> DEPLOY\n        WHCONFIG --> DEPLOY\n    end\n```\n\n```mermaid\nsequenceDiagram\n    participant T as Test Runner\n    participant E as envtest API Server\n    participant W as Webhook Server\n    participant K as Kubernetes API\n\n    Note over T,E: envtest Integration\n    T->>E: Install CRD YAML\n    T->>E: Create valid Keystone CR\n    E-->>T: 201 Created\n    T->>E: Create invalid CR - replicas=0\n    E-->>T: 422 Invalid - CEL rejection\n    T->>W: Create zero-value CR\n    W->>W: Default mutates fields\n    W-->>E: Mutated CR\n    E-->>T: 201 Created - defaults applied\n\n    Note over T,K: Chainsaw E2E\n    T->>K: Apply CR with invalid cron\n    K->>W: Validate webhook call\n    W-->>K: Denied\n    K-->>T: 422 Invalid\n```\n\n## Key Components\n\n- **`operators/keystone/main.go`** (modify): Wire `SetupWebhookWithManager(mgr)` call inside `SetupFunc`, replacing the existing `TODO(CC-0012)` comment. ~3-line change.\n- **`operators/keystone/config/webhook/`** (generate): Run `controller-gen webhook` per the existing `//go:generate` directive in `groupversion_info.go` to produce webhook manifests. Prerequisite for envtest `WebhookInstallOptions`.\n- **`operators/keystone/api/v1alpha1/integration_test.go`** (new): envtest integration test file with `//go:build integration` tag. Tests CRD registration, valid/invalid CR acceptance, webhook defaulting. Uses `NewGomegaWithT(t)` and `envtestutil.SkipIfEnvTestUnavailable(t)` patterns consistent with existing integration tests (e.g., `internal/common/testutil/envtest/integration_test.go`). Reuses `validKeystone()` helper from `keystone_webhook_test.go`.\n- **`operators/keystone/internal/testutil/envtest_setup.go`** (new): Keystone-specific envtest helper configuring `envtest.Environment` with `CRDDirectoryPaths` pointing at `config/crd/bases/` and `WebhookInstallOptions` pointing at `config/webhook/`. Path resolution via `runtime.Caller(0)` follows existing `fakeCRDsDirs()` pattern. Registers Keystone types into a local scheme (not modifying `SharedScheme()`).\n- **`tests/e2e/keystone/invalid-cr/chainsaw-test.yaml`** (new): Chainsaw test definition (API `v1alpha2`, matching existing `chainsaw-config.yaml`) with two steps asserting webhook rejection.\n- **`tests/e2e/keystone/invalid-cr/00-invalid-cron.yaml`** (new): Keystone CR manifest with invalid `fernet.rotationSchedule` value (e.g., `\"not-a-cron\"`).\n- **`tests/e2e/keystone/invalid-cr/01-duplicate-plugins.yaml`** (new): Keystone CR manifest with two `plugins` entries sharing the same `configSection` value.\n- **`operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml`** (existing, not modified): Generated CRD YAML used as `CRDDirectoryPaths` source for envtest.\n- **`operators/keystone/api/v1alpha1/keystone_webhook.go`** (existing, not modified): Source of defaulting and validation logic under test. Uses typed generic webhook pattern (`admission.Defaulter[*Keystone]`, `admission.Validator[*Keystone]`).",
   "stories": [
@@ -348,6 +348,7 @@
       "description": "In operators/keystone/main.go, replace the TODO(CC-0012) comment inside SetupFunc with the actual webhook registration call: `if err := (&keystonev1alpha1.KeystoneWebhook{}).SetupWebhookWithManager(mgr); err != nil { return err }`. Change the underscore parameter `_` to `mgr`. Then run `go generate ./operators/keystone/api/v1alpha1/...` (or the equivalent controller-gen webhook command from the //go:generate directive) to produce operators/keystone/config/webhook/ manifests. Verify the config/webhook/ directory contains mutatingwebhookconfiguration.yaml and validatingwebhookconfiguration.yaml.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002"
@@ -359,6 +360,7 @@
       "description": "Create operators/keystone/internal/testutil/envtest_setup.go. Implement a SetupKeystoneEnvTest(t testing.TB) function that: (1) uses runtime.Caller(0) to resolve paths to config/crd/bases/ and config/webhook/ relative to the helper file, (2) creates an envtest.Environment with CRDDirectoryPaths and WebhookInstallOptions.Paths, (3) builds a local scheme with clientgoscheme + apiextensionsv1 + keystonev1alpha1.AddToScheme (NOT modifying SharedScheme), (4) starts the environment, creates a controller-runtime client, registers t.Cleanup for teardown, and returns (client.Client, context.Context, context.CancelFunc). Also re-export SkipIfEnvTestUnavailable from the common envtest package. Follow patterns from internal/common/testutil/envtest/setup.go.",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -369,6 +371,7 @@
       "description": "Create operators/keystone/api/v1alpha1/integration_test.go with //go:build integration. Add test TestIntegration_CRDInstalled: calls SkipIfEnvTestUnavailable, calls SetupKeystoneEnvTest, lists CRDs via apiextensionsv1 and asserts keystones.keystone.openstack.c5c3.io is present. Add test TestIntegration_ValidCRAccepted: creates a Keystone CR using validKeystone() with ObjectMeta (name, namespace), asserts client.Create succeeds, asserts client.Get retrieves the CR. Add test TestIntegration_ValidCRWithClusterRefAccepted: creates a valid CR using clusterRef mode instead of host mode. Uses Gomega NewGomegaWithT(t) pattern consistent with existing tests.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-005",
@@ -381,6 +384,7 @@
       "description": "In the same integration_test.go, add tests for CEL validation rejection: TestIntegration_CELRejectsDBBothClusterRefAndHost (set both database.clusterRef and database.host, assert apierrors.IsInvalid or error contains 'database'), TestIntegration_CELRejectsCacheBothClusterRefAndServers, TestIntegration_CELRejectsReplicasZero (replicas=0), TestIntegration_CELRejectsMaxActiveKeysBelowMinimum (maxActiveKeys=1), TestIntegration_CELRejectsPolicyOverridesEmpty (policyOverrides set but empty). Each test uses SkipIfEnvTestUnavailable, creates a namespace, submits the invalid CR via unstructured client (to bypass typed defaulting), and asserts the expected rejection.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-010"
@@ -392,6 +396,7 @@
       "description": "In the same integration_test.go, add tests for webhook defaulting: TestIntegration_WebhookDefaultsSetsZeroValues: creates a Keystone CR with zero-valued replicas, empty cache.backend, empty bootstrap.adminUser, empty bootstrap.region, zero fernet.maxActiveKeys (but valid database, cache.servers, and fernet.rotationSchedule), asserts create succeeds, retrieves the CR, asserts spec fields have the expected defaults (3, 'dogpile.cache.pymemcache', 'admin', 'RegionOne', 3). TestIntegration_WebhookDefaultsPreservesExplicit: creates a CR with replicas=5 and region='EU-West', asserts those values are preserved after creation.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-007",
         "REQ-010"
@@ -403,6 +408,7 @@
       "description": "Create tests/e2e/keystone/invalid-cr/ directory. Create 00-invalid-cron.yaml: a Keystone CR manifest with valid database (host mode), cache (servers mode), bootstrap, but fernet.rotationSchedule='not-a-cron'. Create chainsaw-test.yaml with apiVersion chainsaw.kyverno.io/v1alpha2, kind Test, metadata.name 'keystone-invalid-cr'. Step 1: try apply 00-invalid-cron.yaml with expect error matching the 422 rejection (check: message contains 'rotationSchedule' or status code 422). Follow the existing chainsaw-config.yaml patterns.",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -413,6 +419,7 @@
       "description": "In the same tests/e2e/keystone/invalid-cr/ directory, create 01-duplicate-plugins.yaml: a Keystone CR with valid base spec but two plugins with the same configSection value (e.g., 'section_a'). Add a second step in chainsaw-test.yaml that applies 01-duplicate-plugins.yaml and expects a 422 error containing 'configSection'. Ensure the test steps are independent (each creates and fails, no shared state).",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -423,6 +430,7 @@
       "description": "Add a 'Testing' section to docs/reference/keystone-crd.md documenting: (1) the envtest integration test file location and how to run it (go test -tags integration ./operators/keystone/api/v1alpha1/ with KUBEBUILDER_ASSETS), (2) the Keystone-specific envtest setup helper location and purpose, (3) the Chainsaw E2E test directory for invalid-cr/ and how to run it (chainsaw test ./tests/e2e/keystone/invalid-cr/). Keep concise, link to architecture/docs/09-implementation/06-testing.md for broader context.",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-004",
@@ -560,8 +568,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-03-10T12:13:21.822728"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-10T13:01:32.212301"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-10T15:50:57.104135"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/55",
+  "pr_number": 55,
   "execution_history": [
     {
       "run_id": "96b1c6b7-7526-4fd3-9ed9-b011912efb57",
@@ -573,6 +591,84 @@
           "name": "prepare",
           "duration": 233.82043266296387,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "e38050de-f186-4d2a-aa44-fff7dde34ff7",
+      "timestamp": "2026-03-10T13:41:53.971122",
+      "total_duration": 2113.1471722126007,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (2 tasks)",
+          "duration": 362.4863860607147,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (3 tasks)",
+          "duration": 800.2480022907257,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (2 tasks)",
+          "duration": 310.2226688861847,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (1 tasks)",
+          "duration": 171.23115992546082,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0012] Code Review",
+          "duration": 320.8859136104584,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0012] Improvements",
+          "duration": 71.86633110046387,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0012] Simplify",
+          "duration": 76.20671033859253,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "6389237f-f381-4b38-aa04-92e4bad03ba4",
+      "timestamp": "2026-03-10T14:14:00.949888",
+      "total_duration": 485.1030158996582,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 485.1030158996582,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "a5d8075f-5638-4469-abbf-aa722dbad6dc",
+      "timestamp": "2026-03-10T14:51:42.882548",
+      "total_duration": 229.05701208114624,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 229.05701208114624,
+          "type": "review_address",
           "status": "done"
         }
       ]

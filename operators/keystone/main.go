@@ -31,10 +31,11 @@ func main() {
 	if err := bootstrap.Run(bootstrap.ManagerConfig{
 		Scheme:           scheme,
 		LeaderElectionID: "keystone.openstack.c5c3.io",
-		SetupFunc: func(_ ctrl.Manager) error {
+		SetupFunc: func(mgr ctrl.Manager) error {
 			// +kubebuilder:scaffold:builder — register controllers here
-			// TODO(CC-0012): Call (&keystonev1alpha1.KeystoneWebhook{}).SetupWebhookWithManager(mgr)
-			// once the Keystone controller is wired up.
+			if err := (&keystonev1alpha1.KeystoneWebhook{}).SetupWebhookWithManager(mgr); err != nil {
+				return err
+			}
 			return nil
 		},
 	}); err != nil {

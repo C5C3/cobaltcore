@@ -27,6 +27,9 @@ var (
 	_ admission.Validator[*Keystone] = &KeystoneWebhook{}
 )
 
+// +kubebuilder:webhook:path=/mutate-keystone-openstack-c5c3-io-v1alpha1-keystone,mutating=true,failurePolicy=fail,sideEffects=None,groups=keystone.openstack.c5c3.io,resources=keystones,verbs=create;update,versions=v1alpha1,name=mkeystone.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-keystone-openstack-c5c3-io-v1alpha1-keystone,mutating=false,failurePolicy=fail,sideEffects=None,groups=keystone.openstack.c5c3.io,resources=keystones,verbs=create;update;delete,versions=v1alpha1,name=vkeystone.kb.io,admissionReviewVersions=v1
+
 // SetupWebhookWithManager registers the defaulting and validating webhooks with the manager.
 func (w *KeystoneWebhook) SetupWebhookWithManager(mgr ctrl.Manager) error {
 	return builder.WebhookManagedBy[*Keystone](mgr, &Keystone{}).

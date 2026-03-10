@@ -1,0 +1,111 @@
+{
+  "feature_id": "CC-0012",
+  "title": "E002: Add tests for Keystone CRD",
+  "date": "2026-03-10",
+  "summary": "CC-0012 adds envtest integration tests (CRD installation, valid CR acceptance, CEL rejection, webhook defaulting) and Chainsaw E2E tests (invalid cron, duplicate plugins) for the Keystone CRD. Webhook registration is wired into main.go, and webhook manifests are generated via controller-gen. Implementation is well-structured, follows established patterns, and covers all planned requirements. One blocking issue: the Chainsaw test file uses apiVersion v1alpha1 instead of v1alpha2 as specified by both the plan and the project's chainsaw-config.yaml.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Integration tests exist with //go:build integration tag", "checked": true},
+    {"item": "SkipIfEnvTestUnavailable(t) called as first statement in every integration test", "checked": true},
+    {"item": "CRD installation verified (TestIntegration_CRDInstalled)", "checked": true},
+    {"item": "Valid CR acceptance tested in both host and clusterRef modes", "checked": true},
+    {"item": "CEL rejection tests cover all 5 constraint violations", "checked": true},
+    {"item": "Webhook defaulting tests verify zero-value defaults and explicit value preservation", "checked": true},
+    {"item": "Chainsaw E2E tests cover invalid cron and duplicate plugins", "checked": true},
+    {"item": "Tests use namespace isolation via GenerateName", "checked": true},
+    {"item": "Unit tests pass (28/28)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows Gomega NewGomegaWithT pattern", "checked": true},
+    {"item": "envtest helper uses runtime.Caller(0) path resolution matching fakeCRDsDirs() pattern", "checked": true},
+    {"item": "Local scheme registration (SharedScheme not modified)", "checked": true},
+    {"item": "Import cycle avoided via addToScheme/registerWebhooks callbacks", "checked": true},
+    {"item": "Reuses validKeystone() helper from webhook unit tests", "checked": true},
+    {"item": "SPDX headers on all new files", "checked": true},
+    {"item": "Feature ID (CC-0012) referenced in comments and docs", "checked": true},
+    {"item": "Webhook manifests generated (not hand-written) via controller-gen", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "gosec nolint annotation justified (InsecureSkipVerify for envtest self-signed cert)", "checked": true},
+    {"item": "No user input handling in new code", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Operator entrypoint via shared bootstrap pattern followed", "checked": true},
+    {"item": "Typed-generic webhook struct pattern followed", "checked": true},
+    {"item": "envtest skip guard pattern followed (re-export from common)", "checked": true},
+    {"item": "No scope creep (no reconciler tests, no full E2E suite, no SharedScheme changes)", "checked": true},
+    {"item": "Chainsaw test apiVersion matches project chainsaw-config.yaml", "checked": false}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated test setup code (centralized in setupEnvTest helper)", "checked": true},
+    {"item": "No unnecessary abstractions", "checked": true},
+    {"item": "Minimal changes to existing files (main.go: 3 lines, webhook.go: 2 marker lines)", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "envtest setup failures use t.Fatalf (immediate stop)", "checked": true},
+    {"item": "Webhook server readiness checked before tests run", "checked": true},
+    {"item": "Environment cleanup registered via t.Cleanup", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "ErrorIfCRDPathMissing: true in envtest Environment", "checked": true},
+    {"item": "runtime.Caller(0) panic on failure (consistent with fakeCRDsDirs)", "checked": true},
+    {"item": "env.Stop() called in all error paths before t.Fatalf", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [
+    {
+      "severity": "MINOR",
+      "description": "Importing commonenvtest package solely for SkipIfEnvTestUnavailable pulls in transitive dependencies (cert-manager, mariadb-operator, external-secrets, gateway-api) into the keystone go.mod. A future improvement could extract the skip guard into a dependency-free sub-package.",
+      "location": "operators/keystone/internal/testutil/envtest_setup.go:27",
+      "fix": "No action needed now (plan-approved design). Consider extracting SkipIfEnvTestUnavailable into internal/common/testutil/envtest/guard/ in a future cleanup task."
+    }
+  ],
+  "issues_found": [
+    {
+      "id": "C1-1",
+      "check_id": "C1",
+      "severity": "blocking",
+      "file": "tests/e2e/keystone/invalid-cr/chainsaw-test.yaml",
+      "line": 8,
+      "description": "Chainsaw test uses apiVersion chainsaw.kyverno.io/v1alpha1 but the plan (Task 3.1) and review criteria both specify v1alpha2. The project's chainsaw-config.yaml (line 19) uses v1alpha2. This is an inconsistency that could cause parse errors with Chainsaw v0.3+ if the Test kind also requires v1alpha2. If v1alpha1 is intentionally correct for the Test kind (distinct from the Configuration kind), add a DEVIATION comment explaining why.",
+      "fix": "Change line 8 from 'apiVersion: chainsaw.kyverno.io/v1alpha1' to 'apiVersion: chainsaw.kyverno.io/v1alpha2'. If Chainsaw Test kind only supports v1alpha1, add a comment: '# NOTE: Chainsaw Test kind uses v1alpha1 (distinct from Configuration v1alpha2)' and update the review criteria."
+    },
+    {
+      "id": "DA3-1",
+      "check_id": "DA3",
+      "severity": "major",
+      "file": "docs/reference/keystone-crd.md",
+      "line": 398,
+      "description": "Documentation states E2E tests use 'the Chainsaw framework (chainsaw.kyverno.io/v1alpha1)' but should reference the same apiVersion used in the actual test file after the C1-1 fix above.",
+      "fix": "Update line 398 to match the corrected apiVersion in chainsaw-test.yaml (v1alpha2 if C1-1 is fixed to v1alpha2, or add the same clarifying note if v1alpha1 is retained with a DEVIATION comment)."
+    }
+  ],
+  "suggested_improvements": [
+    "Consider extracting SkipIfEnvTestUnavailable into a dependency-free sub-package to avoid pulling cert-manager, mariadb-operator, and external-secrets into every operator's go.mod (future cleanup, not blocking)."
+  ],
+  "next_steps": [
+    "Fix C1-1: Update chainsaw-test.yaml apiVersion to v1alpha2 (or add DEVIATION comment if v1alpha1 is correct for Test kind)",
+    "Fix DA3-1: Update docs/reference/keystone-crd.md line 398 to match the corrected apiVersion",
+    "Re-run review after fixes"
+  ],
+  "detected_patterns": [
+    {
+      "name": "Operator-specific envtest helper with webhook server and callback-based scheme registration",
+      "component": "operators/*/internal/testutil/",
+      "category": "testing",
+      "applies_when": "Adding envtest integration tests for a new operator that has defaulting/validating webhooks and needs to test through the full admission pipeline (not just unit-testing webhook functions)",
+      "description": "Each operator that needs webhook integration testing creates a dedicated envtest setup helper in operators/<name>/internal/testutil/envtest_setup.go. The helper: (1) resolves CRD and webhook manifest paths via runtime.Caller(0) relative to the helper file, (2) starts envtest.Environment with CRDDirectoryPaths and WebhookInstallOptions, (3) builds a local scheme using callbacks (addToScheme, registerWebhooks) to avoid import cycles with the api/v1alpha1 package, (4) creates a controller-runtime manager with a webhook server bound to envtest-allocated host/port/certDir, (5) waits for the webhook server TLS endpoint to accept connections, (6) returns the manager's client. This differs from the common SetupEnvTest (which has no webhook support) and keeps SharedScheme() unmodified. Re-exports SkipIfEnvTestUnavailable from the common envtest package.",
+      "examples": [
+        {
+          "location": "operators/keystone/internal/testutil/envtest_setup.go:47",
+          "code": "func SetupKeystoneEnvTest(\n\tt testing.TB,\n\taddToScheme func(*k8sruntime.Scheme) error,\n\tregisterWebhooks func(ctrl.Manager) error,\n) (client.Client, context.Context, context.CancelFunc) {\n\tt.Helper()\n\tcrdDir, webhookDir := keystonePaths()\n\tenv := &envtest.Environment{\n\t\tCRDDirectoryPaths:     []string{crdDir},\n\t\tErrorIfCRDPathMissing: true,\n\t\tWebhookInstallOptions: envtest.WebhookInstallOptions{\n\t\t\tPaths: []string{webhookDir},\n\t\t},\n\t}"
+        },
+        {
+          "location": "operators/keystone/api/v1alpha1/integration_test.go:35",
+          "code": "func setupEnvTest(t testing.TB) (client.Client, context.Context, context.CancelFunc) {\n\tt.Helper()\n\treturn testutil.SetupKeystoneEnvTest(t, AddToScheme, func(mgr ctrl.Manager) error {\n\t\treturn (&KeystoneWebhook{}).SetupWebhookWithManager(mgr)\n\t})\n}"
+        }
+      ]
+    }
+  ]
+}

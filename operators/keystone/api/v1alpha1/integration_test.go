@@ -1,0 +1,328 @@
+// SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+//
+// SPDX-License-Identifier: Apache-2.0
+
+//go:build integration
+
+package v1alpha1
+
+import (
+	"context"
+	"fmt"
+	"testing"
+
+	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
+
+	commonv1 "github.com/c5c3/forge/internal/common/types"
+	"github.com/c5c3/forge/operators/keystone/internal/testutil"
+)
+
+// Feature: CC-0012
+
+// --- Helpers ---
+
+// setupEnvTest wraps testutil.SetupKeystoneEnvTest with the v1alpha1 scheme
+// registration and webhook setup, avoiding the import cycle between testutil
+// and this package.
+func setupEnvTest(t testing.TB) (client.Client, context.Context, context.CancelFunc) {
+	t.Helper()
+	return testutil.SetupKeystoneEnvTest(t, AddToScheme, func(mgr ctrl.Manager) error {
+		return (&KeystoneWebhook{}).SetupWebhookWithManager(mgr)
+	})
+}
+
+// validIntegrationKeystone returns a valid Keystone CR suitable for envtest
+// integration tests. It uses the same field values as validKeystone() from
+// keystone_webhook_test.go but adds ObjectMeta for API server submission.
+func validIntegrationKeystone(name, namespace string) *Keystone {
+	k := validKeystone()
+	k.Name = name
+	k.Namespace = namespace
+	return k
+}
+
+// --- Task 2.1: CRD installation and valid CR acceptance tests ---
+
+func TestIntegration_CRDInstalled(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+
+	crdList := &apiextensionsv1.CustomResourceDefinitionList{}
+	g.Expect(c.List(ctx, crdList)).To(Succeed())
+
+	installed := make(map[string]bool, len(crdList.Items))
+	for _, crd := range crdList.Items {
+		installed[crd.Name] = true
+	}
+
+	const expectedCRD = "keystones.keystone.openstack.c5c3.io"
+	g.Expect(installed).To(HaveKey(expectedCRD), "expected CRD %q to be installed", expectedCRD)
+}
+
+func TestIntegration_ValidCRAccepted(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-valid-cr-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	k := validIntegrationKeystone("valid-cr", ns.Name)
+	g.Expect(c.Create(ctx, k)).To(Succeed(), "valid Keystone CR should be accepted")
+
+	// Verify it can be retrieved.
+	got := &Keystone{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "valid-cr", Namespace: ns.Name}, got)).To(Succeed())
+	g.Expect(got.Spec.Replicas).To(Equal(int32(3)))
+	g.Expect(got.Spec.Database.Host).To(Equal("db.example.com"))
+}
+
+func TestIntegration_ValidCRWithClusterRefAccepted(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-clusterref-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	k := validIntegrationKeystone("clusterref-cr", ns.Name)
+	// Switch database to ClusterRef mode.
+	k.Spec.Database.ClusterRef = &corev1.LocalObjectReference{Name: "mariadb"}
+	k.Spec.Database.Host = ""
+	// Switch cache to ClusterRef mode.
+	k.Spec.Cache.ClusterRef = &corev1.LocalObjectReference{Name: "memcached"}
+	k.Spec.Cache.Servers = nil
+
+	g.Expect(c.Create(ctx, k)).To(Succeed(), "Keystone CR with ClusterRef mode should be accepted")
+
+	got := &Keystone{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "clusterref-cr", Namespace: ns.Name}, got)).To(Succeed())
+	g.Expect(got.Spec.Database.ClusterRef.Name).To(Equal("mariadb"))
+	g.Expect(got.Spec.Cache.ClusterRef.Name).To(Equal("memcached"))
+}
+
+// --- Task 2.2: CEL validation rejection tests ---
+
+func TestIntegration_CELRejectsDBBothClusterRefAndHost(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cel-db-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	k := validIntegrationKeystone("db-both", ns.Name)
+	k.Spec.Database.ClusterRef = &corev1.LocalObjectReference{Name: "mariadb"}
+	k.Spec.Database.Host = "db.example.com"
+
+	err := c.Create(ctx, k)
+	g.Expect(err).To(HaveOccurred(), "setting both database.clusterRef and database.host should be rejected")
+	g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
+		fmt.Sprintf("expected Invalid or Forbidden status error, got: %v", err))
+	g.Expect(err.Error()).To(ContainSubstring("database"))
+}
+
+func TestIntegration_CELRejectsCacheBothClusterRefAndServers(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cel-cache-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	k := validIntegrationKeystone("cache-both", ns.Name)
+	k.Spec.Cache.ClusterRef = &corev1.LocalObjectReference{Name: "memcached"}
+	k.Spec.Cache.Servers = []string{"mc:11211"}
+
+	err := c.Create(ctx, k)
+	g.Expect(err).To(HaveOccurred(), "setting both cache.clusterRef and cache.servers should be rejected")
+	g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
+		fmt.Sprintf("expected Invalid or Forbidden status error, got: %v", err))
+	g.Expect(err.Error()).To(ContainSubstring("cache"))
+}
+
+func TestIntegration_CELRejectsReplicasBelowMinimum(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cel-replicas-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	// Use -1 because the defaulting webhook converts 0 to 3. The
+	// kubebuilder:validation:Minimum=1 CRD schema rule and the validating
+	// webhook both reject negative values.
+	k := validIntegrationKeystone("replicas-neg", ns.Name)
+	k.Spec.Replicas = -1
+
+	err := c.Create(ctx, k)
+	g.Expect(err).To(HaveOccurred(), "negative replicas should be rejected")
+	g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
+		fmt.Sprintf("expected Invalid or Forbidden status error, got: %v", err))
+}
+
+func TestIntegration_CELRejectsMaxActiveKeysBelowMinimum(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cel-mak-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	// Use 1 because the defaulting webhook only converts 0 to 3.
+	// The kubebuilder:validation:Minimum=3 CRD schema rule and the
+	// validating webhook both reject values below 3 (except 0 which
+	// is treated as "use default").
+	k := validIntegrationKeystone("mak-below-min", ns.Name)
+	k.Spec.Fernet.MaxActiveKeys = 1
+
+	err := c.Create(ctx, k)
+	g.Expect(err).To(HaveOccurred(), "maxActiveKeys=1 should be rejected (minimum is 3)")
+	g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
+		fmt.Sprintf("expected Invalid or Forbidden status error, got: %v", err))
+}
+
+func TestIntegration_CELRejectsPolicyOverridesEmpty(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cel-policy-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	k := validIntegrationKeystone("policy-empty", ns.Name)
+	k.Spec.PolicyOverrides = &commonv1.PolicySpec{}
+
+	err := c.Create(ctx, k)
+	g.Expect(err).To(HaveOccurred(), "empty policyOverrides should be rejected")
+	g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
+		fmt.Sprintf("expected Invalid or Forbidden status error, got: %v", err))
+	g.Expect(err.Error()).To(ContainSubstring("policyOverrides"))
+}
+
+// --- Task 2.3: Webhook defaulting tests ---
+
+func TestIntegration_WebhookDefaultsSetsZeroValues(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-defaults-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	// Create a CR with zero values for fields that the webhook should default.
+	// Required fields (database, cache, image, fernet.rotationSchedule,
+	// bootstrap.adminPasswordSecretRef) must still be valid.
+	k := &Keystone{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "defaults-zero",
+			Namespace: ns.Name,
+		},
+		Spec: KeystoneSpec{
+			Replicas: 0, // webhook defaults to 3
+			Image:    commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Database: commonv1.DatabaseSpec{
+				Host:      "db.example.com",
+				Port:      3306,
+				Database:  "keystone",
+				SecretRef: commonv1.SecretRefSpec{Name: "keystone-db"},
+			},
+			Cache: commonv1.CacheSpec{
+				Backend: "", // webhook defaults to "dogpile.cache.pymemcache"
+				Servers: []string{"mc:11211"},
+			},
+			Fernet: FernetSpec{
+				RotationSchedule: "0 0 * * 0",
+				MaxActiveKeys:    0, // webhook defaults to 3
+			},
+			Bootstrap: BootstrapSpec{
+				AdminUser:              "", // webhook defaults to "admin"
+				AdminPasswordSecretRef: commonv1.SecretRefSpec{Name: "keystone-admin"},
+				Region:                 "", // webhook defaults to "RegionOne"
+			},
+		},
+	}
+
+	g.Expect(c.Create(ctx, k)).To(Succeed(), "CR with zero values should be accepted after webhook defaults")
+
+	got := &Keystone{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "defaults-zero", Namespace: ns.Name}, got)).To(Succeed())
+
+	// Verify that the webhook applied defaults for zero-valued fields.
+	g.Expect(got.Spec.Replicas).To(Equal(int32(3)), "replicas should be defaulted to 3")
+	g.Expect(got.Spec.Fernet.MaxActiveKeys).To(Equal(int32(3)), "maxActiveKeys should be defaulted to 3")
+	g.Expect(got.Spec.Cache.Backend).To(Equal("dogpile.cache.pymemcache"), "cache.backend should be defaulted")
+	g.Expect(got.Spec.Bootstrap.AdminUser).To(Equal("admin"), "bootstrap.adminUser should be defaulted")
+	g.Expect(got.Spec.Bootstrap.Region).To(Equal("RegionOne"), "bootstrap.region should be defaulted")
+}
+
+func TestIntegration_WebhookDefaultsPreservesExplicit(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-preserve-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	// Create a CR with explicit (non-zero) values for all defaultable fields.
+	k := &Keystone{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "defaults-explicit",
+			Namespace: ns.Name,
+		},
+		Spec: KeystoneSpec{
+			Replicas: 5,
+			Image:    commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Database: commonv1.DatabaseSpec{
+				Host:      "db.example.com",
+				Port:      3306,
+				Database:  "keystone",
+				SecretRef: commonv1.SecretRefSpec{Name: "keystone-db"},
+			},
+			Cache: commonv1.CacheSpec{
+				Backend: "dogpile.cache.memcache",
+				Servers: []string{"mc:11211"},
+			},
+			Fernet: FernetSpec{
+				RotationSchedule: "0 */6 * * *",
+				MaxActiveKeys:    7,
+			},
+			Bootstrap: BootstrapSpec{
+				AdminUser:              "custom-admin",
+				AdminPasswordSecretRef: commonv1.SecretRefSpec{Name: "keystone-admin"},
+				Region:                 "EU-West",
+			},
+		},
+	}
+
+	g.Expect(c.Create(ctx, k)).To(Succeed(), "CR with explicit values should be accepted")
+
+	got := &Keystone{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "defaults-explicit", Namespace: ns.Name}, got)).To(Succeed())
+
+	// Verify that the webhook preserved all explicitly set values.
+	g.Expect(got.Spec.Replicas).To(Equal(int32(5)), "explicit replicas should be preserved")
+	g.Expect(got.Spec.Fernet.MaxActiveKeys).To(Equal(int32(7)), "explicit maxActiveKeys should be preserved")
+	g.Expect(got.Spec.Cache.Backend).To(Equal("dogpile.cache.memcache"), "explicit cache.backend should be preserved")
+	g.Expect(got.Spec.Bootstrap.AdminUser).To(Equal("custom-admin"), "explicit bootstrap.adminUser should be preserved")
+	g.Expect(got.Spec.Bootstrap.Region).To(Equal("EU-West"), "explicit bootstrap.region should be preserved")
+}

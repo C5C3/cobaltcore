@@ -1,0 +1,66 @@
+{
+  "feature_id": "CC-0012",
+  "title": "E002: Add tests for Keystone CRD",
+  "date": "2026-03-10",
+  "verdict": "APPROVED",
+  "summary": "All four items from greptile-apps[bot] external review #1 are correctly addressed: (1) mgrStopped channel synchronizes goroutine shutdown in cleanup and both error paths, (2) metrics and health-probe servers disabled with BindAddress '0', (3) direct client.New replaces mgr.GetClient() matching the project's canonical pattern in internal/common/testutil/envtest/setup.go, (4) test renamed from CELRejectsReplicasZero to CELRejectsReplicasBelowMinimum. go vet and golangci-lint pass clean. No new bugs introduced.",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (go vet, golangci-lint clean)", "checked": true},
+    {"item": "Edge cases covered (CEL rejection, webhook defaults, explicit value preservation)", "checked": true},
+    {"item": "Test names accurately describe behavior under test", "checked": true},
+    {"item": "Tests use direct API client for synchronous Create→Get assertions", "checked": true},
+    {"item": "Test cleanup awaits goroutine shutdown before releasing resources", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing envtest setup patterns (runtime.Caller path resolution, local scheme)", "checked": true},
+    {"item": "Follows Gomega NewGomegaWithT(t) assertion pattern", "checked": true},
+    {"item": "Follows namespace-isolated test pattern with GenerateName", "checked": true},
+    {"item": "Direct client matches common SetupEnvTest pattern (client.New instead of mgr.GetClient)", "checked": true},
+    {"item": "No code duplication — shared cleanup logic in error paths is unavoidable pre-t.Cleanup registration", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "InsecureSkipVerify only used for envtest self-signed cert with nolint annotation", "checked": true},
+    {"item": "No hardcoded secrets or credentials", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "SharedScheme() not modified — local scheme per test", "checked": true},
+    {"item": "Metrics and health-probe servers disabled to prevent port collisions", "checked": true},
+    {"item": "Goroutine synchronization prevents sequential-test port races", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No unnecessary abstractions", "checked": true},
+    {"item": "Changes strictly address external review feedback — no extras", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Error paths call t.Fatalf after proper cleanup (cancel → mgrStopped → env.Stop)", "checked": true},
+    {"item": "All error paths consistently await goroutine before environment teardown", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All error paths properly tear down resources in correct order", "checked": true},
+    {"item": "env.Stop errors logged but don't mask primary failure message", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": [
+    {
+      "name": "Goroutine-await channel for test manager lifecycle",
+      "component": "operators/*/internal/testutil",
+      "category": "testing",
+      "applies_when": "Starting a controller-runtime manager in a background goroutine within test setup code (e.g., for webhook testing with envtest)",
+      "description": "When a ctrl.Manager is started in a background goroutine during test setup, a 'mgrStopped' channel (make(chan struct{})) is created before the goroutine and closed via defer in the goroutine body. All teardown paths (t.Cleanup and error branches) must receive on this channel after calling cancel() and before calling env.Stop(), ensuring the manager has fully released its ports. This prevents sequential-test port-conflict races. Additionally, test managers must disable default listeners with Metrics: metricsserver.Options{BindAddress: \"0\"} and HealthProbeBindAddress: \"0\" to avoid port collisions.",
+      "examples": [
+        {
+          "location": "operators/keystone/internal/testutil/envtest_setup.go:103",
+          "code": "mgrStopped := make(chan struct{})\ngo func() {\n\tdefer close(mgrStopped)\n\tif err := mgr.Start(ctx); err != nil {\n\t\tt.Errorf(\"manager exited with error: %v\", err)\n\t}\n}()"
+        },
+        {
+          "location": "operators/keystone/internal/testutil/envtest_setup.go:141",
+          "code": "t.Cleanup(func() {\n\tcancel()\n\t<-mgrStopped // ensure manager has fully stopped and ports are released\n\tif err := env.Stop(); err != nil {\n\t\tt.Errorf(\"failed to stop Keystone envtest environment: %v\", err)\n\t}\n})"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "feature_id": "CC-0012",
+  "title": "E002: Add tests for Keystone CRD",
+  "date": "2026-03-10",
+  "summary": "Addresses external review #2 feedback from greptile-apps[bot]: updated stale test name `TestIntegration_CELRejectsReplicasZero` → `TestIntegration_CELRejectsReplicasBelowMinimum` in `docs/reference/keystone-crd.md`, added review pattern for cross-file rename consistency, and recorded the external review JSON. All changes are documentation/metadata only — no Go code modified.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass", "checked": true},
+    {"item": "Edge cases are covered", "checked": true},
+    {"item": "No Go code changed — test suite unaffected", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns", "checked": true},
+    {"item": "Review pattern file follows established format in .planwerk/review_patterns/", "checked": true},
+    {"item": "External review JSON follows established format", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "All user inputs validated", "checked": true},
+    {"item": "No security-relevant changes in this diff", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "No scope creep — only addresses the specific review feedback", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unnecessary additions", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs validated", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": []
+}

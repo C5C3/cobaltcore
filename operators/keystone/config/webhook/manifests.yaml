@@ -1,0 +1,53 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: mutating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-keystone-openstack-c5c3-io-v1alpha1-keystone
+  failurePolicy: Fail
+  name: mkeystone.kb.io
+  rules:
+  - apiGroups:
+    - keystone.openstack.c5c3.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - keystones
+  sideEffects: None
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-keystone-openstack-c5c3-io-v1alpha1-keystone
+  failurePolicy: Fail
+  name: vkeystone.kb.io
+  rules:
+  - apiGroups:
+    - keystone.openstack.c5c3.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    - DELETE
+    resources:
+    - keystones
+  sideEffects: None

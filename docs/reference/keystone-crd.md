@@ -1,7 +1,7 @@
 ---
 title: Keystone CRD API Reference
 quadrant: operator
-feature: CC-0011
+feature: CC-0011, CC-0012
 ---
 
 # Keystone CRD API Reference
@@ -304,6 +304,110 @@ providing clear, field-specific error messages to the operator.
 
 ---
 
+## Testing
+
+The Keystone CRD has a three-layer test strategy (CC-0012):
+
+1. **Unit tests** — fast, in-process tests for webhook logic (existing from CC-0011).
+2. **Integration tests** — envtest-based tests that run a real API server + etcd to
+   validate CRD schema, CEL rules, and webhooks through the full admission pipeline.
+3. **E2E tests** — Chainsaw tests that deploy the operator to a real cluster and verify
+   webhook rejection in a production-like environment.
+
+### Running the Tests
+
+| Layer | Command | Prerequisites |
+| --- | --- | --- |
+| Unit | `go test ./operators/keystone/api/v1alpha1/` | None |
+| Integration | `go test -tags=integration ./operators/keystone/api/v1alpha1/` | `KUBEBUILDER_ASSETS` set to envtest binaries |
+| E2E | `chainsaw test --test-dir tests/e2e/keystone/invalid-cr/` | Operator deployed to a cluster with webhooks active |
+
+### envtest Integration Helper
+
+The `operators/keystone/internal/testutil` package provides a Keystone-specific envtest
+setup helper that configures CRD installation and webhook serving for integration tests.
+
+```go
+func SetupKeystoneEnvTest(
+    t testing.TB,
+    addToScheme func(*runtime.Scheme) error,
+    registerWebhooks func(ctrl.Manager) error,
+) (client.Client, context.Context, context.CancelFunc)
+```
+
+**Design decisions (CC-0012):**
+
+- Uses a **local scheme** — `SharedScheme()` from `internal/common` is not modified.
+  Only Keystone tests need Keystone types registered.
+- Resolves CRD and webhook manifest paths via `runtime.Caller(0)` relative navigation,
+  matching the pattern in `internal/common/testutil/envtest/setup.go`.
+- Starts a controller-runtime manager with a webhook server bound to the envtest-allocated
+  host, port, and certificate directory.
+- Waits for the webhook server TLS endpoint to accept connections before returning.
+- Tears down the environment automatically via `t.Cleanup()`.
+
+**Parameters:**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `addToScheme` | `func(*runtime.Scheme) error` | Registers Keystone API types (breaks import cycle between testutil and v1alpha1). |
+| `registerWebhooks` | `func(ctrl.Manager) error` | Sets up webhook handlers with the manager. |
+
+The `SkipIfEnvTestUnavailable` guard is re-exported from
+`internal/common/testutil/envtest` for convenience.
+
+### Integration Test Coverage
+
+All integration tests use the `//go:build integration` tag and call
+`testutil.SkipIfEnvTestUnavailable(t)` as the first statement.
+
+#### CRD Installation and Valid CR Acceptance
+
+| Test | Requirement | Behavior |
+| --- | --- | --- |
+| `TestIntegration_CRDInstalled` | CRD discoverable | Lists CRDs via apiextensions API; verifies `keystones.keystone.openstack.c5c3.io` is present. |
+| `TestIntegration_ValidCRAccepted` | Happy-path admission | Creates a valid Keystone CR (brownfield database mode), verifies HTTP 201 and successful Get. |
+| `TestIntegration_ValidCRWithClusterRefAccepted` | ClusterRef mode | Creates a valid CR using `database.clusterRef` and `cache.clusterRef`, verifies acceptance and readback. |
+
+#### CEL Validation Rejection
+
+| Test | Requirement | Trigger | Expected Error |
+| --- | --- | --- | --- |
+| `TestIntegration_CELRejectsDBBothClusterRefAndHost` | Mutual exclusivity | Both `database.clusterRef` and `database.host` set | Invalid/Forbidden containing "database" |
+| `TestIntegration_CELRejectsCacheBothClusterRefAndServers` | Mutual exclusivity | Both `cache.clusterRef` and `cache.servers` set | Invalid/Forbidden containing "cache" |
+| `TestIntegration_CELRejectsReplicasBelowMinimum` | Minimum constraint | `replicas = -1` (note: 0 is converted to 3 by the defaulting webhook, so -1 is used) | Invalid/Forbidden |
+| `TestIntegration_CELRejectsMaxActiveKeysBelowMinimum` | Minimum constraint | `fernet.maxActiveKeys = 1` (below minimum of 3; 0 is defaulted to 3 by webhook) | Invalid/Forbidden |
+| `TestIntegration_CELRejectsPolicyOverridesEmpty` | Policy source required | `policyOverrides` set with neither `rules` nor `configMapRef` | Invalid/Forbidden containing "policyOverrides" |
+
+**Admission pipeline note:** In Kubernetes, the admission order is: mutating webhooks
+then schema validation (CEL) then validating webhooks. The defaulting webhook converts
+`replicas: 0` to `3` and `maxActiveKeys: 0` to `3` before CEL validation runs, so these
+tests use values that bypass defaulting (negative or non-zero-but-below-minimum) to
+exercise the CRD schema constraints.
+
+#### Webhook Defaulting
+
+| Test | Requirement | Behavior |
+| --- | --- | --- |
+| `TestIntegration_WebhookDefaultsSetsZeroValues` | Defaults applied | Creates a CR with zero-valued defaultable fields; verifies `replicas=3`, `cache.backend="dogpile.cache.pymemcache"`, `bootstrap.adminUser="admin"`, `bootstrap.region="RegionOne"`, `fernet.maxActiveKeys=3` after admission. |
+| `TestIntegration_WebhookDefaultsPreservesExplicit` | Explicit values preserved | Creates a CR with `replicas=5` and `region="EU-West"`; verifies these values are not overwritten by the defaulting webhook. |
+
+### Chainsaw E2E Tests
+
+E2E tests live in `tests/e2e/keystone/invalid-cr/` and use the Chainsaw framework
+(`chainsaw.kyverno.io/v1alpha2`). They verify webhook rejection in a real cluster with
+the operator deployed.
+
+| Step | Manifest | Requirement | Expected Error |
+| --- | --- | --- | --- |
+| `invalid-cron-expression-rejected` | `00-invalid-cron.yaml` | Invalid cron | Error containing "rotationSchedule" and "invalid cron expression" |
+| `duplicate-plugin-config-section-rejected` | `01-duplicate-plugins.yaml` | Duplicate configSection | Error containing "configSection" and "Duplicate value" |
+
+Each step uses `apply` with `expect` to assert that the `$error` variable is non-null
+and contains the expected field-level error message.
+
+---
+
 ## CRD Generation
 
 The CRD manifest and DeepCopy methods are generated by `controller-gen`:
@@ -340,10 +444,22 @@ operators/keystone/
 │   ├── keystone_webhook.go           Defaulting + validating webhooks
 │   ├── keystone_types_test.go        Type and scheme registration tests
 │   ├── keystone_webhook_test.go      Webhook unit tests (table-driven)
+│   ├── integration_test.go           envtest integration tests (CC-0012)
 │   └── zz_generated.deepcopy.go     Generated DeepCopy methods
 ├── config/crd/bases/
 │   └── keystone.openstack.c5c3.io_keystones.yaml  Generated CRD manifest
-└── main.go                           Scheme registration + bootstrap
+├── config/webhook/
+│   ├── manifests.yaml                Generated webhook configurations
+│   └── ...
+├── internal/testutil/
+│   └── envtest_setup.go              Keystone-specific envtest helper (CC-0012)
+└── main.go                           Scheme registration + bootstrap + webhook wiring
+
+tests/e2e/keystone/
+└── invalid-cr/
+    ├── chainsaw-test.yaml            Chainsaw E2E test definition (CC-0012)
+    ├── 00-invalid-cron.yaml          Invalid cron expression CR manifest
+    └── 01-duplicate-plugins.yaml     Duplicate plugin configSection CR manifest
 ```
 
 This layout is the canonical pattern for all CobaltCore operators. New operators
