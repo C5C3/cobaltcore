@@ -4,6 +4,9 @@ go 1.25.7
 
 require (
 	github.com/c5c3/forge/internal/common v0.0.0
+	github.com/onsi/gomega v1.39.1
+	github.com/robfig/cron/v3 v3.0.1
+	k8s.io/api v0.35.2
 	k8s.io/apimachinery v0.35.2
 	k8s.io/client-go v0.35.2
 	sigs.k8s.io/controller-runtime v0.23.3
@@ -63,7 +66,6 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
-	k8s.io/api v0.35.2 // indirect
 	k8s.io/apiextensions-apiserver v0.35.2 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20260127142750-a19766b6e2d4 // indirect

@@ -1,0 +1,137 @@
+{
+  "summary": "Keystone CRD reference implementation: types (11 spec fields, 3 printer columns, 2 XValidation CEL rules, status subresource), groupversion_info, webhook (defaulting + validating), deepcopy generation, CRD YAML generation, scheme registration in main.go, Makefile wiring for generate/manifests targets, reference documentation, and unit tests. Build/test/lint all pass, generated files are in sync. The implementation is well-structured and follows kubebuilder v4 / controller-runtime v0.23+ patterns. However, the webhook deviates from the plan in 3 areas: missing Cache.Backend defaulting (plan decision #1), extra Fernet.RotationSchedule defaulting (contradicts plan decision #3), and 2 missing validation rules (replicas < 1 check, empty policy rule name detection) with their corresponding tests.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (24 test functions, all PASS)", "checked": true},
+    {"item": "Defaulting positive test (zero values → defaults applied)", "checked": true},
+    {"item": "Defaulting negative test (explicit values preserved)", "checked": true},
+    {"item": "Cron validation: 5 valid expressions accepted, 5 invalid rejected", "checked": true},
+    {"item": "Duplicate plugin ConfigSection: unique accepted, duplicate rejected, nil plugins accepted", "checked": true},
+    {"item": "PolicyOverrides: nil, rules-only, configMapRef-only, both-sources accepted; no-sources rejected", "checked": true},
+    {"item": "Multi-error accumulation tested (3 violations in single object)", "checked": true},
+    {"item": "ValidateUpdate delegates to same validation as ValidateCreate", "checked": true},
+    {"item": "ValidateDelete always allows", "checked": true},
+    {"item": "Missing: replicas < 1 validation test cases (plan task 2.3 items 2-4)", "checked": false},
+    {"item": "Missing: empty policy rule name validation test case (plan task 2.3 item 13)", "checked": false},
+    {"item": "Missing: Cache.Backend defaulting test case", "checked": false},
+    {"item": "Tests use raw t.Errorf/t.Fatalf instead of project Gomega convention (plan task 2.2 requires NewGomegaWithT)", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "SPDX Apache-2.0 headers on all new Go files", "checked": true},
+    {"item": "Shared types reused from commonv1 (not redefined)", "checked": true},
+    {"item": "11 spec fields match plan scope exactly", "checked": true},
+    {"item": "3 printer columns (Ready/Endpoint/Age) present", "checked": true},
+    {"item": "2 XValidation CEL rules (Database, PolicyOverrides) present", "checked": true},
+    {"item": "Status subresource enabled", "checked": true},
+    {"item": "Webhook uses separate struct with generic interfaces (controller-runtime v0.23+)", "checked": true},
+    {"item": "Compile-time interface assertions for Defaulter/Validator", "checked": true},
+    {"item": "validate() accumulates errors via field.ErrorList (no short-circuit)", "checked": true},
+    {"item": "main.go follows operator-entrypoint-via-shared-bootstrap pattern", "checked": true},
+    {"item": "go.mod follows operator-module-dependency-with-local-replace-directive pattern", "checked": true},
+    {"item": "Makefile targets are generic (loop over operators with api/ dirs)", "checked": true},
+    {"item": "Generated files (deepcopy, CRD) are in sync with source", "checked": true},
+    {"item": "Reference documentation covers all spec fields, defaults, validation rules, generation commands", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Cron expressions validated via robfig/cron/v3 ParseStandard (no arbitrary code execution)", "checked": true},
+    {"item": "No hardcoded secrets or credentials", "checked": true},
+    {"item": "Input validation at webhook boundary (field.ErrorList pattern)", "checked": true},
+    {"item": "No path traversal or injection risks", "checked": true},
+    {"item": "CEL XValidation rules enforce structural constraints at API server level", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Types file structure matches kubebuilder v4 conventions", "checked": true},
+    {"item": "GroupVersion/SchemeBuilder/AddToScheme in separate groupversion_info.go", "checked": true},
+    {"item": "Webhook registration via builder.WebhookManagedBy[*Keystone]", "checked": true},
+    {"item": "Scheme registration in init() with kubebuilder scaffold markers preserved", "checked": true},
+    {"item": "CRD output directory follows operators/<name>/config/crd/bases/ convention", "checked": true},
+    {"item": "boilerplate.go.txt for controller-gen header generation", "checked": true},
+    {"item": "internal/common/types deepcopy generation via +kubebuilder:object:generate=true on doc.go", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No conversion webhooks (YAGNI — only v1alpha1)", "checked": true},
+    {"item": "No reconciler scaffolding (excluded per scope)", "checked": true},
+    {"item": "No cert-manager integration (excluded per scope)", "checked": true},
+    {"item": "ValidateDelete is a no-op (correct per architecture)", "checked": true},
+    {"item": "No unnecessary abstractions or helper packages", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "CEL validation runs before webhooks (API server level)", "checked": true},
+    {"item": "Webhook validation accumulates all errors (not just first)", "checked": true},
+    {"item": "field.ErrorList provides field-specific error paths", "checked": true},
+    {"item": "apierrors.NewInvalid returns structured StatusError with GroupKind", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Cron expression parsing validates format before use", "checked": true},
+    {"item": "Duplicate plugin detection via map tracking", "checked": true},
+    {"item": "PolicyOverrides nil check before accessing sub-fields", "checked": true},
+    {"item": "Kubebuilder Minimum markers on Replicas and MaxActiveKeys", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "id": "FC1-1",
+      "severity": "critical",
+      "check_id": "FC1",
+      "file": "operators/keystone/api/v1alpha1/keystone_webhook.go:39-56",
+      "description": "Missing Cache.Backend defaulting in Default(). Plan decision #1 explicitly requires: 'Default() sets Cache.Backend = \"dogpile.cache.pymemcache\" when empty'. The 5 planned defaults are: Replicas, Fernet.MaxActiveKeys, Cache.Backend, Bootstrap.AdminUser, Bootstrap.Region. Cache.Backend is not implemented.",
+      "fix": "Add to Default(): if obj.Spec.Cache.Backend == \"\" { obj.Spec.Cache.Backend = \"dogpile.cache.pymemcache\" }"
+    },
+    {
+      "id": "C1-1",
+      "severity": "critical",
+      "check_id": "C1",
+      "file": "operators/keystone/api/v1alpha1/keystone_webhook.go:43-45",
+      "description": "Fernet.RotationSchedule defaulting in Default() contradicts plan decision #3: 'Fernet.RotationSchedule defaulting → Rely on Kubebuilder marker only (+kubebuilder:default=\"0 0 * * 0\"); Default() does not set it.' The implementation adds this default which was explicitly excluded from the webhook.",
+      "fix": "Remove the RotationSchedule conditional block (lines 43-45) from Default(). The +kubebuilder:default marker on the type already handles schema-level defaulting."
+    },
+    {
+      "id": "FC1-2",
+      "severity": "critical",
+      "check_id": "FC1",
+      "file": "operators/keystone/api/v1alpha1/keystone_webhook.go:75-118",
+      "description": "Missing replicas < 1 validation rule in validate(). Plan task 2.1 and visualization V1 explicitly require a webhook-level replicas check as defense-in-depth alongside the +kubebuilder:validation:Minimum=1 marker. The plan lists 5 validation rules; only 3 are implemented.",
+      "fix": "Add to validate() before the cron check: if k.Spec.Replicas < 1 { allErrs = append(allErrs, field.Invalid(specPath.Child(\"replicas\"), k.Spec.Replicas, \"must be at least 1\")) }"
+    },
+    {
+      "id": "FC1-3",
+      "severity": "critical",
+      "check_id": "FC1",
+      "file": "operators/keystone/api/v1alpha1/keystone_webhook.go:100-108",
+      "description": "Missing empty policy rule name validation in validate(). Plan task 2.1 and visualization V5 explicitly require detecting empty string keys in PolicyOverrides.Rules map. The plan says: 'empty policy rule name detection'.",
+      "fix": "Add inside the PolicyOverrides != nil block: for name := range k.Spec.PolicyOverrides.Rules { if name == \"\" { allErrs = append(allErrs, field.Invalid(specPath.Child(\"policyOverrides\", \"rules\"), \"\", \"rule name must not be empty\")) } }"
+    },
+    {
+      "id": "FC1-4",
+      "severity": "critical",
+      "check_id": "FC1",
+      "file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "description": "Missing test cases per plan task 2.3: (1) replicas=0 rejected with field.Invalid on spec.replicas, (2) replicas=-1 rejected, (3) replicas=1 accepted, (4) empty policy rule name rejected with field.Invalid, (5) Cache.Backend default applied when empty. Also missing: Fernet.RotationSchedule default test should be removed if decision #3 is followed.",
+      "fix": "Add test functions: TestValidate_ReplicasLessThanOne (negative), TestValidate_ReplicasMinimum (positive with replicas=1), TestValidate_EmptyPolicyRuleName (negative), TestDefault_CacheBackendDefault (positive). Update TestDefault_SetsZeroValueDefaults to verify Cache.Backend instead of RotationSchedule."
+    },
+    {
+      "id": "PC3-1",
+      "severity": "major",
+      "check_id": "PC3",
+      "file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "description": "All test functions use raw t.Errorf/t.Fatalf assertions instead of the project's established Gomega pattern. Plan task 2.2 explicitly requires: 'Use NewGomegaWithT(t) and Expect pattern matching project convention in internal/common/conditions/conditions_test.go'. The gomega dependency is available (v1.39.1 via internal/common). All 65+ test assertions in internal/common/ use this pattern consistently.",
+      "fix": "Refactor all test functions to use: import (. \"github.com/onsi/gomega\"), g := NewGomegaWithT(t), g.Expect(...).To(Equal(...)), g.Expect(err).NotTo(HaveOccurred()), g.Expect(err).To(HaveOccurred()), g.Expect(err.Error()).To(ContainSubstring(...)). Apply to both keystone_webhook_test.go and keystone_types_test.go."
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a go:generate directive comment in groupversion_info.go pointing to the controller-gen commands, making generation discoverable from the source",
+    "The docs/reference/keystone-crd.md 'Replicas' field description says 'Minimum: 1' but does not mention the webhook default of 3; consider noting that the webhook provides a secondary default layer"
+  ],
+  "next_steps": [
+    "Fix FC1-1: Add Cache.Backend defaulting to Default() per plan decision #1",
+    "Fix C1-1: Remove Fernet.RotationSchedule defaulting from Default() per plan decision #3",
+    "Fix FC1-2: Add replicas < 1 validation to validate()",
+    "Fix FC1-3: Add empty policy rule name validation to validate()",
+    "Fix FC1-4: Add missing test cases for the above rules and Cache.Backend default",
+    "Fix PC3-1: Refactor test files to use Gomega pattern (NewGomegaWithT + g.Expect)",
+    "Re-run make generate and make manifests to ensure generated files stay in sync after changes",
+    "Re-run make build && make test OPERATOR=keystone && make lint OPERATOR=keystone to verify"
+  ],
+  "detected_patterns": []
+}

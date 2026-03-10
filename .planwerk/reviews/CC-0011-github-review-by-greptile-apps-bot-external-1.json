@@ -1,0 +1,46 @@
+{
+  "feature_id": "CC-0011",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer wants two changes: (1) Fix the CEL validation rule on `PolicyOverrides` to use `size(self.rules) > 0` instead of `self.rules != null`, because the current rule lets empty maps (`{}`) pass the CRD check while the webhook rejects them—a problem if the webhook is unreachable. (2) Add `// +kubebuilder:object:generate=false` above the `KeystoneWebhook` struct to stop controller-gen from generating unnecessary deepcopy methods for a zero-field utility struct.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-09T22:52:56Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "The CEL rule `self.rules != null` evaluates to **true** when `rules` is an empty map (`{}`), because an empty map is not null. However, the webhook (keystone_webhook.go line 114) rejects this case via `len(k.Spec.PolicyOverrides.Rules) == 0 && ConfigMapRef == nil`.\n\nThis means:\n- A `policyOverrides: {rules: {}}` payload **passes** the CRD schema check (XValidation), but\n- **fails** the webhook validation.\n\nIf the webhook server is ever unreachable or not yet registered, the XValidation rule is the only gate — and it will silently allow empty `rules` through. The CEL expression should mirror the webhook's semantic precisely:\n\n```suggestion\n\t// +kubebuilder:validation:XValidation:rule=\"size(self.rules) > 0 || self.configMapRef != null\",message=\"at least one of rules or configMapRef must be set\"\n\tPolicyOverrides *commonv1.PolicySpec `json:\"policyOverrides,omitempty\"`\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: operators/keystone/api/v1alpha1/keystone_types.go\nLine: 77-78\n\nComment:\nThe CEL rule `self.rules != null` evaluates to **true** when `rules` is an empty map (`{}`), because an empty map is not null. However, the webhook (keystone_webhook.go line 114) rejects this case via `len(k.Spec.PolicyOverrides.Rules) == 0 && ConfigMapRef == nil`.\n\nThis means:\n- A `policyOverrides: {rules: {}}` payload **passes** the CRD schema check (XValidation), but\n- **fails** the webhook validation.\n\nIf the webhook server is ever unreachable or not yet registered, the XValidation rule is the only gate — and it will silently allow empty `rules` through. The CEL expression should mirror the webhook's semantic precisely:\n\n```suggestion\n\t// +kubebuilder:validation:XValidation:rule=\"size(self.rules) > 0 || self.configMapRef != null\",message=\"at least one of rules or configMapRef must be set\"\n\tPolicyOverrides *commonv1.PolicySpec `json:\"policyOverrides,omitempty\"`\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "operators/keystone/api/v1alpha1/keystone_types.go",
+      "line": 78,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-09T22:52:54Z",
+      "id": null,
+      "resolution": "Changed the CEL XValidation rule on PolicyOverrides (keystone_types.go:77) from 'self.rules != null || self.configMapRef != null' to 'size(self.rules) > 0 || self.configMapRef != null', so an empty rules map ({}) is now correctly rejected at the CRD schema level, matching the webhook validation logic."
+    },
+    {
+      "body": "The `+kubebuilder:object:generate=true` package-level marker in `groupversion_info.go` causes controller-gen to emit `DeepCopyInto`/`DeepCopy` for every struct in the package, including `KeystoneWebhook{}`. `KeystoneWebhook` is a zero-field utility struct, not a Kubernetes runtime object, so generating deepcopy for it is unnecessary noise in the generated file.\n\nAdd the per-type opt-out marker directly above the struct declaration in `keystone_webhook.go`:\n\n```go\n// +kubebuilder:object:generate=false\ntype KeystoneWebhook struct{}\n```\n\nRe-running `make generate` will drop the two methods from `zz_generated.deepcopy.go`.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: operators/keystone/api/v1alpha1/zz_generated.deepcopy.go\nLine: 207-218\n\nComment:\nThe `+kubebuilder:object:generate=true` package-level marker in `groupversion_info.go` causes controller-gen to emit `DeepCopyInto`/`DeepCopy` for every struct in the package, including `KeystoneWebhook{}`. `KeystoneWebhook` is a zero-field utility struct, not a Kubernetes runtime object, so generating deepcopy for it is unnecessary noise in the generated file.\n\nAdd the per-type opt-out marker directly above the struct declaration in `keystone_webhook.go`:\n\n```go\n// +kubebuilder:object:generate=false\ntype KeystoneWebhook struct{}\n```\n\nRe-running `make generate` will drop the two methods from `zz_generated.deepcopy.go`.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "operators/keystone/api/v1alpha1/zz_generated.deepcopy.go",
+      "line": 218,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-09T22:52:55Z",
+      "id": null,
+      "resolution": "Added '// +kubebuilder:object:generate=false' marker above the KeystoneWebhook struct in keystone_webhook.go and re-ran controller-gen, which removed the spurious DeepCopyInto and DeepCopy methods for KeystoneWebhook from zz_generated.deepcopy.go (lines 207–219 deleted)."
+    }
+  ],
+  "resolution_summary": "Both review comments were addressed exactly as suggested. The CEL XValidation rule on PolicyOverrides was changed from 'self.rules != null' to 'size(self.rules) > 0' to correctly reject empty maps and mirror the webhook's semantic validation. The KeystoneWebhook struct was annotated with '+kubebuilder:object:generate=false' and controller-gen was re-run, removing the unnecessary DeepCopyInto/DeepCopy methods from zz_generated.deepcopy.go.",
+  "github_review_id": 3918688423
+}

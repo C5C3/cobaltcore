@@ -7,9 +7,8 @@
 # - Stub targets use $(error) to fail explicitly with a feature reference (e.g.,
 #   "S006: docker-build not yet implemented") rather than silently succeeding,
 #   preventing false confidence that a target works.
-# - generate/manifests are no-ops (echo) rather than errors because they are valid
-#   targets that simply have no generators registered yet — controller-gen will be
-#   added when CRD types exist (CC-0011).
+# - generate/manifests use controller-gen to produce deepcopy functions and CRD/webhook
+#   manifests for each operator module that has an api/ directory (CC-0011).
 
 # Default operators to build and test
 OPERATORS ?= keystone c5c3
@@ -18,6 +17,9 @@ OPERATORS ?= keystone c5c3
 ifdef OPERATOR
 OPERATORS := $(OPERATOR)
 endif
+
+# controller-gen generates deepcopy functions, CRD manifests, and webhook configs.
+CONTROLLER_GEN ?= controller-gen
 
 # ============================================================================
 # Build Targets
@@ -71,12 +73,36 @@ lint:
 # ============================================================================
 
 .PHONY: generate
-generate:
-	@echo "controller-gen not yet configured"
+# generate runs controller-gen object to produce zz_generated.deepcopy.go files
+# for internal/common/types and each operator that has an api/ directory (CC-0011, REQ-009).
+generate: generate-common
+	@for op in $(OPERATORS); do \
+		if [ -d "operators/$$op/api" ]; then \
+			echo "Generating deepcopy for operators/$$op..."; \
+			(cd operators/$$op && $(CONTROLLER_GEN) object:headerFile=../../hack/boilerplate.go.txt paths=./api/...); \
+		fi; \
+	done
+
+.PHONY: generate-common
+# generate-common runs controller-gen object for internal/common/types with the
+# SPDX header (CC-0011). Separated so it runs alongside operator generation.
+generate-common:
+	@echo "Generating deepcopy for internal/common/types..."
+	@cd internal/common && $(CONTROLLER_GEN) object:headerFile=../../hack/boilerplate.go.txt paths=./types/...
 
 .PHONY: manifests
+# manifests runs controller-gen crd and webhook to produce CRD YAML and webhook
+# configuration for each operator that has an api/ directory (CC-0011, REQ-009).
+# Output is written to operators/<op>/config/crd/bases/ and operators/<op>/config/webhook/.
 manifests:
-	@echo "controller-gen not yet configured"
+	@for op in $(OPERATORS); do \
+		if [ -d "operators/$$op/api" ]; then \
+			echo "Generating CRD and webhook manifests for operators/$$op..."; \
+			mkdir -p operators/$$op/config/crd/bases operators/$$op/config/webhook; \
+			(cd operators/$$op && $(CONTROLLER_GEN) crd paths=./api/... output:crd:artifacts:config=config/crd/bases); \
+			(cd operators/$$op && $(CONTROLLER_GEN) webhook paths=./api/... output:webhook:artifacts:config=config/webhook); \
+		fi; \
+	done
 
 # ============================================================================
 # Deployment and Docker Targets

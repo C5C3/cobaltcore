@@ -1,0 +1,37 @@
+{
+  "feature_id": "CC-0011",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer found that the `//go:generate` directives in `groupversion_info.go` are missing the `headerFile` argument that the Makefile's `generate` target includes, so running `go generate` would produce `zz_generated.deepcopy.go` without the SPDX copyright header. They want the directives updated to include `object:headerFile=../../../../hack/boilerplate.go.txt` (or removed entirely) to stay consistent with `make generate`.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-10T07:57:16Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 2,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**`//go:generate` directives omit `headerFile`, diverging from `make generate`**\n\nThe `Makefile`'s `generate` target passes `object:headerFile=../../hack/boilerplate.go.txt` to controller-gen:\n\n```makefile\n$(CONTROLLER_GEN) object:headerFile=../../hack/boilerplate.go.txt paths=./api/...\n```\n\nThe `//go:generate` directives here pass no `headerFile`, so running `go generate ./...` from within the package would regenerate `zz_generated.deepcopy.go` **without** the SPDX copyright header — inconsistent with the file that was committed.\n\nAlign the directives with the Makefile, or remove them to avoid confusion:\n\n```suggestion\n//go:generate controller-gen object:headerFile=../../../../hack/boilerplate.go.txt paths=.\n//go:generate controller-gen crd paths=. output:crd:dir=../../config/crd/bases\n```\n\n(The path to `boilerplate.go.txt` is `../../../../hack/...` relative to the `api/v1alpha1/` directory.)\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: operators/keystone/api/v1alpha1/groupversion_info.go\nLine: 8-9\n\nComment:\n**`//go:generate` directives omit `headerFile`, diverging from `make generate`**\n\nThe `Makefile`'s `generate` target passes `object:headerFile=../../hack/boilerplate.go.txt` to controller-gen:\n\n```makefile\n$(CONTROLLER_GEN) object:headerFile=../../hack/boilerplate.go.txt paths=./api/...\n```\n\nThe `//go:generate` directives here pass no `headerFile`, so running `go generate ./...` from within the package would regenerate `zz_generated.deepcopy.go` **without** the SPDX copyright header — inconsistent with the file that was committed.\n\nAlign the directives with the Makefile, or remove them to avoid confusion:\n\n```suggestion\n//go:generate controller-gen object:headerFile=../../../../hack/boilerplate.go.txt paths=.\n//go:generate controller-gen crd paths=. output:crd:dir=../../config/crd/bases\n```\n\n(The path to `boilerplate.go.txt` is `../../../../hack/...` relative to the `api/v1alpha1/` directory.)\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "operators/keystone/api/v1alpha1/groupversion_info.go",
+      "line": 9,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-10T07:57:15Z",
+      "id": null,
+      "resolution": "Updated the `//go:generate` directive on line 8 of `operators/keystone/api/v1alpha1/groupversion_info.go` to include `object:headerFile=../../../../hack/boilerplate.go.txt`, matching the reviewer's exact suggestion. The two directives now read: `//go:generate controller-gen object:headerFile=../../../../hack/boilerplate.go.txt paths=.` and `//go:generate controller-gen crd paths=. output:crd:dir=../../config/crd/bases`, consistent with the Makefile's `generate` target which passes `object:headerFile=../../hack/boilerplate.go.txt` (the path difference accounts for the relative directory depth from `api/v1alpha1/`)."
+    }
+  ],
+  "resolution_summary": "The review comment was addressed exactly as suggested. The `//go:generate` directives in `groupversion_info.go` were updated to include `headerFile=../../../../hack/boilerplate.go.txt` on the object generation directive, aligning them with the Makefile's `generate` target. No additional files beyond the reviewed location were changed to address this comment.",
+  "github_review_id": 3920482539
+}

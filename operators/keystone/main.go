@@ -11,6 +11,7 @@ import (
 	"os"
 
 	"github.com/c5c3/forge/internal/common/bootstrap"
+	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -22,6 +23,7 @@ var scheme = runtime.NewScheme()
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(keystonev1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -31,6 +33,8 @@ func main() {
 		LeaderElectionID: "keystone.openstack.c5c3.io",
 		SetupFunc: func(_ ctrl.Manager) error {
 			// +kubebuilder:scaffold:builder — register controllers here
+			// TODO(CC-0012): Call (&keystonev1alpha1.KeystoneWebhook{}).SetupWebhookWithManager(mgr)
+			// once the Keystone controller is wired up.
 			return nil
 		},
 	}); err != nil {

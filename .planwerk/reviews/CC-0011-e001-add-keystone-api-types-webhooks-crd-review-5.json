@@ -1,0 +1,85 @@
+{
+  "summary": "Review #4 feedback addressed: Cache XValidation marker + webhook defense-in-depth check added, vacuous test assertion fixed, TODO(CC-0012) tracks deferred webhook registration, 4 new cache mutual-exclusivity tests added. All code logic is correct, tests pass (0.011s), lint clean, go vet clean. One issue: CRD YAML was not regenerated after adding Cache XValidation marker — `make manifests` produces a diff.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (`make test OPERATOR=keystone` exits 0)", "checked": true},
+    {"item": "Edge cases covered (both/neither cache refs, zero/negative replicas, empty cron, duplicate plugins, empty rule names)", "checked": true},
+    {"item": "Every defaulting rule (5) has positive + negative tests", "checked": true},
+    {"item": "Every validation rule has positive + negative tests", "checked": true},
+    {"item": "Cache mutual-exclusivity has 4 test cases (servers-only, clusterRef-only, both, neither)", "checked": true},
+    {"item": "No vacuous test assertions behind conditional guards", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing gomega + NewGomegaWithT(t) pattern", "checked": true},
+    {"item": "Follows operator-entrypoint-via-shared-bootstrap pattern", "checked": true},
+    {"item": "SPDX headers present on all files", "checked": true},
+    {"item": "Functions are focused and small (validate ~40 lines, Default ~15 lines)", "checked": true},
+    {"item": "No dead code or unused imports", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "All user inputs validated at API boundary (webhook)", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "No injection vulnerabilities", "checked": true},
+    {"item": "Defense-in-depth: webhook validates alongside CRD markers", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "Shared types imported from commonv1 (not redefined)", "checked": true},
+    {"item": "Webhook struct uses typed generics (controller-runtime v0.23+)", "checked": true},
+    {"item": "KeystoneWebhook opts out of deepcopy generation", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unused features or over-engineering", "checked": true},
+    {"item": "ValidateDelete returns nil without unnecessary logic", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors accumulated in field.ErrorList (no short-circuit)", "checked": true},
+    {"item": "All errors returned with field paths for clear diagnostics", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Replicas < 1 defense-in-depth alongside Minimum=1 marker", "checked": true},
+    {"item": "MaxActiveKeys < 3 defense-in-depth alongside Minimum=3 marker", "checked": true},
+    {"item": "Cache XOR defense-in-depth alongside XValidation CEL rule", "checked": true},
+    {"item": "PolicyOverrides source requirement defense-in-depth alongside CEL", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "id": "C2-1",
+      "severity": "blocker",
+      "check_id": "C2",
+      "file": "operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml",
+      "line": null,
+      "description": "CRD YAML out of sync with Go types. The Cache XValidation marker `+kubebuilder:validation:XValidation:rule=\"has(self.clusterRef) != has(self.servers)\"` was added to keystone_types.go:53, but `make manifests` was not re-run. The committed CRD YAML is missing the `x-kubernetes-validations` block on the cache field. This means the API server will NOT enforce the cache mutual-exclusivity constraint at the CRD schema level until the CRD is regenerated and redeployed.",
+      "fix": "Run `make manifests` and commit the updated CRD YAML. The diff is exactly 3 lines adding the x-kubernetes-validations block to the cache field."
+    }
+  ],
+  "suggested_improvements": [
+    "Database field has XValidation CEL rule (keystone_types.go:48) but no matching webhook defense-in-depth check in validate(), while Cache now has both. Consider adding a Database XOR webhook check for consistency in a follow-up (not blocking since Database CEL existed before this diff and the external reviewer did not request it).",
+    "docs/reference/keystone-crd.md CEL Validation Rules table (line 114-119) should be updated to include: (1) Cache XValidation rule, (2) corrected PolicyOverrides CEL text (size(self.rules) > 0, not self.rules != null), (3) the second PolicyOverrides empty-key XValidation rule."
+  ],
+  "next_steps": [
+    "Run `make manifests` and commit the regenerated CRD YAML to bring it in sync with keystone_types.go"
+  ],
+  "detected_patterns": [
+    {
+      "name": "Typed-generic webhook struct with object:generate=false opt-out",
+      "component": "operators/*/api/v1alpha1/",
+      "category": "validation",
+      "applies_when": "Adding defaulting and validating webhooks for a new CobaltCore operator CRD (e.g., GlanceWebhook, NovaWebhook)",
+      "description": "Webhooks use a dedicated zero-field struct (e.g., KeystoneWebhook) implementing admission.Defaulter[*T] and admission.Validator[*T] typed generics from controller-runtime v0.23+. The struct has a +kubebuilder:object:generate=false marker to prevent unnecessary DeepCopy generation. SetupWebhookWithManager registers both webhooks via builder.WebhookManagedBy[*T]. Compile-time interface checks are declared as package-level var _ assertions. Default() returns error (not void), and Validate{Create,Update} accept context + typed object parameters. ValidateDelete returns nil unconditionally. The internal validate() method accumulates errors in field.ErrorList and returns apierrors.NewInvalid with the correct GroupKind. This replaces the older kubebuilder pattern where methods are defined directly on the CRD type (as shown in the architecture doc).",
+      "examples": [
+        {
+          "location": "operators/keystone/api/v1alpha1/keystone_webhook.go:20-36",
+          "code": "// KeystoneWebhook implements defaulting and validation webhooks for the Keystone CRD (CC-0011).\n// +kubebuilder:object:generate=false\ntype KeystoneWebhook struct{}\n\n// Compile-time interface checks.\nvar (\n\t_ admission.Defaulter[*Keystone] = &KeystoneWebhook{}\n\t_ admission.Validator[*Keystone] = &KeystoneWebhook{}\n)\n\n// SetupWebhookWithManager registers the defaulting and validating webhooks with the manager.\nfunc (w *KeystoneWebhook) SetupWebhookWithManager(mgr ctrl.Manager) error {\n\treturn builder.WebhookManagedBy[*Keystone](mgr, &Keystone{}).\n\t\tWithDefaulter(w).\n\t\tWithValidator(w).\n\t\tComplete()\n}"
+        },
+        {
+          "location": "operators/keystone/api/v1alpha1/keystone_webhook.go:42-58",
+          "code": "func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {\n\tif obj.Spec.Replicas == 0 {\n\t\tobj.Spec.Replicas = 3\n\t}\n\tif obj.Spec.Fernet.MaxActiveKeys == 0 {\n\t\tobj.Spec.Fernet.MaxActiveKeys = 3\n\t}\n\tif obj.Spec.Cache.Backend == \"\" {\n\t\tobj.Spec.Cache.Backend = \"dogpile.cache.pymemcache\"\n\t}\n\tif obj.Spec.Bootstrap.AdminUser == \"\" {\n\t\tobj.Spec.Bootstrap.AdminUser = \"admin\"\n\t}\n\tif obj.Spec.Bootstrap.Region == \"\" {\n\t\tobj.Spec.Bootstrap.Region = \"RegionOne\"\n\t}\n\treturn nil\n}"
+        }
+      ]
+    }
+  ]
+}

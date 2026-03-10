@@ -3,7 +3,7 @@
 **Review-Area**: architecture
 **Detection-Hint**: When a YAML/config manifest declares packages or dependencies, trace whether any build step (Dockerfile, Makefile, CI script) actually reads and uses that file. If the build hardcodes the same information separately, the manifest is documentation-only and must be clearly marked as such.
 **Severity**: WARNING
-**Occurrences**: 1
+**Occurrences**: 2
 
 ## What to check
 
@@ -19,3 +19,8 @@ A config file that looks authoritative but is silently ignored creates a drift t
 - **Feedback**: `pip_packages` is **never read** by the build process — it is pure documentation. The risk is that someone adds a new extra to `pip_packages` and expects it to be installed, when in fact the Dockerfile also needs to be updated independently.
 - **What was missed**: Check if the values in a config manifest (e.g., extra-packages.yaml listing pip extras) are consumed programmatically by the build, or if the Dockerfile independently hardcodes the same values. If they are decoupled, verify that (a) a prominent warning exists stating the file is documentation-only, and (b) a test or CI check asserts consistency between the manifest and the actual build instructions.
 - **Fix**: Strengthened the warning comment to explicitly state that adding entries does NOT automatically install them and that the corresponding Dockerfile line must also be updated.
+
+### CC-0011 — greptile-apps[bot]
+- **Feedback**: The Makefile's generate target loops over $(OPERATORS) and skips internal/common entirely, so there is currently no make generate path that regenerates this file with the proper header.
+- **What was missed**: Compare the generation invocation (Makefile target, go:generate directive, or script) for every generated file touched in the PR against existing generation targets for the same tool. Verify all required flags (e.g., headerFile for controller-gen) are present and that the Makefile actually has a target that regenerates the file.
+- **Fix**: Added a dedicated generate-common Makefile target that runs controller-gen with the headerFile argument, and regenerated zz_generated.deepcopy.go with the proper SPDX header.

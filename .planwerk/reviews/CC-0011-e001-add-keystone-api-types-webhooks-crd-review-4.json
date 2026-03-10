@@ -1,0 +1,58 @@
+{
+  "summary": "Review #4 of CC-0011 post-greptile review #3 fixes. Three changes: (1) added XValidation CEL rule for empty policy rule names on PolicyOverrides, (2) added defense-in-depth maxActiveKeys < 3 webhook check mirroring the Replicas pattern, (3) added comprehensive tests for maxActiveKeys validation. Code logic is correct, tests are thorough, and the changes directly address the external review feedback. One blocking issue: CRD YAML was not regenerated after adding the new XValidation marker — `make manifests` produces a 2-line diff.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (make test OPERATOR=keystone exits 0)", "checked": true},
+    {"item": "Edge cases covered: maxActiveKeys boundary (0, 1, 2, 3, 7, -1)", "checked": true},
+    {"item": "Positive and negative cases for each new validation rule", "checked": true},
+    {"item": "Table-driven test pattern for maxActiveKeys below minimum", "checked": true},
+    {"item": "Zero-value explicitly tested as allowed (defaulting path)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing defense-in-depth pattern from Replicas check", "checked": true},
+    {"item": "Gomega assertions with NewGomegaWithT per project pattern", "checked": true},
+    {"item": "CC-0011 and REQ IDs referenced in comments", "checked": true},
+    {"item": "No dead code or unnecessary additions", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "All user inputs validated at admission boundary", "checked": true},
+    {"item": "CEL rule mirrors webhook validation semantics", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "Defense-in-depth: both CRD marker and webhook guard present", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is minimal — only adds what was requested by external review", "checked": true},
+    {"item": "No scope creep beyond the three specific fixes", "checked": true},
+    {"item": "XValidation CEL rule correctly handles nil, empty, and populated rules map", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unnecessary abstractions", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early via field.ErrorList accumulation", "checked": true},
+    {"item": "maxActiveKeys check placed before cron validation (fail fast on simpler checks)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "maxActiveKeys != 0 guard prevents conflict with defaulting logic", "checked": true},
+    {"item": "CEL rule uses !has(self.rules) guard before .all() to handle absent field", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "id": "V3-CRD-SYNC",
+      "check_id": "V3",
+      "severity": "blocker",
+      "file": "operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml",
+      "line": 285,
+      "description": "CRD YAML is not in sync with Go type definitions. The new XValidation rule `!has(self.rules) || self.rules.all(k, k != '')` was added to keystone_types.go:78 but `make manifests` was not re-run. Running `make manifests` produces a 2-line diff adding the missing x-kubernetes-validations entry for the empty policy rule name check.",
+      "fix": "Run `make manifests` and commit the regenerated CRD YAML. The diff is: +2 lines under spec.policyOverrides.x-kubernetes-validations adding the rule `!has(self.rules) || self.rules.all(k, k != '')` with message 'policy rule name must not be empty'."
+    }
+  ],
+  "suggested_improvements": [],
+  "next_steps": [
+    "Run `make manifests` and commit the updated CRD YAML to sync with the new XValidation marker"
+  ],
+  "detected_patterns": []
+}

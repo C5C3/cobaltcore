@@ -1,0 +1,45 @@
+{
+  "feature_id": "CC-0011",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer wants two defense-in-depth changes: (1) Add a second `XValidation` CEL rule on `PolicyOverrides` to reject empty rule-name keys (`\"\"`) at the CRD schema layer, since the existing CEL only checks that rules/configMapRef are present and the webhook's empty-key rejection (REQ-008) can be bypassed if the webhook is unreachable. (2) Add a `maxActiveKeys < 3` guard in the webhook's `validate()` function to match the existing `+kubebuilder:validation:Minimum=3` CRD marker, mirroring how `Replicas` already has both a CRD marker and a defense-in-depth runtime check.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-10T08:11:30Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 3,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**CRD XValidation doesn't cover empty rule name constraint (REQ-008 gap)**\n\nThe `x-kubernetes-validations` rule guards only the *source-presence* requirement (`size(self.rules) > 0 || self.configMapRef != null`), but it doesn't prevent the empty-key rule that the webhook enforces in REQ-008 (`keystone_webhook.go:123-131`).\n\nIf the webhook server is unreachable, a payload like:\n\n```yaml\npolicyOverrides:\n  rules:\n    \"\": \"role:admin\"\n```\n\nwill **pass** the CEL rule (`size(self.rules) == 1 > 0`) and be persisted to etcd, even though the webhook would normally reject it. Downstream, the reconciler processing `PolicyOverrides.Rules` would encounter an empty key and likely fail silently or panic.\n\nAdd a second XValidation to enforce the empty-key constraint at the CRD layer:\n\n```go\n// +kubebuilder:validation:XValidation:rule=\"size(self.rules) > 0 || self.configMapRef != null\",message=\"at least one of rules or configMapRef must be set\"\n// +kubebuilder:validation:XValidation:rule=\"!has(self.rules) || self.rules.all(k, k != '')\",message=\"policy rule name must not be empty\"\nPolicyOverrides *commonv1.PolicySpec `json:\"policyOverrides,omitempty\"`\n```\n\nThis mirrors REQ-008 at the schema layer so both gates (CRD validation and webhook) agree on the reject outcome for empty rule names.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: operators/keystone/api/v1alpha1/keystone_types.go\nLine: 77\n\nComment:\n**CRD XValidation doesn't cover empty rule name constraint (REQ-008 gap)**\n\nThe `x-kubernetes-validations` rule guards only the *source-presence* requirement (`size(self.rules) > 0 || self.configMapRef != null`), but it doesn't prevent the empty-key rule that the webhook enforces in REQ-008 (`keystone_webhook.go:123-131`).\n\nIf the webhook server is unreachable, a payload like:\n\n```yaml\npolicyOverrides:\n  rules:\n    \"\": \"role:admin\"\n```\n\nwill **pass** the CEL rule (`size(self.rules) == 1 > 0`) and be persisted to etcd, even though the webhook would normally reject it. Downstream, the reconciler processing `PolicyOverrides.Rules` would encounter an empty key and likely fail silently or panic.\n\nAdd a second XValidation to enforce the empty-key constraint at the CRD layer:\n\n```go\n// +kubebuilder:validation:XValidation:rule=\"size(self.rules) > 0 || self.configMapRef != null\",message=\"at least one of rules or configMapRef must be set\"\n// +kubebuilder:validation:XValidation:rule=\"!has(self.rules) || self.rules.all(k, k != '')\",message=\"policy rule name must not be empty\"\nPolicyOverrides *commonv1.PolicySpec `json:\"policyOverrides,omitempty\"`\n```\n\nThis mirrors REQ-008 at the schema layer so both gates (CRD validation and webhook) agree on the reject outcome for empty rule names.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "operators/keystone/api/v1alpha1/keystone_types.go",
+      "line": 77,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-10T08:11:28Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "**`MaxActiveKeys` lacks defense-in-depth validation**\n\n`Replicas` gets an explicit comment — *\"Defense-in-depth replicas check alongside the `+kubebuilder:validation:Minimum=1` marker\"* — and a corresponding `< 1` guard here. `FernetSpec.MaxActiveKeys` also carries a `+kubebuilder:validation:Minimum=3` CRD marker and is auto-defaulted to `3` by `Default()`, but the `validate()` function has no corresponding `< 3` check.\n\nIf the CRD admission layer is ever bypassed (e.g., via direct `etcdctl` writes, admission controller misconfiguration, or a future `PATCH /status` path), `maxActiveKeys: 1` would persist silently. Fernet key rotation with fewer than 3 active keys can cause token validation failures.\n\nAdd the defense-in-depth check for consistency:\n\n```suggestion\n\t// REQ-007 (CC-0011): Defense-in-depth replicas check alongside the\n\t// +kubebuilder:validation:Minimum=1 marker.\n\tif k.Spec.Replicas < 1 {\n\t\tallErrs = append(allErrs, field.Invalid(\n\t\t\tspecPath.Child(\"replicas\"),\n\t\t\tk.Spec.Replicas,\n\t\t\t\"replicas must be at least 1\",\n\t\t))\n\t}\n\n\t// Defense-in-depth maxActiveKeys check alongside the +kubebuilder:validation:Minimum=3 marker.\n\tif k.Spec.Fernet.MaxActiveKeys < 3 && k.Spec.Fernet.MaxActiveKeys != 0 {\n\t\tallErrs = append(allErrs, field.Invalid(\n\t\t\tspecPath.Child(\"fernet\", \"maxActiveKeys\"),\n\t\t\tk.Spec.Fernet.MaxActiveKeys,\n\t\t\t\"maxActiveKeys must be at least 3\",\n\t\t))\n\t}\n```\n\n(The `!= 0` guard avoids conflicting with `Default()`, which converts `0` to `3` — but by the time `ValidateCreate/Update` runs the webhook has already fired, so `0` should not appear unless validation is called outside the normal admission path.)\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: operators/keystone/api/v1alpha1/keystone_webhook.go\nLine: 82-90\n\nComment:\n**`MaxActiveKeys` lacks defense-in-depth validation**\n\n`Replicas` gets an explicit comment — *\"Defense-in-depth replicas check alongside the `+kubebuilder:validation:Minimum=1` marker\"* — and a corresponding `< 1` guard here. `FernetSpec.MaxActiveKeys` also carries a `+kubebuilder:validation:Minimum=3` CRD marker and is auto-defaulted to `3` by `Default()`, but the `validate()` function has no corresponding `< 3` check.\n\nIf the CRD admission layer is ever bypassed (e.g., via direct `etcdctl` writes, admission controller misconfiguration, or a future `PATCH /status` path), `maxActiveKeys: 1` would persist silently. Fernet key rotation with fewer than 3 active keys can cause token validation failures.\n\nAdd the defense-in-depth check for consistency:\n\n```suggestion\n\t// REQ-007 (CC-0011): Defense-in-depth replicas check alongside the\n\t// +kubebuilder:validation:Minimum=1 marker.\n\tif k.Spec.Replicas < 1 {\n\t\tallErrs = append(allErrs, field.Invalid(\n\t\t\tspecPath.Child(\"replicas\"),\n\t\t\tk.Spec.Replicas,\n\t\t\t\"replicas must be at least 1\",\n\t\t))\n\t}\n\n\t// Defense-in-depth maxActiveKeys check alongside the +kubebuilder:validation:Minimum=3 marker.\n\tif k.Spec.Fernet.MaxActiveKeys < 3 && k.Spec.Fernet.MaxActiveKeys != 0 {\n\t\tallErrs = append(allErrs, field.Invalid(\n\t\t\tspecPath.Child(\"fernet\", \"maxActiveKeys\"),\n\t\t\tk.Spec.Fernet.MaxActiveKeys,\n\t\t\t\"maxActiveKeys must be at least 3\",\n\t\t))\n\t}\n```\n\n(The `!= 0` guard avoids conflicting with `Default()`, which converts `0` to `3` — but by the time `ValidateCreate/Update` runs the webhook has already fired, so `0` should not appear unless validation is called outside the normal admission path.)\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "operators/keystone/api/v1alpha1/keystone_webhook.go",
+      "line": 90,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-10T08:11:29Z",
+      "id": null,
+      "resolution": ""
+    }
+  ],
+  "github_review_id": 3920553052
+}

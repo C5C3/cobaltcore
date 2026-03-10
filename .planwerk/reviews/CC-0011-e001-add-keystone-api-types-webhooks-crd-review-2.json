@@ -1,0 +1,51 @@
+{
+  "feature_id": "CC-0011",
+  "title": "E001: Add Keystone API types, webhooks & CRD generation",
+  "date": "2026-03-10",
+  "summary": "Review of post-external-feedback changes: CEL XValidation rule fix (self.rules != null → size(self.rules) > 0), KeystoneWebhook opt-out from deepcopy generation (+kubebuilder:object:generate=false), and two new review pattern files. Both external review comments addressed correctly. One blocking issue: CRD YAML not regenerated after the CEL rule change.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (make test OPERATOR=keystone)", "checked": true},
+    {"item": "Edge cases covered in webhook tests", "checked": true},
+    {"item": "No test changes needed for this diff (CEL rule + codegen marker)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns", "checked": true},
+    {"item": "Minimal, targeted changes with no scope creep", "checked": true},
+    {"item": "Review pattern files well-structured and actionable", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "CEL rule now correctly rejects empty maps, closing admission gap", "checked": true},
+    {"item": "No hardcoded secrets or sensitive data", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Non-API struct correctly opted out of deepcopy generation", "checked": true},
+    {"item": "CEL semantics now match webhook semantics exactly", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "Removed unnecessary generated code (KeystoneWebhook DeepCopy)", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Empty map rules now rejected at CRD schema level before reaching webhook", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Defense-in-depth: CEL + webhook both reject empty rules map", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "id": "C2",
+      "severity": "blocking",
+      "file": "operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml:287",
+      "description": "CRD YAML not regenerated after CEL rule change in keystone_types.go. Running `make manifests` produces a 1-line diff: the committed CRD still has `rule: self.rules != null || self.configMapRef != null` but should have `rule: size(self.rules) > 0 || self.configMapRef != null`. Generated files must be in sync with Go type definitions.",
+      "fix": "Run `make manifests` and commit the updated CRD YAML file `operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml`."
+    }
+  ],
+  "suggested_improvements": [],
+  "next_steps": [
+    "Run `make manifests` and commit the regenerated CRD YAML to bring generated files in sync with the CEL rule change"
+  ],
+  "detected_patterns": []
+}

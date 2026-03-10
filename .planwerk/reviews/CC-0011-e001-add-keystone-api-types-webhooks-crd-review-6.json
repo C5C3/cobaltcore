@@ -1,0 +1,64 @@
+{
+  "summary": "Addresses external review #5 feedback: CEL XValidation rule for CacheSpec updated from `has(self.servers)` to `has(self.servers) && size(self.servers) > 0` to match webhook semantics for empty arrays. New review pattern documented. However, the CRD YAML was not regenerated after the CEL rule change.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (`make test OPERATOR=keystone` exits 0)", "checked": true},
+    {"item": "Edge cases covered (defaulting, validation, cron, duplicates, policy)", "checked": true},
+    {"item": "Generated files in sync (`make manifests` produces no diff)", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns", "checked": true},
+    {"item": "CEL rule semantically equivalent to webhook validation", "checked": true},
+    {"item": "Lint passes (`make lint OPERATOR=keystone` exits 0)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "All user inputs validated at CRD boundary (CEL + webhook)", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "CEL and Go validation layers agree on accept/reject for all input states", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unnecessary features added", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early via CRD-level and webhook validation", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Defense-in-depth: CEL + webhook both validate cache mutual exclusivity", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "id": "FC4-1",
+      "severity": "blocking",
+      "check_id": "FC4",
+      "file": "operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml",
+      "line": 110,
+      "description": "CRD YAML is out of sync with keystone_types.go. The committed CRD still has the old CEL rule `has(self.clusterRef) != has(self.servers)` while the types file was updated to `(self.clusterRef != null) != (has(self.servers) && size(self.servers) > 0)`. Running `make manifests` produces a diff.",
+      "fix": "Run `make manifests` and commit the updated CRD YAML file `operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml`."
+    }
+  ],
+  "suggested_improvements": [],
+  "next_steps": [
+    "Run `make manifests` to regenerate `operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml` with the updated CEL rule, then commit the result"
+  ],
+  "detected_patterns": [],
+  "metadata": {
+    "feature_id": "CC-0011",
+    "title": "E001: Add Keystone API types, webhooks & CRD generation",
+    "date": "2026-03-10",
+    "verdict": "NEEDS_CHANGES",
+    "review_number": 6,
+    "verification_commands": {
+      "build": "make build OPERATOR=keystone — PASSED",
+      "test": "make test OPERATOR=keystone — PASSED (all tests green)",
+      "lint": "make lint OPERATOR=keystone — PASSED (0 issues)",
+      "manifests_sync": "make manifests — FAILED (1 file changed: CRD YAML out of sync)"
+    },
+    "external_review_addressed": "greptile-apps[bot] review #5 — CEL/webhook semantic mismatch for CacheSpec.Servers empty array"
+  }
+}
