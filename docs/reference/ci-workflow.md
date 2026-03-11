@@ -4,6 +4,8 @@ quadrant: infrastructure
 feature: CC-0003
 ---
 
+::: v-pre
+
 # CI Workflow
 
 Reference documentation for the GitHub Actions CI workflow (CC-0003).
@@ -135,3 +137,5 @@ The CI workflow depends on artifacts introduced by CC-0001:
 
 The CI workflow will not pass until CC-0001 is merged to `main`, as it depends on both
 the Makefile targets and the Go workspace configuration.
+
+:::

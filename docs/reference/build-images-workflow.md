@@ -4,6 +4,8 @@ quadrant: infrastructure
 feature: CC-0007, CC-0029, CC-0030, CC-0031, CC-0032
 ---
 
+::: v-pre
+
 # Build Images Workflow
 
 Reference documentation for the GitHub Actions build-images workflow (CC-0007, CC-0029,
@@ -1016,3 +1018,5 @@ The build-images workflow depends on artifacts introduced by CC-0006:
 | `releases/2025.2/source-refs.yaml` | `build-service-images` | Upstream version resolution |
 | `releases/2025.2/upper-constraints.txt` | `build-service-images` | Python dependency pins |
 | `scripts/apply-constraint-overrides.sh` | `build-service-images` | Constraint override application |
+
+:::

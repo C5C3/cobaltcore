@@ -1,0 +1,46 @@
+{
+  "feature_id": "CC-0033",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer requests two changes:\n\n1. **Replace the global Vue delimiter override** in `docs/.vitepress/config.ts` with per-file `::: v-pre` blocks in reference docs that contain `${{ }}` expressions, since the global change silently breaks standard Vue interpolation site-wide.\n\n2. **Add an inline comment** in `.github/workflows/deploy-docs.yaml` explaining why the `concurrency` config uses a static `group: pages` instead of the repo's standard `${{ github.ref }}-${{ github.workflow }}` pattern, so future contributors don't mistakenly \"correct\" it.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-11T21:35:38Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**Global delimiter change disables `{{ }}` syntax site-wide**\n\nSetting `delimiters: ['${{{{', '}}}}$']` applies globally to every page compiled by VitePress — not just the reference docs that contain GitHub Actions `${{ }}` expressions. Any future contributor who tries to use standard Vue template interpolation (e.g., a custom component or page that renders `{{ someVar }}`) will silently get no output rather than an error, because the default delimiters are no longer active.\n\nThe standard VitePress recommendation for escaping GitHub Actions syntax is to wrap affected content blocks with `::: v-pre` / `:::` in the individual reference doc files. This is more targeted and preserves normal Vue behaviour for the rest of the site.\n\n```ts\n// Alternative: leave config.ts unchanged and add to each reference doc:\n// ::: v-pre\n// ... content with ${{ }} expressions ...\n// :::\n```\n\nIf keeping the global delimiter approach, a prominent comment near `delimiters` explaining the trade-off would help future contributors understand why `{{ }}` doesn't work anywhere in the docs.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: docs/.vitepress/config.ts\nLine: 13-16\n\nComment:\n**Global delimiter change disables `{{ }}` syntax site-wide**\n\nSetting `delimiters: ['${{{{', '}}}}$']` applies globally to every page compiled by VitePress — not just the reference docs that contain GitHub Actions `${{ }}` expressions. Any future contributor who tries to use standard Vue template interpolation (e.g., a custom component or page that renders `{{ someVar }}`) will silently get no output rather than an error, because the default delimiters are no longer active.\n\nThe standard VitePress recommendation for escaping GitHub Actions syntax is to wrap affected content blocks with `::: v-pre` / `:::` in the individual reference doc files. This is more targeted and preserves normal Vue behaviour for the rest of the site.\n\n```ts\n// Alternative: leave config.ts unchanged and add to each reference doc:\n// ::: v-pre\n// ... content with ${{ }} expressions ...\n// :::\n```\n\nIf keeping the global delimiter approach, a prominent comment near `delimiters` explaining the trade-off would help future contributors understand why `{{ }}` doesn't work anywhere in the docs.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "docs/.vitepress/config.ts",
+      "line": 16,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-11T21:35:36Z",
+      "id": null,
+      "resolution": "Removed the global `delimiters: ['${{{{', '}}}}$']` setting from docs/.vitepress/config.ts entirely. Instead, wrapped the content of docs/reference/ci-workflow.md and docs/reference/build-images-workflow.md with `::: v-pre` / `:::` blocks to escape GitHub Actions `${{ }}` expressions locally, preserving standard Vue template interpolation for the rest of the site."
+    },
+    {
+      "body": "**Concurrency pattern deviates from the documented repo convention**\n\nThe `github-actions-workflow-spdx-header-and-structure-convention` pattern specifies:\n\n```yaml\nconcurrency:\n  group: ${{ github.ref }}-${{ github.workflow }}\n  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n```\n\nThis workflow uses a static `group: pages` with `cancel-in-progress: false`, which is the pattern GitHub's own Pages deployment docs recommend to prevent concurrent deployments to a single Pages environment. That reasoning is sound — but since it consciously diverges from the documented convention, a short inline comment explaining why would make the intent clear and prevent a future reviewer from \"fixing\" it back to the standard pattern.\n\n```yaml\nconcurrency:\n  # Static group ensures only one Pages deployment runs at a time.\n  # Intentionally deviates from the ${{ github.ref }}-${{ github.workflow }} pattern.\n  group: pages\n  cancel-in-progress: false\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: .github/workflows/deploy-docs.yaml\nLine: 23-25\n\nComment:\n**Concurrency pattern deviates from the documented repo convention**\n\nThe `github-actions-workflow-spdx-header-and-structure-convention` pattern specifies:\n\n```yaml\nconcurrency:\n  group: ${{ github.ref }}-${{ github.workflow }}\n  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n```\n\nThis workflow uses a static `group: pages` with `cancel-in-progress: false`, which is the pattern GitHub's own Pages deployment docs recommend to prevent concurrent deployments to a single Pages environment. That reasoning is sound — but since it consciously diverges from the documented convention, a short inline comment explaining why would make the intent clear and prevent a future reviewer from \"fixing\" it back to the standard pattern.\n\n```yaml\nconcurrency:\n  # Static group ensures only one Pages deployment runs at a time.\n  # Intentionally deviates from the ${{ github.ref }}-${{ github.workflow }} pattern.\n  group: pages\n  cancel-in-progress: false\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>\n\n<sub>Note: If this suggestion doesn't match your team's coding style, reply to this and let me know. I'll remember it for next time!</sub>",
+      "path": ".github/workflows/deploy-docs.yaml",
+      "line": 25,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-11T21:35:37Z",
+      "id": null,
+      "resolution": "Added a multi-line inline comment above the `group: pages` line in .github/workflows/deploy-docs.yaml (lines 24-27) explaining that the static concurrency group intentionally deviates from the per-branch per-workflow pattern because GitHub Pages has a single deployment target and concurrent deployments cause failures."
+    }
+  ],
+  "resolution_summary": "Both review comments were addressed. The global Vue delimiter override in config.ts was removed entirely and replaced with targeted `::: v-pre` / `:::` blocks in the individual reference doc files (docs/reference/ci-workflow.md and docs/reference/build-images-workflow.md), following the reviewer's recommended VitePress-standard approach. The concurrency block in deploy-docs.yaml received an inline comment explaining why it intentionally deviates from the repo's standard `${{ github.ref }}-${{ github.workflow }}` pattern. The v-pre change touched two additional reference doc files beyond config.ts because those are the files that contain GitHub Actions `${{ }}` expressions that triggered the original delimiter workaround.",
+  "github_review_id": 3932669127
+}

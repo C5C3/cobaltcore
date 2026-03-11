@@ -1,0 +1,40 @@
+{
+  "feature_id": "CC-0033",
+  "title": "Publish docs as VitePress site on GitHub Pages",
+  "date": "2026-03-11",
+  "summary": "Addresses two external review comments from greptile-apps[bot]: (1) replaced global Vue delimiter override in config.ts with targeted ::: v-pre blocks in the two reference docs that contain ${{ }} expressions, preserving standard Vue interpolation site-wide; (2) added a 4-line inline comment to deploy-docs.yaml explaining why the concurrency group intentionally deviates from the repo's standard pattern.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "npm run docs:build passes without errors", "checked": true},
+    {"item": "VitePress renders ${{ }} expressions correctly in reference docs", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns", "checked": true},
+    {"item": "Changes are minimal and narrowly scoped to review feedback", "checked": true},
+    {"item": "No dead code or commented-out code", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Workflow permissions unchanged (least privilege)", "checked": true},
+    {"item": "No secrets or credentials exposed", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible (per-file v-pre vs global config override)", "checked": true},
+    {"item": "v-pre blocks applied only to files containing ${{ }} expressions (2 of 6 reference docs)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unnecessary abstractions", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Build errors detected at compile time", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All reference docs with ${{ }} are wrapped (verified via grep)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": []
+}

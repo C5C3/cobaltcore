@@ -2,8 +2,8 @@
   "feature_id": "CC-0033",
   "title": "Publish docs as VitePress site on GitHub Pages",
   "slug": "publish-docs-as-vitepress-site-on-github-pages",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 🔧 small\n**Category:** docs\n**Priority:** medium\n**Source:** Proposed for 'The documentation under docs/ should be analogous to https'\n\nCreate a VitePress documentation site for the forge repository and deploy it to GitHub Pages. Involves 7 file operations:\n\n1. **`package.json`** (root) — `name: \"c5c3-forge-docs\"`, VitePress `^1.6.3` devDependency, scripts: `docs:dev`/`docs:build`/`docs:preview`\n2. **`docs/.vitepress/config.ts`** — Site config with `title: \"CobaltCore Forge\"`, `base: '/forge/'`, sidebar linking 5 existing reference docs (`keystone-crd`, `ci-workflow`, `build-images-workflow`, `container-images`, `kubernetes-packages`), GitHub social link to `c5c3/forge`\n3. **`docs/.vitepress/theme/index.ts`** — Re-export DefaultTheme with custom.css import (identical to C5C3/C5C3 pattern)\n4. **`docs/.vitepress/theme/custom.css`** — 1440px max-width, code block horizontal scroll, table overflow handling, sidebar width adjustments (identical to C5C3/C5C3)\n5. **`docs/index.md`** — Landing page with hero section, project overview, link to architecture docs at `c5c3.github.io/C5C3`\n6. **`.github/workflows/deploy-docs.yaml`** — Two-job workflow (build → deploy) following `github-actions-workflow-spdx-header-and-structure-convention` pattern exactly: SPDX header, quoted `\"on\"`, `permissions` block (contents: read, pages: write, id-token: write), concurrency group with cancel-in-progress on PR only. Triggers on push to main (paths: docs/**, package.json, package-lock.json, workflow file) + workflow_dispatch. Uses actions/checkout@v4, setup-node@v4 (Node 22), configure-pages@v5, upload-pages-artifact@v3, deploy-pages@v4\n7. **`.gitignore`** (edit) — Add `node_modules/`, `docs/.vitepress/cache/`, `docs/.vitepress/dist/`\n\nAll new files must carry SPDX Apache-2.0 headers per `spdx-apache-20-header-on-infrastructure-files` pattern. Workflow must use `.yaml` extension per forge convention.\n\n**Rationale:** The 5 reference docs under docs/reference/ are only accessible via GitHub's file browser, which lacks navigation, search, and readable formatting. Publishing as a VitePress site provides a professional documentation experience at c5c3.github.io/forge with sidebar navigation, consistent styling, and automatic deployment on push to main — matching the existing C5C3/C5C3 architecture docs site pattern.\n\n**Affected Areas:**\n- package.json\n- docs/.vitepress/config.ts\n- docs/.vitepress/theme/index.ts\n- docs/.vitepress/theme/custom.css\n- docs/index.md\n- .github/workflows/deploy-docs.yaml\n- .gitignore",
   "stories": [
@@ -374,6 +374,7 @@
       "description": "Create /package.json with name 'c5c3-forge-docs', private: true, type: 'module', devDependencies: { vitepress: '^1.6.3' }, scripts: { 'docs:dev': 'vitepress dev docs', 'docs:build': 'vitepress build docs', 'docs:preview': 'vitepress preview docs' }. Mirror the architecture/package.json structure exactly.",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-001"
       ]
@@ -384,6 +385,7 @@
       "description": "Create docs/.vitepress/config.ts with SPDX header (// comments), defineConfig with title 'CobaltCore Forge', base '/forge/', sidebar with Reference section containing 5 items linking to /reference/keystone-crd, /reference/ci-workflow, /reference/build-images-workflow, /reference/container-images, /reference/kubernetes-packages. Add socialLinks with GitHub icon linking to https://github.com/c5c3/forge. Follow the architecture/docs/.vitepress/config.ts pattern.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-009"
@@ -395,6 +397,7 @@
       "description": "Create docs/.vitepress/theme/index.ts identical to architecture/docs/.vitepress/theme/index.ts: SPDX header, import DefaultTheme from 'vitepress/theme', import './custom.css', export default DefaultTheme.",
       "level": 1,
       "estimate_minutes": 5,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-009"
@@ -406,6 +409,7 @@
       "description": "Create docs/.vitepress/theme/custom.css identical to architecture/docs/.vitepress/theme/custom.css: SPDX header (/* */ comments), --vp-layout-max-width: 1440px, .VPDoc content container max-width overrides, code block overflow-x: auto, .VPSidebar width 280px (300px at >= 1440px), table overflow handling.",
       "level": 1,
       "estimate_minutes": 5,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-009"
@@ -417,6 +421,7 @@
       "description": "Create docs/index.md with VitePress frontmatter (layout: home), hero section (name: 'CobaltCore Forge', tagline describing the forge repository, actions linking to reference docs and architecture site at https://c5c3.github.io/C5C3/), and features section highlighting key areas (Reference Docs, Container Images, Kubernetes Operators).",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -427,6 +432,7 @@
       "description": "Append to .gitignore: a 'Node.js / VitePress' section header comment, then node_modules/, docs/.vitepress/cache/, docs/.vitepress/dist/ entries. Place after existing IDE section.",
       "level": 1,
       "estimate_minutes": 5,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -437,25 +443,13 @@
       "description": "Create .github/workflows/deploy-docs.yaml following github-actions-workflow-spdx-header-and-structure-convention: SPDX header, --- separator, name 'Deploy Documentation', quoted 'on' with push (branches: [main], paths: docs/**, package.json, package-lock.json, .github/workflows/deploy-docs.yaml) and workflow_dispatch. Permissions: contents: read, pages: write, id-token: write. Concurrency group 'pages' with cancel-in-progress: false (matches reference pattern — only one deploy at a time). Build job: checkout@v4 with fetch-depth 0, setup-node@v4 with node-version 22 and cache npm, npm ci, npm run docs:build, configure-pages@v5, upload-pages-artifact@v3 with path docs/.vitepress/dist. Deploy job: environment github-pages, needs: build, deploy-pages@v4.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-006",
         "REQ-007",
         "REQ-009",
         "REQ-010"
-      ]
-    },
-    {
-      "id": "3.1",
-      "title": "Validate VitePress build succeeds locally (REQ-001, REQ-002, REQ-003, REQ-004)",
-      "description": "Run npm install && npm run docs:build in the repository root. Verify: (1) build completes without errors, (2) docs/.vitepress/dist/index.html exists, (3) reference doc pages are generated under dist/reference/. Fix any build errors found. This serves as the integration test for all VitePress configuration.",
-      "level": 3,
-      "estimate_minutes": 15,
-      "requirements": [
-        "REQ-001",
-        "REQ-002",
-        "REQ-003",
-        "REQ-004"
       ]
     }
   ],
@@ -599,8 +593,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-03-11T14:24:27.539467"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-11T21:06:28.718629"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-11T21:53:41.100810"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/58",
+  "pr_number": 58,
   "execution_history": [
     {
       "run_id": "3d38c42b-c2d9-42db-a08a-4b24f9d2fa62",
@@ -612,6 +616,58 @@
           "name": "prepare",
           "duration": 212.6694357395172,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "be618e76-0dd7-443b-a5f3-d4167362f066",
+      "timestamp": "2026-03-11T21:27:19.467561",
+      "total_duration": 989.297070980072,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (6 tasks)",
+          "duration": 365.2065978050232,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (1 tasks)",
+          "duration": 131.71286296844482,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0033] Code Review",
+          "duration": 297.67940759658813,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0033] Improvements",
+          "duration": 148.20709776878357,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0033] Simplify",
+          "duration": 46.4911048412323,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "b0921122-41f5-4ea5-bba6-fd7900e91e4d",
+      "timestamp": "2026-03-11T21:43:31.114541",
+      "total_duration": 365.0152223110199,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 365.0152223110199,
+          "type": "review_address",
           "status": "done"
         }
       ]

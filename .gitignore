@@ -24,3 +24,8 @@ operators/c5c3/c5c3
 .vscode/
 *.swp
 *.swo
+
+# Node.js / VitePress
+node_modules/
+docs/.vitepress/cache/
+docs/.vitepress/dist/

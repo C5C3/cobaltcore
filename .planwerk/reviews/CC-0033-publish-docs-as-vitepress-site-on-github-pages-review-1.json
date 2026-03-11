@@ -1,0 +1,102 @@
+{
+  "summary": "VitePress documentation site with 6 reference docs, landing page, custom theme, and GitHub Pages deployment workflow. Build succeeds. Two issues found: (1) deploy-docs.yaml uses unpinned tag-only action references (e.g., actions/checkout@v4) instead of SHA-pinned references (e.g., actions/checkout@<sha> # v6) used by all other workflows in the repo, and checkout@v4 is outdated vs v6 used elsewhere; (2) the deploy job environment URL references a nonexistent deployment payload field instead of the deploy-pages step output.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "npm run docs:build succeeds without errors", "checked": true},
+    {"item": "All 6 reference docs render as HTML in dist/reference/", "checked": true},
+    {"item": "Landing page renders with hero section", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "package.json matches spec: name, scripts, devDependency", "checked": true},
+    {"item": "config.ts has correct title, base, sidebar, socialLinks", "checked": true},
+    {"item": "Theme and CSS match architecture/docs/.vitepress/theme/ pattern", "checked": true},
+    {"item": "Vue compiler options handle GitHub Actions ${{ }} syntax in reference docs", "checked": true},
+    {"item": "docs/index.md has hero, features, architecture docs link", "checked": true},
+    {"item": ".gitignore contains all 3 required entries", "checked": true},
+    {"item": "Workflow uses .yaml extension and self-references correctly in paths", "checked": true},
+    {"item": "Action references use SHA-pinned format matching other workflows", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "Workflow permissions follow least privilege (contents:read, pages:write, id-token:write)", "checked": true},
+    {"item": "No user inputs interpolated in shell commands", "checked": true},
+    {"item": "No secrets exposed in workflow or config files", "checked": true},
+    {"item": "Action references pinned by SHA to prevent supply chain attacks", "checked": false}
+  ],
+  "architecture_checklist": [
+    {"item": "Two-job workflow structure (build -> deploy) matches spec", "checked": true},
+    {"item": "Concurrency group 'pages' with cancel-in-progress: false is correct for GitHub Pages", "checked": true},
+    {"item": "SPDX headers on all new files follow correct format per file type", "checked": true},
+    {"item": "Site structure mirrors architecture/docs/.vitepress/ pattern", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated logic beyond intentional CSS reuse from architecture site", "checked": true},
+    {"item": "No unnecessary features or configuration", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Build step runs before upload/deploy", "checked": true},
+    {"item": "npm ci used instead of npm install for deterministic builds", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "fetch-depth: 0 ensures VitePress git-based features work", "checked": true},
+    {"item": "Workflow triggers correctly scoped to docs-related paths", "checked": true}
+  ],
+  "security_findings": [
+    {
+      "severity": "MEDIUM",
+      "description": "PC3: All 5 existing workflow files use SHA-pinned action references (e.g., actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6). The deploy-docs.yaml uses tag-only references (e.g., actions/checkout@v4). Tag references are mutable and can be retargeted after a compromise of the upstream action repository. This is both a pattern inconsistency and a supply chain security concern.",
+      "location": ".github/workflows/deploy-docs.yaml:32-65",
+      "fix": "Pin all action references by SHA with version comment. Use checkout v6 to match repo standard. Example: uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6. Look up current SHAs for setup-node@v4, configure-pages@v5, upload-pages-artifact@v3, deploy-pages@v4."
+    }
+  ],
+  "architecture_findings": [
+    {
+      "severity": "MAJOR",
+      "description": "Q4: Deploy job environment URL uses ${{ github.event.deployment.payload.web_url || '' }} which references the GitHub deployment event payload. The deploy-pages@v4 action does not populate this field — it outputs the URL via step outputs. The environment URL in GitHub will always be empty.",
+      "location": ".github/workflows/deploy-docs.yaml:59",
+      "fix": "Change url: ${{ github.event.deployment.payload.web_url || '' }} to url: ${{ steps.deployment.outputs.page_url }}"
+    }
+  ],
+  "issues_found": [
+    {
+      "id": "PC3",
+      "severity": "blocking",
+      "file": ".github/workflows/deploy-docs.yaml",
+      "lines": "32,37,49,52,65",
+      "description": "Action references use mutable tags (e.g., @v4) instead of SHA-pinned references used by all other workflows. Additionally, actions/checkout@v4 is outdated — the repo uses v6.",
+      "fix": "Pin all 5 action references by SHA with version comments. Use v6 for checkout to match ci.yaml, build-images.yaml, etc. Look up current SHAs for: actions/checkout (v6), actions/setup-node (v4), actions/configure-pages (v5), actions/upload-pages-artifact (v3), actions/deploy-pages (v4)."
+    },
+    {
+      "id": "Q4",
+      "severity": "major",
+      "file": ".github/workflows/deploy-docs.yaml",
+      "lines": "59",
+      "description": "Environment URL references github.event.deployment.payload.web_url which is not populated by deploy-pages@v4. The GitHub environment page will show an empty URL.",
+      "fix": "Replace with: url: ${{ steps.deployment.outputs.page_url }}"
+    }
+  ],
+  "suggested_improvements": [],
+  "next_steps": [
+    "Pin all action references in deploy-docs.yaml by SHA with version comments, matching the pattern in ci.yaml and build-images.yaml",
+    "Fix environment URL to use steps.deployment.outputs.page_url",
+    "Update actions/checkout from v4 to v6 to match the rest of the repo"
+  ],
+  "detected_patterns": [
+    {
+      "name": "SHA-pinned GitHub Actions references with version comment",
+      "component": ".github/workflows/*.yaml",
+      "category": "configuration",
+      "applies_when": "Adding or updating a GitHub Actions workflow that references external actions",
+      "description": "All action references use the full SHA hash with a trailing version comment (e.g., actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6). This prevents supply chain attacks via mutable tag retargeting and provides audit traceability. The version comment preserves human readability. This extends the existing github-actions-workflow-spdx-header-and-structure-convention pattern.",
+      "examples": [
+        {
+          "location": ".github/workflows/ci.yaml:25",
+          "code": "- uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6"
+        },
+        {
+          "location": ".github/workflows/build-images.yaml:59",
+          "code": "- uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6"
+        }
+      ]
+    }
+  ]
+}

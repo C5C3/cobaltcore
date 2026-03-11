@@ -1,0 +1,55 @@
+/* SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company */
+
+/* SPDX-License-Identifier: Apache-2.0 */
+
+/* Wider content area for ASCII diagrams and code blocks */
+:root {
+  /* Increase max content width from default ~960px to 1440px */
+  --vp-layout-max-width: 1440px;
+}
+
+/* Make the main content container wider */
+/* stylelint-disable-next-line selector-class-pattern */
+.VPDoc.has-sidebar .content-container {
+  max-width: 1440px !important;
+}
+
+/* stylelint-disable-next-line selector-class-pattern */
+.VPDoc:not(.has-sidebar) .content {
+  max-width: 1440px !important;
+}
+
+/* Ensure code blocks can use the full width */
+.vp-doc div[class*='language-'] {
+  margin: 1rem 0;
+  border-radius: 8px;
+}
+
+.vp-doc div[class*='language-'] pre {
+  overflow-x: auto;
+}
+
+/* Make ASCII diagrams (text blocks) more visible */
+.vp-doc div[class*='language-text'] {
+  background-color: var(--vp-code-block-bg);
+}
+
+/* Optional: Adjust sidebar width for better balance */
+/* stylelint-disable-next-line selector-class-pattern */
+.VPSidebar {
+  width: 280px;
+}
+
+@media (width >= 1440px) {
+  /* stylelint-disable-next-line selector-class-pattern */
+  .VPSidebar {
+    width: 300px;
+  }
+}
+
+/* Ensure tables don't overflow */
+.vp-doc table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+}
