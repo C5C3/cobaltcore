@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# MariaDB Galera cluster for OpenStack infrastructure databases.
+# The mariadb-operator manages this CR and provisions a 3-node Galera cluster
+# with automatic failover and synchronous replication.
+# Feature: CC-0008, REQ-005
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: MariaDB
+metadata:
+  name: openstack-db
+  namespace: openstack
+spec:
+  replicas: 3
+  galera:
+    enabled: true
+  maxScale:
+    enabled: true
+    replicas: 2
+  # The mariadb-root-password Secret will be provisioned by the External
+  # Secrets Operator integration (CC-0009).
+  rootPasswordSecretKeyRef:
+    name: mariadb-root-password
+    key: password
+  storage:
+    size: 100Gi
+    storageClassName: ceph-rbd
+  metrics:
+    enabled: true
+  primaryService:
+    type: ClusterIP
+  secondaryService:
+    type: ClusterIP

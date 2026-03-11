@@ -1,0 +1,86 @@
+{
+  "summary": "Review of changes addressing greptile-apps[bot] review #1 feedback. Two issues were fixed: (1) ClusterIssuer extracted from cert-manager HelmRelease into a separate infrastructure kustomization to avoid CRD-not-found failures on first apply, (2) explicit Namespace resources added to ensure target namespaces exist before namespaced resources are applied. The restructuring into a two-phase kustomization (base + infrastructure) is architecturally sound and correctly addresses the bootstrap ordering problems. Documentation was substantially rewritten to reflect the new deployment model.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (N/A — pure infrastructure YAML manifests, no Go/Python code)", "checked": true},
+    {"item": "Edge cases covered (N/A — declarative manifests)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing SPDX header pattern on all new files", "checked": true},
+    {"item": "Follows existing kustomization.yaml structure", "checked": true},
+    {"item": "Feature ID CC-0008 referenced in all new files", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets in manifests", "checked": true},
+    {"item": "ClusterIssuer uses selfSigned (appropriate for dev)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Two-phase kustomization correctly separates CRD-dependent resources", "checked": true},
+    {"item": "Namespace resources cover all 5 target namespaces used by HelmReleases and infrastructure CRs", "checked": true},
+    {"item": "Infrastructure kustomization references only files that exist", "checked": true},
+    {"item": "Base kustomization no longer references CRD-dependent resources", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated resource definitions", "checked": true},
+    {"item": "No unnecessary resources added", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Deployment docs clearly state step 2 depends on step 1 completion", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "install.createNamespace retained as safety net alongside explicit namespaces", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "id": "DA3-1",
+      "severity": "major",
+      "check_id": "DA3",
+      "file": "docs/reference/infrastructure-manifests.md",
+      "line": 292,
+      "description": "Documentation states 'Resource count: 11 files producing 14 Kubernetes resources' but the base kustomization resources list contains exactly 10 files: 1 namespaces.yaml + 5 sources + 4 releases = 10 files. The '11 files' count was carried forward from the pre-refactor single kustomization (5 sources + 4 releases + 2 infra = 11) without updating for the new layout.",
+      "fix": "Change '11 files' to '10 files' on line 292: 'Resource count: 10 files producing 14 Kubernetes resources.'"
+    }
+  ],
+  "suggested_improvements": [],
+  "next_steps": [
+    "Fix the file count in docs/reference/infrastructure-manifests.md line 292 (11 → 10)"
+  ],
+  "detected_patterns": [
+    {
+      "name": "Two-phase kustomization for CRD-dependent resources",
+      "component": "deploy/flux-system/",
+      "category": "configuration",
+      "applies_when": "Adding Kubernetes resources to the deploy/ manifests that depend on CRDs installed by operator HelmReleases (e.g., ClusterIssuer requires cert-manager CRDs, MariaDB CR requires mariadb-operator CRDs)",
+      "description": "CRD-dependent resources (ClusterIssuer, operator instance CRs like MariaDB/Memcached) are placed in a separate infrastructure kustomization (deploy/flux-system/infrastructure/kustomization.yaml) rather than the base kustomization. The base kustomization contains only built-in Kubernetes types (Namespaces, HelmRepository, HelmRelease). This prevents kubectl apply failures on fresh clusters where CRDs do not exist yet. Deployment follows a two-step process: step 1 applies base resources, step 2 applies infrastructure resources after operators have installed their CRDs.",
+      "examples": [
+        {
+          "location": "deploy/flux-system/kustomization.yaml:19-34",
+          "code": "resources:\n  # Namespace resources (applied first by kustomize resource ordering)\n  - namespaces.yaml\n\n  # HelmRepository sources (FluxCD chart registries)\n  - sources/cert-manager.yaml\n  - sources/mariadb-operator.yaml\n  - sources/external-secrets.yaml\n  - sources/openbao.yaml\n  - sources/c5c3-charts.yaml\n\n  # HelmRelease operators (deployed via FluxCD)\n  - releases/cert-manager.yaml\n  - releases/mariadb-operator.yaml\n  - releases/external-secrets.yaml\n  - releases/memcached-operator.yaml"
+        },
+        {
+          "location": "deploy/flux-system/infrastructure/kustomization.yaml:15-18",
+          "code": "resources:\n  - cluster-issuer.yaml\n  - mariadb.yaml\n  - memcached.yaml"
+        }
+      ]
+    },
+    {
+      "name": "Explicit namespace resources for kubectl apply compatibility",
+      "component": "deploy/flux-system/",
+      "category": "configuration",
+      "applies_when": "Adding a HelmRelease or namespaced resource to the base kustomization that targets a non-default namespace",
+      "description": "All target namespaces used by HelmRelease CRs and infrastructure resources are declared as explicit Namespace resources in namespaces.yaml, listed as the first resource in the base kustomization. This ensures kubectl apply -k works on fresh clusters where namespaces don't exist yet. When adding a new operator HelmRelease targeting a new namespace, the namespace must also be added to namespaces.yaml. The install.createNamespace: true setting on HelmReleases is retained as a complementary safety net for FluxCD reconciliation.",
+      "examples": [
+        {
+          "location": "deploy/flux-system/namespaces.yaml:8-32",
+          "code": "---\napiVersion: v1\nkind: Namespace\nmetadata:\n  name: cert-manager\n---\napiVersion: v1\nkind: Namespace\nmetadata:\n  name: mariadb-system\n---\napiVersion: v1\nkind: Namespace\nmetadata:\n  name: external-secrets\n---\napiVersion: v1\nkind: Namespace\nmetadata:\n  name: memcached-system\n---\napiVersion: v1\nkind: Namespace\nmetadata:\n  name: openstack"
+        },
+        {
+          "location": "deploy/flux-system/kustomization.yaml:19-21",
+          "code": "resources:\n  # Namespace resources (applied first by kustomize resource ordering)\n  - namespaces.yaml"
+        }
+      ]
+    }
+  ]
+}

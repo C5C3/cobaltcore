@@ -2,8 +2,8 @@
   "feature_id": "CC-0008",
   "title": "D001: Implement FluxCD infrastructure manifests",
   "slug": "d001-implement-fluxcd-infrastructure-manifests",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Feature ID:** CC-0008\n**Size:** 🔨 medium\n**Category:** infrastructure\n**Priority:** high\n\n---\n\n## Open Questions\n\nAll three original questions have been answered by the user:\n\n- **Q1 (Memcached Operator Helm chart)** → OCI registry at GHCR: `oci://ghcr.io/c5c3/charts` via a `c5c3-charts` HelmRepository (confirmed by `architecture/docs/09-implementation/07-ci-cd-and-packaging.md` lines 305–354)\n- **Q2 (Default ClusterIssuer)** → Self-signed ClusterIssuer\n- **Q3 (Kustomization includes infrastructure/)** → Yes, include `../infrastructure/`\n\n**No remaining open questions.**\n\n---\n\n## Summary\n\nCreate the FluxCD infrastructure deployment manifests under `deploy/` for the CobaltCore development stack. This includes HelmRepository sources for five upstream registries (cert-manager, mariadb-operator, ESO, OpenBao, and the C5C3 OCI chart registry), HelmRelease definitions for four operators (cert-manager with a self-signed ClusterIssuer, MariaDB Operator, Memcached Operator, ESO) with production-ready values and dependency ordering, MariaDB Galera and Memcached instance CRs, and a Kustomize integration file. OpenBao's HelmRelease is excluded (CC-0009 scope).\n\n## Scope\n\n**Included:**\n- 5 HelmRepository CRs in `deploy/flux-system/sources/` — `cert-manager` (`https://charts.jetstack.io`), `mariadb-operator` (`https://mariadb-operator.github.io/mariadb-operator`), `external-secrets` (`https://charts.external-secrets.io`), `openbao` (`https://openbao.github.io/openbao-helm`), `c5c3-charts` (`oci://ghcr.io/c5c3/charts`, type: `oci`)\n- 4 HelmRelease CRs in `deploy/flux-system/releases/` — cert-manager, MariaDB Operator, Memcached Operator, ESO — with `dependsOn` chain and production values (`interval: 30m`, `install.crds: CreateReplace`, `upgrade.crds: CreateReplace`, `upgrade.remediation.retries: 3`)\n- Self-signed ClusterIssuer bundled with cert-manager HelmRelease (post-install)\n- MariaDB Galera CR (`deploy/infrastructure/mariadb.yaml`) — `k8s.mariadb.com/v1alpha1`, 3 replicas, Galera enabled, MaxScale, metrics\n- Memcached CR (`deploy/infrastructure/memcached.yaml`) — `cache.c5c3.io/v1alpha1`, 3 replicas, anti-affinity, PDB, monitoring\n- `deploy/flux-system/kustomization.yaml` referencing `sources/`, `releases/`, and `../infrastructure/`\n\n**Excluded:**\n- OpenBao HelmRelease and bootstrap scripts (CC-0009)\n- ESO ClusterSecretStore and ExternalSecret CRs (CC-0009)\n- `make deploy-infra` / `make teardown-infra` targets (CC-0010)\n- Chainsaw E2E tests for infrastructure health (CC-0010)\n- Valkey and RabbitMQ operators (YAGNI for Keystone-first strategy)\n- Keystone Operator HelmRelease (CC-0017)\n- Production OpenBao PKI ClusterIssuer (CC-0009)\n\n## Visualization\n\n```mermaid\nflowchart TD\n    subgraph sources[\"deploy/flux-system/sources/\"]\n        S1[\"HelmRepo: cert-manager\\njetstack.io\"]\n        S2[\"HelmRepo: mariadb-operator\\nGitHub Pages\"]\n        S3[\"HelmRepo: external-secrets\\nexternal-secrets.io\"]\n        S4[\"HelmRepo: openbao\\nGitHub Pages\"]\n        S5[\"HelmRepo: c5c3-charts\\noci://ghcr.io/c5c3/charts\"]\n    end\n\n    subgraph releases[\"deploy/flux-system/releases/\"]\n        R1[\"HelmRelease: cert-manager\\n+ self-signed ClusterIssuer\"]\n        R2[\"HelmRelease: mariadb-operator\"]\n        R3[\"HelmRelease: external-secrets\"]\n        R4[\"HelmRelease: memcached-operator\"]\n    end\n\n    subgraph infra[\"deploy/infrastructure/\"]\n        I1[\"MariaDB Galera CR\\n3 replicas, MaxScale\"]\n        I2[\"Memcached CR\\n3 replicas, PDB\"]\n    end\n\n    K[\"deploy/flux-system/kustomization.yaml\"]\n\n    S1 --> R1\n    S2 --> R2\n    S3 --> R3\n    S5 --> R4\n\n    R2 -->|\"dependsOn\"| R1\n    R3 -->|\"dependsOn\"| R1\n    R4 -->|\"dependsOn\"| R1\n\n    R2 -.->|\"operator manages\"| I1\n    R4 -.->|\"operator manages\"| I2\n\n    K -->|\"references\"| sources\n    K -->|\"references\"| releases\n    K -->|\"references\"| infra\n```\n\n```mermaid\nflowchart LR\n    CM[\"cert-manager\\n#40;base layer#41;\"] --> MDB[\"MariaDB Operator\"]\n    CM --> ESO[\"External Secrets Operator\"]\n    CM --> MC[\"Memcached Operator\"]\n    MDB -.-> MDBCR[\"MariaDB Galera CR\"]\n    MC -.-> MCCR[\"Memcached CR\"]\n```\n\n## Key Components\n\n- **`deploy/flux-system/sources/cert-manager.yaml`**: HelmRepository — `https://charts.jetstack.io`, `interval: 1h`, API `source.toolkit.fluxcd.io/v1`\n- **`deploy/flux-system/sources/mariadb-operator.yaml`**: HelmRepository — `https://mariadb-operator.github.io/mariadb-operator`, `interval: 1h`\n- **`deploy/flux-system/sources/external-secrets.yaml`**: HelmRepository — `https://charts.external-secrets.io`, `interval: 1h`\n- **`deploy/flux-system/sources/openbao.yaml`**: HelmRepository — `https://openbao.github.io/openbao-helm`, `interval: 1h`\n- **`deploy/flux-system/sources/c5c3-charts.yaml`**: HelmRepository — `oci://ghcr.io/c5c3/charts`, `type: oci`, `interval: 1h` (serves memcached-operator chart)\n- **`deploy/flux-system/releases/cert-manager.yaml`**: HelmRelease in `cert-manager` namespace, chart version `>=1.0.0`, no dependencies (base layer), includes post-install self-signed `ClusterIssuer`\n- **`deploy/flux-system/releases/mariadb-operator.yaml`**: HelmRelease in `mariadb-system` namespace, chart version `>=0.30.0 <1.0.0`, `dependsOn: cert-manager`, metrics + webhook enabled\n- **`deploy/flux-system/releases/external-secrets.yaml`**: HelmRelease in `external-secrets` namespace, chart version `>=0.9.0`, `dependsOn: cert-manager`\n- **`deploy/flux-system/releases/memcached-operator.yaml`**: HelmRelease in `memcached-system` namespace, chart `memcached-operator` from `c5c3-charts` sourceRef, chart version `>=0.1.0 <1.0.0`, `dependsOn: cert-manager`\n- **`deploy/infrastructure/mariadb.yaml`**: MariaDB CR (`openstack-db`) in `openstack` namespace — `k8s.mariadb.com/v1alpha1`, Galera 3-replica, MaxScale 2-replica, 100Gi `ceph-rbd`, metrics enabled\n- **`deploy/infrastructure/memcached.yaml`**: Memcached CR (`openstack-memcached`) in `openstack` namespace — `cache.c5c3.io/v1alpha1`, 3 replicas, 1024MB, 4096 max connections, soft anti-affinity, PDB minAvailable 2, monitoring exporter\n- **`deploy/flux-system/kustomization.yaml`**: Kustomize file referencing `sources/`, `releases/`, and `../infrastructure/` for single-command `kubectl apply -k deploy/flux-system/` deployment\n\n### Corrections from codebase research\n\nTwo details refined from the user's draft:\n\n1. **Memcached CRD API group**: `cache.c5c3.io/v1alpha1` (not `memcached.c5c3.io/v1alpha1`) — confirmed from the fake CRD at `internal/common/testutil/fake_crds/memcached-operator/memcached.yaml` and the envtest integration test at `internal/common/testutil/envtest/integration_test.go:48`.\n\n2. **Memcached-operator HelmRepository**: Named `c5c3-charts` (not a separate `memcached-operator` repo) pointing to `oci://ghcr.io/c5c3/charts` with `type: oci` — this is the shared OCI registry for all C5C3-owned charts, per `architecture/docs/09-implementation/07-ci-cd-and-packaging.md` lines 305–354. The HelmRelease references this via `sourceRef.name: c5c3-charts`.",
   "stories": [
@@ -346,6 +346,7 @@
       "description": "Create the directory deploy/flux-system/sources/ and 5 HelmRepository YAML files. Each file follows the same structure: apiVersion source.toolkit.fluxcd.io/v1, kind HelmRepository, metadata.name and metadata.namespace flux-system, spec.interval 1h, spec.url. Files: cert-manager.yaml (url: https://charts.jetstack.io), mariadb-operator.yaml (url: https://mariadb-operator.github.io/mariadb-operator), external-secrets.yaml (url: https://charts.external-secrets.io), openbao.yaml (url: https://openbao.github.io/openbao-helm), c5c3-charts.yaml (url: oci://ghcr.io/c5c3/charts, spec.type: oci). All files include SPDX header. Remove deploy/.gitkeep after creating real files. Pattern reference: architecture/docs/09-implementation/07-ci-cd-and-packaging.md lines 310-318 and architecture/docs/09-implementation/09-openbao-deployment.md lines 10-16.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-008"
@@ -357,6 +358,7 @@
       "description": "Create deploy/flux-system/releases/cert-manager.yaml containing two YAML documents separated by ---. Document 1: HelmRelease with apiVersion helm.toolkit.fluxcd.io/v2, metadata.name cert-manager, metadata.namespace cert-manager, spec.interval 30m, chart.spec.chart cert-manager, chart.spec.version '>=1.0.0', chart.spec.sourceRef (kind HelmRepository, name cert-manager, namespace flux-system), install.crds CreateReplace, install.createNamespace true, upgrade.crds CreateReplace, upgrade.remediation.retries 3. No dependsOn (base layer). Document 2: ClusterIssuer with apiVersion cert-manager.io/v1, metadata.name selfsigned-cluster-issuer, spec.selfSigned {}. Include SPDX header. Pattern reference: architecture/docs/05-deployment/01-gitops-fluxcd/03-helm-deployment.md.",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-003",
@@ -370,6 +372,7 @@
       "description": "Create deploy/flux-system/releases/mariadb-operator.yaml with HelmRelease: apiVersion helm.toolkit.fluxcd.io/v2, metadata.name mariadb-operator, metadata.namespace mariadb-system, spec.interval 30m, chart.spec.chart mariadb-operator, chart.spec.version '>=0.30.0 <1.0.0', sourceRef (kind HelmRepository, name mariadb-operator, namespace flux-system), values.metrics.enabled true, values.webhook.enabled true, install.crds CreateReplace, install.createNamespace true, upgrade.crds CreateReplace, upgrade.remediation.retries 3, dependsOn [{name: cert-manager, namespace: cert-manager}]. Include SPDX header. Exact pattern from architecture/docs/05-deployment/01-gitops-fluxcd/03-helm-deployment.md lines 17-44.",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-003",
@@ -382,6 +385,7 @@
       "description": "Create deploy/flux-system/releases/external-secrets.yaml with HelmRelease: apiVersion helm.toolkit.fluxcd.io/v2, metadata.name external-secrets, metadata.namespace external-secrets, spec.interval 30m, chart.spec.chart external-secrets, chart.spec.version '>=0.9.0', sourceRef (kind HelmRepository, name external-secrets, namespace flux-system), install.crds CreateReplace, install.createNamespace true, upgrade.crds CreateReplace, upgrade.remediation.retries 3, dependsOn [{name: cert-manager, namespace: cert-manager}]. Include SPDX header.",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-003",
@@ -394,6 +398,7 @@
       "description": "Create deploy/flux-system/releases/memcached-operator.yaml with HelmRelease: apiVersion helm.toolkit.fluxcd.io/v2, metadata.name memcached-operator, metadata.namespace memcached-system, spec.interval 30m, chart.spec.chart memcached-operator, chart.spec.version '>=0.1.0 <1.0.0', sourceRef (kind HelmRepository, name c5c3-charts, namespace flux-system) — NOTE: sourceRef name is c5c3-charts (shared OCI registry, NOT a separate memcached-operator repo), install.crds CreateReplace, install.createNamespace true, upgrade.crds CreateReplace, upgrade.remediation.retries 3, dependsOn [{name: cert-manager, namespace: cert-manager}]. Include SPDX header. Pattern reference: architecture/docs/09-implementation/07-ci-cd-and-packaging.md lines 321-353.",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-003",
@@ -406,6 +411,7 @@
       "description": "Create deploy/infrastructure/mariadb.yaml with MariaDB CR: apiVersion k8s.mariadb.com/v1alpha1, kind MariaDB, metadata.name openstack-db, metadata.namespace openstack, spec.replicas 3, spec.galera.enabled true, spec.maxScale.enabled true, spec.maxScale.replicas 2, spec.storage.size 100Gi, spec.storage.storageClassName ceph-rbd, spec.metrics.enabled true. Include SPDX header. Reference: architecture/docs/03-components/01-control-plane/06-infrastructure-operators.md MariaDB section and fake CRD at internal/common/testutil/fake_crds/mariadb-operator/mariadb.yaml for API group confirmation.",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-008"
@@ -417,6 +423,7 @@
       "description": "Create deploy/infrastructure/memcached.yaml with Memcached CR: apiVersion cache.c5c3.io/v1alpha1 (CRITICAL: use cache.c5c3.io NOT memcached.c5c3.io — confirmed by fake CRD at internal/common/testutil/fake_crds/memcached-operator/memcached.yaml and envtest at internal/common/testutil/envtest/integration_test.go:48), kind Memcached, metadata.name openstack-memcached, metadata.namespace openstack, spec.replicas 3, spec.image memcached:1.6, spec.config.maxMemoryMB 1024, spec.config.maxConnections 4096, spec.resources.requests.memory 1Gi, spec.resources.requests.cpu 500m, spec.highAvailability.podAntiAffinity soft, spec.highAvailability.podDisruptionBudget.minAvailable 2, spec.monitoring.enabled true, spec.monitoring.exporter.image prom/memcached-exporter:latest. Include SPDX header. Reference: architecture/docs/03-components/01-control-plane/06-infrastructure-operators.md Memcached section.",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-008"
@@ -428,6 +435,7 @@
       "description": "Create deploy/flux-system/kustomization.yaml with apiVersion kustomize.config.k8s.io/v1beta1, kind Kustomization, resources listing all 11 files: sources/cert-manager.yaml, sources/mariadb-operator.yaml, sources/external-secrets.yaml, sources/openbao.yaml, sources/c5c3-charts.yaml, releases/cert-manager.yaml, releases/mariadb-operator.yaml, releases/external-secrets.yaml, releases/memcached-operator.yaml, ../infrastructure/mariadb.yaml, ../infrastructure/memcached.yaml. Group entries with comments (# HelmRepository sources, # HelmRelease deployments, # Infrastructure CRs). Include SPDX header. Validate by running kustomize build deploy/flux-system/ and verify all resources appear in output.",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-007",
         "REQ-008"
@@ -439,6 +447,7 @@
       "description": "Create docs/reference/infrastructure/fluxcd-manifests.md documenting: directory structure (deploy/flux-system/sources/, releases/, deploy/infrastructure/), each HelmRepository with name and URL, each HelmRelease with namespace and chart version, dependency ordering diagram, MariaDB Galera CR field summary, Memcached CR field summary (noting cache.c5c3.io API group), how to deploy (kubectl apply -k deploy/flux-system/), how to add new operators (add source + release + kustomization entry). Reference: architecture/docs/05-deployment/01-gitops-fluxcd/ for context.",
       "level": 5,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -596,8 +605,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-03-11T08:30:37.867547"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-11T10:03:35.911897"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-11T14:55:23.894774"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/57",
+  "pr_number": 57,
   "execution_history": [
     {
       "run_id": "4fb80808-06e7-4af5-8044-313b88f84c66",
@@ -609,6 +628,76 @@
           "name": "prepare",
           "duration": 1040.101232767105,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "c5bee09b-855e-4a6a-b6d4-8bd560db4d90",
+      "timestamp": "2026-03-11T10:30:53.259890",
+      "total_duration": 1414.9971146583557,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (1 tasks)",
+          "duration": 180.04779624938965,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (4 tasks)",
+          "duration": 253.92763686180115,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (2 tasks)",
+          "duration": 142.07996892929077,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (1 tasks)",
+          "duration": 151.1362235546112,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 5 (1 tasks)",
+          "duration": 186.23537850379944,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0008] Code Review",
+          "duration": 292.260174036026,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0008] Improvements",
+          "duration": 178.43361401557922,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0008] Simplify",
+          "duration": 30.876322507858276,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "1b5494a6-9185-41c6-934a-68fc2996386b",
+      "timestamp": "2026-03-11T11:01:59.593547",
+      "total_duration": 657.9081172943115,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 657.9081172943115,
+          "type": "review_address",
           "status": "done"
         }
       ]

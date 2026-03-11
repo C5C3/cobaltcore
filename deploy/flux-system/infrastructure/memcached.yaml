@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Memcached cluster for OpenStack session caching and token caching.
+# The memcached-operator manages this CR and provisions a 3-replica Memcached
+# cluster with stable DNS-based service discovery for operator consumers.
+# Feature: CC-0008, REQ-006
+---
+apiVersion: cache.c5c3.io/v1alpha1
+kind: Memcached
+metadata:
+  name: openstack-memcached
+  namespace: openstack
+spec:
+  replicas: 3
+  image: memcached:1.6

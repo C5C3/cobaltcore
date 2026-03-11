@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Kustomization for CRD-dependent infrastructure resources.
+# These resources require their operator CRDs to be installed first.
+# Apply AFTER the base kustomization (deploy/flux-system/) and operator
+# CRDs are available. See docs/reference/infrastructure-manifests.md for
+# deployment instructions.
+# Feature: CC-0008
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - cluster-issuer.yaml
+  - mariadb.yaml
+  - memcached.yaml

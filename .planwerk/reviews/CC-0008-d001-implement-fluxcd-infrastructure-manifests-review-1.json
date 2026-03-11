@@ -1,0 +1,159 @@
+{
+  "summary": "FluxCD infrastructure manifests implementing 5 HelmRepository sources, 4 HelmRelease operators, a self-signed ClusterIssuer, and 2 infrastructure CRs (MariaDB Galera, Memcached) under deploy/flux-system/, with a single Kustomization file producing 12 resources. HelmRepository and HelmRelease CRs are well-structured and consistent. Infrastructure CRs deviate significantly from the plan specification — MariaDB CR is missing MaxScale, has wrong storage size and name; Memcached CR is missing the image field and has wrong name.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "kustomize build produces all 12 expected resources (5 HelmRepository + 4 HelmRelease + 1 ClusterIssuer + 1 MariaDB + 1 Memcached)", "checked": true},
+    {"item": "All YAML files parse without errors", "checked": true},
+    {"item": "Every HelmRelease sourceRef.name matches a HelmRepository metadata.name", "checked": true},
+    {"item": "No automated tests required (declarative YAML manifests)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "All HelmRepository CRs follow identical structure (apiVersion, namespace, interval)", "checked": true},
+    {"item": "All HelmRelease CRs follow identical common settings (interval, install, upgrade)", "checked": true},
+    {"item": "SPDX Apache-2.0 license headers on all files (3-line format)", "checked": true},
+    {"item": "Kustomization resource list grouped with section comments", "checked": true},
+    {"item": "Documentation is comprehensive and accurate relative to implementation", "checked": true},
+    {"item": "No dead code or commented-out blocks", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets in manifests (MariaDB root password via SecretKeyRef)", "checked": true},
+    {"item": "Self-signed ClusterIssuer clearly documented as development-only", "checked": true},
+    {"item": "No path traversal or injection risks (declarative YAML)", "checked": true},
+    {"item": "Namespace isolation: operators in separate namespaces (cert-manager, mariadb-system, external-secrets, memcached-system)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Dependency chain correct: cert-manager base, all others dependsOn cert-manager", "checked": true},
+    {"item": "Memcached Operator sourceRef uses c5c3-charts (shared OCI registry), not separate repo", "checked": true},
+    {"item": "Memcached CR uses cache.c5c3.io/v1alpha1 (not memcached.c5c3.io)", "checked": true},
+    {"item": "MariaDB Galera CR matches architecture doc spec", "checked": false},
+    {"item": "Infrastructure CRs in plan-specified directory (deploy/infrastructure/)", "checked": false},
+    {"item": "Single Kustomization file with flat resource list for simplicity", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated configuration across manifests", "checked": true},
+    {"item": "OpenBao HelmRepository provisioned for CC-0009 (intentional, per plan scope)", "checked": true},
+    {"item": "No unnecessary abstractions or overlays", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "HelmRelease remediation retries set to 3 for upgrade failures", "checked": true},
+    {"item": "install.crds CreateReplace ensures CRDs are always present", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "install.createNamespace true prevents missing-namespace failures", "checked": true},
+    {"item": "Version constraints prevent unexpected major version upgrades", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [
+    {
+      "severity": "MEDIUM",
+      "check_id": "C1",
+      "description": "Infrastructure CRs placed in deploy/flux-system/infrastructure/ instead of plan-specified deploy/infrastructure/. The plan explicitly states 'MariaDB Galera CR (deploy/infrastructure/mariadb.yaml)' and 'Memcached CR (deploy/infrastructure/memcached.yaml)' with the kustomization referencing '../infrastructure/'. The implementation nests them under deploy/flux-system/infrastructure/ instead. This is functionally equivalent but deviates from the plan without documented justification.",
+      "location": "deploy/flux-system/infrastructure/",
+      "fix": "Either move files to deploy/infrastructure/ and update kustomization.yaml references to ../infrastructure/mariadb.yaml and ../infrastructure/memcached.yaml, or document the deviation rationale."
+    }
+  ],
+  "issues_found": [
+    {
+      "id": "FC1-1",
+      "severity": "blocker",
+      "check_id": "FC1",
+      "file": "deploy/flux-system/infrastructure/mariadb.yaml",
+      "line": 13,
+      "description": "MariaDB CR metadata.name is 'mariadb' but plan task 3.1 and architecture doc (03-components/01-control-plane/06-infrastructure-operators.md) specify 'openstack-db'.",
+      "fix": "Change metadata.name from 'mariadb' to 'openstack-db'."
+    },
+    {
+      "id": "FC1-2",
+      "severity": "blocker",
+      "check_id": "FC1",
+      "file": "deploy/flux-system/infrastructure/mariadb.yaml",
+      "line": 15,
+      "description": "MariaDB CR is missing spec.maxScale configuration. Plan task 3.1 specifies 'spec.maxScale.enabled true, spec.maxScale.replicas 2' and the review criterion explicitly requires 'MaxScale 2 replicas'. The upstream mariadb-operator CRD supports this field.",
+      "fix": "Add to spec:\n  maxScale:\n    enabled: true\n    replicas: 2"
+    },
+    {
+      "id": "FC1-3",
+      "severity": "blocker",
+      "check_id": "FC1",
+      "file": "deploy/flux-system/infrastructure/mariadb.yaml",
+      "line": 23,
+      "description": "MariaDB CR storage size is 10Gi but plan task 3.1 and architecture doc specify 100Gi. The review criterion explicitly requires '100Gi ceph-rbd'.",
+      "fix": "Change spec.storage.size from '10Gi' to '100Gi'."
+    },
+    {
+      "id": "FC1-4",
+      "severity": "blocker",
+      "check_id": "FC1",
+      "file": "deploy/flux-system/infrastructure/mariadb.yaml",
+      "line": 22,
+      "description": "MariaDB CR storage is missing storageClassName. Plan task 3.1 specifies 'spec.storage.storageClassName ceph-rbd' and review criterion requires 'ceph-rbd'.",
+      "fix": "Add spec.storage.storageClassName: ceph-rbd."
+    },
+    {
+      "id": "FC1-5",
+      "severity": "blocker",
+      "check_id": "FC1",
+      "file": "deploy/flux-system/infrastructure/memcached.yaml",
+      "line": 14,
+      "description": "Memcached CR metadata.name is 'memcached' but plan task 3.2 and architecture doc specify 'openstack-memcached'.",
+      "fix": "Change metadata.name from 'memcached' to 'openstack-memcached'."
+    },
+    {
+      "id": "FC1-6",
+      "severity": "critical",
+      "check_id": "FC1",
+      "file": "deploy/flux-system/infrastructure/memcached.yaml",
+      "line": 16,
+      "description": "Memcached CR is missing spec.image field. Plan task 3.2 specifies 'spec.image memcached:1.6'. The fake CRD at internal/common/testutil/fake_crds/memcached-operator/memcached.yaml confirms 'image' is a supported spec field (line 35-36). Note: plan-specified fields config, resources, highAvailability, and monitoring are NOT in the CRD schema and should be omitted (plan-vs-CRD discrepancy — the architecture doc describes aspirational fields not yet implemented in the operator CRD).",
+      "fix": "Add spec.image: memcached:1.6 to the Memcached CR."
+    },
+    {
+      "id": "C2-1",
+      "severity": "critical",
+      "check_id": "C2",
+      "file": "deploy/flux-system/releases/cert-manager.yaml",
+      "line": 36,
+      "description": "ClusterIssuer metadata.name is 'selfsigned-issuer' but plan task 2.1 specifies 'selfsigned-cluster-issuer'. Documentation references and future CRs may depend on this exact name.",
+      "fix": "Change metadata.name from 'selfsigned-issuer' to 'selfsigned-cluster-issuer'."
+    },
+    {
+      "id": "DA1-1",
+      "severity": "minor",
+      "check_id": "DA3",
+      "file": "docs/reference/infrastructure-manifests.md",
+      "line": 197,
+      "description": "Documentation describes MariaDB CR name as 'mariadb' and Memcached CR name as 'memcached', consistent with implementation but inconsistent with plan/architecture docs ('openstack-db' and 'openstack-memcached'). Documentation should be updated after the CRs are fixed to match the plan.",
+      "fix": "Update all name references in docs/reference/infrastructure-manifests.md after fixing the CR names."
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a comment to the MariaDB CR explaining that the rootPasswordSecretKeyRef secret (mariadb-root-password) will be provisioned by the ESO integration in CC-0009",
+    "The cert-manager HelmRelease version constraint was tightened to >=1.16.0 <2.0.0 (plan: >=1.0.0) and external-secrets to >=0.10.0 <1.0.0 (plan: >=0.9.0) — these are reasonable refinements but should be noted for traceability"
+  ],
+  "next_steps": [
+    "Fix MariaDB CR: rename to openstack-db, add maxScale (enabled: true, replicas: 2), change storage to 100Gi, add storageClassName: ceph-rbd",
+    "Fix Memcached CR: rename to openstack-memcached, add spec.image: memcached:1.6",
+    "Fix ClusterIssuer: rename to selfsigned-cluster-issuer",
+    "Update docs/reference/infrastructure-manifests.md to reflect corrected CR names and MariaDB spec additions",
+    "Decide on infrastructure directory location: keep deploy/flux-system/infrastructure/ (current) or move to deploy/infrastructure/ (plan-specified) — document the decision"
+  ],
+  "detected_patterns": [
+    {
+      "name": "FluxCD HelmRelease common install/upgrade settings",
+      "component": "deploy/flux-system/releases/",
+      "category": "configuration",
+      "applies_when": "Adding a new HelmRelease CR for an infrastructure operator (e.g., OpenBao for CC-0009, Keystone Operator for CC-0017)",
+      "description": "All HelmRelease CRs in deploy/flux-system/releases/ share identical install and upgrade settings: interval 30m, install.crds CreateReplace, install.createNamespace true, upgrade.crds CreateReplace, upgrade.remediation.retries 3. All operators except cert-manager (the base layer) must include dependsOn [{name: cert-manager, namespace: cert-manager}]. The sourceRef always points to a HelmRepository in the flux-system namespace. Each operator is deployed to its own namespace (<operator>-system or <operator-name>).",
+      "examples": [
+        {
+          "location": "deploy/flux-system/releases/mariadb-operator.yaml:4",
+          "code": "---\napiVersion: helm.toolkit.fluxcd.io/v2\nkind: HelmRelease\nmetadata:\n  name: mariadb-operator\n  namespace: mariadb-system\nspec:\n  interval: 30m\n  dependsOn:\n    - name: cert-manager\n      namespace: cert-manager\n  chart:\n    spec:\n      chart: mariadb-operator\n      version: \">=0.30.0 <1.0.0\"\n      sourceRef:\n        kind: HelmRepository\n        name: mariadb-operator\n        namespace: flux-system\n  values:\n    metrics:\n      enabled: true\n    webhook:\n      enabled: true\n  install:\n    crds: CreateReplace\n    createNamespace: true\n  upgrade:\n    crds: CreateReplace\n    remediation:\n      retries: 3"
+        },
+        {
+          "location": "deploy/flux-system/releases/memcached-operator.yaml:4",
+          "code": "---\napiVersion: helm.toolkit.fluxcd.io/v2\nkind: HelmRelease\nmetadata:\n  name: memcached-operator\n  namespace: memcached-system\nspec:\n  interval: 30m\n  dependsOn:\n    - name: cert-manager\n      namespace: cert-manager\n  chart:\n    spec:\n      chart: memcached-operator\n      version: \">=0.1.0 <1.0.0\"\n      sourceRef:\n        kind: HelmRepository\n        name: c5c3-charts\n        namespace: flux-system\n  values:\n    metrics:\n      enabled: true\n    webhook:\n      enabled: true\n  install:\n    crds: CreateReplace\n    createNamespace: true\n  upgrade:\n    crds: CreateReplace\n    remediation:\n      retries: 3"
+        }
+      ]
+    }
+  ]
+}

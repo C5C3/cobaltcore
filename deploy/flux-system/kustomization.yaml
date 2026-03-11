@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Kustomization for FluxCD base infrastructure manifests.
+# Includes Namespace resources, HelmRepository sources, and HelmRelease
+# operators. CRD-dependent infrastructure custom resources are in a
+# separate kustomization at infrastructure/kustomization.yaml.
+# Feature: CC-0008, REQ-007, REQ-008
+#
+# To add a new operator (e.g., OpenBao for CC-0009):
+#   1. Add a new source file in sources/ (e.g., sources/openbao.yaml)
+#   2. Add a new release file in releases/ (e.g., releases/openbao.yaml)
+#   3. Add both paths to the resources list below
+#   4. Add the operator namespace to namespaces.yaml (e.g., openbao-system)
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # Namespace resources (applied first by kustomize resource ordering)
+  - namespaces.yaml
+
+  # HelmRepository sources (FluxCD chart registries)
+  - sources/cert-manager.yaml
+  - sources/mariadb-operator.yaml
+  - sources/external-secrets.yaml
+  - sources/openbao.yaml
+  - sources/c5c3-charts.yaml
+
+  # HelmRelease operators (deployed via FluxCD)
+  - releases/cert-manager.yaml
+  - releases/mariadb-operator.yaml
+  - releases/external-secrets.yaml
+  - releases/memcached-operator.yaml
