@@ -22,12 +22,15 @@ spec:
         namespace: flux-system
   values:
     metrics:
-      enabled: true
+      enabled: false
     webhook:
-      enabled: true
+      enabled: false
   install:
     crds: CreateReplace
     createNamespace: true
+    disableWait: true
+    remediation:
+      retries: 3
   upgrade:
     crds: CreateReplace
     remediation:

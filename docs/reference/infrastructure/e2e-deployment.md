@@ -329,7 +329,7 @@ if the tool already exists at the correct version.
 
 | Tool | Version |
 | --- | --- |
-| chainsaw | v0.3.1 |
+| chainsaw | v0.2.14 |
 | flux | 2.5.1 |
 | kind | v0.27.0 |
 | kubectl | v1.32.3 |

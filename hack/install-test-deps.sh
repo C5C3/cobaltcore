@@ -11,7 +11,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Pinned versions
 # ---------------------------------------------------------------------------
-CHAINSAW_VERSION="v0.3.1"
+CHAINSAW_VERSION="v0.2.14"
 FLUX_VERSION="2.5.1"
 KIND_VERSION="v0.27.0"
 KUBECTL_VERSION="v1.32.3"
@@ -64,7 +64,7 @@ verify_checksum() {
   local expected_hash
   if [[ -n "${download_filename}" ]]; then
     # Multi-entry format: "<hash>  <filename>" — extract hash for our file.
-    expected_hash=$(grep "${download_filename}" "${checksum_file}" | awk '{print $1}')
+    expected_hash=$(grep "${download_filename}\$" "${checksum_file}" | awk '{print $1}')
   else
     # Single-hash format: file contains only the hash (e.g. kubectl .sha256).
     expected_hash=$(tr -d '[:space:]' < "${checksum_file}")
@@ -156,7 +156,7 @@ install_tool "chainsaw" "${CHAINSAW_VERSION}" \
   "chainsaw version" \
   "https://github.com/kyverno/chainsaw/releases/download/${CHAINSAW_VERSION}/chainsaw_${OS}_${ARCH}.tar.gz" \
   "tarball" \
-  "https://github.com/kyverno/chainsaw/releases/download/${CHAINSAW_VERSION}/chainsaw_checksums.txt" \
+  "https://github.com/kyverno/chainsaw/releases/download/${CHAINSAW_VERSION}/checksums.txt" \
   "chainsaw_${OS}_${ARCH}.tar.gz"
 
 # ---------------------------------------------------------------------------

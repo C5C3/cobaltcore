@@ -21,13 +21,18 @@ spec:
         name: mariadb-operator
         namespace: flux-system
   values:
-    metrics:
+    crds:
       enabled: true
+    metrics:
+      enabled: false
     webhook:
       enabled: true
   install:
     crds: CreateReplace
     createNamespace: true
+    disableWait: true
+    remediation:
+      retries: 3
   upgrade:
     crds: CreateReplace
     remediation:

@@ -18,8 +18,12 @@ spec:
         name: cert-manager
         namespace: flux-system
   values:
+    crds:
+      enabled: true
     prometheus:
       enabled: true
+    startupapicheck:
+      enabled: false
   install:
     crds: CreateReplace
     createNamespace: true

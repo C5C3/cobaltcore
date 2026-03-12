@@ -9,11 +9,10 @@
 # DECISION: Deployment names for Helm-installed operators
 # Ambiguity: Exact Deployment names depend on each Helm chart's templates,
 #   which are not available in the repository.
-# Chose: cert-manager, external-secrets-operator (ESO controller), mariadb-operator,
-#   memcached-operator-controller-manager (kubebuilder convention for c5c3 operator).
+# Chose: cert-manager, external-secrets (ESO controller), mariadb-operator,
+#   memcached-operator (Helm release name convention).
 #   OpenBao StatefulSet is named "openbao" per the openbao Helm chart convention.
-# Reviewer: please verify Deployment names match actual chart output.
-apiVersion: chainsaw.kyverno.io/v1alpha2
+apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
   name: infra-stack-health
@@ -60,7 +59,7 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: memcached-operator-controller-manager
+            name: memcached-operator
             namespace: memcached-system
           status:
             (availableReplicas > `0`): true
@@ -116,13 +115,13 @@ spec:
             - status: "True"
 
   # ── Step 4: ESO Resources ───────────────────────────────────────────────
-  # Asserts ClusterSecretStore Valid condition and ExternalSecret SecretSynced
+  # Asserts ClusterSecretStore Valid condition and ExternalSecret Ready
   # conditions, confirming end-to-end secret delivery from OpenBao to K8s.
   - name: assert-eso-resources-functional
     try:
     - assert:
         resource:
-          apiVersion: external-secrets.io/v1beta1
+          apiVersion: external-secrets.io/v1
           kind: ClusterSecretStore
           metadata:
             name: openbao-cluster-store
@@ -131,31 +130,31 @@ spec:
             - status: "True"
     - assert:
         resource:
-          apiVersion: external-secrets.io/v1beta1
+          apiVersion: external-secrets.io/v1
           kind: ExternalSecret
           metadata:
             name: keystone-admin
             namespace: openstack
           status:
-            (conditions[?type == 'SecretSynced']):
+            (conditions[?type == 'Ready']):
             - status: "True"
     - assert:
         resource:
-          apiVersion: external-secrets.io/v1beta1
+          apiVersion: external-secrets.io/v1
           kind: ExternalSecret
           metadata:
             name: keystone-db
             namespace: openstack
           status:
-            (conditions[?type == 'SecretSynced']):
+            (conditions[?type == 'Ready']):
             - status: "True"
     - assert:
         resource:
-          apiVersion: external-secrets.io/v1beta1
+          apiVersion: external-secrets.io/v1
           kind: ExternalSecret
           metadata:
             name: mariadb-root-password
             namespace: openstack
           status:
-            (conditions[?type == 'SecretSynced']):
+            (conditions[?type == 'Ready']):
             - status: "True"
