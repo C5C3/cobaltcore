@@ -521,6 +521,7 @@
       "title": "Write reference documentation `docs/reference/infrastructure/e2e-deployment.md` — documents `make deploy-infra`, `make teardown-infra`, `make install-test-deps`, `make e2e` targets; deployment sequence diagram; kustomize overlay structure in `deploy/kind/`; environment variables for timeout configuration; prerequisites (docker, kubectl); CI job description. (REQ-001 through REQ-012)",
       "level": 6,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
