@@ -8,8 +8,6 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
 CLUSTER_NAME="${CLUSTER_NAME:-c5c3}"
 
 log() {

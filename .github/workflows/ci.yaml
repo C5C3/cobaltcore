@@ -64,7 +64,7 @@ jobs:
       - name: Deploy infrastructure
         run: make deploy-infra
       - name: Run E2E tests
-        run: chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/infrastructure/
+        run: chainsaw test --config tests/e2e/chainsaw-config.yaml --report-path _output/reports/ tests/e2e/infrastructure/
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

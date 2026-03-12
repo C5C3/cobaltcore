@@ -19,8 +19,16 @@ source "${SCRIPT_DIR}/common.sh"
 # ---------------------------------------------------------------------------
 KEY_SHARES=5
 KEY_THRESHOLD=3
-PODS=("openbao-0" "openbao-1" "openbao-2")
 SECRET_NAME="openbao-init-keys"
+
+# OPENBAO_PODS — Space-separated list of pod names to unseal.
+# Override via environment to match the replica count of your deployment.
+# Default: 3-replica HA setup. For standalone (kind): export OPENBAO_PODS="openbao-0"
+if [[ -n "${OPENBAO_PODS:-}" ]]; then
+  IFS=' ' read -ra PODS <<< "${OPENBAO_PODS}"
+else
+  PODS=("openbao-0" "openbao-1" "openbao-2")
+fi
 
 # ---------------------------------------------------------------------------
 # Helpers

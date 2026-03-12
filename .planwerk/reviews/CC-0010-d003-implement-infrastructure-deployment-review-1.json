@@ -1,0 +1,145 @@
+{
+  "feature_id": "CC-0010",
+  "title": "D003: Implement infrastructure deployment automation E2E",
+  "date": "2026-03-12",
+  "summary": "Implements `make deploy-infra`, `make teardown-infra`, `make install-test-deps`, and `make e2e` targets with orchestration scripts, kustomize overlays for kind-specific sizing, a Chainsaw E2E test covering all 12 infrastructure health assertions, and a GitHub Actions `e2e-infra` CI job. Overall implementation is well-structured and follows project conventions. One blocking issue: init-unseal.sh hardcodes a 3-replica PODS array that will fail on the standalone (1-replica) kind deployment because openbao-1 and openbao-2 do not exist. One major inconsistency: the wait_for_externalsecrets function and the Chainsaw test check different ExternalSecret condition types.",
+  "verdict": "BLOCKED",
+  "tests_checklist": [
+    {"item": "Chainsaw E2E test exists at tests/e2e/infrastructure/infra-stack-health/chainsaw-test.yaml", "checked": true},
+    {"item": "Test covers all 5 operator Deployments/StatefulSets", "checked": true},
+    {"item": "Test covers ClusterIssuer, MariaDB CR, Memcached CR Ready conditions", "checked": true},
+    {"item": "Test covers ClusterSecretStore Valid condition", "checked": true},
+    {"item": "Test covers 3 ExternalSecrets sync conditions", "checked": true},
+    {"item": "Test uses extended 5m assert timeout for operator startup", "checked": true},
+    {"item": "Full deploy-infra + e2e + teardown-infra cycle works end-to-end", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Shell scripts follow project conventions (SPDX header, set -euo pipefail, CC-0010 reference, log() with timestamps)", "checked": true},
+    {"item": "CI job follows existing conventions (SHA-pinned actions, permissions, concurrency, runs-on)", "checked": true},
+    {"item": "Kustomize overlays do not modify production manifests", "checked": true},
+    {"item": "Scripts are idempotent (preflight checks, existing cluster detection)", "checked": true},
+    {"item": "Helper functions are well-documented with comments", "checked": true},
+    {"item": "No dead code or unused variables", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets in scripts or configs", "checked": true},
+    {"item": "BAO_TOKEN extracted from K8s Secret, not hardcoded", "checked": true},
+    {"item": "Downloaded binaries use HTTPS", "checked": true},
+    {"item": "CI actions are SHA-pinned to prevent supply-chain attacks", "checked": true},
+    {"item": "No shell injection in sh -c commands", "checked": true},
+    {"item": "Downloaded binaries verified with checksums", "checked": false}
+  ],
+  "architecture_checklist": [
+    {"item": "Two-phase kustomization pattern followed (base for operators, infrastructure for CRD-dependent resources)", "checked": true},
+    {"item": "Kind overlays patch production manifests via kustomize, not modify them", "checked": true},
+    {"item": "OpenBao bootstrap scripts invoked as-is without modification", "checked": true},
+    {"item": "Solution is as simple as possible for the requirements", "checked": true},
+    {"item": "CI job independent of lint/test jobs (no needs: dependency)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code across scripts", "checked": true},
+    {"item": "No unused features or over-engineering", "checked": true},
+    {"item": "Shared log() pattern consistent across all scripts", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Pre-flight checks detect Docker not running", "checked": true},
+    {"item": "Timeout-based waits prevent infinite loops", "checked": true},
+    {"item": "set -euo pipefail on all scripts", "checked": true},
+    {"item": "Helpful error messages on timeout", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Existing cluster detected and handled gracefully", "checked": true},
+    {"item": "Teardown idempotent (exits 0 if cluster doesn't exist)", "checked": true},
+    {"item": "install-test-deps skips download if correct version exists", "checked": true},
+    {"item": "Environment variable defaults provided for all configurable values", "checked": true}
+  ],
+  "security_findings": [
+    {
+      "severity": "LOW",
+      "description": "install-test-deps.sh downloads binaries from GitHub releases and dl.k8s.io without verifying checksums or signatures. A compromised CDN or MITM attack could serve malicious binaries. While HTTPS mitigates transport-level attacks, checksum verification provides defense-in-depth.",
+      "location": "hack/install-test-deps.sh:78-80",
+      "fix": "Add SHA-256 checksum verification after download for each tool. Store expected checksums as constants at the top of the script (alongside version pins). Verify with: echo \"${EXPECTED_HASH} ${INSTALL_DIR}/${name}\" | sha256sum -c -"
+    }
+  ],
+  "architecture_findings": [
+    {
+      "severity": "BLOCKING",
+      "description": "FC4: deploy-infra.sh calls init-unseal.sh without overriding the PODS variable. init-unseal.sh (CC-0009) hardcodes PODS=(\"openbao-0\" \"openbao-1\" \"openbao-2\") at line 22 as a direct assignment (not env-overridable). In standalone mode (1 replica deployed by the kind overlay), pods openbao-1 and openbao-2 do not exist. The unseal_pod function will fail with 'ERROR: Could not reach openbao-1' and exit 1, aborting the entire deployment at step 7. The review criteria explicitly expected 'PODS variable override for standalone mode' in deploy-infra.sh, but no override mechanism exists.",
+      "location": "hack/deploy-infra.sh:201",
+      "fix": "Two changes needed: (1) In deploy/openbao/bootstrap/init-unseal.sh, make PODS env-overridable by changing line 22 from `PODS=(\"openbao-0\" \"openbao-1\" \"openbao-2\")` to `if [[ -z \"${OPENBAO_PODS:-}\" ]]; then PODS=(\"openbao-0\" \"openbao-1\" \"openbao-2\"); else IFS=',' read -ra PODS <<< \"${OPENBAO_PODS}\"; fi`. (2) In hack/deploy-infra.sh, before calling init-unseal.sh at line 201, add: `export OPENBAO_PODS=\"openbao-0\"` to restrict unseal to the single standalone replica."
+    }
+  ],
+  "issues_found": [
+    {
+      "id": "FC4",
+      "severity": "blocking",
+      "file": "hack/deploy-infra.sh",
+      "line": 201,
+      "description": "init-unseal.sh PODS hardcoded for 3 replicas — will fail on standalone kind cluster. deploy-infra.sh calls init-unseal.sh without any mechanism to override the PODS array. unseal_pod() will exit 1 when kubectl exec fails for non-existent openbao-1.",
+      "fix": "Make PODS env-overridable in init-unseal.sh and export OPENBAO_PODS=openbao-0 from deploy-infra.sh before calling init-unseal.sh."
+    },
+    {
+      "id": "PC3",
+      "severity": "major",
+      "file": "hack/deploy-infra.sh",
+      "line": 119,
+      "description": "ExternalSecret condition type mismatch: wait_for_externalsecrets() checks `.type == \"Ready\"` but chainsaw-test.yaml checks `.type == \"SecretSynced\"`. If the ESO version uses only one of these condition types, one check will fail while the other passes. Both should use the same condition type for consistency.",
+      "fix": "Align both to use the same condition type. ESO v0.10+ uses `Ready` as the primary status condition. Change chainsaw-test.yaml assertions from `type == 'SecretSynced'` to `type == 'Ready'`, OR change the jq filter in wait_for_externalsecrets to check `SecretSynced` instead of `Ready`. The latter is preferred if `SecretSynced` is the more specific/accurate condition for the ESO version deployed."
+    },
+    {
+      "id": "Q7",
+      "severity": "minor",
+      "file": "hack/teardown-infra.sh",
+      "line": 11,
+      "description": "SCRIPT_DIR is declared but never used. Dead variable.",
+      "fix": "Remove line 11: `SCRIPT_DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"`"
+    }
+  ],
+  "suggested_improvements": [
+    "Add SHA-256 checksum verification to install-test-deps.sh for downloaded binaries (defense-in-depth against supply-chain attacks)",
+    "Add a preflight check in deploy-infra.sh for required CLI tools (flux, kind, kubectl, jq) before starting deployment, providing a clear error message listing missing tools",
+    "Consider adding a `--report-file` flag to the CI chainsaw invocation to ensure JUnit output lands in _output/reports/ even if the global chainsaw-config.yaml report path changes"
+  ],
+  "next_steps": [
+    "Fix BLOCKING: Make init-unseal.sh PODS variable env-overridable and add OPENBAO_PODS=openbao-0 export in deploy-infra.sh before bootstrap invocation",
+    "Fix MAJOR: Align ExternalSecret condition type between wait_for_externalsecrets() and chainsaw-test.yaml",
+    "Fix MINOR: Remove unused SCRIPT_DIR from teardown-infra.sh",
+    "Re-request review after fixes"
+  ],
+  "detected_patterns": [
+    {
+      "name": "Environment-variable-configurable timeouts with trailing-s strip for arithmetic",
+      "component": "hack/deploy-infra.sh",
+      "category": "configuration",
+      "applies_when": "Writing a shell script wait function that accepts a human-readable timeout string (e.g., '600s') from an environment variable and needs to use it in both kubectl --timeout and bash arithmetic comparisons",
+      "description": "Wait helper functions accept a timeout string with trailing 's' suffix (e.g., '600s') from environment variables, strip the suffix for arithmetic comparisons (`timeout_secs=\"${timeout%s}\"`), and use the original value for kubectl --timeout which accepts the 's' suffix natively. This avoids maintaining two separate timeout variables and follows the convention established by kubectl's timeout format.",
+      "examples": [
+        {
+          "location": "hack/deploy-infra.sh:40-42",
+          "code": "wait_for_helmreleases() {\n  local timeout=\"${HELM_RELEASE_TIMEOUT}\"\n  # Strip trailing 's' for arithmetic if present.\n  local timeout_secs=\"${timeout%s}\""
+        },
+        {
+          "location": "hack/deploy-infra.sh:101-103",
+          "code": "wait_for_externalsecrets() {\n  local timeout=\"${EXTERNAL_SECRET_TIMEOUT}\"\n  local timeout_secs=\"${timeout%s}\""
+        }
+      ]
+    },
+    {
+      "name": "Two-phase kind kustomize overlay referencing production base",
+      "component": "deploy/kind/base/, deploy/kind/infrastructure/",
+      "category": "configuration",
+      "applies_when": "Adding kind-specific resource sizing or configuration that differs from production manifests in deploy/flux-system/",
+      "description": "Kind-specific differences are expressed as kustomize overlays in deploy/kind/ that reference the production manifests via relative paths (../../flux-system/ for base, ../../flux-system/infrastructure/ for CRD-dependent resources). The overlays use strategic merge patches to adjust replicas, storage classes, and HA settings without modifying the production manifests. This mirrors the two-phase kustomization pattern from deploy/flux-system/ (base for operators, infrastructure for CRD-dependent resources) and ensures kind testing validates the same manifests that ship to production with only resource sizing differences.",
+      "examples": [
+        {
+          "location": "deploy/kind/base/kustomization.yaml:14-15",
+          "code": "resources:\n  - ../../flux-system/"
+        },
+        {
+          "location": "deploy/kind/infrastructure/kustomization.yaml:16-17",
+          "code": "resources:\n  - ../../flux-system/infrastructure/"
+        }
+      ]
+    }
+  ]
+}

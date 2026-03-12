@@ -108,7 +108,7 @@ wait_for_externalsecrets() {
       log "No ExternalSecrets found yet in namespace 'openstack'. Waiting ..."
     else
       not_synced=$(kubectl get externalsecrets -n openstack -o json \
-        | jq '[.items[] | select(.status.conditions // [] | map(select(.type == "Ready" and .status == "True")) | length == 0)] | length')
+        | jq '[.items[] | select(.status.conditions // [] | map(select(.type == "SecretSynced" and .status == "True")) | length == 0)] | length')
       if [[ "${not_synced}" -eq 0 ]]; then
         log "All ${total} ExternalSecret(s) are synced."
         return 0
@@ -132,6 +132,21 @@ wait_for_externalsecrets() {
 # ---------------------------------------------------------------------------
 preflight() {
   log "Running pre-flight checks ..."
+
+  # Check required CLI tools.
+  local required_tools=("docker" "flux" "kind" "kubectl" "jq")
+  local missing=()
+  for tool in "${required_tools[@]}"; do
+    if ! command -v "${tool}" &>/dev/null; then
+      missing+=("${tool}")
+    fi
+  done
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    log "ERROR: Required tools not found: ${missing[*]}"
+    log "Install missing tools and retry. See hack/install-test-deps.sh for automated installation."
+    exit 1
+  fi
+  log "All required CLI tools found."
 
   # Check Docker daemon.
   if ! docker info > /dev/null 2>&1; then
@@ -199,6 +214,9 @@ main() {
   local bootstrap_dir="${REPO_ROOT}/deploy/openbao/bootstrap"
 
   # 7a. Init and unseal.
+  # kind overlay uses standalone mode (1 replica) — override the default
+  # 3-replica PODS array in init-unseal.sh (CC-0010).
+  export OPENBAO_PODS="openbao-0"
   log "  Running init-unseal.sh ..."
   bash "${bootstrap_dir}/init-unseal.sh"
 

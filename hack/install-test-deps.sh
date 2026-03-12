@@ -44,14 +44,64 @@ case "${ARCH}" in
 esac
 
 # ---------------------------------------------------------------------------
-# install_tool — generic installer
+# verify_checksum — SHA-256 checksum verification for downloaded files.
 #
-# Usage: install_tool <name> <version> <version_cmd> <url> <mode>
-#   name        — binary name (e.g. chainsaw)
-#   version     — expected version string to grep for
-#   version_cmd — command that prints version info
-#   url         — download URL
-#   mode        — "tarball" or "binary"
+# Usage: verify_checksum <file_path> <checksum_url> <download_filename>
+#   file_path         — local path to the downloaded file
+#   checksum_url      — URL of the checksum file to download
+#   download_filename — filename to grep for in multi-entry checksum files;
+#                       empty string means the checksum file contains only the hash
+# ---------------------------------------------------------------------------
+verify_checksum() {
+  local file_path="$1"
+  local checksum_url="$2"
+  local download_filename="$3"
+
+  local checksum_file
+  checksum_file="$(mktemp)"
+  curl -fsSL "${checksum_url}" -o "${checksum_file}"
+
+  local expected_hash
+  if [[ -n "${download_filename}" ]]; then
+    # Multi-entry format: "<hash>  <filename>" — extract hash for our file.
+    expected_hash=$(grep "${download_filename}" "${checksum_file}" | awk '{print $1}')
+  else
+    # Single-hash format: file contains only the hash (e.g. kubectl .sha256).
+    expected_hash=$(tr -d '[:space:]' < "${checksum_file}")
+  fi
+  rm -f "${checksum_file}"
+
+  if [[ -z "${expected_hash}" ]]; then
+    log "ERROR: Could not extract expected checksum for ${file_path} from ${checksum_url}"
+    return 1
+  fi
+
+  local actual_hash
+  actual_hash=$(sha256sum "${file_path}" | awk '{print $1}')
+
+  if [[ "${actual_hash}" != "${expected_hash}" ]]; then
+    log "ERROR: SHA-256 checksum mismatch for ${file_path}"
+    log "  Expected: ${expected_hash}"
+    log "  Actual:   ${actual_hash}"
+    return 1
+  fi
+
+  log "  SHA-256 checksum verified."
+}
+
+# ---------------------------------------------------------------------------
+# install_tool — generic installer with checksum verification
+#
+# Usage: install_tool <name> <version> <version_cmd> <url> <mode> \
+#          <checksum_url> <checksum_filename>
+#   name              — binary name (e.g. chainsaw)
+#   version           — expected version string to grep for
+#   version_cmd       — command that prints version info
+#   url               — download URL
+#   mode              — "tarball" or "binary"
+#   checksum_url      — URL of the SHA-256 checksum file
+#   checksum_filename — filename to match in multi-entry checksum files
+#                       (empty string for single-hash files like kubectl)
 # ---------------------------------------------------------------------------
 install_tool() {
   local name="$1"
@@ -59,6 +109,8 @@ install_tool() {
   local version_cmd="$3"
   local url="$4"
   local mode="$5"
+  local checksum_url="${6:-}"
+  local checksum_filename="${7:-}"
 
   # Check if the tool already exists at the correct version.
   if command -v "${name}" &>/dev/null; then
@@ -76,11 +128,21 @@ install_tool() {
     trap "rm -rf '${tmp_dir}'" RETURN
 
     curl -fsSL "${url}" -o "${tmp_dir}/${name}.tar.gz"
+
+    if [[ -n "${checksum_url}" ]]; then
+      verify_checksum "${tmp_dir}/${name}.tar.gz" "${checksum_url}" "${checksum_filename}"
+    fi
+
     tar -xzf "${tmp_dir}/${name}.tar.gz" -C "${tmp_dir}"
     mv "${tmp_dir}/${name}" "${INSTALL_DIR}/${name}"
     chmod +x "${INSTALL_DIR}/${name}"
   elif [[ "${mode}" == "binary" ]]; then
     curl -fsSL "${url}" -o "${INSTALL_DIR}/${name}"
+
+    if [[ -n "${checksum_url}" ]]; then
+      verify_checksum "${INSTALL_DIR}/${name}" "${checksum_url}" "${checksum_filename}"
+    fi
+
     chmod +x "${INSTALL_DIR}/${name}"
   fi
 
@@ -93,7 +155,9 @@ install_tool() {
 install_tool "chainsaw" "${CHAINSAW_VERSION}" \
   "chainsaw version" \
   "https://github.com/kyverno/chainsaw/releases/download/${CHAINSAW_VERSION}/chainsaw_${OS}_${ARCH}.tar.gz" \
-  "tarball"
+  "tarball" \
+  "https://github.com/kyverno/chainsaw/releases/download/${CHAINSAW_VERSION}/chainsaw_checksums.txt" \
+  "chainsaw_${OS}_${ARCH}.tar.gz"
 
 # ---------------------------------------------------------------------------
 # Install flux
@@ -101,7 +165,9 @@ install_tool "chainsaw" "${CHAINSAW_VERSION}" \
 install_tool "flux" "${FLUX_VERSION}" \
   "flux version --client" \
   "https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/flux_${FLUX_VERSION}_${OS}_${ARCH}.tar.gz" \
-  "tarball"
+  "tarball" \
+  "https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/flux_${FLUX_VERSION}_checksums.txt" \
+  "flux_${FLUX_VERSION}_${OS}_${ARCH}.tar.gz"
 
 # ---------------------------------------------------------------------------
 # Install kind
@@ -109,7 +175,9 @@ install_tool "flux" "${FLUX_VERSION}" \
 install_tool "kind" "${KIND_VERSION}" \
   "kind version" \
   "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-${OS}-${ARCH}" \
-  "binary"
+  "binary" \
+  "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-${OS}-${ARCH}.sha256sum" \
+  "kind-${OS}-${ARCH}"
 
 # ---------------------------------------------------------------------------
 # Install kubectl
@@ -117,6 +185,8 @@ install_tool "kind" "${KIND_VERSION}" \
 install_tool "kubectl" "${KUBECTL_VERSION}" \
   "kubectl version --client" \
   "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/${OS}/${ARCH}/kubectl" \
-  "binary"
+  "binary" \
+  "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/${OS}/${ARCH}/kubectl.sha256" \
+  ""
 
 log "All E2E test dependencies are installed."
