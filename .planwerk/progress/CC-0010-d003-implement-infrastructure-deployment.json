@@ -452,6 +452,7 @@
       "title": "Create orchestration script `hack/deploy-infra.sh` — implements the full 8-step deployment sequence: kind create cluster (using hack/kind-config.yaml), flux install, kubectl apply -k deploy/kind/base, wait for HelmReleases Ready, kubectl apply -k deploy/kind/infrastructure, wait for OpenBao pods Ready, run OpenBao bootstrap, wait for ExternalSecrets synced. Includes `log()`, `wait_for_helmreleases()`, `wait_for_pods()`, `wait_for_externalsecrets()` helper functions with configurable timeouts via environment variables. SPDX header, `set -euo pipefail`, CC-0010 reference. Handles pre-flight checks (docker running, no existing cluster). (REQ-001, REQ-004, REQ-005, REQ-011, REQ-012)",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-004",
@@ -465,6 +466,7 @@
       "title": "Create teardown script `hack/teardown-infra.sh` — runs `kind delete cluster --name <cluster-name>`, idempotent (succeeds even if cluster does not exist). SPDX header, `set -euo pipefail`, CC-0010 reference. (REQ-002, REQ-011)",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-011"
@@ -475,6 +477,7 @@
       "title": "Create install-test-deps script `hack/install-test-deps.sh` — installs pinned versions of chainsaw, flux CLI, kind, and kubectl. Skips download if tool already exists at correct version. SPDX header, `set -euo pipefail`, CC-0010 reference. (REQ-006, REQ-011)",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-011"
