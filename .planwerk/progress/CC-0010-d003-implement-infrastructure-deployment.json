@@ -488,6 +488,7 @@
       "title": "Update Makefile: replace `deploy-infra` stub (S008) with `hack/deploy-infra.sh`, add `teardown-infra` target delegating to `hack/teardown-infra.sh`, replace `install-test-deps` stub (S002) with `hack/install-test-deps.sh`, replace `e2e` stub (S002) with `chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/`. Keep existing .PHONY declarations and comment style. (REQ-001, REQ-002, REQ-006, REQ-007)",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",

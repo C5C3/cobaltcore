@@ -7,6 +7,7 @@
 # - Stub targets use $(error) to fail explicitly with a feature reference (e.g.,
 #   "S006: docker-build not yet implemented") rather than silently succeeding,
 #   preventing false confidence that a target works.
+# - teardown-infra added for kind cluster cleanup (CC-0010).
 # - generate/manifests use controller-gen to produce deepcopy functions and CRD/webhook
 #   manifests for each operator module that has an api/ directory (CC-0011).
 
@@ -122,15 +123,19 @@ helm-package:
 
 .PHONY: e2e
 e2e:
-	$(error S002: e2e not yet implemented)
+	chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/
 
 .PHONY: deploy-infra
 deploy-infra:
-	$(error S008: deploy-infra not yet implemented)
+	@hack/deploy-infra.sh
+
+.PHONY: teardown-infra
+teardown-infra:
+	@hack/teardown-infra.sh
 
 .PHONY: install-test-deps
 install-test-deps:
-	$(error S002: install-test-deps not yet implemented)
+	@hack/install-test-deps.sh
 
 .PHONY: test-integration
 # TODO: Replace this stub when envtest CI infrastructure is added.
