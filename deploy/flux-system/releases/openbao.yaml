@@ -1,0 +1,99 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OpenBao HelmRelease — HA 3-replica Raft cluster with TLS.
+# Deployed to openbao-system namespace, depends on cert-manager for TLS certificates.
+# See architecture/docs/09-implementation/09-openbao-deployment.md for design rationale.
+# Feature: CC-0009
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: openbao
+  namespace: openbao-system
+spec:
+  interval: 30m
+  dependsOn:
+    - name: cert-manager
+      namespace: cert-manager
+  chart:
+    spec:
+      chart: openbao
+      version: ">=0.5.0 <1.0.0"
+      sourceRef:
+        kind: HelmRepository
+        name: openbao
+        namespace: flux-system
+  values:
+    server:
+      # Explicitly enable the system:auth-delegator ClusterRoleBinding so that
+      # the kubernetes/management auth mount can validate service account JWTs
+      # via the Kubernetes TokenReview API (required for ESO authentication).
+      authDelegator:
+        enabled: true
+      ha:
+        enabled: true
+        replicas: 3
+        raft:
+          enabled: true
+          config: |
+            ui = false
+
+            listener "tcp" {
+              tls_disable     = 0
+              address         = "[::]:8200"
+              cluster_address = "[::]:8201"
+              tls_cert_file   = "/openbao/tls/tls.crt"
+              tls_key_file    = "/openbao/tls/tls.key"
+            }
+
+            storage "raft" {
+              path = "/openbao/data"
+              retry_join {
+                leader_api_addr    = "https://openbao-0.openbao-internal:8200"
+                leader_ca_cert_file = "/openbao/tls/ca.crt"
+              }
+              retry_join {
+                leader_api_addr    = "https://openbao-1.openbao-internal:8200"
+                leader_ca_cert_file = "/openbao/tls/ca.crt"
+              }
+              retry_join {
+                leader_api_addr    = "https://openbao-2.openbao-internal:8200"
+                leader_ca_cert_file = "/openbao/tls/ca.crt"
+              }
+            }
+
+            service_registration "kubernetes" {}
+
+      dataStorage:
+        enabled: true
+        size: 10Gi
+        storageClass: local-path
+
+      resources:
+        requests:
+          memory: 256Mi
+          cpu: 250m
+        limits:
+          memory: 512Mi
+
+      # TLS via cert-manager
+      volumes:
+        - name: tls
+          secret:
+            secretName: openbao-tls
+      volumeMounts:
+        - name: tls
+          mountPath: /openbao/tls
+          readOnly: true
+
+    injector:
+      enabled: false
+  install:
+    crds: CreateReplace
+    createNamespace: true
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3

@@ -3,7 +3,7 @@
 **Review-Area**: documentation
 **Detection-Hint**: When a PR modifies script logic (e.g., file paths, arguments, invocation requirements), search the docs/ directory for references to that script and verify descriptions still match the implementation.
 **Severity**: WARNING
-**Occurrences**: 2
+**Occurrences**: 3
 
 ## What to check
 
@@ -24,3 +24,8 @@ Stale documentation misleads users into invoking tools incorrectly, leading to s
 - **Feedback**: The reference docs acknowledge this but attribute incorrect FluxCD behaviour (docs/reference/infrastructure-manifests.md line 111–112 says 'the HelmRelease installs CRDs first, making the ClusterIssuer valid' — this is not true for `kubectl apply -k`; the HelmRelease install is asynchronous).
 - **What was missed**: Check that any documentation statement explaining *why* a deployment pattern works is accurate for the exact command documented. For example, if docs say 'the HelmRelease installs CRDs first, making resource X valid', verify whether that is true for `kubectl apply -k` (it is not — HelmRelease processing is asynchronous) versus FluxCD's Kustomization controller with `dependsOn` (where it can be true).
 - **Fix**: The reference documentation (docs/reference/infrastructure-manifests.md) was substantially rewritten to reflect the two-phase deployment, correct the previously inaccurate FluxCD behavior claims, and document the new directory layout.
+
+### CC-0009 — greptile-apps[bot]
+- **Feedback**: Stale documentation — describes discarded exit-code approach, not the current JSON parsing implementation. The claim that 'Exit code `2` indicates sealed (already initialized)' is exactly the ambiguity that the JSON parsing fix was introduced to resolve.
+- **What was missed**: After any in-PR code revision, grep the PR's documentation files for terms related to the old approach (e.g., 'exit code', old function names, old flags). Verify all behavioral descriptions match the final implementation.
+- **Fix**: Updated Behavior, Idempotency sections, and the idempotency summary table to describe `bao status -format=json` with `jq -e '.initialized == true'` instead of exit-code checking.

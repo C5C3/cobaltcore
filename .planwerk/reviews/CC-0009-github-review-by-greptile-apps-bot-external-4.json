@@ -1,0 +1,55 @@
+{
+  "feature_id": "CC-0009",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer wants three changes: (1) Add `leader_ca_cert_file = \"/openbao/tls/ca.crt\"` to each `retry_join` stanza in the Raft storage config, since the self-signed TLS cert won't be trusted otherwise and the cluster will fail to form. (2) The root token is still exposed in process listings via `env`/`kubectl exec` arguments — acknowledged as a known issue, can be deferred to a follow-up hardening pass. (3) Add `token_max_ttl=4h` to the four ESO Kubernetes auth roles to match the bounded lifetime already set on the AppRole provisioner role, preventing indefinite token renewal.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-12T08:55:43Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 4,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**Raft `retry_join` TLS verification will fail with self-signed certificate**\n\nThe three `retry_join` stanzas use `https://` URLs but include no `leader_ca_cert_file` (or `leader_tls_servername` + skip-verify). The TLS certificate is issued by `selfsigned-cluster-issuer` — a ClusterIssuer that produces a self-signed CA not present in the pod's OS trust store. When a follower node's Raft storage layer connects to `https://openbao-0.openbao-internal:8200` during initial cluster formation, it will fail to verify the leader's certificate and the join will be rejected with a TLS error.\n\nVault/OpenBao's own [Integrated Storage documentation](https://developer.hashicorp.com/vault/docs/configuration/storage/raft#leader_ca_cert_file) states:\n\n> If TLS is enabled on the cluster, you should configure the `retry_join` stanza with `leader_ca_cert_file` to validate the TLS certificate.\n\nThe CA certificate is already available in the `openbao-tls` Secret as `ca.crt` (mounted into each pod via the `volumes`/`volumeMounts` configured below). The fix is to reference it in each `retry_join` stanza:\n\n```\nstorage \"raft\" {\n  path = \"/openbao/data\"\n  retry_join {\n    leader_api_addr    = \"https://openbao-0.openbao-internal:8200\"\n    leader_ca_cert_file = \"/openbao/tls/ca.crt\"\n  }\n  retry_join {\n    leader_api_addr    = \"https://openbao-1.openbao-internal:8200\"\n    leader_ca_cert_file = \"/openbao/tls/ca.crt\"\n  }\n  retry_join {\n    leader_api_addr    = \"https://openbao-2.openbao-internal:8200\"\n    leader_ca_cert_file = \"/openbao/tls/ca.crt\"\n  }\n}\n```\n\nWithout this, the three-node Raft cluster will never form after `openbao-0` initializes.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: deploy/flux-system/releases/openbao.yaml\nLine: 43-57\n\nComment:\n**Raft `retry_join` TLS verification will fail with self-signed certificate**\n\nThe three `retry_join` stanzas use `https://` URLs but include no `leader_ca_cert_file` (or `leader_tls_servername` + skip-verify). The TLS certificate is issued by `selfsigned-cluster-issuer` — a ClusterIssuer that produces a self-signed CA not present in the pod's OS trust store. When a follower node's Raft storage layer connects to `https://openbao-0.openbao-internal:8200` during initial cluster formation, it will fail to verify the leader's certificate and the join will be rejected with a TLS error.\n\nVault/OpenBao's own [Integrated Storage documentation](https://developer.hashicorp.com/vault/docs/configuration/storage/raft#leader_ca_cert_file) states:\n\n> If TLS is enabled on the cluster, you should configure the `retry_join` stanza with `leader_ca_cert_file` to validate the TLS certificate.\n\nThe CA certificate is already available in the `openbao-tls` Secret as `ca.crt` (mounted into each pod via the `volumes`/`volumeMounts` configured below). The fix is to reference it in each `retry_join` stanza:\n\n```\nstorage \"raft\" {\n  path = \"/openbao/data\"\n  retry_join {\n    leader_api_addr    = \"https://openbao-0.openbao-internal:8200\"\n    leader_ca_cert_file = \"/openbao/tls/ca.crt\"\n  }\n  retry_join {\n    leader_api_addr    = \"https://openbao-1.openbao-internal:8200\"\n    leader_ca_cert_file = \"/openbao/tls/ca.crt\"\n  }\n  retry_join {\n    leader_api_addr    = \"https://openbao-2.openbao-internal:8200\"\n    leader_ca_cert_file = \"/openbao/tls/ca.crt\"\n  }\n}\n```\n\nWithout this, the three-node Raft cluster will never form after `openbao-0` initializes.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "deploy/flux-system/releases/openbao.yaml",
+      "line": 57,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-12T08:55:40Z",
+      "id": null,
+      "resolution": "Added `leader_ca_cert_file = \"/openbao/tls/ca.crt\"` to all three `retry_join` stanzas in `deploy/flux-system/releases/openbao.yaml`, ensuring Raft TLS verification uses the cert-manager CA certificate already mounted at `/openbao/tls/`. Key alignment was also normalized to match the suggested style."
+    },
+    {
+      "body": "**Root token still exposed in process listings via `env`**\n\n`bao_exec` and `bao_exec_stdin` inject the vault root token using the `env` wrapper as a positional argument to `kubectl exec`. The expanded token value is visible in `/proc/<pid>/cmdline` on the operator workstation and in the container's process table for the duration of every `kubectl exec` call made by the four downstream scripts (`setup-secret-engines.sh`, `setup-auth.sh`, `setup-policies.sh`, `write-bootstrap-secrets.sh`).\n\nReview #2 acknowledged this as a pre-existing issue after the passwords were moved to in-pod generation. The same `/proc/<pid>/cmdline` exposure vector that was fixed for unseal keys and passwords in this PR still exists for the root token on every bootstrap invocation. A practical mitigation would be to read the token from a mounted file or K8s Secret inside the pod rather than forwarding it via the operator environment, but since this affects all five scripts it is reasonable to defer to a hardening pass in a follow-up feature.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: deploy/openbao/bootstrap/common.sh\nLine: 34-43\n\nComment:\n**Root token still exposed in process listings via `env`**\n\n`bao_exec` and `bao_exec_stdin` inject the vault root token using the `env` wrapper as a positional argument to `kubectl exec`. The expanded token value is visible in `/proc/<pid>/cmdline` on the operator workstation and in the container's process table for the duration of every `kubectl exec` call made by the four downstream scripts (`setup-secret-engines.sh`, `setup-auth.sh`, `setup-policies.sh`, `write-bootstrap-secrets.sh`).\n\nReview #2 acknowledged this as a pre-existing issue after the passwords were moved to in-pod generation. The same `/proc/<pid>/cmdline` exposure vector that was fixed for unseal keys and passwords in this PR still exists for the root token on every bootstrap invocation. A practical mitigation would be to read the token from a mounted file or K8s Secret inside the pod rather than forwarding it via the operator environment, but since this affects all five scripts it is reasonable to defer to a hardening pass in a follow-up feature.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "deploy/openbao/bootstrap/common.sh",
+      "line": 43,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-12T08:55:41Z",
+      "id": null,
+      "resolution": "Added a TODO comment to `bao_exec` in `deploy/openbao/bootstrap/common.sh` documenting the BAO_TOKEN `/proc/<pid>/cmdline` exposure and noting that a future hardening pass should inject the token via a mounted K8s Secret or tmpfs file. A cross-reference comment was also added to `bao_exec_stdin`. No functional code change was made, consistent with the reviewer's acknowledgment that this is reasonable to defer."
+    },
+    {
+      "body": "**ESO Kubernetes auth roles missing `token_max_ttl`**\n\nThe four ESO Kubernetes auth roles set `ttl=1h` but omit `token_max_ttl`. Without a max TTL, tokens issued by these roles can be renewed indefinitely by ESO's background renewal loop. By contrast, the AppRole `provisioner` role (line 74) explicitly caps its tokens with a maximum TTL of 4h.\n\nAdding a `token_max_ttl` value matching the AppRole ceiling would bring these roles in line with the bounded credential lifetime principle already established for the provisioner role, limiting the blast radius if an ESO token were ever compromised or leaked.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: deploy/openbao/bootstrap/setup-auth.sh\nLine: 59-65\n\nComment:\n**ESO Kubernetes auth roles missing `token_max_ttl`**\n\nThe four ESO Kubernetes auth roles set `ttl=1h` but omit `token_max_ttl`. Without a max TTL, tokens issued by these roles can be renewed indefinitely by ESO's background renewal loop. By contrast, the AppRole `provisioner` role (line 74) explicitly caps its tokens with a maximum TTL of 4h.\n\nAdding a `token_max_ttl` value matching the AppRole ceiling would bring these roles in line with the bounded credential lifetime principle already established for the provisioner role, limiting the blast radius if an ESO token were ever compromised or leaked.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "deploy/openbao/bootstrap/setup-auth.sh",
+      "line": 65,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-12T08:55:42Z",
+      "id": null,
+      "resolution": "Added `token_max_ttl=4h` to the ESO Kubernetes auth role write loop in `deploy/openbao/bootstrap/setup-auth.sh`, capping token renewal lifetime to match the AppRole provisioner role's `token_max_ttl=4h` ceiling."
+    }
+  ],
+  "resolution_summary": "All three review comments were addressed. Comment [0] was fixed by adding `leader_ca_cert_file = \"/openbao/tls/ca.crt\"` to each of the three `retry_join` stanzas in the Raft storage config, exactly as recommended. Comment [1] was acknowledged as a deferred hardening item by adding TODO comments to both `bao_exec` and `bao_exec_stdin` in `common.sh`, documenting the `/proc/<pid>/cmdline` exposure and the intended future fix. Comment [2] was fixed by adding `token_max_ttl=4h` to the ESO Kubernetes auth role loop, matching the AppRole provisioner's ceiling.",
+  "github_review_id": 3934913685
+}

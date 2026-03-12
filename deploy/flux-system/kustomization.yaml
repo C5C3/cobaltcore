@@ -6,7 +6,7 @@
 # Includes Namespace resources, HelmRepository sources, and HelmRelease
 # operators. CRD-dependent infrastructure custom resources are in a
 # separate kustomization at infrastructure/kustomization.yaml.
-# Feature: CC-0008, REQ-007, REQ-008
+# Feature: CC-0008, CC-0009, REQ-007, REQ-008
 #
 # To add a new operator (e.g., OpenBao for CC-0009):
 #   1. Add a new source file in sources/ (e.g., sources/openbao.yaml)
@@ -33,3 +33,4 @@ resources:
   - releases/mariadb-operator.yaml
   - releases/external-secrets.yaml
   - releases/memcached-operator.yaml
+  - releases/openbao.yaml

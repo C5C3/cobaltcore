@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# cert-manager Certificate for OpenBao TLS.
+# Generates the openbao-tls Secret used by the OpenBao StatefulSet for
+# inter-node Raft communication and API TLS termination.
+# Requires cert-manager CRDs to be installed (via the cert-manager HelmRelease).
+# Feature: CC-0009
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: openbao-tls
+  namespace: openbao-system
+spec:
+  secretName: openbao-tls
+  # 1-year lifetime reduces rotation frequency for the HA Raft cluster.
+  # OpenBao does not hot-reload TLS certificates, so frequent rotation
+  # requires pod restarts to avoid Raft peer TLS handshake failures.
+  duration: 8760h
+  renewBefore: 720h
+  issuerRef:
+    name: selfsigned-cluster-issuer
+    kind: ClusterIssuer
+  dnsNames:
+    - openbao-0.openbao-internal
+    - openbao-1.openbao-internal
+    - openbao-2.openbao-internal
+    - openbao.openbao-system.svc
+  ipAddresses:
+    - 127.0.0.1
+    - "::1"

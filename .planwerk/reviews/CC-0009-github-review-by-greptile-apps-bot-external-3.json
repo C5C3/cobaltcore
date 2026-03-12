@@ -1,0 +1,46 @@
+{
+  "feature_id": "CC-0009",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer identifies two security issues in the OpenBao bootstrap scripts:\n\n1. **Pipe secrets via stdin instead of CLI arguments**: Unseal keys and init output are passed as command-line arguments to `bao operator unseal` and `kubectl create secret`, exposing them in process listings (`/proc/<pid>/cmdline`). Switch to stdin-based approaches (e.g., `echo \"${key}\" | bao_exec_stdin bao operator unseal -` and `kubectl apply -f -`) to prevent leaking secrets.\n\n2. **Set a TTL on AppRole secret IDs**: The CI/CD provisioner's `secret_id_ttl=0` means leaked secret IDs never expire. Set a bounded TTL (e.g., one year) and implement rotation to limit blast radius of credential compromise.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-12T08:27:07Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 3,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**Unseal keys passed as command-line arguments expose them in process listings**\n\nEach unseal key is extracted from the Kubernetes Secret and passed directly as a positional argument to `bao operator unseal`. During the `kubectl exec` call, the cleartext base64-encoded key appears in `/proc/<pid>/cmdline` on the operator workstation and in the container's process table on the node (visible via `ps aux` to any process sharing that PID namespace).\n\nThis is the same exposure vector that was addressed in `write-bootstrap-secrets.sh` — where passwords are now generated in-pod via `sh -c \"... $(openssl rand ...)\"` to avoid cleartext appearing in process arguments. The unseal keys deserve the same treatment: a single captured key combined with other captures during concurrent unseal rounds could provide an attacker with enough shares to reconstruct the master key (threshold is 3 out of 5).\n\n`bao operator unseal` supports reading from stdin when invoked without a positional argument. A stdin-based approach eliminates the process-listing exposure:\n\n```bash\necho \"${key}\" | kubectl exec -i -n \"${NAMESPACE}\" \"${pod}\" -- \\\n  env BAO_ADDR=\"${BAO_ADDR}\" VAULT_SKIP_VERIFY=\"${VAULT_SKIP_VERIFY}\" \\\n  bao operator unseal -\n```\n\nOr, reusing the existing `bao_exec_stdin` helper from `common.sh`:\n\n```bash\necho \"${key}\" | bao_exec_stdin bao operator unseal -\n```\n\nNote: the same risk applies to the `kubectl create secret --from-literal=init-output=\"${init_output}\"` call in `initialize()` (line 78–80), where the full init output (all 5 unseal keys + root token) appears as a command-line argument when the Secret is created. Consider writing the JSON to a temp file or piping via `kubectl apply -f -` to avoid this.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: deploy/openbao/bootstrap/init-unseal.sh\nLine: 113-116\n\nComment:\n**Unseal keys passed as command-line arguments expose them in process listings**\n\nEach unseal key is extracted from the Kubernetes Secret and passed directly as a positional argument to `bao operator unseal`. During the `kubectl exec` call, the cleartext base64-encoded key appears in `/proc/<pid>/cmdline` on the operator workstation and in the container's process table on the node (visible via `ps aux` to any process sharing that PID namespace).\n\nThis is the same exposure vector that was addressed in `write-bootstrap-secrets.sh` — where passwords are now generated in-pod via `sh -c \"... $(openssl rand ...)\"` to avoid cleartext appearing in process arguments. The unseal keys deserve the same treatment: a single captured key combined with other captures during concurrent unseal rounds could provide an attacker with enough shares to reconstruct the master key (threshold is 3 out of 5).\n\n`bao operator unseal` supports reading from stdin when invoked without a positional argument. A stdin-based approach eliminates the process-listing exposure:\n\n```bash\necho \"${key}\" | kubectl exec -i -n \"${NAMESPACE}\" \"${pod}\" -- \\\n  env BAO_ADDR=\"${BAO_ADDR}\" VAULT_SKIP_VERIFY=\"${VAULT_SKIP_VERIFY}\" \\\n  bao operator unseal -\n```\n\nOr, reusing the existing `bao_exec_stdin` helper from `common.sh`:\n\n```bash\necho \"${key}\" | bao_exec_stdin bao operator unseal -\n```\n\nNote: the same risk applies to the `kubectl create secret --from-literal=init-output=\"${init_output}\"` call in `initialize()` (line 78–80), where the full init output (all 5 unseal keys + root token) appears as a command-line argument when the Secret is created. Consider writing the JSON to a temp file or piping via `kubectl apply -f -` to avoid this.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "deploy/openbao/bootstrap/init-unseal.sh",
+      "line": 116,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-12T08:27:05Z",
+      "id": null,
+      "resolution": "Fixed in two ways: (1) In `unseal_pod()` (line 138), unseal keys are now piped via stdin (`echo \"${key}\" | kube_exec_stdin \"${pod}\" bao operator unseal -`) instead of passed as command-line arguments. A new `kube_exec_stdin()` helper (lines 39-44) was added to support the `-i` flag for stdin forwarding. (2) In `initialize()` (lines 87-101), the `kubectl create secret --from-literal=init-output=\"${init_output}\"` call was replaced with `kubectl apply -f -` using a heredoc-piped Secret manifest, preventing the full init output (unseal keys + root token) from appearing in process argument lists. Both changes are documented with inline comments explaining the security rationale."
+    },
+    {
+      "body": "**AppRole secret IDs for CI/CD provisioner never expire**\n\nThe `secret_id_ttl` for the `provisioner` role is set to `0`, meaning issued secret IDs have no expiry. If a secret ID is leaked (e.g., from a compromised runner or exposed logs), it can be used indefinitely to obtain fresh tokens — bounded only by the 4h token max TTL per authentication, not by any overall window.\n\nSetting a non-zero TTL (e.g., one year) and rotating the secret ID via CI/CD automation would align with the least-privilege lifecycle model already established by the 1h/4h token TTLs, and limit the blast radius of a credential leak to a bounded period.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: deploy/openbao/bootstrap/setup-auth.sh\nLine: 76-77\n\nComment:\n**AppRole secret IDs for CI/CD provisioner never expire**\n\nThe `secret_id_ttl` for the `provisioner` role is set to `0`, meaning issued secret IDs have no expiry. If a secret ID is leaked (e.g., from a compromised runner or exposed logs), it can be used indefinitely to obtain fresh tokens — bounded only by the 4h token max TTL per authentication, not by any overall window.\n\nSetting a non-zero TTL (e.g., one year) and rotating the secret ID via CI/CD automation would align with the least-privilege lifecycle model already established by the 1h/4h token TTLs, and limit the blast radius of a credential leak to a bounded period.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "deploy/openbao/bootstrap/setup-auth.sh",
+      "line": 77,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-12T08:27:06Z",
+      "id": null,
+      "resolution": "Fixed by changing `secret_id_ttl=0` to `secret_id_ttl=8760h` (1 year) on line 79 of `setup-auth.sh`. An inline comment was added (lines 73-74) explaining that the 1-year TTL bounds the blast radius of a leaked secret ID and that CI/CD automation should rotate the secret ID before expiry."
+    }
+  ],
+  "resolution_summary": "Both review comments were addressed. Comment [0] about unseal keys exposed in process arguments was fixed by piping keys via stdin (`echo \"${key}\" | kube_exec_stdin ... bao operator unseal -`) instead of passing them as positional arguments, and by replacing `kubectl create secret --from-literal` with `kubectl apply -f -` using a piped manifest to avoid exposing init output in process listings. A new `kube_exec_stdin` helper was added to support the stdin-based approach. Comment [1] about never-expiring AppRole secret IDs was fixed by changing `secret_id_ttl=0` to `secret_id_ttl=8760h` (1 year) with a comment explaining the rationale.",
+  "github_review_id": 3934759570
+}

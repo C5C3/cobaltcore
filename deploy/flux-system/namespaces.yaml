@@ -4,7 +4,7 @@
 
 # Namespace resources for all infrastructure components.
 # Applied before any namespaced resources to ensure target namespaces exist.
-# Feature: CC-0008
+# Feature: CC-0008, CC-0009
 ---
 apiVersion: v1
 kind: Namespace
@@ -30,3 +30,8 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: openstack
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openbao-system

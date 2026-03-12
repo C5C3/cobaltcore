@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Kustomization for External Secrets Operator (ESO) resources.
+# Includes the ClusterSecretStore that connects to OpenBao and all
+# ExternalSecret resources that materialise secrets into the openstack
+# namespace.
+# Feature: CC-0009
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - clustersecretstore.yaml
+  - externalsecrets/keystone-admin.yaml
+  - externalsecrets/keystone-db.yaml
+  - externalsecrets/mariadb-root-password.yaml

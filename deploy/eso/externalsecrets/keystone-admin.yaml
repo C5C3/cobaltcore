@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# ExternalSecret for the Keystone admin credentials.
+# Pulls the admin password from the OpenBao path "bootstrap/keystone-admin"
+# and materialises it as a Kubernetes Secret named "keystone-admin-credentials" in the
+# openstack namespace.
+# Feature: CC-0009
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: keystone-admin
+  namespace: openstack
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: openbao-cluster-store
+    kind: ClusterSecretStore
+  target:
+    name: keystone-admin-credentials
+    creationPolicy: Owner
+  data:
+    - secretKey: password
+      remoteRef:
+        key: bootstrap/keystone-admin
+        property: password

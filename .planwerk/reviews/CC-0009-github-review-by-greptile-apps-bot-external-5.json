@@ -1,0 +1,36 @@
+{
+  "feature_id": "CC-0009",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer wants a `Max TTL` column (value `4h`) added to the Kubernetes auth role table in the OpenBao bootstrap doc, since `setup-auth.sh` configures both a 1h initial TTL and a 4h max lifetime but the table only shows the initial TTL — inconsistent with the AppRole table below it which correctly documents both.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-12T09:18:00Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 5,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**Auth table missing max-lifetime column**\n\nThe Kubernetes auth role table has a single `TTL` column but `setup-auth.sh` configures both an initial TTL of 1 hour *and* a maximum lifetime of 4 hours on each role. The second bound was added in response to a previous review round to limit token renewal windows.\n\nWithout a `Max TTL` column, an operator reading this table would believe ESO tokens can be renewed indefinitely beyond the initial lifetime — which is incorrect. Compare with the AppRole table immediately below, which correctly documents both the initial and maximum lifetimes.\n\nConsider adding a `Max TTL` column with a value of `4h` for all four mounts to keep the reference consistent with the actual `setup-auth.sh` implementation.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: docs/reference/infrastructure/openbao-bootstrap.md\nLine: 327-332\n\nComment:\n**Auth table missing max-lifetime column**\n\nThe Kubernetes auth role table has a single `TTL` column but `setup-auth.sh` configures both an initial TTL of 1 hour *and* a maximum lifetime of 4 hours on each role. The second bound was added in response to a previous review round to limit token renewal windows.\n\nWithout a `Max TTL` column, an operator reading this table would believe ESO tokens can be renewed indefinitely beyond the initial lifetime — which is incorrect. Compare with the AppRole table immediately below, which correctly documents both the initial and maximum lifetimes.\n\nConsider adding a `Max TTL` column with a value of `4h` for all four mounts to keep the reference consistent with the actual `setup-auth.sh` implementation.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "docs/reference/infrastructure/openbao-bootstrap.md",
+      "line": 332,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-12T09:17:59Z",
+      "id": null,
+      "resolution": ""
+    }
+  ],
+  "github_review_id": 3935041775
+}

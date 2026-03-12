@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# ExternalSecret for Keystone database credentials.
+# Pulls username and password from the OpenBao path "openstack/keystone/db"
+# and materialises them as a Kubernetes Secret named "keystone-db-credentials" in the
+# openstack namespace.
+# Feature: CC-0009
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: keystone-db
+  namespace: openstack
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: openbao-cluster-store
+    kind: ClusterSecretStore
+  target:
+    name: keystone-db-credentials
+    creationPolicy: Owner
+  data:
+    - secretKey: username
+      remoteRef:
+        key: openstack/keystone/db
+        property: username
+    - secretKey: password
+      remoteRef:
+        key: openstack/keystone/db
+        property: password

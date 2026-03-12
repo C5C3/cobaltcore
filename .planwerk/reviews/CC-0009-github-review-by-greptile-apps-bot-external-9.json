@@ -1,0 +1,36 @@
+{
+  "feature_id": "CC-0009",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer wants single quotes in non-generated values passed to `put_args` to be escaped before shell interpolation, preventing potential shell injection if a future value contains a single quote. The suggested fix is to replace `'` with `'\\''` in `val` before wrapping it in single quotes.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-12T11:33:49Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 9,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**Single-quote injection risk in non-generated `put_args` values**\n\nNon-generated values are wrapped in single quotes before being appended to `put_args`:\n\n```bash\nput_args+=\" ${key}='${val}'\"\n```\n\nThis is then interpolated unquoted into the `sh -c` command string:\n\n```bash\nsh -c \"bao kv put \\\"${BAO_KV_PATH}\\\" ${put_args}\"\n```\n\nIf any future caller passes a `val` that contains a single quote (e.g., `description=it's-a-service`), the single quote will prematurely terminate the single-quoted segment in the inner shell, causing a parse error — or worse, allowing unintended shell token injection.\n\nThe current callers (`username=keystone`) are safe, but hardening this now avoids a subtle footgun for future additions. A minimal fix is to escape any single quotes in the value before wrapping:\n\n```bash\n# Escape single quotes in val: ' → '\\''\nlocal escaped_val=\"${val//\\'/\\'\\\\\\'\\'}\"\nput_args+=\" ${key}='${escaped_val}'\"\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: deploy/openbao/bootstrap/write-bootstrap-secrets.sh\nLine: 49-51\n\nComment:\n**Single-quote injection risk in non-generated `put_args` values**\n\nNon-generated values are wrapped in single quotes before being appended to `put_args`:\n\n```bash\nput_args+=\" ${key}='${val}'\"\n```\n\nThis is then interpolated unquoted into the `sh -c` command string:\n\n```bash\nsh -c \"bao kv put \\\"${BAO_KV_PATH}\\\" ${put_args}\"\n```\n\nIf any future caller passes a `val` that contains a single quote (e.g., `description=it's-a-service`), the single quote will prematurely terminate the single-quoted segment in the inner shell, causing a parse error — or worse, allowing unintended shell token injection.\n\nThe current callers (`username=keystone`) are safe, but hardening this now avoids a subtle footgun for future additions. A minimal fix is to escape any single quotes in the value before wrapping:\n\n```bash\n# Escape single quotes in val: ' → '\\''\nlocal escaped_val=\"${val//\\'/\\'\\\\\\'\\'}\"\nput_args+=\" ${key}='${escaped_val}'\"\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "deploy/openbao/bootstrap/write-bootstrap-secrets.sh",
+      "line": 51,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-12T11:33:48Z",
+      "id": null,
+      "resolution": ""
+    }
+  ],
+  "github_review_id": 3935861922
+}

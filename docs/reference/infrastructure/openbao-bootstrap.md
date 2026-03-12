@@ -1,0 +1,561 @@
+---
+title: OpenBao Bootstrap Procedure
+quadrant: infrastructure
+feature: CC-0009
+---
+
+# OpenBao Bootstrap Procedure
+
+Reference documentation for the OpenBao deployment and bootstrap procedure (CC-0009).
+OpenBao is deployed as a 3-replica HA Raft cluster via FluxCD HelmRelease, then
+initialized and configured through a sequence of idempotent bootstrap scripts. The
+scripts provision secret engines, authentication backends, least-privilege policies, and
+initial credentials required by downstream services.
+
+## Architecture Overview
+
+```text
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Management Cluster                          │
+│                                                                    │
+│  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐           │
+│  │  openbao-0   │   │  openbao-1   │   │  openbao-2   │           │
+│  │  (leader)    │◄──►  (follower)  │◄──►  (follower)  │           │
+│  │  Raft peer   │   │  Raft peer   │   │  Raft peer   │           │
+│  └──────┬───────┘   └──────────────┘   └──────────────┘           │
+│         │                                                          │
+│         │  TLS (openbao-tls Secret from cert-manager)              │
+│         │                                                          │
+│  ┌──────▼───────────────────────────────────────────────────────┐  │
+│  │              ClusterSecretStore: openbao-cluster-store        │  │
+│  │              (kubernetes/management auth, role eso-management)│  │
+│  └──────┬───────────────────────────────────────────────────────┘  │
+│         │                                                          │
+│  ┌──────▼──────┐  ┌──────────────┐  ┌──────────────────────────┐  │
+│  │ ExternalSec │  │ ExternalSec  │  │ ExternalSecret           │  │
+│  │ keystone-   │  │ keystone-db  │  │ mariadb-root-password    │  │
+│  │ admin       │  │              │  │                          │  │
+│  └─────────────┘  └──────────────┘  └──────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+## Prerequisites
+
+The following must be in place before running the bootstrap scripts:
+
+| Prerequisite | Details |
+| --- | --- |
+| Kubernetes cluster | Management cluster with `kubectl` access configured |
+| FluxCD | source-controller and helm-controller installed |
+| cert-manager | Deployed and healthy (CRDs installed, webhook ready) |
+| Base manifests | `kubectl apply -k deploy/flux-system/` completed successfully |
+| Infrastructure manifests | `kubectl apply -k deploy/flux-system/infrastructure/` completed (includes openbao-tls Certificate) |
+| OpenBao pods | All 3 replicas (`openbao-0`, `openbao-1`, `openbao-2`) running in `openbao-system` namespace |
+| CLI tools | `kubectl`, `jq` available on the operator workstation; `openssl` available inside the OpenBao pod (used for in-pod password generation) |
+
+**Verification commands:**
+
+```bash
+# Confirm all 3 OpenBao pods are Running
+kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao
+
+# Confirm TLS certificate is ready
+kubectl get certificate openbao-tls -n openbao-system
+
+# Confirm cert-manager ClusterIssuer exists
+kubectl get clusterissuer selfsigned-cluster-issuer
+```
+
+## Directory Layout
+
+```text
+deploy/
+├── openbao/
+│   ├── bootstrap/
+│   │   ├── common.sh                   Shared functions (log, bao_exec) sourced by all scripts
+│   │   ├── init-unseal.sh              Initialize and unseal the cluster
+│   │   ├── setup-secret-engines.sh     Enable KV v2 and PKI secret engines
+│   │   ├── setup-auth.sh              Configure Kubernetes and AppRole auth
+│   │   ├── setup-policies.sh           Apply all HCL access control policies
+│   │   └── write-bootstrap-secrets.sh  Generate and seed initial credentials
+│   └── policies/
+│       ├── eso-management.hcl          ESO policy for management cluster
+│       ├── eso-control-plane.hcl       ESO policy for control-plane cluster
+│       ├── eso-hypervisor.hcl          ESO policy for hypervisor cluster
+│       ├── eso-storage.hcl             ESO policy for storage cluster
+│       ├── push-app-credentials.hcl    PushSecret policy for app credentials
+│       ├── push-ceph-keys.hcl          PushSecret policy for Ceph keys
+│       ├── ci-cd-provisioner.hcl       CI/CD pipeline provisioning policy
+│       └── pki-issuer.hcl             cert-manager PKI issuing policy
+├── eso/
+│   ├── kustomization.yaml              Kustomize entrypoint for ESO resources
+│   ├── clustersecretstore.yaml         ClusterSecretStore for OpenBao
+│   └── externalsecrets/
+│       ├── keystone-admin.yaml         Keystone admin credentials
+│       ├── keystone-db.yaml            Keystone database credentials
+│       └── mariadb-root-password.yaml  MariaDB root password
+└── flux-system/
+    ├── releases/
+    │   └── openbao.yaml                HelmRelease for OpenBao HA cluster
+    └── infrastructure/
+        └── openbao-tls-cert.yaml       cert-manager Certificate for TLS
+```
+
+## Script Execution Order
+
+The bootstrap scripts **must** be executed in the following order. Each script depends
+on the successful completion of the previous step:
+
+```text
+1. init-unseal.sh           Initialize Shamir keys, unseal all replicas
+       │
+       ▼
+2. setup-secret-engines.sh  Enable KV v2 and PKI engines
+       │
+       ▼
+3. setup-auth.sh            Configure Kubernetes auth + AppRole
+       │
+       ▼
+4. setup-policies.sh        Apply 8 HCL least-privilege policies
+       │
+       ▼
+5. write-bootstrap-secrets.sh  Generate and seed initial passwords
+```
+
+**Dependency rationale:**
+
+- `init-unseal.sh` must run first because OpenBao is sealed after initial deployment
+  and all subsequent operations require an unsealed vault with a root token.
+- `setup-secret-engines.sh` enables the KV v2 engine that `write-bootstrap-secrets.sh`
+  writes to, so engines must exist before secrets can be written.
+- `setup-auth.sh` creates the auth mounts and roles that `setup-policies.sh` links
+  policies to, though technically policies can be written before auth configuration.
+- `setup-policies.sh` must run before `write-bootstrap-secrets.sh` to ensure access
+  control is in place before credentials are seeded.
+
+## Environment Setup
+
+All bootstrap scripts execute `bao` CLI commands inside the `openbao-0` pod via
+`kubectl exec`. No direct network connection to OpenBao is required from the operator
+workstation.
+
+### Required Environment Variables
+
+| Variable | Required By | Description |
+| --- | --- | --- |
+| `BAO_TOKEN` | All scripts except `init-unseal.sh` | Root token obtained from `init-unseal.sh` output |
+
+The `init-unseal.sh` script does not require `BAO_TOKEN` — it produces the root token
+as output. All subsequent scripts require the root token to be set as `BAO_TOKEN` in the
+shell environment.
+
+### Internal Script Variables
+
+Each script sets the following variables internally via `kubectl exec` environment
+injection:
+
+| Variable | Value | Purpose |
+| --- | --- | --- |
+| `BAO_ADDR` | `https://127.0.0.1:8200` | OpenBao API address (pod-local loopback) |
+| `VAULT_CACERT` | `/openbao/tls/ca.crt` | CA certificate path for TLS verification |
+
+### Running the Full Bootstrap
+
+```bash
+# Step 1: Initialize and unseal (produces root token)
+cd deploy/openbao/bootstrap
+./init-unseal.sh
+
+# Retrieve the root token from the Kubernetes Secret
+export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n openbao-system \
+  -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
+
+# Step 2-5: Run remaining scripts in order
+./setup-secret-engines.sh
+./setup-auth.sh
+./setup-policies.sh
+./write-bootstrap-secrets.sh
+```
+
+## Script Reference
+
+### init-unseal.sh
+
+**Purpose:** Initialize OpenBao with Shamir secret sharing and unseal all 3 replicas.
+
+**File:** `deploy/openbao/bootstrap/init-unseal.sh`
+
+| Parameter | Value |
+| --- | --- |
+| Key shares | 5 |
+| Key threshold | 3 |
+| Output format | JSON |
+| Target pods | `openbao-0`, `openbao-1`, `openbao-2` |
+| Namespace | `openbao-system` |
+
+**Behavior:**
+
+1. Checks if OpenBao is already initialized by running `bao status -format=json` on `openbao-0`
+   and parsing the `initialized` field from the JSON output.
+2. If not initialized: runs `bao operator init -key-shares=5 -key-threshold=3
+   -format=json` and stores the full JSON output (containing unseal keys and root
+   token) as a Kubernetes Secret `openbao-init-keys` in the `openbao-system` namespace.
+3. If already initialized: retrieves existing unseal keys from the `openbao-init-keys`
+   Secret.
+4. Iterates over all 3 pods (`openbao-0`, `openbao-1`, `openbao-2`) and unseals each
+   by providing 3 unseal keys (meeting the threshold).
+5. Skips unsealing for pods that are already unsealed.
+
+**Idempotency:** Runs `bao status -format=json` on `openbao-0` (ignoring the exit
+code via `|| true`) and uses `jq -e '.initialized == true'` to reliably distinguish
+an uninitialized cluster from an initialized-but-sealed one (both return exit code
+`2`). If already initialized and unsealed, the script logs a message and exits cleanly.
+
+**Output:** The `openbao-init-keys` Kubernetes Secret contains:
+
+| Key | Description |
+| --- | --- |
+| `init-output` | Full JSON output from `bao operator init` including `unseal_keys_b64` array and `root_token` |
+
+**Production security:** After bootstrap is complete and the cluster is verified
+operational, the `openbao-init-keys` Secret should be exported to secure offline
+storage (e.g., hardware security module, air-gapped backup) and deleted from the
+cluster. The unseal keys and root token stored in this Secret grant full control
+over the vault — leaving them in-cluster increases the blast radius of a
+Kubernetes namespace compromise. Re-sealing and unsealing after pod restarts
+requires the exported keys, so ensure they are recoverable before deletion.
+
+### setup-secret-engines.sh
+
+**Purpose:** Enable KV version 2 and PKI secret engines.
+
+**File:** `deploy/openbao/bootstrap/setup-secret-engines.sh`
+
+**Requires:** `BAO_TOKEN` environment variable.
+
+| Engine | Mount Path | Configuration |
+| --- | --- | --- |
+| KV v2 | `kv-v2/` | `version=2` |
+| PKI | `pki/` | `max-lease-ttl=87600h` (10 years) |
+
+**Idempotency:** Before enabling each engine, the script checks `bao secrets list
+-format=json` for the mount path. If the path already exists, the engine enable is
+skipped with a log message.
+
+### setup-auth.sh
+
+**Purpose:** Configure Kubernetes authentication for 4 cluster contexts and AppRole
+authentication for CI/CD pipelines.
+
+**File:** `deploy/openbao/bootstrap/setup-auth.sh`
+
+**Requires:** `BAO_TOKEN` environment variable.
+
+#### Kubernetes Auth Mounts
+
+| Mount Path | Cluster | ESO Role | Bound SA | Bound NS | Policy | TTL | Max TTL |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `kubernetes/management` | Management | `eso-management` | `external-secrets` | `external-secrets` | `eso-management` | 1h | 4h |
+| `kubernetes/control-plane` | Control Plane | `eso-control-plane` | `external-secrets` | `external-secrets` | `eso-control-plane` | 1h | 4h |
+| `kubernetes/hypervisor` | Hypervisor | `eso-hypervisor` | `external-secrets` | `external-secrets` | `eso-hypervisor` | 1h | 4h |
+| `kubernetes/storage` | Storage | `eso-storage` | `external-secrets` | `external-secrets` | `eso-storage` | 1h | 4h |
+
+Each Kubernetes auth mount creates a role named `eso-<cluster>` that binds to the
+`external-secrets` service account in the `external-secrets` namespace. The role is
+linked to the corresponding `eso-<cluster>` policy.
+
+**Note:** The management cluster mount is fully configured — the script explicitly writes
+`auth/kubernetes/management/config` with the in-cluster Kubernetes API endpoint and CA
+certificate. This requires the OpenBao service account to have the `system:auth-delegator`
+ClusterRole (created by the Helm chart when `server.authDelegator.enabled=true`, the
+default). The control-plane, hypervisor, and storage cluster mounts have roles created but
+their Kubernetes host and CA configuration is deferred until those clusters are provisioned.
+
+#### AppRole Auth
+
+| Mount Path | Role | Policy | Token TTL | Max TTL | Secret ID TTL |
+| --- | --- | --- | --- | --- | --- |
+| `approle/` | `provisioner` | `ci-cd-provisioner` | 1h | 4h | `8760h` (1 year) |
+
+**Idempotency:** Before enabling each auth method, the script checks `bao auth list
+-format=json` for the mount path. If the path already exists, the auth enable is
+skipped. Role creation uses `bao write` which is an upsert operation (creates or
+updates).
+
+### setup-policies.sh
+
+**Purpose:** Apply all HCL access control policies from the `policies/` directory.
+
+**File:** `deploy/openbao/bootstrap/setup-policies.sh`
+
+**Requires:** `BAO_TOKEN` environment variable.
+
+The script iterates over all `.hcl` files in `deploy/openbao/policies/` and applies
+each one via `bao policy write <name> -` (reading from stdin). The policy name is
+derived from the filename without the `.hcl` extension.
+
+**Idempotency:** `bao policy write` is an upsert operation — it creates a new policy
+or overwrites an existing one with the same name. Re-running with the same policy
+content is inherently idempotent.
+
+### write-bootstrap-secrets.sh
+
+**Purpose:** Generate cryptographically secure passwords and seed initial credentials
+into the KV v2 secret engine.
+
+**File:** `deploy/openbao/bootstrap/write-bootstrap-secrets.sh`
+
+**Requires:** `BAO_TOKEN` environment variable.
+
+| KV v2 Path | Secret Keys | Description |
+| --- | --- | --- |
+| `kv-v2/bootstrap/keystone-admin` | `password` | Keystone admin user password |
+| `kv-v2/infrastructure/mariadb` | `root-password` | MariaDB root password |
+| `kv-v2/openstack/keystone/db` | `username`, `password` | Keystone database credentials (username is `keystone`) |
+
+**Password generation:** Each password is generated **inside the OpenBao pod** using
+`openssl rand -base64 32` via `sh -c` within `kubectl exec`, producing a 32-byte
+(256-bit) cryptographically secure random value encoded as base64 (44 characters).
+Generating passwords inside the pod prevents cleartext passwords from appearing in
+host `/proc/<pid>/cmdline` process argument lists.
+
+**Security:** Generated passwords are never echoed to stdout or stderr and never
+appear as command-line arguments visible to host process listings. The script
+outputs only status messages (e.g., `Writing kv-v2/bootstrap/keystone-admin...` or
+`Skipping kv-v2/bootstrap/keystone-admin (already exists)`).
+
+**Idempotency:** Before writing each secret, the script checks `bao kv get` for the
+path. If the secret already exists, the write is skipped to prevent overwriting
+existing credentials. This is critical — overwriting would create a mismatch between
+the credentials stored in OpenBao and those already provisioned to consuming services.
+
+## HCL Access Control Policies
+
+Eight HCL policies enforce least-privilege access for each consumer type. All policy
+paths under the KV v2 engine include the `data/` prefix, which is required by the
+OpenBao/Vault KV v2 API for read and write operations.
+
+### ESO Policies (Read-Only)
+
+These policies grant the External Secrets Operator read-only access to pull secrets
+from OpenBao into Kubernetes Secrets.
+
+| Policy | Paths | Capabilities |
+| --- | --- | --- |
+| `eso-management` | `kv-v2/data/bootstrap/*`, `kv-v2/data/infrastructure/*`, `kv-v2/data/openstack/keystone/*` | `read` |
+| `eso-control-plane` | `kv-v2/data/bootstrap/*`, `kv-v2/data/openstack/*`, `kv-v2/data/infrastructure/*`, `kv-v2/data/ceph/*` | `read` |
+| `eso-hypervisor` | `kv-v2/data/ceph/client-nova`, `kv-v2/data/openstack/nova/compute-*` | `read` |
+| `eso-storage` | `kv-v2/data/ceph/*` | `read`, `create`, `update` |
+
+**Note:** `eso-storage` is the only ESO policy with write capabilities. This allows
+the Ceph cluster to write its own keys back to OpenBao via PushSecret.
+
+**Note:** `eso-hypervisor` has the narrowest scope — it can only access the specific
+Ceph client key for Nova and Nova compute configuration, not broader secret paths.
+
+### Operational Policies
+
+| Policy | Paths | Capabilities | Purpose |
+| --- | --- | --- | --- |
+| `push-app-credentials` | `kv-v2/data/openstack/*/app-credential` | `create`, `update`, `read` | PushSecret for OpenStack application credentials |
+| `push-ceph-keys` | `kv-v2/data/ceph/*` | `create`, `update`, `read` | PushSecret for Ceph client keys |
+| `ci-cd-provisioner` | `kv-v2/data/*` (create/update/read), `kv-v2/metadata/*` (read/list) | `create`, `update`, `read`, `list` | CI/CD pipeline secret provisioning |
+| `pki-issuer` | `pki/issue/*`, `pki/sign/*` | `create`, `update` | cert-manager PKI certificate issuing |
+
+**Note:** `ci-cd-provisioner` intentionally lacks `delete` capability. The CI/CD
+pipeline can create, update, and read secrets but cannot delete them, preventing
+accidental secret removal during automated deployments.
+
+**Note:** `push-app-credentials` and `push-ceph-keys` include `read` capability
+so that ESO's PushSecret controller can check the current remote value during
+reconciliation and only write when the secret has actually changed.
+
+## Secret Paths
+
+All secrets are stored under the `kv-v2/` mount point (KV version 2 engine).
+
+### Bootstrap Secrets
+
+| Path | Keys | Provisioned By | Consumed By |
+| --- | --- | --- | --- |
+| `kv-v2/bootstrap/keystone-admin` | `password` | `write-bootstrap-secrets.sh` | ExternalSecret `keystone-admin` |
+| `kv-v2/infrastructure/mariadb` | `root-password` | `write-bootstrap-secrets.sh` | ExternalSecret `mariadb-root-password` |
+| `kv-v2/openstack/keystone/db` | `username`, `password` | `write-bootstrap-secrets.sh` | ExternalSecret `keystone-db` |
+
+### ESO Integration
+
+The ClusterSecretStore `openbao-cluster-store` connects the External Secrets Operator
+to OpenBao. ExternalSecret resources reference this store to pull secrets into
+Kubernetes.
+
+| ExternalSecret | Namespace | Remote Path | Remote Property | K8s Secret Name | K8s Secret Key |
+| --- | --- | --- | --- | --- | --- |
+| `keystone-admin` | `openstack` | `bootstrap/keystone-admin` | `password` | `keystone-admin-credentials` | `password` |
+| `keystone-db` | `openstack` | `openstack/keystone/db` | `username`, `password` | `keystone-db-credentials` | `username`, `password` |
+| `mariadb-root-password` | `openstack` | `infrastructure/mariadb` | `root-password` | `mariadb-root-password` | `password` |
+
+**Note:** The ExternalSecret `remoteRef.key` is the path **under** the store's mount
+path. The ClusterSecretStore already sets `path: kv-v2`, so ExternalSecrets use
+`infrastructure/mariadb` (not `kv-v2/infrastructure/mariadb`).
+
+**Note:** The `mariadb-root-password` ExternalSecret maps the OpenBao key
+`root-password` to the Kubernetes Secret key `password`. The MariaDB CR
+references this Secret with `rootPasswordSecretKeyRef.key: password`, which
+reads the exact key specified — the MariaDB CRD uses a standard
+`SecretKeySelector` with no key remapping.
+
+## OpenBao HelmRelease
+
+**File:** `deploy/flux-system/releases/openbao.yaml`
+
+| Property | Value |
+| --- | --- |
+| Target namespace | `openbao-system` |
+| Chart | `openbao` |
+| Version constraint | `>=0.5.0 <1.0.0` |
+| Source | `openbao` HelmRepository |
+| Dependencies | `cert-manager` in `cert-manager` namespace |
+
+### HA Raft Configuration
+
+| Setting | Value |
+| --- | --- |
+| Replicas | 3 |
+| Storage backend | Raft |
+| Raft data path | `/openbao/data` |
+| PVC size | `10Gi` |
+| PVC storage class | `local-path` |
+| Leader election | Automatic via Raft consensus |
+
+All 3 replicas are configured with `retry_join` stanzas pointing to each other's
+headless service DNS names (`openbao-0.openbao-internal`, `openbao-1.openbao-internal`,
+`openbao-2.openbao-internal`), enabling automatic cluster formation at startup.
+
+### TLS Configuration
+
+| Setting | Value |
+| --- | --- |
+| TLS certificate | `/openbao/tls/tls.crt` |
+| TLS key | `/openbao/tls/tls.key` |
+| Listener address | `[::]:8200` (dual-stack) |
+| Cluster address | `[::]:8201` |
+| TLS disabled | `false` |
+| Certificate source | `openbao-tls` Secret (cert-manager) |
+| Certificate duration | `8760h` (1 year) |
+| Renewal window | `720h` (30 days before expiry) |
+
+The TLS certificate is issued by the `selfsigned-cluster-issuer` ClusterIssuer via
+a cert-manager Certificate resource at
+`deploy/flux-system/infrastructure/openbao-tls-cert.yaml`.
+
+**Certificate SANs:**
+
+| SAN | Type | Purpose |
+| --- | --- | --- |
+| `openbao-0.openbao-internal` | DNS | StatefulSet pod 0 |
+| `openbao-1.openbao-internal` | DNS | StatefulSet pod 1 |
+| `openbao-2.openbao-internal` | DNS | StatefulSet pod 2 |
+| `openbao.openbao-system.svc` | DNS | Kubernetes Service endpoint |
+| `127.0.0.1` | IP | Pod-local loopback (bootstrap scripts, `bao_exec`) |
+| `::1` | IP | IPv6 loopback |
+
+### Resource Limits
+
+| Resource | Request | Limit |
+| --- | --- | --- |
+| Memory | 256Mi | 512Mi |
+| CPU | 250m | — |
+
+### Disabled Features
+
+| Feature | Value | Reason |
+| --- | --- | --- |
+| `injector.enabled` | `false` | Secrets are managed via ESO, not sidecar injection |
+| `ui` | `false` | No web UI required for headless secret management |
+
+## Idempotency Guarantees
+
+All bootstrap scripts are designed to be safely re-run without side effects. This
+table summarizes the idempotency mechanism for each script:
+
+| Script | Guard Mechanism | Behavior on Re-run |
+| --- | --- | --- |
+| `init-unseal.sh` | `bao status -format=json` JSON parsing | Skips initialization if already initialized; skips unseal for already-unsealed pods |
+| `setup-secret-engines.sh` | `bao secrets list` path check | Skips engine enable if mount path already exists |
+| `setup-auth.sh` | `bao auth list` path check | Skips auth enable if mount path already exists; role write is upsert |
+| `setup-policies.sh` | `bao policy write` upsert semantics | Overwrites existing policy with same content (no-op if unchanged) |
+| `write-bootstrap-secrets.sh` | `bao kv get` existence check | Skips secret write if path already contains data |
+
+**Critical invariant:** `write-bootstrap-secrets.sh` never overwrites existing secrets.
+This prevents credential rotation from being accidentally triggered by a re-run. To
+rotate credentials, existing secrets must be explicitly deleted first.
+
+## Error Handling
+
+All scripts use `set -euo pipefail` for strict error handling:
+
+| Flag | Behavior |
+| --- | --- |
+| `-e` | Exit immediately on any command failure |
+| `-u` | Treat unset variables as errors |
+| `-o pipefail` | Propagate failures through pipes (not just the last command) |
+
+Scripts log timestamped status messages to stdout using ISO 8601 format. Error messages
+from `bao` CLI commands are propagated to stderr by `kubectl exec`.
+
+## Troubleshooting
+
+### OpenBao pods not starting
+
+Verify the TLS certificate Secret exists and is populated:
+
+```bash
+kubectl get secret openbao-tls -n openbao-system -o jsonpath='{.data.tls\.crt}' | wc -c
+```
+
+If the Secret is empty or missing, check cert-manager logs:
+
+```bash
+kubectl logs -n cert-manager -l app.kubernetes.io/name=cert-manager
+```
+
+### Unseal keys lost
+
+If the `openbao-init-keys` Secret is deleted, the unseal keys cannot be recovered.
+OpenBao must be completely redeployed (delete PVCs, delete pods, re-run init):
+
+```bash
+kubectl delete pvc -n openbao-system -l app.kubernetes.io/name=openbao
+kubectl delete pods -n openbao-system -l app.kubernetes.io/name=openbao
+# Wait for pods to restart, then re-run init-unseal.sh
+```
+
+### Script fails with "permission denied"
+
+Ensure scripts have execute permissions:
+
+```bash
+chmod +x deploy/openbao/bootstrap/*.sh
+```
+
+### ExternalSecrets stuck in "SecretSyncedError"
+
+Verify the ClusterSecretStore is healthy:
+
+```bash
+kubectl get clustersecretstore openbao-cluster-store -o jsonpath='{.status.conditions}'
+```
+
+Common causes:
+
+- OpenBao is sealed (re-run `init-unseal.sh`)
+- ESO service account missing (verify `external-secrets` SA exists in `external-secrets` namespace)
+- TLS trust failure (verify `openbao-tls` Secret contains `ca.crt` key)
+
+## Related Resources
+
+- [Infrastructure Manifests](../infrastructure-manifests.md) — FluxCD base deployment (CC-0008)
+- `deploy/flux-system/releases/openbao.yaml` — OpenBao HelmRelease
+- `deploy/flux-system/infrastructure/openbao-tls-cert.yaml` — TLS Certificate
+- `deploy/eso/clustersecretstore.yaml` — ClusterSecretStore configuration
+- `deploy/eso/externalsecrets/` — ExternalSecret resources
