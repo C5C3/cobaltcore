@@ -501,6 +501,7 @@
       "title": "Create Chainsaw E2E test `tests/e2e/infrastructure/infra-stack-health/chainsaw-test.yaml` — v1alpha2 Test with steps asserting: (1) cert-manager Deployment readiness in cert-manager namespace, (2) OpenBao StatefulSet readiness in openbao-system, (3) ESO Deployment readiness in external-secrets, (4) MariaDB Operator Deployment readiness in mariadb-system, (5) Memcached Operator Deployment readiness in memcached-system, (6) ClusterIssuer Ready condition on selfsigned-cluster-issuer, (7) MariaDB CR Ready condition on openstack-db, (8) Memcached CR Ready condition on openstack-memcached, (9) ClusterSecretStore Valid condition on openbao-cluster-store, (10) ExternalSecret SecretSynced for keystone-admin, keystone-db, mariadb-root-password. Uses extended assert timeout (~5min). SPDX header, CC-0010 reference. (REQ-008)",
       "level": 4,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]

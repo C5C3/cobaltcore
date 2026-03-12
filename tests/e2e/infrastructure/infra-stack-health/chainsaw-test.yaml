@@ -1,0 +1,161 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test asserting full infrastructure stack health after
+# deploy-infra.sh completes. Validates that all operators, CRs, and
+# ExternalSecrets are Ready/Synced in a kind cluster (CC-0010, REQ-008).
+#
+# DECISION: Deployment names for Helm-installed operators
+# Ambiguity: Exact Deployment names depend on each Helm chart's templates,
+#   which are not available in the repository.
+# Chose: cert-manager, external-secrets-operator (ESO controller), mariadb-operator,
+#   memcached-operator-controller-manager (kubebuilder convention for c5c3 operator).
+#   OpenBao StatefulSet is named "openbao" per the openbao Helm chart convention.
+# Reviewer: please verify Deployment names match actual chart output.
+apiVersion: chainsaw.kyverno.io/v1alpha2
+kind: Test
+metadata:
+  name: infra-stack-health
+spec:
+  # Extended timeout for operator startup: pods may take several minutes to
+  # pull images, run init containers, and reach Ready state in CI.
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Operator Deployments ─────────────────────────────────────────
+  # Asserts that all operator Deployments have at least one available replica,
+  # confirming the control-plane pods are running and passing readiness probes.
+  - name: assert-operator-deployments-ready
+    try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cert-manager
+            namespace: cert-manager
+          status:
+            (availableReplicas > `0`): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: external-secrets
+            namespace: external-secrets
+          status:
+            (availableReplicas > `0`): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: mariadb-operator
+            namespace: mariadb-system
+          status:
+            (availableReplicas > `0`): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: memcached-operator-controller-manager
+            namespace: memcached-system
+          status:
+            (availableReplicas > `0`): true
+
+  # ── Step 2: OpenBao StatefulSet ──────────────────────────────────────────
+  # Asserts that the OpenBao StatefulSet has at least one ready replica,
+  # confirming the Raft storage node is initialized and serving requests.
+  - name: assert-openbao-statefulset-ready
+    try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: openbao
+            namespace: openbao-system
+          status:
+            (readyReplicas >= `1`): true
+
+  # ── Step 3: Infrastructure Custom Resources ──────────────────────────────
+  # Asserts Ready conditions on ClusterIssuer, MariaDB CR, and Memcached CR,
+  # confirming that operator reconciliation has completed successfully.
+  - name: assert-infrastructure-crs-ready
+    try:
+    - assert:
+        resource:
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: selfsigned-cluster-issuer
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: MariaDB
+          metadata:
+            name: openstack-db
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: cache.c5c3.io/v1alpha1
+          kind: Memcached
+          metadata:
+            name: openstack-memcached
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+
+  # ── Step 4: ESO Resources ───────────────────────────────────────────────
+  # Asserts ClusterSecretStore Valid condition and ExternalSecret SecretSynced
+  # conditions, confirming end-to-end secret delivery from OpenBao to K8s.
+  - name: assert-eso-resources-functional
+    try:
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1beta1
+          kind: ClusterSecretStore
+          metadata:
+            name: openbao-cluster-store
+          status:
+            (conditions[?type == 'Valid']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1beta1
+          kind: ExternalSecret
+          metadata:
+            name: keystone-admin
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretSynced']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1beta1
+          kind: ExternalSecret
+          metadata:
+            name: keystone-db
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretSynced']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1beta1
+          kind: ExternalSecret
+          metadata:
+            name: mariadb-root-password
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretSynced']):
+            - status: "True"
