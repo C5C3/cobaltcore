@@ -511,6 +511,7 @@
       "title": "Add `e2e-infra` job to `.github/workflows/ci.yaml` — new job alongside existing `lint` and `test` (no `needs:` dependency). Steps: checkout (SHA-pinned actions/checkout), setup-go (SHA-pinned actions/setup-go with go-version-file: go.work), create kind cluster (SHA-pinned helm/kind-action with config: hack/kind-config.yaml), install flux CLI, run `make deploy-infra`, run `chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/infrastructure/`, upload JUnit report as artifact (SHA-pinned actions/upload-artifact). `timeout-minutes: 20`, follows existing `permissions: contents: read` and concurrency conventions. (REQ-009)",
       "level": 5,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
