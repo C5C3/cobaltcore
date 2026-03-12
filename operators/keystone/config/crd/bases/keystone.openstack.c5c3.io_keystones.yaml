@@ -67,6 +67,13 @@ spec:
                     default: admin
                     description: AdminUser is the admin username for the bootstrap.
                     type: string
+                  publicEndpoint:
+                    description: |-
+                      PublicEndpoint is the externally routable Keystone endpoint URL used for
+                      --bootstrap-public-url. When unset, the cluster-local service DNS is used
+                      as a fallback. External clients (CLI users, Horizon, federation partners)
+                      require a routable address here (CC-0013).
+                    type: string
                   region:
                     default: RegionOne
                     description: Region is the Keystone region name.
@@ -97,6 +104,15 @@ spec:
                         type: string
                     type: object
                     x-kubernetes-map-type: atomic
+                  replicas:
+                    default: 3
+                    description: |-
+                      Replicas is the number of Memcached pod replicas in the referenced cluster
+                      (managed mode). Used to generate the correct number of StatefulSet pod
+                      endpoints. Only used when ClusterRef is set.
+                    format: int32
+                    minimum: 1
+                    type: integer
                   servers:
                     description: Servers is the list of cache server endpoints (brownfield
                       mode).

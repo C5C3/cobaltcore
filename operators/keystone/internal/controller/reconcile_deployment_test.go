@@ -1,0 +1,357 @@
+// SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package controller
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	. "github.com/onsi/gomega"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	commonv1 "github.com/c5c3/forge/internal/common/types"
+	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+)
+
+// Feature: CC-0013
+
+func deployTestScheme() *runtime.Scheme {
+	s := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(s)
+	_ = keystonev1alpha1.AddToScheme(s)
+	return s
+}
+
+func deployTestKeystone() *keystonev1alpha1.Keystone {
+	return &keystonev1alpha1.Keystone{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-keystone",
+			Namespace:  "default",
+			UID:        "ks-uid",
+			Generation: 1,
+		},
+		Spec: keystonev1alpha1.KeystoneSpec{
+			Replicas: 3,
+			Image:    commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Database: commonv1.DatabaseSpec{
+				Host:      "db.example.com",
+				Port:      3306,
+				Database:  "keystone",
+				SecretRef: commonv1.SecretRefSpec{Name: "keystone-db-credentials"},
+			},
+			Cache: commonv1.CacheSpec{Backend: "dogpile.cache.pymemcache", Servers: []string{"mc:11211"}},
+			Bootstrap: keystonev1alpha1.BootstrapSpec{
+				AdminUser:              "admin",
+				AdminPasswordSecretRef: commonv1.SecretRefSpec{Name: "keystone-admin"},
+				Region:                 "RegionOne",
+			},
+		},
+	}
+}
+
+func newDeployTestReconciler(s *runtime.Scheme, objs ...client.Object) *KeystoneReconciler {
+	cb := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...)
+	cb = cb.WithStatusSubresource(&keystonev1alpha1.Keystone{})
+	return &KeystoneReconciler{
+		Client:   cb.Build(),
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+}
+
+// readyDeployment returns a Deployment that matches what buildKeystoneDeployment
+// would produce, but with status indicating it is available and ready.
+func readyDeployment(ks *keystonev1alpha1.Keystone, configMapName string) *appsv1.Deployment {
+	deploy := buildKeystoneDeployment(ks, configMapName)
+	replicas := int32(ks.Spec.Replicas)
+	deploy.Spec.Replicas = &replicas
+	deploy.Generation = 1
+	deploy.Status.ObservedGeneration = 1
+	deploy.Status.ReadyReplicas = replicas
+	deploy.Status.Conditions = []appsv1.DeploymentCondition{
+		{
+			Type:   appsv1.DeploymentAvailable,
+			Status: corev1.ConditionTrue,
+		},
+	}
+	return deploy
+}
+
+// notReadyDeployment returns a Deployment that exists but is not yet available.
+func notReadyDeployment(ks *keystonev1alpha1.Keystone, configMapName string) *appsv1.Deployment {
+	deploy := buildKeystoneDeployment(ks, configMapName)
+	deploy.Generation = 1
+	deploy.Status.ObservedGeneration = 1
+	deploy.Status.ReadyReplicas = 0
+	return deploy
+}
+
+func TestReconcileDeployment_DeploymentAndServiceCreated(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+	r := newDeployTestReconciler(s, ks)
+
+	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	// Deployment just created, not ready yet — should requeue.
+	g.Expect(result.RequeueAfter).To(Equal(10 * time.Second))
+
+	// Verify Deployment was created.
+	var deploy appsv1.Deployment
+	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
+		Name: "test-keystone-api", Namespace: "default",
+	}, &deploy)).To(Succeed())
+
+	// Verify Service was created.
+	var svc corev1.Service
+	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
+		Name: "test-keystone-api", Namespace: "default",
+	}, &svc)).To(Succeed())
+}
+
+func TestReconcileDeployment_NotReady_Requeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+	deploy := notReadyDeployment(ks, "keystone-config-abc123")
+	r := newDeployTestReconciler(s, ks, deploy)
+
+	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(10 * time.Second))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DeploymentReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForDeployment"))
+}
+
+func TestReconcileDeployment_Ready_SetsEndpoint(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+	deploy := readyDeployment(ks, "keystone-config-abc123")
+	r := newDeployTestReconciler(s, ks, deploy)
+
+	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(BeZero())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DeploymentReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("DeploymentReady"))
+
+	g.Expect(ks.Status.Endpoint).To(Equal("http://test-keystone-api.default.svc.cluster.local:5000/v3"))
+}
+
+func TestReconcileDeployment_OwnerReferences(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+	r := newDeployTestReconciler(s, ks)
+
+	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Verify Deployment has owner reference.
+	var deploy appsv1.Deployment
+	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
+		Name: "test-keystone-api", Namespace: "default",
+	}, &deploy)).To(Succeed())
+	g.Expect(deploy.OwnerReferences).To(HaveLen(1))
+	g.Expect(deploy.OwnerReferences[0].Name).To(Equal("test-keystone"))
+
+	// Verify Service has owner reference.
+	var svc corev1.Service
+	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
+		Name: "test-keystone-api", Namespace: "default",
+	}, &svc)).To(Succeed())
+	g.Expect(svc.OwnerReferences).To(HaveLen(1))
+	g.Expect(svc.OwnerReferences[0].Name).To(Equal("test-keystone"))
+}
+
+func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+	r := newDeployTestReconciler(s, ks)
+
+	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var deploy appsv1.Deployment
+	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
+		Name: "test-keystone-api", Namespace: "default",
+	}, &deploy)).To(Succeed())
+
+	// Verify replicas.
+	g.Expect(deploy.Spec.Replicas).NotTo(BeNil())
+	g.Expect(*deploy.Spec.Replicas).To(Equal(int32(3)))
+
+	// Verify container spec.
+	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
+	container := deploy.Spec.Template.Spec.Containers[0]
+	g.Expect(container.Name).To(Equal("keystone-api"))
+	g.Expect(container.Image).To(Equal("ghcr.io/c5c3/keystone:2025.2"))
+
+	// Verify port.
+	g.Expect(container.Ports).To(HaveLen(1))
+	g.Expect(container.Ports[0].ContainerPort).To(Equal(int32(5000)))
+	g.Expect(container.Ports[0].Name).To(Equal("keystone-api"))
+
+	// Verify liveness probe.
+	g.Expect(container.LivenessProbe).NotTo(BeNil())
+	g.Expect(container.LivenessProbe.HTTPGet).NotTo(BeNil())
+	g.Expect(container.LivenessProbe.HTTPGet.Path).To(Equal("/v3"))
+	g.Expect(container.LivenessProbe.HTTPGet.Port.IntValue()).To(Equal(5000))
+	g.Expect(container.LivenessProbe.InitialDelaySeconds).To(Equal(int32(15)))
+	g.Expect(container.LivenessProbe.PeriodSeconds).To(Equal(int32(20)))
+
+	// Verify readiness probe.
+	g.Expect(container.ReadinessProbe).NotTo(BeNil())
+	g.Expect(container.ReadinessProbe.HTTPGet).NotTo(BeNil())
+	g.Expect(container.ReadinessProbe.HTTPGet.Path).To(Equal("/v3"))
+	g.Expect(container.ReadinessProbe.HTTPGet.Port.IntValue()).To(Equal(5000))
+	g.Expect(container.ReadinessProbe.InitialDelaySeconds).To(Equal(int32(5)))
+	g.Expect(container.ReadinessProbe.PeriodSeconds).To(Equal(int32(10)))
+
+	// Verify volume mounts.
+	g.Expect(container.VolumeMounts).To(HaveLen(3))
+	var configMount, fernetMount, credentialMount corev1.VolumeMount
+	for _, vm := range container.VolumeMounts {
+		switch vm.Name {
+		case "config":
+			configMount = vm
+		case "fernet-keys":
+			fernetMount = vm
+		case "credential-keys":
+			credentialMount = vm
+		}
+	}
+	g.Expect(configMount.MountPath).To(Equal("/etc/keystone/keystone.conf.d/"))
+	g.Expect(configMount.ReadOnly).To(BeTrue())
+	g.Expect(fernetMount.MountPath).To(Equal("/etc/keystone/fernet-keys/"))
+	g.Expect(fernetMount.ReadOnly).To(BeTrue())
+	g.Expect(credentialMount.MountPath).To(Equal("/etc/keystone/credential-keys/"))
+	g.Expect(credentialMount.ReadOnly).To(BeTrue())
+
+	// Verify volumes.
+	g.Expect(deploy.Spec.Template.Spec.Volumes).To(HaveLen(3))
+	var configVol, fernetVol, credentialVol corev1.Volume
+	for _, v := range deploy.Spec.Template.Spec.Volumes {
+		switch v.Name {
+		case "config":
+			configVol = v
+		case "fernet-keys":
+			fernetVol = v
+		case "credential-keys":
+			credentialVol = v
+		}
+	}
+	g.Expect(configVol.ConfigMap).NotTo(BeNil())
+	g.Expect(configVol.ConfigMap.Name).To(Equal("keystone-config-abc123"))
+	g.Expect(fernetVol.Secret).NotTo(BeNil())
+	g.Expect(fernetVol.Secret.SecretName).To(Equal("test-keystone-fernet-keys"))
+	g.Expect(credentialVol.Secret).NotTo(BeNil())
+	g.Expect(credentialVol.Secret.SecretName).To(Equal("test-keystone-credential-keys"))
+	g.Expect(credentialVol.Secret.Optional).NotTo(BeNil())
+	g.Expect(*credentialVol.Secret.Optional).To(BeTrue(), "credential-keys volume should be optional until credential key management is implemented")
+
+	// Verify labels.
+	g.Expect(deploy.Spec.Template.Labels).To(HaveKeyWithValue("app", "test-keystone-api"))
+	g.Expect(deploy.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app", "test-keystone-api"))
+
+	// Verify Service spec.
+	var svc corev1.Service
+	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
+		Name: "test-keystone-api", Namespace: "default",
+	}, &svc)).To(Succeed())
+	g.Expect(svc.Spec.Ports).To(HaveLen(1))
+	g.Expect(svc.Spec.Ports[0].Port).To(Equal(int32(5000)))
+	g.Expect(svc.Spec.Ports[0].TargetPort.IntValue()).To(Equal(5000))
+	g.Expect(svc.Spec.Ports[0].Protocol).To(Equal(corev1.ProtocolTCP))
+	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue("app", "test-keystone-api"))
+}
+
+func TestReconcileDeployment_NotReady_ConditionMessageAndGeneration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+	deploy := notReadyDeployment(ks, "keystone-config-abc123")
+	r := newDeployTestReconciler(s, ks, deploy)
+
+	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(10 * time.Second))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DeploymentReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForDeployment"))
+	g.Expect(cond.Message).To(Equal("Keystone API deployment is not yet available"))
+	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
+}
+
+func TestReconcileDeployment_Ready_ConditionMessageAndGeneration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+	deploy := readyDeployment(ks, "keystone-config-abc123")
+	r := newDeployTestReconciler(s, ks, deploy)
+
+	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(BeZero())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DeploymentReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("DeploymentReady"))
+	g.Expect(cond.Message).To(Equal("Keystone API deployment is available"))
+	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
+}
+
+func TestReconcileDeployment_ServiceCreatedAlongsideDeployment(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+	// Only pre-create the Keystone CR, not the Deployment or Service.
+	r := newDeployTestReconciler(s, ks)
+
+	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Verify both Deployment and Service exist after a single reconcile call.
+	var deploy appsv1.Deployment
+	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
+		Name: "test-keystone-api", Namespace: "default",
+	}, &deploy)).To(Succeed())
+
+	var svc corev1.Service
+	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
+		Name: "test-keystone-api", Namespace: "default",
+	}, &svc)).To(Succeed())
+
+	// Verify the Service targets the Deployment's pods.
+	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue("app", "test-keystone-api"))
+	g.Expect(deploy.Spec.Template.Labels).To(HaveKeyWithValue("app", "test-keystone-api"))
+
+	// Both should have owner references.
+	g.Expect(deploy.OwnerReferences).To(HaveLen(1))
+	g.Expect(svc.OwnerReferences).To(HaveLen(1))
+}

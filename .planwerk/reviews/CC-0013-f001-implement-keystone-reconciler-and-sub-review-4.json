@@ -1,0 +1,80 @@
+{
+  "summary": "CC-0013 implements the KeystoneReconciler with 6 sequential sub-reconcilers (secrets, fernetKeys, config, database, deployment, bootstrap), each gating the next via status conditions. All previous review feedback from greptile-apps[bot] has been addressed: ESO Secret watch uses EnqueueRequestsFromMapFunc instead of EnqueueRequestForOwner, resource names are instance-scoped via CR name, reconcile ordering matches data dependencies (config before database/bootstrap), and Jobs mount the config ConfigMap. The implementation is thorough, well-tested (60+ test cases), follows existing patterns, and handles edge cases. All verification checks pass: go test, go vet, golangci-lint, gosec.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (go test ./operators/keystone/... — 0 failures)", "checked": true},
+    {"item": "Edge cases covered (missing secrets, stale jobs, brownfield mode, brownfield skips MariaDB CRs, min key floor)", "checked": true},
+    {"item": "Error cases tested (API errors, job failures, ErrJobFailed sentinel)", "checked": true},
+    {"item": "Condition messages and ObservedGeneration verified in assertions", "checked": true},
+    {"item": "Sequential progression tested (phase 1 → phase 2 with added prerequisites)", "checked": true},
+    {"item": "Idempotency tested (two reconciles produce same result)", "checked": true},
+    {"item": "Secret watch mapper tested for referenced, owned, and unrelated secrets", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing codebase patterns (gomega, conditions, Ensure* shared libraries)", "checked": true},
+    {"item": "One file per sub-reconciler, clear separation of concerns", "checked": true},
+    {"item": "Error wrapping with context in all error paths", "checked": true},
+    {"item": "Functions are focused and reasonably sized", "checked": true},
+    {"item": "No dead code or unused imports", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Fernet key generation uses crypto/rand (CSPRNG)", "checked": true},
+    {"item": "No hardcoded secrets in code", "checked": true},
+    {"item": "DB password handled via url.UserPassword (RFC 3986 userinfo encoding)", "checked": true},
+    {"item": "Fernet rotation CronJob uses minimal RBAC (get+patch on specific Secret)", "checked": true},
+    {"item": "gosec reports 0 issues", "checked": true},
+    {"item": "Rotation script uses TLS with proper CA verification", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is appropriately complex for the requirements", "checked": true},
+    {"item": "Reconcile ordering matches data dependencies (config before db_sync and bootstrap)", "checked": true},
+    {"item": "Secret watch correctly uses MapFunc instead of EnqueueRequestForOwner for ESO secrets", "checked": true},
+    {"item": "All child resource names are instance-scoped (use CR name prefix)", "checked": true},
+    {"item": "Owner references set on all created resources", "checked": true},
+    {"item": "main.go registers external schemes and instantiates reconciler correctly", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated logic across sub-reconcilers (each has distinct responsibility)", "checked": true},
+    {"item": "Shared libraries reused (conditions, config, database, deployment, job, secrets, plugins, policy)", "checked": true},
+    {"item": "No unnecessary abstractions", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Sub-reconcilers return early on not-ready conditions", "checked": true},
+    {"item": "Error propagation halts reconcile chain", "checked": true},
+    {"item": "Stale job detection prevents silently skipping migrations", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "ExternalSecret and Secret readiness both verified (status-vs-object race guard)", "checked": true},
+    {"item": "MaxActiveKeys floor of 3 enforced in code (defense-in-depth alongside CRD marker)", "checked": true},
+    {"item": "Credential-keys volume marked Optional to prevent failures until future feature", "checked": true},
+    {"item": "NotFound errors handled gracefully in Reconcile()", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "id": "D2",
+      "severity": "minor",
+      "description": "REVIEWER-DISAGREEMENT comment style is not production-appropriate. The comment at reconcile_config.go:81-83 documents a valid technical decision (url.UserPassword vs url.PathEscape) but uses a reviewer-debate format instead of a standard explanatory comment.",
+      "location": "operators/keystone/internal/controller/reconcile_config.go:81",
+      "fix": "Rewrite as: // url.UserPassword correctly encodes all RFC 3986 userinfo characters (including @, :, /). // url.PathEscape does not escape @ or :, which would produce an invalid connection URL."
+    },
+    {
+      "id": "FC2-note",
+      "severity": "minor",
+      "description": "TODO comment for credential key management is flagged by stub scanner but is an explicitly documented deferral per the plan's exclusion section. The volume is marked Optional=true to prevent failures.",
+      "location": "operators/keystone/internal/controller/reconcile_deployment.go:160",
+      "fix": "No action required — this is an intentional deferral with graceful fallback. The TODO tracks future work."
+    }
+  ],
+  "suggested_improvements": [
+    "Consider rewriting the REVIEWER-DISAGREEMENT comment at reconcile_config.go:81 as a standard technical rationale comment",
+    "Consider extracting the per-test-file scheme helpers (secretsTestScheme, dbTestScheme, etc.) into a shared testutil if more sub-reconciler test files are added in the future"
+  ],
+  "next_steps": [
+    "CC-0014: Integration/E2E tests for the Keystone reconciler",
+    "Future: Credential key management sub-reconciler (reconcileCredentialKeys) to make the credential-keys volume non-optional",
+    "Future: Federation support in reconcileConfig (FederationSpec exists but no reconciler logic)"
+  ],
+  "detected_patterns": []
+}

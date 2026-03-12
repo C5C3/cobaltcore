@@ -115,6 +115,13 @@ type BootstrapSpec struct {
 	// Region is the Keystone region name.
 	// +kubebuilder:default="RegionOne"
 	Region string `json:"region,omitempty"`
+
+	// PublicEndpoint is the externally routable Keystone endpoint URL used for
+	// --bootstrap-public-url. When unset, the cluster-local service DNS is used
+	// as a fallback. External clients (CLI users, Horizon, federation partners)
+	// require a routable address here (CC-0013).
+	// +optional
+	PublicEndpoint string `json:"publicEndpoint,omitempty"`
 }
 
 // KeystoneStatus defines the observed state of Keystone.

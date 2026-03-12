@@ -1,0 +1,100 @@
+{
+  "feature_id": "CC-0013",
+  "title": "GitHub Review by gndrmnn",
+  "summary": "The reviewer wants several changes: (1) downgrade a log level from Info to Debug, (2) remove a useless test that only verifies struct assignment, (3) use `url.URL`/`url.UserPassword` for URL construction, (4) use the existing `internal/conditions` package (likely `meta.FindStatusCondition`) instead of reimplementing condition lookups, (5) pass `defaults` as the second argument for clarity, (6) use `k8s.io/utils/ptr` instead of custom pointer helper functions, and (7) run `make generate`/`make regenerate` after API struct changes.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "gndrmnn",
+  "date": "2026-03-11T15:45:38Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 5,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "I expect this to happen on somewhat of a regular basis. Please don't log this as ``Info`` maybe as ``Debug`` if at all.",
+      "path": "operators/keystone/internal/controller/keystone_controller.go",
+      "line": 62,
+      "author": "gndrmnn",
+      "created_at": "2026-03-11T13:57:15Z",
+      "id": null,
+      "resolution": "[0] keystone_controller.go:62 — Changed log.FromContext(ctx).Info(...) to log.FromContext(ctx).V(1).Info(...) to use Debug verbosity level instead of Info, since not-found events are expected during normal operation."
+    },
+    {
+      "body": "Useless test. We certainly do not need to test, if a struct we just created has values we assign to it. This tests go-lang more than it helps us in any way testing the controller.",
+      "path": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "line": 273,
+      "author": "gndrmnn",
+      "created_at": "2026-03-11T14:03:11Z",
+      "id": null,
+      "resolution": "[1] keystone_controller_test.go:273 — Removed TestReconcile_ReadyFalseWhenSubConditionMissing, which pre-set conditions on a Keystone struct and called aggregateReady() — testing Go struct behavior rather than actual controller logic."
+    },
+    {
+      "body": "Explicitly constructing a ``url.URL`` object and using ``url.UserPassword`` seems appropriate and correct",
+      "path": "operators/keystone/internal/controller/reconcile_config.go",
+      "line": 93,
+      "author": "gndrmnn",
+      "created_at": "2026-03-11T15:15:58Z",
+      "id": null,
+      "resolution": "[2] reconcile_config.go:93 — No changes needed; this was positive feedback confirming that the explicit url.URL construction with url.UserPassword is appropriate and correct."
+    },
+    {
+      "body": "We have ``internal/conditions`` for this kind of stuff and I am pretty sure this - again - reimplements ``meta.FindStatusCondition(conditions, conditionType)``",
+      "path": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "line": 324,
+      "author": "gndrmnn",
+      "created_at": "2026-03-11T15:17:08Z",
+      "id": null,
+      "resolution": "[3] keystone_controller_test.go:324 — Replaced the custom findCondition test helper with meta.FindStatusCondition from k8s.io/apimachinery/pkg/api/meta, and deleted the local findCondition function. Applied the same replacement across 5 additional test files (reconcile_bootstrap_test.go, reconcile_database_test.go, reconcile_deployment_test.go, reconcile_fernet_test.go, reconcile_secrets_test.go) that used the same reimplemented helper."
+    },
+    {
+      "body": "While functionally identical, I suggest using ``defaults`` as the second argument to this function. This makes it easier to understand what is going on when reading the code.",
+      "path": "operators/keystone/internal/controller/reconcile_config.go",
+      "line": 103,
+      "author": "gndrmnn",
+      "created_at": "2026-03-11T15:17:53Z",
+      "id": null,
+      "resolution": "[4] reconcile_config.go:103 — Changed config.MergeDefaults(pluginConfig, merged) to config.MergeDefaults(pluginConfig, defaults) so the second argument clearly communicates that plugin config is merged on top of the base defaults."
+    },
+    {
+      "body": "Thats what the ``k8s.io/utils/ptr`` package is for. Use that instead of reinventing functions",
+      "path": "operators/keystone/internal/controller/reconcile_deployment.go",
+      "line": 167,
+      "author": "gndrmnn",
+      "created_at": "2026-03-11T15:20:58Z",
+      "id": null,
+      "resolution": "[5] reconcile_deployment.go:167 — Replaced custom boolPtr(true) with ptr.To(true) from k8s.io/utils/ptr, removed the boolPtr function definition, and promoted k8s.io/utils from indirect to direct dependency in go.mod."
+    },
+    {
+      "body": "I am pretty sure changing the API structs requires us to re-run ``make generate`` to re-generate the auto-generated files.",
+      "path": "operators/keystone/api/v1alpha1/keystone_types.go",
+      "line": 124,
+      "author": "gndrmnn",
+      "created_at": "2026-03-11T15:27:47Z",
+      "id": null,
+      "resolution": "[6] keystone_types.go:124 — Ran make generate to regenerate the CRD YAML (keystone.openstack.c5c3.io_keystones.yaml), which now includes the new publicEndpoint and replicas fields matching the API struct changes."
+    },
+    {
+      "body": "This needs to have a ``make regenerate`` as well.",
+      "path": "internal/common/types/types.go",
+      "line": 67,
+      "author": "gndrmnn",
+      "created_at": "2026-03-11T15:42:02Z",
+      "id": null,
+      "resolution": "[7] internal/common/types/types.go:67 — The CRD YAML was regenerated (same make generate run as comment [6]) to reflect the new Replicas field added to CacheSpec in the shared common types package."
+    }
+  ],
+  "resolution_summary": "All 8 review comments from gndrmnn were addressed. The changes include: downgrading a log from Info to Debug via V(1), removing a useless test that only verified struct assignment, replacing a custom findCondition helper with meta.FindStatusCondition (applied to 6 test files beyond the one mentioned: reconcile_bootstrap_test.go, reconcile_database_test.go, reconcile_deployment_test.go, reconcile_fernet_test.go, reconcile_secrets_test.go in addition to keystone_controller_test.go), changing the MergeDefaults second argument to defaults for clarity, replacing a custom boolPtr function with ptr.To from k8s.io/utils/ptr (also promoting k8s.io/utils to a direct dependency in go.mod), and regenerating CRD manifests to reflect API struct changes in both keystone_types.go and internal/common/types/types.go.",
+  "github_review_id": 3929798042
+}

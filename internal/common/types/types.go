@@ -58,6 +58,13 @@ type CacheSpec struct {
 	// Servers is the list of cache server endpoints (brownfield mode).
 	// +optional
 	Servers []string `json:"servers,omitempty"`
+	// Replicas is the number of Memcached pod replicas in the referenced cluster
+	// (managed mode). Used to generate the correct number of StatefulSet pod
+	// endpoints. Only used when ClusterRef is set.
+	// +optional
+	// +kubebuilder:default=3
+	// +kubebuilder:validation:Minimum=1
+	Replicas int32 `json:"replicas,omitempty"`
 }
 
 // SecretRefSpec references a Kubernetes Secret.

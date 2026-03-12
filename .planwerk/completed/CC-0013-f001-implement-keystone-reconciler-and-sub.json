@@ -2,8 +2,8 @@
   "feature_id": "CC-0013",
   "title": "F001: Implement Keystone reconciler and sub-reconcilers",
   "slug": "f001-implement-keystone-reconciler-and-sub",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 🏗️ large\n**Category:** backend\n**Priority:** critical\n**Feature ID:** CC-0013\n\n---\n\n## Summary\n\nImplement the `KeystoneReconciler` (CC-0013) — the core controller driving the full lifecycle of a `Keystone` custom resource. The reconciler orchestrates 6 sequential sub-reconcilers (secrets, database, Fernet keys, config, deployment, bootstrap), each gating the next via status conditions. It leverages all shared libraries from `internal/common/` (conditions, config, database, deployment, job, secrets, plugins, policy) and wires into the existing `operators/keystone/main.go` with scheme registration and reconciler instantiation.\n\n---\n\n## Scope\n\n**Included:**\n- `KeystoneReconciler` struct with embedded `client.Client`, `Scheme *runtime.Scheme`, `Recorder record.EventRecorder` (per architecture doc pattern in `04-keystone-reconciler.md`)\n- `SetupWithManager` with `For(Keystone)`, `Owns(Deployment, Service, ConfigMap, Job, CronJob)`, `Watches(Secret)` with `handler.EnqueueRequestForOwner` for ESO-managed Secrets\n- RBAC markers for: `keystone.openstack.c5c3.io` (keystones, keystones/status, keystones/finalizers), `apps` (deployments), `\"\"` (services, configmaps, secrets, events), `batch` (jobs, cronjobs), `k8s.mariadb.com` (databases, users, grants), `external-secrets.io` (externalsecrets, pushsecrets)\n- `Reconcile()` main loop: fetch Keystone CR via `client.IgnoreNotFound`, call sub-reconcilers sequentially, aggregate `Ready` condition via `conditions.AllTrue`\n- **`reconcileSecrets`** (`reconcile_secrets.go`): Check ESO Secrets via `secrets.WaitForExternalSecret` + `secrets.IsSecretReady` for `spec.database.secretRef` and `spec.bootstrap.adminPasswordSecretRef`. Set `SecretsReady` condition. Requeue 15s.\n- **`reconcileDatabase`** (`reconcile_database.go`): Managed mode (`spec.database.clusterRef` set) → `database.EnsureDatabase` + `database.EnsureDatabaseUser` (User+Grant together). Brownfield mode (`spec.database.host` set) → skip CRs. Both modes → `database.RunDBSyncJob` with `keystone-manage db_sync`. Set `DatabaseReady` condition. Requeue 30s (CRs) / 60s (Job).\n- **`reconcileFernetKeys`** (`reconcile_fernet.go`): Generate initial Fernet keys in-process via `crypto/rand` (32-byte URL-safe base64), store in K8s Secret with owner reference. Ensure rotation CronJob via `job.EnsureCronJob` on `spec.fernet.rotationSchedule`. Ensure PushSecret via `secrets.EnsurePushSecret` for OpenBao backup. Set `FernetKeysReady` condition. Requeue 30s.\n- **`reconcileConfig`** (`reconcile_config.go`): Build `keystone.conf` from spec fields (database connection, cache servers, fernet paths) + `config.MergeDefaults` + `config.InjectSecrets` for `{{DB_PASSWORD}}` placeholder + `spec.extraConfig` merge. Render plugin config via `plugins.RenderPluginConfig`. Render `api-paste.ini` via `plugins.RenderPastePipelineINI` with `spec.middleware`. Render `policy.yaml` via `policy.LoadPolicyFromConfigMap` + `policy.MergePolicies` + `policy.RenderPolicyYAML` + `config.InjectOsloPolicyConfig`. Create immutable ConfigMap via `config.CreateImmutableConfigMap` → returns actual name with hash suffix. No dedicated status condition (synchronous operation).\n- **`reconcileDeployment`** (`reconcile_deployment.go`): Create/update Deployment via `deployment.EnsureDeployment` with container `keystone-api`, image from `spec.image`, port 5000, liveness/readiness probes on `GET /v3`, volume mounts (ConfigMap, fernet-keys Secret, credential-keys Secret). Create/update Service via `deployment.EnsureService` on port 5000. Set `status.endpoint`. Set `DeploymentReady` condition. Requeue 10s.\n- **`reconcileBootstrap`** (`reconcile_bootstrap.go`): Run `keystone-manage bootstrap` Job via `job.RunJob` with admin credentials from ESO Secret, admin URL, region from `spec.bootstrap`. Uses `job.PodSpecHash` for stale-Job detection on spec changes. Set `BootstrapReady` condition. Requeue 60s.\n- Aggregate `Ready` condition via `conditions.SetCondition` + `conditions.AllTrue(\"SecretsReady\", \"DatabaseReady\", \"FernetKeysReady\", \"DeploymentReady\", \"BootstrapReady\")`\n- **Scheme registration** in `main.go`: Add `mariadbv1alpha1`, `esov1beta1`, `esov1alpha1` to the scheme (required for the reconciler to create/watch MariaDB and ESO CRs)\n- **`main.go` wiring**: Instantiate `KeystoneReconciler` with `mgr.GetClient()`, `mgr.GetScheme()`, `mgr.GetEventRecorderFor(\"keystone-controller\")` at `+kubebuilder:scaffold:builder` marker\n- File organization: one file per sub-reconciler + `keystone_reconciler.go` for struct/Reconcile/Setup, all under `operators/keystone/internal/controller/`\n\n**Excluded:**\n- Integration/E2E tests (CC-0014, separate feature)\n- TLS certificate management via cert-manager (future feature, YAGNI — `tls` package exists but not requested)\n- Horizontal Pod Autoscaler (not requested, YAGNI)\n- Metrics/monitoring instrumentation beyond controller-runtime defaults (future feature)\n- Federation support in `reconcileConfig` (`FederationSpec` exists in CRD but no reconciler logic requested)\n- Changes to existing shared libraries in `internal/common/` (assumed stable and complete)\n- Changes to CRD types or webhooks (CC-0011, already complete)\n- Deployment strategy configuration (future feature)\n- Old immutable ConfigMap pruning (owner-reference GC handles deletion when Keystone CR is deleted; accumulation during rolling updates is acceptable for initial implementation)\n\n---\n\n## Visualization\n\n### Reconcile Flow — Sub-Reconciler Sequence\n\n```mermaid\nflowchart TD\n    START[\"Reconcile()\"] --> FETCH[\"Fetch Keystone CR\"]\n    FETCH --> SECRETS[\"reconcileSecrets\"]\n    SECRETS -->|SecretsReady=True| DB[\"reconcileDatabase\"]\n    SECRETS -->|SecretsReady=False| REQ1[\"Requeue 15s\"]\n    DB -->|DatabaseReady=True| FERNET[\"reconcileFernetKeys\"]\n    DB -->|DatabaseReady=False| REQ2[\"Requeue 30-60s\"]\n    FERNET -->|FernetKeysReady=True| CONFIG[\"reconcileConfig\"]\n    FERNET -->|FernetKeysReady=False| REQ3[\"Requeue 30s\"]\n    CONFIG --> DEPLOY[\"reconcileDeployment\"]\n    DEPLOY -->|DeploymentReady=True| BOOT[\"reconcileBootstrap\"]\n    DEPLOY -->|DeploymentReady=False| REQ4[\"Requeue 10s\"]\n    BOOT -->|BootstrapReady=True| READY[\"Set Ready=True\"]\n    BOOT -->|BootstrapReady=False| REQ5[\"Requeue 60s\"]\n```\n\n### Owned Resources Architecture\n\n```mermaid\nflowchart LR\n    KS[\"Keystone CR\"] -->|owns| DEP[\"Deployment\"]\n    KS -->|owns| SVC[\"Service\"]\n    KS -->|owns| CM[\"ConfigMap\\n#40;immutable#41;\"]\n    KS -->|owns| DBSYNC[\"Job\\n#40;db-sync#41;\"]\n    KS -->|owns| BOOT[\"Job\\n#40;bootstrap#41;\"]\n    KS -->|owns| CRON[\"CronJob\\n#40;fernet-rotate#41;\"]\n    KS -->|owns| FKEY[\"Secret\\n#40;fernet-keys#41;\"]\n    KS -->|owns| PS[\"PushSecret\"]\n    KS -->|creates| DBCR[\"MariaDB Database CR\"]\n    KS -->|creates| USR[\"MariaDB User CR\"]\n    KS -->|creates| GR[\"MariaDB Grant CR\"]\n    KS -->|watches| SEC[\"Secrets\\n#40;ESO-managed#41;\"]\n```\n\n### Sub-Reconciler to Shared Library Mapping\n\n```mermaid\nflowchart LR\n    subgraph reconciler[\"KeystoneReconciler\"]\n        rSec[\"reconcileSecrets\"]\n        rDB[\"reconcileDatabase\"]\n        rFer[\"reconcileFernetKeys\"]\n        rCfg[\"reconcileConfig\"]\n        rDep[\"reconcileDeployment\"]\n        rBoot[\"reconcileBootstrap\"]\n    end\n\n    subgraph common[\"internal/common\"]\n        secrets[\"secrets\"]\n        database[\"database\"]\n        job[\"job\"]\n        config[\"config\"]\n        deployment[\"deployment\"]\n        conditions[\"conditions\"]\n        plugins[\"plugins\"]\n        policy[\"policy\"]\n    end\n\n    rSec --> secrets\n    rDB --> database\n    rFer --> job\n    rFer --> secrets\n    rCfg --> config\n    rCfg --> plugins\n    rCfg --> policy\n    rDep --> deployment\n    rBoot --> job\n    reconciler --> conditions\n```\n\n### Condition State Progression\n\n```mermaid\nstateDiagram-v2\n    [*] --> SecretsReady: reconcileSecrets\n    SecretsReady --> DatabaseReady: reconcileDatabase\n    DatabaseReady --> FernetKeysReady: reconcileFernetKeys\n    FernetKeysReady --> ConfigGenerated: reconcileConfig\n    ConfigGenerated --> DeploymentReady: reconcileDeployment\n    DeploymentReady --> BootstrapReady: reconcileBootstrap\n    BootstrapReady --> Ready: AllTrue\n    Ready --> [*]\n```\n\n---\n\n## Key Components\n\n- **`KeystoneReconciler` struct** (`operators/keystone/internal/controller/keystone_reconciler.go`): Main reconciler with embedded `client.Client`, `Scheme`, `Recorder` fields. Implements `Reconcile()` orchestrating sub-reconcilers sequentially with early-return on `!result.IsZero() || err != nil`. `SetupWithManager` with For/Owns/Watches declarations. All RBAC markers including `\"\"` group events for EventRecorder.\n- **`reconcileSecrets`** (`reconcile_secrets.go`): Calls `secrets.WaitForExternalSecret` for DB and admin credential ExternalSecrets, then `secrets.IsSecretReady` to verify expected keys. Sets `SecretsReady` condition with `conditions.SetCondition`.\n- **`reconcileDatabase`** (`reconcile_database.go`): Branches on `spec.database.clusterRef` (managed → `database.EnsureDatabase` + `database.EnsureDatabaseUser` which handles User+Grant together) vs `spec.database.host` (brownfield → skip CRs). Runs `database.RunDBSyncJob` in both modes. Handles `job.ErrJobFailed` sentinel for permanent failure. Sets `DatabaseReady`.\n- **`reconcileFernetKeys`** (`reconcile_fernet.go`): Generates initial Fernet keys via `crypto/rand` (32-byte URL-safe base64), creates K8s Secret with owner reference. Ensures rotation CronJob via `job.EnsureCronJob`. Ensures PushSecret via `secrets.EnsurePushSecret`. Sets `FernetKeysReady`.\n- **`reconcileConfig`** (`reconcile_config.go`): Config generation pipeline: base sections from spec → `config.MergeDefaults` → `config.InjectSecrets` → merge `spec.extraConfig` → `plugins.RenderPluginConfig` → `plugins.RenderPastePipelineINI` → `policy.LoadPolicyFromConfigMap` + `policy.MergePolicies` + `policy.RenderPolicyYAML` → `config.InjectOsloPolicyConfig` → `config.RenderINI` → `config.CreateImmutableConfigMap`. Returns `configMapName` to caller for Deployment volume mount. No status condition.\n- **`reconcileDeployment`** (`reconcile_deployment.go`): Builds Deployment spec with `spec.image`, `spec.replicas`, port 5000, probes on `/v3`, volume mounts for immutable ConfigMap + fernet-keys Secret. Calls `deployment.EnsureDeployment` + `deployment.EnsureService`. Sets `status.endpoint`. Sets `DeploymentReady`.\n- **`reconcileBootstrap`** (`reconcile_bootstrap.go`): Builds bootstrap Job spec with `keystone-manage bootstrap` command + admin credentials from `secrets.GetSecretValue`. Uses `job.PodSpecHash` annotation for stale-Job detection. Calls `job.RunJob`. Sets `BootstrapReady`.\n- **`main.go` wiring** (`operators/keystone/main.go`): Register `mariadbv1alpha1`, `esov1beta1`, `esov1alpha1` schemes. Instantiate `KeystoneReconciler` with client/scheme/recorder at scaffold marker, after existing webhook registration.",
   "stories": [
@@ -462,6 +462,7 @@
       "description": "Create operators/keystone/internal/controller/keystone_reconciler.go with: (1) KeystoneReconciler struct embedding client.Client, Scheme *runtime.Scheme, Recorder record.EventRecorder. (2) All RBAC markers per architecture doc. (3) Reconcile() method: fetch Keystone CR via client.IgnoreNotFound, call sub-reconcilers sequentially with early-return on !result.IsZero() || err != nil, aggregate Ready condition via conditions.AllTrue, patch status. (4) SetupWithManager with For(Keystone), Owns(Deployment, Service, ConfigMap, Job, CronJob), Watches(Secret) with handler.EnqueueRequestForOwner. Sub-reconciler methods are stubbed as private methods returning (ctrl.Result, error) that will be implemented in subsequent tasks. Write unit tests for Reconcile orchestration logic (CR not found, sub-reconciler requeue propagation, Ready aggregation).",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-008",
@@ -476,6 +477,7 @@
       "description": "Create operators/keystone/internal/controller/reconcile_secrets.go with reconcileSecrets method. Check DB credentials ExternalSecret via secrets.WaitForExternalSecret(ctx, r.Client, client.ObjectKey{Namespace: keystone.Namespace, Name: keystone.Spec.Database.SecretRef.Name}). Check admin credentials ExternalSecret similarly for spec.bootstrap.adminPasswordSecretRef. Set SecretsReady condition with appropriate Reason/Message. Return RequeueAfter 15s when not ready. Write unit tests with fake client for: DB secret not ready, admin secret not ready, both ready.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -486,6 +488,7 @@
       "description": "Create operators/keystone/internal/controller/reconcile_database.go. Branch on spec.database.clusterRef != nil (managed) vs spec.database.host != '' (brownfield). Managed mode: call database.EnsureDatabase with a constructed mariadbv1alpha1.Database CR, call database.EnsureDatabaseUser with User and Grant CRs. Build MariaDB CRs with correct names (keystone), namespace, and clusterRef. Brownfield mode: skip MariaDB CR creation. Both modes: construct a batchv1.Job for keystone-manage db_sync with the Keystone image, env vars for DB connection, and call database.RunDBSyncJob. Handle job.ErrJobFailed. Set DatabaseReady condition with Reason=WaitingForDatabase/DBSyncInProgress/DatabaseSynced. Write unit tests for managed mode, brownfield mode, db_sync complete, db_sync failed.",
       "level": 1,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -496,6 +499,7 @@
       "description": "Create operators/keystone/internal/controller/reconcile_fernet.go. (1) Check if keystone-fernet-keys Secret exists. If not, generate keys using crypto/rand (32 bytes → base64url encoding) for indices '0' (staging) and '1' (primary), create Secret with owner reference. (2) Construct CronJob with spec.fernet.rotationSchedule, keystone-manage fernet_rotate command using spec.image, writable fernet-keys volume mount. Call job.EnsureCronJob. (3) Construct PushSecret for OpenBao backup of fernet-keys Secret. Call secrets.EnsurePushSecret. Set FernetKeysReady condition. Write unit tests for: initial key generation, existing keys not overwritten, CronJob creation, PushSecret creation.",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -506,6 +510,7 @@
       "description": "Create operators/keystone/internal/controller/reconcile_config.go. Implement the full config generation pipeline: (1) Build base keystone.conf sections from spec (database connection string with {{DB_PASSWORD}} placeholder, cache servers, fernet_tokens max_active_keys, token provider=fernet). (2) Apply config.MergeDefaults with operator defaults (oslo_middleware, DEFAULT log_config, connection_recycle_time). (3) Read DB password via secrets.GetSecretValue, inject via config.InjectSecrets. (4) Merge spec.extraConfig. (5) Render plugin config via plugins.RenderPluginConfig, merge into conf. (6) Render api-paste.ini via plugins.RenderPastePipelineINI with Keystone base pipeline and spec.middleware. (7) If spec.policyOverrides set: load from ConfigMap if configMapRef, merge with inline rules, render YAML, inject oslo_policy config. (8) Call config.CreateImmutableConfigMap. Return (configMapName, ctrl.Result, error). reconcileConfig does NOT set a status condition (synchronous). Write unit tests for config assembly logic.",
       "level": 1,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -516,6 +521,7 @@
       "description": "Create operators/keystone/internal/controller/reconcile_deployment.go. Build Deployment spec: container keystone-api, image from fmt.Sprintf('%s:%s', spec.image.Repository, spec.image.Tag), port 5000, replicas from spec.replicas, readiness probe (HTTPGet /v3 port 5000), liveness probe (HTTPGet /v3 port 5000), volume mounts for config (ConfigMap with configMapName param), fernet-keys (Secret keystone-fernet-keys), credential-keys (Secret keystone-credential-keys). Set owner reference. Call deployment.EnsureDeployment. Build Service spec: port 5000, selector matching Deployment labels. Call deployment.EnsureService. Set status.endpoint. Set DeploymentReady condition. Write unit tests for: Deployment spec construction, Service creation, not-ready requeue, ready state.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-012"
@@ -527,6 +533,7 @@
       "description": "Create operators/keystone/internal/controller/reconcile_bootstrap.go. Build Job spec: keystone-manage bootstrap command with args (--bootstrap-password from env var sourced from admin Secret, --bootstrap-admin-url/internal-url/public-url from service endpoint, --bootstrap-region-id from spec.bootstrap.region). Container uses spec.image, env var BOOTSTRAP_PASSWORD from SecretKeyRef to spec.bootstrap.adminPasswordSecretRef. Call job.RunJob which handles PodSpecHash annotation for stale detection. Set BootstrapReady condition. Write unit tests for: Job spec construction, complete state, running state, failed state.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -537,6 +544,7 @@
       "description": "Modify operators/keystone/main.go: (1) Add imports for mariadbv1alpha1, esov1beta1 (github.com/external-secrets/external-secrets/apis/externalsecrets/v1beta1), esov1alpha1 (github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1), and the new controller package. (2) In init(), add utilruntime.Must calls for mariadbv1alpha1.AddToScheme, esov1beta1.SchemeBuilder.AddToScheme, esov1alpha1.SchemeBuilder.AddToScheme. (3) In SetupFunc, before webhook registration, instantiate KeystoneReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Recorder: mgr.GetEventRecorderFor('keystone-controller')} and call .SetupWithManager(mgr). (4) Run go mod tidy to update dependencies. Verify the operator compiles with go build.",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -547,6 +555,7 @@
       "description": "Create operators/keystone/internal/controller/keystone_reconciler_test.go. Write unit tests using fake client and gomega assertions: (1) TestReconcile_CRNotFound — verify no error returned. (2) TestReconcile_SecretsNotReady — verify early return with requeue, subsequent sub-reconcilers not called. (3) TestReconcile_AllSubReconcilersSucceed — verify Ready=True aggregated condition. (4) TestReconcile_SubReconcilerError — verify error propagation, later sub-reconcilers skipped. (5) TestReconcile_StatusPatchedOnRequeue — verify conditions are patched before returning requeue result. Tests should use dependency injection or test-friendly sub-reconciler invocation to isolate orchestration logic.",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-011"
@@ -558,6 +567,7 @@
       "description": "Add test cases to the sub-reconciler test files for edge cases: (1) reconcile_secrets_test.go: WaitForExternalSecret returns error (API error), verify error propagation. (2) reconcile_database_test.go: EnsureDatabase not ready, EnsureDatabaseUser not ready (user not ready yet means grant not created), RunDBSyncJob API error. (3) reconcile_fernet_test.go: Secret creation API error, EnsureCronJob error, EnsurePushSecret error. (4) reconcile_deployment_test.go: EnsureDeployment API error, EnsureService error. (5) reconcile_bootstrap_test.go: RunJob returns ErrJobFailed sentinel, verify error wrapping.",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-003",
@@ -572,6 +582,7 @@
       "description": "Create docs/reference/keystone-reconciler.md documenting: (1) KeystoneReconciler struct fields and their purposes. (2) Sub-reconciler sequence with condition progression. (3) RBAC permissions summary table. (4) Requeue delay table by sub-reconciler. (5) Owner reference and garbage collection behavior. (6) Config generation pipeline steps. Reference the architecture doc at architecture/docs/09-implementation/04-keystone-reconciler.md for the canonical description.",
       "level": 4,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-013"
@@ -795,6 +806,447 @@
       "story": "Operator deploys Keystone CR through complete reconciliation lifecycle",
       "expected": "When any sub-condition is missing, Ready=False is set",
       "requirement_id": "REQ-011"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_NotFound_ReturnsEmptyResult",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_SetsAllSubConditionsTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_AggregatesReadyCondition",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_ReadyFalseWhenSubConditionMissing",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_StatusUpdatePersisted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_Idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSetupWithManager_RegistersWithoutError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_AllTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_OneFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_MissingCondition",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_Empty",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_BasicManagedDatabaseAndCache",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_BrownfieldDatabase",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_BrownfieldCache",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_PluginConfig",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_ExtraConfigOverridesDefaults",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_PolicyOverridesInlineRules",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_PolicyOverridesConfigMapRef",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_Middleware",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_ConfigMapNameContainsContentHash",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_ImmutableConfigMapWithOwnerReference",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_AllReady_DatabaseSynced",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_DatabaseNotReady_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_UserNotReady_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Brownfield_DBSyncComplete_DatabaseSynced",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_DBSyncRunning_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_DBSyncFailed_ReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_NoSecretCreatesAll",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_SecretAlreadyExists",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_CronJobScheduleUpdated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_GeneratedKeysAreValid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_CronJobScheduleMatchesSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_PushSecretReferencesCorrectSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestGenerateFernetKey_Valid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestGenerateFernetKey_Unique",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_secrets_test.go",
+      "test_function": "TestReconcileSecrets_DBCredentialsNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_secrets_test.go",
+      "test_function": "TestReconcileSecrets_AdminCredentialsNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_secrets_test.go",
+      "test_function": "TestReconcileSecrets_ErrorFetchingExternalSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_EarlyReturnOnSecretsNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_EarlyReturnOnDatabaseNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_SequentialProgression",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_ReadyFalseWhenDeploymentNotAvailable",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_ObservedGenerationTracked",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_StaleJobDetection",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_JobFailed_ConditionMessage",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_JobComplete_ConditionMessageAndGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_JobSpec_TTLAndBackoff",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Brownfield_SkipsMariaDBCRs_CreatesDBSyncJob",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_StaleDBSyncJob_Recreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_ConditionMessages",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_DeploymentAndServiceCreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_NotReady_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_Ready_SetsEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_OwnerReferences",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_NotReady_ConditionMessageAndGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_Ready_ConditionMessageAndGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_ServiceCreatedAlongsideDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_MinActiveKeysFloor",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_ConditionMessages",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_CronJobSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_secrets_test.go",
+      "test_function": "TestReconcileSecrets_DBNotReady_ConditionMessage",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_secrets_test.go",
+      "test_function": "TestReconcileSecrets_AdminNotReady_ConditionMessage",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_secrets_test.go",
+      "test_function": "TestReconcileSecrets_BothNotReady_DBCheckFirst",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],
@@ -828,8 +1280,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-03-10T17:06:43.770345"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-10T18:32:40.696380"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-12T09:23:29.367925"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/56",
+  "pr_number": 56,
   "execution_history": [
     {
       "run_id": "9182ff02-6bc9-4ad4-b3ca-1bf0a778724d",
@@ -841,6 +1303,126 @@
           "name": "prepare",
           "duration": 377.84118700027466,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "6782ad98-a60c-41d6-9c65-6f8cdd91f8d3",
+      "timestamp": "2026-03-10T19:47:51.215087",
+      "total_duration": 4096.973560094833,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (5 tasks)",
+          "duration": 1770.3362278938293,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (2 tasks)",
+          "duration": 990.0729904174805,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (3 tasks)",
+          "duration": 398.1722459793091,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (1 tasks)",
+          "duration": 304.19374775886536,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0013] Code Review",
+          "duration": 312.79410910606384,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0013] Improvements",
+          "duration": 258.14091420173645,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0013] Simplify",
+          "duration": 63.26332473754883,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "672d171a-4288-4d6c-a45d-fdfd3c582089",
+      "timestamp": "2026-03-10T20:42:21.102811",
+      "total_duration": 1943.1686215400696,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 1943.1686215400696,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "3278d501-bdcf-445c-a570-53d57ca8a658",
+      "timestamp": "2026-03-10T21:31:19.758199",
+      "total_duration": 738.6810874938965,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 738.6810874938965,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "ba5a7bcb-18b8-40e8-b343-614f4ffa66b8",
+      "timestamp": "2026-03-10T22:47:49.472465",
+      "total_duration": 2414.2599334716797,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #3",
+          "duration": 2414.2599334716797,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "4a740c90-62c1-43ce-89d0-8c5cb0d3af8a",
+      "timestamp": "2026-03-10T23:07:19.548170",
+      "total_duration": 686.4329957962036,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #4",
+          "duration": 686.4329957962036,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "8af110d5-4713-4780-8c63-71b8f6467135",
+      "timestamp": "2026-03-12T08:57:43.493289",
+      "total_duration": 1263.7656819820404,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #5",
+          "duration": 1263.7656819820404,
+          "type": "review_address",
           "status": "done"
         }
       ]

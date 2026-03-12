@@ -10,8 +10,13 @@ package main
 import (
 	"os"
 
+	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
+	esov1beta1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1beta1"
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
+
 	"github.com/c5c3/forge/internal/common/bootstrap"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	"github.com/c5c3/forge/operators/keystone/internal/controller"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -24,6 +29,9 @@ var scheme = runtime.NewScheme()
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(keystonev1alpha1.AddToScheme(scheme))
+	utilruntime.Must(esov1alpha1.SchemeBuilder.AddToScheme(scheme))
+	utilruntime.Must(esov1beta1.SchemeBuilder.AddToScheme(scheme))
+	utilruntime.Must(mariadbv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -33,6 +41,13 @@ func main() {
 		LeaderElectionID: "keystone.openstack.c5c3.io",
 		SetupFunc: func(mgr ctrl.Manager) error {
 			// +kubebuilder:scaffold:builder — register controllers here
+			if err := (&controller.KeystoneReconciler{
+				Client:   mgr.GetClient(),
+				Scheme:   mgr.GetScheme(),
+				Recorder: mgr.GetEventRecorderFor("keystone-controller"),
+			}).SetupWithManager(mgr); err != nil {
+				return err
+			}
 			if err := (&keystonev1alpha1.KeystoneWebhook{}).SetupWebhookWithManager(mgr); err != nil {
 				return err
 			}

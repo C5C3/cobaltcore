@@ -1,0 +1,104 @@
+{
+  "summary": "Implements the KeystoneReconciler (CC-0013) with 6 sequential sub-reconcilers (secrets, database, fernet keys, config, deployment, bootstrap), main.go wiring with external scheme registration, comprehensive unit tests (47 tests, all passing), and reference documentation. The implementation correctly follows the architecture doc, uses shared libraries from internal/common/, and produces a working reconciliation loop that drives a Keystone CR through all phases to a fully operational state.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Tests exist for all sub-reconcilers", "checked": true},
+    {"item": "Tests pass (47/47)", "checked": true},
+    {"item": "Happy paths tested", "checked": true},
+    {"item": "Error paths tested (API errors, job failures)", "checked": true},
+    {"item": "Edge cases covered (stale jobs, brownfield mode, min keys floor)", "checked": true},
+    {"item": "Sequential progression tested", "checked": true},
+    {"item": "Idempotency tested", "checked": true},
+    {"item": "ObservedGeneration tested", "checked": true},
+    {"item": "Condition messages tested", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "One file per sub-reconciler (REQ-013)", "checked": true},
+    {"item": "Follows existing code patterns in internal/common/", "checked": true},
+    {"item": "SPDX headers on all files", "checked": true},
+    {"item": "Clear naming conventions", "checked": true},
+    {"item": "Error wrapping with context", "checked": true},
+    {"item": "Consistent condition-setting pattern across sub-reconcilers", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "Fernet keys use crypto/rand (secure randomness)", "checked": true},
+    {"item": "DB credentials read from Secrets (not hardcoded)", "checked": true},
+    {"item": "Admin password injected via SecretKeyRef (not plaintext)", "checked": true},
+    {"item": "No command injection risk", "checked": true},
+    {"item": "No path traversal risk", "checked": true},
+    {"item": "Volume mounts are ReadOnly where appropriate", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Sequential sub-reconciler orchestration with early return", "checked": true},
+    {"item": "Ready condition aggregated via conditions.AllTrue (REQ-011)", "checked": true},
+    {"item": "SetupWithManager with For/Owns/Watches (REQ-008)", "checked": true},
+    {"item": "Owner references set via SetControllerReference (REQ-012)", "checked": true},
+    {"item": "main.go registers external schemes and instantiates reconciler (REQ-009)", "checked": true},
+    {"item": "Managed vs brownfield branching correct (REQ-003)", "checked": true},
+    {"item": "Config pipeline follows documented sequence (REQ-005)", "checked": true},
+    {"item": "RBAC markers cover all required resource groups (REQ-010)", "checked": false}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code across sub-reconcilers", "checked": true},
+    {"item": "Shared libraries used for K8s interactions", "checked": true},
+    {"item": "No over-engineered abstractions", "checked": true},
+    {"item": "No unused code paths", "checked": false}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors returned immediately on API failures", "checked": true},
+    {"item": "Sub-reconcilers gate on predecessor success", "checked": true},
+    {"item": "Conditions set before early returns", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "CR not-found handled gracefully", "checked": true},
+    {"item": "Fernet key count floored at 3", "checked": true},
+    {"item": "DB port defaults to 3306 when not set", "checked": true},
+    {"item": "Status persisted before returning requeue", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [
+    {
+      "severity": "MINOR",
+      "check_id": "Q7",
+      "description": "Recorder field (events.EventRecorder) is declared on KeystoneReconciler struct and initialized in main.go and all tests, but is never called in any production code. This is dead code. The corresponding RBAC marker for events (groups=core,resources=events) is also missing, which would cause runtime failures if someone attempts to use the Recorder without adding the RBAC marker first.",
+      "location": "operators/keystone/internal/controller/keystone_controller.go:42",
+      "fix": "Either (a) remove the Recorder field and all initializations if events are not planned for the initial implementation, or (b) add at least one event emission (e.g., on Ready=True or on error) and add the missing RBAC marker: +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch"
+    }
+  ],
+  "issues_found": [
+    {
+      "id": "PC3-1",
+      "severity": "blocking",
+      "check_id": "PC3",
+      "description": "reconcileSecrets does NOT set ObservedGeneration on any of its 3 condition-setting calls (lines 33, 49, 58). All other sub-reconcilers (reconcileDatabase, reconcileFernetKeys, reconcileDeployment, reconcileBootstrap) consistently set ObservedGeneration: keystone.Generation on every condition. This is a pattern inconsistency — the same concept (setting conditions) is implemented differently in one file vs all others.",
+      "location": "operators/keystone/internal/controller/reconcile_secrets.go:33-62",
+      "fix": "Add ObservedGeneration: keystone.Generation to all 3 metav1.Condition literals in reconcileSecrets: lines 33-38 (WaitingForDBCredentials), lines 49-55 (WaitingForAdminCredentials), and lines 58-62 (SecretsAvailable)."
+    }
+  ],
+  "suggested_improvements": [
+    "Consider URL-encoding the database username and password when building the connection string in reconcileConfig (reconcile_config.go:81-82). Special characters in credentials (e.g., @, :, /) could break the PyMySQL connection URL. Use net/url.PathEscape or a dedicated connection string builder."
+  ],
+  "next_steps": [
+    "Fix PC3-1: Add ObservedGeneration to all conditions in reconcileSecrets",
+    "Decide whether to keep or remove the unused Recorder field (Q7 finding)"
+  ],
+  "detected_patterns": [
+    {
+      "name": "Sub-reconciler condition contract with ObservedGeneration",
+      "component": "operators/keystone/internal/controller",
+      "category": "service-structure",
+      "applies_when": "Setting status conditions in any sub-reconciler method of a KeystoneReconciler (or future operator reconcilers following the same pattern)",
+      "description": "Every sub-reconciler sets conditions via conditions.SetCondition with all 5 fields: Type (string matching the sub-reconciler's responsibility, e.g. 'DatabaseReady'), Status (metav1.ConditionTrue/False), ObservedGeneration (keystone.Generation), Reason (CamelCase action state, e.g. 'WaitingForDatabase'), and Message (human-readable description). The ObservedGeneration field MUST be set on every condition to track which CR generation the condition reflects. On requeue, the condition is set to False with an appropriate Reason before returning. On success, the condition is set to True.",
+      "examples": [
+        {
+          "location": "operators/keystone/internal/controller/reconcile_database.go:42-49",
+          "code": "conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{\n\tType:               \"DatabaseReady\",\n\tStatus:             metav1.ConditionFalse,\n\tObservedGeneration: keystone.Generation,\n\tReason:             \"WaitingForDatabase\",\n\tMessage:            \"MariaDB Database CR is not ready\",\n})"
+        },
+        {
+          "location": "operators/keystone/internal/controller/reconcile_bootstrap.go:53-59",
+          "code": "conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{\n\tType:               \"BootstrapReady\",\n\tStatus:             metav1.ConditionTrue,\n\tObservedGeneration: keystone.Generation,\n\tReason:             \"BootstrapComplete\",\n\tMessage:            \"Keystone bootstrap completed successfully\",\n})"
+        }
+      ]
+    }
+  ]
+}
