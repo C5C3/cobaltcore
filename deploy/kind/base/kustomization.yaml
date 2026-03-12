@@ -4,7 +4,8 @@
 
 # Kustomize overlay for kind cluster base deployments.
 # References the flux-system base infrastructure manifests and patches
-# OpenBao for standalone mode (single replica, no HA, standard storage).
+# OpenBao for single-node Raft mode (1 replica, HA enabled for Raft
+# storage rendering, no retry_join peers, standard storage class).
 # Feature: CC-0010
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -14,8 +15,9 @@ resources:
   - ../../flux-system/
 
 patches:
-  # OpenBao: standalone mode for kind (1 replica, HA disabled, standard
-  # storage class, no retry_join peers).
+  # OpenBao: single-node Raft for kind (ha.enabled=true so the Helm chart
+  # renders ha.raft.config; replicas=1 with no retry_join peers).
+  # See: review #1 — ha.raft.config is ignored when ha.enabled=false.
   - target:
       kind: HelmRelease
       name: openbao
@@ -30,7 +32,7 @@ patches:
         values:
           server:
             ha:
-              enabled: false
+              enabled: true
               replicas: 1
               raft:
                 enabled: true

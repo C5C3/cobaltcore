@@ -75,6 +75,13 @@ wait_for_helmreleases() {
 #   $1 — namespace
 #   $2 — label selector (e.g. app.kubernetes.io/name=openbao)
 #   $3 — timeout (e.g. 300s)
+#
+# NOTE: The effective maximum wait can be up to 2x the configured timeout.
+# The pod-existence polling loop uses the full timeout to wait for pods to
+# appear, and then kubectl wait uses the full timeout again to wait for
+# the Ready condition. This is intentional — the CI job timeout (40 min)
+# provides the outer bound, and script-level timeouts are designed to fire
+# and produce diagnostics before the CI runner is killed (CC-0010).
 # ---------------------------------------------------------------------------
 wait_for_pods() {
   local namespace="$1"
@@ -82,6 +89,20 @@ wait_for_pods() {
   local timeout="$3"
 
   log "Waiting for pods (namespace=${namespace}, selector=${selector}, timeout=${timeout}) ..."
+
+  # Wait until at least one pod exists before handing off to kubectl wait.
+  # kubectl wait exits immediately with an error when no pods match the
+  # selector, which races with async pod scheduling (review #1, CC-0010).
+  local timeout_secs="${timeout%s}"
+  local deadline=$(( $(date +%s) + timeout_secs ))
+  until kubectl get pods -l "${selector}" -n "${namespace}" --no-headers 2>/dev/null | grep -q .; do
+    if [[ $(date +%s) -ge ${deadline} ]]; then
+      log "ERROR: Timed out waiting for pods to appear (namespace=${namespace}, selector=${selector})."
+      return 1
+    fi
+    sleep 5
+  done
+
   kubectl wait --for=condition=Ready pod \
     -l "${selector}" \
     -n "${namespace}" \
@@ -170,14 +191,8 @@ preflight() {
 main() {
   log "=== Infrastructure Deployment — cluster: ${CLUSTER_NAME} ==="
 
-  # --- Pre-flight ----------------------------------------------------------
-  local cluster_exists=false
-  if ! preflight; then
-    cluster_exists=true
-  fi
-
-  # --- Step 1: Create kind cluster ----------------------------------------
-  if [[ "${cluster_exists}" == "false" ]]; then
+  # --- Pre-flight + Step 1: Create kind cluster ----------------------------
+  if preflight; then
     log "[Step 1/8] Creating kind cluster '${CLUSTER_NAME}' ..."
     kind create cluster --name "${CLUSTER_NAME}" --config "${REPO_ROOT}/hack/kind-config.yaml"
     log "kind cluster '${CLUSTER_NAME}' created."
@@ -214,7 +229,7 @@ main() {
   local bootstrap_dir="${REPO_ROOT}/deploy/openbao/bootstrap"
 
   # 7a. Init and unseal.
-  # kind overlay uses standalone mode (1 replica) — override the default
+  # kind overlay uses single-node Raft mode (1 replica) — override the default
   # 3-replica PODS array in init-unseal.sh (CC-0010).
   export OPENBAO_PODS="openbao-0"
   log "  Running init-unseal.sh ..."

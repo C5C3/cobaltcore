@@ -68,7 +68,7 @@ Step 2: flux install
   ▼
 Step 3: kubectl apply -k deploy/kind/base
   │     Applies namespaces, HelmRepository sources, and HelmRelease operators
-  │     (with kind-specific OpenBao patches for standalone mode).
+  │     (with kind-specific OpenBao patches for single-node Raft mode).
   ▼
 Step 4: Wait for HelmReleases Ready
   │     Polls all HelmReleases across all namespaces until every one has
@@ -144,7 +144,7 @@ that ship to production, with only resource sizing differences.
 deploy/
 ├── kind/
 │   ├── base/
-│   │   └── kustomization.yaml          Patches OpenBao for standalone mode
+│   │   └── kustomization.yaml          Patches OpenBao for single-node Raft mode
 │   └── infrastructure/
 │       └── kustomization.yaml          Patches MariaDB and Memcached for single replica
 └── flux-system/                        (production base — referenced by kind overlays)
@@ -157,19 +157,20 @@ deploy/
 
 **Base reference:** `../../flux-system/` (production manifests)
 
-Patches the OpenBao HelmRelease for standalone mode:
+Patches the OpenBao HelmRelease for single-node Raft mode:
 
 | Setting | Production | Kind Overlay |
 | --- | --- | --- |
-| `server.ha.enabled` | `true` | `false` |
+| `server.ha.enabled` | `true` | `true` |
 | `server.ha.replicas` | `3` | `1` |
-| Raft `retry_join` peers | 3 peers configured | Removed (standalone node) |
+| `server.ha.raft.config` | Includes `retry_join` peers | Single-node (no `retry_join`) |
 | `dataStorage.storageClass` | `local-path` | `standard` |
 
-The Raft configuration in the kind overlay omits `retry_join` stanzas entirely.
-A standalone Raft node bootstraps automatically without peer discovery. Including
-`retry_join` on a single node would cause the node to fail waiting for peers that
-do not exist.
+HA mode remains enabled (`ha.enabled: true`) so the Helm chart renders the
+`ha.raft.config` stanza. With `ha.enabled: false`, the chart silently falls back
+to `standalone.config`, ignoring any custom Raft configuration. The kind overlay
+omits `retry_join` stanzas — a single Raft node bootstraps automatically without
+peer discovery.
 
 ### Infrastructure Overlay (`deploy/kind/infrastructure/`)
 
@@ -192,7 +193,7 @@ a single-node kind cluster without modification.
 ### Validating Overlays
 
 ```bash
-# Render base overlay (should show OpenBao with ha.enabled: false)
+# Render base overlay (should show OpenBao with ha.enabled: true, replicas: 1)
 kustomize build deploy/kind/base/
 
 # Render infrastructure overlay (should show MariaDB replicas: 1)
@@ -284,9 +285,16 @@ for strict error handling. All log messages are ISO 8601 UTC timestamped.
 | --- | --- |
 | `log()` | Print timestamped log message |
 | `wait_for_helmreleases()` | Poll HelmReleases until all Ready or timeout |
-| `wait_for_pods()` | Wait for pods matching a label selector to become Ready |
+| `wait_for_pods()` | Poll for pod existence, then wait for Ready condition (see note below) |
 | `wait_for_externalsecrets()` | Poll ExternalSecrets until all synced or timeout |
 | `preflight()` | Verify Docker is running and check for existing cluster |
+
+**`wait_for_pods` timeout behavior:** The function first polls until at least one pod
+matching the label selector exists, then hands off to `kubectl wait --for=condition=Ready`.
+Both phases use the full configured timeout independently, so the effective maximum wait
+can be up to 2x the configured value (e.g., 600s for a 300s timeout). This is intentional —
+the CI job timeout (40 min) provides the outer bound, while script-level timeouts produce
+diagnostics before the runner is killed.
 
 **Exit codes:**
 
@@ -345,7 +353,7 @@ push to `main` and on every pull request. It runs independently of the `lint` an
 | Setting | Value |
 | --- | --- |
 | `runs-on` | `ubuntu-latest` |
-| `timeout-minutes` | `20` |
+| `timeout-minutes` | `40` |
 | `permissions` | `contents: read` |
 
 ### Steps
