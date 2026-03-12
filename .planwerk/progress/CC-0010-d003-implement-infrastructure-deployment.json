@@ -421,6 +421,7 @@
       "title": "Create kind cluster config `hack/kind-config.yaml` — single control-plane node with standard settings for CI runners (REQ-010, REQ-011)",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-010",
         "REQ-011"
@@ -431,6 +432,7 @@
       "title": "Create kustomize overlay `deploy/kind/base/kustomization.yaml` — references `../../flux-system/`, adds strategic merge patch for OpenBao HelmRelease (standalone mode: 1 replica, HA disabled, standalone Raft config without retry_join peers, `standard` storage class). Validate with `kustomize build deploy/kind/base/` (REQ-003)",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -440,6 +442,7 @@
       "title": "Create kustomize overlay `deploy/kind/infrastructure/kustomization.yaml` — references `../../flux-system/infrastructure/`, adds strategic merge patches for MariaDB CR (1 replica, Galera disabled, MaxScale disabled, `standard` storage class) and Memcached CR (1 replica). Validate with `kustomize build deploy/kind/infrastructure/` (REQ-003)",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]

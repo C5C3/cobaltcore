@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Kustomize overlay for kind cluster base deployments.
+# References the flux-system base infrastructure manifests and patches
+# OpenBao for standalone mode (single replica, no HA, standard storage).
+# Feature: CC-0010
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../flux-system/
+
+patches:
+  # OpenBao: standalone mode for kind (1 replica, HA disabled, standard
+  # storage class, no retry_join peers).
+  - target:
+      kind: HelmRelease
+      name: openbao
+      namespace: openbao-system
+    patch: |
+      apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: openbao
+        namespace: openbao-system
+      spec:
+        values:
+          server:
+            ha:
+              enabled: false
+              replicas: 1
+              raft:
+                enabled: true
+                config: |
+                  ui = false
+
+                  listener "tcp" {
+                    tls_disable     = 0
+                    address         = "[::]:8200"
+                    cluster_address = "[::]:8201"
+                    tls_cert_file   = "/openbao/tls/tls.crt"
+                    tls_key_file    = "/openbao/tls/tls.key"
+                  }
+
+                  storage "raft" {
+                    path = "/openbao/data"
+                  }
+
+                  service_registration "kubernetes" {}
+            dataStorage:
+              storageClass: standard
