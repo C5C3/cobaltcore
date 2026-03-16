@@ -124,7 +124,7 @@ spec:
                 type: object
                 x-kubernetes-validations:
                 - message: exactly one of clusterRef or servers must be set
-                  rule: (self.clusterRef != null) != (has(self.servers) && size(self.servers)
+                  rule: has(self.clusterRef) != (has(self.servers) && size(self.servers)
                     > 0)
               database:
                 description: |-

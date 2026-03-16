@@ -12,6 +12,8 @@ import (
 
 	esov1beta1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1beta1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
+	"github.com/c5c3/forge/internal/common/deployment"
+	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -39,6 +41,7 @@ func newScheme() *runtime.Scheme {
 	_ = corev1.AddToScheme(s)
 	_ = batchv1.AddToScheme(s)
 	_ = mariadbv1alpha1.AddToScheme(s)
+	_ = appsv1.AddToScheme(s)
 	_ = esov1beta1.AddToScheme(s)
 	return s
 }
@@ -328,10 +331,15 @@ func TestSimulateJobComplete(t *testing.T) {
 	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(job), updated)).To(Succeed())
 
 	g.Expect(updated.Status.Succeeded).To(BeEquivalentTo(1))
+	g.Expect(updated.Status.StartTime).NotTo(BeNil())
 	g.Expect(updated.Status.CompletionTime).NotTo(BeNil())
-	g.Expect(updated.Status.Conditions).To(HaveLen(1))
+	g.Expect(updated.Status.Conditions).To(HaveLen(2))
 
-	cond := updated.Status.Conditions[0]
+	// SuccessCriteriaMet must come before Complete (K8s 1.35 requirement).
+	g.Expect(updated.Status.Conditions[0].Type).To(Equal(batchv1.JobSuccessCriteriaMet))
+	g.Expect(updated.Status.Conditions[0].Status).To(Equal(corev1.ConditionTrue))
+
+	cond := updated.Status.Conditions[1]
 	g.Expect(cond.Type).To(Equal(batchv1.JobComplete))
 	g.Expect(cond.Status).To(Equal(corev1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal("Completed"))
@@ -362,7 +370,7 @@ func TestSimulateJobComplete_idempotent(t *testing.T) {
 	updated := &batchv1.Job{}
 	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
 
-	g.Expect(updated.Status.Conditions).To(HaveLen(1), "expected exactly 1 condition after two calls")
+	g.Expect(updated.Status.Conditions).To(HaveLen(2), "expected exactly 2 conditions after two calls")
 }
 
 func TestSimulateJobComplete_notFound(t *testing.T) {
@@ -375,4 +383,140 @@ func TestSimulateJobComplete_notFound(t *testing.T) {
 	key := client.ObjectKey{Name: "missing", Namespace: "default"}
 	err := SimulateJobComplete(context.Background(), c, key)
 	g.Expect(err).To(HaveOccurred())
+}
+
+// Feature: CC-0014
+
+// --- SimulateDeploymentReady ---
+
+func TestSimulateDeploymentReady(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-deploy",
+			Namespace:  "default",
+			Generation: 1,
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(newScheme()).
+		WithObjects(deploy).
+		WithStatusSubresource(deploy).
+		Build()
+
+	err := SimulateDeploymentReady(context.Background(), c, client.ObjectKeyFromObject(deploy), 3)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	updated := &appsv1.Deployment{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(deploy), updated)).To(Succeed())
+
+	g.Expect(updated.Status.ReadyReplicas).To(BeEquivalentTo(3))
+	g.Expect(updated.Status.AvailableReplicas).To(BeEquivalentTo(3))
+	g.Expect(updated.Status.Replicas).To(BeEquivalentTo(3))
+	g.Expect(updated.Status.UpdatedReplicas).To(BeEquivalentTo(3))
+	g.Expect(updated.Status.ObservedGeneration).To(Equal(int64(1)))
+	g.Expect(updated.Status.Conditions).To(HaveLen(2))
+
+	progressingCond := updated.Status.Conditions[0]
+	g.Expect(progressingCond.Type).To(Equal(appsv1.DeploymentProgressing))
+	g.Expect(progressingCond.Status).To(Equal(corev1.ConditionTrue))
+	g.Expect(progressingCond.Reason).To(Equal("NewReplicaSetAvailable"))
+
+	availableCond := updated.Status.Conditions[1]
+	g.Expect(availableCond.Type).To(Equal(appsv1.DeploymentAvailable))
+	g.Expect(availableCond.Status).To(Equal(corev1.ConditionTrue))
+	g.Expect(availableCond.Reason).To(Equal("MinimumReplicasAvailable"))
+}
+
+func TestSimulateDeploymentReady_idempotent(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-deploy",
+			Namespace:  "default",
+			Generation: 1,
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(newScheme()).
+		WithObjects(deploy).
+		WithStatusSubresource(deploy).
+		Build()
+
+	ctx := context.Background()
+	key := client.ObjectKeyFromObject(deploy)
+
+	g.Expect(SimulateDeploymentReady(ctx, c, key, 3)).To(Succeed())
+	g.Expect(SimulateDeploymentReady(ctx, c, key, 3)).To(Succeed())
+
+	updated := &appsv1.Deployment{}
+	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
+
+	g.Expect(updated.Status.Conditions).To(HaveLen(2), "expected exactly 2 conditions after two calls")
+}
+
+func TestSimulateDeploymentReady_notFound(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	c := fake.NewClientBuilder().
+		WithScheme(newScheme()).
+		Build()
+
+	key := client.ObjectKey{Name: "missing", Namespace: "default"}
+	err := SimulateDeploymentReady(context.Background(), c, key, 3)
+	g.Expect(err).To(HaveOccurred())
+}
+
+func TestSimulateDeploymentReady_IsDeploymentReadyReturnsTrue(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-deploy",
+			Namespace:  "default",
+			Generation: 1,
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(newScheme()).
+		WithObjects(deploy).
+		WithStatusSubresource(deploy).
+		Build()
+
+	err := SimulateDeploymentReady(context.Background(), c, client.ObjectKeyFromObject(deploy), 3)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	updated := &appsv1.Deployment{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(deploy), updated)).To(Succeed())
+
+	g.Expect(deployment.IsDeploymentReady(updated)).To(BeTrue())
+}
+
+func TestSimulateDeploymentReady_zeroReplicas(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-deploy",
+			Namespace:  "default",
+			Generation: 1,
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(newScheme()).
+		WithObjects(deploy).
+		WithStatusSubresource(deploy).
+		Build()
+
+	g.Expect(SimulateDeploymentReady(context.Background(), c, client.ObjectKeyFromObject(deploy), 0)).To(Succeed())
+
+	updated := &appsv1.Deployment{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(deploy), updated)).To(Succeed())
+	g.Expect(updated.Status.ReadyReplicas).To(BeEquivalentTo(0))
 }

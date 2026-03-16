@@ -50,7 +50,7 @@ type KeystoneSpec struct {
 
 	// Cache defines the Memcached cache configuration.
 	// Supports managed (clusterRef) and brownfield (servers) modes.
-	// +kubebuilder:validation:XValidation:rule="(self.clusterRef != null) != (has(self.servers) && size(self.servers) > 0)",message="exactly one of clusterRef or servers must be set"
+	// +kubebuilder:validation:XValidation:rule="has(self.clusterRef) != (has(self.servers) && size(self.servers) > 0)",message="exactly one of clusterRef or servers must be set"
 	Cache commonv1.CacheSpec `json:"cache"`
 
 	// Fernet configures Fernet key rotation.

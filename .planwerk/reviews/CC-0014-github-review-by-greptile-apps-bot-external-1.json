@@ -1,0 +1,55 @@
+{
+  "feature_id": "CC-0014",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer requests three changes: (1) Add a `Progressing=True` condition alongside the existing `Available=True` condition in `SimulateDeploymentReady` to better match real Kubernetes deployment controller behavior. (2) Replace the manual string length-guard and slice-based prefix check with `strings.HasPrefix` in the integration test. (3) Add a `TestSimulateDeploymentReady_zeroReplicas` test case to cover the zero-replicas edge case, mirroring the existing `TestSimulateMariaDBReady_zeroReplicas`.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-12T14:49:44Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**Missing `Progressing` condition in `SimulateDeploymentReady`**\n\nThe function only sets the `Available=True` condition, but a real Kubernetes deployment controller also sets `Progressing=True (reason: NewReplicaSetAvailable)` when a rollout completes. The current `IsDeploymentReady` implementation only checks for `Available=True` and `ReadyReplicas`, so tests pass today — but if `IsDeploymentReady` is ever updated to also guard on `Progressing`, every integration test that calls `SimulateDeploymentReady` would silently fail.\n\nFor better production fidelity and resilience against future changes, add the `Progressing` condition alongside `Available`:\n\n```suggestion\n\tdeploy.Status.ReadyReplicas = replicas\n\tdeploy.Status.AvailableReplicas = replicas\n\tdeploy.Status.Replicas = replicas\n\tdeploy.Status.UpdatedReplicas = replicas\n\tdeploy.Status.ObservedGeneration = deploy.Generation\n\tdeploy.Status.Conditions = []appsv1.DeploymentCondition{\n\t\t{\n\t\t\tType:               appsv1.DeploymentProgressing,\n\t\t\tStatus:             corev1.ConditionTrue,\n\t\t\tReason:             \"NewReplicaSetAvailable\",\n\t\t\tMessage:            \"ReplicaSet has successfully progressed\",\n\t\t\tLastTransitionTime: metav1.Now(),\n\t\t},\n\t\t{\n\t\t\tType:               appsv1.DeploymentAvailable,\n\t\t\tStatus:             corev1.ConditionTrue,\n\t\t\tReason:             \"MinimumReplicasAvailable\",\n\t\t\tMessage:            \"Deployment has minimum availability\",\n\t\t\tLastTransitionTime: metav1.Now(),\n\t\t},\n\t}\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: internal/common/testutil/simulators/simulators.go\nLine: 286-300\n\nComment:\n**Missing `Progressing` condition in `SimulateDeploymentReady`**\n\nThe function only sets the `Available=True` condition, but a real Kubernetes deployment controller also sets `Progressing=True (reason: NewReplicaSetAvailable)` when a rollout completes. The current `IsDeploymentReady` implementation only checks for `Available=True` and `ReadyReplicas`, so tests pass today — but if `IsDeploymentReady` is ever updated to also guard on `Progressing`, every integration test that calls `SimulateDeploymentReady` would silently fail.\n\nFor better production fidelity and resilience against future changes, add the `Progressing` condition alongside `Available`:\n\n```suggestion\n\tdeploy.Status.ReadyReplicas = replicas\n\tdeploy.Status.AvailableReplicas = replicas\n\tdeploy.Status.Replicas = replicas\n\tdeploy.Status.UpdatedReplicas = replicas\n\tdeploy.Status.ObservedGeneration = deploy.Generation\n\tdeploy.Status.Conditions = []appsv1.DeploymentCondition{\n\t\t{\n\t\t\tType:               appsv1.DeploymentProgressing,\n\t\t\tStatus:             corev1.ConditionTrue,\n\t\t\tReason:             \"NewReplicaSetAvailable\",\n\t\t\tMessage:            \"ReplicaSet has successfully progressed\",\n\t\t\tLastTransitionTime: metav1.Now(),\n\t\t},\n\t\t{\n\t\t\tType:               appsv1.DeploymentAvailable,\n\t\t\tStatus:             corev1.ConditionTrue,\n\t\t\tReason:             \"MinimumReplicasAvailable\",\n\t\t\tMessage:            \"Deployment has minimum availability\",\n\t\t\tLastTransitionTime: metav1.Now(),\n\t\t},\n\t}\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "internal/common/testutil/simulators/simulators.go",
+      "line": 300,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-12T14:49:41Z",
+      "id": null,
+      "resolution": "SimulateDeploymentReady now includes both the DeploymentProgressing (Reason: NewReplicaSetAvailable) and DeploymentAvailable conditions in its status, exactly matching the reviewer's suggested code block (simulators.go:291-306)."
+    },
+    {
+      "body": "**Manual string-prefix check is error-prone; use `strings.HasPrefix`**\n\nThe length-guard + manual slice approach is harder to read and could silently mismatch if the prefix constant is ever updated out of sync with the slice index:\n\n```suggestion\n\tfor _, cm := range configMaps.Items {\n\t\tif strings.HasPrefix(cm.Name, \"test-keystone-config-\") {\n\t\t\tfoundConfigMap = true\n\t\t\tg.Expect(cm.Immutable).NotTo(BeNil(), \"ConfigMap should be immutable\")\n\t\t\tg.Expect(*cm.Immutable).To(BeTrue(), \"ConfigMap should be immutable\")\n\t\t\tbreak\n\t\t}\n\t}\n```\n\nThis also requires adding `\"strings\"` to the import block.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: operators/keystone/internal/controller/integration_test.go\nLine: 482-489\n\nComment:\n**Manual string-prefix check is error-prone; use `strings.HasPrefix`**\n\nThe length-guard + manual slice approach is harder to read and could silently mismatch if the prefix constant is ever updated out of sync with the slice index:\n\n```suggestion\n\tfor _, cm := range configMaps.Items {\n\t\tif strings.HasPrefix(cm.Name, \"test-keystone-config-\") {\n\t\t\tfoundConfigMap = true\n\t\t\tg.Expect(cm.Immutable).NotTo(BeNil(), \"ConfigMap should be immutable\")\n\t\t\tg.Expect(*cm.Immutable).To(BeTrue(), \"ConfigMap should be immutable\")\n\t\t\tbreak\n\t\t}\n\t}\n```\n\nThis also requires adding `\"strings\"` to the import block.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "operators/keystone/internal/controller/integration_test.go",
+      "line": 489,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-12T14:49:42Z",
+      "id": null,
+      "resolution": "The manual length-guard + slice prefix check was replaced with strings.HasPrefix(cm.Name, \"test-keystone-config-\") in integration_test.go:484, and the \"strings\" import was added to the file's import block (line 13)."
+    },
+    {
+      "body": "**Missing zero-replicas test for `SimulateDeploymentReady`**\n\n`TestSimulateMariaDBReady_zeroReplicas` exists for `SimulateMariaDBReady`, which ensures the zero-replica edge case is handled. `SimulateDeploymentReady` doesn't have an equivalent. This matters because `IsDeploymentReady` compares `ReadyReplicas < desired` — passing `replicas=0` while `spec.Replicas=3` would make `IsDeploymentReady` return `false`, which could silently confuse callers.\n\nA minimal companion test:\n\n```go\nfunc TestSimulateDeploymentReady_zeroReplicas(t *testing.T) {\n    g := NewGomegaWithT(t)\n    deploy := &appsv1.Deployment{\n        ObjectMeta: metav1.ObjectMeta{Name: \"test-deploy\", Namespace: \"default\", Generation: 1},\n    }\n    c := fake.NewClientBuilder().WithScheme(newScheme()).\n        WithObjects(deploy).WithStatusSubresource(deploy).Build()\n    g.Expect(SimulateDeploymentReady(context.Background(), c, client.ObjectKeyFromObject(deploy), 0)).To(Succeed())\n    updated := &appsv1.Deployment{}\n    g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(deploy), updated)).To(Succeed())\n    g.Expect(updated.Status.ReadyReplicas).To(BeEquivalentTo(0))\n}\n```\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: internal/common/testutil/simulators/simulators_test.go\nLine: 469-493\n\nComment:\n**Missing zero-replicas test for `SimulateDeploymentReady`**\n\n`TestSimulateMariaDBReady_zeroReplicas` exists for `SimulateMariaDBReady`, which ensures the zero-replica edge case is handled. `SimulateDeploymentReady` doesn't have an equivalent. This matters because `IsDeploymentReady` compares `ReadyReplicas < desired` — passing `replicas=0` while `spec.Replicas=3` would make `IsDeploymentReady` return `false`, which could silently confuse callers.\n\nA minimal companion test:\n\n```go\nfunc TestSimulateDeploymentReady_zeroReplicas(t *testing.T) {\n    g := NewGomegaWithT(t)\n    deploy := &appsv1.Deployment{\n        ObjectMeta: metav1.ObjectMeta{Name: \"test-deploy\", Namespace: \"default\", Generation: 1},\n    }\n    c := fake.NewClientBuilder().WithScheme(newScheme()).\n        WithObjects(deploy).WithStatusSubresource(deploy).Build()\n    g.Expect(SimulateDeploymentReady(context.Background(), c, client.ObjectKeyFromObject(deploy), 0)).To(Succeed())\n    updated := &appsv1.Deployment{}\n    g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(deploy), updated)).To(Succeed())\n    g.Expect(updated.Status.ReadyReplicas).To(BeEquivalentTo(0))\n}\n```\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "internal/common/testutil/simulators/simulators_test.go",
+      "line": 493,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-12T14:49:43Z",
+      "id": null,
+      "resolution": "TestSimulateDeploymentReady_zeroReplicas was added at simulators_test.go:500-522, matching the reviewer's suggested test: it creates a Deployment, calls SimulateDeploymentReady with replicas=0, and asserts ReadyReplicas is 0."
+    }
+  ],
+  "resolution_summary": "All three review comments were addressed exactly as suggested. Comment [0] added the Progressing condition to SimulateDeploymentReady, comment [1] replaced the manual string-prefix check with strings.HasPrefix (plus the \"strings\" import), and comment [2] added the TestSimulateDeploymentReady_zeroReplicas test. Additionally, SimulateJobComplete in simulators.go was enhanced with a StartTime field and a JobSuccessCriteriaMet condition — this follows the same production-fidelity pattern from comment [0] (adding missing conditions that a real Kubernetes controller sets) applied to an existing simulator in the same file.",
+  "github_review_id": 3937262209
+}

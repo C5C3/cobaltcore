@@ -2,8 +2,8 @@
   "feature_id": "CC-0014",
   "title": "F002: Add Keystone reconciler integration tests",
   "slug": "f002-add-keystone-reconciler-integration-tests",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 🏗️ large\n**Category:** backend\n**Priority:** high\n**Feature ID:** CC-0014 (S014 in PLAN.md)\n\n## Summary\n\nAdd envtest integration tests (CC-0014) for the Keystone reconciler exercising the full reconciliation loop against a real API server with etcd. Tests create prerequisite Secrets simulating ESO sync, create a Keystone CR, then drive condition progression through SecretsReady → FernetKeysReady → (ConfigMap created) → DatabaseReady → DeploymentReady → BootstrapReady → Ready by simulating external dependencies (MariaDB readiness, Job completion, Deployment availability). They verify correct creation of all child resources (Deployment, Service, ConfigMap, Jobs, CronJob, Secret, RBAC, PushSecret) and that `status.endpoint` and `status.conditions` (including ObservedGeneration) are populated correctly. Both brownfield and managed database modes are covered.\n\n## Scope\n\n**Included:**\n- New integration test file `operators/keystone/internal/controller/integration_test.go` with `//go:build integration` tag\n- Full reconciliation loop test (brownfield mode): create prereqs → create CR → manager-driven reconcile → verify all 6 conditions reach True\n- Full reconciliation loop test (managed mode): same flow but with `spec.database.clusterRef` + MariaDB CR simulation via `SimulateDatabaseReady`, `SimulateUserReady`, `SimulateGrantReady`\n- Condition progression test: verify each sub-condition transitions False→True in reconciliation order, later conditions remain absent/False until predecessors are satisfied\n- Resource creation verification: assert Deployment (`{name}-api`), Service (`{name}-api`), ConfigMap (immutable, `{name}-config-{hash}`), Jobs (`{name}-db-sync`, `{name}-bootstrap`), CronJob (`{name}-fernet-rotate`), Secret (`{name}-fernet-keys`), ServiceAccount (`{name}-fernet-rotate`), Role (`{name}-fernet-rotate`), RoleBinding (`{name}-fernet-rotate`), PushSecret (`{name}-fernet-keys-backup`) exist after full reconciliation\n- Status field verification: `status.endpoint` matches `http://{name}-api.{namespace}.svc.cluster.local:5000/v3`, `status.conditions` ObservedGeneration matches CR Generation\n- `SimulateDeploymentReady` function in shared simulators package (`internal/common/testutil/simulators/simulators.go`)\n- New `SetupKeystoneEnvTestWithController` helper in `operators/keystone/internal/testutil/envtest_setup.go` that registers the `KeystoneReconciler` via `SetupWithManager` alongside CRDs and webhooks; must also install fake CRDs for MariaDB, ESO, and cert-manager types from the common envtest `fake_crds/` directory and register them in the scheme (via `SharedScheme()` or equivalent)\n- Build tag `integration` consistent with existing CC-0012 tests\n\n**Excluded:**\n- Webhook defaulting/validation testing (already covered by CC-0012 — YAGNI)\n- Error injection / fault tolerance tests (separate feature, not requested)\n- Chainsaw E2E tests (deferred to Phase 7 per PLAN.md)\n- Federation, middleware, plugin, or policyOverrides paths (not part of core reconciliation loop, no current requirement)\n- Performance / stress testing (YAGNI)\n- Deletion / finalizer testing (not implemented in the reconciler, YAGNI)\n- `test-integration` Makefile target wiring (currently a stub, separate infrastructure concern)\n\n## Visualization\n\n```mermaid\nsequenceDiagram\n    participant T as Test\n    participant API as envtest API Server\n    participant R as Keystone Reconciler\n    participant S as Simulators\n\n    T->>API: Create Namespace\n    T->>API: Create ExternalSecrets\n    T->>API: Create Secrets (DB creds, admin creds)\n    S->>API: SimulateExternalSecretSync\n    T->>API: Create Keystone CR\n    Note over R: Manager triggers reconcile\n    R->>API: Check ExternalSecret + Secret\n    R->>API: Set SecretsReady=True\n    R->>API: Create Fernet Keys Secret\n    R->>API: Create SA, Role, RoleBinding\n    R->>API: Create CronJob, PushSecret\n    R->>API: Set FernetKeysReady=True\n    R->>API: Create ConfigMap (immutable, hashed)\n    R->>API: Create db-sync Job\n    R->>API: Set DatabaseReady=False (DBSyncInProgress)\n    S->>API: SimulateJobComplete (db-sync)\n    Note over R: Requeue triggers reconcile\n    R->>API: Set DatabaseReady=True\n    R->>API: Create Deployment + Service\n    R->>API: Set DeploymentReady=False\n    S->>API: SimulateDeploymentReady\n    Note over R: Requeue triggers reconcile\n    R->>API: Set DeploymentReady=True, status.endpoint\n    R->>API: Create bootstrap Job\n    R->>API: Set BootstrapReady=False\n    S->>API: SimulateJobComplete (bootstrap)\n    Note over R: Requeue triggers reconcile\n    R->>API: Set BootstrapReady=True\n    R->>API: Set Ready=True (AllReady)\n    T->>API: Verify all conditions, resources, status\n```\n\n```mermaid\nstateDiagram-v2\n    [*] --> SecretsReady: ESO Secrets exist\n    SecretsReady --> FernetKeysReady: Fernet Secret + RBAC + CronJob + PushSecret created\n    FernetKeysReady --> DatabaseReady: ConfigMap created, db-sync Job completes\n    DatabaseReady --> DeploymentReady: Deployment + Service created, pods available\n    DeploymentReady --> BootstrapReady: Bootstrap Job completes\n    BootstrapReady --> Ready: AllTrue aggregation\n    Ready --> [*]\n```\n\n```mermaid\nflowchart TD\n    subgraph TestFile[\"integration_test.go\"]\n        TFL[\"TestIntegration_FullReconcile_Brownfield\"]\n        TFM[\"TestIntegration_FullReconcile_Managed\"]\n        TCP[\"TestIntegration_ConditionProgression\"]\n        TRC[\"TestIntegration_ResourceCreation\"]\n        TSE[\"TestIntegration_StatusEndpoint\"]\n        TOG[\"TestIntegration_ObservedGeneration\"]\n    end\n    subgraph Helpers[\"testutil/envtest_setup.go\"]\n        SK[\"SetupKeystoneEnvTestWithController (new)\"]\n        SE2[\"SetupKeystoneEnvTest (unchanged)\"]\n    end\n    subgraph Simulators[\"simulators/simulators.go\"]\n        SD[\"SimulateDeploymentReady (new)\"]\n        SE[\"SimulateExternalSecretSync\"]\n        SJ[\"SimulateJobComplete\"]\n        SDB[\"SimulateDatabaseReady\"]\n        SU[\"SimulateUserReady\"]\n        SG[\"SimulateGrantReady\"]\n    end\n    TestFile --> SK\n    TestFile --> Simulators\n```\n\n## Key Components\n\n- **`operators/keystone/internal/controller/integration_test.go`** (new): Main test file with `//go:build integration` tag. Contains 6 test functions using `testing.T` + gomega (dot-imported), consistent with CC-0012 patterns. Each test calls `testutil.SkipIfEnvTestUnavailable(t)`, creates an isolated namespace, uses `gomega.Eventually` for polling condition progression. Brownfield test uses `spec.database.host`; managed test uses `spec.database.clusterRef` and exercises MariaDB CR creation + simulation.\n- **`operators/keystone/internal/testutil/envtest_setup.go`** (modified): New `SetupKeystoneEnvTestWithController(t, addToScheme, registerWebhooks, registerController)` function that extends envtest setup to also register the `KeystoneReconciler` via `SetupWithManager`. Must install additional fake CRDs (MariaDB Database/User/Grant, ESO ExternalSecret/PushSecret) alongside the Keystone CRD, and register their types in the scheme. Existing `SetupKeystoneEnvTest` remains unchanged — CC-0012 webhook tests are unaffected.\n- **`internal/common/testutil/simulators/simulators.go`** (modified): New `SimulateDeploymentReady(ctx, c, key, replicas)` function that sets `status.conditions[Available]=True`, `status.readyReplicas`, and `status.observedGeneration` on an existing Deployment. Follows the established typed-resource simulator pattern (like `SimulateMariaDBReady`).\n- **Existing simulators** (unchanged, consumed): `SimulateExternalSecretSync`, `SimulateJobComplete`, `SimulateDatabaseReady`, `SimulateUserReady`, `SimulateGrantReady` — simulate external controller behavior in envtest where those controllers don't run.\n- **Existing `builders.SecretBuilder`** (unchanged, consumed): Used to construct prerequisite DB credentials Secret (keys: `username`, `password`) and admin credentials Secret (key: `password`).",
   "stories": [
@@ -331,6 +331,7 @@
       "description": "Add SimulateDeploymentReady(ctx context.Context, c client.Client, key client.ObjectKey, replicas int32) error to internal/common/testutil/simulators/simulators.go. The function gets the existing Deployment, sets status.conditions with DeploymentAvailable=True, status.readyReplicas=replicas, status.observedGeneration=deploy.Generation, then calls c.Status().Update(). Follow the typed-resource pattern used by SimulateJobComplete. Add a unit test in simulators_test.go (non-integration) using the fake client that verifies: (a) readyReplicas is set, (b) Available condition is True, (c) observedGeneration matches generation, (d) IsDeploymentReady returns true after the call. Feature comment: // Feature: CC-0014.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001"
       ]
@@ -341,6 +342,7 @@
       "description": "Add SetupKeystoneEnvTestWithController(t testing.TB, addToScheme func(*runtime.Scheme) error, registerWebhooks func(ctrl.Manager) error, registerController func(ctrl.Manager) error) (client.Client, context.Context, context.CancelFunc) to operators/keystone/internal/testutil/envtest_setup.go. This function extends the existing SetupKeystoneEnvTest pattern to additionally: (1) install fake CRDs from internal/common/testutil/fake_crds/ (mariadb-operator/*.yaml, external-secrets/*.yaml, cert-manager/*.yaml) alongside the Keystone CRD, (2) build a scheme that includes Keystone types plus SharedScheme() types (MariaDB, ESO, cert-manager, core K8s), (3) call registerController(mgr) after starting the manager to register the KeystoneReconciler. Use runtime.Caller(0) relative paths to locate fake_crds/. Leave SetupKeystoneEnvTest completely unchanged. Extract shared setup logic into unexported helpers if it reduces duplication without affecting SetupKeystoneEnvTest's behavior.",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-009"
@@ -352,6 +354,7 @@
       "description": "Create operators/keystone/internal/controller/integration_test.go with //go:build integration tag. Define shared helpers: (a) setupEnvTestWithController(t) calling testutil.SetupKeystoneEnvTestWithController with keystonev1alpha1.AddToScheme, KeystoneWebhook.SetupWebhookWithManager, and KeystoneReconciler.SetupWithManager; (b) createPrerequisites(t, ctx, c, ns, ks) that creates ExternalSecrets (db, admin), Secrets with correct keys (using builders.SecretBuilder), and calls SimulateExternalSecretSync; (c) driveFullReconciliation(t, ctx, c, ns, ks) that polls for condition progression and calls SimulateJobComplete (db-sync), SimulateDeploymentReady, SimulateJobComplete (bootstrap) at appropriate points. Write TestIntegration_FullReconcile_Brownfield: creates namespace (GenerateName), creates brownfield Keystone CR (spec.database.host), calls createPrerequisites and driveFullReconciliation, then asserts: all 6 conditions are True, status.endpoint is correct, ObservedGeneration matches. Use gomega dot-import and EventuallyCondition from assertions package.",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-005",
@@ -365,6 +368,7 @@
       "description": "Add TestIntegration_ConditionProgression to integration_test.go. This test creates a Keystone CR in brownfield mode but drives the reconciliation step-by-step, pausing between phases to verify intermediate condition states. Steps: (1) Create namespace, ExternalSecrets, Secrets but do NOT call SimulateExternalSecretSync yet. Wait for SecretsReady=False (WaitingForDBCredentials). Verify FernetKeysReady/DatabaseReady/DeploymentReady/BootstrapReady are absent. (2) Call SimulateExternalSecretSync for both ExternalSecrets. Wait for SecretsReady=True, then FernetKeysReady=True. Verify DatabaseReady=False (DBSyncInProgress). (3) Call SimulateJobComplete for db-sync. Wait for DatabaseReady=True. Verify DeploymentReady=False (WaitingForDeployment). (4) Call SimulateDeploymentReady. Wait for DeploymentReady=True. Verify BootstrapReady=False (BootstrapInProgress). (5) Call SimulateJobComplete for bootstrap. Wait for BootstrapReady=True, Ready=True (AllReady). Use EventuallyCondition with appropriate timeouts.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -375,6 +379,7 @@
       "description": "Add three focused tests to integration_test.go: (1) TestIntegration_ResourceCreation: runs full brownfield reconciliation, then uses AssertResourceExists to verify all 12 child resources exist: Deployment test-keystone-api, Service test-keystone-api, ConfigMap matching test-keystone-config-* (use client.List with label/prefix matching), Jobs test-keystone-db-sync and test-keystone-bootstrap, CronJob test-keystone-fernet-rotate, Secret test-keystone-fernet-keys, ServiceAccount test-keystone-fernet-rotate, Role test-keystone-fernet-rotate, RoleBinding test-keystone-fernet-rotate, PushSecret test-keystone-fernet-keys-backup. (2) TestIntegration_StatusEndpoint: runs full reconciliation, verifies status.endpoint matches expected format. (3) TestIntegration_ObservedGeneration: runs full reconciliation, fetches Keystone CR, iterates all conditions verifying each has ObservedGeneration == ks.Generation.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-006",
@@ -387,6 +392,7 @@
       "description": "Add TestIntegration_FullReconcile_Managed to integration_test.go. Creates a Keystone CR with spec.database.clusterRef (pointing to a MariaDB cluster name) instead of spec.database.host. Creates prerequisites (ExternalSecrets, Secrets, simulate sync). The reconciler will create MariaDB Database, User, Grant CRs. The test uses gomega.Eventually to wait for these CRs to appear, then calls SimulateDatabaseReady, SimulateUserReady, SimulateGrantReady. Then continues with SimulateJobComplete (db-sync), SimulateDeploymentReady, SimulateJobComplete (bootstrap). Verifies all 6 conditions reach True, status.endpoint is correct. Also verifies MariaDB CRs exist with correct names (same as Keystone CR name).",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -483,6 +489,125 @@
       "story": "Platform engineer verifies condition progression order",
       "expected": "Ready=False with reason NotAllReady when BootstrapReady is not yet True; transitions to Ready=True (AllReady) only after all sub-conditions are True",
       "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMariaDBReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMariaDBReady_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMariaDBReady_zeroReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMariaDBReady_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMemcachedReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMemcachedReady_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMemcachedReady_emptyServerList",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMemcachedReady_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateExternalSecretSync",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateExternalSecretSync_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateExternalSecretSync_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateJobComplete",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateJobComplete_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateJobComplete_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateDeploymentReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateDeploymentReady_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateDeploymentReady_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],
@@ -514,8 +639,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-03-12T10:22:59.599669"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-12T13:29:05.618236"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-16T11:20:21.949523"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/64",
+  "pr_number": 64,
   "execution_history": [
     {
       "run_id": "8c03b308-f8ec-436c-b41a-702727f57730",
@@ -527,6 +662,72 @@
           "name": "prepare",
           "duration": 675.4400234222412,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "19faf5b8-879e-4c84-b4fc-b9a95a073a57",
+      "timestamp": "2026-03-12T14:23:11.944376",
+      "total_duration": 2998.59455370903,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (2 tasks)",
+          "duration": 569.7218241691589,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (4 tasks)",
+          "duration": 1947.4959843158722,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0014] Code Review",
+          "duration": 361.69486808776855,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0014] Improvements",
+          "duration": 58.73964786529541,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0014] Simplify",
+          "duration": 60.94222927093506,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "3b0bb7d6-95c7-4745-9aaa-8f737e17cd8c",
+      "timestamp": "2026-03-12T15:10:33.735650",
+      "total_duration": 750.7145166397095,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 750.7145166397095,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "057133ca-1b86-4cfe-b584-a56c0651fd1b",
+      "timestamp": "2026-03-12T15:48:43.002966",
+      "total_duration": 788.6225287914276,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 788.6225287914276,
+          "type": "review_address",
           "status": "done"
         }
       ]

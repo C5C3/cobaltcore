@@ -14,6 +14,7 @@ import (
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	esov1beta1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1beta1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
+	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -149,8 +150,17 @@ func SimulateJobComplete(ctx context.Context, c client.Client, key client.Object
 
 	job.Status.Succeeded = 1
 	now := metav1.Now()
+	startTime := metav1.NewTime(now.Add(-1 * time.Second))
+	job.Status.StartTime = &startTime
 	job.Status.CompletionTime = &now
 	job.Status.Conditions = []batchv1.JobCondition{
+		{
+			Type:               batchv1.JobSuccessCriteriaMet,
+			Status:             corev1.ConditionTrue,
+			LastTransitionTime: now,
+			Reason:             "Completed",
+			Message:            "Job completed successfully",
+		},
 		{
 			Type:               batchv1.JobComplete,
 			Status:             corev1.ConditionTrue,
@@ -261,4 +271,40 @@ func SimulateCertificateReady(ctx context.Context, c client.Client, key client.O
 	}
 
 	return c.Status().Update(ctx, cert)
+}
+
+// Feature: CC-0014
+
+// SimulateDeploymentReady updates a Deployment resource's status to indicate
+// availability by setting the Available condition to True, readyReplicas, and
+// observedGeneration to match the Deployment's Generation (CC-0014, REQ-001).
+func SimulateDeploymentReady(ctx context.Context, c client.Client, key client.ObjectKey, replicas int32) error {
+	deploy := &appsv1.Deployment{}
+	if err := c.Get(ctx, key, deploy); err != nil {
+		return fmt.Errorf("getting Deployment %s: %w", key, err)
+	}
+
+	deploy.Status.ReadyReplicas = replicas
+	deploy.Status.AvailableReplicas = replicas
+	deploy.Status.Replicas = replicas
+	deploy.Status.UpdatedReplicas = replicas
+	deploy.Status.ObservedGeneration = deploy.Generation
+	deploy.Status.Conditions = []appsv1.DeploymentCondition{
+		{
+			Type:               appsv1.DeploymentProgressing,
+			Status:             corev1.ConditionTrue,
+			Reason:             "NewReplicaSetAvailable",
+			Message:            "ReplicaSet has successfully progressed",
+			LastTransitionTime: metav1.Now(),
+		},
+		{
+			Type:               appsv1.DeploymentAvailable,
+			Status:             corev1.ConditionTrue,
+			Reason:             "MinimumReplicasAvailable",
+			Message:            "Deployment has minimum availability",
+			LastTransitionTime: metav1.Now(),
+		},
+	}
+
+	return c.Status().Update(ctx, deploy)
 }

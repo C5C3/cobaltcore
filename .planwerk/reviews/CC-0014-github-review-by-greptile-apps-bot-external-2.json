@@ -1,0 +1,46 @@
+{
+  "feature_id": "CC-0014",
+  "title": "GitHub Review by greptile-apps[bot]",
+  "summary": "The reviewer wants two changes in the integration tests: (1) Replace the hardcoded replica count of `3` in `SimulateDeploymentReady` with a dynamic read from the actual Deployment spec, both in `driveFullReconciliation` (line 268) and `TestIntegration_FullReconcile_Managed` (line 654). (2) Move the `key` variable declaration (line 345) so it's initialized with both `Namespace` and `Name` immediately after the CR is created, rather than declaring it early with an empty `Name` that gets patched in later.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "greptile-apps[bot]",
+  "date": "2026-03-12T15:19:36Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 2,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "**Hardcoded replica count couples helper to fixture**\n\n`driveFullReconciliation` hardcodes `3` for `SimulateDeploymentReady`. `IsDeploymentReady` checks `Status.ReadyReplicas >= *Spec.Replicas` — so if the `integrationBrownfieldKeystone` fixture is ever changed to a replica count **greater than 3** (e.g., 5), `SimulateDeploymentReady(..., 3)` would set `ReadyReplicas=3`, which is less than `desired=5`, causing `IsDeploymentReady` to return `false`. The test would then silently hang at `waitForCondition(..., \"DeploymentReady\", ConditionTrue, ...)` until the timeout, with no indication that the hardcoded replica count is the cause.\n\nThe fix is to dynamically read the desired replica count from the already-created Deployment spec:\n\n```go\n// Wait for the Deployment to appear and simulate its readiness.\ndeployKey := client.ObjectKey{Namespace: ns, Name: fmt.Sprintf(\"%s-api\", ksName)}\ng.Eventually(func() error {\n    return c.Get(ctx, deployKey, &appsv1.Deployment{})\n}, eventuallyTimeout, pollInterval).Should(Succeed(), \"Deployment should appear\")\n\ndeploy := &appsv1.Deployment{}\ng.Expect(c.Get(ctx, deployKey, deploy)).To(Succeed())\nreplicas := int32(1)\nif deploy.Spec.Replicas != nil {\n    replicas = *deploy.Spec.Replicas\n}\ng.Expect(simulators.SimulateDeploymentReady(ctx, c, deployKey, replicas)).To(Succeed(), \"simulate Deployment ready\")\n```\n\nThe same change should be applied to the equivalent call in `TestIntegration_FullReconcile_Managed` at line 654.\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: operators/keystone/internal/controller/integration_test.go\nLine: 265-268\n\nComment:\n**Hardcoded replica count couples helper to fixture**\n\n`driveFullReconciliation` hardcodes `3` for `SimulateDeploymentReady`. `IsDeploymentReady` checks `Status.ReadyReplicas >= *Spec.Replicas` — so if the `integrationBrownfieldKeystone` fixture is ever changed to a replica count **greater than 3** (e.g., 5), `SimulateDeploymentReady(..., 3)` would set `ReadyReplicas=3`, which is less than `desired=5`, causing `IsDeploymentReady` to return `false`. The test would then silently hang at `waitForCondition(..., \"DeploymentReady\", ConditionTrue, ...)` until the timeout, with no indication that the hardcoded replica count is the cause.\n\nThe fix is to dynamically read the desired replica count from the already-created Deployment spec:\n\n```go\n// Wait for the Deployment to appear and simulate its readiness.\ndeployKey := client.ObjectKey{Namespace: ns, Name: fmt.Sprintf(\"%s-api\", ksName)}\ng.Eventually(func() error {\n    return c.Get(ctx, deployKey, &appsv1.Deployment{})\n}, eventuallyTimeout, pollInterval).Should(Succeed(), \"Deployment should appear\")\n\ndeploy := &appsv1.Deployment{}\ng.Expect(c.Get(ctx, deployKey, deploy)).To(Succeed())\nreplicas := int32(1)\nif deploy.Spec.Replicas != nil {\n    replicas = *deploy.Spec.Replicas\n}\ng.Expect(simulators.SimulateDeploymentReady(ctx, c, deployKey, replicas)).To(Succeed(), \"simulate Deployment ready\")\n```\n\nThe same change should be applied to the equivalent call in `TestIntegration_FullReconcile_Managed` at line 654.\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "operators/keystone/internal/controller/integration_test.go",
+      "line": 268,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-12T15:19:34Z",
+      "id": null,
+      "resolution": "NOT ADDRESSED: SimulateDeploymentReady still uses hardcoded 3 in all three locations: driveFullReconciliation (line 274), TestIntegration_ConditionProgression (line 439), and TestIntegration_FullReconcile_Managed (line 660). The reviewer requested dynamically reading the replica count from the Deployment spec."
+    },
+    {
+      "body": "**`key` declared with empty `Name` field is error-prone**\n\n`key` is initialized with only `Namespace` set at line 345, and `Name` is patched in at line 386 after the CR is created. While the current code is correct (every `waitForCondition` and `c.Get` call using `key` comes after line 386), this pattern is fragile: any helper call inserted between lines 345 and 386 that passes `key` would silently operate on a namespaced name with an empty `Name` string, which would never match any real object — causing a confusing test failure or a false pass.\n\nInitialise `key` immediately after the CR name is known:\n\n```suggestion\n\t// Create the Keystone CR.\n\tks := integrationBrownfieldKeystone(\"test-keystone\", ns.Name)\n\tg.Expect(c.Create(ctx, ks)).To(Succeed())\n\tkey := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}\n```\n\n(Remove the early declaration at line 345.)\n\n<details><summary>Prompt To Fix With AI</summary>\n\n`````markdown\nThis is a comment left during a code review.\nPath: operators/keystone/internal/controller/integration_test.go\nLine: 344-346\n\nComment:\n**`key` declared with empty `Name` field is error-prone**\n\n`key` is initialized with only `Namespace` set at line 345, and `Name` is patched in at line 386 after the CR is created. While the current code is correct (every `waitForCondition` and `c.Get` call using `key` comes after line 386), this pattern is fragile: any helper call inserted between lines 345 and 386 that passes `key` would silently operate on a namespaced name with an empty `Name` string, which would never match any real object — causing a confusing test failure or a false pass.\n\nInitialise `key` immediately after the CR name is known:\n\n```suggestion\n\t// Create the Keystone CR.\n\tks := integrationBrownfieldKeystone(\"test-keystone\", ns.Name)\n\tg.Expect(c.Create(ctx, ks)).To(Succeed())\n\tkey := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}\n```\n\n(Remove the early declaration at line 345.)\n\nHow can I resolve this? If you propose a fix, please make it concise.\n`````\n</details>",
+      "path": "operators/keystone/internal/controller/integration_test.go",
+      "line": 346,
+      "author": "greptile-apps[bot]",
+      "created_at": "2026-03-12T15:19:35Z",
+      "id": null,
+      "resolution": "NOT ADDRESSED: key is still declared with empty Name at line 351 (key := types.NamespacedName{Namespace: ns.Name}) and patched later at line 392 (key.Name = ks.Name). The reviewer requested moving the declaration to after CR creation so both Name and Namespace are set together."
+    }
+  ],
+  "resolution_summary": "Neither review comment was addressed. The fix commit d289571 made unrelated improvements: extracting magic timeout/interval numbers into named constants (eventuallyTimeout, eventuallyLongTimeout, pollInterval), replacing a manual string prefix check with strings.HasPrefix, and simplifying a Ready condition check to use meta.IsStatusConditionTrue. However, the two specific issues raised by the reviewer — hardcoded replica count 3 in SimulateDeploymentReady and the fragile key declaration with empty Name — remain unchanged in the current code.",
+  "github_review_id": 3937515978
+}

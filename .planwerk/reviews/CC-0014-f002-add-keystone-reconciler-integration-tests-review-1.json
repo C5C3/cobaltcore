@@ -1,0 +1,94 @@
+{
+  "summary": "CC-0014 F002 adds envtest integration tests for the Keystone reconciler. New SimulateDeploymentReady simulator function with unit tests (happy path, idempotent, not-found, IsDeploymentReady cross-validation). New SetupKeystoneEnvTestWithController helper that extends envtest setup with fake CRDs and reconciler registration. Six integration test functions covering brownfield full reconcile, managed full reconcile, condition progression with intermediate state verification, resource creation (all 12 child resources), status endpoint, and ObservedGeneration. Also includes justified bug fixes: SimulateJobComplete updated for K8s 1.35 SuccessCriteriaMet condition, and CacheSpec CEL rule fixed from `self.clusterRef != null` to `has(self.clusterRef)` to match the Database rule pattern and avoid CEL evaluation errors on absent optional fields.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "V1: All unit tests pass (SimulateDeploymentReady, SimulateJobComplete)", "checked": true},
+    {"item": "V2: go vet passes on both internal/common and operators/keystone", "checked": true},
+    {"item": "V3: golangci-lint passes with 0 issues on both packages", "checked": true},
+    {"item": "TE1: Happy path tested — brownfield and managed full reconcile to Ready=True", "checked": true},
+    {"item": "TE2: Edge cases tested — condition progression verifies intermediate False states and absent conditions", "checked": true},
+    {"item": "TE3: Error cases tested — SimulateDeploymentReady not-found, idempotent", "checked": true},
+    {"item": "TE4: Tests independent — each test creates isolated namespace via GenerateName", "checked": true},
+    {"item": "TE5: Test names follow TestIntegration_* convention consistent with CC-0012", "checked": true},
+    {"item": "TE6: Mocking appropriate — simulators replace external controllers (ESO, MariaDB, K8s Deployment controller) that don't run in envtest", "checked": true},
+    {"item": "TE7: Assertions specific — exact condition types, reasons, status values, endpoint URLs, ObservedGeneration equality", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Q1: Functions do one thing — createPrerequisites, waitForCondition, driveFullReconciliation each have single responsibility", "checked": true},
+    {"item": "Q2: Functions are appropriately sized — helpers are concise, test functions are longer but sequential test steps", "checked": true},
+    {"item": "Q3: Shared helpers extract common logic (createPrerequisites, driveFullReconciliation, waitForCondition)", "checked": true},
+    {"item": "Q4: Clear naming — integrationBrownfieldKeystone, integrationManagedKeystone, waitForCondition, driveFullReconciliation", "checked": true},
+    {"item": "Q5: No excessive nesting — guard clauses and gomega Eventually used appropriately", "checked": true},
+    {"item": "Q6: No magic numbers — timeout constants (30s, 500ms) and resource names are descriptive", "checked": true},
+    {"item": "Q7: No dead code — all helpers are used by tests", "checked": true},
+    {"item": "P2: Uses existing utilities — simulators, testutil, commonenvtest", "checked": true},
+    {"item": "P5: File locations match project conventions — integration_test.go in controller package, envtest_setup.go in testutil", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "S1-S6: No security concerns in test-only code — test passwords are test data, no injection risks, no external API calls", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "C1: Implements exactly what was requested — all 6 test functions per plan", "checked": true},
+    {"item": "C2: All acceptance criteria met — brownfield, managed, condition progression, resource creation, endpoint, ObservedGeneration", "checked": true},
+    {"item": "C5: No regression — SetupKeystoneEnvTest unchanged, CC-0012 webhook tests unaffected", "checked": true},
+    {"item": "FC1: All tasks and requirements from plan implemented", "checked": true},
+    {"item": "FC2: No stubs, placeholders, or TODOs remain", "checked": true},
+    {"item": "FC3: All test functions are fully working with real assertions", "checked": true},
+    {"item": "FC4: Behaviors described in feature spec work end-to-end", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code beyond acceptable SetupKeystoneEnvTest/SetupKeystoneEnvTestWithController duplication (by design per plan)", "checked": true},
+    {"item": "No unnecessary abstractions — helpers are used by multiple tests", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "SkipIfEnvTestUnavailable called as first line in each test", "checked": true},
+    {"item": "t.Fatalf used for unrecoverable setup failures", "checked": true},
+    {"item": "gomega Eventually with timeouts for async condition polling", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Direct (non-caching) client used for test assertions to avoid stale reads", "checked": true},
+    {"item": "mgrStopped channel prevents port-conflict races between tests", "checked": true},
+    {"item": "Metrics and health probe listeners disabled to avoid port collisions", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [
+    {
+      "severity": "INFO",
+      "description": "CacheSpec CEL rule changed from `self.clusterRef != null` to `has(self.clusterRef)` — justified bug fix discovered during integration testing. Aligns with Database rule pattern and avoids CEL evaluation errors on absent optional fields with omitempty. Semantically correct per CEL spec.",
+      "location": "operators/keystone/api/v1alpha1/keystone_types.go:53",
+      "fix": "No fix needed — change is correct."
+    },
+    {
+      "severity": "INFO",
+      "description": "SimulateJobComplete updated to emit both JobSuccessCriteriaMet and JobComplete conditions with StartTime — matches real K8s 1.35 Job controller behavior. Backward-compatible since IsJobComplete only checks for JobComplete.",
+      "location": "internal/common/testutil/simulators/simulators.go:150-170",
+      "fix": "No fix needed — change improves simulator fidelity."
+    }
+  ],
+  "issues_found": [
+    {
+      "id": "D3-1",
+      "severity": "minor",
+      "check_id": "D3",
+      "file": "internal/common/testutil/simulators/simulators.go",
+      "line": 168,
+      "description": "Message field in second JobCondition struct literal has one extra space before the string value compared to the first condition (line 161). `Message:             ` (13 spaces) vs `Message:            ` (12 spaces). Cosmetic alignment inconsistency.",
+      "fix": "Remove the extra space on line 168 to align with the first condition: `Message:            \"Job completed successfully\",`"
+    },
+    {
+      "id": "D2-1",
+      "severity": "minor",
+      "check_id": "D2",
+      "description": "commonFakeCRDsDirs() at envtest_setup.go:204 does not include the len(dirs)==0 panic guard that the canonical fakeCRDsDirs() in internal/common/testutil/envtest/setup.go:134 has. Not a functional issue since envtest would fail at CRD installation if no CRDs are found, but it is an inconsistency with the reference implementation.",
+      "file": "operators/keystone/internal/testutil/envtest_setup.go",
+      "line": 224,
+      "fix": "Add a panic guard after the loop: `if len(dirs) == 0 { panic(fmt.Sprintf(\"testutil: no subdirectories found in fake_crds directory %s\", root)) }`"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding the len(dirs)==0 panic guard to commonFakeCRDsDirs() for consistency with the canonical fakeCRDsDirs() implementation.",
+    "Fix the extra space in SimulateJobComplete Message field alignment (line 168)."
+  ],
+  "next_steps": [],
+  "detected_patterns": []
+}

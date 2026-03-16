@@ -1,0 +1,56 @@
+{
+  "feature_id": "CC-0014",
+  "title": "F002: Add Keystone reconciler integration tests",
+  "date": "2026-03-12",
+  "summary": "Review of external review #1 fixes: all three greptile-apps[bot] comments addressed correctly. (1) SimulateDeploymentReady now includes both DeploymentProgressing and DeploymentAvailable conditions, matching real K8s controller behavior. (2) Manual string-prefix check replaced with strings.HasPrefix. (3) TestSimulateDeploymentReady_zeroReplicas added for edge-case coverage. All unit tests pass, golangci-lint clean, go vet clean. Changes are minimal, correctly scoped, and follow established patterns.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Unit tests exist and pass for SimulateDeploymentReady (5 tests)", "checked": true},
+    {"item": "Integration tests cover brownfield and managed modes", "checked": true},
+    {"item": "Condition progression test verifies intermediate states", "checked": true},
+    {"item": "Edge case covered: zero replicas test added", "checked": true},
+    {"item": "Assertions are specific (exact values, not just 'no error')", "checked": true},
+    {"item": "Tests independent (namespace isolation via GenerateName)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing simulator patterns (Get -> set status -> Status().Update())", "checked": true},
+    {"item": "Gomega dot-import and NewGomegaWithT(t) pattern followed", "checked": true},
+    {"item": "SkipIfEnvTestUnavailable guard present in all integration tests", "checked": true},
+    {"item": "Goroutine-await channel pattern for test manager lifecycle", "checked": true},
+    {"item": "Direct (non-caching) client used for test assertions", "checked": true},
+    {"item": "strings.HasPrefix used instead of manual slice comparison", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets (test uses obviously fake values)", "checked": true},
+    {"item": "No injection vulnerabilities (test-only code)", "checked": true},
+    {"item": "InsecureSkipVerify scoped to envtest self-signed certs with nolint annotation", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Simulator in shared package (internal/common/testutil/simulators/)", "checked": true},
+    {"item": "Envtest helper in operator-specific testutil package", "checked": true},
+    {"item": "No circular dependencies introduced", "checked": true},
+    {"item": "SetupKeystoneEnvTest unchanged (CC-0012 tests unaffected)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code in the diff", "checked": true},
+    {"item": "No unnecessary features added", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "t.Fatalf used for setup failures that prevent test execution", "checked": true},
+    {"item": "Eventually with timeouts prevents infinite waits", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Simulator validates resource exists before updating status", "checked": true},
+    {"item": "Error wrapping includes resource namespace/name context", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "integration_test.go:434 — The conditional guard `if readyCond != nil` around the Ready-condition assertion in TestIntegration_ConditionProgression means the assertion is vacuous when Ready is absent (the expected case). Consider replacing with `g.Expect(meta.IsStatusConditionTrue(ksState.Status.Conditions, \"Ready\")).To(BeFalse())` which handles both nil and present-but-False cases unconditionally. (Pre-existing code, not in this diff — noted for future improvement.)",
+    "integration_test.go — The timeout values 30*time.Second and 500*time.Millisecond are repeated ~15 times. Consider extracting to package-level test constants for easier tuning in CI. (Pre-existing code, not in this diff.)",
+    "integration_test.go:620,627 — The 60s timeout for MariaDB User/Grant CR polling (vs 30s elsewhere) would benefit from a brief comment explaining why the longer timeout is needed (accommodates 30s RequeueAfter delay). (Pre-existing code, not in this diff.)"
+  ],
+  "next_steps": [],
+  "detected_patterns": []
+}
