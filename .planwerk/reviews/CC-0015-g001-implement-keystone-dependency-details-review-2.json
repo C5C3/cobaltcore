@@ -1,0 +1,57 @@
+{
+  "summary": "Addresses external review feedback from gndrmnn: fernetKeysHash no longer swallows IsNotFound errors — all errors are propagated to the caller with wrapping context. The caller reconcileDeployment now distinguishes IsNotFound (tolerated, continues with empty hash) from unexpected errors (returned). Test updated to assert not-found error is returned. New review pattern documented.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "TE1: Happy path tested — TestReconcileDeployment_FernetKeysHashFromSecret verifies hash annotation from real Secret data", "checked": true},
+    {"item": "TE2: Edge cases tested — TestFernetKeysHash_SecretNotFound verifies not-found error propagation; TestBuildKeystoneDeployment_FernetKeysHashAnnotation_EmptyHash verifies empty hash", "checked": true},
+    {"item": "TE3: Error cases tested — TestFernetKeysHash_SecretNotFound asserts apierrors.IsNotFound(err) is true", "checked": true},
+    {"item": "TE4: Tests independent — each test creates its own reconciler and scheme", "checked": true},
+    {"item": "TE5: Test names descriptive and follow existing convention", "checked": true},
+    {"item": "TE6: Mocking appropriate — fake client for unit tests", "checked": true},
+    {"item": "TE7: Assertions specific — exact error type check via apierrors.IsNotFound, not just err != nil", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Q1: fernetKeysHash does one thing — read Secret, compute hash, return error", "checked": true},
+    {"item": "Q4: Clear naming — error wrapping message includes namespace/name context", "checked": true},
+    {"item": "Q7: No dead code introduced", "checked": true},
+    {"item": "P2: Uses existing apierrors.IsNotFound utility from k8s.io/apimachinery", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "S3: No hardcoded secrets — Secret is read from API server", "checked": true},
+    {"item": "S5: Sensitive data not exposed in error messages — only namespace/name logged, not Secret content", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "C1: Implements exactly what external reviewer requested — propagate not-found error to caller", "checked": true},
+    {"item": "C3: Edge case handled — not-found error tolerated in caller via apierrors.IsNotFound check through error wrapping chain", "checked": true},
+    {"item": "C4: Errors propagated explicitly with wrapping context, not silently swallowed", "checked": true},
+    {"item": "C5: Existing tests (TestReconcileDeployment_DeploymentAndServiceCreated etc.) continue to pass — no regression", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "Minimal change — only error handling flow modified, no unnecessary additions", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Non-not-found errors fail immediately; not-found is explicitly tolerated at the caller level", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "fmt.Errorf with %w preserves error chain for apierrors.IsNotFound detection through errors.As", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": [],
+  "metadata": {
+    "feature_id": "CC-0015",
+    "title": "G001: Implement Keystone dependency details",
+    "date": "2026-03-17",
+    "verdict": "APPROVED",
+    "verification": {
+      "go_vet": "pass (0 issues)",
+      "golangci_lint": "pass (0 issues)",
+      "unit_tests": "pass (controller package, 0.424s)",
+      "integration_tests": "pass (skipped — KUBEBUILDER_ASSETS not set)"
+    },
+    "pre_review_stub_note": "reconcile_deployment.go:190 TODO(CC-0013) is pre-existing and not part of this diff — intentionally deferred credential key management, not a new stub"
+  }
+}

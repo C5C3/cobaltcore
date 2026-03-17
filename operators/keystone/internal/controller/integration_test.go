@@ -694,3 +694,213 @@ func TestIntegration_FullReconcile_Managed(t *testing.T) {
 	g.Expect(c.Get(ctx, userKey, &mariadbv1alpha1.User{})).To(Succeed(), "MariaDB User CR should still exist")
 	g.Expect(c.Get(ctx, grantKey, &mariadbv1alpha1.Grant{})).To(Succeed(), "MariaDB Grant CR should still exist")
 }
+
+// --- Task CC-0015/2.1: CronJob detailed spec test (REQ-006) ---
+
+func TestIntegration_CronJobDetailedSpec(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cronjob-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	// Fetch the Fernet rotation CronJob (REQ-006).
+	cronJob := &batchv1.CronJob{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-fernet-rotate"}, cronJob)).
+		To(Succeed(), "CronJob test-keystone-fernet-rotate should exist")
+
+	// Verify schedule matches spec.fernet.rotationSchedule.
+	g.Expect(cronJob.Spec.Schedule).To(Equal(ks.Spec.Fernet.RotationSchedule),
+		"CronJob schedule should match spec.fernet.rotationSchedule")
+
+	podSpec := cronJob.Spec.JobTemplate.Spec.Template.Spec
+	expectedImage := fmt.Sprintf("%s:%s", ks.Spec.Image.Repository, ks.Spec.Image.Tag)
+
+	// Verify ServiceAccountName.
+	g.Expect(podSpec.ServiceAccountName).To(Equal(fmt.Sprintf("%s-fernet-rotate", ks.Name)),
+		"CronJob should use the fernet-rotate ServiceAccount")
+
+	// Verify init container: copy-keys.
+	g.Expect(podSpec.InitContainers).To(HaveLen(1), "CronJob should have exactly one init container")
+	initContainer := podSpec.InitContainers[0]
+	g.Expect(initContainer.Name).To(Equal("copy-keys"))
+	g.Expect(initContainer.Image).To(Equal(expectedImage), "init container image should match spec")
+	g.Expect(initContainer.Command).To(Equal([]string{"sh", "-c", "cp /fernet-keys-src/* /etc/keystone/fernet-keys/"}))
+
+	// Verify init container volume mounts.
+	g.Expect(initContainer.VolumeMounts).To(HaveLen(2))
+	initMounts := map[string]corev1.VolumeMount{}
+	for _, vm := range initContainer.VolumeMounts {
+		initMounts[vm.Name] = vm
+	}
+	g.Expect(initMounts["fernet-keys-src"].MountPath).To(Equal("/fernet-keys-src"))
+	g.Expect(initMounts["fernet-keys-src"].ReadOnly).To(BeTrue(), "fernet-keys-src should be read-only")
+	g.Expect(initMounts["fernet-keys"].MountPath).To(Equal("/etc/keystone/fernet-keys"))
+
+	// Verify main container: fernet-rotate.
+	g.Expect(podSpec.Containers).To(HaveLen(1), "CronJob should have exactly one main container")
+	mainContainer := podSpec.Containers[0]
+	g.Expect(mainContainer.Name).To(Equal("fernet-rotate"))
+	g.Expect(mainContainer.Image).To(Equal(expectedImage), "main container image should match spec")
+	g.Expect(mainContainer.Command).To(Equal([]string{"sh", "-c", fernetRotateScript}))
+
+	// Verify main container env vars.
+	envMap := map[string]corev1.EnvVar{}
+	for _, env := range mainContainer.Env {
+		envMap[env.Name] = env
+	}
+	g.Expect(envMap).To(HaveKey("SECRET_NAME"))
+	g.Expect(envMap["SECRET_NAME"].Value).To(Equal(fmt.Sprintf("%s-fernet-keys", ks.Name)))
+
+	g.Expect(envMap).To(HaveKey("SECRET_NAMESPACE"))
+	g.Expect(envMap["SECRET_NAMESPACE"].ValueFrom).NotTo(BeNil(), "SECRET_NAMESPACE should use ValueFrom")
+	g.Expect(envMap["SECRET_NAMESPACE"].ValueFrom.FieldRef).NotTo(BeNil(), "SECRET_NAMESPACE should use fieldRef")
+	g.Expect(envMap["SECRET_NAMESPACE"].ValueFrom.FieldRef.FieldPath).To(Equal("metadata.namespace"))
+
+	g.Expect(envMap).To(HaveKey("OS_fernet_tokens__max_active_keys"))
+	g.Expect(envMap["OS_fernet_tokens__max_active_keys"].Value).To(Equal("3"),
+		"OS_fernet_tokens__max_active_keys should match spec.fernet.maxActiveKeys")
+
+	// Verify main container volume mounts.
+	g.Expect(mainContainer.VolumeMounts).To(HaveLen(1))
+	g.Expect(mainContainer.VolumeMounts[0].Name).To(Equal("fernet-keys"))
+	g.Expect(mainContainer.VolumeMounts[0].MountPath).To(Equal("/etc/keystone/fernet-keys"))
+
+	// Verify volumes: fernet-keys-src (Secret) and fernet-keys (emptyDir).
+	volMap := map[string]corev1.Volume{}
+	for _, v := range podSpec.Volumes {
+		volMap[v.Name] = v
+	}
+	g.Expect(volMap).To(HaveKey("fernet-keys-src"))
+	g.Expect(volMap["fernet-keys-src"].Secret).NotTo(BeNil(), "fernet-keys-src volume should be a Secret")
+	g.Expect(volMap["fernet-keys-src"].Secret.SecretName).To(Equal(fmt.Sprintf("%s-fernet-keys", ks.Name)))
+
+	g.Expect(volMap).To(HaveKey("fernet-keys"))
+	g.Expect(volMap["fernet-keys"].EmptyDir).NotTo(BeNil(), "fernet-keys volume should be an emptyDir")
+}
+
+// --- Task CC-0015/2.2: Bootstrap Job detailed spec test (REQ-007) ---
+
+// driveReconciliationToBootstrapJob drives external dependencies through
+// reconciliation phases until the bootstrap Job appears, without simulating
+// bootstrap completion (CC-0015, REQ-007).
+func driveReconciliationToBootstrapJob(t testing.TB, ctx context.Context, c client.Client, ksName, ns string) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	key := types.NamespacedName{Name: ksName, Namespace: ns}
+
+	waitForCondition(t, ctx, c, key, "SecretsReady", metav1.ConditionTrue, eventuallyTimeout)
+	waitForCondition(t, ctx, c, key, "FernetKeysReady", metav1.ConditionTrue, eventuallyTimeout)
+
+	dbSyncKey := client.ObjectKey{Namespace: ns, Name: fmt.Sprintf("%s-db-sync", ksName)}
+	g.Eventually(func() error {
+		return c.Get(ctx, dbSyncKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "db-sync Job should appear")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, dbSyncKey)).To(Succeed())
+
+	waitForCondition(t, ctx, c, key, "DatabaseReady", metav1.ConditionTrue, eventuallyTimeout)
+
+	deployKey := client.ObjectKey{Namespace: ns, Name: fmt.Sprintf("%s-api", ksName)}
+	deploy := &appsv1.Deployment{}
+	g.Eventually(func() error {
+		return c.Get(ctx, deployKey, deploy)
+	}, eventuallyTimeout, pollInterval).Should(Succeed())
+	g.Expect(simulators.SimulateDeploymentReady(ctx, c, deployKey, ptr.Deref(deploy.Spec.Replicas, 1))).To(Succeed())
+
+	waitForCondition(t, ctx, c, key, "DeploymentReady", metav1.ConditionTrue, eventuallyTimeout)
+
+	bootstrapKey := client.ObjectKey{Namespace: ns, Name: fmt.Sprintf("%s-bootstrap", ksName)}
+	g.Eventually(func() error {
+		return c.Get(ctx, bootstrapKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "bootstrap Job should appear")
+}
+
+func TestIntegration_BootstrapJobDetailedSpec(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-bootstrap-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	// Drive reconciliation until bootstrap Job appears, without completing it (REQ-007).
+	driveReconciliationToBootstrapJob(t, ctx, c, ks.Name, ns.Name)
+
+	// Fetch the bootstrap Job.
+	bootstrapJob := &batchv1.Job{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-bootstrap"}, bootstrapJob)).
+		To(Succeed(), "bootstrap Job should exist")
+
+	// Verify backoffLimit (REQ-007).
+	g.Expect(bootstrapJob.Spec.BackoffLimit).NotTo(BeNil())
+	g.Expect(*bootstrapJob.Spec.BackoffLimit).To(Equal(int32(4)), "backoffLimit should be 4")
+
+	// Verify ttlSecondsAfterFinished (REQ-007).
+	g.Expect(bootstrapJob.Spec.TTLSecondsAfterFinished).NotTo(BeNil())
+	g.Expect(*bootstrapJob.Spec.TTLSecondsAfterFinished).To(Equal(int32(300)), "ttlSecondsAfterFinished should be 300")
+
+	// Verify container spec.
+	podSpec := bootstrapJob.Spec.Template.Spec
+	g.Expect(podSpec.Containers).To(HaveLen(1))
+	container := podSpec.Containers[0]
+	g.Expect(container.Name).To(Equal("bootstrap"))
+
+	// Verify image.
+	expectedImage := fmt.Sprintf("%s:%s", ks.Spec.Image.Repository, ks.Spec.Image.Tag)
+	g.Expect(container.Image).To(Equal(expectedImage))
+
+	// Verify command (REQ-007).
+	g.Expect(container.Command).To(Equal([]string{"keystone-manage", "bootstrap"}))
+
+	// Verify args include all bootstrap parameters.
+	expectedServiceURL := fmt.Sprintf("http://%s-api.%s.svc.cluster.local:5000/v3", ks.Name, ns.Name)
+	g.Expect(container.Args).To(Equal([]string{
+		"--bootstrap-password", "$(BOOTSTRAP_PASSWORD)",
+		"--bootstrap-admin-url", expectedServiceURL,
+		"--bootstrap-internal-url", expectedServiceURL,
+		"--bootstrap-public-url", expectedServiceURL,
+		"--bootstrap-region-id", ks.Spec.Bootstrap.Region,
+	}))
+
+	// Verify BOOTSTRAP_PASSWORD env from SecretKeyRef (REQ-007).
+	g.Expect(container.Env).To(HaveLen(1))
+	pwEnv := container.Env[0]
+	g.Expect(pwEnv.Name).To(Equal("BOOTSTRAP_PASSWORD"))
+	g.Expect(pwEnv.ValueFrom).NotTo(BeNil())
+	g.Expect(pwEnv.ValueFrom.SecretKeyRef).NotTo(BeNil())
+	g.Expect(pwEnv.ValueFrom.SecretKeyRef.Name).To(Equal(ks.Spec.Bootstrap.AdminPasswordSecretRef.Name),
+		"BOOTSTRAP_PASSWORD should reference the admin password Secret")
+	g.Expect(pwEnv.ValueFrom.SecretKeyRef.Key).To(Equal("password"))
+
+	// Verify config volume mount (REQ-007).
+	g.Expect(container.VolumeMounts).To(HaveLen(1))
+	g.Expect(container.VolumeMounts[0].Name).To(Equal("config"))
+	g.Expect(container.VolumeMounts[0].MountPath).To(Equal("/etc/keystone/keystone.conf.d/"))
+	g.Expect(container.VolumeMounts[0].ReadOnly).To(BeTrue())
+
+	// Verify config volume source is a ConfigMap with the expected name prefix.
+	g.Expect(podSpec.Volumes).To(HaveLen(1))
+	g.Expect(podSpec.Volumes[0].Name).To(Equal("config"))
+	g.Expect(podSpec.Volumes[0].ConfigMap).NotTo(BeNil())
+	g.Expect(podSpec.Volumes[0].ConfigMap.Name).To(HavePrefix(fmt.Sprintf("%s-config-", ks.Name)),
+		"config volume should reference a ConfigMap with the expected name prefix")
+
+	// Verify RestartPolicy.
+	g.Expect(podSpec.RestartPolicy).To(Equal(corev1.RestartPolicyOnFailure))
+}

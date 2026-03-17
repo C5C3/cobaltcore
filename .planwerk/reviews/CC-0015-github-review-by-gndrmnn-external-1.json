@@ -1,0 +1,37 @@
+{
+  "feature_id": "CC-0015",
+  "title": "GitHub Review by gndrmnn",
+  "summary": "The reviewer wants `reconcile_deployment.go:44` to return the not-found error to the caller instead of returning an empty hash with no error, as the current behavior is semantically misleading.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "gndrmnn",
+  "date": "2026-03-17T10:37:21Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "Returning an empty string for the hash and indicating no error does not seem to make much sense in this specific case. It is better for this function to return the is-not-found error to the caller.",
+      "path": "operators/keystone/internal/controller/reconcile_deployment.go",
+      "line": 44,
+      "author": "gndrmnn",
+      "created_at": "2026-03-17T10:24:53Z",
+      "id": null,
+      "resolution": "fernetKeysHash no longer swallows the IsNotFound error — the special-case `if apierrors.IsNotFound(err) { return \"\", nil }` branch was removed so the wrapped not-found error is returned to the caller. The caller reconcileDeployment now checks `err != nil && !apierrors.IsNotFound(err)` to tolerate not-found gracefully. The function's doc comment was updated from 'returns an empty string without error' to 'the not-found error is returned to the caller'. The test TestFernetKeysHash_SecretNotFound was updated to assert that a not-found error IS returned (using apierrors.IsNotFound) instead of asserting no error."
+    }
+  ],
+  "resolution_summary": "The review comment requested that fernetKeysHash return the not-found error to the caller instead of swallowing it. The fix removed the IsNotFound early-return inside fernetKeysHash so all errors (including not-found) are now propagated. The caller reconcileDeployment was updated to tolerate not-found errors specifically (continuing with an empty hash) while still failing on unexpected errors. The doc comment on fernetKeysHash was also updated to reflect the new behaviour.",
+  "github_review_id": 3959673840
+}

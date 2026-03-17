@@ -6,12 +6,17 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -24,11 +29,33 @@ import (
 
 // Feature: CC-0013
 
+// fernetKeysHash reads the fernet-keys Secret for the given Keystone instance
+// and returns a deterministic SHA-256 hex digest of its Data map. If the Secret
+// does not exist, the not-found error is returned to the caller (CC-0015).
+func (r *KeystoneReconciler) fernetKeysHash(ctx context.Context, keystone *keystonev1alpha1.Keystone) (string, error) {
+	secretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
+	var secret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      secretName,
+		Namespace: keystone.Namespace,
+	}, &secret); err != nil {
+		return "", fmt.Errorf("getting fernet-keys Secret %s/%s: %w", keystone.Namespace, secretName, err)
+	}
+	// json.Marshal sorts map keys, so the hash is deterministic (CC-0015).
+	data, _ := json.Marshal(secret.Data)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
 // reconcileDeployment ensures the Keystone API Deployment and Service exist
 // with the correct spec. It sets the DeploymentReady condition and the
 // status endpoint when the Deployment becomes available (CC-0013, REQ-006, REQ-012).
 func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
-	deploy := buildKeystoneDeployment(keystone, configMapName)
+	hash, err := r.fernetKeysHash(ctx, keystone)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, fmt.Errorf("computing fernet-keys hash: %w", err)
+	}
+	deploy := buildKeystoneDeployment(keystone, configMapName, hash)
 	ready, err := deployment.EnsureDeployment(ctx, r.Client, r.Scheme, keystone, deploy)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring Deployment: %w", err)
@@ -67,7 +94,7 @@ func keystoneAppLabel(keystone *keystonev1alpha1.Keystone) string {
 	return fmt.Sprintf("%s-api", keystone.Name)
 }
 
-func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName string) *appsv1.Deployment {
+func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName string, fernetKeysHash string) *appsv1.Deployment {
 	appLabel := keystoneAppLabel(keystone)
 	labels := map[string]string{"app": appLabel}
 	replicas := int32(keystone.Spec.Replicas)
@@ -86,6 +113,9 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
+					Annotations: map[string]string{
+						"keystone.c5c3.io/fernet-keys-hash": fernetKeysHash,
+					},
 				},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{

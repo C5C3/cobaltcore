@@ -6,6 +6,9 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -13,6 +16,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -75,7 +79,7 @@ func newDeployTestReconciler(s *runtime.Scheme, objs ...client.Object) *Keystone
 // readyDeployment returns a Deployment that matches what buildKeystoneDeployment
 // would produce, but with status indicating it is available and ready.
 func readyDeployment(ks *keystonev1alpha1.Keystone, configMapName string) *appsv1.Deployment {
-	deploy := buildKeystoneDeployment(ks, configMapName)
+	deploy := buildKeystoneDeployment(ks, configMapName, "")
 	replicas := int32(ks.Spec.Replicas)
 	deploy.Spec.Replicas = &replicas
 	deploy.Generation = 1
@@ -92,7 +96,7 @@ func readyDeployment(ks *keystonev1alpha1.Keystone, configMapName string) *appsv
 
 // notReadyDeployment returns a Deployment that exists but is not yet available.
 func notReadyDeployment(ks *keystonev1alpha1.Keystone, configMapName string) *appsv1.Deployment {
-	deploy := buildKeystoneDeployment(ks, configMapName)
+	deploy := buildKeystoneDeployment(ks, configMapName, "")
 	deploy.Generation = 1
 	deploy.Status.ObservedGeneration = 1
 	deploy.Status.ReadyReplicas = 0
@@ -354,4 +358,115 @@ func TestReconcileDeployment_ServiceCreatedAlongsideDeployment(t *testing.T) {
 	// Both should have owner references.
 	g.Expect(deploy.OwnerReferences).To(HaveLen(1))
 	g.Expect(svc.OwnerReferences).To(HaveLen(1))
+}
+
+// Feature: CC-0015
+
+func deployTestFernetKeysSecret(ks *keystonev1alpha1.Keystone) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ks.Name + "-fernet-keys",
+			Namespace: ks.Namespace,
+		},
+		Data: map[string][]byte{
+			"0": []byte("fernet-key-0"),
+			"1": []byte("fernet-key-1"),
+		},
+	}
+}
+
+func TestBuildKeystoneDeployment_FernetKeysHashAnnotation(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+	hash := "abc123def456"
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", hash)
+
+	g.Expect(deploy.Spec.Template.Annotations).To(HaveKeyWithValue(
+		"keystone.c5c3.io/fernet-keys-hash", hash,
+	))
+}
+
+func TestBuildKeystoneDeployment_FernetKeysHashAnnotation_EmptyHash(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+
+	g.Expect(deploy.Spec.Template.Annotations).To(HaveKeyWithValue(
+		"keystone.c5c3.io/fernet-keys-hash", "",
+	))
+}
+
+func TestFernetKeysHash_Deterministic(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+
+	secret1 := deployTestFernetKeysSecret(ks)
+	secret2 := deployTestFernetKeysSecret(ks)
+
+	// Two identical secrets must produce the same hash.
+	r1 := newDeployTestReconciler(s, ks, secret1)
+	hash1, err := r1.fernetKeysHash(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	r2 := newDeployTestReconciler(s, ks, secret2)
+	hash2, err := r2.fernetKeysHash(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(hash1).To(Equal(hash2))
+
+	// Verify hash is a 64-char hex string (SHA-256 = 32 bytes = 64 hex chars).
+	g.Expect(hash1).To(MatchRegexp("^[0-9a-f]{64}$"))
+
+	// Modify one key and verify different hash.
+	secret3 := deployTestFernetKeysSecret(ks)
+	secret3.Data["0"] = []byte("different-fernet-key")
+	r3 := newDeployTestReconciler(s, ks, secret3)
+	hash3, err := r3.fernetKeysHash(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(hash3).NotTo(Equal(hash1))
+}
+
+func TestFernetKeysHash_SecretNotFound(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+
+	// No fernet-keys Secret in the fake client — expect not-found error (CC-0015).
+	r := newDeployTestReconciler(s, ks)
+
+	hash, err := r.fernetKeysHash(context.Background(), ks)
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "expected not-found error, got: %v", err)
+	g.Expect(hash).To(Equal(""))
+}
+
+func TestReconcileDeployment_FernetKeysHashFromSecret(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+	secret := deployTestFernetKeysSecret(ks)
+	r := newDeployTestReconciler(s, ks, secret)
+
+	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	// Deployment just created, not ready yet — should requeue.
+	g.Expect(result.RequeueAfter).To(Equal(10 * time.Second))
+
+	// Verify the created Deployment has the fernet-keys hash annotation.
+	var deploy appsv1.Deployment
+	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
+		Name: "test-keystone-api", Namespace: "default",
+	}, &deploy)).To(Succeed())
+
+	// Compute the expected hash from the secret data.
+	data, _ := json.Marshal(secret.Data)
+	sum := sha256.Sum256(data)
+	expectedHash := hex.EncodeToString(sum[:])
+
+	g.Expect(deploy.Spec.Template.Annotations).To(HaveKeyWithValue(
+		"keystone.c5c3.io/fernet-keys-hash", expectedHash,
+	))
 }

@@ -452,3 +452,204 @@ func TestReconcileConfig_ImmutableConfigMapWithOwnerReference(t *testing.T) {
 	g.Expect(cm.OwnerReferences[0].Name).To(Equal("test-keystone"))
 	g.Expect(cm.OwnerReferences[0].UID).To(Equal(ks.UID))
 }
+
+func TestResolveDatabaseHost(t *testing.T) {
+	tests := []struct {
+		name     string
+		keystone *keystonev1alpha1.Keystone
+		expected string
+	}{
+		{
+			name: "managed mode with default port",
+			keystone: &keystonev1alpha1.Keystone{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "default"},
+				Spec: keystonev1alpha1.KeystoneSpec{
+					Database: commonv1.DatabaseSpec{
+						ClusterRef: &corev1.LocalObjectReference{Name: "mariadb"},
+						Port:       0,
+					},
+				},
+			},
+			expected: "mariadb.default.svc:3306",
+		},
+		{
+			name: "managed mode with explicit port",
+			keystone: &keystonev1alpha1.Keystone{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "default"},
+				Spec: keystonev1alpha1.KeystoneSpec{
+					Database: commonv1.DatabaseSpec{
+						ClusterRef: &corev1.LocalObjectReference{Name: "mariadb"},
+						Port:       3307,
+					},
+				},
+			},
+			expected: "mariadb.default.svc:3307",
+		},
+		{
+			name: "brownfield with explicit port",
+			keystone: &keystonev1alpha1.Keystone{
+				Spec: keystonev1alpha1.KeystoneSpec{
+					Database: commonv1.DatabaseSpec{
+						Host: "db.example.com",
+						Port: 3306,
+					},
+				},
+			},
+			expected: "db.example.com:3306",
+		},
+		{
+			name: "brownfield with default port",
+			keystone: &keystonev1alpha1.Keystone{
+				Spec: keystonev1alpha1.KeystoneSpec{
+					Database: commonv1.DatabaseSpec{
+						Host: "db.example.com",
+						Port: 0,
+					},
+				},
+			},
+			expected: "db.example.com:3306",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			result := resolveDatabaseHost(tt.keystone)
+			g.Expect(result).To(Equal(tt.expected))
+		})
+	}
+}
+
+func TestDBPort(t *testing.T) {
+	tests := []struct {
+		name     string
+		keystone *keystonev1alpha1.Keystone
+		expected int32
+	}{
+		{
+			name: "explicit port",
+			keystone: &keystonev1alpha1.Keystone{
+				Spec: keystonev1alpha1.KeystoneSpec{
+					Database: commonv1.DatabaseSpec{
+						Port: 3307,
+					},
+				},
+			},
+			expected: 3307,
+		},
+		{
+			name: "zero port defaults to 3306",
+			keystone: &keystonev1alpha1.Keystone{
+				Spec: keystonev1alpha1.KeystoneSpec{
+					Database: commonv1.DatabaseSpec{
+						Port: 0,
+					},
+				},
+			},
+			expected: 3306,
+		},
+		{
+			name: "negative port defaults to 3306",
+			keystone: &keystonev1alpha1.Keystone{
+				Spec: keystonev1alpha1.KeystoneSpec{
+					Database: commonv1.DatabaseSpec{
+						Port: -1,
+					},
+				},
+			},
+			expected: 3306,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			result := dbPort(tt.keystone)
+			g.Expect(result).To(Equal(tt.expected))
+		})
+	}
+}
+
+func TestResolveCacheServers(t *testing.T) {
+	tests := []struct {
+		name     string
+		keystone *keystonev1alpha1.Keystone
+		expected string
+	}{
+		{
+			name: "brownfield with multiple servers",
+			keystone: &keystonev1alpha1.Keystone{
+				Spec: keystonev1alpha1.KeystoneSpec{
+					Cache: commonv1.CacheSpec{
+						Servers: []string{"mc-0:11211", "mc-1:11211"},
+					},
+				},
+			},
+			expected: "mc-0:11211,mc-1:11211",
+		},
+		{
+			name: "brownfield with single server",
+			keystone: &keystonev1alpha1.Keystone{
+				Spec: keystonev1alpha1.KeystoneSpec{
+					Cache: commonv1.CacheSpec{
+						Servers: []string{"mc:11211"},
+					},
+				},
+			},
+			expected: "mc:11211",
+		},
+		{
+			name: "managed mode with default replicas",
+			keystone: &keystonev1alpha1.Keystone{
+				Spec: keystonev1alpha1.KeystoneSpec{
+					Cache: commonv1.CacheSpec{
+						ClusterRef: &corev1.LocalObjectReference{Name: "memcached"},
+						Replicas:   0,
+					},
+				},
+			},
+			expected: "memcached-0.memcached:11211,memcached-1.memcached:11211,memcached-2.memcached:11211",
+		},
+		{
+			name: "managed mode with custom replicas",
+			keystone: &keystonev1alpha1.Keystone{
+				Spec: keystonev1alpha1.KeystoneSpec{
+					Cache: commonv1.CacheSpec{
+						ClusterRef: &corev1.LocalObjectReference{Name: "mc"},
+						Replicas:   5,
+					},
+				},
+			},
+			expected: "memcached-0.mc:11211,memcached-1.mc:11211,memcached-2.mc:11211,memcached-3.mc:11211,memcached-4.mc:11211",
+		},
+		{
+			name: "managed mode with single replica",
+			keystone: &keystonev1alpha1.Keystone{
+				Spec: keystonev1alpha1.KeystoneSpec{
+					Cache: commonv1.CacheSpec{
+						ClusterRef: &corev1.LocalObjectReference{Name: "mc"},
+						Replicas:   1,
+					},
+				},
+			},
+			expected: "memcached-0.mc:11211",
+		},
+		{
+			name: "neither ClusterRef nor Servers set",
+			keystone: &keystonev1alpha1.Keystone{
+				Spec: keystonev1alpha1.KeystoneSpec{
+					Cache: commonv1.CacheSpec{},
+				},
+			},
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			result := resolveCacheServers(tt.keystone)
+			g.Expect(result).To(Equal(tt.expected))
+		})
+	}
+}

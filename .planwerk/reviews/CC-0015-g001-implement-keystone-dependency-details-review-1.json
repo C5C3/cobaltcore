@@ -1,0 +1,93 @@
+{
+  "metadata": {
+    "feature_id": "CC-0015",
+    "title": "G001: Implement Keystone dependency details",
+    "date": "2026-03-16",
+    "verdict": "NEEDS_CHANGES"
+  },
+  "summary": "CC-0015 implements: (1) fernet-keys hash annotation on Deployment pod template via fernetKeysHash() helper and buildKeystoneDeployment() parameter, (2) table-driven unit tests for resolveDatabaseHost(), dbPort(), and resolveCacheServers(), (3) envtest integration tests for CronJob and bootstrap Job detailed specs, (4) reference documentation updates. All unit tests pass (54 tests, 0 failures). Integration tests compile correctly and use proper skip guards. One golangci-lint violation (QF1008) on new code blocks the merge.",
+  "verdict": "NEEDS_CHANGES",
+  "review_steps": {
+    "1_INTENT": "Plan specifies: fernet-keys hash annotation on Deployment pod template, table-driven unit tests for 3 pure helper functions, envtest integration tests for CronJob and bootstrap Job specs, documentation update. All implemented.",
+    "2_SCOPE": "Changed files: reconcile_deployment.go, reconcile_deployment_test.go, reconcile_config_test.go, integration_test.go, keystone-reconciler.md, progress JSON. All within expected scope. No scope creep detected.",
+    "3_VERIFICATION": "go vet: PASS. go test: 54/54 PASS. golangci-lint: 1 FAIL (QF1008 staticcheck on new code at reconcile_deployment.go:38).",
+    "4_PATTERNS": "Hash pattern matches internal/common/job/job.go PodSpecHash() — same json.Marshal + sha256 + hex.EncodeToString approach. Tests follow gomega NewGomegaWithT pattern. Integration tests follow envtest skip guard + namespace isolation patterns. One deviation: r.Client.Get vs r.Get idiom.",
+    "5_TESTS": "Comprehensive: annotation presence, empty hash, determinism, secret-not-found, end-to-end reconciliation with hash, all helper function edge cases, CronJob spec fields, bootstrap Job spec fields. Good coverage of happy path, edge cases, and error paths.",
+    "6_SECURITY": "No security concerns. Hash is computed from Secret.Data (already in-cluster). No user input validation gaps. No secrets exposed in logs.",
+    "7_COMPLEXITY": "Minimal and appropriate. fernetKeysHash() is a clean 15-line function. buildKeystoneDeployment() change is a 3-line annotation addition. No over-engineering.",
+    "8_COMPLETENESS": "All 6 tasks from the plan are implemented and marked done. Documentation updated. No stubs or TODOs remain in new code.",
+    "9_PROMPT_QUALITY": "N/A — no new prompt files."
+  },
+  "tests_checklist": [
+    {"item": "All existing unit tests pass without regressions (54/54)", "checked": true},
+    {"item": "New fernet hash tests cover annotation presence, empty hash, determinism, not-found", "checked": true},
+    {"item": "Table-driven tests for resolveDatabaseHost cover managed/brownfield/default port", "checked": true},
+    {"item": "Table-driven tests for dbPort cover explicit, zero, and negative values", "checked": true},
+    {"item": "Table-driven tests for resolveCacheServers cover managed/brownfield/empty/single/custom replicas", "checked": true},
+    {"item": "Integration test for CronJob verifies schedule, init container, volumes, env vars, ServiceAccount", "checked": true},
+    {"item": "Integration test for bootstrap Job verifies command, args, env, backoffLimit, ttlSeconds, volumes", "checked": true},
+    {"item": "Tests follow NewGomegaWithT pattern", "checked": true},
+    {"item": "Integration tests use SkipIfEnvTestUnavailable guard", "checked": true},
+    {"item": "Integration tests use namespace isolation with GenerateName", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing hash computation pattern (json.Marshal + sha256 + hex)", "checked": true},
+    {"item": "fernetKeysHash is a focused single-responsibility function", "checked": true},
+    {"item": "Error handling follows existing pattern (IsNotFound returns empty, other errors wrapped)", "checked": true},
+    {"item": "json.Marshal determinism guaranteed for map[string][]byte (Go encoding/json v1 sorts keys)", "checked": true},
+    {"item": "No dead code or commented-out code", "checked": true},
+    {"item": "golangci-lint passes without errors", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "No secrets exposed in logs or error messages", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "Hash computation uses SHA-256 (appropriate for integrity checking)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is minimal — 3-line annotation + 15-line helper", "checked": true},
+    {"item": "Follows existing PodSpecHash pattern from internal/common/job", "checked": true},
+    {"item": "Integration tests reuse existing helpers (setupEnvTestWithController, createPrerequisites, etc.)", "checked": true},
+    {"item": "driveReconciliationToBootstrapJob follows same structure as driveFullReconciliation", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unused code or imports", "checked": true},
+    {"item": "No future-proofing or extra configurability", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "fernetKeysHash returns error early if Secret Get fails (non-NotFound)", "checked": true},
+    {"item": "reconcileDeployment propagates fernetKeysHash error immediately", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Secret not-found handled gracefully (returns empty string)", "checked": true},
+    {"item": "Hash is empty string when Secret doesn't exist, not a sentinel value", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "id": "V3-1",
+      "check_id": "V3",
+      "severity": "blocking",
+      "description": "golangci-lint QF1008 (staticcheck): redundant embedded field 'Client' in selector. The new code at reconcile_deployment.go:38 uses `r.Client.Get(...)` but since KeystoneReconciler embeds client.Client, the idiomatic form is `r.Get(...)`. This is flagged by the project's enabled staticcheck linter and fails CI.",
+      "location": "operators/keystone/internal/controller/reconcile_deployment.go:38",
+      "fix": "Change `r.Client.Get(ctx, types.NamespacedName{...}, &secret)` to `r.Get(ctx, types.NamespacedName{...}, &secret)`. This matches the pattern used in keystone_controller.go:61 and reconcile_fernet.go:68."
+    },
+    {
+      "id": "PC3-1",
+      "check_id": "PC3",
+      "severity": "blocking",
+      "description": "Inconsistent client access pattern in production code. The new fernetKeysHash() uses `r.Client.Get()` while sibling reconcilers use `r.Get()` directly. In production code (non-test), the codebase uses `r.Get()` (keystone_controller.go:61, reconcile_fernet.go:68). The `r.Client.Get()` form is used only in test code where the reconciler is constructed with an explicit Client field. The new production code should follow the production pattern.",
+      "location": "operators/keystone/internal/controller/reconcile_deployment.go:38",
+      "fix": "Same fix as V3-1: change `r.Client.Get` to `r.Get`."
+    }
+  ],
+  "suggested_improvements": [
+    "Minor (D2): The doc comment on fernetKeysHash at line 32-34 mentions CC-0015/REQ-001 but could also note that json.Marshal sorts map keys, which is why the hash is deterministic. The docs in keystone-reconciler.md already document this — consider adding a brief inline comment at line 48 for future readers."
+  ],
+  "next_steps": [
+    "Fix QF1008: change r.Client.Get to r.Get in reconcile_deployment.go:38",
+    "Re-run golangci-lint to confirm clean pass"
+  ],
+  "detected_patterns": []
+}

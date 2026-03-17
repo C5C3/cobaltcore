@@ -1,7 +1,7 @@
 ---
 title: Keystone Reconciler Architecture
 quadrant: operator
-feature: CC-0013
+feature: CC-0013, CC-0015
 ---
 
 # Keystone Reconciler Architecture
@@ -520,6 +520,29 @@ spec. Sets `status.endpoint` when the Deployment becomes available.
 > **Note:** This sub-reconciler accepts the `configMapName` returned by
 > `reconcileConfig` to reference the correct immutable ConfigMap in volume mounts.
 
+**Fernet Keys Hash Annotation (CC-0015):**
+
+Before building the Deployment, `reconcileDeployment` calls `fernetKeysHash()` to
+compute a SHA-256 digest of the `{name}-fernet-keys` Secret data. This hash is set
+as the pod template annotation `keystone.c5c3.io/fernet-keys-hash`, which triggers a
+rolling restart whenever the Fernet rotation CronJob updates the Secret.
+
+```text
+CronJob rotates keys → Secret data changes → secretToKeystoneMapper watch
+  → Reconcile() → reconcileDeployment() reads Secret → computes hash
+  → annotation value changes → Kubernetes triggers rolling restart
+```
+
+The `fernetKeysHash()` helper:
+
+| Behavior | Detail |
+| --- | --- |
+| Secret name | `{keystone.Name}-fernet-keys` |
+| Algorithm | SHA-256 of `json.Marshal(secret.Data)` |
+| Output | Hex-encoded digest (64 characters) |
+| Secret not found | Returns empty string (no error) — safe because `reconcileFernetKeys` runs before `reconcileDeployment` |
+| Determinism | `json.Marshal` on `map[string][]byte` sorts keys alphabetically |
+
 **Deployment Spec:**
 
 | Field | Value |
@@ -530,6 +553,12 @@ spec. Sets `status.endpoint` when the Deployment becomes available.
 | Container name | `keystone-api` |
 | Image | `{spec.image.repository}:{spec.image.tag}` |
 | Port | 5000 (named `keystone-api`) |
+
+**Pod Template Annotations:**
+
+| Annotation | Value | Purpose |
+| --- | --- | --- |
+| `keystone.c5c3.io/fernet-keys-hash` | SHA-256 hex digest of fernet-keys Secret data | Triggers rolling restart on Fernet key rotation (CC-0015) |
 
 **Probes:**
 
@@ -695,8 +724,9 @@ The reconciler has comprehensive unit tests using `gomega` with `NewGomegaWithT(
 | `reconcile_database_test.go` | Managed/brownfield modes, MariaDB CRs, db_sync lifecycle, stale Job detection |
 | `reconcile_fernet_test.go` | Key generation, Secret idempotency, CronJob schedule, PushSecret, key validity |
 | `reconcile_config_test.go` | INI generation, extraConfig merge, plugin config, policy overrides, ConfigMap hashing |
-| `reconcile_deployment_test.go` | Deployment spec, Service creation, readiness, endpoint, owner references |
+| `reconcile_deployment_test.go` | Deployment spec, Service creation, readiness, endpoint, owner references, fernet-keys hash annotation (CC-0015) |
 | `reconcile_bootstrap_test.go` | Job creation, completion, failure, stale detection, TTL/backoff |
+| `integration_test.go` | Full reconciliation envtest: CronJob spec, bootstrap Job spec, brownfield mode, condition progression (CC-0015) |
 
 ---
 
@@ -724,7 +754,8 @@ operators/keystone/
     │   ├── reconcile_fernet_test.go            Fernet tests
     │   ├── reconcile_config_test.go            Config tests
     │   ├── reconcile_deployment_test.go        Deployment tests
-    │   └── reconcile_bootstrap_test.go         Bootstrap tests
+    │   ├── reconcile_bootstrap_test.go         Bootstrap tests
+    │   └── integration_test.go                 Envtest integration tests (CC-0015)
     └── testutil/
         └── envtest_setup.go                    Keystone-specific envtest helper
 ```
