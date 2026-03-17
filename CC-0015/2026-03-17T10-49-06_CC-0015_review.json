@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-17T10:49:06.386833+00:00",
+  "feature_id": "CC-0015",
+  "task_type": "review",
+  "session_key": "CC-0015",
+  "model": "opus",
+  "prompt": "Analyze the following external review that has been addressed.\nIdentify what our INTERNAL code review should have caught\nBEFORE the external reviewer found it.\n\n## External Review Feedback\n\n\n## Code Comments (with Resolutions)\n- [operators/keystone/internal/controller/reconcile_deployment.go:44] Returning an empty string for the hash and indicating no error does not seem to make much sense in this specific case. It is better for this function to return the is-not-found error to the caller.\n\n## Resolution Summary\nThe review comment requested that fernetKeysHash return the not-found error to the caller instead of swallowing it. The fix removed the IsNotFound early-return inside fernetKeysHash so all errors (including not-found) are now propagated. The caller reconcileDeployment was updated to tolerate not-found errors specifically (continuing with an empty hash) while still failing on unexpected errors. The doc comment on fernetKeysHash was also updated to reflect the new behaviour.\n\nExtract 0-3 review improvement patterns. For each:\n- name: Short, action-oriented name IN ENGLISH\n- review_area: error-handling | security | testing | performance | type-safety | validation | architecture | naming | documentation\n- detection_hint: How should the reviewer detect this?\n- severity: BLOCKING | WARNING\n- what_to_check: What exactly to check\n- why_it_matters: Why it matters\n- example_feedback: Original quote from the reviewer\n- example_fix: What was changed\n\nQUALITY: Only real review blindspots. No subjective style opinions.\nNothing that only a domain expert could know.\nIf nothing extractable: empty array.\n\nLANGUAGE: ALL fields MUST be in English.\n\nResponse: ONLY JSON array.",
+  "prompt_length": 1691,
+  "caller": "run_claude_cli"
+}
