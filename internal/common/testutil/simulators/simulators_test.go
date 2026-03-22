@@ -142,7 +142,7 @@ func TestSimulateMariaDBReady_notFound(t *testing.T) {
 func TestSimulateMemcachedReady(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	memcached := newUnstructured("cache.c5c3.io", "v1alpha1", "Memcached", "test-memcached", "default")
+	memcached := newUnstructured("memcached.c5c3.io", "v1beta1", "Memcached", "test-memcached", "default")
 	servers := []string{"mc-0.mc:11211", "mc-1.mc:11211"}
 
 	c := fake.NewClientBuilder().
@@ -154,7 +154,7 @@ func TestSimulateMemcachedReady(t *testing.T) {
 	err := SimulateMemcachedReady(context.Background(), c, client.ObjectKeyFromObject(memcached), 2, servers)
 	g.Expect(err).NotTo(HaveOccurred())
 
-	updated := newUnstructured("cache.c5c3.io", "v1alpha1", "Memcached", "test-memcached", "default")
+	updated := newUnstructured("memcached.c5c3.io", "v1beta1", "Memcached", "test-memcached", "default")
 	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(memcached), updated)).To(Succeed())
 
 	readyReplicas, found, err := unstructured.NestedInt64(updated.Object, "status", "readyReplicas")
@@ -181,7 +181,7 @@ func TestSimulateMemcachedReady(t *testing.T) {
 func TestSimulateMemcachedReady_idempotent(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	memcached := newUnstructured("cache.c5c3.io", "v1alpha1", "Memcached", "test-memcached", "default")
+	memcached := newUnstructured("memcached.c5c3.io", "v1beta1", "Memcached", "test-memcached", "default")
 	servers := []string{"mc-0.mc:11211"}
 
 	c := fake.NewClientBuilder().
@@ -196,7 +196,7 @@ func TestSimulateMemcachedReady_idempotent(t *testing.T) {
 	g.Expect(SimulateMemcachedReady(ctx, c, key, 1, servers)).To(Succeed())
 	g.Expect(SimulateMemcachedReady(ctx, c, key, 1, servers)).To(Succeed())
 
-	updated := newUnstructured("cache.c5c3.io", "v1alpha1", "Memcached", "test-memcached", "default")
+	updated := newUnstructured("memcached.c5c3.io", "v1beta1", "Memcached", "test-memcached", "default")
 	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
 
 	conditions, found, err := unstructured.NestedSlice(updated.Object, "status", "conditions")
@@ -208,7 +208,7 @@ func TestSimulateMemcachedReady_idempotent(t *testing.T) {
 func TestSimulateMemcachedReady_emptyServerList(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	memcached := newUnstructured("cache.c5c3.io", "v1alpha1", "Memcached", "test-memcached", "default")
+	memcached := newUnstructured("memcached.c5c3.io", "v1beta1", "Memcached", "test-memcached", "default")
 
 	c := fake.NewClientBuilder().
 		WithScheme(newScheme()).
@@ -218,7 +218,7 @@ func TestSimulateMemcachedReady_emptyServerList(t *testing.T) {
 
 	g.Expect(SimulateMemcachedReady(context.Background(), c, client.ObjectKeyFromObject(memcached), 0, []string{})).To(Succeed())
 
-	updated := newUnstructured("cache.c5c3.io", "v1alpha1", "Memcached", "test-memcached", "default")
+	updated := newUnstructured("memcached.c5c3.io", "v1beta1", "Memcached", "test-memcached", "default")
 	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(memcached), updated)).To(Succeed())
 
 	readyReplicas, found, err := unstructured.NestedInt64(updated.Object, "status", "readyReplicas")

@@ -1,0 +1,76 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Kustomize overlay for kind cluster — base FluxCD manifests.
+# References the production flux-system kustomization and patches
+# the OpenBao HelmRelease to standalone mode (1 replica, HA disabled,
+# no retry_join peers, standard storage class) suitable for a
+# single-node kind cluster.
+# Feature: CC-0010, REQ-003
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../flux-system
+
+patches:
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: openbao
+      namespace: openbao-system
+    patch: |
+      apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: openbao
+        namespace: openbao-system
+      spec:
+        values:
+          server:
+            ha:
+              enabled: false
+              replicas: 1
+            standalone:
+              enabled: true
+              config: |
+                ui = false
+
+                listener "tcp" {
+                  tls_disable     = 0
+                  address         = "[::]:8200"
+                  cluster_address = "[::]:8201"
+                  tls_cert_file   = "/openbao/tls/tls.crt"
+                  tls_key_file    = "/openbao/tls/tls.key"
+                }
+
+                storage "raft" {
+                  path = "/openbao/data"
+                }
+
+                service_registration "kubernetes" {}
+            dataStorage:
+              storageClass: standard
+
+  # Memcached operator: disable webhooks in kind to avoid cert-manager
+  # webhook TLS provisioning issues (liveness probe kills the container
+  # after ~2.5min when the webhook server cannot bind its TLS port).
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: memcached-operator
+      namespace: memcached-system
+    patch: |
+      apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: memcached-operator
+        namespace: memcached-system
+      spec:
+        values:
+          webhook:
+            enabled: false

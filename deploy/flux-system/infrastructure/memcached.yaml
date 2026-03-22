@@ -7,7 +7,7 @@
 # cluster with stable DNS-based service discovery for operator consumers.
 # Feature: CC-0008, REQ-006
 ---
-apiVersion: cache.c5c3.io/v1alpha1
+apiVersion: memcached.c5c3.io/v1beta1
 kind: Memcached
 metadata:
   name: openstack-memcached

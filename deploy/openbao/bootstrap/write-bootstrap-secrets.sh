@@ -21,8 +21,9 @@ source "${SCRIPT_DIR}/common.sh"
 BAO_TOKEN="${BAO_TOKEN:?BAO_TOKEN must be set}"
 
 # Marker value: use as a key's value to generate a cryptographically random
-# password (base64, 32 bytes) inside the pod.  Generating in-pod avoids
-# cleartext passwords appearing in host process argument lists.
+# password (base64, 32 bytes) inside the pod using OpenBao's sys/tools/random
+# API.  Generating in-pod avoids cleartext passwords appearing in host process
+# argument lists.
 readonly GENERATED_PASSWORD="@generate"
 
 # Write a secret only if it does not already exist in the KV-v2 store.
@@ -51,7 +52,7 @@ write_secret_if_missing() {
     local key="${arg%%=*}"
     local val="${arg#*=}"
     if [[ "${val}" == "${GENERATED_PASSWORD}" ]]; then
-      put_args+=" ${key}=\"\$(openssl rand -base64 32)\""
+      put_args+=" ${key}=\"\$(bao write -field=random_bytes sys/tools/random/32 format=base64)\""
     else
       # Quote non-generated values to guard against shell metacharacters
       # (spaces, equals signs in values, etc.) in the sh -c command string.

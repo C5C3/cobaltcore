@@ -1,0 +1,159 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for infrastructure stack health verification (CC-0010).
+# Asserts that all deployed infrastructure components are running and healthy
+# after the full deployment sequence (make deploy-infra) completes.
+#
+# Covers:
+#   - Operator Deployments: cert-manager, external-secrets, mariadb-operator,
+#     memcached-operator
+#   - OpenBao StatefulSet readiness
+#   - Infrastructure CRs: ClusterIssuer, MariaDB, Memcached
+#   - ESO resources: ClusterSecretStore (Valid), ExternalSecrets (SecretSynced)
+#
+# REQ-008 (CC-0010)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: infra-stack-health
+spec:
+  # Extended assert timeout (~5min) for operator startup and CRD reconciliation.
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Operator Deployments ────────────────────────────────────────
+  # Verify that all infrastructure operator Deployments have available replicas.
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cert-manager
+            namespace: cert-manager
+          status:
+            (availableReplicas > `0`): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: external-secrets
+            namespace: external-secrets
+          status:
+            (availableReplicas > `0`): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: mariadb-operator
+            namespace: mariadb-system
+          status:
+            (availableReplicas > `0`): true
+    # Verified from CI run 23262026727: pod name memcached-operator-8547dc8f67-lhk4j
+    # confirms the Deployment is named "memcached-operator" (not the kubebuilder
+    # convention -controller-manager).
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: memcached-operator
+            namespace: memcached-system
+          status:
+            (availableReplicas > `0`): true
+  # ── Step 2: OpenBao StatefulSet ─────────────────────────────────────────
+  # Verify that the OpenBao StatefulSet has at least one ready replica.
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: openbao
+            namespace: openbao-system
+          status:
+            (readyReplicas >= `1`): true
+  # ── Step 3: Infrastructure CRs ─────────────────────────────────────────
+  # Verify that ClusterIssuer, MariaDB CR, and Memcached CR have Ready
+  # conditions.
+  - try:
+    - assert:
+        resource:
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: selfsigned-cluster-issuer
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: MariaDB
+          metadata:
+            name: openstack-db
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: memcached.c5c3.io/v1beta1
+          kind: Memcached
+          metadata:
+            name: openstack-memcached
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+  # ── Step 4: ESO Resources ──────────────────────────────────────────────
+  # Verify that the ClusterSecretStore is Valid and all ExternalSecrets have
+  # reached SecretSynced status.
+  - try:
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ClusterSecretStore
+          metadata:
+            name: openbao-cluster-store
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: Valid
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: keystone-admin
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: SecretSynced
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: keystone-db
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: SecretSynced
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: mariadb-root-password
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: SecretSynced

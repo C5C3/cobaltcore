@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Kustomize overlay for kind cluster — CRD-dependent infrastructure resources.
+# References the production flux-system/infrastructure kustomization and
+# patches MariaDB CR (1 replica, Galera disabled, MaxScale disabled,
+# standard storage class) and Memcached CR (1 replica) for single-node
+# kind cluster resource constraints.
+# Feature: CC-0010, REQ-003
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../flux-system/infrastructure
+
+patches:
+  # MariaDB: single replica, no Galera, no MaxScale, standard storage
+  - target:
+      group: k8s.mariadb.com
+      version: v1alpha1
+      kind: MariaDB
+      name: openstack-db
+      namespace: openstack
+    patch: |
+      apiVersion: k8s.mariadb.com/v1alpha1
+      kind: MariaDB
+      metadata:
+        name: openstack-db
+        namespace: openstack
+      spec:
+        replicas: 1
+        galera:
+          enabled: false
+        maxScale:
+          enabled: false
+        storage:
+          size: 1Gi
+          storageClassName: standard
+
+  # Memcached: single replica
+  - target:
+      group: memcached.c5c3.io
+      version: v1beta1
+      kind: Memcached
+      name: openstack-memcached
+      namespace: openstack
+    patch: |
+      apiVersion: memcached.c5c3.io/v1beta1
+      kind: Memcached
+      metadata:
+        name: openstack-memcached
+        namespace: openstack
+      spec:
+        replicas: 1

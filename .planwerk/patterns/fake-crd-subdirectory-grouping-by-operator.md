@@ -46,7 +46,7 @@ func fakeCRDsDirs() []string {
 //	cert-manager/        — cert-manager.io CRDs (Certificate, ClusterIssuer)
 //	external-secrets/    — external-secrets.io CRDs (ExternalSecret, PushSecret, ClusterSecretStore)
 //	mariadb-operator/    — k8s.mariadb.com CRDs (MariaDB, Database, Grant, User)
-//	memcached-operator/  — cache.c5c3.io CRDs (Memcached)
+//	memcached-operator/  — memcached.c5c3.io CRDs (Memcached)
 //	rabbitmq-operator/   — rabbitmq.com CRDs (RabbitmqCluster)
 ```
 

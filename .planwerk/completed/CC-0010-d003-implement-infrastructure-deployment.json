@@ -2,8 +2,8 @@
   "feature_id": "CC-0010",
   "title": "D003: Implement infrastructure deployment automation E2E",
   "slug": "d003-implement-infrastructure-deployment",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 🏗️ large\n**Category:** infrastructure\n**Priority:** high\n**Feature ID:** S010 (CC-0014)\n\n---\n\n## Summary\n\nImplement `make deploy-infra` and `make teardown-infra` Makefile targets that deploy the full infrastructure stack (cert-manager, OpenBao, ESO, MariaDB Operator, Memcached Operator, infrastructure CRs, ExternalSecrets) to a kind cluster using FluxCD with kustomize overlays for kind-specific resource sizing. Bootstrap OpenBao end-to-end (init-unseal, secret engines, auth, policies, bootstrap secrets) to validate the full secret chain through ESO. Create a Chainsaw E2E test at `tests/e2e/infrastructure/infra-stack-health/chainsaw-test.yaml` validating all components reach healthy state. Extend `.github/workflows/ci.yaml` with an `e2e-infra` job running the full stack test on every PR and push to main.\n\n---\n\n## Scope\n\n**Included:**\n- `make deploy-infra` target replacing stub S008 — installs FluxCD in kind, applies existing manifests via kustomize overlays in dependency order\n- `make teardown-infra` target (new) — deletes the kind cluster\n- `make install-test-deps` target replacing stub S002 — installs chainsaw, flux CLI, kind, helm prerequisites\n- `make e2e` target replacing stub S002 — runs Chainsaw tests\n- Orchestration script `hack/deploy-infra.sh` — creates kind cluster, runs `flux install`, applies kustomize overlays in two phases (base → infrastructure), runs OpenBao bootstrap, waits for health\n- Cleanup script `hack/teardown-infra.sh` — `kind delete cluster`\n- Kind cluster config `hack/kind-config.yaml` (single control-plane node)\n- Kustomize overlays `deploy/kind/base/` and `deploy/kind/infrastructure/` — patches HelmReleases and CRs for reduced replicas and `standard` storage class\n- Full OpenBao bootstrap invocation (init-unseal → setup-secret-engines → setup-auth → setup-policies → write-bootstrap-secrets)\n- Chainsaw E2E test `tests/e2e/infrastructure/infra-stack-health/chainsaw-test.yaml` — asserts readiness of all operators, CRs, ClusterIssuer, and ExternalSecret sync status\n- GitHub Actions `e2e-infra` job in `.github/workflows/ci.yaml` using `helm/kind-action`, `fluxcd/flux2/action`, SHA-pinned actions per existing CI conventions\n\n**Excluded:**\n- Operator deployment (keystone-operator, c5c3-operator) — separate features S017/S022, YAGNI\n- Modification of existing `deploy/flux-system/` manifests — read-only reference, kind-specific differences handled via kustomize overlays in `deploy/kind/`\n- Production HA validation (3-replica Galera, multi-node Raft) — belongs to S024 stress tests, YAGNI\n- Image build or push — no operator images needed for infrastructure-only stack\n- Separate workflow file — single `ci.yaml` with new job, path-filtered optimization deferred\n\n---\n\n## Visualization\n\n```mermaid\nflowchart TD\n    subgraph MakeTargets[\"Makefile Targets\"]\n        ITD[\"make install-test-deps\"]\n        DI[\"make deploy-infra\"]\n        TI[\"make teardown-infra\"]\n        E2E[\"make e2e\"]\n    end\n\n    subgraph DeployScript[\"hack/deploy-infra.sh\"]\n        K[\"1. kind create cluster\"]\n        FI[\"2. flux install\"]\n        NS[\"3. kubectl apply -k deploy/kind/base\"]\n        WAIT1[\"4. Wait: HelmReleases Ready\"]\n        INF[\"5. kubectl apply -k deploy/kind/infrastructure\"]\n        WAIT2[\"6. Wait: OpenBao pods Ready\"]\n        BOOT[\"7. OpenBao bootstrap scripts\"]\n        WAIT3[\"8. Wait: ExternalSecrets Synced\"]\n    end\n\n    subgraph FluxReconciliation[\"FluxCD Reconciles HelmReleases\"]\n        CM[\"cert-manager\"]\n        OB[\"OpenBao\"]\n        MO[\"MariaDB Operator\"]\n        ESO[\"ESO\"]\n        MCO[\"Memcached Operator\"]\n    end\n\n    subgraph InfraCRs[\"Infrastructure CRs via Kustomize\"]\n        CI2[\"ClusterIssuer\"]\n        TLS[\"OpenBao TLS Certificate\"]\n        MDB[\"MariaDB CR 1 replica\"]\n        MC[\"Memcached CR 1 replica\"]\n        CSS[\"ClusterSecretStore\"]\n        ES[\"ExternalSecrets x3\"]\n    end\n\n    subgraph KindOverlays[\"deploy/kind/ Kustomize Overlays\"]\n        OVB[\"base/ — patches HelmRelease replicas and storage\"]\n        OVI[\"infrastructure/ — patches CR replicas and storage class\"]\n    end\n\n    DI --> K --> FI --> NS\n    NS --> OVB\n    OVB -->|\"FluxCD\"| FluxReconciliation\n    CM --> OB & MO & ESO & MCO\n    FluxReconciliation --> WAIT1\n    WAIT1 --> INF\n    INF --> OVI\n    OVI --> InfraCRs\n    InfraCRs --> WAIT2 --> BOOT --> WAIT3\n```\n\n```mermaid\nsequenceDiagram\n    participant CI as GitHub Actions\n    participant Kind as kind cluster\n    participant Flux as FluxCD\n    participant K8s as Kubernetes API\n    participant OB as OpenBao\n    participant CS as Chainsaw\n\n    CI->>Kind: kind create cluster\n    CI->>Flux: flux install\n    CI->>K8s: kubectl apply -k deploy/kind/base\n    Flux->>K8s: Reconcile cert-manager HelmRelease\n    Flux->>K8s: Reconcile openbao, mariadb-op, eso, memcached-op\n    CI->>K8s: Wait HelmReleases Ready\n    CI->>K8s: kubectl apply -k deploy/kind/infrastructure\n    K8s-->>K8s: cert-manager issues OpenBao TLS cert\n    CI->>K8s: Wait OpenBao pods Ready\n    CI->>OB: init-unseal.sh\n    CI->>OB: setup-secret-engines, auth, policies, secrets\n    CI->>K8s: Wait ExternalSecrets Synced\n    CI->>CS: chainsaw test infra-stack-health\n    CS->>K8s: Assert all components healthy\n    CS-->>CI: JUnit XML report\n```\n\n---\n\n## Key Components\n\n- **`Makefile` targets**: Replace stubs `deploy-infra` (S008), `install-test-deps` (S002), `e2e` (S002); add new `teardown-infra`; each delegates to scripts in `hack/`\n- **`hack/deploy-infra.sh`**: Orchestration script — creates kind cluster, runs `flux install`, applies `deploy/kind/base/` kustomization (FluxCD reconciles HelmReleases), applies `deploy/kind/infrastructure/` kustomization (CRs + ESO resources), runs OpenBao bootstrap scripts from `deploy/openbao/bootstrap/`, includes `wait_for_ready()` helpers with configurable timeouts; follows existing shell conventions (`set -euo pipefail`, SPDX header)\n- **`hack/teardown-infra.sh`**: Cleanup script — `kind delete cluster --name <cluster-name>`\n- **`hack/kind-config.yaml`**: Single control-plane node, sufficient for CI runners (~7GB RAM, 2 vCPUs)\n- **`deploy/kind/base/kustomization.yaml`**: Kustomize overlay referencing `../../flux-system/`, patches OpenBao HelmRelease to standalone mode (1 replica, HA disabled); other operators unchanged (single-replica by default or stateless)\n- **`deploy/kind/infrastructure/kustomization.yaml`**: Kustomize overlay referencing `../../flux-system/infrastructure/`, patches MariaDB CR (1 replica, Galera disabled, MaxScale disabled, `standard` storage class), patches Memcached CR (1 replica)\n- **`tests/e2e/infrastructure/infra-stack-health/chainsaw-test.yaml`**: Chainsaw v1alpha2 test asserting: cert-manager Deployment Ready, OpenBao StatefulSet Ready, ESO Deployment Ready, MariaDB Operator Deployment Ready, Memcached Operator Deployment Ready, ClusterIssuer Ready condition, MariaDB CR Ready condition, Memcached CR Ready condition, ClusterSecretStore Valid condition, ExternalSecrets SecretSynced condition; uses extended assert timeout (~5min) for operator startup\n- **`.github/workflows/ci.yaml` — `e2e-infra` job**: New job alongside existing `lint` and `test`; uses SHA-pinned `helm/kind-action` to create cluster, installs FluxCD, runs `make deploy-infra`, executes `chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/infrastructure/`, uploads JUnit report as artifact; `timeout-minutes: 20`; follows existing CI conventions (SHA-pinned actions, `permissions: contents: read`, `concurrency` with cancel-in-progress on PRs)",
   "stories": [
@@ -421,6 +421,7 @@
       "title": "Create kind cluster config `hack/kind-config.yaml` — single control-plane node with standard settings for CI runners (REQ-010, REQ-011)",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-010",
         "REQ-011"
@@ -431,6 +432,7 @@
       "title": "Create kustomize overlay `deploy/kind/base/kustomization.yaml` — references `../../flux-system/`, adds strategic merge patch for OpenBao HelmRelease (standalone mode: 1 replica, HA disabled, standalone Raft config without retry_join peers, `standard` storage class). Validate with `kustomize build deploy/kind/base/` (REQ-003)",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -440,6 +442,7 @@
       "title": "Create kustomize overlay `deploy/kind/infrastructure/kustomization.yaml` — references `../../flux-system/infrastructure/`, adds strategic merge patches for MariaDB CR (1 replica, Galera disabled, MaxScale disabled, `standard` storage class) and Memcached CR (1 replica). Validate with `kustomize build deploy/kind/infrastructure/` (REQ-003)",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -449,6 +452,7 @@
       "title": "Create orchestration script `hack/deploy-infra.sh` — implements the full 8-step deployment sequence: kind create cluster (using hack/kind-config.yaml), flux install, kubectl apply -k deploy/kind/base, wait for HelmReleases Ready, kubectl apply -k deploy/kind/infrastructure, wait for OpenBao pods Ready, run OpenBao bootstrap, wait for ExternalSecrets synced. Includes `log()`, `wait_for_helmreleases()`, `wait_for_pods()`, `wait_for_externalsecrets()` helper functions with configurable timeouts via environment variables. SPDX header, `set -euo pipefail`, CC-0010 reference. Handles pre-flight checks (docker running, no existing cluster). (REQ-001, REQ-004, REQ-005, REQ-011, REQ-012)",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-004",
@@ -462,6 +466,7 @@
       "title": "Create teardown script `hack/teardown-infra.sh` — runs `kind delete cluster --name <cluster-name>`, idempotent (succeeds even if cluster does not exist). SPDX header, `set -euo pipefail`, CC-0010 reference. (REQ-002, REQ-011)",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-011"
@@ -472,6 +477,7 @@
       "title": "Create install-test-deps script `hack/install-test-deps.sh` — installs pinned versions of chainsaw, flux CLI, kind, and kubectl. Skips download if tool already exists at correct version. SPDX header, `set -euo pipefail`, CC-0010 reference. (REQ-006, REQ-011)",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-011"
@@ -482,6 +488,7 @@
       "title": "Update Makefile: replace `deploy-infra` stub (S008) with `hack/deploy-infra.sh`, add `teardown-infra` target delegating to `hack/teardown-infra.sh`, replace `install-test-deps` stub (S002) with `hack/install-test-deps.sh`, replace `e2e` stub (S002) with `chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/`. Keep existing .PHONY declarations and comment style. (REQ-001, REQ-002, REQ-006, REQ-007)",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -494,6 +501,7 @@
       "title": "Create Chainsaw E2E test `tests/e2e/infrastructure/infra-stack-health/chainsaw-test.yaml` — v1alpha2 Test with steps asserting: (1) cert-manager Deployment readiness in cert-manager namespace, (2) OpenBao StatefulSet readiness in openbao-system, (3) ESO Deployment readiness in external-secrets, (4) MariaDB Operator Deployment readiness in mariadb-system, (5) Memcached Operator Deployment readiness in memcached-system, (6) ClusterIssuer Ready condition on selfsigned-cluster-issuer, (7) MariaDB CR Ready condition on openstack-db, (8) Memcached CR Ready condition on openstack-memcached, (9) ClusterSecretStore Valid condition on openbao-cluster-store, (10) ExternalSecret SecretSynced for keystone-admin, keystone-db, mariadb-root-password. Uses extended assert timeout (~5min). SPDX header, CC-0010 reference. (REQ-008)",
       "level": 4,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -503,6 +511,7 @@
       "title": "Add `e2e-infra` job to `.github/workflows/ci.yaml` — new job alongside existing `lint` and `test` (no `needs:` dependency). Steps: checkout (SHA-pinned actions/checkout), setup-go (SHA-pinned actions/setup-go with go-version-file: go.work), create kind cluster (SHA-pinned helm/kind-action with config: hack/kind-config.yaml), install flux CLI, run `make deploy-infra`, run `chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/infrastructure/`, upload JUnit report as artifact (SHA-pinned actions/upload-artifact). `timeout-minutes: 20`, follows existing `permissions: contents: read` and concurrency conventions. (REQ-009)",
       "level": 5,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -512,6 +521,7 @@
       "title": "Write reference documentation `docs/reference/infrastructure/e2e-deployment.md` — documents `make deploy-infra`, `make teardown-infra`, `make install-test-deps`, `make e2e` targets; deployment sequence diagram; kustomize overlay structure in `deploy/kind/`; environment variables for timeout configuration; prerequisites (docker, kubectl); CI job description. (REQ-001 through REQ-012)",
       "level": 6,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -716,8 +726,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-03-12T16:31:13.326428"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-17T19:55:41.273362"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-22T17:52:23.343679"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/71",
+  "pr_number": 71,
   "execution_history": [
     {
       "run_id": "4c8cdbd0-5502-4b07-9461-7e9e39e9e0a5",
@@ -729,6 +749,68 @@
           "name": "prepare",
           "duration": 630.498101234436,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "a994328a-a93d-4ea1-b5ec-6837cd9ba6af",
+      "timestamp": "2026-03-17T21:44:27.438868",
+      "total_duration": 2847.224062681198,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (3 tasks)",
+          "duration": 485.65802526474,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (3 tasks)",
+          "duration": 645.099939584732,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (1 tasks)",
+          "duration": 45.18820786476135,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (1 tasks)",
+          "duration": 376.56901454925537,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 5 (1 tasks)",
+          "duration": 275.3337125778198,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 6 (1 tasks)",
+          "duration": 66.91724181175232,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0010] Code Review",
+          "duration": 392.5042724609375,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0010] Improvements",
+          "duration": 489.4283375740051,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0010] Simplify",
+          "duration": 70.52531099319458,
+          "type": "simplify",
           "status": "done"
         }
       ]

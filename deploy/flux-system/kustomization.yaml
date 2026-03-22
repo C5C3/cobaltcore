@@ -27,9 +27,12 @@ resources:
   - sources/external-secrets.yaml
   - sources/openbao.yaml
   - sources/c5c3-charts.yaml
+  - sources/prometheus-community.yaml
 
   # HelmRelease operators (deployed via FluxCD)
   - releases/cert-manager.yaml
+  - releases/prometheus-operator-crds.yaml
+  - releases/mariadb-operator-crds.yaml
   - releases/mariadb-operator.yaml
   - releases/external-secrets.yaml
   - releases/memcached-operator.yaml

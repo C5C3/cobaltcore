@@ -2,8 +2,8 @@
 # Manages build, test, lint, and deployment operations for operators and common modules
 #
 # DEVIATION from architecture/01-project-setup.md (CC-0001):
-# - Architecture doc lists 9 targets; this Makefile defines 11 (adds deploy-infra,
-#   install-test-deps) for completeness.
+# - Architecture doc lists 9 targets; this Makefile defines 12 (adds deploy-infra,
+#   teardown-infra, install-test-deps) for completeness.
 # - Stub targets use $(error) to fail explicitly with a feature reference (e.g.,
 #   "S006: docker-build not yet implemented") rather than silently succeeding,
 #   preventing false confidence that a target works.
@@ -122,15 +122,19 @@ helm-package:
 
 .PHONY: e2e
 e2e:
-	$(error S002: e2e not yet implemented)
+	chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/
 
 .PHONY: deploy-infra
 deploy-infra:
-	$(error S008: deploy-infra not yet implemented)
+	hack/deploy-infra.sh
+
+.PHONY: teardown-infra
+teardown-infra:
+	hack/teardown-infra.sh
 
 .PHONY: install-test-deps
 install-test-deps:
-	$(error S002: install-test-deps not yet implemented)
+	hack/install-test-deps.sh
 
 .PHONY: test-integration
 # TODO: Replace this stub when envtest CI infrastructure is added.

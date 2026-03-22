@@ -2,15 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw v0.3+ E2E test configuration for CC-0002.
+# Chainsaw v0.2.14 E2E test configuration for CC-0002.
 # Reference: https://kyverno.github.io/chainsaw/latest/configuration/
-#
-# DECISION: apiVersion v1alpha2 vs v1alpha1
-# Ambiguity: REQ-006 specifies apiVersion chainsaw.kyverno.io/v1alpha1 but
-#   also says "targeting Chainsaw v0.3+".
-# Chose: v1alpha2 because Chainsaw v0.3+ only supports v1alpha2 (v1alpha1 was
-#   removed in v0.2.0). Using v1alpha1 would cause a parse error.
-# Reviewer: please verify.
 #
 # DECISION: report format JUNIT-TEST vs XML
 # Ambiguity: requirement says "JUnit XML output" without specifying format value.

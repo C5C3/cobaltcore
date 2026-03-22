@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Prometheus Community Helm chart repository (OCI).
+# Provides prometheus-operator-crds chart required by operators that watch
+# monitoring.coreos.com resources (e.g., memcached-operator ServiceMonitor).
+# Feature: CC-0010
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: prometheus-community
+  namespace: flux-system
+spec:
+  type: oci
+  interval: 1h
+  url: oci://ghcr.io/prometheus-community/charts

@@ -12,6 +12,8 @@ spec:
   dependsOn:
     - name: cert-manager
       namespace: cert-manager
+    - name: prometheus-operator-crds
+      namespace: monitoring-system
   chart:
     spec:
       chart: memcached-operator
@@ -28,6 +30,8 @@ spec:
   install:
     crds: CreateReplace
     createNamespace: true
+    remediation:
+      retries: 3
   upgrade:
     crds: CreateReplace
     remediation:

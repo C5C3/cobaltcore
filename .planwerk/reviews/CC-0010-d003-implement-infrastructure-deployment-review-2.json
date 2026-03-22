@@ -1,0 +1,138 @@
+{
+  "metadata": {
+    "feature_id": "CC-0010",
+    "title": "D003: Implement infrastructure deployment automation E2E",
+    "date": "2026-03-17",
+    "verdict": "APPROVED"
+  },
+  "summary": "Second review after all 6 issues from review 1 were addressed. The implementation is complete and well-structured: all Makefile targets replace stubs correctly, shell scripts follow project conventions (SPDX, set -euo pipefail, log(), CC-0010 references, configurable timeouts), kustomize overlays correctly patch production manifests without modification, the Chainsaw E2E test covers all 12 required assertions, the CI e2e-infra job uses SHA-pinned actions with diagnostic dump on failure, and install-test-deps.sh now verifies SHA256 checksums for all downloaded binaries. All review-1 blockers resolved: chainsaw installation added to CI, checksum verification implemented, unnecessary secret deletion removed, BAO_TOKEN unset after bootstrap, jq --arg used for safe interpolation, PATH documented in Quick Start. No blocking or major issues remain.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Chainsaw E2E test exists at tests/e2e/infrastructure/infra-stack-health/chainsaw-test.yaml", "checked": true},
+    {"item": "Test covers all 12 required assertions (4 operator Deployments, 1 StatefulSet, ClusterIssuer, MariaDB CR, Memcached CR, ClusterSecretStore, 3 ExternalSecrets)", "checked": true},
+    {"item": "Test uses extended assert timeout (5m) for operator startup", "checked": true},
+    {"item": "Test uses v1alpha2 API version matching Chainsaw v0.3+ requirement", "checked": true},
+    {"item": "CI e2e-infra job installs chainsaw via make install-test-deps and adds to PATH", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Shell scripts follow SPDX Apache-2.0 header convention", "checked": true},
+    {"item": "Shell scripts use set -euo pipefail", "checked": true},
+    {"item": "Shell scripts include CC-0010 feature reference", "checked": true},
+    {"item": "log() function uses ISO 8601 UTC timestamps matching existing pattern", "checked": true},
+    {"item": "Functions have single responsibility (preflight, wait_for_*, init, bootstrap)", "checked": true},
+    {"item": "Wait functions have configurable timeouts via environment variables", "checked": true},
+    {"item": "No dead code or commented-out code", "checked": true},
+    {"item": "Naming is clear and intention-revealing", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets in scripts or configs", "checked": true},
+    {"item": "Unseal keys passed via stdin (not as command-line arguments)", "checked": true},
+    {"item": "BAO_TOKEN unset after bootstrap phase completes (line 372)", "checked": true},
+    {"item": "Downloaded binaries verified with SHA256 checksums from upstream releases", "checked": true},
+    {"item": "Production manifests not modified (kind-specific changes in deploy/kind/ only)", "checked": true},
+    {"item": "CI job uses permissions: contents: read (least privilege)", "checked": true},
+    {"item": "All CI action references SHA-pinned with version comments", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Two-phase kustomize pattern correctly applied (base then infrastructure)", "checked": true},
+    {"item": "Kustomize overlays reference production manifests without modification", "checked": true},
+    {"item": "OpenBao bootstrap scripts invoked as-is from CC-0009", "checked": true},
+    {"item": "SKIP_KIND_CREATE flag enables CI mode where cluster is pre-created", "checked": true},
+    {"item": "Solution is as simple as possible for the requirements", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code across scripts", "checked": true},
+    {"item": "No over-engineering or unused abstractions", "checked": true},
+    {"item": "No features beyond what was explicitly requested", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Preflight checks verify all required CLI tools before deployment", "checked": true},
+    {"item": "Preflight checks verify Docker is running", "checked": true},
+    {"item": "Preflight checks detect existing kind cluster", "checked": true},
+    {"item": "Wait functions timeout with descriptive error messages and diagnostic dump", "checked": true},
+    {"item": "Bootstrap scripts validated as executable before invocation", "checked": true},
+    {"item": "SHA256 checksum verification aborts on mismatch with clear error", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs (env vars) have sensible defaults", "checked": true},
+    {"item": "Teardown script is idempotent (succeeds if no cluster exists)", "checked": true},
+    {"item": "install-test-deps skips tools already at correct version", "checked": true},
+    {"item": "Wait loops have deadlines preventing infinite hangs", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "id": "ISSUE-01",
+      "severity": "minor",
+      "check_ids": ["D2"],
+      "title": "Same-origin checksum verification provides limited supply-chain protection",
+      "description": "install-test-deps.sh downloads SHA256 checksums from the same GitHub Release as the binaries (e.g., checksums.txt alongside the tarball). If an attacker compromises the GitHub Release page, both the binary and its checksum file are replaced simultaneously. The verification protects against transport corruption and CDN cache poisoning but not against a compromised upstream. This is standard practice for CI tooling scripts and acceptable for an E2E testing context.",
+      "location": "hack/install-test-deps.sh:107-111,143-147,179-183,214-218",
+      "fix": "For stronger supply-chain guarantees, pin expected SHA256 hashes as constants in the script (one per platform per tool) so they become part of code review. Example: CHAINSAW_SHA256_linux_amd64='abc123...'. This is a hardening suggestion, not a blocker."
+    },
+    {
+      "id": "ISSUE-02",
+      "severity": "minor",
+      "check_ids": ["D2"],
+      "title": "Memcached operator Deployment name is unverified assumption",
+      "description": "The Chainsaw test at line 68 asserts on Deployment name 'memcached-operator-controller-manager' based on kubebuilder convention. A DECISION comment at lines 57-62 documents this assumption. The actual Helm chart Deployment name should be verified after first successful deployment.",
+      "location": "tests/e2e/infrastructure/infra-stack-health/chainsaw-test.yaml:68",
+      "fix": "After first successful end-to-end run, verify the actual Deployment name with 'kubectl get deploy -n memcached-system' and update the assertion if needed."
+    },
+    {
+      "id": "ISSUE-03",
+      "severity": "minor",
+      "check_ids": ["D2"],
+      "title": "NAMESPACE vs OPENBAO_NAMESPACE variable naming is potentially confusing",
+      "description": "deploy-infra.sh reads NAMESPACE from the environment (line 41) and stores it in OPENBAO_NAMESPACE for its own use. The child bootstrap scripts read NAMESPACE from common.sh. When both variables are unset, defaults align correctly (both default to 'openbao-system'). When NAMESPACE is set in the environment, it is inherited by child processes correctly. However, the internal variable rename to OPENBAO_NAMESPACE could confuse future maintainers who might try to set OPENBAO_NAMESPACE directly (which would not propagate to bootstrap scripts).",
+      "location": "hack/deploy-infra.sh:41",
+      "fix": "Add a comment on line 41 explaining that NAMESPACE (not OPENBAO_NAMESPACE) is the user-facing environment variable, and that it is inherited by bootstrap scripts via common.sh."
+    }
+  ],
+  "suggested_improvements": [
+    "After first successful deployment, verify the memcached-operator Deployment name (chainsaw-test.yaml:68) and update if it differs from the kubebuilder convention assumption",
+    "Consider adding shellcheck CI validation for hack/*.sh scripts to catch future shell scripting issues automatically",
+    "For stronger supply-chain protection, consider pinning expected SHA256 hashes as constants rather than fetching them from the same origin as the binaries"
+  ],
+  "next_steps": [
+    "Merge the feature branch — all blocking and major issues are resolved",
+    "Verify memcached-operator Deployment name after first successful E2E run in CI"
+  ],
+  "detected_patterns": [
+    {
+      "name": "Infrastructure deployment script with 8-step orchestration and configurable timeouts",
+      "component": "hack/",
+      "category": "service-structure",
+      "applies_when": "Adding a new deployment orchestration script that deploys multiple interdependent components to a kind cluster with health-wait gates between phases",
+      "description": "Deployment scripts follow a numbered step sequence with log() delimiters ('=== Step N/M: description ==='), wait_for_* helper functions with configurable timeouts via environment variables, preflight checks for required CLI tools and Docker, and a SKIP_*_CREATE flag for CI mode where the cluster is pre-created by a GitHub Action. Each wait function polls every 10 seconds with a deadline, dumps diagnostic info on timeout, and exits 1. The script uses set -euo pipefail, SPDX Apache-2.0 header, and feature ID reference.",
+      "examples": [
+        {
+          "location": "hack/deploy-infra.sh:50-52",
+          "code": "log() {\n  echo \"[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*\"\n}"
+        },
+        {
+          "location": "hack/deploy-infra.sh:60-107",
+          "code": "wait_for_helmreleases() {\n  local timeout=\"$1\"\n  shift\n  local releases=(\"$@\")\n  local deadline=$(( $(date +%s) + timeout ))\n\n  log \"Waiting up to ${timeout}s for HelmReleases to become Ready: ${releases[*]}\"\n\n  while true; do\n    local all_ready=true\n    for release in \"${releases[@]}\"; do\n      local ns\n      ns=$(kubectl get helmrelease --all-namespaces -o json 2>/dev/null \\\n        | jq -r --arg name \"${release}\" '.items[] | select(.metadata.name == $name) | .metadata.namespace' 2>/dev/null) || true\n      ...\n    done\n    if [[ $(date +%s) -ge ${deadline} ]]; then\n      log \"ERROR: Timed out waiting for HelmReleases after ${timeout}s.\"\n      kubectl get helmrelease --all-namespaces 2>/dev/null || true\n      exit 1\n    fi\n    sleep 10\n  done\n}"
+        }
+      ]
+    },
+    {
+      "name": "Binary installation with version-skip and SHA256 checksum verification",
+      "component": "hack/",
+      "category": "configuration",
+      "applies_when": "Adding a script that downloads and installs CLI tool binaries from GitHub Releases or upstream URLs for development/CI use",
+      "description": "Each install_* function follows a consistent pattern: (1) check if the tool is already installed at the correct version (skip if so), (2) download the binary to a temporary directory, (3) download the upstream checksum file, (4) verify SHA256 checksum via a shared verify_sha256 helper, (5) install with 0755 permissions. The temporary directory is cleaned up via trap RETURN. Version detection uses tool-specific version commands with grep -oP for version extraction. Platform detection (OS/ARCH) is centralized in a detect_platform function.",
+      "examples": [
+        {
+          "location": "hack/install-test-deps.sh:64-80",
+          "code": "verify_sha256() {\n  local file=\"$1\"\n  local expected=\"$2\"\n  if [[ -z \"${expected}\" ]]; then\n    log \"ERROR: Empty expected SHA256 hash for $(basename \"${file}\").\"\n    exit 1\n  fi\n  local actual\n  actual=$(sha256sum \"${file}\" | awk '{print $1}')\n  if [[ \"${actual}\" != \"${expected}\" ]]; then\n    log \"ERROR: SHA256 checksum mismatch for $(basename \"${file}\")\"\n    log \"  expected: ${expected}\"\n    log \"  actual:   ${actual}\"\n    exit 1\n  fi\n  log \"  SHA256 checksum verified.\"\n}"
+        },
+        {
+          "location": "hack/install-test-deps.sh:85-116",
+          "code": "install_chainsaw() {\n  local target=\"${INSTALL_DIR}/chainsaw\"\n  local want=\"${CHAINSAW_VERSION}\"\n  if [[ -x \"${target}\" ]]; then\n    local got\n    got=\"$(\"${target}\" version 2>/dev/null | grep -oP 'v[\\d.]+' | head -1)\" || true\n    if [[ \"${got}\" == \"${want}\" ]]; then\n      log \"chainsaw ${want} already installed — skipping.\"\n      return\n    fi\n  fi\n  log \"Installing chainsaw ${want}...\"\n  local url=\"https://github.com/kyverno/chainsaw/releases/download/${want}/chainsaw_${OS}_${ARCH}.tar.gz\"\n  local tmpdir\n  tmpdir=\"$(mktemp -d)\"\n  trap 'rm -rf \"${tmpdir}\"' RETURN\n  curl -fsSL \"${url}\" -o \"${tmpdir}/chainsaw.tar.gz\"\n  local checksums_url=\"https://github.com/kyverno/chainsaw/releases/download/${want}/checksums.txt\"\n  curl -fsSL \"${checksums_url}\" -o \"${tmpdir}/checksums.txt\"\n  local expected_hash\n  expected_hash=$(grep \"chainsaw_${OS}_${ARCH}.tar.gz\" \"${tmpdir}/checksums.txt\" | awk '{print $1}')\n  verify_sha256 \"${tmpdir}/chainsaw.tar.gz\" \"${expected_hash}\"\n  tar -xzf \"${tmpdir}/chainsaw.tar.gz\" -C \"${tmpdir}\" chainsaw\n  install -m 0755 \"${tmpdir}/chainsaw\" \"${target}\"\n  log \"chainsaw ${want} installed to ${target}.\"\n}"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Kind cluster configuration for local development and CI.
+# Single control-plane node suitable for CI runners (~7GB RAM, 2 vCPUs).
+# Used by hack/deploy-infra.sh to create the E2E test cluster.
+# Feature: CC-0010, REQ-010
+---
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane

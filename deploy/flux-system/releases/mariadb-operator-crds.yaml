@@ -1,37 +1,29 @@
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
+
+# MariaDB Operator CRDs — separate chart required since mariadb-operator v0.35.0.
+# Must be installed before mariadb-operator so CRDs are available for the operator
+# and for infrastructure CRs (e.g., MariaDB Galera cluster).
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
-  name: mariadb-operator
+  name: mariadb-operator-crds
   namespace: mariadb-system
 spec:
   interval: 30m
-  dependsOn:
-    - name: cert-manager
-      namespace: cert-manager
-    - name: mariadb-operator-crds
-      namespace: mariadb-system
   chart:
     spec:
-      chart: mariadb-operator
+      chart: mariadb-operator-crds
       version: ">=0.30.0 <1.0.0"
       sourceRef:
         kind: HelmRepository
         name: mariadb-operator
         namespace: flux-system
-  values:
-    metrics:
-      enabled: false
-    webhook:
-      enabled: true
   install:
     crds: CreateReplace
     createNamespace: true
-    remediation:
-      retries: 3
   upgrade:
     crds: CreateReplace
     remediation:

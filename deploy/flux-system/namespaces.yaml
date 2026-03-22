@@ -24,6 +24,11 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  name: monitoring-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
   name: memcached-system
 ---
 apiVersion: v1

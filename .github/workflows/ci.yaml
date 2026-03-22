@@ -33,6 +33,16 @@ jobs:
       - name: Run lint
         run: make lint
 
+  # CC-0010: Validate shell scripts with shellcheck to catch scripting issues
+  # early.  shellcheck is pre-installed on ubuntu-latest runners.
+  shellcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Run shellcheck on hack/*.sh
+        run: shellcheck --severity=warning hack/*.sh
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -55,3 +65,53 @@ jobs:
   #         go-version-file: go.work
   #     - name: Run integration tests
   #       run: make test-integration
+
+  # CC-0010, REQ-009: End-to-end infrastructure deployment and Chainsaw test.
+  # Deploys the full infrastructure stack to a kind cluster and validates health
+  # of all operators, CRs, and ExternalSecrets via Chainsaw assertions.
+  e2e-infra:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+        with:
+          go-version-file: go.work
+      - name: Create kind cluster
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          config: hack/kind-config.yaml
+          cluster_name: forge-e2e
+      - name: Install Flux CLI
+        uses: fluxcd/flux2/action@871be9b40d53627786d3a3835a3ddba1e3234bd2 # v2.8.3
+      - name: Install test dependencies
+        run: |
+          make install-test-deps
+          echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
+      - name: Deploy infrastructure stack
+        run: make deploy-infra
+        env:
+          # kind cluster already created by helm/kind-action; skip creation in script.
+          SKIP_KIND_CREATE: "true"
+      - name: Run Chainsaw E2E tests
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/infrastructure/
+      - name: Dump diagnostic info
+        if: failure()
+        run: |
+          echo "=== HelmReleases ==="
+          kubectl get helmrelease --all-namespaces || true
+          echo "=== Pods ==="
+          kubectl get pods --all-namespaces || true
+          echo "=== Events (last 50) ==="
+          kubectl get events --all-namespaces --sort-by='.lastTimestamp' | tail -50 || true
+          echo "=== Flux logs ==="
+          flux logs --all-namespaces || true
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-infra-junit-report
+          path: _output/reports/
+          retention-days: 14

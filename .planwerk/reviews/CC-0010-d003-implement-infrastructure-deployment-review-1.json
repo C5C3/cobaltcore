@@ -1,0 +1,156 @@
+{
+  "metadata": {
+    "feature_id": "CC-0010",
+    "title": "D003: Implement infrastructure deployment automation E2E",
+    "date": "2026-03-17",
+    "verdict": "NEEDS_CHANGES"
+  },
+  "summary": "Infrastructure deployment automation is well-implemented: kustomize overlays build correctly, shell scripts follow project conventions (SPDX, set -euo pipefail, log(), CC-0010 references), the Chainsaw E2E test covers all 12 required health assertions, and the two-phase kustomize pattern is correctly applied. The CI e2e-infra job follows SHA-pinned action conventions. One blocking issue: the CI job never installs the chainsaw binary, so the test step will fail with 'command not found'. Three additional major issues around secret handling and download integrity need addressing.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Chainsaw E2E test exists at tests/e2e/infrastructure/infra-stack-health/chainsaw-test.yaml", "checked": true},
+    {"item": "Test covers all 12 required assertions (4 operator Deployments, 1 StatefulSet, ClusterIssuer, MariaDB CR, Memcached CR, ClusterSecretStore, 3 ExternalSecrets)", "checked": true},
+    {"item": "Test uses extended assert timeout (5m) for operator startup", "checked": true},
+    {"item": "Test uses v1alpha2 API version matching Chainsaw v0.3+ requirement", "checked": true},
+    {"item": "CI e2e-infra job runs test end-to-end successfully", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Shell scripts follow SPDX Apache-2.0 header convention", "checked": true},
+    {"item": "Shell scripts use set -euo pipefail", "checked": true},
+    {"item": "Shell scripts include CC-0010 feature reference", "checked": true},
+    {"item": "log() function uses ISO 8601 UTC timestamps matching existing pattern", "checked": true},
+    {"item": "Functions have single responsibility (preflight, wait_for_*, init, bootstrap)", "checked": true},
+    {"item": "Wait functions have configurable timeouts via environment variables", "checked": true},
+    {"item": "No dead code or commented-out code", "checked": true},
+    {"item": "Naming is clear and intention-revealing", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets in scripts or configs", "checked": true},
+    {"item": "Unseal keys passed via stdin (not as command-line arguments)", "checked": true},
+    {"item": "BAO_TOKEN exposure limited to bootstrap phase only", "checked": false},
+    {"item": "Downloaded binaries verified with checksums", "checked": false},
+    {"item": "Production manifests not modified (kind-specific changes in deploy/kind/ only)", "checked": true},
+    {"item": "CI job uses permissions: contents: read (least privilege)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Two-phase kustomize pattern correctly applied (base then infrastructure)", "checked": true},
+    {"item": "Kustomize overlays reference production manifests without modification", "checked": true},
+    {"item": "OpenBao bootstrap scripts invoked as-is from CC-0009", "checked": true},
+    {"item": "SKIP_KIND_CREATE flag enables CI mode where cluster is pre-created", "checked": true},
+    {"item": "Solution is as simple as possible for the requirements", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code across scripts", "checked": true},
+    {"item": "No over-engineering or unused abstractions", "checked": true},
+    {"item": "No features beyond what was explicitly requested", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Preflight checks verify all required CLI tools before deployment", "checked": true},
+    {"item": "Preflight checks verify Docker is running", "checked": true},
+    {"item": "Preflight checks detect existing kind cluster", "checked": true},
+    {"item": "Wait functions timeout with descriptive error messages", "checked": true},
+    {"item": "Bootstrap scripts validated as executable before invocation", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs (env vars) have sensible defaults", "checked": true},
+    {"item": "Teardown script is idempotent (succeeds if no cluster exists)", "checked": true},
+    {"item": "install-test-deps skips tools already at correct version", "checked": true},
+    {"item": "Wait loops have deadlines preventing infinite hangs", "checked": true}
+  ],
+  "security_findings": [
+    {
+      "id": "S-01",
+      "severity": "HIGH",
+      "check_id": "S6",
+      "description": "install-test-deps.sh downloads 4 binaries (chainsaw, flux, kind, kubectl) via curl -fsSL with no SHA256 checksum or signature verification. A compromised CDN or supply chain attack on the upstream release could inject malicious binaries that are immediately installed with 0755 permissions and subsequently used to manage cluster infrastructure and secrets.",
+      "location": "hack/install-test-deps.sh:79,107,135,162",
+      "fix": "Add SHA256 checksum verification for each download. Most upstream projects publish checksum files (e.g., kind publishes kind-<os>-<arch>.sha256sum, flux publishes flux_<ver>_checksums.txt). Download the checksum file, verify with sha256sum -c, and abort on mismatch. Alternatively, embed expected SHA256 hashes as constants alongside the version pins."
+    },
+    {
+      "id": "S-02",
+      "severity": "MEDIUM",
+      "check_id": "S5",
+      "description": "BAO_TOKEN is exported at deploy-infra.sh:346 and remains in the shell environment through step 8 (ExternalSecret wait) and until script termination. After bootstrap completes, the token is no longer needed but remains exposed to any child process or environment dump.",
+      "location": "hack/deploy-infra.sh:346",
+      "fix": "Add 'unset BAO_TOKEN' at the end of the openbao_bootstrap() function (after line 376) to limit the token's exposure window to only the bootstrap phase."
+    }
+  ],
+  "architecture_findings": [
+    {
+      "id": "A-01",
+      "severity": "MINOR",
+      "check_id": "D2",
+      "description": "The wait_for_helmreleases function interpolates the release name into a jq filter string using bash escaping. While current hardcoded names are safe, using jq --arg would be more robust and idiomatic.",
+      "location": "hack/deploy-infra.sh:75",
+      "fix": "Change to: jq -r --arg name \"${release}\" '.items[] | select(.metadata.name == $name) | .metadata.namespace'"
+    }
+  ],
+  "issues_found": [
+    {
+      "id": "ISSUE-01",
+      "severity": "blocker",
+      "check_ids": ["C1", "FC4"],
+      "title": "CI e2e-infra job does not install chainsaw — test step will fail",
+      "description": "The e2e-infra job in .github/workflows/ci.yaml runs 'chainsaw test ...' at line 83 but never installs the chainsaw binary. The job installs kind (via helm/kind-action), flux (via fluxcd/flux2/action), and go (via actions/setup-go), but there is no step to install chainsaw. The test step will fail with 'chainsaw: command not found'. Neither make install-test-deps nor any chainsaw-specific action is invoked.",
+      "location": ".github/workflows/ci.yaml:82-83",
+      "fix": "Add a step before the 'Run Chainsaw E2E tests' step to install chainsaw. Options: (a) add 'run: make install-test-deps' step (installs chainsaw + other tools, some redundant with earlier actions), (b) add a dedicated step: 'run: curl -fsSL https://github.com/kyverno/chainsaw/releases/download/v0.3.1/chainsaw_linux_amd64.tar.gz | tar -xz -C /usr/local/bin chainsaw', or (c) use go install if a Go module path is available. Option (a) is simplest and consistent with the documented workflow."
+    },
+    {
+      "id": "ISSUE-02",
+      "severity": "critical",
+      "check_ids": ["S6"],
+      "title": "No checksum verification for downloaded binaries in install-test-deps.sh",
+      "description": "All four binary downloads use curl -fsSL with no SHA256 checksum or signature verification. These binaries are installed with 0755 permissions and used to manage cluster infrastructure and handle secrets (kubectl, kind). This is a supply chain risk.",
+      "location": "hack/install-test-deps.sh:79,107,135,162",
+      "fix": "Add SHA256 checksum verification. Either embed expected hashes as constants alongside version pins, or download and verify the upstream-published checksum files."
+    },
+    {
+      "id": "ISSUE-03",
+      "severity": "major",
+      "check_ids": ["C3"],
+      "title": "Unnecessary delete-before-apply creates race window for init-keys Secret",
+      "description": "The openbao_init_unseal function runs 'kubectl delete secret' (line 289) followed by 'kubectl apply' (line 295). If the script is interrupted between the delete and the apply, the init output (root token + unseal keys) is lost permanently. kubectl apply alone handles both creation and update, making the delete unnecessary.",
+      "location": "hack/deploy-infra.sh:289-291",
+      "fix": "Remove the kubectl delete secret command on lines 289-291. The subsequent kubectl apply -f - will create-or-update the Secret correctly."
+    },
+    {
+      "id": "ISSUE-04",
+      "severity": "major",
+      "check_ids": ["S5"],
+      "title": "BAO_TOKEN remains exported after bootstrap completes",
+      "description": "BAO_TOKEN is exported at line 346 for the bootstrap scripts but remains in the environment through step 8 and script termination. This unnecessarily extends the exposure window of the root token to any child processes spawned in the remaining steps.",
+      "location": "hack/deploy-infra.sh:346-377",
+      "fix": "Add 'unset BAO_TOKEN' at the end of openbao_bootstrap(), after the log message on line 376."
+    },
+    {
+      "id": "ISSUE-05",
+      "severity": "minor",
+      "check_ids": ["D2"],
+      "title": "jq filter uses bash string interpolation instead of --arg",
+      "description": "The wait_for_helmreleases function interpolates the release name into a jq filter string via bash escaping (line 75). Using jq --arg is more robust against special characters and is idiomatic jq usage.",
+      "location": "hack/deploy-infra.sh:75",
+      "fix": "Replace: jq -r \".items[] | select(.metadata.name == \\\"${release}\\\") | .metadata.namespace\" with: jq -r --arg name \"${release}\" '.items[] | select(.metadata.name == $name) | .metadata.namespace'"
+    },
+    {
+      "id": "ISSUE-06",
+      "severity": "minor",
+      "check_ids": ["DA3"],
+      "title": "Documentation Quick Start does not mention PATH requirement for install-test-deps",
+      "description": "The Quick Start section shows 'make install-test-deps' followed by 'make deploy-infra', but does not mention that the installed tools go to $INSTALL_DIR (default ~/.local/bin) which must be in PATH. While ~/.local/bin is typically in PATH on modern Linux, it may not be on all systems or CI runners.",
+      "location": "docs/reference/infrastructure/e2e-deployment.md:254-266",
+      "fix": "Add a note after the install-test-deps command: 'Ensure $INSTALL_DIR (default: ~/.local/bin) is in your PATH.'"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a step to the CI e2e-infra job that dumps diagnostic info (kubectl get all --all-namespaces, flux logs) on failure, similar to how other infra CI jobs capture debug output for troubleshooting",
+    "The memcached-operator Deployment name 'memcached-operator-controller-manager' in chainsaw-test.yaml:68 is marked as a DECISION based on kubebuilder convention — verify this against the actual Helm chart template after first successful deployment",
+    "Consider adding shellcheck CI validation for hack/*.sh scripts to catch future shell scripting issues automatically"
+  ],
+  "next_steps": [
+    "Fix ISSUE-01: Add chainsaw installation step to the CI e2e-infra job (blocking)",
+    "Fix ISSUE-02: Add SHA256 checksum verification to install-test-deps.sh binary downloads",
+    "Fix ISSUE-03: Remove unnecessary kubectl delete secret before kubectl apply in deploy-infra.sh:289-291",
+    "Fix ISSUE-04: Add 'unset BAO_TOKEN' at end of openbao_bootstrap() in deploy-infra.sh"
+  ],
+  "detected_patterns": []
+}

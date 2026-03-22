@@ -25,21 +25,12 @@ SECRET_NAME="openbao-init-keys"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-# init-unseal uses its own kube_exec / kube_exec_stdin because BAO_TOKEN
-# is not available until after initialization completes.
+# init-unseal uses its own kube_exec because BAO_TOKEN is not available
+# until after initialization completes.
 kube_exec() {
   local pod="$1"
   shift
   kubectl exec -n "${NAMESPACE}" "${pod}" -- \
-    env BAO_ADDR="${BAO_ADDR}" VAULT_CACERT="${VAULT_CACERT}" "$@"
-}
-
-# kube_exec_stdin — Like kube_exec but with stdin forwarding (-i flag).
-# Used when piping secrets to avoid exposing them in process arguments.
-kube_exec_stdin() {
-  local pod="$1"
-  shift
-  kubectl exec -i -n "${NAMESPACE}" "${pod}" -- \
     env BAO_ADDR="${BAO_ADDR}" VAULT_CACERT="${VAULT_CACERT}" "$@"
 }
 
@@ -137,16 +128,14 @@ unseal_pod() {
   local init_output
   init_output=$(kubectl get secret "${SECRET_NAME}" \
     -n "${NAMESPACE}" \
-    -o jsonpath='{.data.init-output}' | openssl base64 -d)
+    -o jsonpath='{.data.init-output}' | base64 -d)
 
   # Apply the first KEY_THRESHOLD keys.
-  # Keys are piped via stdin to avoid exposing them in process argument lists
-  # (visible in /proc/<pid>/cmdline and `ps aux`).
   local i
   for i in $(seq 0 $(( KEY_THRESHOLD - 1 ))); do
     local key
     key=$(echo "${init_output}" | jq -r ".unseal_keys_b64[${i}]")
-    echo "${key}" | kube_exec_stdin "${pod}" bao operator unseal - > /dev/null
+    kube_exec "${pod}" bao operator unseal "${key}" > /dev/null
     log "  Applied unseal key $((i + 1))/${KEY_THRESHOLD} to ${pod}."
   done
 

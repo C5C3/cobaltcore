@@ -26,6 +26,8 @@ spec:
         name: openbao
         namespace: flux-system
   values:
+    global:
+      tlsDisable: false
     server:
       # Explicitly enable the system:auth-delegator ClusterRoleBinding so that
       # the kubernetes/management auth mount can validate service account JWTs

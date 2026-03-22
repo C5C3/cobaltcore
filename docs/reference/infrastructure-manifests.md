@@ -261,7 +261,7 @@ The root password is sourced from a Kubernetes Secret (`mariadb-root-password`, 
 
 | Property | Value |
 | --- | --- |
-| API version | `cache.c5c3.io/v1alpha1` |
+| API version | `memcached.c5c3.io/v1beta1` |
 | Kind | `Memcached` |
 | Name | `openstack-memcached` |
 | Namespace | `openstack` |
@@ -272,8 +272,8 @@ The Memcached CR provisions a 3-replica Memcached cluster for OpenStack session 
 token caching. The memcached-operator manages pod lifecycle and provides stable DNS-based
 service discovery for operator consumers.
 
-**API group:** The API group is `cache.c5c3.io` (not `memcached.c5c3.io`). This is
-confirmed by the CRD definition in `internal/common/testutil/fake_crds/memcached-operator/`.
+**API group:** The API group is `memcached.c5c3.io`, matching the CRD definition
+shipped by the [memcached-operator](https://github.com/C5C3/memcached-operator) Helm chart.
 
 ## Kustomization
 

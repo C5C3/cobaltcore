@@ -88,7 +88,7 @@ func TestIntegration_SimulateMemcachedReady(t *testing.T) {
 	g.Expect(c.Create(ctx, ns)).To(Succeed())
 
 	// Create the Memcached resource.
-	memcached := newUnstructuredCR("cache.c5c3.io", "v1alpha1", "Memcached", "test-memcached", ns.Name)
+	memcached := newUnstructuredCR("memcached.c5c3.io", "v1beta1", "Memcached", "test-memcached", ns.Name)
 	g.Expect(c.Create(ctx, memcached)).To(Succeed())
 
 	key := client.ObjectKey{Name: "test-memcached", Namespace: ns.Name}
@@ -98,7 +98,7 @@ func TestIntegration_SimulateMemcachedReady(t *testing.T) {
 	g.Expect(SimulateMemcachedReady(ctx, c, key, 2, servers)).To(Succeed())
 
 	// Verify status via a fresh Get.
-	updated := newUnstructuredCR("cache.c5c3.io", "v1alpha1", "Memcached", "test-memcached", ns.Name)
+	updated := newUnstructuredCR("memcached.c5c3.io", "v1beta1", "Memcached", "test-memcached", ns.Name)
 	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
 
 	readyReplicas, found, _ := unstructured.NestedInt64(updated.Object, "status", "readyReplicas")
