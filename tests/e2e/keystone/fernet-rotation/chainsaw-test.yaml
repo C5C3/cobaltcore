@@ -1,0 +1,108 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for fernet key rotation (CC-0016).
+# Verifies:
+#   - CronJob schedule matches spec.fernet.rotationSchedule
+#   - Manual rotation via kubectl create job --from=cronjob changes Secret data
+#   - Deployment pod-template annotation keystone.c5c3.io/fernet-keys-hash
+#     updates after rotation (triggering rolling restart)
+#
+# REQ-005, REQ-012, REQ-013 (CC-0016)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-fernet-rotation
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR ──────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Wait for Ready=True ────────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-fernet
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+  # ── Step 3: Assert CronJob schedule matches spec ───────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: keystone-fernet-fernet-rotate
+            namespace: openstack
+          spec:
+            schedule: "0 0 * * 0"
+  # ── Step 4: Trigger rotation and verify Secret + Deployment changed ────
+  - try:
+    - script:
+        timeout: 180s
+        content: |
+          set -euo pipefail
+
+          # Record state before rotation
+          BEFORE_HASH=$(kubectl get secret keystone-fernet-fernet-keys -n openstack \
+            -o jsonpath='{.data}' | sha256sum | cut -d' ' -f1)
+          BEFORE_ANNOTATION=$(kubectl get deploy keystone-fernet-api -n openstack \
+            -o jsonpath='{.spec.template.metadata.annotations.keystone\.c5c3\.io/fernet-keys-hash}')
+
+          # Trigger manual fernet key rotation
+          kubectl create job keystone-fernet-manual-rotate \
+            --from=cronjob/keystone-fernet-fernet-rotate -n openstack
+          kubectl wait --for=condition=complete \
+            job/keystone-fernet-manual-rotate -n openstack --timeout=120s
+
+          # Verify Secret data changed
+          AFTER_HASH=$(kubectl get secret keystone-fernet-fernet-keys -n openstack \
+            -o jsonpath='{.data}' | sha256sum | cut -d' ' -f1)
+          if [ "$BEFORE_HASH" = "$AFTER_HASH" ]; then
+            echo "ERROR: Fernet Secret data did not change after rotation"
+            exit 1
+          fi
+          echo "OK: Fernet Secret data changed"
+
+          # Wait for reconciler to detect the Secret change and update
+          # the Deployment annotation (poll every 5s, timeout 120s).
+          TIMEOUT=120
+          ELAPSED=0
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            AFTER_ANNOTATION=$(kubectl get deploy keystone-fernet-api -n openstack \
+              -o jsonpath='{.spec.template.metadata.annotations.keystone\.c5c3\.io/fernet-keys-hash}')
+            if [ "$BEFORE_ANNOTATION" != "$AFTER_ANNOTATION" ]; then
+              echo "OK: Deployment fernet-keys-hash annotation changed"
+              break
+            fi
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+          done
+          if [ "$BEFORE_ANNOTATION" = "$AFTER_ANNOTATION" ]; then
+            echo "ERROR: Deployment fernet-keys-hash annotation did not change within ${TIMEOUT}s"
+            exit 1
+          fi
+  # ── Step 5: Assert Ready=True maintained after rotation ────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-fernet
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady

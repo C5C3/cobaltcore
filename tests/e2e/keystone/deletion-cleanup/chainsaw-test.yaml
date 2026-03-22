@@ -1,0 +1,145 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for garbage collection on Keystone CR deletion (CC-0016).
+# Deploys a Keystone CR, waits for Ready=True, deletes the CR, then asserts
+# all owned resources are garbage-collected (NotFound).
+#
+# REQ-007, REQ-012, REQ-013 (CC-0016)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-deletion-cleanup
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR ──────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Wait for Ready=True ────────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-cleanup
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+  # ── Step 3: Delete the Keystone CR ─────────────────────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          name: keystone-cleanup
+          namespace: openstack
+  # ── Step 4: Assert all owned resources are deleted ─────────────────────
+  - try:
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-cleanup-api
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: keystone-cleanup-api
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: keystone-cleanup-fernet-rotate
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: keystone-cleanup-fernet-keys
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: keystone-cleanup-fernet-rotate
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: keystone-cleanup-fernet-rotate
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: keystone-cleanup-fernet-rotate
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: external-secrets.io/v1alpha1
+          kind: PushSecret
+          metadata:
+            name: keystone-cleanup-fernet-keys-backup
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: keystone-cleanup-db-sync
+            namespace: openstack
+    # MariaDB CRs created by reconcileDatabase in managed mode (clusterRef).
+    # Owner references are set on these CRs, so they must be garbage-collected
+    # when the Keystone CR is deleted (CC-0016).
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: keystone-cleanup
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: keystone-cleanup
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: keystone-cleanup
+            namespace: openstack
+  # ── Step 5: Assert dynamically-named ConfigMap deleted ─────────────────
+  # The ConfigMap has a content-hash suffix so it cannot use a static error
+  # assertion. A script step with an inverted grep verifies no ConfigMap
+  # with the expected prefix remains after garbage collection (CC-0016).
+  - try:
+    - script:
+        content: |
+          set -euo pipefail
+          if kubectl get cm -n openstack -o name | grep -q keystone-cleanup-config-; then
+            echo "ERROR: ConfigMap matching keystone-cleanup-config-* still exists"
+            exit 1
+          fi
+          echo "OK: No ConfigMap matching keystone-cleanup-config-* found"

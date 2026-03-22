@@ -1,0 +1,130 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for happy-path Keystone deployment (CC-0016).
+# Validates the full reconciliation cycle in managed mode:
+#   - All 5 sub-conditions progress to True with expected reasons
+#   - Aggregate Ready=True with reason AllReady
+#   - All owned resources exist (Deployment, Service, CronJob, Secret,
+#     RBAC, PushSecret)
+#   - ConfigMap with keystone-basic-config- prefix exists
+#   - Keystone API at /v3 is accessible via curl
+#
+# REQ-001, REQ-002, REQ-003, REQ-012, REQ-013 (CC-0016)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-basic-deployment
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR ──────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert all sub-conditions and Ready ────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-basic
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+              reason: SecretsAvailable
+            (conditions[?type == 'FernetKeysReady']):
+            - status: "True"
+              reason: FernetKeysAvailable
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+              reason: DatabaseSynced
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+              reason: DeploymentReady
+            (conditions[?type == 'BootstrapReady']):
+            - status: "True"
+              reason: BootstrapComplete
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+  # ── Step 3: Assert Deployment and Service ──────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-basic-api
+            namespace: openstack
+          status:
+            (availableReplicas > `0`): true
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: keystone-basic-api
+            namespace: openstack
+          spec:
+            ports:
+            - port: 5000
+  # ── Step 4: Assert Fernet resources ────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: keystone-basic-fernet-rotate
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: keystone-basic-fernet-keys
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: keystone-basic-fernet-rotate
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: keystone-basic-fernet-rotate
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: keystone-basic-fernet-rotate
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1alpha1
+          kind: PushSecret
+          metadata:
+            name: keystone-basic-fernet-keys-backup
+            namespace: openstack
+  # ── Step 5: Assert ConfigMap exists ────────────────────────────────────
+  - try:
+    - script:
+        content: |
+          kubectl get cm -n openstack -o name | grep keystone-basic-config-
+  # ── Step 6: Assert API accessibility ───────────────────────────────────
+  - try:
+    - script:
+        content: |
+          curl -sf http://keystone-basic-api.openstack.svc:5000/v3

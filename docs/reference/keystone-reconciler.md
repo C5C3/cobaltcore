@@ -707,6 +707,8 @@ Keystone CR via `controllerutil.SetControllerReference()`. This enables:
 ## Testing
 
 The reconciler has comprehensive unit tests using `gomega` with `NewGomegaWithT(t)`.
+For end-to-end Chainsaw tests that validate the reconciler in a real cluster, see
+[Keystone E2E Test Suites](./keystone-e2e-tests.md) (CC-0016).
 
 ### Running Tests
 

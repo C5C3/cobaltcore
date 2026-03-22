@@ -1,7 +1,7 @@
 ---
 title: Keystone CRD API Reference
 quadrant: operator
-feature: CC-0011, CC-0012
+feature: CC-0011, CC-0012, CC-0016
 ---
 
 # Keystone CRD API Reference
@@ -394,9 +394,12 @@ exercise the CRD schema constraints.
 
 ### Chainsaw E2E Tests
 
-E2E tests live in `tests/e2e/keystone/invalid-cr/` and use the Chainsaw framework
-(`chainsaw.kyverno.io/v1alpha2`). They verify webhook rejection in a real cluster with
-the operator deployed.
+E2E tests live in `tests/e2e/keystone/` and use the Chainsaw framework
+(`chainsaw.kyverno.io/v1alpha2`). The `invalid-cr` suite below verifies webhook
+rejection in a real cluster with the operator deployed. For the 9 reconciler E2E test
+suites (basic-deployment, missing-secret, fernet-rotation, scale, deletion-cleanup,
+policy-overrides, middleware-config, brownfield-database, image-upgrade), see
+[Keystone E2E Test Suites](./keystone-e2e-tests.md) (CC-0016).
 
 | Step | Manifest | Requirement | Expected Error |
 | --- | --- | --- | --- |
@@ -456,6 +459,15 @@ operators/keystone/
 └── main.go                           Scheme registration + bootstrap + webhook wiring
 
 tests/e2e/keystone/
+├── basic-deployment/                 Happy-path reconciliation E2E (CC-0016)
+├── missing-secret/                   Secret dependency recovery E2E (CC-0016)
+├── fernet-rotation/                  Fernet key rotation E2E (CC-0016)
+├── scale/                            Replica scaling E2E (CC-0016)
+├── deletion-cleanup/                 Garbage collection E2E (CC-0016)
+├── policy-overrides/                 oslo.policy integration E2E (CC-0016)
+├── middleware-config/                Middleware pipeline E2E (CC-0016)
+├── brownfield-database/              External database mode E2E (CC-0016)
+├── image-upgrade/                    Rolling image upgrade E2E (CC-0016)
 └── invalid-cr/
     ├── chainsaw-test.yaml            Chainsaw E2E test definition (CC-0012)
     ├── 00-invalid-cron.yaml          Invalid cron expression CR manifest

@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Policy source ConfigMap for the policy-overrides E2E test (CC-0016).
+# Contains sample oslo.policy rules referenced by the Keystone CR's
+# policyOverrides.configMapRef.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keystone-policy-source
+  namespace: openstack
+data:
+  policy.yaml: |
+    "identity:list_users": "role:admin"
+    "identity:get_user": "role:admin or user_id:%(target.user.id)s"
+    "identity:create_project": "role:admin"

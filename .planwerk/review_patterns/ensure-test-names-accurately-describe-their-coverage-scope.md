@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: When a test name contains universal quantifiers like 'All', 'Every', 'Runs all', or 'Full', verify that every branch or validation path in the function under test is actually exercised. Cross-reference the test setup with the production code's branches.
 **Severity**: WARNING
-**Occurrences**: 2
+**Occurrences**: 3
 
 ## What to check
 
@@ -24,3 +24,8 @@ Misleadingly named tests give false confidence that all paths are covered and th
 - **Feedback**: `TestSimulateMariaDBReady_zeroReplicas` exists for `SimulateMariaDBReady`, which ensures the zero-replica edge case is handled. `SimulateDeploymentReady` doesn't have an equivalent.
 - **What was missed**: Does a newly added function have the same edge-case test coverage as its analogous siblings in the same package? Specifically check for zero-value and boundary-condition tests.
 - **Fix**: Added `TestSimulateDeploymentReady_zeroReplicas` that creates a deployment, calls `SimulateDeploymentReady` with 0 replicas, and asserts `ReadyReplicas` is 0.
+
+### CC-0016 — berendt
+- **Feedback**: Every test CR specifies database: keystone in its spec. With parallel: 4, up to 4 concurrent keystone-manage db_sync Jobs will execute Alembic migrations against the same database simultaneously.
+- **What was missed**: For each resource name (database schema, queue, bucket, etc.) referenced in test fixtures, verify it is unique per test suite when tests run in parallel. Search for hardcoded shared names like `database: keystone` appearing across multiple test directories.
+- **Fix**: Assigned unique database names per test (e.g., `keystone_basic`, `keystone_scale`, `keystone_cleanup`) across all 9 CR fixture files.

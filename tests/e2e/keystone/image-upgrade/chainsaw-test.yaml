@@ -1,0 +1,88 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for rolling image upgrade (CC-0016).
+# Verifies:
+#   - Patching spec.image.tag updates the Deployment container image
+#   - Ready=True is maintained after the rollout completes
+#
+# REQ-011, REQ-012, REQ-013 (CC-0016)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-image-upgrade
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR ──────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert Ready and initial image tag ─────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-upgrade
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        content: |
+          kubectl get deploy keystone-upgrade-api -n openstack \
+            -o jsonpath='{.spec.template.spec.containers[0].image}' | grep '2025\.2$'
+  # ── Step 3: Patch image tag ────────────────────────────────────────────
+  - try:
+    - patch:
+        file: 01-patch-image.yaml
+  # ── Step 4: Assert Deployment image updated and Ready maintained ───────
+  - try:
+    - script:
+        timeout: 120s
+        content: |
+          set -euo pipefail
+          # Wait for Deployment to reflect the new image tag (poll every 5s).
+          TIMEOUT=120
+          ELAPSED=0
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            IMAGE=$(kubectl get deploy keystone-upgrade-api -n openstack \
+              -o jsonpath='{.spec.template.spec.containers[0].image}')
+            if echo "$IMAGE" | grep -q '2025.2-upgraded'; then
+              echo "OK: Deployment image updated to $IMAGE"
+              break
+            fi
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+          done
+          if ! echo "$IMAGE" | grep -q '2025.2-upgraded'; then
+            echo "ERROR: Deployment image did not update within ${TIMEOUT}s (current: $IMAGE)"
+            exit 1
+          fi
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-upgrade
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-upgrade-api
+            namespace: openstack
+          status:
+            (availableReplicas > `0`): true
+            (updatedReplicas == replicas): true

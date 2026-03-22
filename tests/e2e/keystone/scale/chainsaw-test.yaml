@@ -1,0 +1,87 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for replica scaling (CC-0016).
+# Verifies that patching spec.replicas propagates to the Deployment:
+#   - Initial deployment with replicas: 3
+#   - Scale up to 5 replicas
+#   - Scale down to 2 replicas
+#
+# REQ-006, REQ-012, REQ-013 (CC-0016)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-scale
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR with replicas: 3 ─────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert Ready and initial replica count ─────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-scale
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-scale-api
+            namespace: openstack
+          spec:
+            replicas: 3
+          status:
+            (availableReplicas >= `3`): true
+  # ── Step 3: Scale up to 5 replicas ─────────────────────────────────────
+  - try:
+    - patch:
+        file: 01-patch-scale-up.yaml
+  # ── Step 4: Assert scale-up ────────────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-scale-api
+            namespace: openstack
+          spec:
+            replicas: 5
+          status:
+            (availableReplicas >= `5`): true
+  # ── Step 5: Scale down to 2 replicas ───────────────────────────────────
+  - try:
+    - patch:
+        file: 02-patch-scale-down.yaml
+  # ── Step 6: Assert scale-down ──────────────────────────────────────────
+  # NOTE: Exact match (== 2) is intentional here, unlike the >= used for
+  # scale-up in Steps 2/4. Scale-up uses >= because we only need to wait
+  # until enough pods are available. Scale-down uses exact match to prove
+  # pods were actually terminated, not just that 2 remain available while
+  # the old 5 are still running (which would make >= trivially true).
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-scale-api
+            namespace: openstack
+          spec:
+            replicas: 2
+          status:
+            availableReplicas: 2

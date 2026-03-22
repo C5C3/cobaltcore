@@ -1,0 +1,74 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for brownfield database mode (CC-0016).
+# Verifies:
+#   - No MariaDB CRs (Database, User, Grant) are created when using
+#     explicit database.host (no clusterRef)
+#   - keystone.conf [database].connection contains the explicit host
+#   - Reconciliation completes to Ready=True via the existing database
+#
+# REQ-010, REQ-012, REQ-013 (CC-0016)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-brownfield-database
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR with brownfield database ─────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert no MariaDB CRs created for this CR ─────────────────
+  - try:
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: keystone-brownfield
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: keystone-brownfield
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: keystone-brownfield
+            namespace: openstack
+  # ── Step 3: Wait for Ready=True ────────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-brownfield
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+  # ── Step 4: Verify keystone.conf connection contains explicit host ─────
+  - try:
+    - script:
+        content: |
+          set -euo pipefail
+          CM_NAME=$(kubectl get cm -n openstack -o name | grep keystone-brownfield-config-)
+          if [ -z "$CM_NAME" ]; then
+            echo "ERROR: No ConfigMap matching keystone-brownfield-config-* found"
+            exit 1
+          fi
+          kubectl get "$CM_NAME" -n openstack -o jsonpath='{.data.keystone\.conf}' \
+            | grep 'openstack-db.openstack.svc.cluster.local'
+          echo "OK: keystone.conf connection contains the explicit host"

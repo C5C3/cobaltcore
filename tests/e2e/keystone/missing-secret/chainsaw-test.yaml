@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for secret dependency recovery (CC-0016).
+# Verifies the reconciler waits when referenced Secrets don't exist
+# (SecretsReady=False) and recovers to Ready=True once they are created.
+#
+# REQ-004, REQ-012, REQ-013 (CC-0016)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-missing-secret
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR with non-existent secret references ──────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert SecretsReady=False ──────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-missing-secret
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "False"
+              reason: WaitingForDBCredentials
+  # ── Step 3: Create the missing ExternalSecrets ─────────────────────────
+  - try:
+    - apply:
+        file: 01-late-secrets.yaml
+  # ── Step 4: Assert recovery to Ready=True ──────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-missing-secret
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady

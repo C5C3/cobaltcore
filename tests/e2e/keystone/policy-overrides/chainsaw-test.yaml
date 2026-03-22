@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for policy override injection (CC-0016).
+# Verifies:
+#   - Generated ConfigMap contains a policy.yaml data key with rules
+#     from the referenced source ConfigMap
+#   - keystone.conf contains the [oslo_policy] section with policy_file
+#
+# REQ-008, REQ-012, REQ-013 (CC-0016)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-policy-overrides
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply policy source ConfigMap ──────────────────────────────
+  - try:
+    - apply:
+        file: 00-policy-cm.yaml
+  # ── Step 2: Apply Keystone CR with policyOverrides ─────────────────────
+  - try:
+    - apply:
+        file: 01-keystone-cr.yaml
+  # ── Step 3: Wait for Ready=True ────────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-policy
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+  # ── Step 4: Verify ConfigMap contains policy.yaml and oslo_policy ──────
+  - try:
+    - script:
+        content: |
+          set -euo pipefail
+          CM_NAME=$(kubectl get cm -n openstack -o name | grep keystone-policy-config-)
+          if [ -z "$CM_NAME" ]; then
+            echo "ERROR: No ConfigMap matching keystone-policy-config-* found"
+            exit 1
+          fi
+          # Verify policy.yaml data key exists and contains expected rule
+          kubectl get "$CM_NAME" -n openstack -o jsonpath='{.data.policy\.yaml}' \
+            | grep 'identity:list_users'
+          echo "OK: policy.yaml contains expected rules"
+          # Verify keystone.conf contains oslo_policy section with policy_file
+          kubectl get "$CM_NAME" -n openstack -o jsonpath='{.data.keystone\.conf}' \
+            | grep 'policy_file'
+          echo "OK: keystone.conf contains oslo_policy policy_file directive"

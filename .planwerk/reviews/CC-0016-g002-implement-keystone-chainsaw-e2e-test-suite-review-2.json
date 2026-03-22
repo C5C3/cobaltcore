@@ -1,0 +1,52 @@
+{
+  "feature_id": "CC-0016",
+  "title": "G002: Implement Keystone Chainsaw E2E test suite",
+  "date": "2026-03-22",
+  "verdict": "APPROVED",
+  "summary": "Review of commit d8179dc addressing all 8 findings from external reviewer berendt. All feedback items are correctly implemented: unique database names per test (W-001), execution-vs-display-order clarification in docs (W-002/I-003), exact scale-down assertion (W-003), anchored grep pattern (W-004), updatedReplicas rollout check (B-001), MariaDB CR cleanup assertions (I-001), and reason field in SecretsReady assertion (I-002). Documentation is consistent with implementation changes. No new issues introduced.",
+  "tests_checklist": [
+    {"item": "All 9 E2E test directories exist under tests/e2e/keystone/ with chainsaw-test.yaml and fixture YAML files", "checked": true},
+    {"item": "All YAML files begin with SPDX Apache-2.0 header", "checked": true},
+    {"item": "All chainsaw-test.yaml files use apiVersion chainsaw.kyverno.io/v1alpha1 kind Test", "checked": true},
+    {"item": "All condition assertions use JMESPath conditions[?type == 'X'] syntax", "checked": true},
+    {"item": "All 9 Keystone CRs have unique names (no name collisions)", "checked": true},
+    {"item": "All 9 Keystone CRs have unique database names (no shared schema for parallel execution)", "checked": true},
+    {"item": "Each test uses extended assert timeout (5m) for full reconciliation", "checked": true},
+    {"item": "Error checks in deletion-cleanup include MariaDB CRs (Database, User, Grant)", "checked": true},
+    {"item": "missing-secret asserts reason field (WaitingForDBCredentials)", "checked": true},
+    {"item": "Scale-down uses exact equality assertion (availableReplicas: 2)", "checked": true},
+    {"item": "image-upgrade uses anchored grep (2025\\.2$) and updatedReplicas == replicas", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing Chainsaw test patterns from infra-stack-health and invalid-cr", "checked": true},
+    {"item": "Comments explain non-obvious decisions (MariaDB CR owner references)", "checked": true},
+    {"item": "No dead code or stale references to old shared database name", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets in test fixtures", "checked": true},
+    {"item": "No sensitive data exposure in script steps", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Database isolation per test suite prevents concurrent db_sync conflicts", "checked": true},
+    {"item": "Documentation accurately reflects implementation", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No unnecessary additions beyond reviewer feedback scope", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Exact equality assertion catches scale-down failures early", "checked": true},
+    {"item": "Anchored grep prevents false-positive stale state matches", "checked": true},
+    {"item": "updatedReplicas check proves rollout completion rather than relying on stale pods", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external reviewer findings addressed", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "INFO: tests/e2e/keystone/scale/chainsaw-test.yaml:48,65 — Scale-up assertions use (availableReplicas >= N) while scale-down (line 82) uses exact match. The asymmetry is semantically justified (>= for scale-up correctly waits until enough pods are available; exact match for scale-down proves pods were actually terminated). Consider adding a brief comment at line 82 explaining why exact match is used here but not for scale-up, to prevent future reviewers from 'fixing' the asymmetry."
+  ],
+  "next_steps": [],
+  "detected_patterns": []
+}

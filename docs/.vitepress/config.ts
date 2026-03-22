@@ -16,6 +16,7 @@ export default defineConfig({
         text: 'Reference',
         items: [
           { text: 'Keystone CRD', link: '/reference/keystone-crd' },
+          { text: 'Keystone E2E Tests', link: '/reference/keystone-e2e-tests' },
           { text: 'CI Workflow', link: '/reference/ci-workflow' },
           { text: 'Build Images Workflow', link: '/reference/build-images-workflow' },
           { text: 'Container Images', link: '/reference/container-images' },

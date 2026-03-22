@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for middleware pipeline customization (CC-0016).
+# Verifies:
+#   - Generated ConfigMap's api-paste.ini contains the custom filter name
+#     ("audit") in the pipeline definition
+#   - The filter factory entry (keystonemiddleware.audit) is present
+#
+# REQ-009, REQ-012, REQ-013 (CC-0016)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-middleware-config
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR with custom middleware ────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Wait for Ready=True ────────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-middleware
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+  # ── Step 3: Verify api-paste.ini contains custom filter and factory ────
+  - try:
+    - script:
+        content: |
+          set -euo pipefail
+          CM_NAME=$(kubectl get cm -n openstack -o name | grep keystone-middleware-config-)
+          if [ -z "$CM_NAME" ]; then
+            echo "ERROR: No ConfigMap matching keystone-middleware-config-* found"
+            exit 1
+          fi
+          PASTE=$(kubectl get "$CM_NAME" -n openstack -o jsonpath='{.data.api-paste\.ini}')
+          # Verify api-paste.ini contains the audit filter name in the pipeline
+          echo "$PASTE" | grep 'audit'
+          echo "OK: api-paste.ini contains audit filter reference"
+          # Verify filter factory entry
+          echo "$PASTE" | grep 'keystonemiddleware.audit'
+          echo "OK: api-paste.ini contains keystonemiddleware.audit filter factory"

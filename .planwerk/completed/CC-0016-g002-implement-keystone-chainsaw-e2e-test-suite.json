@@ -2,8 +2,8 @@
   "feature_id": "CC-0016",
   "title": "G002: Implement Keystone Chainsaw E2E test suite",
   "slug": "g002-implement-keystone-chainsaw-e2e-test-suite",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 🏗️ large\n**Category:** infrastructure\n**Priority:** medium\n**Feature ID:** CC-0016 (S016)\n\n---\n\n## Open Questions\n\nNo open questions — both decisions resolved by user:\n\n1. **`missing-secret/` isolation** → Use unique `secretRef` names per test CR\n2. **CR name collisions with `parallel: 4`** → Unique CR name per test directory\n\n---\n\n## Summary\n\nCreate 9 Chainsaw E2E test suites under `tests/e2e/keystone/` validating the Keystone operator's full lifecycle on a real cluster. Each suite targets a specific operational scenario: happy-path deployment, secret dependency recovery, Fernet key rotation, replica scaling, garbage collection on deletion, policy override injection, middleware pipeline customization, brownfield (unmanaged) database mode, and rolling image upgrades. Together they cover the operator's condition progression (`SecretsReady` → `DatabaseReady` → `FernetKeysReady` → `DeploymentReady` → `BootstrapReady` → `Ready`), owned resource management, and resilience to operational changes.\n\n---\n\n## Scope\n\n**Included:**\n- **`basic-deployment/`** — Apply valid Keystone CR (managed mode with `clusterRef`), assert all 5 sub-conditions progress to `True` and aggregate `Ready=True` (reason: `AllReady`), verify Deployment `{name}-api` with `availableReplicas > 0`, Service `{name}-api` on port 5000, immutable ConfigMap `{name}-config-{hash}`, CronJob `{name}-fernet-rotate`, fernet Secret `{name}-fernet-keys`, RBAC resources (ServiceAccount/Role/RoleBinding `{name}-fernet-rotate`), PushSecret `{name}-fernet-keys-backup`. Single `script` step with `curl http://{name}-api.openstack.svc:5000/v3` to verify functional API response.\n- **`missing-secret/`** — Apply Keystone CR referencing non-existent Secret names (unique per test, e.g. `missing-secret-keystone-db`), assert `SecretsReady=False` (reason: `WaitingForDBCredentials` or `WaitingForAdminCredentials`), create prerequisite Secrets, assert recovery to `Ready=True`\n- **`fernet-rotation/`** — Verify CronJob `{name}-fernet-rotate` schedule matches `spec.fernet.rotationSchedule`, trigger manual rotation via `kubectl create job --from=cronjob/{name}-fernet-rotate`, assert `{name}-fernet-keys` Secret `.data` changes, assert Deployment pod-template annotation `keystone.c5c3.io/fernet-keys-hash` updates (rolling restart)\n- **`scale/`** — Apply Keystone CR with `replicas: 3`, patch to `replicas: 5`, assert `Deployment.spec.replicas` and `status.availableReplicas` update, patch to `replicas: 2`, assert scale-down\n- **`deletion-cleanup/`** — Deploy Keystone CR, wait for `Ready=True`, delete CR, assert all owned resources return NotFound via `error` checks: Deployment, Service, ConfigMap, CronJob, Jobs (db-sync, bootstrap), Secret (fernet-keys), ServiceAccount, Role, RoleBinding, PushSecret\n- **`policy-overrides/`** — Apply Keystone CR with `policyOverrides.configMapRef`, assert generated ConfigMap contains `policy.yaml` data key, assert `keystone.conf` contains `[oslo_policy]` section with `policy_file = /etc/keystone/policy.yaml`\n- **`middleware-config/`** — Apply Keystone CR with custom `middleware` entries (name, filterFactory, position), assert `api-paste.ini` key in generated ConfigMap contains the modified pipeline filter references\n- **`brownfield-database/`** — Apply Keystone CR with explicit `database.host: openstack-db.openstack.svc.cluster.local` and `database.port: 3306` (no `clusterRef`), assert NO `databases.k8s.mariadb.com` or `users.k8s.mariadb.com` or `grants.k8s.mariadb.com` CRs are created (via `error` checks), assert `keystone.conf` `[database].connection` contains the explicit host\n- **`image-upgrade/`** — Apply Keystone CR, wait for `Ready=True`, patch `spec.image.tag`, assert Deployment container image updates, assert `Ready=True` maintained after rollout completes\n\n**Excluded:**\n- Performance/stress tests (S024 scope)\n- ControlPlane/c5c3-operator integration (S022/S023 scope)\n- TLS certificate validation (not in S016 spec)\n- Federation tests (no federation reconciler yet)\n- Webhook validation tests (already covered by `invalid-cr/` in CC-0012)\n- Cache brownfield testing (not in S016 spec; only database brownfield requested)\n\n---\n\n## Visualization\n\n```mermaid\nflowchart TD\n    subgraph E2E[\"tests/e2e/keystone/\"]\n        BD[\"basic-deployment/\"]\n        MS[\"missing-secret/\"]\n        FR[\"fernet-rotation/\"]\n        SC[\"scale/\"]\n        DC[\"deletion-cleanup/\"]\n        PO[\"policy-overrides/\"]\n        MC[\"middleware-config/\"]\n        BF[\"brownfield-database/\"]\n        IU[\"image-upgrade/\"]\n    end\n\n    subgraph Conditions[\"Condition Coverage\"]\n        SR[\"SecretsReady\"]\n        DR[\"DatabaseReady\"]\n        FKR[\"FernetKeysReady\"]\n        DPR[\"DeploymentReady\"]\n        BR[\"BootstrapReady\"]\n        RDY[\"Ready\"]\n    end\n\n    BD --> SR & DR & FKR & DPR & BR & RDY\n    MS --> SR\n    FR --> FKR\n    SC --> DPR\n    DC --> RDY\n    PO --> DR & DPR\n    MC --> DPR\n    BF --> DR & DPR\n    IU --> DPR & RDY\n```\n\n```mermaid\nsequenceDiagram\n    participant CH as Chainsaw\n    participant K8s as Kubernetes API\n    participant KR as Keystone Reconciler\n    participant OW as Owned Resources\n\n    Note over CH: basic-deployment\n    CH->>K8s: apply Keystone CR + prerequisite Secrets\n    K8s->>KR: reconcile\n    KR->>OW: create fernet Secret, CronJob, RBAC, ConfigMap, MariaDB CRs, db-sync Job, Deployment, Service, bootstrap Job, PushSecret\n    CH->>K8s: assert conditions SecretsReady...Ready = True\n    CH->>K8s: assert Deployment availableReplicas > 0\n    CH->>K8s: script curl /v3\n\n    Note over CH: missing-secret\n    CH->>K8s: apply Keystone CR with unique secretRef names\n    CH->>K8s: assert SecretsReady = False\n    CH->>K8s: create prerequisite Secrets\n    CH->>K8s: assert Ready = True\n\n    Note over CH: fernet-rotation\n    CH->>K8s: apply Keystone CR, wait Ready\n    CH->>K8s: record fernet Secret .data hash\n    CH->>K8s: script kubectl create job --from=cronjob\n    CH->>K8s: assert fernet Secret .data changed\n    CH->>K8s: assert Deployment annotation changed\n\n    Note over CH: deletion-cleanup\n    CH->>K8s: delete Keystone CR\n    CH->>K8s: error assert Deployment not found\n    CH->>K8s: error assert Service not found\n    CH->>K8s: error assert CronJob not found\n```\n\n```mermaid\nstateDiagram-v2\n    [*] --> SecretsReady: ESO Secrets synced\n    SecretsReady --> DatabaseReady: MariaDB CRs + db_sync Job\n    DatabaseReady --> FernetKeysReady: Fernet Secret + CronJob + PushSecret\n    FernetKeysReady --> DeploymentReady: Deployment available + endpoint set\n    DeploymentReady --> BootstrapReady: Bootstrap Job complete\n    BootstrapReady --> Ready: All conditions True\n\n    state \"missing-secret test\" as ms\n    SecretsReady --> ms: SecretsReady=False path\n\n    state \"fernet-rotation test\" as fr\n    FernetKeysReady --> fr: Key rotation path\n\n    state \"scale test\" as sc\n    DeploymentReady --> sc: Replica changes\n```\n\n---\n\n## Key Components\n\n- **`basic-deployment/chainsaw-test.yaml`** + fixture CR + prerequisite Secrets — Happy-path test asserting full condition progression (`SecretsReady` → `DatabaseReady` → `FernetKeysReady` → `DeploymentReady` → `BootstrapReady` → `Ready=True` with reason `AllReady`), resource existence checks (Deployment `{name}-api`, Service, ConfigMap, CronJob, fernet Secret, RBAC, PushSecret), and a `script` step with `curl` to verify HTTP response from `/v3`\n- **`missing-secret/chainsaw-test.yaml`** + fixture CR + late-created Secrets — CR references unique Secret names (e.g. `missing-secret-keystone-db`, `missing-secret-keystone-admin`). Tests `SecretsReady=False` when referenced Secrets don't exist, asserts reason is `WaitingForDBCredentials` or `WaitingForAdminCredentials`, then creates Secrets and asserts recovery to `Ready=True`\n- **`fernet-rotation/chainsaw-test.yaml`** + fixture CR — Verifies CronJob `schedule` field matches spec, triggers rotation via `kubectl create job --from=cronjob/{name}-fernet-rotate` in a `script` step, asserts `{name}-fernet-keys` Secret `.data` changes, asserts Deployment pod-template annotation `keystone.c5c3.io/fernet-keys-hash` value changes (triggering rolling restart)\n- **`scale/chainsaw-test.yaml`** + fixture CR + patch files — Three-step test (3→5→2) using Chainsaw `patch` steps on `spec.replicas`, asserting `Deployment.spec.replicas` and `status.availableReplicas` at each step\n- **`deletion-cleanup/chainsaw-test.yaml`** + fixture CR — Deploys Keystone CR, waits for `Ready=True`, deletes CR, asserts all owned resources return NotFound via Chainsaw `error` checks: Deployment, Service, ConfigMap, CronJob, Jobs (db-sync, bootstrap), Secret (fernet-keys), ServiceAccount, Role, RoleBinding, PushSecret\n- **`policy-overrides/chainsaw-test.yaml`** + fixture CR + policy ConfigMap — Applies Keystone CR with `policyOverrides.configMapRef`, asserts generated ConfigMap contains `policy.yaml` data key and `keystone.conf` contains `[oslo_policy]` section with `policy_file`\n- **`middleware-config/chainsaw-test.yaml`** + fixture CR — Applies Keystone CR with custom `middleware` entries (specifying `name`, `filterFactory`, `position`), asserts `api-paste.ini` in generated ConfigMap contains the modified pipeline filter references\n- **`brownfield-database/chainsaw-test.yaml`** + fixture CR — Applies Keystone CR with `database.host`/`database.port` (no `clusterRef`), asserts NO `databases.k8s.mariadb.com`, `users.k8s.mariadb.com`, or `grants.k8s.mariadb.com` CRs exist via `error` checks, asserts `keystone.conf` `[database].connection` contains the explicit host. Uses the existing `openstack-db` MariaDB instance.\n- **`image-upgrade/chainsaw-test.yaml`** + fixture CR + patch file — Applies Keystone CR, waits for `Ready=True`, patches `spec.image.tag` via Chainsaw `patch` step, asserts Deployment container image updates, asserts `Ready=True` maintained after rollout completes\n- **Shared conventions** — Each test directory contains its own Keystone CR YAML with a unique CR name (e.g., `keystone-basic`, `keystone-scale`). Each test creates its own prerequisite Secrets with test-unique names. Brownfield tests use `host`/`port`; managed tests use `clusterRef` pointing to `openstack-db`/`openstack-memcached`. Assertions follow existing patterns from `infra-stack-health` and `invalid-cr`: CEL expressions with backtick-quoted numerics (`` `0` ``), JMESPath condition filters (`conditions[?type == 'Ready']`), and extended `assert` timeout (5m) for full reconciliation cycles.\n\n---\n\n**Note on condition order:** Research confirms the sub-reconciler execution order is `reconcileSecrets` → `reconcileDatabase` → `reconcileFernetKeys` → `reconcileConfig` → `reconcileDeployment` → `reconcileBootstrap` (per `keystone_controller.go` subConditionTypes). The user's original elaboration had `FernetKeysReady` before `DatabaseReady` — corrected above to match the actual code.",
   "stories": [
@@ -453,6 +453,7 @@
       "description": "Create directory tests/e2e/keystone/basic-deployment/ with: (1) 00-keystone-cr.yaml — Keystone CR named 'keystone-basic' in managed mode with clusterRef: openstack-db, cache clusterRef: openstack-memcached, replicas: 3, image ghcr.io/c5c3/keystone:2025.2, fernet rotationSchedule: '0 0 * * 0', database.secretRef.name pointing to existing ESO-synced Secret, bootstrap.adminPasswordSecretRef.name pointing to existing ESO-synced Secret. (2) chainsaw-test.yaml — apiVersion chainsaw.kyverno.io/v1alpha1 kind Test with name keystone-basic-deployment, timeouts.assert: 5m, steps: apply CR, assert all 5 sub-conditions True (using JMESPath conditions[?type == 'X'] syntax), assert Ready=True reason AllReady, assert Deployment keystone-basic-api with (availableReplicas > `0`): true, assert Service keystone-basic-api, assert CronJob keystone-basic-fernet-rotate, assert Secret keystone-basic-fernet-keys, assert ServiceAccount/Role/RoleBinding keystone-basic-fernet-rotate, assert PushSecret keystone-basic-fernet-keys-backup, script step to verify ConfigMap keystone-basic-config-* exists (kubectl get cm -n $NAMESPACE | grep keystone-basic-config-), script step to curl http://keystone-basic-api.$NAMESPACE.svc:5000/v3. All files with SPDX Apache-2.0 header. Follow patterns from infra-stack-health and invalid-cr tests.",
       "level": 1,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -467,6 +468,7 @@
       "description": "Create directory tests/e2e/keystone/missing-secret/ with: (1) 00-keystone-cr.yaml — Keystone CR named 'keystone-missing-secret' with database.secretRef.name: missing-secret-keystone-db and bootstrap.adminPasswordSecretRef.name: missing-secret-keystone-admin (unique names that don't exist in the cluster). Use brownfield database.host and cache.servers to avoid MariaDB/Memcached dependencies for the initial failure assertion. (2) 01-late-secrets.yaml — ExternalSecrets named missing-secret-keystone-db and missing-secret-keystone-admin pointing to the existing OpenBao paths (openstack/keystone/db and bootstrap/keystone-admin via openbao-cluster-store ClusterSecretStore). These create the missing Secrets when applied. (3) chainsaw-test.yaml — Step 1: apply 00-keystone-cr.yaml. Step 2: assert SecretsReady=False with reason WaitingForDBCredentials or WaitingForAdminCredentials (use JMESPath conditions[?type == 'SecretsReady'] with status: 'False'). Step 3: apply 01-late-secrets.yaml. Step 4: assert with 5m timeout that Ready=True. SPDX headers on all files.",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-012",
@@ -479,6 +481,7 @@
       "description": "Create directory tests/e2e/keystone/deletion-cleanup/ with: (1) 00-keystone-cr.yaml — Keystone CR named 'keystone-cleanup' in managed mode with same pattern as basic-deployment CR. (2) chainsaw-test.yaml — Step 1: apply CR. Step 2: assert with 5m timeout Ready=True. Step 3: delete the Keystone CR. Step 4: error checks (Chainsaw error steps) asserting NotFound for each owned resource type: Deployment keystone-cleanup-api (apps/v1), Service keystone-cleanup-api (v1), CronJob keystone-cleanup-fernet-rotate (batch/v1), Secret keystone-cleanup-fernet-keys (v1), ServiceAccount keystone-cleanup-fernet-rotate (v1), Role keystone-cleanup-fernet-rotate (rbac.authorization.k8s.io/v1), RoleBinding keystone-cleanup-fernet-rotate (rbac.authorization.k8s.io/v1), PushSecret keystone-cleanup-fernet-keys-backup (external-secrets.io/v1alpha1), Job keystone-cleanup-db-sync (batch/v1). Each error step checks the specific resource by name in the openstack namespace. SPDX headers on all files.",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-007",
         "REQ-012",
@@ -491,6 +494,7 @@
       "description": "Create directory tests/e2e/keystone/fernet-rotation/ with: (1) 00-keystone-cr.yaml — Keystone CR named 'keystone-fernet' in managed mode, fernet.rotationSchedule: '0 0 * * 0', maxActiveKeys: 3. (2) chainsaw-test.yaml — Step 1: apply CR. Step 2: assert with 5m timeout Ready=True. Step 3: assert CronJob keystone-fernet-fernet-rotate spec.schedule == '0 0 * * 0'. Step 4: script step to record current fernet Secret data hash and Deployment annotation: BEFORE_HASH=$(kubectl get secret keystone-fernet-fernet-keys -n $NAMESPACE -o jsonpath='{.data}' | sha256sum | cut -d' ' -f1); BEFORE_ANNOTATION=$(kubectl get deploy keystone-fernet-api -n $NAMESPACE -o jsonpath='{.spec.template.metadata.annotations.keystone\\.c5c3\\.io/fernet-keys-hash}'). Step 5: script step to trigger rotation: kubectl create job keystone-fernet-manual-rotate --from=cronjob/keystone-fernet-fernet-rotate -n $NAMESPACE && kubectl wait --for=condition=complete job/keystone-fernet-manual-rotate -n $NAMESPACE --timeout=120s. Step 6: script step to verify Secret data changed: AFTER_HASH=$(kubectl get secret keystone-fernet-fernet-keys -n $NAMESPACE -o jsonpath='{.data}' | sha256sum | cut -d' ' -f1); [ \"$BEFORE_HASH\" != \"$AFTER_HASH\" ]. Step 7: assert Deployment pod-template annotation keystone.c5c3.io/fernet-keys-hash has a different value (re-assert Ready=True to ensure rollout completed). SPDX headers.",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-012",
@@ -503,6 +507,7 @@
       "description": "Create directory tests/e2e/keystone/scale/ with: (1) 00-keystone-cr.yaml — Keystone CR named 'keystone-scale' in managed mode, replicas: 3. (2) 01-patch-scale-up.yaml — Keystone CR patch: spec.replicas: 5 (apiVersion keystone.openstack.c5c3.io/v1alpha1, kind Keystone, metadata.name: keystone-scale). (3) 02-patch-scale-down.yaml — Keystone CR patch: spec.replicas: 2. (4) chainsaw-test.yaml — Step 1: apply CR. Step 2: assert with 5m timeout Ready=True and Deployment keystone-scale-api spec.replicas == 3, (availableReplicas >= `3`): true. Step 3: patch using 01-patch-scale-up.yaml. Step 4: assert Deployment spec.replicas == 5, (availableReplicas >= `5`): true with 5m timeout. Step 5: patch using 02-patch-scale-down.yaml. Step 6: assert Deployment spec.replicas == 2, (availableReplicas >= `2`): true with 5m timeout. SPDX headers.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-012",
@@ -515,6 +520,7 @@
       "description": "Create directory tests/e2e/keystone/image-upgrade/ with: (1) 00-keystone-cr.yaml — Keystone CR named 'keystone-upgrade' in managed mode, image.tag: '2025.2'. (2) 01-patch-image.yaml — Keystone CR patch: spec.image.tag: '2025.2-patch1' (or another available tag). (3) chainsaw-test.yaml — Step 1: apply CR. Step 2: assert with 5m timeout Ready=True and Deployment keystone-upgrade-api container image contains ':2025.2'. Step 3: patch using 01-patch-image.yaml. Step 4: assert with 5m timeout Deployment container image contains the new tag and Ready=True maintained. Use script step if needed: kubectl get deploy keystone-upgrade-api -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].image}' | grep '2025.2-patch1'. SPDX headers.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-011",
         "REQ-012",
@@ -527,6 +533,7 @@
       "description": "Create directory tests/e2e/keystone/policy-overrides/ with: (1) 00-policy-cm.yaml — ConfigMap named 'keystone-policy-source' in openstack namespace with data key 'policy.yaml' containing sample policy rules (e.g. 'identity:list_users: role:admin'). (2) 01-keystone-cr.yaml — Keystone CR named 'keystone-policy' in managed mode with policyOverrides.configMapRef.name: keystone-policy-source. (3) chainsaw-test.yaml — Step 1: apply 00-policy-cm.yaml. Step 2: apply 01-keystone-cr.yaml. Step 3: assert with 5m timeout Ready=True. Step 4: script step to verify generated ConfigMap contains policy.yaml: CM_NAME=$(kubectl get cm -n $NAMESPACE -o name | grep keystone-policy-config-) && kubectl get $CM_NAME -n $NAMESPACE -o jsonpath='{.data.policy\\.yaml}' | grep 'identity:list_users'. Step 5: script step to verify keystone.conf contains oslo_policy: kubectl get $CM_NAME -n $NAMESPACE -o jsonpath='{.data.keystone\\.conf}' | grep 'policy_file'. SPDX headers.",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-008",
         "REQ-012",
@@ -539,6 +546,7 @@
       "description": "Create directory tests/e2e/keystone/middleware-config/ with: (1) 00-keystone-cr.yaml — Keystone CR named 'keystone-middleware' in managed mode with spec.middleware: [{name: audit, filterFactory: 'keystonemiddleware.audit:filter_factory', position: before}]. (2) chainsaw-test.yaml — Step 1: apply CR. Step 2: assert with 5m timeout Ready=True. Step 3: script step to verify api-paste.ini contains the custom filter: CM_NAME=$(kubectl get cm -n $NAMESPACE -o name | grep keystone-middleware-config-) && kubectl get $CM_NAME -n $NAMESPACE -o jsonpath='{.data.api-paste\\.ini}' | grep 'audit'. Step 4: script step to verify the filter factory entry: kubectl get $CM_NAME -n $NAMESPACE -o jsonpath='{.data.api-paste\\.ini}' | grep 'keystonemiddleware.audit'. SPDX headers.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-009",
         "REQ-012",
@@ -551,6 +559,7 @@
       "description": "Create directory tests/e2e/keystone/brownfield-database/ with: (1) 00-keystone-cr.yaml — Keystone CR named 'keystone-brownfield' with database.host: openstack-db.openstack.svc.cluster.local, database.port: 3306, database.database: keystone (NO clusterRef). Uses the existing openstack-db MariaDB instance. cache.servers: ['openstack-memcached-0.openstack-memcached:11211'] (brownfield cache too). database.secretRef and bootstrap.adminPasswordSecretRef point to existing ESO-synced Secrets. (2) chainsaw-test.yaml — Step 1: apply CR. Step 2: error checks asserting no MariaDB CRs with name keystone-brownfield: error for Database (apiVersion: k8s.mariadb.com/v1alpha1 kind: Database name: keystone-brownfield), error for User (kind: User name: keystone-brownfield), error for Grant (kind: Grant name: keystone-brownfield). Step 3: assert with 5m timeout Ready=True. Step 4: script step to verify keystone.conf [database].connection contains the explicit host: CM_NAME=$(kubectl get cm -n $NAMESPACE -o name | grep keystone-brownfield-config-) && kubectl get $CM_NAME -n $NAMESPACE -o jsonpath='{.data.keystone\\.conf}' | grep 'openstack-db.openstack.svc.cluster.local'. SPDX headers.",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-010",
         "REQ-012",
@@ -563,6 +572,7 @@
       "description": "Update docs/reference/keystone-reconciler.md or architecture/docs/09-implementation/06-testing.md (whichever is more appropriate based on project convention) to include: (1) Table listing all 9 E2E test suites with columns: directory name, scenario description, conditions covered, key assertions. (2) CR naming convention (keystone-basic, keystone-scale, etc.) for parallel execution. (3) Note on the corrected sub-reconciler execution order (reconcileSecrets → reconcileFernetKeys → reconcileConfig → reconcileDatabase → reconcileDeployment → reconcileBootstrap per keystone_controller.go). (4) Note that tests use 5m assert timeout for full reconciliation cycles. Do NOT create a new documentation file — extend the existing testing docs.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-013"
       ]
@@ -748,8 +758,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-03-22T19:09:38.317468"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-22T19:10:24.824420"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-22T20:36:44.174092"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/76",
+  "pr_number": 76,
   "execution_history": [
     {
       "run_id": "b75a139c-bcdb-44b2-88a1-00c35c1d5acc",
@@ -761,6 +781,58 @@
           "name": "prepare",
           "duration": 750.9724416732788,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "e9f99f9b-b253-492e-ae58-f229f9bc3968",
+      "timestamp": "2026-03-22T19:44:55.476513",
+      "total_duration": 1938.4832785129547,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (9 tasks)",
+          "duration": 786.5945646762848,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (1 tasks)",
+          "duration": 369.38927388191223,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0016] Code Review",
+          "duration": 472.3175437450409,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0016] Improvements",
+          "duration": 248.4857108592987,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0016] Simplify",
+          "duration": 61.69618535041809,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "b190affe-6e5b-4a59-8aea-ad31a018167f",
+      "timestamp": "2026-03-22T20:32:09.348093",
+      "total_duration": 863.5512442588806,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 863.5512442588806,
+          "type": "review_address",
           "status": "done"
         }
       ]
