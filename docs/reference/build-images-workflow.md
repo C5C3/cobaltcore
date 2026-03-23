@@ -130,6 +130,8 @@ availability.
 
 **Steps:**
 
+::: v-pre
+
 | # | Step | Action / Command | Details |
 | --- | --- | --- | --- |
 | 1 | Reject fork PRs | Shell (conditional) | Fails fast with `::error::` if the PR originates from a fork (CC-0007) |
@@ -153,13 +155,19 @@ availability.
 | 19 | Attest SBOM for venv-builder | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
 | 20 | Sign venv-builder | Shell | Skipped on PRs. Signs venv-builder by digest with cosign keyless OIDC (`cosign sign --yes`) (CC-0030) |
 
+:::
+
 The `venv-builder` build uses a `docker-image://` build context pointing at the
 just-pushed `python-base` image (referenced by digest), ensuring its `FROM python-base`
 directive resolves to the exact image built in step 7.
 
+::: v-pre
+
 Each base image is tagged with both `:latest` (mutable convenience tag) and
 `:${{ github.sha }}` (immutable commit-pinned tag). The SHA tag provides an auditable
 mapping from any base image in GHCR back to the commit that produced it (CC-0007).
+
+:::
 
 **Outputs:**
 
@@ -221,6 +229,8 @@ Depends on `build-base-images` for image references (REQ-003) and on
 
 **Steps:**
 
+::: v-pre
+
 | # | Step | Action / Command | Details |
 | --- | --- | --- | --- |
 | 1 | Checkout | `actions/checkout@v6` | Checks out this repository |
@@ -241,6 +251,8 @@ Depends on `build-base-images` for image references (REQ-003) and on
 | 16 | Attest SBOM for service image | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
 | 17 | Sign service image | Shell | Skipped on PRs. Signs service image by digest with cosign keyless OIDC (`cosign sign --yes`) (CC-0030) |
 | 18 | Verify service image (PR) | Shell (conditional) | On PRs only: runs `verify_${{ matrix.service }}.sh` with the locally loaded image ref (CC-0028) |
+
+:::
 
 **Build Contexts:**
 
@@ -275,10 +287,14 @@ refs independently via its own matrix strategy (CC-0007).
 
 ### verify-service-images
 
+::: v-pre
+
 Validates that built service images are functional by running `verify_${{ matrix.service }}.sh`
 (CC-0028). This job replaces the former `smoke-test` job and runs only on push events
 (when images are in GHCR). It uses its own matrix strategy matching
 `build-service-images` to test every service independently.
+
+:::
 
 On PRs, the equivalent verification runs as an inline step within `build-service-images`
 (step 14 above) because `--load` makes the image available only on the same runner.
@@ -294,12 +310,16 @@ On PRs, the equivalent verification runs as an inline step within `build-service
 
 **Steps:**
 
+::: v-pre
+
 | # | Step | Action / Command | Details |
 | --- | --- | --- | --- |
 | 1 | Checkout | `actions/checkout@v6` | Checks out the repository (needed for test scripts, `source-refs.yaml`, and patch counting) |
 | 2 | Login to GHCR | `docker/login-action@v4` | Authenticates to pull the image |
 | 3 | Derive image ref | Shell | Reconstructs the composite tag from the same inputs as `build-service-images` |
 | 4 | Pull and verify | Shell | `docker pull <image-ref>` then runs `verify_${{ matrix.service }}.sh` with the pulled image ref |
+
+:::
 
 **Test script executed:**
 
@@ -430,11 +450,15 @@ run:
 
 This pattern is applied to all three image types:
 
+::: v-pre
+
 | Image | SBOM output file | Job |
 | --- | --- | --- |
 | `python-base` | `sbom-python-base.cyclonedx.json` | `build-base-images` |
 | `venv-builder` | `sbom-venv-builder.cyclonedx.json` | `build-base-images` |
 | Service (e.g., `keystone`) | `sbom-${{ matrix.service }}.cyclonedx.json` | `build-service-images` |
+
+:::
 
 ### PR Behavior
 
@@ -607,7 +631,7 @@ This pattern is applied to all three image types:
 | --- | --- | --- | --- | --- |
 | `python-base` | `grype-python-base-sbom` | `grype-python-base-image` | `grype-python-base` | `build-base-images` |
 | `venv-builder` | `grype-venv-builder-sbom` | `grype-venv-builder-image` | `grype-venv-builder` | `build-base-images` |
-| Service (e.g., `keystone`) | `grype-service-sbom` | `grype-service-image` | `grype-${{ matrix.service }}` | `build-service-images` |
+| Service (e.g., `keystone`) | `grype-service-sbom` | `grype-service-image` | <code v-pre>grype-${{ matrix.service }}</code> | `build-service-images` |
 
 ### Scan Input: PR vs Push
 
@@ -746,9 +770,9 @@ description, licenses, vendor). These supplement the auto-generated labels.
 
 | Step ID | Job | Image input |
 | --- | --- | --- |
-| `meta-python-base` | `build-base-images` | `ghcr.io/${{ steps.meta.outputs.owner }}/python-base` |
-| `meta-venv-builder` | `build-base-images` | `ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder` |
-| `meta-service` | `build-service-images` | `${{ steps.tags.outputs.image }}` |
+| `meta-python-base` | `build-base-images` | <code v-pre>ghcr.io/${{ steps.meta.outputs.owner }}/python-base</code> |
+| `meta-venv-builder` | `build-base-images` | <code v-pre>ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder</code> |
+| `meta-service` | `build-service-images` | <code v-pre>${{ steps.tags.outputs.image }}</code> |
 
 Each metadata-action step's `outputs.labels` is wired into the corresponding
 `build-push-action` step via the `labels` input. At push time, CI-generated labels
@@ -931,7 +955,7 @@ The workflow triggers on the same events as `build-images.yaml`:
 ### Permissions and Concurrency
 
 Top-level permissions are `contents: read` (least privilege). The concurrency group
-follows the standard pattern: `${{ github.ref }}-${{ github.workflow }}` with
+follows the standard pattern: <code v-pre>${{ github.ref }}-${{ github.workflow }}</code> with
 `cancel-in-progress` limited to pull request events.
 
 ### Job: verify-static-tests

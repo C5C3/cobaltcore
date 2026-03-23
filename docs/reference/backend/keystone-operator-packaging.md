@@ -250,6 +250,7 @@ Selector labels (used by Deployment and Service) are a subset:
 
 The operator Deployment is configured with the following fixed settings:
 
+::: v-pre
 **Container arguments:**
 
 | Argument | Value | Configurable |
@@ -257,6 +258,7 @@ The operator Deployment is configured with the following fixed settings:
 | `--leader-elect` | Present when `leaderElection.enabled=true` | Yes |
 | `--metrics-bind-address` | `:{{ .Values.metrics.port }}` (default `:8080`) | Yes (port) |
 | `--health-probe-bind-address` | `:8081` | No (hardcoded in bootstrap.Run) |
+:::
 
 **Health probes:**
 
@@ -268,6 +270,7 @@ The operator Deployment is configured with the following fixed settings:
 The health probe port (8081) is hardcoded in the `bootstrap.Run()` defaults and is not
 configurable via Helm values.
 
+::: v-pre
 **Container ports:**
 
 | Name | Port | Conditional |
@@ -275,6 +278,7 @@ configurable via Helm values.
 | `metrics` | `{{ .Values.metrics.port }}` (default 8080) | Always |
 | `health` | `8081` | Always |
 | `webhook` | `9443` | `webhook.enabled` |
+:::
 
 **Pod security context:**
 
@@ -299,10 +303,12 @@ configurable via Helm values.
 
 The Service is type `ClusterIP` with two ports:
 
+::: v-pre
 | Name | Port | Target Port | Purpose | Conditional |
 | --- | --- | --- | --- | --- |
 | `webhook` | `443` | `9443` | Admission webhook callbacks from the API server | `webhook.enabled` |
 | `metrics` | `{{ .Values.metrics.port }}` | `{{ .Values.metrics.port }}` | Prometheus metrics scraping | Always |
+:::
 
 ### RBAC Configuration
 
@@ -368,9 +374,11 @@ Two webhook configurations are rendered when `webhook.enabled=true`:
 
 Both configurations include the annotation:
 
+::: v-pre
 ```yaml
 cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "keystone-operator.fullname" . }}-webhook
 ```
+:::
 
 This instructs cert-manager to inject the CA bundle from the named Certificate resource
 into the webhook `caBundle` field automatically. The Certificate resource must exist in
