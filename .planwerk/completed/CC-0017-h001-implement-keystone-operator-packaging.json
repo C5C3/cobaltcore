@@ -2,8 +2,8 @@
   "feature_id": "CC-0017",
   "title": "H001: Implement Keystone Operator packaging",
   "slug": "h001-implement-keystone-operator-packaging",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 🔨 medium\n**Category:** infrastructure\n**Priority:** high\n\n## Open Questions\n\nAll questions resolved by user decisions. No remaining ambiguities.\n\n## Summary\n\nCreate the packaging layer for the Keystone operator: a multi-stage Dockerfile (Go 1.25 builder → distroless runtime), a Helm chart with all deployment manifests (Deployment, Service, ServiceAccount, RBAC, webhook configs, CRDs), and a FluxCD HelmRelease to deploy it via GitOps. This connects the existing operator code (`operators/keystone/`) to the existing FluxCD deployment pipeline (`deploy/flux-system/`), completing Phase 8 (S017) of the project plan.\n\n## Scope\n\n**Included:**\n- `operators/keystone/Dockerfile` — multi-stage build (golang:1.25 builder, gcr.io/distroless/static:nonroot runtime, CGO_ENABLED=0, UID 65532). Build context must be workspace root to resolve `go.work` and `internal/common` dependency.\n- `operators/keystone/helm/keystone-operator/Chart.yaml` — apiVersion v2, chart metadata\n- `operators/keystone/helm/keystone-operator/values.yaml` — image, replicas (default 2), resources, leaderElection (default true), webhook, metrics, serviceAccount\n- `operators/keystone/helm/keystone-operator/crds/keystone.openstack.c5c3.io_keystones.yaml` — CRD copied from `config/crd/bases/`\n- `operators/keystone/helm/keystone-operator/templates/deployment.yaml`\n- `operators/keystone/helm/keystone-operator/templates/service.yaml`\n- `operators/keystone/helm/keystone-operator/templates/serviceaccount.yaml`\n- `operators/keystone/helm/keystone-operator/templates/clusterrole.yaml`\n- `operators/keystone/helm/keystone-operator/templates/clusterrolebinding.yaml`\n- `operators/keystone/helm/keystone-operator/templates/webhook-configuration.yaml` (both MutatingWebhookConfiguration and ValidatingWebhookConfiguration)\n- `operators/keystone/helm/keystone-operator/templates/_helpers.tpl`\n- `deploy/flux-system/releases/keystone-operator.yaml` — FluxCD HelmRelease targeting `openstack` namespace\n- Update `deploy/flux-system/kustomization.yaml` to include the new HelmRelease resource\n\n**Excluded:**\n- CI/CD workflows for building/pushing operator image or Helm chart (S018 — separate feature)\n- Makefile `docker-build` and `helm-package` target implementations (separate feature per PLAN.md)\n- `values-prod.yaml` or environment-specific overrides (YAGNI)\n- `NOTES.txt` post-install template (YAGNI)\n- Helm chart tests (YAGNI for initial packaging)\n- HelmRepository source for c5c3-charts (`deploy/flux-system/sources/c5c3-charts.yaml` already exists)\n- Monitoring/alerting resources — PrometheusRule, ServiceMonitor (separate concern)\n- New namespace manifest (`openstack` already exists in `namespaces.yaml`)\n\n## Visualization\n\n```mermaid\nflowchart TD\n    subgraph build [\"Dockerfile - Multi-stage Build\"]\n        B1[\"golang:1.25 builder\"]\n        B2[\"CGO_ENABLED=0 go build\"]\n        B3[\"distroless/static:nonroot\"]\n        B1 --> B2 --> B3\n    end\n\n    subgraph helm [\"Helm Chart - keystone-operator\"]\n        CH[\"Chart.yaml\"]\n        VA[\"values.yaml\"]\n        CRD[\"crds/keystones.yaml\"]\n        subgraph templates [\"templates/\"]\n            DEP[\"deployment.yaml\"]\n            SVC[\"service.yaml\"]\n            SA[\"serviceaccount.yaml\"]\n            CR[\"clusterrole.yaml\"]\n            CRB[\"clusterrolebinding.yaml\"]\n            MWH[\"mutating-webhook-config\"]\n            VWH[\"validating-webhook-config\"]\n            HLP[\"_helpers.tpl\"]\n        end\n    end\n\n    subgraph flux [\"FluxCD GitOps\"]\n        SRC[\"HelmRepository: c5c3-charts<br/>oci://ghcr.io/c5c3/charts\"]\n        HR[\"HelmRelease: keystone-operator\"]\n        SRC --> HR\n    end\n\n    B3 -->|\"image referenced by\"| VA\n    VA -->|\"configures\"| templates\n    HR -->|\"deploys chart\"| helm\n```\n\n```mermaid\nsequenceDiagram\n    participant FC as FluxCD\n    participant HR as HelmRelease\n    participant H as Helm\n    participant K as Kubernetes\n    participant CM as cert-manager\n\n    FC->>HR: Reconcile keystone-operator\n    Note over HR: dependsOn: cert-manager,<br/>mariadb-operator, memcached-operator\n    HR->>H: Install/Upgrade chart\n    H->>K: Apply CRDs from crds/\n    H->>K: Create ServiceAccount\n    H->>K: Create ClusterRole + ClusterRoleBinding\n    H->>K: Create Deployment (2 replicas)\n    H->>K: Create Service (webhook 443 to 9443, metrics 8080)\n    H->>K: Create MutatingWebhookConfiguration\n    H->>K: Create ValidatingWebhookConfiguration\n    K->>CM: cert-manager.io/inject-ca-from annotation\n    CM-->>K: Inject CA bundle into webhook configs\n    K-->>H: Resources ready\n    H-->>HR: Release healthy\n    HR-->>FC: Ready=True\n```\n\n```mermaid\nflowchart LR\n    subgraph deps [\"HelmRelease Dependency Chain\"]\n        CM[\"cert-manager\"]\n        MDB[\"mariadb-operator\"]\n        MC[\"memcached-operator\"]\n        ES[\"external-secrets\"]\n        KS[\"keystone-operator\"]\n        CM --> MDB\n        CM --> MC\n        CM --> ES\n        MDB --> KS\n        MC --> KS\n        CM --> KS\n    end\n```\n\n## Key Components\n\n- **`operators/keystone/Dockerfile`**: Two-stage build. Builder stage uses `golang:1.25`, copies `go.work`, `go.sum`, and all three module directories (`internal/common/`, `operators/keystone/`, `operators/c5c3/`) for workspace-aware dependency resolution. Builds with `CGO_ENABLED=0 GOOS=linux go build -a -o manager ./operators/keystone/main.go`. Runtime stage copies binary to `gcr.io/distroless/static:nonroot`, runs as UID 65532:65532. Docker build context is workspace root (`/workspace`), not `operators/keystone/`.\n\n- **`Chart.yaml`**: Chart name `keystone-operator`, apiVersion `v2`, type `application`, version `0.1.0`, appVersion `0.1.0`.\n\n- **`values.yaml`**: Configurable image (repo/tag/pullPolicy), replicas (default 2), resource requests/limits, leaderElection toggle (default true), webhook enable/disable, metrics port (default 8080 — matches bootstrap default `--metrics-bind-address :8080`), serviceAccount name/create flag.\n\n- **`crds/keystone.openstack.c5c3.io_keystones.yaml`**: Copy of generated CRD from `config/crd/bases/`. Helm auto-installs CRDs from `crds/` directory before templates.\n\n- **`templates/deployment.yaml`**: Operator Deployment using `bootstrap.Run()` flags: `--leader-elect={{ .Values.leaderElection.enabled }}`, `--metrics-bind-address=:{{ .Values.metrics.port }}`, `--health-probe-bind-address=:8081`. Liveness/readiness probes on `:8081` (`/healthz`, `/readyz`). Security context: non-root, read-only rootfs, drop ALL capabilities, `allowPrivilegeEscalation: false`, `runAsNonRoot: true`. Resource limits from values. Webhook port 9443 exposed on container.\n\n- **`templates/service.yaml`**: ClusterIP service exposing webhook port (443→9443) and metrics port (8080).\n\n- **`templates/serviceaccount.yaml`**: Conditionally created SA via `{{ if .Values.serviceAccount.create }}`.\n\n- **`templates/clusterrole.yaml`**: RBAC rules derived from `+kubebuilder:rbac` markers in `keystone_controller.go`:\n  - `keystone.openstack.c5c3.io`: keystones, keystones/status, keystones/finalizers\n  - `apps`: deployments\n  - `\"\"` (core): services, configmaps, secrets, serviceaccounts, events\n  - `batch`: jobs, cronjobs\n  - `k8s.mariadb.com`: databases, users, grants\n  - `external-secrets.io`: externalsecrets, pushsecrets\n  - `rbac.authorization.k8s.io`: roles, rolebindings\n\n- **`templates/clusterrolebinding.yaml`**: Binds ClusterRole to the operator's ServiceAccount in the `openstack` namespace.\n\n- **`templates/webhook-configuration.yaml`**: Both `MutatingWebhookConfiguration` (defaulting, path `/mutate-keystone-openstack-c5c3-io-v1alpha1-keystone`, operations: CREATE+UPDATE, name: `mkeystone.kb.io`) and `ValidatingWebhookConfiguration` (validation, path `/validate-keystone-openstack-c5c3-io-v1alpha1-keystone`, operations: CREATE+UPDATE+DELETE, name: `vkeystone.kb.io`). Both with `failurePolicy: Fail`, `sideEffects: None`, and `cert-manager.io/inject-ca-from` annotation for automatic CA bundle injection.\n\n- **`templates/_helpers.tpl`**: Standard helpers — `fullname`, `name`, `chart`, `labels`, `selectorLabels`, `serviceAccountName`.\n\n- **`deploy/flux-system/releases/keystone-operator.yaml`**: HelmRelease (apiVersion `helm.toolkit.fluxcd.io/v2`) targeting `openstack` namespace. References `c5c3-charts` OCI HelmRepository (namespace `flux-system`). `dependsOn: [cert-manager, mariadb-operator, memcached-operator]` with correct namespace references. `install.crds: CreateReplace`, `upgrade.crds: CreateReplace`, `remediation.retries: 3`. Version range `>=0.1.0 <1.0.0`. Interval `30m`. Values override: `replicas: 2`, `leaderElection.enabled: true`.\n\n- **`deploy/flux-system/kustomization.yaml`**: Add `releases/keystone-operator.yaml` to the resources list (alongside existing releases).",
   "stories": [
@@ -381,6 +381,7 @@
       "title": "Create operators/keystone/Dockerfile with multi-stage build: golang:1.25 builder with CGO_ENABLED=0, workspace root context copying go.work + all modules, gcr.io/distroless/static:nonroot runtime with USER 65532:65532 (CC-0017, REQ-001, REQ-002)",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002"
@@ -391,6 +392,7 @@
       "title": "Create Chart.yaml (apiVersion v2, name keystone-operator, version 0.1.0, appVersion 0.1.0, type application) and values.yaml with all configurable parameters: image (repo/tag/pullPolicy), replicas (default 2), resources (requests/limits), leaderElection.enabled (default true), webhook.enabled (default true), metrics.port (default 8080), serviceAccount.create/name (CC-0017, REQ-003, REQ-004)",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-004"
@@ -401,6 +403,7 @@
       "title": "Create _helpers.tpl with standard Helm template helpers: keystone-operator.name, keystone-operator.fullname, keystone-operator.chart, keystone-operator.labels (helm.sh/chart, app.kubernetes.io/name, instance, version, managed-by), keystone-operator.selectorLabels, keystone-operator.serviceAccountName (CC-0017, REQ-003)",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -410,6 +413,7 @@
       "title": "Copy CRD from operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml to operators/keystone/helm/keystone-operator/crds/keystone.openstack.c5c3.io_keystones.yaml — exact copy with no modifications (CC-0017, REQ-009)",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -419,6 +423,7 @@
       "title": "Create RBAC templates: serviceaccount.yaml (conditional on serviceAccount.create), clusterrole.yaml with all rules from kubebuilder RBAC markers in keystone_controller.go (7 API groups with exact verbs), clusterrolebinding.yaml binding ClusterRole to ServiceAccount in release namespace (CC-0017, REQ-003, REQ-005)",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-005"
@@ -429,6 +434,7 @@
       "title": "Create deployment.yaml: operator Deployment with container args (--leader-elect, --metrics-bind-address, --health-probe-bind-address), liveness probe (/healthz:8081), readiness probe (/readyz:8081), webhook container port 9443, pod securityContext (runAsNonRoot, UID/GID 65532, fsGroup), container securityContext (drop ALL, read-only rootfs, no privilege escalation, seccomp RuntimeDefault), resource limits from values (CC-0017, REQ-003, REQ-006, REQ-010)",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-006",
@@ -440,6 +446,7 @@
       "title": "Create service.yaml: ClusterIP Service exposing webhook port (443 targetPort 9443, name webhook) and metrics port (8080, name metrics), using selectorLabels from _helpers.tpl (CC-0017, REQ-003)",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -449,6 +456,7 @@
       "title": "Create webhook-configuration.yaml: MutatingWebhookConfiguration (name mkeystone.kb.io, path /mutate-keystone-openstack-c5c3-io-v1alpha1-keystone, operations CREATE+UPDATE) and ValidatingWebhookConfiguration (name vkeystone.kb.io, path /validate-keystone-openstack-c5c3-io-v1alpha1-keystone, operations CREATE+UPDATE+DELETE), both with cert-manager.io/inject-ca-from annotation, failurePolicy Fail, sideEffects None, conditional on webhook.enabled (CC-0017, REQ-003, REQ-007)",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-007"
@@ -459,26 +467,9 @@
       "title": "Create deploy/flux-system/releases/keystone-operator.yaml HelmRelease (helm.toolkit.fluxcd.io/v2, namespace openstack, interval 30m, sourceRef c5c3-charts, version >=0.1.0 <1.0.0, dependsOn cert-manager + mariadb-operator + memcached-operator with namespaces, crds CreateReplace, retries 3, values: replicas 2, leaderElection.enabled true) and update deploy/flux-system/kustomization.yaml to include releases/keystone-operator.yaml in resources list (CC-0017, REQ-008)",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-008"
-      ]
-    },
-    {
-      "id": "5.1",
-      "title": "Validate complete Helm chart: run helm lint, helm template with default values, helm template with webhook.enabled=false, helm template with custom value overrides. Verify all rendered YAML is valid, all resources have correct labels, security contexts, RBAC rules match kubebuilder markers, probe endpoints match bootstrap.Run() defaults, webhook paths match config/webhook/manifests.yaml (CC-0017, REQ-001 through REQ-010)",
-      "level": 5,
-      "estimate_minutes": 25,
-      "requirements": [
-        "REQ-001",
-        "REQ-002",
-        "REQ-003",
-        "REQ-004",
-        "REQ-005",
-        "REQ-006",
-        "REQ-007",
-        "REQ-008",
-        "REQ-009",
-        "REQ-010"
       ]
     },
     {
@@ -486,6 +477,7 @@
       "title": "Create reference documentation at docs/reference/backend/keystone-operator-packaging.md covering: Dockerfile build instructions (build context, build args, image layers), Helm chart configuration reference (all values.yaml parameters with types, defaults, and descriptions), FluxCD HelmRelease configuration, dependency chain diagram, and CRD installation behavior (CC-0017)",
       "level": 5,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-004"
@@ -686,8 +678,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-03-22T21:13:46.521811"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-22T21:14:19.131906"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-23T07:13:15.400374"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/77",
+  "pr_number": 77,
   "execution_history": [
     {
       "run_id": "504ce01f-d661-4cc9-8226-7a79fdd6c5f7",
@@ -699,6 +701,76 @@
           "name": "prepare",
           "duration": 422.75061535835266,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "895f80e2-39b0-4b9e-b005-bc8f744d571c",
+      "timestamp": "2026-03-22T21:43:05.613967",
+      "total_duration": 1461.1814994812012,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (1 tasks)",
+          "duration": 273.74632930755615,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (3 tasks)",
+          "duration": 138.343581199646,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (4 tasks)",
+          "duration": 210.37549710273743,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (1 tasks)",
+          "duration": 55.923486948013306,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 5 (1 tasks)",
+          "duration": 161.72261786460876,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0017] Code Review",
+          "duration": 302.3089141845703,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0017] Improvements",
+          "duration": 236.78324460983276,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0017] Simplify",
+          "duration": 81.97782826423645,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "50d0f93f-16e3-423f-b32c-5bd32152b200",
+      "timestamp": "2026-03-23T06:38:35.015935",
+      "total_duration": 502.1171507835388,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 502.1171507835388,
+          "type": "review_address",
           "status": "done"
         }
       ]

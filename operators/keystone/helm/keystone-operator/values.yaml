@@ -1,0 +1,29 @@
+# Default values for keystone-operator.
+
+image:
+  repository: ghcr.io/c5c3/keystone-operator
+  tag: ""  # Defaults to appVersion from Chart.yaml
+  pullPolicy: IfNotPresent
+
+replicas: 2
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+leaderElection:
+  enabled: true
+
+webhook:
+  enabled: true
+
+metrics:
+  port: 8080
+
+serviceAccount:
+  create: true
+  name: ""

@@ -37,3 +37,4 @@ resources:
   - releases/external-secrets.yaml
   - releases/memcached-operator.yaml
   - releases/openbao.yaml
+  - releases/keystone-operator.yaml

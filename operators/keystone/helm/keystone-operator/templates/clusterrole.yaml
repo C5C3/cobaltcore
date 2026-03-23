@@ -1,0 +1,129 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "keystone-operator.fullname" . }}
+  labels:
+    {{- include "keystone-operator.labels" . | nindent 4 }}
+rules:
+  # keystone.openstack.c5c3.io - keystones (CC-0017)
+  - apiGroups:
+      - keystone.openstack.c5c3.io
+    resources:
+      - keystones
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # keystone.openstack.c5c3.io - keystones/status (CC-0017)
+  - apiGroups:
+      - keystone.openstack.c5c3.io
+    resources:
+      - keystones/status
+    verbs:
+      - get
+      - update
+      - patch
+  # keystone.openstack.c5c3.io - keystones/finalizers (CC-0017)
+  - apiGroups:
+      - keystone.openstack.c5c3.io
+    resources:
+      - keystones/finalizers
+    verbs:
+      - update
+  # apps - deployments (CC-0017)
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # core - services, configmaps, secrets, serviceaccounts (CC-0017)
+  - apiGroups:
+      - ""
+    resources:
+      - services
+      - configmaps
+      - secrets
+      - serviceaccounts
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # core - events (CC-0017)
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+  # batch - jobs, cronjobs (CC-0017)
+  - apiGroups:
+      - batch
+    resources:
+      - jobs
+      - cronjobs
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # k8s.mariadb.com - databases, users, grants (CC-0017)
+  - apiGroups:
+      - k8s.mariadb.com
+    resources:
+      - databases
+      - users
+      - grants
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # external-secrets.io - externalsecrets, pushsecrets (CC-0017)
+  - apiGroups:
+      - external-secrets.io
+    resources:
+      - externalsecrets
+      - pushsecrets
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+  # rbac.authorization.k8s.io - roles, rolebindings (CC-0017)
+  - apiGroups:
+      - rbac.authorization.k8s.io
+    resources:
+      - roles
+      - rolebindings
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete

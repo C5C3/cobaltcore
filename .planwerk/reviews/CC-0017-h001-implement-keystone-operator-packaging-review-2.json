@@ -1,0 +1,72 @@
+{
+  "feature_id": "CC-0017",
+  "title": "H001: Implement Keystone Operator packaging",
+  "date": "2026-03-23",
+  "summary": "Review of fixes addressing external review #1 by berendt. Four findings were addressed: W-001 (conditional webhook Service port), W-002 (external-secrets dependency in HelmRelease), W-003 (Helm template syntax in docs), I-001 (remove -a flag from go build). Code changes are correct. However, the documentation was only partially updated — three sections in keystone-operator-packaging.md now diverge from the implementation.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Helm lint passes (no Go/Python tests in scope — infrastructure packaging only)", "checked": true},
+    {"item": "helm template renders all resource types correctly", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing FluxCD HelmRelease pattern (interval, crds, remediation, dependsOn)", "checked": true},
+    {"item": "Follows SPDX header pattern on infrastructure files", "checked": true},
+    {"item": "Conditional webhook port consistent across service.yaml and deployment.yaml", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Dockerfile runs as nonroot (UID 65532:65532)", "checked": true},
+    {"item": "No hardcoded secrets in Helm values or templates", "checked": true},
+    {"item": "ClusterRole follows least-privilege (matches kubebuilder markers exactly)", "checked": true},
+    {"item": "Pod security context: runAsNonRoot, drop ALL, readOnlyRootFilesystem, seccomp RuntimeDefault", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "HelmRelease dependsOn includes all required operators (cert-manager, mariadb, memcached, external-secrets)", "checked": true},
+    {"item": "CRD in crds/ directory identical to config/crd/bases/ source", "checked": true},
+    {"item": "All values.yaml parameters referenced in templates are defined", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No unused values or template helpers", "checked": true},
+    {"item": "No over-engineered conditionals beyond what is needed", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Webhook failurePolicy set to Fail (not Ignore)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs handled (Helm values with sensible defaults)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "id": "DA3-001",
+      "check_id": "DA3",
+      "severity": "major",
+      "file": "docs/reference/backend/keystone-operator-packaging.md:427",
+      "description": "Dependency chain section not updated for external-secrets. Line 427 says 'three infrastructure operators' (should be four). The ASCII diagram (lines 431-437) omits external-secrets. The rationale table (lines 442-446) has no external-secrets row. The deployment sequence (lines 452-455) says 'all three' instead of 'all four'. The HelmRelease was updated (line 19-20) but the docs were not. This was explicitly requested in W-002: 'Also update the documentation dependency chain in docs/reference/backend/keystone-operator-packaging.md to include this dependency with its rationale.'",
+      "fix": "Add external-secrets to: (1) the introductory sentence (line 427: 'four infrastructure operators'), (2) the ASCII diagram (add external-secrets line under cert-manager and as a dependsOn under keystone-operator), (3) the rationale table (add row: external-secrets | external-secrets | Installs the external-secrets.io CRDs (ExternalSecret, PushSecret) that the Keystone operator creates to manage secrets lifecycle), (4) the deployment sequence (step 2: add external-secrets alongside mariadb/memcached; step 3: 'all four')."
+    },
+    {
+      "id": "DA3-002",
+      "check_id": "DA3",
+      "severity": "major",
+      "file": "docs/reference/backend/keystone-operator-packaging.md:79",
+      "description": "Code snippet still shows 'go build -a -o manager main.go' but the Dockerfile (operators/keystone/Dockerfile:25) was changed to 'go build -o manager main.go' to address I-001. The documentation example now diverges from the implementation. Matches review pattern: cross-reference-documentation-examples-against-implementation.",
+      "fix": "Change line 79 from 'CGO_ENABLED=0 GOOS=linux go build -a -o manager main.go' to 'CGO_ENABLED=0 GOOS=linux go build -o manager main.go'."
+    },
+    {
+      "id": "DA3-003",
+      "check_id": "DA3",
+      "severity": "major",
+      "file": "docs/reference/backend/keystone-operator-packaging.md:300-305",
+      "description": "Service Configuration section (lines 300-305) unconditionally lists the webhook port (443 to 9443) as always present. However, service.yaml (line 13) now wraps the webhook port in '{{- if .Values.webhook.enabled }}', making it conditional. The Deployment section (line 277) correctly documents the webhook port as conditional — the Service section should match. Matches review pattern: update-documentation-when-referenced-code-behavior-changes.",
+      "fix": "Update the Service Configuration table to add a 'Conditional' column (matching the Container Ports table format at line 273) and mark the webhook port as conditional on 'webhook.enabled'. Example: add '(conditional on webhook.enabled)' to the webhook row, or restructure the table to include a Conditional column."
+    }
+  ],
+  "suggested_improvements": [],
+  "next_steps": [
+    "Fix DA3-001: Update the Dependency Chain section (lines 425-459) to include external-secrets in all four locations (intro, diagram, table, sequence)",
+    "Fix DA3-002: Remove '-a' flag from the code snippet at line 79",
+    "Fix DA3-003: Mark the webhook Service port as conditional in the Service Configuration section (lines 300-305)"
+  ],
+  "detected_patterns": []
+}

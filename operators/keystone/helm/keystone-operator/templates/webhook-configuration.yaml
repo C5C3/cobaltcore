@@ -1,0 +1,66 @@
+{{- if .Values.webhook.enabled -}}
+# TODO(CC-0018): Add a cert-manager Certificate template to this chart so that
+# webhook TLS works end-to-end. The cert-manager.io/inject-ca-from annotations
+# below reference a Certificate named <fullname>-webhook which must be created
+# separately until the Certificate template is added.
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ include "keystone-operator.fullname" . }}-mutating
+  labels:
+    {{- include "keystone-operator.labels" . | nindent 4 }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "keystone-operator.fullname" . }}-webhook
+webhooks:
+  - name: mkeystone.kb.io
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      service:
+        name: {{ include "keystone-operator.fullname" . }}
+        namespace: {{ .Release.Namespace }}
+        path: /mutate-keystone-openstack-c5c3-io-v1alpha1-keystone
+    failurePolicy: Fail
+    sideEffects: None
+    rules:
+      - apiGroups:
+          - keystone.openstack.c5c3.io
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - keystones
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ include "keystone-operator.fullname" . }}-validating
+  labels:
+    {{- include "keystone-operator.labels" . | nindent 4 }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "keystone-operator.fullname" . }}-webhook
+webhooks:
+  - name: vkeystone.kb.io
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      service:
+        name: {{ include "keystone-operator.fullname" . }}
+        namespace: {{ .Release.Namespace }}
+        path: /validate-keystone-openstack-c5c3-io-v1alpha1-keystone
+    failurePolicy: Fail
+    sideEffects: None
+    rules:
+      - apiGroups:
+          - keystone.openstack.c5c3.io
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+          - DELETE
+        resources:
+          - keystones
+{{- end }}

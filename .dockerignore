@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Exclude files not needed in the Docker build context to reduce context size
+# and improve build performance (CC-0017).
+
+.git
+.github
+.planwerk
+
+architecture/
+deploy/
+docs/
+hack/
+images/
+LICENSES/
+releases/
+scripts/
+tests/
+
+*.md
