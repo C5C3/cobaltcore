@@ -74,3 +74,24 @@ patches:
         values:
           webhook:
             enabled: false
+
+  # keystone-operator: suspend Flux management in kind so that the e2e CI
+  # job can install it manually with a locally built dev image.
+  # Without this patch Flux installs the published chart from c5c3-charts,
+  # creating the ClusterRole with meta.helm.sh/release-namespace=openstack.
+  # The CI's subsequent `helm install` (no --namespace flag → default) then
+  # fails with an ownership-annotation conflict (fix-001).
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: keystone-operator
+      namespace: openstack
+    patch: |
+      apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: keystone-operator
+        namespace: openstack
+      spec:
+        suspend: true
