@@ -5,7 +5,7 @@
 FROM python-base
 
 # Install uv (fast Python package manager, pinned via Renovate)
-COPY --from=ghcr.io/astral-sh/uv:0.10.9 /uv /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.11.2 /uv /bin/
 
 # Build dependencies
 RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends \
