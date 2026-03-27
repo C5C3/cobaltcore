@@ -120,7 +120,7 @@ jobs:
       # CC-0029: Generate and attest SBOM for python-base
       - name: Generate SBOM for python-base
         if: github.event_name != 'pull_request'
-        uses: anchore/sbom-action@17ae1740179002c89186b61233e0f892c3118b11 # v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           image: ghcr.io/${{ steps.meta.outputs.owner }}/python-base@${{ steps.build-python-base.outputs.digest }}
           format: cyclonedx-json
@@ -210,7 +210,7 @@ jobs:
       # CC-0029: Generate and attest SBOM for venv-builder
       - name: Generate SBOM for venv-builder
         if: github.event_name != 'pull_request'
-        uses: anchore/sbom-action@17ae1740179002c89186b61233e0f892c3118b11 # v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           image: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder@${{ steps.build-venv-builder.outputs.digest }}
           format: cyclonedx-json
@@ -463,7 +463,7 @@ jobs:
       # CC-0029: Generate and attest SBOM for service image
       - name: Generate SBOM for service image
         if: github.event_name != 'pull_request'
-        uses: anchore/sbom-action@17ae1740179002c89186b61233e0f892c3118b11 # v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           image: ${{ steps.tags.outputs.image }}@${{ steps.build-service.outputs.digest }}
           format: cyclonedx-json
