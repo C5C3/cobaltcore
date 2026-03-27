@@ -1,0 +1,70 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+name: Check Base Image Updates
+
+"on":
+  schedule:
+    # Daily at 05:00 UTC
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+  actions: write
+
+jobs:
+  check-base-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Normalize image owner
+        id: meta
+        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve current ubuntu:noble digest
+        id: upstream
+        run: |
+          set -euo pipefail
+          # NOTE: docker buildx imagetools inspect returns the manifest list digest for
+          # multi-arch images when no --platform flag is given. This is intentional — we
+          # compare manifest list digests end-to-end, not platform-specific digests.
+          digest=$(docker buildx imagetools inspect ubuntu:noble --format '{{json .Manifest.Digest}}' | tr -d '"')
+          if [[ -z "${digest}" ]]; then
+            echo "ERROR: failed to resolve ubuntu:noble digest" >&2
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "Current ubuntu:noble digest: ${digest}"
+
+      - name: Read published python-base base digest
+        id: published
+        run: |
+          set -euo pipefail
+          docker pull --platform linux/amd64 --quiet ghcr.io/${{ steps.meta.outputs.owner }}/python-base:latest
+          digest=$(docker inspect ghcr.io/${{ steps.meta.outputs.owner }}/python-base:latest \
+            --format '{{index .Config.Labels "org.opencontainers.image.base.digest"}}')
+          if [[ -z "${digest}" ]]; then
+            echo "ERROR: failed to read base digest label from python-base:latest" >&2
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "Published python-base base digest: ${digest}"
+
+      - name: Trigger rebuild if base image changed
+        if: steps.upstream.outputs.digest != steps.published.outputs.digest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Base image changed: ${{ steps.published.outputs.digest }} → ${{ steps.upstream.outputs.digest }}"
+          # NOTE: This always dispatches on main. Images on stable/** branches will not
+          # receive automatic stale-base rebuilds. This is a known limitation.
+          gh workflow run build-images.yaml --repo "$GITHUB_REPOSITORY" --ref main

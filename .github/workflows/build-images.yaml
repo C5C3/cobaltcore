@@ -5,6 +5,7 @@
 name: Build Images
 
 "on":
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -44,6 +45,8 @@ jobs:
       security-events: write  # CC-0032: GitHub Security tab SARIF upload
     outputs:
       python-base-image: ghcr.io/${{ steps.meta.outputs.owner }}/python-base@${{ steps.build-python-base.outputs.digest }}
+      python-base-name: ghcr.io/${{ steps.meta.outputs.owner }}/python-base
+      python-base-digest: ${{ steps.build-python-base.outputs.digest }}
       venv-builder-image: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder@${{ steps.build-venv-builder.outputs.digest }}
     steps:
       # CC-0007: Fork PRs receive a read-only GITHUB_TOKEN that cannot push
@@ -73,6 +76,18 @@ jobs:
       # CC-0030: Install cosign for image signing
       - uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4
 
+      - name: Resolve ubuntu:noble digest
+        id: ubuntu-base
+        run: |
+          set -euo pipefail
+          digest=$(docker buildx imagetools inspect ubuntu:noble --format '{{json .Manifest.Digest}}' | tr -d '"')
+          if [[ -z "${digest}" ]]; then
+            echo "ERROR: failed to resolve ubuntu:noble digest" >&2
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "Resolved ubuntu:noble digest: ${digest}"
+
       # CC-0031: Generate OCI annotations for python-base
       - name: Generate metadata for python-base
         id: meta-python-base
@@ -95,7 +110,10 @@ jobs:
           tags: |
             ghcr.io/${{ steps.meta.outputs.owner }}/python-base:latest
             ghcr.io/${{ steps.meta.outputs.owner }}/python-base:${{ github.sha }}
-          labels: ${{ steps.meta-python-base.outputs.labels }}
+          labels: |
+            ${{ steps.meta-python-base.outputs.labels }}
+            org.opencontainers.image.base.name=ubuntu:noble
+            org.opencontainers.image.base.digest=${{ steps.ubuntu-base.outputs.digest }}
           cache-from: type=gha,scope=python-base
           cache-to: type=gha,mode=max,scope=python-base
 
@@ -182,7 +200,10 @@ jobs:
           tags: |
             ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder:latest
             ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder:${{ github.sha }}
-          labels: ${{ steps.meta-venv-builder.outputs.labels }}
+          labels: |
+            ${{ steps.meta-venv-builder.outputs.labels }}
+            org.opencontainers.image.base.name=ghcr.io/${{ steps.meta.outputs.owner }}/python-base
+            org.opencontainers.image.base.digest=${{ steps.build-python-base.outputs.digest }}
           cache-from: type=gha,scope=venv-builder
           cache-to: type=gha,mode=max,scope=venv-builder
 
@@ -432,7 +453,10 @@ jobs:
             ${{ steps.tags.outputs.composite }}
             ${{ github.ref_name == 'main' && steps.tags.outputs.version || '' }}
             ${{ steps.tags.outputs.sha }}
-          labels: ${{ steps.meta-service.outputs.labels }}
+          labels: |
+            ${{ steps.meta-service.outputs.labels }}
+            org.opencontainers.image.base.name=${{ needs.build-base-images.outputs.python-base-name }}
+            org.opencontainers.image.base.digest=${{ needs.build-base-images.outputs.python-base-digest }}
           cache-from: type=gha,scope=${{ matrix.service }}-${{ matrix.release }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}-${{ matrix.release }}
 

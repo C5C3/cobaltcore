@@ -179,12 +179,16 @@ test_base_images_multi_arch() {
 test_base_image_digest_outputs() {
   echo "Test: base image outputs contain digest references (REQ-003)"
 
-  local python_output venv_output
+  local python_output venv_output python_name_output python_digest_output
   python_output=$(yq_raw '.jobs["build-base-images"]["outputs"]["python-base-image"]' "$WORKFLOW" || true)
   venv_output=$(yq_raw '.jobs["build-base-images"]["outputs"]["venv-builder-image"]' "$WORKFLOW" || true)
+  python_name_output=$(yq_raw '.jobs["build-base-images"]["outputs"]["python-base-name"]' "$WORKFLOW" || true)
+  python_digest_output=$(yq_raw '.jobs["build-base-images"]["outputs"]["python-base-digest"]' "$WORKFLOW" || true)
 
   assert_contains "python-base-image output references digest" "$python_output" "outputs.digest"
   assert_contains "venv-builder-image output references digest" "$venv_output" "outputs.digest"
+  assert_contains "python-base-name output is non-empty" "$python_name_output" "python-base"
+  assert_contains "python-base-digest output references build-python-base digest" "$python_digest_output" "build-python-base.outputs.digest"
 }
 
 # --- REQ-003, REQ-004: build-service-images depends on build-base-images and verify-base-images ---
@@ -903,6 +907,23 @@ test_service_build_push_has_labels_input() {
   labels=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with.labels' "$WORKFLOW" || true)
 
   assert_contains "build-service labels references meta-service" "$labels" "steps.meta-service.outputs.labels"
+}
+
+# --- CC-0034: OCI base image labels present in build steps (REQ-002) ---
+test_oci_base_labels_in_build_steps() {
+  echo "Test: OCI base image labels present in all three build steps (CC-0034)"
+
+  local python_labels venv_labels service_labels
+  python_labels=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-python-base") | .with.labels' "$WORKFLOW" || true)
+  venv_labels=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-venv-builder") | .with.labels' "$WORKFLOW" || true)
+  service_labels=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with.labels' "$WORKFLOW" || true)
+
+  assert_contains "build-python-base labels include org.opencontainers.image.base.name" "$python_labels" "org.opencontainers.image.base.name"
+  assert_contains "build-python-base labels include org.opencontainers.image.base.digest" "$python_labels" "org.opencontainers.image.base.digest"
+  assert_contains "build-venv-builder labels include org.opencontainers.image.base.name" "$venv_labels" "org.opencontainers.image.base.name"
+  assert_contains "build-venv-builder labels include org.opencontainers.image.base.digest" "$venv_labels" "org.opencontainers.image.base.digest"
+  assert_contains "build-service labels include org.opencontainers.image.base.name" "$service_labels" "org.opencontainers.image.base.name"
+  assert_contains "build-service labels include org.opencontainers.image.base.digest" "$service_labels" "org.opencontainers.image.base.digest"
 }
 
 # --- CC-0031: metadata-action labels include OCI title (REQ-005) ---
@@ -1645,6 +1666,8 @@ echo ""
 test_venv_builder_build_push_has_labels_input
 echo ""
 test_service_build_push_has_labels_input
+echo ""
+test_oci_base_labels_in_build_steps
 echo ""
 test_metadata_action_labels_include_oci_title
 echo ""
