@@ -1738,7 +1738,7 @@ test_sarif_upload_action_sha_pinned() {
   fi
 
   # Validate inline version comment (CC-0032, REQ-010)
-  assert_file_contains "upload-sarif pin has # v3 version comment" "$WORKFLOW" "codeql-action/upload-sarif@[0-9a-f]\{40\}[[:space:]]*# v3"
+  assert_file_contains "upload-sarif pin has # v4 version comment" "$WORKFLOW" "codeql-action/upload-sarif@[0-9a-f]\{40\}[[:space:]]*# v4"
 }
 
 # --- CC-0032: security-events permission on build-base-images (REQ-007) ---
