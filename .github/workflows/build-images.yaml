@@ -135,7 +135,7 @@ jobs:
       - name: Scan python-base for vulnerabilities (SBOM)
         if: github.event_name != 'pull_request'
         id: grype-python-base-sbom
-        uses: anchore/scan-action@7037fa011853d5a11690026fb85feee79f4c946c # v7
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
         with:
           sbom: sbom-python-base.cyclonedx.json
           severity-cutoff: high
@@ -145,7 +145,7 @@ jobs:
       - name: Scan python-base for vulnerabilities (image)
         if: github.event_name == 'pull_request'
         id: grype-python-base-image
-        uses: anchore/scan-action@7037fa011853d5a11690026fb85feee79f4c946c # v7
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
         with:
           image: ghcr.io/${{ steps.meta.outputs.owner }}/python-base@${{ steps.build-python-base.outputs.digest }}
           severity-cutoff: high
@@ -222,7 +222,7 @@ jobs:
       - name: Scan venv-builder for vulnerabilities (SBOM)
         if: github.event_name != 'pull_request'
         id: grype-venv-builder-sbom
-        uses: anchore/scan-action@7037fa011853d5a11690026fb85feee79f4c946c # v7
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
         with:
           sbom: sbom-venv-builder.cyclonedx.json
           severity-cutoff: high
@@ -232,7 +232,7 @@ jobs:
       - name: Scan venv-builder for vulnerabilities (image)
         if: github.event_name == 'pull_request'
         id: grype-venv-builder-image
-        uses: anchore/scan-action@7037fa011853d5a11690026fb85feee79f4c946c # v7
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
         with:
           image: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder@${{ steps.build-venv-builder.outputs.digest }}
           severity-cutoff: high
@@ -475,7 +475,7 @@ jobs:
       - name: Scan service image for vulnerabilities (SBOM)
         if: github.event_name != 'pull_request'
         id: grype-service-sbom
-        uses: anchore/scan-action@7037fa011853d5a11690026fb85feee79f4c946c # v7
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
         with:
           sbom: sbom-${{ matrix.service }}.cyclonedx.json
           severity-cutoff: high
@@ -485,7 +485,7 @@ jobs:
       - name: Scan service image for vulnerabilities (image)
         if: github.event_name == 'pull_request'
         id: grype-service-image
-        uses: anchore/scan-action@7037fa011853d5a11690026fb85feee79f4c946c # v7
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
         with:
           image: ${{ steps.tags.outputs.composite }}
           severity-cutoff: high
