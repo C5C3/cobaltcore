@@ -1,0 +1,36 @@
+{
+  "feature_id": "CC-0034",
+  "title": "GitHub Review by sourcery-ai[bot]",
+  "summary": "The reviewer raises three issues: (1) the regex validation in `verify_release_config.sh` is too strict and will reject valid stestr patterns starting with `^`, `.`, or digits — it should only enforce non-empty/non-comment lines; (2) the test-excludes validation is hardcoded to a single file path instead of iterating over all `<release>/test-excludes/*.txt` files; and (3) the `Resolve source ref` step in `build-images.yaml` uses `yq` which isn't available on a fresh `ubuntu-latest` runner and needs an explicit install step.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "sourcery-ai[bot]",
+  "date": "2026-03-27T20:34:51Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "Hey - I've found 1 issue, and left some high level feedback:\n\n- The `test_test_excludes_file_format` check in `verify_release_config.sh` is overly restrictive (`grep -vE '^[0-9]+:(#|[a-zA-Z_])'`), which will flag perfectly valid stestr regex patterns that start with `^`, `.`, digits, or other metacharacters as invalid; consider loosening this to only enforce \"comment or non-empty\" semantics without constraining the first character of regex lines.\n- The test-excludes validation in `verify_release_config.sh` is hard-wired to `releases/2025.2/test-excludes/keystone.txt`, which means additional services or future releases won't be validated in the same way; you may want to parameterize this to iterate over all `<release>/test-excludes/*.txt` files instead of a single path.\n\n<details>\n<summary>Prompt for AI Agents</summary>\n\n~~~markdown\nPlease address the comments from this code review:\n\n## Overall Comments\n- The `test_test_excludes_file_format` check in `verify_release_config.sh` is overly restrictive (`grep -vE '^[0-9]+:(#|[a-zA-Z_])'`), which will flag perfectly valid stestr regex patterns that start with `^`, `.`, digits, or other metacharacters as invalid; consider loosening this to only enforce \"comment or non-empty\" semantics without constraining the first character of regex lines.\n- The test-excludes validation in `verify_release_config.sh` is hard-wired to `releases/2025.2/test-excludes/keystone.txt`, which means additional services or future releases won't be validated in the same way; you may want to parameterize this to iterate over all `<release>/test-excludes/*.txt` files instead of a single path.\n\n## Individual Comments\n\n### Comment 1\n<location path=\".github/workflows/build-images.yaml\" line_range=\"517-522\" />\n<code_context>\n+    steps:\n+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6\n+\n+      - name: Resolve source ref\n+        id: source-ref\n+        env:\n+          MATRIX_SERVICE: ${{ matrix.service }}\n+          MATRIX_RELEASE: ${{ matrix.release }}\n+        run: |\n+          ref=$(yq \".\\\"${MATRIX_SERVICE}\\\"\" \"releases/${MATRIX_RELEASE}/source-refs.yaml\")\n+          if [ -z \"$ref\" ] || [ \"$ref\" = \"null\" ]; then\n</code_context>\n<issue_to_address>\n**issue (bug_risk):** The `Resolve source ref` step assumes `yq` is available, but this job doesn't install it.\n\nOn a fresh `ubuntu-latest` runner, `yq` is not installed by default, so this step will fail when it runs:\n\n```bash\nref=$(yq \".\\\"${MATRIX_SERVICE}\\\"\" \"releases/${MATRIX_RELEASE}/source-refs.yaml\")\n```\nPlease add an explicit `yq` installation/setup step (e.g. `mikefarah/yq` or package install) before this, or switch to a tool that’s guaranteed to be available on the runner.\n</issue_to_address>\n~~~\n\n</details>\n\n***\n\n<details>\n<summary>Sourcery is free for open source - if you like our reviews please consider sharing them ✨</summary>\n\n- [X](https://twitter.com/intent/tweet?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [Mastodon](https://mastodon.social/share?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [LinkedIn](https://www.linkedin.com/sharing/share-offsite/?url=https://sourcery.ai)\n- [Facebook](https://www.facebook.com/sharer/sharer.php?u=https://sourcery.ai)\n\n</details>\n\n<sub>\nHelp me be more useful! Please click 👍 or 👎 on each comment and I'll use the feedback to improve your reviews.\n</sub>",
+  "code_comments": [
+    {
+      "body": "**issue (bug_risk):** The `Resolve source ref` step assumes `yq` is available, but this job doesn't install it.\n\nOn a fresh `ubuntu-latest` runner, `yq` is not installed by default, so this step will fail when it runs:\n\n```bash\nref=$(yq \".\\\"${MATRIX_SERVICE}\\\"\" \"releases/${MATRIX_RELEASE}/source-refs.yaml\")\n```\nPlease add an explicit `yq` installation/setup step (e.g. `mikefarah/yq` or package install) before this, or switch to a tool that’s guaranteed to be available on the runner.",
+      "path": ".github/workflows/build-images.yaml",
+      "line": 548,
+      "author": "sourcery-ai[bot]",
+      "created_at": "2026-03-27T20:34:51Z",
+      "id": null,
+      "resolution": ""
+    }
+  ],
+  "github_review_id": 4023517610
+}

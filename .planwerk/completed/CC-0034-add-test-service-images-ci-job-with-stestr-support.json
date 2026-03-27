@@ -2,8 +2,8 @@
   "feature_id": "CC-0034",
   "title": "Add test-service-images CI job with stestr support",
   "slug": "add-test-service-images-ci-job-with-stestr-support",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 📦 medium\n**Category:** infrastructure\n**Priority:** high\n**Source:** Proposed for 'When the service images are built (build-imag'\n\nAdd a `test-service-images` matrix job to `.github/workflows/build-images.yaml` that runs upstream OpenStack unit tests before images are signed/published. The job reuses the existing source-checkout, patch-application, and constraint-override steps from `build-service-images`. It installs the service with test extras (`<service>[test] stestr testtools`) via `uv pip install` in the venv-builder container, then runs `stestr run` with an optional `--exclude-list` flag pointing to `releases/<release>/test-excludes/<service>.txt`. Matrix starts with `{service: [keystone], release: [\"2025.2\"]}`. Job dependencies: `needs: [build-base-images, verify-base-images]`. Update `verify-service-images` to also require `test-service-images`. Subunit test output uploaded as CI artifacts. Create initial `releases/2025.2/test-excludes/keystone.txt` exclusion file. Update `verify_release_config.sh` to accept the optional `test-excludes/` subdirectory and validate file format. Update `verify_build_images_workflow.sh` to validate the new job structure and dependency wiring.\n\n**Rationale:** Currently there is no validation that upstream OpenStack code combined with patches and constraint overrides produces functional code. A broken patch or incompatible constraint override can ship broken service images. Running upstream unit tests catches regressions before images reach signing and publication, reducing the blast radius of upstream source integration failures.\n\n**Affected Areas:**\n- .github/workflows/build-images.yaml\n- releases/2025.2/test-excludes/keystone.txt\n- tests/container-images/verify_release_config.sh\n- tests/container-images/verify_build_images_workflow.sh",
   "stories": [
@@ -464,6 +464,7 @@
       "description": "Create the directory releases/2025.2/test-excludes/ and the initial keystone.txt file. The file should have a SPDX header comment, a comment block explaining the stestr --exclude-list format (one regex per line, # for comments, blank lines ignored), and be otherwise empty (no excluded tests initially). Follow the SPDX header pattern used in other repository files.",
       "level": 1,
       "estimate_minutes": 5,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -474,6 +475,7 @@
       "description": "Add the full test-service-images job to .github/workflows/build-images.yaml between build-service-images and verify-service-images. The job has: matrix {service: [keystone], release: [\"2025.2\"]}, fail-fast: false, needs: [build-base-images, verify-base-images], permissions: {contents: read, packages: read}, timeout-minutes: 60, runs-on: ubuntu-latest. Steps: (1) checkout this repo, (2) resolve source ref from source-refs.yaml via yq with null/empty guard, (3) checkout openstack/<service> at resolved ref into src/<service> with fetch-depth: 1, (4) apply patches conditionally with hashFiles guard, (5) apply constraint overrides via scripts/apply-constraint-overrides.sh, (6) docker login to GHCR, (7) run tests in venv-builder container — docker run with volume mounts for source, upper-constraints.txt, optional test-excludes file, and results directory; inside the container: uv pip install --prefix /var/lib/openstack --constraint upper-constraints.txt './<service>[test]' stestr testtools, then stestr init, then stestr run with conditional --exclude-list, then stestr last --subunit to capture output, (8) upload subunit artifact via actions/upload-artifact with if: always() guard and name including matrix.service and matrix.release. All run: blocks use env: for matrix values (expression injection defense). Steps 1-5 follow existing patterns from build-service-images lines 294-328.",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -491,6 +493,7 @@
       "description": "In .github/workflows/build-images.yaml, change verify-service-images needs from [build-service-images] to [build-service-images, test-service-images]. Do not change the existing if: guard or any other job properties.",
       "level": 2,
       "estimate_minutes": 5,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -501,6 +504,7 @@
       "description": "Add a new test function test_test_excludes_directory_valid() to tests/container-images/verify_release_config.sh. The function: (1) checks if releases/2025.2/test-excludes/ exists — if not, PASS with 'optional directory absent'; (2) if present, validates all files have .txt extension; (3) validates each filename (sans .txt) matches a key in source-refs.yaml; (4) validates file contents are valid stestr format (no binary, lines are either blank, start with #, or contain a regex pattern). Add the function call to the test runner section at the end of the file. Follow the existing test function pattern with PASS/FAIL counters and assert_* helpers from tests/lib/assertions.sh.",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -511,6 +515,7 @@
       "description": "Add test functions to tests/container-images/verify_build_images_workflow.sh validating the test-service-images job structure. New test functions: (1) test_test_service_images_job_defined — job exists under .jobs; (2) test_test_service_images_matrix — matrix.service includes keystone, matrix.release includes 2025.2; (3) test_test_service_images_fail_fast — fail-fast is false; (4) test_test_service_images_depends_on_base — needs contains build-base-images and verify-base-images; (5) test_test_service_images_permissions — packages: read, contents: read, no id-token/attestations/security-events; (6) test_test_service_images_consumes_venv_builder_output — steps reference needs.build-base-images.outputs.venv-builder-image; (7) test_test_service_images_env_vars — run blocks use env: for matrix values. Add all function calls to the test runner section. Follow existing yq_raw/assert_* patterns.",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -525,6 +530,7 @@
       "description": "Add test functions to tests/container-images/verify_build_images_workflow.sh validating the test-service-images step-level structure. New test functions: (1) test_test_service_images_source_ref_step — source-ref step exists with yq and source-refs.yaml; (2) test_test_service_images_patch_step — patch step has hashFiles guard; (3) test_test_service_images_constraint_overrides_step — constraint overrides step references apply-constraint-overrides.sh; (4) test_test_service_images_install_step — install step references uv pip install, [test], stestr, testtools, upper-constraints.txt; (5) test_test_service_images_stestr_run_step — stestr run step exists with stestr init and conditional --exclude-list referencing test-excludes; (6) test_test_service_images_artifact_upload — upload-artifact step exists with if: always() guard and name referencing matrix.service. Add all function calls to the test runner section.",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-004",
@@ -539,6 +545,7 @@
       "description": "Update existing test functions in tests/container-images/verify_build_images_workflow.sh to account for the new fifth job: (1) Rename test_four_jobs_defined to test_five_jobs_defined and add assert for test-service-images; (2) Update test_timeout_minutes_on_all_jobs to check test-service-images timeout; (3) Update test_runs_on_ubuntu_latest to check test-service-images runner; (4) Update test_matrix_jobs_fail_fast_false to check test-service-images fail-fast; (5) Update or add test_verify_service_images_depends_on_test_service_images to check that verify-service-images needs includes both build-service-images and test-service-images; (6) Update all function calls in the test runner section. Also update test_verify_jobs_no_sbom_permissions and test_verify_jobs_no_security_events_permission to check that test-service-images also lacks these permissions.",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-007",
         "REQ-010",
@@ -551,6 +558,7 @@
       "description": "Update docs/reference/build-images-workflow.md to document the new test-service-images job. Add a ### test-service-images section after ### build-service-images (following the existing section pattern). Include: property table (runs-on, timeout-minutes, needs, matrix, permissions), step table (checkout, resolve source ref, checkout upstream, apply patches, apply constraint overrides, docker login, run tests, upload artifacts), description of the test-excludes mechanism, and dependency relationship diagram. Update the existing job dependency diagram at the top of the Jobs section to show the new five-job topology. Update the ### verify-service-images section to document the updated needs array. Add CC-0034 to the feature reference in the YAML frontmatter.",
       "level": 4,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -731,8 +739,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-03-27T19:53:46.163202"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-27T19:54:26.457709"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-27T22:43:55.006393"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/83",
+  "pr_number": 83,
   "execution_history": [
     {
       "run_id": "5ffc5f16-e478-4780-b82b-f14bb08e9984",
@@ -744,6 +762,84 @@
           "name": "prepare",
           "duration": 482.0820519924164,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "09eb902a-581e-40c1-b7c0-67b2d16b2773",
+      "timestamp": "2026-03-27T20:32:42.700719",
+      "total_duration": 2119.917988061905,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (1 tasks)",
+          "duration": 158.89525890350342,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (2 tasks)",
+          "duration": 555.8309166431427,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (4 tasks)",
+          "duration": 548.3763616085052,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (1 tasks)",
+          "duration": 203.45575666427612,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0034] Code Review",
+          "duration": 344.5696351528168,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0034] Improvements",
+          "duration": 215.14694142341614,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0034] Simplify",
+          "duration": 93.6431176662445,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "78532155-d40d-4942-87c0-b2e8b2beceba",
+      "timestamp": "2026-03-27T22:31:47.351067",
+      "total_duration": 775.9641146659851,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 775.9641146659851,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "9cb63349-19dd-4cec-bca7-52636443a21b",
+      "timestamp": "2026-03-27T22:41:19.038803",
+      "total_duration": 551.0316259860992,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 551.0316259860992,
+          "type": "review_address",
           "status": "done"
         }
       ]

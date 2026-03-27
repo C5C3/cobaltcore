@@ -1,0 +1,50 @@
+{
+  "feature_id": "CC-0034",
+  "title": "Add test-service-images CI job with stestr support",
+  "date": "2026-03-27",
+  "verdict": "APPROVED",
+  "summary": "Review #3 following berendt's external review #2. All 3 WARNING findings and 1 INFO finding from the external review have been correctly addressed: (W-001) sync cross-reference comments added above all 3 duplicated steps in test-service-images, (W-002) set -e error propagation added to the inner bash -c script with set +e only around stestr run to capture its exit code, (W-003) INSTALL_SPEC wiring validation added to test_test_service_images_env_vars with assertions for both the env var reference and the [test] extra in pip-extras, (I-001) TestMappedAuth exclusion comment updated to mention SAML2/OAuth2 federation. Both test suites pass: verify_build_images_workflow.sh (286/0) and verify_release_config.sh (20/0). Review patterns updated with new occurrences and a new error-propagation pattern.",
+  "tests_checklist": [
+    {"item": "verify_build_images_workflow.sh passes (286 passed, 0 failed)", "checked": true},
+    {"item": "verify_release_config.sh passes (20 passed, 0 failed)", "checked": true},
+    {"item": "New INSTALL_SPEC wiring assertions cover env var reference and [test] extra", "checked": true},
+    {"item": "Edge cases: yq queries use || true guard for empty results", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing assert_contains/yq_raw test patterns", "checked": true},
+    {"item": "Sync comments match exact wording convention from CC-0007 pattern", "checked": true},
+    {"item": "set -e/set +e/set -e pattern is minimal and correctly scoped", "checked": true},
+    {"item": "No unnecessary code or scope creep beyond external review feedback", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No new expression injection vectors (all matrix values via env:)", "checked": true},
+    {"item": "No hardcoded secrets introduced", "checked": true},
+    {"item": "Error propagation prevents silent setup failures masking real errors", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Changes are minimal and focused on addressing external review feedback", "checked": true},
+    {"item": "Review patterns correctly capture lessons learned for future reviews", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code introduced", "checked": true},
+    {"item": "Sync comments document existing duplication rather than adding new", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "set -e ensures pip install/stestr init failures abort immediately", "checked": true},
+    {"item": "set +e scoped only to stestr run for exit code capture", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "INSTALL_SPEC wiring now validated by tests (prevents silent misconfiguration)", "checked": true},
+    {"item": "TestMappedAuth comment accurately describes exclusion scope", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "I-001 (minor): The W-003 review pattern entry (INSTALL_SPEC wiring gap) was filed under remove-tests-that-only-verify-language-semantics.md, but the finding is about a missing test for env var wiring — not about removing useless tests. Consider moving it to a more fitting pattern file (e.g., a new 'ensure-pipeline-variable-wiring-is-tested' pattern) in a future cleanup."
+  ],
+  "next_steps": [
+    "Address this review's suggestion about review pattern categorization in a follow-up (non-blocking)"
+  ],
+  "detected_patterns": []
+}

@@ -1,0 +1,107 @@
+{
+  "summary": "Adds a test-service-images CI job to build-images.yaml that runs upstream OpenStack unit tests (stestr) inside the venv-builder container before images are signed/published. Includes per-service exclude-list support, subunit artifact upload, dependency wiring (verify-service-images now gates on test-service-images), verification tests in verify_build_images_workflow.sh and verify_release_config.sh, initial keystone.txt exclude file, and reference docs. The workflow implementation is correct and secure, tests pass (276/0 and 21/0), and the overall design is clean. Two test functions were not updated per task 3.4 requirements, and the docs test coverage table has extensive function name mismatches with the actual test script.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (verify_build_images_workflow.sh: 276/0, verify_release_config.sh: 21/0)", "checked": true},
+    {"item": "Edge cases covered (null/empty source-ref guard, conditional exclude-list, always() on artifact upload)", "checked": true},
+    {"item": "test_verify_jobs_no_sbom_permissions updated to check test-service-images (task 3.4)", "checked": false},
+    {"item": "test_verify_jobs_no_security_events_permission updated to check test-service-images (task 3.4)", "checked": false},
+    {"item": "Artifact name includes matrix.service for disambiguation (test exists)", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (source-ref, patches, constraints steps mirror build-service-images)", "checked": true},
+    {"item": "Test functions follow shell-test-script-structure-with-passfail-counters pattern", "checked": true},
+    {"item": "SPDX headers present on all new files", "checked": true},
+    {"item": "Actions pinned to 40-char SHA with version comment", "checked": true},
+    {"item": "No dead code or unused functions", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "All run: blocks use env: for matrix values (expression injection defense)", "checked": true},
+    {"item": "Least-privilege permissions (contents: read, packages: read only)", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "No shell injection in bash -c command (EXCLUDE_LIST_ARG from controlled matrix values)", "checked": true},
+    {"item": "docker login uses GITHUB_TOKEN secret (standard pattern)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible (single docker run step with stestr)", "checked": true},
+    {"item": "Dependency DAG is acyclic (base → verify-base → {build-service, test-service} → verify-service)", "checked": true},
+    {"item": "test-service-images runs in parallel with build-service-images (correct dependency topology)", "checked": true},
+    {"item": "Exclude-list mechanism is optional and file-presence-driven (no config changes needed)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code (steps reuse existing patterns from build-service-images)", "checked": true},
+    {"item": "No unnecessary features beyond specification", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Source-ref resolution exits on null/empty (exit 1 with ::error::)", "checked": true},
+    {"item": "stestr exit code captured and propagated (TEST_EXIT=$?; exit $TEST_EXIT)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Exclude directory created via mkdir -p before volume mount", "checked": true},
+    {"item": "stestr last --subunit uses || true to not fail on missing results", "checked": true},
+    {"item": "hashFiles guard on conditional patch application", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "id": "FC1-001",
+      "severity": "blocking",
+      "check_id": "FC1",
+      "file": "tests/container-images/verify_build_images_workflow.sh:847-863",
+      "description": "test_verify_jobs_no_sbom_permissions was not updated to check test-service-images for absence of id-token and attestations permissions. Task 3.4 explicitly requires: 'Also update test_verify_jobs_no_sbom_permissions and test_verify_jobs_no_security_events_permission to check that test-service-images also lacks these permissions.' The function currently only checks verify-base-images and verify-service-images.",
+      "fix": "Add a block after the verify-service-images checks: local test_service_id_token test_service_attestations; test_service_id_token=$(yq_raw '.jobs[\"test-service-images\"][\"permissions\"][\"id-token\"]' \"$WORKFLOW\" || echo \"null\"); test_service_attestations=$(yq_raw '.jobs[\"test-service-images\"][\"permissions\"][\"attestations\"]' \"$WORKFLOW\" || echo \"null\"); assert_eq \"test-service-images has no id-token permission\" \"null\" \"$test_service_id_token\"; assert_eq \"test-service-images has no attestations permission\" \"null\" \"$test_service_attestations\""
+    },
+    {
+      "id": "FC1-002",
+      "severity": "blocking",
+      "check_id": "FC1",
+      "file": "tests/container-images/verify_build_images_workflow.sh:1704-1714",
+      "description": "test_verify_jobs_no_security_events_permission was not updated to check test-service-images for absence of security-events permission. Task 3.4 explicitly requires this update. The function currently only checks verify-base-images and verify-service-images.",
+      "fix": "Add after the verify-service-images check: local test_service_perm; test_service_perm=$(yq_raw '.jobs[\"test-service-images\"][\"permissions\"][\"security-events\"] // \"null\"' \"$WORKFLOW\" || true); assert_eq \"test-service-images has no security-events permission\" \"null\" \"$test_service_perm\""
+    },
+    {
+      "id": "DA3-001",
+      "severity": "major",
+      "check_id": "DA3",
+      "file": "docs/reference/build-images-workflow.md:348-366",
+      "description": "The test coverage table lists 17 test function names but 13 of them do not match the actual function names in verify_build_images_workflow.sh. Examples: doc says 'test_test_service_images_matrix' but actual is 'test_test_service_images_has_matrix'; doc says 'test_test_service_images_permissions' but no such function exists (covered by 'test_test_service_images_job_structure'); doc says 'test_test_service_images_artifact_upload' but actual is 'test_test_service_images_upload_artifacts'; doc says 'test_test_service_images_artifact_name_includes_service' but no such function exists at all. This makes the docs misleading — a developer searching for the documented function names will not find them.",
+      "fix": "Update the test coverage table to use the actual function names: test_test_service_images_has_matrix, test_test_service_images_job_structure (consolidating permissions/timeout/runner rows), test_test_service_images_uses_venv_builder_output, test_test_service_images_apply_patches, test_test_service_images_constraint_overrides, test_test_service_images_run_tests_stestr, test_test_service_images_exclude_list, test_test_service_images_upload_artifacts, test_verify_service_images_depends_on_service_images. Remove the nonexistent test_test_service_images_artifact_name_includes_service row."
+    },
+    {
+      "id": "TE2-001",
+      "severity": "major",
+      "check_id": "TE2",
+      "file": "tests/container-images/verify_build_images_workflow.sh:594-613",
+      "description": "test_test_service_images_job_structure validates presence of contents: read and packages: read, but does not validate absence of elevated permissions (id-token, attestations). The docs claim test_test_service_images_permissions validates 'no id-token, attestations, or security-events' but no such test exists. While the workflow itself is correctly configured, there is no test that would catch future addition of elevated permissions to test-service-images.",
+      "fix": "Either add negative permission assertions to test_test_service_images_job_structure, or rely on the fix for FC1-001/FC1-002 which adds test-service-images to the existing permission absence tests."
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a test that validates the artifact name includes matrix.service (test-results-${{ matrix.service }}-${{ matrix.release }}) to prevent artifact name collisions when the matrix is extended with additional services",
+    "The docs test coverage table could also list the test functions that were updated for CC-0034 (test_timeout_minutes_on_all_jobs, test_runs_on_ubuntu_latest, test_matrix_jobs_fail_fast_false) since they now also validate test-service-images"
+  ],
+  "next_steps": [
+    "Add test-service-images permission absence checks to test_verify_jobs_no_sbom_permissions (id-token, attestations) and test_verify_jobs_no_security_events_permission (security-events) in verify_build_images_workflow.sh",
+    "Fix the docs test coverage table in build-images-workflow.md to use actual function names from verify_build_images_workflow.sh"
+  ],
+  "detected_patterns": [
+    {
+      "name": "Parallel CI job with shared base dependency and gated downstream verification",
+      "component": ".github/workflows/build-images.yaml",
+      "category": "service-structure",
+      "applies_when": "Adding a new CI validation job that should run in parallel with an existing job and gate a downstream verification job",
+      "description": "When adding a new validation job (like test-service-images) that runs in parallel with an existing build job (build-service-images), both depend on the same base jobs (build-base-images, verify-base-images) and the downstream verification job (verify-service-images) gates on both. The parallel job reuses the same source preparation steps (checkout, resolve source ref, checkout upstream, apply patches, apply constraint overrides) as the build job, following identical patterns for env var usage and expression injection defense.",
+      "examples": [
+        {
+          "location": ".github/workflows/build-images.yaml:502-503",
+          "code": "  test-service-images:\n    needs: [build-base-images, verify-base-images]"
+        },
+        {
+          "location": ".github/workflows/build-images.yaml:600-602",
+          "code": "  verify-service-images:\n    if: github.event_name != 'pull_request'\n    needs: [build-service-images, test-service-images]"
+        }
+      ]
+    }
+  ]
+}

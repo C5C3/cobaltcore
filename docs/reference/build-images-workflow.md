@@ -1,7 +1,7 @@
 ---
 title: Build Images Workflow
 quadrant: infrastructure
-feature: CC-0007, CC-0029, CC-0030, CC-0031, CC-0032
+feature: CC-0007, CC-0029, CC-0030, CC-0031, CC-0032, CC-0034
 ---
 
 ::: v-pre
@@ -9,7 +9,7 @@ feature: CC-0007, CC-0029, CC-0030, CC-0031, CC-0032
 # Build Images Workflow
 
 Reference documentation for the GitHub Actions build-images workflow (CC-0007, CC-0029,
-CC-0030, CC-0031, CC-0032) and the verify-container-images workflow (CC-0028). The
+CC-0030, CC-0031, CC-0032, CC-0034) and the verify-container-images workflow (CC-0028). The
 build-images workflow builds, tags, and publishes container images for OpenStack services
 to GHCR (GitHub Container Registry). Each pushed image receives OCI Image Spec
 annotations (CC-0031), a CycloneDX SBOM, a Sigstore-signed attestation (CC-0029), and a
@@ -98,20 +98,25 @@ ensuring every merge commit produces a complete set of images.
 
 ## Jobs
 
-The workflow defines four jobs with a linear dependency chain (CC-0028):
+The workflow defines five jobs with a dependency graph (CC-0028, CC-0034):
 
 ```text
-build-base-images ──> verify-base-images ──> build-service-images ──> verify-service-images (push only)
+build-base-images ──> verify-base-images ──┬──> build-service-images ──┬──> verify-service-images (push only)
+                                           │                           │
+                                           └──> test-service-images  ──┘
                                                       │
-                                                      └── verify_<service>.sh (PR, inline step)
+                                                      └── stestr run (upstream unit tests)
 ```
 
 The `verify-base-images` job validates base image properties (Python version, user
 UID/GID, PATH, uv version) before service image builds begin. This catches base image
-regressions before they cascade into service image failures. On push events, the
-`verify-service-images` job validates service images pulled from GHCR. On PRs, the
-equivalent verification runs as an inline step within `build-service-images` because
-`--load` makes the image available only on the same runner.
+regressions before they cascade into service image failures. The `test-service-images`
+job (CC-0034) runs upstream unit tests for each service inside the `venv-builder`
+container, in parallel with `build-service-images`. On push events, the
+`verify-service-images` job validates service images pulled from GHCR and gates on both
+`build-service-images` and `test-service-images`. On PRs, the equivalent image
+verification runs as an inline step within `build-service-images` because `--load` makes
+the image available only on the same runner.
 
 ### build-base-images
 
@@ -285,6 +290,95 @@ YAML schema.
 This job does not declare outputs. The `verify-service-images` job derives its own image
 refs independently via its own matrix strategy (CC-0007).
 
+### test-service-images
+
+::: v-pre
+
+Runs upstream unit tests for each service inside the `venv-builder` container (CC-0034).
+The job checks out the service source at the version specified in `source-refs.yaml`,
+applies any patches and constraint overrides, then executes `stestr run` inside a Docker
+container built from the `venv-builder` image. Test results are exported as subunit
+artifacts. An optional per-service exclude-list (`releases/<release>/test-excludes/<service>.txt`)
+skips known-failing tests via `stestr run --exclude-list`.
+
+:::
+
+This job runs in parallel with `build-service-images` — both depend on
+`build-base-images` and `verify-base-images`, but not on each other. The
+`verify-service-images` job gates on both.
+
+| Property | Value |
+| --- | --- |
+| `runs-on` | `ubuntu-latest` |
+| `timeout-minutes` | `60` |
+| `needs` | `[build-base-images, verify-base-images]` |
+| Permissions | `contents: read`, `packages: read` |
+| Matrix | `service: [keystone]`, `release: ["2025.2"]` |
+
+**Steps:**
+
+::: v-pre
+
+| # | Step | Action / Command | Details |
+| --- | --- | --- | --- |
+| 1 | Checkout | `actions/checkout@v6` | Checks out the repository |
+| 2 | Install yq | Shell | Downloads `yq` binary from GitHub releases (version-pinned via `YQ_VERSION` env var, SHA256 checksum verified) |
+| 3 | Resolve source ref | Shell | Reads version from `source-refs.yaml` via `yq`, validates against null/empty |
+| 4 | Checkout service source | `actions/checkout@v6` | Checks out `openstack/<service>` at the resolved ref into `src/<service>` |
+| 5 | Apply patches | Shell (conditional) | Applies `patches/<service>/<release>/*.patch` if any exist (`hashFiles` guard) |
+| 6 | Apply constraint overrides | Shell | Runs `scripts/apply-constraint-overrides.sh` |
+| 7 | Login to GHCR | `docker/login-action@v4` | Authenticates to pull `venv-builder` image |
+| 8 | Run tests | Shell | `docker run` with `venv-builder` image, mounts source, constraints, and test-excludes. Installs `.[test] stestr testtools`, runs `stestr init && stestr run`, exports subunit results |
+| 9 | Upload test results | `actions/upload-artifact@v7` | Always runs. Uploads `results/testresults.subunit` with 30-day retention |
+
+:::
+
+**Test exclude-list:**
+
+If `releases/<release>/test-excludes/<service>.txt` exists, stestr uses it as
+`--exclude-list` to skip tests matching the regex patterns in the file. The file follows
+stestr exclude-list format: blank lines are ignored, `#` lines are comments, all other
+lines are regex patterns matching test IDs to skip. See
+`releases/2025.2/test-excludes/keystone.txt` for an example.
+
+**Test Coverage:**
+
+The `verify_build_images_workflow.sh` script validates test-service-images job structure
+and steps (CC-0034):
+
+| Test | Validates |
+| --- | --- |
+| `test_five_jobs_defined` | All five jobs (build-base-images, verify-base-images, build-service-images, test-service-images, verify-service-images) exist |
+| `test_test_service_images_job_structure` | `runs-on: ubuntu-latest`, `timeout-minutes: 60`, `contents: read`, `packages: read`, no `id-token`, `attestations`, or `security-events` |
+| `test_test_service_images_has_matrix` | Matrix includes `service: keystone` and `release: 2025.2`, with `fail-fast: false` |
+| `test_test_service_images_depends_on_base` | `needs` array contains `build-base-images` and `verify-base-images` |
+| `test_test_service_images_uses_venv_builder_output` | Steps reference `needs.build-base-images.outputs.venv-builder-image` |
+| `test_test_service_images_source_ref_step` | Source-ref step uses `yq` to read `source-refs.yaml` with null/empty guard |
+| `test_test_service_images_checkout_service_source` | Checks out upstream service repo at correct ref and path |
+| `test_test_service_images_apply_patches` | Conditional patch application step with `hashFiles` guard |
+| `test_test_service_images_constraint_overrides` | Constraint overrides step references `apply-constraint-overrides.sh` |
+| `test_test_service_images_run_tests_volumes` | Run tests step mounts service source, constraints, test-excludes, and results volumes |
+| `test_test_service_images_run_tests_stestr` | `pip install` with `stestr`, `stestr init`, and `stestr run` |
+| `test_test_service_images_exclude_list` | `--exclude-list` included only when service-specific exclusion file exists |
+| `test_test_service_images_subunit_output` | `stestr last --subunit` exports results to `testresults.subunit` |
+| `test_test_service_images_upload_artifacts` | `actions/upload-artifact` step for subunit output with `if: always()` and 30-day retention |
+| `test_test_service_images_artifact_name` | Artifact name includes `matrix.service` and `matrix.release` for disambiguation |
+| `test_test_service_images_env_vars` | `run:` blocks use `env:` for matrix values, not direct <code v-pre>${{ matrix.* }}</code> interpolation |
+| `test_test_service_images_docker_run` | Run tests uses `docker run` with `VENV_BUILDER_IMAGE` |
+| `test_test_service_images_feature_comment` | Workflow contains CC-0034 feature comment |
+| `test_verify_service_images_depends_on_service_images` | `verify-service-images` `needs` includes both `build-service-images` and `test-service-images` |
+| `test_timeout_minutes_on_all_jobs` | All jobs including `test-service-images` have `timeout-minutes` set |
+| `test_runs_on_ubuntu_latest` | All jobs including `test-service-images` use `runs-on: ubuntu-latest` |
+| `test_matrix_jobs_fail_fast_false` | All matrix jobs including `test-service-images` have `fail-fast: false` |
+
+The `verify_release_config.sh` script validates test-excludes file structure (CC-0034):
+
+| Test | Validates |
+| --- | --- |
+| `test_test_excludes_file_format` | `test-excludes/keystone.txt` contains valid stestr exclude-list format |
+| `test_test_excludes_directory_structure` | All files in `test-excludes/` are `.txt` and named after services in `source-refs.yaml` |
+| `test_test_excludes_files_match_services` | Each filename (sans `.txt`) corresponds to a key in `source-refs.yaml` |
+
 ### verify-service-images
 
 ::: v-pre
@@ -303,7 +397,7 @@ On PRs, the equivalent verification runs as an inline step within `build-service
 | --- | --- |
 | `runs-on` | `ubuntu-latest` |
 | `timeout-minutes` | `10` |
-| `needs` | `[build-service-images]` |
+| `needs` | `[build-service-images, test-service-images]` |
 | `if` | `github.event_name != 'pull_request'` |
 | Permissions | `contents: read`, `packages: read` |
 | Matrix | `service: [keystone]`, `release: ["2025.2"]` |
@@ -865,14 +959,20 @@ nova:
 
 ### 4. Extend the matrices
 
-Add the service to both the `build-service-images` and `verify-service-images` matrices
-in `.github/workflows/build-images.yaml`:
+Add the service to the `build-service-images`, `test-service-images`, and
+`verify-service-images` matrices in `.github/workflows/build-images.yaml`:
 
 ```yaml
 # build-service-images job:
 strategy:
   matrix:
     service: [keystone, nova]    # ← add here
+    release: ["2025.2"]
+
+# test-service-images job (must mirror build-service-images):
+strategy:
+  matrix:
+    service: [keystone, nova]    # ← add here too
     release: ["2025.2"]
 
 # verify-service-images job (must mirror build-service-images):
@@ -894,6 +994,15 @@ If the service requires constraint overrides, add entries to
 `overrides/<release>/constraints.txt`. The `apply-constraint-overrides.sh` script
 processes them automatically.
 
+### 7. (Optional) Add test exclusions
+
+If the service has upstream unit tests that cannot pass in CI (environment-dependent,
+flaky, or infrastructure-requiring tests), create an exclusion file at
+`releases/<release>/test-excludes/<service>.txt`. The file uses stestr exclude-list
+format: one regex pattern per line, `#` for comments, blank lines allowed. The
+`test-service-images` job picks up the file automatically when present — no workflow
+changes are needed.
+
 The tag derivation, build context resolution, and verification steps all use matrix
 variables and work automatically for new services. The `verify-service-images` job
 derives its own image refs independently via its own matrix strategy. Note that adding a
@@ -913,6 +1022,8 @@ Create the release directory with required files:
 releases/2026.1/
 ├── extra-packages.yaml       # Extra pip/apt packages per service (CC-0027)
 ├── source-refs.yaml          # Service versions for this release
+├── test-excludes/            # (Optional) Per-service stestr exclude-lists (CC-0034)
+│   └── <service>.txt
 └── upper-constraints.txt     # From openstack/requirements stable/2026.1
 ```
 
@@ -935,6 +1046,13 @@ strategy:
 ### 3. (Optional) Add patches and overrides
 
 Create `patches/<service>/2026.1/` and `overrides/2026.1/constraints.txt` as needed.
+
+### 4. (Optional) Add test exclusions
+
+If any services have upstream tests that fail in the new release's CI environment, create
+`releases/2026.1/test-excludes/<service>.txt` with stestr exclude-list patterns. Copy
+patterns from the previous release's exclusion file as a starting point and adjust as
+needed.
 
 ## Verify Container Images Workflow
 
@@ -984,9 +1102,9 @@ non-zero, the job fails.
 
 | Script | Validates |
 | --- | --- |
-| `verify_build_images_workflow.sh` | Workflow structure: job names, dependency chain, trigger events, permissions, action pinning, concurrency, matrix strategy, SBOM/attestation configuration (CC-0029), cosign signing configuration (CC-0030), OCI annotation configuration (CC-0031), vulnerability scanning configuration (CC-0032) |
+| `verify_build_images_workflow.sh` | Workflow structure: job names, dependency chain, trigger events, permissions, action pinning, concurrency, matrix strategy, SBOM/attestation configuration (CC-0029), cosign signing configuration (CC-0030), OCI annotation configuration (CC-0031), vulnerability scanning configuration (CC-0032), test-service-images job structure and steps (CC-0034) |
 | `verify_deviation_comments.sh` | DEVIATION comments in Dockerfiles cross-reference architecture docs |
-| `verify_release_config.sh` | `source-refs.yaml` and `extra-packages.yaml` structure and content validity |
+| `verify_release_config.sh` | `source-refs.yaml`, `extra-packages.yaml` structure and content validity, test-excludes file format and directory structure (CC-0034) |
 | `verify_spdx_headers.sh` | SPDX Apache-2.0 license headers present on all infrastructure files |
 | `test_apply_constraint_overrides.sh` | `scripts/apply-constraint-overrides.sh` correctly applies constraint overrides |
 

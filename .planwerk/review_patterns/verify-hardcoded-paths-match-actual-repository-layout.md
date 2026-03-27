@@ -3,7 +3,7 @@
 **Review-Area**: validation
 **Detection-Hint**: When a script assigns a file path to a variable, trace that path from the expected working directory and confirm the file actually exists at that location in the repo tree.
 **Severity**: BLOCKING
-**Occurrences**: 3
+**Occurrences**: 4
 
 ## What to check
 
@@ -29,3 +29,8 @@ A wrong path causes the script to fail immediately on every invocation with a mi
 - **Feedback**: `setup-auth.sh` enables the `kubernetes/management` auth mount and creates the `eso-management` role, but never calls `bao write auth/kubernetes/management/config` to tell OpenBao how to validate service account tokens from the management cluster.
 - **What was missed**: When the same file sets up the default kubernetes auth mount with enable + config + role, but the management kubernetes auth mount only has enable + role (skipping config), that gap should be flagged. Also verify that documentation claiming something is 'fully configured' matches the actual code.
 - **Fix**: Added explicit `bao write auth/kubernetes/management/config kubernetes_host=... ca_cert=...` call mirroring the default mount configuration, and updated documentation to accurately describe the configuration and its RBAC prerequisite.
+
+### CC-0034 — sourcery-ai[bot]
+- **Feedback**: The test-excludes validation is hard-wired to `releases/2025.2/test-excludes/keystone.txt`, which means additional services or future releases won't be validated.
+- **What was missed**: Validation and verification scripts should iterate over all matching files (e.g. `releases/*/test-excludes/*.txt`) rather than hardcoding a single path like `releases/2025.2/test-excludes/keystone.txt`. Compare the function's scope with related functions in the same script.
+- **Fix**: Parameterize the function to iterate over all `releases/*/test-excludes/*.txt` files, matching the dynamic pattern used by the other test functions in the same script.

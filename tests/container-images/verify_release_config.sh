@@ -218,6 +218,143 @@ test_no_hardcoded_apt_packages() {
   fi
 }
 
+# --- Test 5: test-excludes/*.txt files have valid stestr exclude-list format (CC-0034 REQ-008) ---
+test_test_excludes_file_format() {
+  echo "Test: test-excludes/*.txt files have valid stestr exclude-list format"
+
+  local found_any=false
+  for excludes_file in "$PROJECT_ROOT"/releases/*/test-excludes/*.txt; do
+    [ -f "$excludes_file" ] || continue
+    found_any=true
+    local rel_path="${excludes_file#"$PROJECT_ROOT"/}"
+
+    # Verify file is not empty (must have at least one non-blank, non-comment line or comment)
+    local content_lines
+    content_lines=$(grep -cE '^.' "$excludes_file" || true)
+    if [ "$content_lines" -gt 0 ]; then
+      echo "  PASS: $rel_path has content ($content_lines lines)"
+      PASS=$((PASS + 1))
+    else
+      echo "  FAIL: $rel_path is empty"
+      FAIL=$((FAIL + 1))
+      continue
+    fi
+
+    # Verify format: every non-blank line is either a comment (starts with #) or
+    # a non-empty pattern.  stestr exclude-list accepts any valid regex, so we do
+    # NOT constrain the first character — patterns may start with ^, ., digits,
+    # metacharacters, etc.  We only flag whitespace-only lines (likely mistakes).
+    local bad_lines
+    bad_lines=$(grep -nE '^[[:space:]]+$' "$excludes_file" || true)
+    if [ -z "$bad_lines" ]; then
+      echo "  PASS: $rel_path has valid stestr exclude-list format"
+      PASS=$((PASS + 1))
+    else
+      echo "  FAIL: $rel_path has whitespace-only lines (use blank lines or # comments instead):"
+      echo "    $bad_lines"
+      FAIL=$((FAIL + 1))
+    fi
+
+    # Verify file contains at least one comment line (documentation)
+    if grep -qE '^#' "$excludes_file"; then
+      echo "  PASS: $rel_path contains comment lines"
+      PASS=$((PASS + 1))
+    else
+      echo "  FAIL: $rel_path has no comment lines (expected documentation comments)"
+      FAIL=$((FAIL + 1))
+    fi
+  done
+
+  if [ "$found_any" = false ]; then
+    echo "  PASS: no test-excludes/*.txt files found (optional)"
+    PASS=$((PASS + 1))
+  fi
+}
+
+# --- Test 6: test-excludes directory structure is valid (CC-0034 REQ-008) ---
+test_test_excludes_directory_structure() {
+  echo "Test: test-excludes directory structure is valid"
+
+  local found_any=false
+  for excludes_dir in "$PROJECT_ROOT"/releases/*/test-excludes; do
+    [ -d "$excludes_dir" ] || continue
+    found_any=true
+    local rel_dir="${excludes_dir#"$PROJECT_ROOT"/}"
+
+    echo "  PASS: $rel_dir/ exists"
+    PASS=$((PASS + 1))
+
+    # All files must be .txt
+    local non_txt_files
+    non_txt_files=$(find "$excludes_dir" -maxdepth 1 -type f ! -name '*.txt' || true)
+    if [ -z "$non_txt_files" ]; then
+      echo "  PASS: all files in $rel_dir/ are .txt"
+      PASS=$((PASS + 1))
+    else
+      echo "  FAIL: non-.txt files found in $rel_dir/:"
+      echo "    $non_txt_files"
+      FAIL=$((FAIL + 1))
+    fi
+  done
+
+  if [ "$found_any" = false ]; then
+    echo "  PASS: no test-excludes/ directories found (optional)"
+    PASS=$((PASS + 1))
+  fi
+}
+
+# --- Test 7: test-excludes filenames match services in source-refs.yaml (CC-0034 REQ-008) ---
+test_test_excludes_files_match_services() {
+  echo "Test: test-excludes filenames match services in source-refs.yaml"
+
+  local found_any=false
+  for excludes_dir in "$PROJECT_ROOT"/releases/*/test-excludes; do
+    [ -d "$excludes_dir" ] || continue
+    found_any=true
+    local release_dir
+    release_dir=$(dirname "$excludes_dir")
+    local release_name
+    release_name=$(basename "$release_dir")
+    local source_refs="$release_dir/source-refs.yaml"
+
+    if [ ! -f "$source_refs" ]; then
+      echo "  FAIL: $release_name/source-refs.yaml not found (needed to validate test-excludes filenames)"
+      FAIL=$((FAIL + 1))
+      continue
+    fi
+
+    # Get list of service keys from source-refs.yaml
+    local services
+    services=$(yq 'keys | .[]' "$source_refs" | tr -d '"')
+
+    # Check each .txt file matches a service key
+    local all_match=true
+    for file in "$excludes_dir"/*.txt; do
+      [ -f "$file" ] || continue
+      local basename
+      basename=$(basename "$file" .txt)
+      if echo "$services" | grep -qx "$basename"; then
+        echo "  PASS: $release_name/test-excludes/$basename.txt matches service key in source-refs.yaml"
+        PASS=$((PASS + 1))
+      else
+        echo "  FAIL: $release_name/test-excludes/$basename.txt does not match any service key in source-refs.yaml"
+        FAIL=$((FAIL + 1))
+        all_match=false
+      fi
+    done
+
+    if [ "$all_match" = true ]; then
+      echo "  PASS: all $release_name/test-excludes filenames correspond to services"
+      PASS=$((PASS + 1))
+    fi
+  done
+
+  if [ "$found_any" = false ]; then
+    echo "  PASS: no test-excludes/ directories found (optional)"
+    PASS=$((PASS + 1))
+  fi
+}
+
 # --- Run all tests ---
 echo "=== Release config verification tests ==="
 echo ""
@@ -228,6 +365,12 @@ echo ""
 test_extra_packages_build_wiring
 echo ""
 test_no_hardcoded_apt_packages
+echo ""
+test_test_excludes_file_format
+echo ""
+test_test_excludes_directory_structure
+echo ""
+test_test_excludes_files_match_services
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

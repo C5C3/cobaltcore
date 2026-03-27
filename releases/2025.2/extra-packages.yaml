@@ -15,7 +15,6 @@
 keystone:
   pip_extras:
     - ldap
-    - oauth1
   pip_packages: []
   apt_packages:
     - libapache2-mod-wsgi-py3

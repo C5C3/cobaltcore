@@ -498,9 +498,185 @@ jobs:
           IMAGE_REF: ${{ steps.tags.outputs.composite }}
         run: bash tests/container-images/verify_${{ matrix.service }}.sh "$IMAGE_REF"
 
+  # CC-0034: Run upstream unit tests for each service inside the venv-builder container
+  test-service-images:
+    needs: [build-base-images, verify-base-images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+    # oslo.db opportunistic tests need real MySQL and PostgreSQL backends.
+    # The test container reaches these via --network host on 127.0.0.1.
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: openstack
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -u root -popenstack"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: openstack
+          POSTGRES_PASSWORD: openstack
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U openstack"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [keystone]
+        release: ["2025.2"]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install yq
+        env:
+          YQ_VERSION: v4.45.1
+          YQ_SHA256: 654d2943ca1d3be2024089eb4f270f4070f491a0610481d128509b2834870049
+        run: |
+          sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          echo "${YQ_SHA256}  /usr/local/bin/yq" | sha256sum --check --strict
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      # NOTE: This step MUST stay in sync with the equivalent step in build-service-images.
+      - name: Resolve source ref
+        id: source-ref
+        env:
+          MATRIX_SERVICE: ${{ matrix.service }}
+          MATRIX_RELEASE: ${{ matrix.release }}
+        run: |
+          ref=$(yq ".\"${MATRIX_SERVICE}\"" "releases/${MATRIX_RELEASE}/source-refs.yaml")
+          if [ -z "$ref" ] || [ "$ref" = "null" ]; then
+            echo "::error::No source-ref found for '${MATRIX_SERVICE}' in releases/${MATRIX_RELEASE}/source-refs.yaml"
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "Resolved ${MATRIX_SERVICE} source ref: $ref"
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          repository: openstack/${{ matrix.service }}
+          ref: ${{ steps.source-ref.outputs.ref }}
+          path: src/${{ matrix.service }}
+          fetch-depth: 1
+
+      # NOTE: This step MUST stay in sync with the equivalent step in build-service-images.
+      - name: Apply patches
+        if: hashFiles(format('patches/{0}/{1}/*.patch', matrix.service, matrix.release)) != ''
+        env:
+          MATRIX_SERVICE: ${{ matrix.service }}
+          MATRIX_RELEASE: ${{ matrix.release }}
+        run: git -C "src/${MATRIX_SERVICE}" apply "${GITHUB_WORKSPACE}/patches/${MATRIX_SERVICE}/${MATRIX_RELEASE}"/*.patch
+
+      # NOTE: This step MUST stay in sync with the equivalent step in build-service-images.
+      - name: Apply constraint overrides
+        env:
+          MATRIX_RELEASE: ${{ matrix.release }}
+        run: scripts/apply-constraint-overrides.sh "$MATRIX_RELEASE"
+
+      - name: Resolve pip extras
+        id: pip-extras
+        env:
+          MATRIX_SERVICE: ${{ matrix.service }}
+          MATRIX_RELEASE: ${{ matrix.release }}
+        run: |
+          # Read pip_extras from extra-packages.yaml (e.g. ["ldap"] → "ldap")
+          extras=$(yq -r ".\"${MATRIX_SERVICE}\".pip_extras // [] | join(\",\")" \
+            "releases/${MATRIX_RELEASE}/extra-packages.yaml")
+          if [ -n "$extras" ]; then
+            echo "install_spec=.[test,${extras}]" >> "$GITHUB_OUTPUT"
+          else
+            echo "install_spec=.[test]" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Resolved install spec: .[test${extras:+,${extras}}]"
+
+      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run tests
+        env:
+          MATRIX_SERVICE: ${{ matrix.service }}
+          MATRIX_RELEASE: ${{ matrix.release }}
+          VENV_BUILDER_IMAGE: ${{ needs.build-base-images.outputs.venv-builder-image }}
+          # CC-0034: PBR requires version metadata, but uv's build isolation
+          # copies source without .git.  Passed into the container to write
+          # a PKG-INFO file that PBR reads as a fallback (see script below).
+          SERVICE_VERSION: ${{ steps.source-ref.outputs.ref }}
+          INSTALL_SPEC: ${{ steps.pip-extras.outputs.install_spec }}
+          # oslo.db opportunistic test provisioning URL (semicolon-separated).
+          # MySQL uses root (needs CREATE DATABASE); PostgreSQL uses the
+          # superuser created by the postgres service container.
+          OS_TEST_DBAPI_ADMIN_CONNECTION: "sqlite://;mysql+pymysql://root:openstack@127.0.0.1/;postgresql+psycopg2://openstack:openstack@127.0.0.1/openstack"
+        run: |
+          mkdir -p results
+
+          # Ensure test-excludes directory exists for volume mount
+          mkdir -p "releases/${MATRIX_RELEASE}/test-excludes"
+
+          # Build exclude-list argument if service-specific file exists
+          EXCLUDE_LIST_ARG=""
+          if [ -f "releases/${MATRIX_RELEASE}/test-excludes/${MATRIX_SERVICE}.txt" ]; then
+            EXCLUDE_LIST_ARG="--exclude-list /workspace/test-excludes/${MATRIX_SERVICE}.txt"
+          fi
+
+          docker run --rm --network host \
+            -v "${GITHUB_WORKSPACE}/src/${MATRIX_SERVICE}:/workspace/src:rw" \
+            -v "${GITHUB_WORKSPACE}/releases/${MATRIX_RELEASE}/upper-constraints.txt:/workspace/upper-constraints.txt:ro" \
+            -v "${GITHUB_WORKSPACE}/releases/${MATRIX_RELEASE}/test-excludes:/workspace/test-excludes:ro" \
+            -v "${GITHUB_WORKSPACE}/results:/workspace/results" \
+            -w /workspace/src \
+            -e EXCLUDE_LIST_ARG="${EXCLUDE_LIST_ARG}" \
+            -e SERVICE_NAME="${MATRIX_SERVICE}" \
+            -e SERVICE_VERSION="${SERVICE_VERSION}" \
+            -e INSTALL_SPEC="${INSTALL_SPEC}" \
+            -e OS_TEST_DBAPI_ADMIN_CONNECTION \
+            "${VENV_BUILDER_IMAGE}" \
+            bash -c '
+              set -e
+              source /var/lib/openstack/bin/activate
+              # Write a minimal PKG-INFO so PBR can derive the version
+              # inside the uv build-isolation sandbox, which copies the
+              # source tree to a temp dir without .git (git tags are lost).
+              # PKG-INFO is copied along with the source and is the primary
+              # PBR fallback when .git is absent (the sdist tarball path).
+              printf "Metadata-Version: 2.1\nName: %s\nVersion: %s\n" "$SERVICE_NAME" "$SERVICE_VERSION" > PKG-INFO
+              uv pip install --prefix /var/lib/openstack \
+                --constraint /workspace/upper-constraints.txt \
+                "${INSTALL_SPEC}" stestr testtools
+              stestr init
+              set +e
+              stestr run $EXCLUDE_LIST_ARG; TEST_EXIT=$?
+              set -e
+              stestr last --subunit > /workspace/results/testresults.subunit || true
+              exit $TEST_EXIT
+            '
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: test-results-${{ matrix.service }}-${{ matrix.release }}
+          path: results/testresults.subunit
+          retention-days: 30
+
   verify-service-images:
     if: github.event_name != 'pull_request'
-    needs: [build-service-images]
+    needs: [build-service-images, test-service-images]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

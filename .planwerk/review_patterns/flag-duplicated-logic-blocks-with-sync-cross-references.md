@@ -3,7 +3,7 @@
 **Review-Area**: documentation
 **Detection-Hint**: When reviewing a step or block that looks structurally identical to another block in the same file or workflow, diff the two. If they must remain identical due to platform constraints, check for a comment explicitly documenting the coupling.
 **Severity**: WARNING
-**Occurrences**: 2
+**Occurrences**: 3
 
 ## What to check
 
@@ -24,3 +24,8 @@ When duplicated logic diverges silently, downstream steps operate on stale assum
 - **Feedback**: The DECISION comment explaining the spec deviation (`anchore/grype-action` → `anchore/scan-action`, `fail-on` → `severity-cutoff`) is present only on the `python-base` scan step. The `venv-builder` scan step (~line 183) and the service image scan step (~line 418) do not include this explanation.
 - **What was missed**: If a rationale or DECISION comment is added to one instance of a repeated pattern, confirm every other instance either includes the same comment or a cross-reference to it.
 - **Fix**: Added '# See DECISION comment on Scan python-base step above' to the venv-builder and service image scan steps.
+
+### CC-0034 — berendt
+- **Feedback**: Three steps in `test-service-images` — `Resolve source ref`, `Apply patches`, and `Apply constraint overrides` — are verbatim copies of steps in `build-service-images` with no cross-reference comments. If the source-ref resolution logic in `build-service-images` is updated, the copies in `test-service-images` will silently diverge.
+- **What was missed**: Any block of code (3+ lines) that is copy-pasted from another location in the same file or workflow must have a cross-reference comment identifying its counterpart, so future editors know to update both.
+- **Fix**: Added `# NOTE: This step MUST stay in sync with the equivalent step in build-service-images.` comments above each of the three duplicated steps in test-service-images.

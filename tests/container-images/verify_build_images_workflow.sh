@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify build-images workflow structure, conventions, and correctness (CC-0007, CC-0029, CC-0030, CC-0031, CC-0032)
+# Verify build-images workflow structure, conventions, and correctness (CC-0007, CC-0029, CC-0030, CC-0031, CC-0032, CC-0034)
 # Requirements: REQ-001 through REQ-025
 # Usage: bash tests/container-images/verify_build_images_workflow.sh
 
@@ -105,12 +105,13 @@ test_pull_request_trigger() {
 }
 
 # --- REQ-002, REQ-003, REQ-004, REQ-005, REQ-007: Four jobs defined ---
-test_four_jobs_defined() {
-  echo "Test: four jobs defined (REQ-002, REQ-003, REQ-004, REQ-005)"
+test_five_jobs_defined() {
+  echo "Test: five jobs defined (REQ-002, REQ-003, REQ-004, REQ-005, CC-0034 REQ-001)"
 
   assert_file_contains "build-base-images job defined" "$WORKFLOW" "build-base-images:"
   assert_file_contains "verify-base-images job defined" "$WORKFLOW" "verify-base-images:"
   assert_file_contains "build-service-images job defined" "$WORKFLOW" "build-service-images:"
+  assert_file_contains "test-service-images job defined" "$WORKFLOW" "test-service-images:"
   assert_file_contains "verify-service-images job defined" "$WORKFLOW" "verify-service-images:"
 }
 
@@ -314,14 +315,15 @@ test_verify_service_images_command() {
   assert_file_contains "verify-service-images runs verify script via matrix.service" "$WORKFLOW" 'verify_${{ matrix.service }}.sh'
 }
 
-# --- REQ-007: verify-service-images depends on build-service-images ---
+# --- REQ-007, CC-0034 REQ-007: verify-service-images depends on build-service-images and test-service-images ---
 test_verify_service_images_depends_on_service_images() {
-  echo "Test: verify-service-images depends on build-service-images (REQ-007)"
+  echo "Test: verify-service-images depends on build-service-images and test-service-images (REQ-007, CC-0034 REQ-007)"
 
   local needs
   needs=$(yq_raw '.jobs["verify-service-images"]["needs"][]' "$WORKFLOW" || true)
 
   assert_contains "verify-service-images needs build-service-images" "$needs" "build-service-images"
+  assert_contains "verify-service-images needs test-service-images" "$needs" "test-service-images"
 }
 
 # --- REQ-007: verify-service-images has its own matrix strategy for multi-service support ---
@@ -397,12 +399,13 @@ test_gha_caching_present() {
 
 # --- REQ-008: All jobs have timeout-minutes ---
 test_timeout_minutes_on_all_jobs() {
-  echo "Test: all jobs have timeout-minutes (REQ-008)"
+  echo "Test: all jobs have timeout-minutes (REQ-008, CC-0034 REQ-012)"
 
-  local base_timeout verify_base_timeout service_timeout verify_service_timeout
+  local base_timeout verify_base_timeout service_timeout test_service_timeout verify_service_timeout
   base_timeout=$(yq_raw '.jobs["build-base-images"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
   verify_base_timeout=$(yq_raw '.jobs["verify-base-images"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
   service_timeout=$(yq_raw '.jobs["build-service-images"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
+  test_service_timeout=$(yq_raw '.jobs["test-service-images"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
   verify_service_timeout=$(yq_raw '.jobs["verify-service-images"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
 
   if [ "$base_timeout" != "null" ] && [ -n "$base_timeout" ]; then
@@ -429,6 +432,14 @@ test_timeout_minutes_on_all_jobs() {
     FAIL=$((FAIL + 1))
   fi
 
+  if [ "$test_service_timeout" != "null" ] && [ -n "$test_service_timeout" ]; then
+    echo "  PASS: test-service-images has timeout-minutes: $test_service_timeout"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: test-service-images missing timeout-minutes"
+    FAIL=$((FAIL + 1))
+  fi
+
   if [ "$verify_service_timeout" != "null" ] && [ -n "$verify_service_timeout" ]; then
     echo "  PASS: verify-service-images has timeout-minutes: $verify_service_timeout"
     PASS=$((PASS + 1))
@@ -440,17 +451,19 @@ test_timeout_minutes_on_all_jobs() {
 
 # --- REQ-008: All jobs use runs-on: ubuntu-latest ---
 test_runs_on_ubuntu_latest() {
-  echo "Test: all jobs use runs-on: ubuntu-latest (REQ-008)"
+  echo "Test: all jobs use runs-on: ubuntu-latest (REQ-008, CC-0034 REQ-012)"
 
-  local base_runner verify_base_runner service_runner verify_service_runner
+  local base_runner verify_base_runner service_runner test_service_runner verify_service_runner
   base_runner=$(yq_raw '.jobs["build-base-images"]["runs-on"]' "$WORKFLOW" || echo "null")
   verify_base_runner=$(yq_raw '.jobs["verify-base-images"]["runs-on"]' "$WORKFLOW" || echo "null")
   service_runner=$(yq_raw '.jobs["build-service-images"]["runs-on"]' "$WORKFLOW" || echo "null")
+  test_service_runner=$(yq_raw '.jobs["test-service-images"]["runs-on"]' "$WORKFLOW" || echo "null")
   verify_service_runner=$(yq_raw '.jobs["verify-service-images"]["runs-on"]' "$WORKFLOW" || echo "null")
 
   assert_eq "build-base-images uses ubuntu-latest" "ubuntu-latest" "$base_runner"
   assert_eq "verify-base-images uses ubuntu-latest" "ubuntu-latest" "$verify_base_runner"
   assert_eq "build-service-images uses ubuntu-latest" "ubuntu-latest" "$service_runner"
+  assert_eq "test-service-images uses ubuntu-latest" "ubuntu-latest" "$test_service_runner"
   assert_eq "verify-service-images uses ubuntu-latest" "ubuntu-latest" "$verify_service_runner"
 }
 
@@ -531,13 +544,15 @@ test_version_tag_restricted_to_main() {
 
 # --- CC-0007: Matrix jobs use fail-fast: false for independent failure reporting ---
 test_matrix_jobs_fail_fast_false() {
-  echo "Test: matrix jobs use fail-fast: false (CC-0007)"
+  echo "Test: matrix jobs use fail-fast: false (CC-0007, CC-0034 REQ-012)"
 
-  local service_fail_fast verify_service_fail_fast
+  local service_fail_fast test_service_fail_fast verify_service_fail_fast
   service_fail_fast=$(yq_raw '.jobs["build-service-images"]["strategy"]["fail-fast"]' "$WORKFLOW" || echo "null")
+  test_service_fail_fast=$(yq_raw '.jobs["test-service-images"]["strategy"]["fail-fast"]' "$WORKFLOW" || echo "null")
   verify_service_fail_fast=$(yq_raw '.jobs["verify-service-images"]["strategy"]["fail-fast"]' "$WORKFLOW" || echo "null")
 
   assert_eq "build-service-images has fail-fast: false" "false" "$service_fail_fast"
+  assert_eq "test-service-images has fail-fast: false" "false" "$test_service_fail_fast"
   assert_eq "verify-service-images has fail-fast: false" "false" "$verify_service_fail_fast"
 }
 
@@ -569,6 +584,261 @@ test_verify_service_images_null_guard() {
 
   assert_contains "verify-service-images derive step checks for null string" "$derive_step" '"null"'
   assert_contains "verify-service-images derive step exits on invalid ref" "$derive_step" "exit 1"
+}
+
+# ===========================================================================================
+# CC-0034: test-service-images job tests
+# ===========================================================================================
+
+# --- CC-0034 REQ-001: test-service-images job exists and has correct structure ---
+test_test_service_images_job_structure() {
+  echo "Test: test-service-images job structure (CC-0034 REQ-001, REQ-002, REQ-012)"
+
+  local runner
+  runner=$(yq_raw '.jobs["test-service-images"]["runs-on"]' "$WORKFLOW" || echo "null")
+  assert_eq "test-service-images uses ubuntu-latest" "ubuntu-latest" "$runner"
+
+  local timeout
+  timeout=$(yq_raw '.jobs["test-service-images"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
+  assert_eq "test-service-images has timeout-minutes: 60" "60" "$timeout"
+
+  local contents_perms
+  contents_perms=$(yq_raw '.jobs["test-service-images"]["permissions"]["contents"]' "$WORKFLOW" || echo "null")
+  assert_eq "test-service-images has contents: read" "read" "$contents_perms"
+
+  local packages_perms
+  packages_perms=$(yq_raw '.jobs["test-service-images"]["permissions"]["packages"]' "$WORKFLOW" || echo "null")
+  assert_eq "test-service-images has packages: read" "read" "$packages_perms"
+
+  # Validate absence of elevated permissions (CC-0034 REQ-012)
+  local id_token attestations security_events
+  id_token=$(yq_raw '.jobs["test-service-images"]["permissions"]["id-token"]' "$WORKFLOW" || echo "null")
+  attestations=$(yq_raw '.jobs["test-service-images"]["permissions"]["attestations"]' "$WORKFLOW" || echo "null")
+  security_events=$(yq_raw '.jobs["test-service-images"]["permissions"]["security-events"]' "$WORKFLOW" || echo "null")
+
+  assert_eq "test-service-images has no id-token permission" "null" "$id_token"
+  assert_eq "test-service-images has no attestations permission" "null" "$attestations"
+  assert_eq "test-service-images has no security-events permission" "null" "$security_events"
+}
+
+# --- CC-0034 REQ-002: test-service-images depends on build-base-images and verify-base-images ---
+test_test_service_images_depends_on_base() {
+  echo "Test: test-service-images depends on build-base-images and verify-base-images (CC-0034 REQ-002)"
+
+  local needs
+  needs=$(yq_raw '.jobs["test-service-images"]["needs"][]' "$WORKFLOW" || true)
+
+  assert_contains "test-service-images needs build-base-images" "$needs" "build-base-images"
+  assert_contains "test-service-images needs verify-base-images" "$needs" "verify-base-images"
+}
+
+# --- CC-0034 REQ-001: test-service-images has matrix strategy matching build-service-images ---
+test_test_service_images_has_matrix() {
+  echo "Test: test-service-images has matrix strategy (CC-0034 REQ-001)"
+
+  local services releases fail_fast
+  services=$(yq_raw '.jobs["test-service-images"]["strategy"]["matrix"]["service"][]' "$WORKFLOW" || true)
+  releases=$(yq_raw '.jobs["test-service-images"]["strategy"]["matrix"]["release"][]' "$WORKFLOW" || true)
+  fail_fast=$(yq_raw '.jobs["test-service-images"]["strategy"]["fail-fast"]' "$WORKFLOW" || echo "null")
+
+  assert_contains "test-service-images matrix includes keystone" "$services" "keystone"
+  assert_contains "test-service-images matrix includes release 2025.2" "$releases" "2025.2"
+  assert_eq "test-service-images has fail-fast: false" "false" "$fail_fast"
+}
+
+# --- CC-0034 REQ-011: test-service-images uses venv-builder-image from build-base-images outputs ---
+test_test_service_images_uses_venv_builder_output() {
+  echo "Test: test-service-images uses venv-builder-image output (CC-0034 REQ-011)"
+
+  local run_step_env
+  run_step_env=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .env["VENV_BUILDER_IMAGE"]' "$WORKFLOW" || true)
+
+  assert_contains "Run tests env references venv-builder-image output" "$run_step_env" "needs.build-base-images.outputs.venv-builder-image"
+}
+
+# --- CC-0034 REQ-003: test-service-images resolves source ref from source-refs.yaml ---
+test_test_service_images_source_ref_step() {
+  echo "Test: test-service-images has source-ref resolution step (CC-0034 REQ-003)"
+
+  local source_ref_run
+  source_ref_run=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.id == "source-ref") | .run' "$WORKFLOW" || true)
+
+  assert_not_empty "test-service-images has source-ref step" "$source_ref_run"
+  assert_contains "source-ref step reads source-refs.yaml" "$source_ref_run" "source-refs.yaml"
+  assert_contains "source-ref step checks for null" "$source_ref_run" '"null"'
+  assert_contains "source-ref step checks for empty value" "$source_ref_run" '-z "$ref"'
+  assert_contains "source-ref step exits on invalid ref" "$source_ref_run" "exit 1"
+}
+
+# --- CC-0034 REQ-003: test-service-images checks out service source at correct ref ---
+test_test_service_images_checkout_service_source() {
+  echo "Test: test-service-images checks out service source (CC-0034 REQ-003)"
+
+  local checkout_repo checkout_ref checkout_path
+  checkout_repo=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.with.repository) | .with.repository' "$WORKFLOW" || true)
+  checkout_ref=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.with.repository) | .with.ref' "$WORKFLOW" || true)
+  checkout_path=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.with.repository) | .with.path' "$WORKFLOW" || true)
+
+  assert_contains "service checkout uses openstack/ repo" "$checkout_repo" "openstack/"
+  assert_contains "service checkout uses source-ref output" "$checkout_ref" "steps.source-ref.outputs.ref"
+  assert_contains "service checkout path includes matrix.service" "$checkout_path" "matrix.service"
+}
+
+# --- CC-0034 REQ-004: test-service-images applies patches with hashFiles guard ---
+test_test_service_images_apply_patches() {
+  echo "Test: test-service-images applies patches with hashFiles guard (CC-0034 REQ-004)"
+
+  local apply_step_if apply_step_run
+  apply_step_if=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Apply patches") | .if' "$WORKFLOW" || true)
+  apply_step_run=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Apply patches") | .run' "$WORKFLOW" || true)
+
+  assert_contains "Apply patches uses hashFiles guard" "$apply_step_if" "hashFiles"
+  assert_contains "Apply patches uses hashFiles with .patch pattern" "$apply_step_if" ".patch"
+  assert_contains "Apply patches runs git apply" "$apply_step_run" "git -C"
+}
+
+# --- CC-0034 REQ-004: test-service-images applies constraint overrides ---
+test_test_service_images_constraint_overrides() {
+  echo "Test: test-service-images applies constraint overrides (CC-0034 REQ-004)"
+
+  local override_step_run
+  override_step_run=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Apply constraint overrides") | .run' "$WORKFLOW" || true)
+
+  assert_contains "constraint overrides step runs apply-constraint-overrides.sh" "$override_step_run" "apply-constraint-overrides.sh"
+}
+
+# --- CC-0034 REQ-005: test-service-images Run tests step mounts correct volumes ---
+test_test_service_images_run_tests_volumes() {
+  echo "Test: test-service-images Run tests step mounts correct volumes (CC-0034 REQ-005)"
+
+  local run_step
+  run_step=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .run' "$WORKFLOW" || true)
+
+  assert_contains "Run tests mounts service source" "$run_step" "/workspace/src"
+  assert_contains "Run tests mounts upper-constraints.txt" "$run_step" "upper-constraints.txt"
+  assert_contains "Run tests mounts test-excludes directory" "$run_step" "test-excludes"
+  assert_contains "Run tests mounts results directory" "$run_step" "/workspace/results"
+}
+
+# --- CC-0034 REQ-005: test-service-images Run tests step runs stestr ---
+test_test_service_images_run_tests_stestr() {
+  echo "Test: test-service-images Run tests step runs stestr (CC-0034 REQ-005)"
+
+  local run_step
+  run_step=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .run' "$WORKFLOW" || true)
+
+  assert_contains "Run tests installs test dependencies with pip" "$run_step" "pip install"
+  assert_contains "Run tests installs stestr" "$run_step" "stestr"
+  assert_contains "Run tests runs stestr init" "$run_step" "stestr init"
+  assert_contains "Run tests runs stestr run" "$run_step" "stestr run"
+}
+
+# --- CC-0034 REQ-005: test-service-images uses exclude-list from test-excludes ---
+test_test_service_images_exclude_list() {
+  echo "Test: test-service-images uses exclude-list from test-excludes (CC-0034 REQ-005)"
+
+  local run_step
+  run_step=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .run' "$WORKFLOW" || true)
+
+  assert_contains "Run tests builds EXCLUDE_LIST_ARG" "$run_step" "EXCLUDE_LIST_ARG"
+  assert_contains "Run tests checks for service-specific exclude file" "$run_step" "test-excludes/\${MATRIX_SERVICE}.txt"
+  assert_contains "Run tests passes exclude-list to stestr" "$run_step" "--exclude-list"
+}
+
+# --- CC-0034 REQ-005: test-service-images exports subunit results ---
+test_test_service_images_subunit_output() {
+  echo "Test: test-service-images exports subunit test results (CC-0034 REQ-005)"
+
+  local run_step
+  run_step=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .run' "$WORKFLOW" || true)
+
+  assert_contains "Run tests exports subunit results" "$run_step" "stestr last --subunit"
+  assert_contains "Run tests writes results to subunit file" "$run_step" "testresults.subunit"
+}
+
+# --- CC-0034 REQ-006: test-service-images uploads test results as artifacts ---
+test_test_service_images_upload_artifacts() {
+  echo "Test: test-service-images uploads test results as artifacts (CC-0034 REQ-006)"
+
+  local upload_step_name upload_step_if upload_step_path upload_step_retention
+  upload_step_name=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Upload test results") | .name' "$WORKFLOW" || true)
+  upload_step_if=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Upload test results") | .if' "$WORKFLOW" || true)
+  upload_step_path=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Upload test results") | .with.path' "$WORKFLOW" || true)
+  upload_step_retention=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Upload test results") | .with["retention-days"]' "$WORKFLOW" || echo "null")
+
+  assert_not_empty "Upload test results step exists" "$upload_step_name"
+  assert_eq "Upload test results runs always" "always()" "$upload_step_if"
+  assert_contains "Upload test results includes subunit file" "$upload_step_path" "testresults.subunit"
+  assert_eq "Upload test results has 30-day retention" "30" "$upload_step_retention"
+}
+
+# --- CC-0034 REQ-006: artifact name includes matrix.service for disambiguation ---
+test_test_service_images_artifact_name() {
+  echo "Test: test-service-images artifact name includes matrix.service (CC-0034 REQ-006)"
+
+  local artifact_name
+  artifact_name=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Upload test results") | .with.name' "$WORKFLOW" || true)
+
+  assert_contains "artifact name includes matrix.service" "$artifact_name" "matrix.service"
+  assert_contains "artifact name includes matrix.release" "$artifact_name" "matrix.release"
+}
+
+# --- CC-0034 REQ-010: test-service-images env vars prevent expression injection ---
+test_test_service_images_env_vars() {
+  echo "Test: test-service-images steps use env vars for matrix values (CC-0034 REQ-010)"
+
+  # Source-ref step uses MATRIX_SERVICE and MATRIX_RELEASE env vars
+  local source_ref_env_service source_ref_env_release
+  source_ref_env_service=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.id == "source-ref") | .env["MATRIX_SERVICE"]' "$WORKFLOW" || true)
+  source_ref_env_release=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.id == "source-ref") | .env["MATRIX_RELEASE"]' "$WORKFLOW" || true)
+
+  assert_contains "source-ref step has MATRIX_SERVICE env" "$source_ref_env_service" "matrix.service"
+  assert_contains "source-ref step has MATRIX_RELEASE env" "$source_ref_env_release" "matrix.release"
+
+  # Apply patches step uses env vars
+  local patches_env_service patches_env_release
+  patches_env_service=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Apply patches") | .env["MATRIX_SERVICE"]' "$WORKFLOW" || true)
+  patches_env_release=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Apply patches") | .env["MATRIX_RELEASE"]' "$WORKFLOW" || true)
+
+  assert_contains "Apply patches step has MATRIX_SERVICE env" "$patches_env_service" "matrix.service"
+  assert_contains "Apply patches step has MATRIX_RELEASE env" "$patches_env_release" "matrix.release"
+
+  # Run tests step uses env vars
+  local run_tests_env_service run_tests_env_release
+  run_tests_env_service=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .env["MATRIX_SERVICE"]' "$WORKFLOW" || true)
+  run_tests_env_release=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .env["MATRIX_RELEASE"]' "$WORKFLOW" || true)
+
+  assert_contains "Run tests step has MATRIX_SERVICE env" "$run_tests_env_service" "matrix.service"
+  assert_contains "Run tests step has MATRIX_RELEASE env" "$run_tests_env_release" "matrix.release"
+
+  # INSTALL_SPEC env var references pip-extras output (CC-0034)
+  local install_spec_env
+  install_spec_env=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .env["INSTALL_SPEC"]' "$WORKFLOW" || true)
+  assert_contains "Run tests step has INSTALL_SPEC referencing pip-extras output" "$install_spec_env" "steps.pip-extras.outputs.install_spec"
+
+  # Resolve pip extras step includes [test] extra (CC-0034)
+  local pip_extras_run
+  pip_extras_run=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.id == "pip-extras") | .run' "$WORKFLOW" || true)
+  assert_contains "Resolve pip extras includes [test] extra" "$pip_extras_run" "[test]"
+}
+
+# --- CC-0034 REQ-011: test-service-images uses docker run with venv-builder image ---
+test_test_service_images_docker_run() {
+  echo "Test: test-service-images uses docker run with venv-builder image (CC-0034 REQ-011)"
+
+  local run_step
+  run_step=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .run' "$WORKFLOW" || true)
+
+  assert_contains "Run tests uses docker run" "$run_step" "docker run"
+  assert_contains "Run tests references VENV_BUILDER_IMAGE" "$run_step" "VENV_BUILDER_IMAGE"
+  assert_contains "Run tests creates results directory" "$run_step" "mkdir -p results"
+}
+
+# --- CC-0034 REQ-012: test-service-images has CC-0034 feature comment ---
+test_test_service_images_feature_comment() {
+  echo "Test: test-service-images job has CC-0034 feature comment (CC-0034 REQ-012)"
+
+  assert_file_contains "workflow has CC-0034 comment above test-service-images" "$WORKFLOW" "CC-0034"
 }
 
 # --- REQ-008: Expression injection defense — run: blocks use env vars ---
@@ -621,6 +891,13 @@ test_verify_jobs_no_sbom_permissions() {
 
   assert_eq "verify-service-images has no id-token permission" "null" "$verify_service_id_token"
   assert_eq "verify-service-images has no attestations permission" "null" "$verify_service_attestations"
+
+  local test_service_id_token test_service_attestations
+  test_service_id_token=$(yq_raw '.jobs["test-service-images"]["permissions"]["id-token"]' "$WORKFLOW" || echo "null")
+  test_service_attestations=$(yq_raw '.jobs["test-service-images"]["permissions"]["attestations"]' "$WORKFLOW" || echo "null")
+
+  assert_eq "test-service-images has no id-token permission" "null" "$test_service_id_token"
+  assert_eq "test-service-images has no attestations permission" "null" "$test_service_attestations"
 }
 
 # --- CC-0029: SBOM generation steps exist (REQ-010) ---
@@ -1472,6 +1749,10 @@ test_verify_jobs_no_security_events_permission() {
   local verify_service_perm
   verify_service_perm=$(yq_raw '.jobs["verify-service-images"]["permissions"]["security-events"] // "null"' "$WORKFLOW" || true)
   assert_eq "verify-service-images has no security-events permission" "null" "$verify_service_perm"
+
+  local test_service_perm
+  test_service_perm=$(yq_raw '.jobs["test-service-images"]["permissions"]["security-events"] // "null"' "$WORKFLOW" || true)
+  assert_eq "test-service-images has no security-events permission" "null" "$test_service_perm"
 }
 
 # --- CC-0032: security-events permission comment references CC-0032 (REQ-007) ---
@@ -1548,7 +1829,7 @@ test_push_triggers
 echo ""
 test_pull_request_trigger
 echo ""
-test_four_jobs_defined
+test_five_jobs_defined
 echo ""
 test_verify_base_images_job
 echo ""
@@ -1611,6 +1892,40 @@ echo ""
 test_verify_service_images_tag_derivation_sync_comment
 echo ""
 test_verify_service_images_null_guard
+echo ""
+test_test_service_images_job_structure
+echo ""
+test_test_service_images_depends_on_base
+echo ""
+test_test_service_images_has_matrix
+echo ""
+test_test_service_images_uses_venv_builder_output
+echo ""
+test_test_service_images_source_ref_step
+echo ""
+test_test_service_images_checkout_service_source
+echo ""
+test_test_service_images_apply_patches
+echo ""
+test_test_service_images_constraint_overrides
+echo ""
+test_test_service_images_run_tests_volumes
+echo ""
+test_test_service_images_run_tests_stestr
+echo ""
+test_test_service_images_exclude_list
+echo ""
+test_test_service_images_subunit_output
+echo ""
+test_test_service_images_upload_artifacts
+echo ""
+test_test_service_images_artifact_name
+echo ""
+test_test_service_images_env_vars
+echo ""
+test_test_service_images_docker_run
+echo ""
+test_test_service_images_feature_comment
 echo ""
 test_sbom_permissions_on_build_base_images
 echo ""
