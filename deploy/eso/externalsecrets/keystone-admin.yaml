@@ -4,7 +4,7 @@
 
 # ExternalSecret for the Keystone admin credentials.
 # Pulls the admin password from the OpenBao path "bootstrap/keystone-admin"
-# and materialises it as a Kubernetes Secret named "keystone-admin-credentials" in the
+# and materialises it as a Kubernetes Secret named "keystone-admin" in the
 # openstack namespace.
 # Feature: CC-0009
 ---
@@ -19,7 +19,7 @@ spec:
     name: openbao-cluster-store
     kind: ClusterSecretStore
   target:
-    name: keystone-admin-credentials
+    name: keystone-admin
     creationPolicy: Owner
   data:
     - secretKey: password

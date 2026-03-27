@@ -12,7 +12,7 @@ import (
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
-	esov1beta1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1beta1"
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -121,15 +121,15 @@ func SimulateMemcachedReady(ctx context.Context, c client.Client, key client.Obj
 // indicate successful synchronization by setting the Ready condition to True
 // and updating the refresh time.
 func SimulateExternalSecretSync(ctx context.Context, c client.Client, key client.ObjectKey) error {
-	es := &esov1beta1.ExternalSecret{}
+	es := &esov1.ExternalSecret{}
 	if err := c.Get(ctx, key, es); err != nil {
 		return fmt.Errorf("getting ExternalSecret %s: %w", key, err)
 	}
 
 	es.Status.RefreshTime = metav1.Now()
-	es.Status.Conditions = []esov1beta1.ExternalSecretStatusCondition{
+	es.Status.Conditions = []esov1.ExternalSecretStatusCondition{
 		{
-			Type:               esov1beta1.ExternalSecretReady,
+			Type:               esov1.ExternalSecretReady,
 			Status:             corev1.ConditionTrue,
 			Reason:             "SecretSynced",
 			Message:            "Secret was synced",

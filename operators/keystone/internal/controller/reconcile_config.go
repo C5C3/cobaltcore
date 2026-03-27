@@ -28,7 +28,8 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 	// Step 1: Build keystone.conf INI sections from CRD spec.
 	defaults := map[string]map[string]string{
 		"DEFAULT": {
-			"log_config_append": "/etc/keystone/logging.conf",
+			"keystone_user":  "",
+			"keystone_group": "",
 		},
 		"token": {
 			"provider": "fernet",
@@ -40,6 +41,9 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 		"cache": {
 			"enabled": "true",
 			"backend": keystone.Spec.Cache.Backend,
+		},
+		"paste_deploy": {
+			"config_file": "/etc/keystone/keystone.conf.d/api-paste.ini",
 		},
 		"oslo_middleware": {
 			"enable_proxy_headers_parsing": "true",
@@ -62,12 +66,21 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 	}
 
 	// Step 3: Resolve database connection string.
-	username, err := secrets.GetSecretValue(ctx, r.Client, client.ObjectKey{
-		Namespace: keystone.Namespace,
-		Name:      keystone.Spec.Database.SecretRef.Name,
-	}, "username")
-	if err != nil {
-		return "", fmt.Errorf("reading database username: %w", err)
+	// In managed mode the MariaDB User CR name (= keystone.Name) is the MySQL
+	// username, so the connection string must use that same value.
+	// In brownfield mode no User CR exists; the secret's username is used.
+	var username string
+	if keystone.Spec.Database.ClusterRef != nil {
+		username = keystone.Name
+	} else {
+		u, err := secrets.GetSecretValue(ctx, r.Client, client.ObjectKey{
+			Namespace: keystone.Namespace,
+			Name:      keystone.Spec.Database.SecretRef.Name,
+		}, "username")
+		if err != nil {
+			return "", fmt.Errorf("reading database username: %w", err)
+		}
+		username = u
 	}
 
 	password, err := secrets.GetSecretValue(ctx, r.Client, client.ObjectKey{
@@ -82,10 +95,11 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 	// which are delimiters in the userinfo component per RFC 3986. url.UserPassword handles all
 	// reserved characters ('@', '/', '?', ':') correctly for database connection strings.
 	connURL := &url.URL{
-		Scheme: "mysql+pymysql",
-		User:   url.UserPassword(username, password),
-		Host:   resolveDatabaseHost(keystone),
-		Path:   keystone.Spec.Database.Database,
+		Scheme:   "mysql+pymysql",
+		User:     url.UserPassword(username, password),
+		Host:     resolveDatabaseHost(keystone),
+		Path:     keystone.Spec.Database.Database,
+		RawQuery: "charset=utf8",
 	}
 
 	defaults = config.InjectSecrets(defaults, map[string]string{
@@ -124,8 +138,20 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 	apiPasteINI, err := plugins.RenderPastePipelineINI(plugins.PipelineSpec{
 		PipelineName: "public_api",
 		AppName:      "admin_service",
-		BaseFilters:  []string{"cors", "sizelimit", "http_proxy_to_wsgi", "osprofiler", "url_normalize", "request_id", "authtoken"},
-		Middleware:   keystone.Spec.Middleware,
+		AppFactory:   "egg:keystone#service_v3",
+		BaseFilters:  []string{"cors", "sizelimit", "http_proxy_to_wsgi", "url_normalize", "request_id"},
+		BaseFilterFactories: map[string]string{
+			"cors":               "egg:oslo.middleware#cors",
+			"sizelimit":          "egg:oslo.middleware#sizelimit",
+			"http_proxy_to_wsgi": "egg:oslo.middleware#http_proxy_to_wsgi",
+			"url_normalize":      "egg:keystone#url_normalize",
+			"request_id":         "egg:oslo.middleware#request_id",
+		},
+		BaseFilterConfigs: map[string]map[string]string{
+			"cors": {"oslo_config_project": "keystone"},
+		},
+		CompositeRoutes: map[string]string{"/v3": "public_api"},
+		Middleware:       keystone.Spec.Middleware,
 	})
 	if err != nil {
 		return "", fmt.Errorf("rendering api-paste.ini: %w", err)
@@ -157,16 +183,9 @@ func resolveCacheServers(keystone *keystonev1alpha1.Keystone) string {
 		return strings.Join(keystone.Spec.Cache.Servers, ",")
 	}
 	if keystone.Spec.Cache.ClusterRef != nil {
-		name := keystone.Spec.Cache.ClusterRef.Name
-		replicas := keystone.Spec.Cache.Replicas
-		if replicas <= 0 {
-			replicas = 3
-		}
-		endpoints := make([]string, replicas)
-		for i := range replicas {
-			endpoints[i] = fmt.Sprintf("memcached-%d.%s:11211", i, name)
-		}
-		return strings.Join(endpoints, ",")
+		// The memcached operator provisions a Deployment + headless Service.
+		// Use the Service DNS name which resolves to all pod IPs.
+		return fmt.Sprintf("%s:11211", keystone.Spec.Cache.ClusterRef.Name)
 	}
 	return ""
 }

@@ -2,8 +2,8 @@
   "feature_id": "CC-0018",
   "title": "H002: Complete CI pipeline and coverage setup",
   "slug": "h002-complete-ci-pipeline-and-coverage-setup",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 🏗️ large\n**Category:** infrastructure\n**Priority:** high\n\n## Open Questions\n\nAll questions from the initial elaboration have been answered by the user. No remaining ambiguities.\n\n## Summary\n\nExtend the existing `.github/workflows/ci.yaml` (S018) into a full job matrix covering lint, unit tests, integration tests (per operator), E2E tests (kind + Chainsaw), operator Docker image build-and-push to GHCR, and Helm chart OCI push. Add `v*` tag triggers so tagged commits produce versioned images (SemVer stripped from git tag), charts, and a GitHub Release. Create a `.codecov.yml` with component-level coverage thresholds (80% `internal/common/`, 70% operator controllers, 90% webhooks). Use `codecov/codecov-action` for coverage upload.\n\n## Scope\n\n**Included:**\n- Extend `ci.yaml` `on.push` trigger to include `tags: [\"v*\"]`\n- **Lint job**: retain existing `lint` (golangci-lint v2.11.3) + `shellcheck` jobs unchanged\n- **Test job (unit)**: refactor existing single `test` job into a matrix strategy over `[common, keystone, c5c3]` with `-coverprofile` output per module\n- **Test job (integration)**: un-stub `test-integration` Makefile target; add per-operator matrix job with `setup-envtest` binary\n- **Coverage upload**: `codecov/codecov-action` with flag-based component separation in both `test` and `test-integration` jobs\n- **E2E infra job**: retain existing `e2e-infra` job unchanged\n- **E2E keystone job**: new job — build operator Docker image, `kind load docker-image`, deploy via Helm chart, run Chainsaw keystone test suites from `tests/e2e/keystone/`\n- **Build-and-push job**: build `operators/keystone/Dockerfile`, push to GHCR; image tag = SemVer from git tag (strip `v` prefix) or `main`-branch SHA; conditional on `main` push or `v*` tag; uses `docker/metadata-action` for tag derivation\n- **Helm-push job**: `helm package` on `operators/keystone/helm/keystone-operator/`, `helm push` to `oci://ghcr.io/<owner>/charts/`; conditional on `main` push or `v*` tag\n- **GitHub Release job**: on `v*` tags only, `gh release create` attaching Helm chart tarball; uses GitHub auto-generated release notes\n- **Verify-codegen job**: new gate job running `make manifests && make generate && git diff --exit-code` + `make verify-crd-sync` (from S025)\n- **Implement `docker-build` Makefile target**: currently stubbed with error; must support `OPERATOR=<op>` parameter\n- **Implement `helm-package` Makefile target**: currently stubbed with error; must support `OPERATOR=<op>` parameter\n- **Implement `test-integration` Makefile target**: currently stubbed; wire envtest-based integration tests\n- **`.codecov.yml`**: new file with component thresholds — 80% `internal/common/`, 70% `operators/*/internal/controller/`, 90% `operators/*/api/`\n\n**Excluded:**\n- Modifying `build-images.yaml` (handles OpenStack service container images — separate concern, different tag strategy with SBOM/signing)\n- Modifying `cleanup-images.yaml`, `verify-container-images.yaml`, `deploy-docs.yaml` (unrelated workflows)\n- SBOM generation / cosign signing for operator images (not requested; can follow `build-images.yaml` patterns later)\n- c5c3-operator Dockerfile (doesn't exist yet; S022 creates it — matrix prepared to accommodate it)\n- Release notes generation logic beyond GitHub auto-generated notes\n- Branch protection rules or required status checks configuration\n- Changes to existing `e2e-infra` job logic\n- Changes to `.golangci.yml` lint configuration\n\n## Visualization\n\n```mermaid\nflowchart TD\n    trigger[\"on.push: main / PR / tags v*\"]\n\n    subgraph gates[\"Gate Jobs #40;always#41;\"]\n        lint[\"lint #40;golangci-lint#41;\"]\n        shellcheck[\"shellcheck #40;hack/*.sh#41;\"]\n        verify[\"verify-codegen #40;manifests + generate + crd-sync#41;\"]\n        test[\"test #40;matrix: common, keystone, c5c3#41;\"]\n        testint[\"test-integration #40;matrix: keystone, c5c3#41;\"]\n    end\n\n    subgraph e2e_group[\"E2E Jobs\"]\n        e2einfra[\"e2e-infra #40;existing: kind + Chainsaw infra#41;\"]\n        e2eop[\"e2e-keystone #40;build image + kind load + Helm deploy + Chainsaw#41;\"]\n    end\n\n    subgraph publish[\"Publish Jobs #40;main / v* tags only#41;\"]\n        buildpush[\"build-and-push #40;keystone operator image to GHCR#41;\"]\n        helmpush[\"helm-push #40;OCI push to GHCR#41;\"]\n    end\n\n    subgraph release_group[\"Release Job #40;v* tags only#41;\"]\n        ghrelease[\"github-release #40;gh release create + chart tarball#41;\"]\n    end\n\n    codecov[\"Upload coverage to Codecov\"]\n\n    trigger --> gates\n    test --> codecov\n    testint --> codecov\n    gates --> e2e_group\n    gates --> publish\n    publish --> release_group\n```\n\n```mermaid\nsequenceDiagram\n    participant Tag as Git Tag v*\n    participant CI as ci.yaml\n    participant GHCR as ghcr.io\n    participant GH as GitHub Releases\n\n    Tag->>CI: Trigger full pipeline\n    CI->>CI: Gate jobs #40;lint, test, verify, E2E#41;\n    CI->>GHCR: docker push operator:0.1.0\n    CI->>GHCR: helm push oci://charts/keystone-operator:0.1.0\n    CI->>GH: gh release create v0.1.0 + chart tarball\n```\n\n```mermaid\nflowchart LR\n    subgraph codecov_cfg[\".codecov.yml Thresholds\"]\n        common[\"internal/common/ >= 80%\"]\n        controllers[\"operators/*/internal/controller/ >= 70%\"]\n        webhooks[\"operators/*/api/ >= 90%\"]\n    end\n```\n\n## Key Components\n\n- **`ci.yaml` trigger extension**: Add `tags: [\"v*\"]` to `on.push.branches` sibling, enabling tag-triggered full pipeline runs\n- **`verify-codegen` job**: New gate job — `make manifests && make generate && git diff --exit-code` + `make verify-crd-sync`; catches uncommitted generated code before merge\n- **`test` job (matrix)**: Refactor existing single `test` job into matrix strategy over `[common, keystone, c5c3]`; each entry runs with `-coverprofile` and uploads to Codecov with component flags\n- **`test-integration` job**: Un-stub `test-integration` Makefile target; new CI job with per-operator matrix, `setup-envtest` for kubebuilder assets, `-coverprofile` output, Codecov upload\n- **Codecov upload step**: `codecov/codecov-action` in `test` and `test-integration` jobs; uses `flags` parameter for component-level threshold matching in `.codecov.yml`\n- **`e2e-keystone` job**: New job — `docker build` operator image, `kind load docker-image`, `helm install` from `operators/keystone/helm/keystone-operator/`, run Chainsaw tests from `tests/e2e/keystone/` (12 existing suites); depends on gate jobs passing\n- **`build-and-push` job**: `docker/build-push-action` building `operators/keystone/Dockerfile`; `docker/metadata-action` derives tags (SemVer from `v*` tag, `main` branch SHA); pushes to GHCR; conditional on `github.ref == 'refs/heads/main'` or `startsWith(github.ref, 'refs/tags/v')`\n- **`helm-push` job**: `helm package operators/keystone/helm/keystone-operator/` → `helm push` to `oci://ghcr.io/<owner>/charts/`; chart version set from git tag; same push conditions as `build-and-push`\n- **`github-release` job**: On `v*` tags only; `gh release create ${{ github.ref_name }} --generate-notes` attaching packaged Helm chart tarball as release asset\n- **`docker-build` Makefile target**: Replace current stub with `docker build -t $(IMG) -f operators/$(OPERATOR)/Dockerfile .` supporting `OPERATOR` and `IMG` variables\n- **`helm-package` Makefile target**: Replace current stub with `helm package operators/$(OPERATOR)/helm/$(OPERATOR)-operator/` supporting `OPERATOR` variable\n- **`test-integration` Makefile target**: Replace current stub with envtest-based test runner, filtering to `*/internal/controller/...` packages with build tag `integration`\n- **`.codecov.yml`**: New file with `coverage.status.project` and `coverage.status.patch` settings; component definitions mapping `internal/common/**` → 80%, `operators/*/internal/controller/**` → 70%, `operators/*/api/**` → 90%",
   "stories": [
@@ -466,6 +466,7 @@
       "description": "Replace the stubbed docker-build target in Makefile with a working implementation. Add IMG variable defaulting to ghcr.io/c5c3/$(OPERATOR)-operator:latest. The target runs docker build -t $(IMG) -f operators/$(OPERATOR)/Dockerfile . with context at repository root. Verify with make docker-build OPERATOR=keystone.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-010"
       ]
@@ -476,6 +477,7 @@
       "description": "Replace the stubbed helm-package target in Makefile with a working implementation. Add optional CHART_VERSION variable; when set, pass --version $(CHART_VERSION) to helm package. The target runs helm package operators/$(OPERATOR)/helm/$(OPERATOR)-operator/ with optional --version flag. Verify with make helm-package OPERATOR=keystone.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-011"
       ]
@@ -486,6 +488,7 @@
       "description": "Replace the stubbed test-integration target in Makefile. The target: (1) runs setup-envtest to get KUBEBUILDER_ASSETS path, (2) exports KUBEBUILDER_ASSETS, (3) for each operator in $(OPERATORS), runs go test with -tags=integration -coverprofile=cover-integration-$$op.out targeting ./operators/$$op/... packages. Uses SETUP_ENVTEST ?= setup-envtest variable. If no integration test files exist yet, the target should succeed gracefully (go test with build tag filtering will simply run zero tests).",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -496,6 +499,7 @@
       "description": "Modify ci.yaml on.push to add tags: ['v*'] alongside existing branches: [main]. Add top-level permissions block for packages:write and contents:write (needed by publish and release jobs), using per-job permissions overrides to keep gate jobs at contents:read only. Verify YAML validity.",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-001"
       ]
@@ -506,6 +510,7 @@
       "description": "Replace the single test job in ci.yaml with a matrix strategy. Matrix includes entries with module name and test path: common=./internal/common/..., keystone=./operators/keystone/..., c5c3=./operators/c5c3/.... Each entry runs go test <path> -coverprofile=cover-${{ matrix.module }}.out. Add codecov/codecov-action step after tests with: file pointing to coverprofile, flags set to ${{ matrix.module }}-unit, token from secrets.CODECOV_TOKEN, fail_ci_if_error: false.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-004"
@@ -517,6 +522,7 @@
       "description": "Add test-integration job to ci.yaml. Matrix over [keystone, c5c3]. Steps: checkout, setup-go, install setup-envtest (go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest), run make test-integration OPERATOR=${{ matrix.operator }}, upload coverage via codecov/codecov-action with flags [${{ matrix.operator }}-integration]. Pin action versions matching existing patterns (checkout@v6, setup-go@v6).",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-004"
@@ -528,6 +534,7 @@
       "description": "Add verify-codegen job to ci.yaml. Steps: checkout, setup-go, install controller-gen (go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest), run 'make manifests && make generate', run 'git diff --exit-code' (fail with diff if generated files changed), run 'make verify-crd-sync'. Use same action pin hashes as existing jobs. Timeout: 10 minutes.",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -538,6 +545,7 @@
       "description": "Add e2e-keystone job to ci.yaml with needs: [lint, shellcheck, test, test-integration, verify-codegen]. Steps: checkout, setup-go, create kind cluster (helm/kind-action with hack/kind-config.yaml), install Flux CLI, install test deps (make install-test-deps), deploy infrastructure (make deploy-infra with SKIP_KIND_CREATE=true), build operator image (make docker-build OPERATOR=keystone IMG=keystone-operator:ci-test), load into kind (kind load docker-image keystone-operator:ci-test --name forge-e2e), helm install (helm install keystone-operator operators/keystone/helm/keystone-operator/ --set image.repository=keystone-operator --set image.tag=ci-test --set image.pullPolicy=Never), wait for operator pods, run Chainsaw tests (chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/keystone/), diagnostic dump on failure, upload JUnit report. Timeout: 30 minutes.",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -548,6 +556,7 @@
       "description": "Add build-and-push job to ci.yaml with needs: [lint, shellcheck, test, test-integration, verify-codegen] and condition: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')). Job permissions: contents:read, packages:write. Steps: checkout, normalize owner (lowercase GITHUB_REPOSITORY_OWNER), docker/setup-buildx-action, docker/login-action (GHCR), docker/metadata-action (tags: type=semver,pattern={{version}} for tags; type=sha for main), docker/build-push-action (file: operators/keystone/Dockerfile, context: ., push: true, tags/labels from metadata). Pin all actions with SHA hashes following existing build-images.yaml patterns.",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -558,6 +567,7 @@
       "description": "Add helm-push job to ci.yaml with needs: [lint, shellcheck, test, test-integration, verify-codegen] and same push condition as build-and-push. Job permissions: contents:read, packages:write. Steps: checkout, install Helm (azure/setup-helm action), normalize owner, derive chart version from git tag (strip v prefix) or use Chart.yaml default, helm registry login to ghcr.io, make helm-package OPERATOR=keystone CHART_VERSION=<derived>, helm push <tgz> oci://ghcr.io/<owner>/charts/.",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -568,6 +578,7 @@
       "description": "Add github-release job to ci.yaml with needs: [build-and-push, helm-push] and condition: startsWith(github.ref, 'refs/tags/v'). Job permissions: contents:write. Steps: checkout, install Helm, derive chart version, make helm-package OPERATOR=keystone CHART_VERSION=<derived>, gh release create ${{ github.ref_name }} --generate-notes with the .tgz file as release asset. Uses GITHUB_TOKEN for gh authentication.",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -578,6 +589,7 @@
       "description": "Create .codecov.yml at repository root. Configure: coverage.status.project with overall target, coverage.status.patch with default threshold. Define component_management.individual_components with three entries: (1) common — paths: ['internal/common/**'], target: 80%; (2) controllers — paths: ['operators/*/internal/controller/**'], target: 70%; (3) webhooks — paths: ['operators/*/api/**'], target: 90%. Add flag_management linking unit and integration flags.",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-012"
       ]
@@ -588,6 +600,7 @@
       "description": "Update the existing docs/reference/ci-workflow.md to document all new jobs: test (matrix), test-integration, verify-codegen, e2e-keystone, build-and-push, helm-push, github-release. Document the v* tag trigger, permissions model, job dependency graph, Codecov integration, and Makefile target changes (docker-build, helm-package, test-integration). Include the mermaid job dependency diagram from the feature elaboration. Remove the 'Disabled Jobs' section for test-integration since it's now active.",
       "level": 5,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -805,8 +818,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-03-23T09:06:53.332236"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-23T10:55:33.079238"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-27T14:25:15.378444"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/80",
+  "pr_number": 80,
   "execution_history": [
     {
       "run_id": "1517ee19-8bf9-42ec-ab94-a4728db6a934",
@@ -818,6 +841,76 @@
           "name": "prepare",
           "duration": 383.59521746635437,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "b01b729a-3d25-47d5-a969-443b3400a9a6",
+      "timestamp": "2026-03-23T11:37:38.432889",
+      "total_duration": 2311.3434343338013,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (3 tasks)",
+          "duration": 406.1658170223236,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (4 tasks)",
+          "duration": 367.4804177284241,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (4 tasks)",
+          "duration": 406.5724856853485,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (1 tasks)",
+          "duration": 54.254135847091675,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 5 (1 tasks)",
+          "duration": 208.1606776714325,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0018] Code Review",
+          "duration": 475.77141976356506,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0018] Improvements",
+          "duration": 344.64516973495483,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0018] Simplify",
+          "duration": 48.29331088066101,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "b84c0087-89dc-4438-b063-a760ce4dec0b",
+      "timestamp": "2026-03-27T11:01:04.988814",
+      "total_duration": 982.4886260032654,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 982.4886260032654,
+          "type": "review_address",
           "status": "done"
         }
       ]

@@ -18,7 +18,7 @@ import (
 
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
-	esov1beta1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1beta1"
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
@@ -237,7 +237,7 @@ func buildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8srunti
 	utilruntime.Must(apiextensionsv1.AddToScheme(s))
 	// External operator types needed by the reconciler.
 	utilruntime.Must(mariadbv1alpha1.AddToScheme(s))
-	utilruntime.Must(esov1beta1.AddToScheme(s))
+	utilruntime.Must(esov1.AddToScheme(s))
 	utilruntime.Must(esov1alpha1.AddToScheme(s))
 	utilruntime.Must(certmanagerv1.AddToScheme(s))
 	// Keystone types.

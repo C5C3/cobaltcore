@@ -9,7 +9,7 @@ import (
 	"fmt"
 
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
-	esov1beta1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1beta1"
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -25,7 +25,7 @@ import (
 // (false, nil) when not yet ready, and (false, error) on unexpected failures
 // (CC-0005).
 func WaitForExternalSecret(ctx context.Context, c client.Client, key client.ObjectKey) (bool, error) {
-	es := &esov1beta1.ExternalSecret{}
+	es := &esov1.ExternalSecret{}
 	if err := c.Get(ctx, key, es); err != nil {
 		if apierrors.IsNotFound(err) {
 			return false, nil
@@ -34,7 +34,7 @@ func WaitForExternalSecret(ctx context.Context, c client.Client, key client.Obje
 	}
 
 	for _, cond := range es.Status.Conditions {
-		if cond.Type == esov1beta1.ExternalSecretReady && cond.Status == corev1.ConditionTrue {
+		if cond.Type == esov1.ExternalSecretReady && cond.Status == corev1.ConditionTrue {
 			return true, nil
 		}
 	}

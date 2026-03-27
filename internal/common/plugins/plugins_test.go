@@ -662,6 +662,110 @@ func TestRenderPastePipelineINI(t *testing.T) {
 	}
 }
 
+func TestRenderPastePipeline_AppFactory(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	spec := PipelineSpec{
+		PipelineName: "public_api",
+		AppName:      "admin_service",
+		AppFactory:   "egg:keystone#service_v3",
+		BaseFilters:  []string{"cors"},
+	}
+
+	result, err := RenderPastePipeline(spec)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(HaveKey("app:admin_service"))
+	g.Expect(result["app:admin_service"]).To(Equal(map[string]string{
+		"use": "egg:keystone#service_v3",
+	}))
+}
+
+func TestRenderPastePipeline_BaseFilterFactories(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	spec := PipelineSpec{
+		PipelineName: "public_api",
+		AppName:      "app",
+		BaseFilters:  []string{"cors", "sizelimit"},
+		BaseFilterFactories: map[string]string{
+			"cors":     "egg:oslo.middleware#cors",
+			"sizelimit": "egg:oslo.middleware#sizelimit",
+		},
+		BaseFilterConfigs: map[string]map[string]string{
+			"cors": {"oslo_config_project": "keystone"},
+		},
+	}
+
+	result, err := RenderPastePipeline(spec)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result["filter:cors"]).To(Equal(map[string]string{
+		"use":                  "egg:oslo.middleware#cors",
+		"oslo_config_project":  "keystone",
+	}))
+	g.Expect(result["filter:sizelimit"]).To(Equal(map[string]string{
+		"use": "egg:oslo.middleware#sizelimit",
+	}))
+}
+
+func TestRenderPastePipeline_CompositeRoutes(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	spec := PipelineSpec{
+		PipelineName: "public_api",
+		AppName:      "app",
+		BaseFilters:  []string{"cors"},
+		CompositeRoutes: map[string]string{
+			"/v3": "public_api",
+		},
+	}
+
+	result, err := RenderPastePipeline(spec)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(HaveKey("composite:main"))
+	g.Expect(result["composite:main"]).To(Equal(map[string]string{
+		"use": "egg:Paste#urlmap",
+		"/v3": "public_api",
+	}))
+}
+
+func TestRenderPastePipelineINI_FullKeystoneSpec(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	spec := PipelineSpec{
+		PipelineName: "public_api",
+		AppName:      "admin_service",
+		AppFactory:   "egg:keystone#service_v3",
+		BaseFilters:  []string{"cors", "sizelimit", "http_proxy_to_wsgi", "url_normalize", "request_id"},
+		BaseFilterFactories: map[string]string{
+			"cors":               "egg:oslo.middleware#cors",
+			"sizelimit":          "egg:oslo.middleware#sizelimit",
+			"http_proxy_to_wsgi": "egg:oslo.middleware#http_proxy_to_wsgi",
+			"url_normalize":      "egg:keystone#url_normalize",
+			"request_id":         "egg:oslo.middleware#request_id",
+		},
+		BaseFilterConfigs: map[string]map[string]string{
+			"cors": {"oslo_config_project": "keystone"},
+		},
+		CompositeRoutes: map[string]string{"/v3": "public_api"},
+	}
+
+	result, err := RenderPastePipelineINI(spec)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(ContainSubstring("[app:admin_service]"))
+	g.Expect(result).To(ContainSubstring("use = egg:keystone#service_v3"))
+	g.Expect(result).To(ContainSubstring("[composite:main]"))
+	g.Expect(result).To(ContainSubstring("/v3 = public_api"))
+	g.Expect(result).To(ContainSubstring("use = egg:Paste#urlmap"))
+	g.Expect(result).To(ContainSubstring("[filter:cors]"))
+	g.Expect(result).To(ContainSubstring("oslo_config_project = keystone"))
+	g.Expect(result).To(ContainSubstring("[filter:request_id]"))
+	g.Expect(result).To(ContainSubstring("[filter:sizelimit]"))
+	g.Expect(result).To(ContainSubstring("[filter:url_normalize]"))
+	g.Expect(result).To(ContainSubstring("[filter:http_proxy_to_wsgi]"))
+	g.Expect(result).To(ContainSubstring("[pipeline:public_api]"))
+	g.Expect(result).To(ContainSubstring("pipeline = cors sizelimit http_proxy_to_wsgi url_normalize request_id admin_service"))
+}
+
 func TestRenderPastePipelineINI_duplicateMiddlewareNameReturnsError(t *testing.T) {
 	g := NewGomegaWithT(t)
 

@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Pre-creates the MariaDB Database, User, and Grant CRs for the brownfield
+# database E2E test. In brownfield mode the Keystone operator intentionally
+# skips creating these resources, so they must exist beforehand.
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: Database
+metadata:
+  name: keystone-brownfield-db
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  characterSet: utf8
+  collate: utf8_general_ci
+  name: keystone_brownfield
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: User
+metadata:
+  name: keystone-brownfield-user
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  name: keystone
+  passwordSecretKeyRef:
+    name: keystone-db
+    key: password
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: Grant
+metadata:
+  name: keystone-brownfield-grant
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  privileges:
+  - "ALL PRIVILEGES"
+  database: keystone_brownfield
+  table: "*"
+  username: keystone

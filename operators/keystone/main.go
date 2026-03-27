@@ -11,7 +11,7 @@ import (
 	"os"
 
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
-	esov1beta1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1beta1"
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 
 	"github.com/c5c3/forge/internal/common/bootstrap"
@@ -30,7 +30,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(keystonev1alpha1.AddToScheme(scheme))
 	utilruntime.Must(esov1alpha1.SchemeBuilder.AddToScheme(scheme))
-	utilruntime.Must(esov1beta1.SchemeBuilder.AddToScheme(scheme))
+	utilruntime.Must(esov1.SchemeBuilder.AddToScheme(scheme))
 	utilruntime.Must(mariadbv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }

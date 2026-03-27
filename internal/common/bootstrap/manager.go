@@ -8,9 +8,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -64,6 +66,7 @@ func Run(cfg ManagerConfig) error {
 	var metricsAddr string
 	var probeAddr string
 	var enableLeaderElection bool
+	var syncPeriod time.Duration
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080",
 		"The address the metric endpoint binds to.")
@@ -72,6 +75,9 @@ func Run(cfg ManagerConfig) error {
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager, "+
 			"ensuring only one active controller manager.")
+	flag.DurationVar(&syncPeriod, "sync-period", 10*time.Minute,
+		"The minimum frequency at which watched resources are reconciled "+
+			"(e.g. 10m). Ensures eventual consistency if watch events are missed.")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -82,6 +88,9 @@ func Run(cfg ManagerConfig) error {
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: cfg.Scheme,
+		Cache: cache.Options{
+			SyncPeriod: &syncPeriod,
+		},
 		Metrics: metricsserver.Options{
 			BindAddress: metricsAddr,
 		},

@@ -23,6 +23,16 @@ RUN --mount=type=bind,from=upper-constraints,source=upper-constraints.txt,target
         --constraint /tmp/upper-constraints.txt \
         "$PKG" $PIP_PACKAGES
 
+# Generate the WSGI entry-point script that uWSGI loads at runtime.
+# PBR registers this as a wsgi_scripts entry point, but uv's --prefix
+# install mode does not generate entry-point scripts, so we create it
+# manually. The callable matches keystone's setup.cfg wsgi_scripts entry.
+RUN printf '#!/var/lib/openstack/bin/python\n\
+from keystone.server.wsgi import initialize_public_application\n\
+application = initialize_public_application()\n' \
+    > /var/lib/openstack/bin/keystone-wsgi-public && \
+    chmod +x /var/lib/openstack/bin/keystone-wsgi-public
+
 # ---------- Stage 2: runtime ----------
 FROM python-base
 

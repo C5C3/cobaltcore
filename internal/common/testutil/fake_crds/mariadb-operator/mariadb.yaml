@@ -65,7 +65,7 @@ spec:
                       lastTransitionTime:
                         type: string
                         format: date-time
-                readyReplicas:
+                replicas:
                   type: integer
                 currentPrimaryPodIndex:
                   type: integer

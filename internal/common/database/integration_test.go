@@ -12,6 +12,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	envtestutil "github.com/c5c3/forge/internal/common/testutil/envtest"
+	"github.com/c5c3/forge/internal/common/testutil/simulators"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -165,15 +166,23 @@ func TestIntegration_EnsureDatabaseUser(t *testing.T) {
 		},
 	}
 
-	// Create.
+	// First call creates the User but not the Grant (User is not yet Ready).
 	ready, err := EnsureDatabaseUser(ctx, c, scheme, owner, user, grant)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(ready).To(BeFalse(), "newly created user/grant should not be ready")
+	g.Expect(ready).To(BeFalse(), "newly created user should not be ready")
 
 	createdUser := &mariadbv1alpha1.User{}
 	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(user), createdUser)).To(Succeed())
 	g.Expect(createdUser.OwnerReferences).To(HaveLen(1))
 	g.Expect(createdUser.OwnerReferences[0].Name).To(Equal("user-owner"))
+
+	// Simulate the User becoming Ready so the next call creates the Grant.
+	userKey := client.ObjectKeyFromObject(user)
+	g.Expect(simulators.SimulateUserReady(ctx, c, userKey)).To(Succeed())
+
+	ready, err = EnsureDatabaseUser(ctx, c, scheme, owner, user, grant)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ready).To(BeFalse(), "newly created grant should not be ready")
 
 	createdGrant := &mariadbv1alpha1.Grant{}
 	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(grant), createdGrant)).To(Succeed())
@@ -253,8 +262,19 @@ func TestIntegration_EnsureDatabaseUser_idempotent(t *testing.T) {
 		},
 	}
 
+	// First call creates the User (Grant not created until User is Ready).
 	_, err := EnsureDatabaseUser(ctx, c, scheme, owner, user, grant)
 	g.Expect(err).NotTo(HaveOccurred())
+
+	// Simulate the User becoming Ready so subsequent calls create the Grant.
+	userKey := client.ObjectKeyFromObject(user)
+	g.Expect(simulators.SimulateUserReady(ctx, c, userKey)).To(Succeed())
+
+	// Second call creates the Grant (User is now Ready).
+	_, err = EnsureDatabaseUser(ctx, c, scheme, owner, user, grant)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Third call is idempotent — no duplicate resources created.
 	_, err = EnsureDatabaseUser(ctx, c, scheme, owner, user, grant)
 	g.Expect(err).NotTo(HaveOccurred())
 

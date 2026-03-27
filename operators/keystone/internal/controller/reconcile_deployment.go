@@ -121,6 +121,17 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 					Containers: []corev1.Container{{
 						Name:  "keystone-api",
 						Image: fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag),
+						Command: []string{
+							"uwsgi",
+							"--http", ":5000",
+							"--wsgi-file", "/var/lib/openstack/bin/keystone-wsgi-public",
+							"--master",
+							"--lazy-apps",
+							"--need-app",
+							"--processes", "2",
+							"--threads", "2",
+							"--pyargv=--config-dir=/etc/keystone/keystone.conf.d/",
+						},
 						Ports: []corev1.ContainerPort{{
 							Name:          "keystone-api",
 							ContainerPort: 5000,

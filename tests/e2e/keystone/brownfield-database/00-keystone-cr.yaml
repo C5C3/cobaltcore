@@ -25,7 +25,7 @@ spec:
   cache:
     backend: dogpile.cache.pymemcache
     servers:
-    - "openstack-memcached-0.openstack-memcached:11211"
+    - "openstack-memcached:11211"
   fernet:
     rotationSchedule: "0 0 * * 0"
     maxActiveKeys: 3

@@ -1,0 +1,177 @@
+{
+  "summary": "CC-0018 H002 extends ci.yaml with matrix tests, integration tests, verify-codegen, e2e-keystone, build-and-push, helm-push, and github-release jobs. Implements docker-build, helm-package, and test-integration Makefile targets. Adds .codecov.yml with component thresholds and updates docs/reference/ci-workflow.md. Core pipeline structure is sound but has several completeness gaps: verify-codegen omits make verify-crd-sync, github-release attaches no chart tarball, e2e-keystone needs list omits shellcheck, and build-and-push uses a custom tag script instead of docker/metadata-action without stripping the v prefix from version tags.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "V1: All tests pass (N/A — CI workflow YAML, no test runner)", "checked": true},
+    {"item": "V2: No type errors (N/A — YAML/Makefile, not Go code)", "checked": true},
+    {"item": "V3: No lint errors (N/A — no Go code changed)", "checked": true},
+    {"item": "TE1: Happy path tested (CI jobs cover standard push/PR/tag triggers)", "checked": true},
+    {"item": "TE2: Edge cases covered (fork PRs with missing CODECOV_TOKEN)", "checked": false},
+    {"item": "TE4: Tests independent (matrix jobs run independently)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Q1: Functions do one thing (each CI job has single responsibility)", "checked": true},
+    {"item": "Q3: No code duplication (Makefile targets share OPERATOR pattern)", "checked": true},
+    {"item": "Q4: Clear naming (job names match purpose)", "checked": true},
+    {"item": "Q7: No dead code (removed commented-out test-integration stub)", "checked": true},
+    {"item": "P5: File location matches project structure conventions", "checked": true},
+    {"item": "PC1: Follows GitHub Actions SPDX header and SHA-pinning pattern", "checked": true},
+    {"item": "PC3: Consistent patterns across all files", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "S3: No hardcoded secrets (GITHUB_TOKEN via secrets context only)", "checked": true},
+    {"item": "S5: Sensitive data not exposed in logs (helm login uses --password-stdin)", "checked": true},
+    {"item": "Permissions use least-privilege (contents:read top-level, per-job escalation)", "checked": true},
+    {"item": "Publish jobs gated on push events only (never run on PRs)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "Job DAG dependencies form correct execution order", "checked": false},
+    {"item": "Existing jobs (lint, shellcheck, docs, e2e-infra) completely unchanged", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No over-engineering (jobs are minimal and focused)", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early (gate jobs block downstream)", "checked": true},
+    {"item": "Makefile for-loop propagates test failures", "checked": false}
+  ],
+  "defensive_checklist": [
+    {"item": "OPERATOR variable validated in docker-build and helm-package", "checked": true},
+    {"item": "Helm push glob validated against multiple matches", "checked": false}
+  ],
+  "security_findings": [],
+  "architecture_findings": [
+    {
+      "severity": "MEDIUM",
+      "description": "FC1: build-and-push job uses custom shell tag derivation instead of docker/metadata-action as specified in plan. The existing build-images.yaml uses docker/metadata-action (3 instances at lines 79, 164, 399). The custom script also keeps the v prefix on version tags (e.g., image tagged as v0.1.0 instead of 0.1.0), contradicting the plan spec 'SemVer from git tag (strip v prefix)'. Additionally, no OCI labels are generated — the two-layer OCI annotation pattern (static Dockerfile LABEL + CI metadata-action) established in build-images.yaml is not followed.",
+      "location": ".github/workflows/ci.yaml:268-282",
+      "fix": "Replace the custom 'Derive image tags' step with docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf (matching build-images.yaml SHA). Configure tags: type=sha for all pushes, type=semver,pattern={{version}} for v* tags, type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }} for latest. Wire labels output to build-push-action."
+    },
+    {
+      "severity": "MEDIUM",
+      "description": "Mutable 'latest' tag pushed unconditionally from both main-branch pushes and v* tag pushes. Per external review pattern 'check-mutable-tags-for-cross-branch-clobbering': if a main commit happens after a v1.0.0 release, 'latest' silently points to an unreleased build. Users pulling ':latest' get unpredictable results.",
+      "location": ".github/workflows/ci.yaml:277",
+      "fix": "Restrict 'latest' to v* tag pushes only, or use docker/metadata-action with type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}. This ensures 'latest' always points to the most recent release, not an unreleased main commit."
+    }
+  ],
+  "issues_found": [
+    {
+      "id": "FC1-1",
+      "severity": "blocker",
+      "check_id": "FC1",
+      "file": ".github/workflows/ci.yaml",
+      "line": "107-116",
+      "description": "verify-codegen job does NOT run 'make verify-crd-sync'. Plan task 2.4 explicitly requires this step: 'run make verify-crd-sync'. The Makefile has a dedicated verify-crd-sync target (line 142) that checks Helm chart CRD copies match generated CRDs. Without this step, Helm chart CRDs can silently drift from controller-gen output.",
+      "fix": "Add a step after 'Run code generation': '- name: Verify Helm CRD sync\\n  run: make verify-crd-sync' before the git diff check."
+    },
+    {
+      "id": "FC1-2",
+      "severity": "blocker",
+      "check_id": "FC1",
+      "file": ".github/workflows/ci.yaml",
+      "line": "331-334",
+      "description": "github-release job does not attach the Helm chart tarball as a release asset. Plan task 3.4 requires: 'gh release create ${{ github.ref_name }} --generate-notes with the .tgz file as release asset'. The current implementation uses softprops/action-gh-release with only generate_release_notes: true — creating an empty release with no downloadable artifacts.",
+      "fix": "Add steps to package the Helm chart and attach it: (1) add azure/setup-helm@v4, (2) run 'make helm-package OPERATOR=keystone CHART_VERSION=${GITHUB_REF_NAME#v}', (3) add 'files: |\\n  *.tgz' to the softprops/action-gh-release with: block."
+    },
+    {
+      "id": "C1-1",
+      "severity": "blocker",
+      "check_id": "C1",
+      "file": ".github/workflows/ci.yaml",
+      "line": "190",
+      "description": "e2e-keystone needs list is [lint, test, test-integration, verify-codegen] but plan task 3.1 specifies needs: [lint, shellcheck, test, test-integration, verify-codegen]. Missing shellcheck means e2e-keystone can run even if shell script validation fails.",
+      "fix": "Change line 190 to: needs: [lint, shellcheck, test, test-integration, verify-codegen]"
+    },
+    {
+      "id": "C1-2",
+      "severity": "critical",
+      "check_id": "C1",
+      "file": ".github/workflows/ci.yaml",
+      "line": "268-282",
+      "description": "build-and-push uses custom shell script for tag derivation instead of docker/metadata-action as specified in plan. Version tag keeps v prefix (e.g., image:v0.1.0) instead of stripping it (image:0.1.0) as the plan requires. No OCI labels generated — diverges from the established two-layer OCI annotation pattern in build-images.yaml.",
+      "fix": "Replace the 'Derive image tags' step with docker/metadata-action. Use tags: type=semver,pattern={{version}} (strips v prefix automatically), type=sha (for traceability), type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}. Wire labels: ${{ steps.meta.outputs.labels }} to build-push-action."
+    },
+    {
+      "id": "Q4-1",
+      "severity": "critical",
+      "check_id": "Q4",
+      "file": ".codecov.yml",
+      "line": "21-22",
+      "description": "fail_ci_if_error: false is placed under the 'coverage:' key in .codecov.yml. This is NOT a valid Codecov YAML configuration key at this location — it is a parameter of the codecov/codecov-action GitHub Action. The value is silently ignored, meaning the intended fork PR protection is not configured. The codecov-action steps in ci.yaml (lines 66, 90) also do not set this parameter. While codecov-action v5 defaults fail_ci_if_error to false, the plan explicitly requires this for defense-in-depth.",
+      "fix": "Remove 'fail_ci_if_error: false' from .codecov.yml. Add 'fail_ci_if_error: false' to both codecov/codecov-action steps in ci.yaml (test job line 66 and test-integration job line 90)."
+    },
+    {
+      "id": "FC2-1",
+      "severity": "critical",
+      "check_id": "FC2",
+      "file": ".codecov.yml",
+      "line": "61",
+      "description": "Plan task 4.1 explicitly requires 'Add flag_management linking unit and integration flags'. The .codecov.yml has no flag_management section. Without it, the unit-<operator> and integration-<operator> flags uploaded by CI are not formally linked to coverage tracking rules. Flag management enables carryforward coverage (so missing flags don't tank coverage) and per-flag status checks.",
+      "fix": "Add a flag_management section with individual_flags entries for unit-keystone, unit-c5c3, integration-keystone, integration-c5c3 with appropriate paths and carryforward: true."
+    },
+    {
+      "id": "C4-1",
+      "severity": "critical",
+      "check_id": "C4",
+      "file": "Makefile",
+      "line": "219",
+      "description": "test-integration for-loop does not propagate go test failures. Inside the for-loop, 'go test -tags=integration ...' runs without '|| exit 1'. Under Make's default shell, if go test fails for the first operator, the loop continues to the next operator. The overall target exit code is the last command's exit code, masking the failure. This causes CI to report success and upload coverage even when tests fail.",
+      "fix": "Add '|| exit 1' after the go test invocation: 'go test -tags=integration -coverprofile=cover-integration-$$op.out ./operators/$$op/... || exit 1; \\'"
+    },
+    {
+      "id": "DA3-1",
+      "severity": "critical",
+      "check_id": "DA3",
+      "file": "docs/reference/ci-workflow.md",
+      "line": "68-78",
+      "description": "Job Dependency DAG diagram groups shellcheck as a gate job feeding into 'E2E Jobs + Publish Jobs', but the actual ci.yaml (line 190) defines e2e-keystone with needs: [lint, test, test-integration, verify-codegen] — shellcheck is NOT in the dependency list. If shellcheck is added to e2e-keystone needs (per C1-1), the diagram becomes correct. Otherwise, the diagram overstates the dependency.",
+      "fix": "After fixing C1-1 (adding shellcheck to e2e-keystone needs), the diagram will be correct. If shellcheck is intentionally excluded, update the diagram to show shellcheck running independently."
+    },
+    {
+      "id": "C3-1",
+      "severity": "minor",
+      "check_id": "C3",
+      "file": ".github/workflows/ci.yaml",
+      "line": "319",
+      "description": "Helm push glob '${OPERATOR}-operator-*.tgz' could match multiple files if stale tarballs exist in the working directory. While unlikely in CI fresh checkout, this is fragile. helm push accepts exactly one argument — multiple matches would cause a confusing error.",
+      "fix": "Capture the exact filename: 'CHART_TGZ=$(ls ${OPERATOR}-operator-*.tgz) && helm push \"$CHART_TGZ\" oci://...'. Or add explicit cleanup before packaging."
+    },
+    {
+      "id": "C1-3",
+      "severity": "minor",
+      "check_id": "C1",
+      "file": ".github/workflows/ci.yaml",
+      "line": "54-56",
+      "description": "test job matrix is [keystone, c5c3] but plan task 2.2 specifies a 3-entry matrix [common, keystone, c5c3]. The current approach tests common redundantly in each matrix entry (both produce cover-unit-common.out). Functionally equivalent but wastes CI time running common tests twice and the second run overwrites the first coverage file.",
+      "fix": "Either accept the 2-entry matrix as a minor deviation from the plan, or restructure to a 3-entry matrix where common runs independently. The current approach works but is wasteful."
+    },
+    {
+      "id": "D2-1",
+      "severity": "minor",
+      "check_id": "D2",
+      "file": "Makefile",
+      "line": "59",
+      "description": "Pre-existing: test target for-loop also lacks '|| exit 1', same issue as C4-1. The -coverprofile addition in this PR makes it more consequential since coverage is uploaded even when tests fail. Out of strict diff scope since this is pre-existing, but amplified by the changes in this PR.",
+      "fix": "Add '|| exit 1' after go test in the test target for-loop for consistency with the fix for C4-1."
+    }
+  ],
+  "suggested_improvements": [
+    "Consider using docker/metadata-action consistently across ci.yaml and build-images.yaml for OCI label generation and tag derivation — reduces custom scripting and ensures OCI compliance",
+    "Add a CODECOV_TOKEN secret check step that logs a warning when the token is unavailable (forks) rather than relying solely on fail_ci_if_error defaults",
+    "The e2e-keystone job timeout of 20 minutes may be tight if kind cluster creation + image build + helm deploy + Chainsaw tests all run sequentially — consider 30 minutes as specified in the plan task 3.1",
+    "Consider adding a 'common' entry to the test matrix to avoid running common tests redundantly in each operator matrix entry"
+  ],
+  "next_steps": [
+    "Fix FC1-1: Add 'make verify-crd-sync' step to verify-codegen job",
+    "Fix FC1-2: Add Helm chart tarball as release asset in github-release job",
+    "Fix C1-1: Add shellcheck to e2e-keystone needs list",
+    "Fix C1-2: Replace custom tag derivation with docker/metadata-action, strip v prefix from version tags",
+    "Fix Q4-1: Move fail_ci_if_error: false from .codecov.yml to codecov-action steps in ci.yaml",
+    "Fix FC2-1: Add flag_management section to .codecov.yml",
+    "Fix C4-1: Add '|| exit 1' to Makefile test-integration for-loop",
+    "Fix DA3-1: Update docs DAG diagram after e2e-keystone needs fix"
+  ],
+  "detected_patterns": []
+}

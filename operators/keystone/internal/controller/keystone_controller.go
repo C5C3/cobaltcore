@@ -71,15 +71,16 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return r.updateStatus(ctx, &keystone, result, err)
 	}
 
-	if result, err := r.reconcileFernetKeys(ctx, &keystone); !result.IsZero() || err != nil {
-		return r.updateStatus(ctx, &keystone, result, err)
-	}
-
-	// reconcileConfig must run before reconcileDatabase because the db_sync
-	// Job requires the keystone.conf ConfigMap to read [database] connection.
+	// reconcileConfig must run before reconcileFernetKeys and reconcileDatabase
+	// because both the fernet rotation CronJob and the db_sync Job require the
+	// keystone.conf ConfigMap.
 	configMapName, err := r.reconcileConfig(ctx, &keystone)
 	if err != nil {
 		return r.updateStatus(ctx, &keystone, ctrl.Result{}, err)
+	}
+
+	if result, err := r.reconcileFernetKeys(ctx, &keystone, configMapName); !result.IsZero() || err != nil {
+		return r.updateStatus(ctx, &keystone, result, err)
 	}
 
 	if result, err := r.reconcileDatabase(ctx, &keystone, configMapName); !result.IsZero() || err != nil {

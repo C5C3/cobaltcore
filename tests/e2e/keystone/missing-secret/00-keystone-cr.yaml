@@ -5,8 +5,8 @@
 # Keystone CR fixture for the missing-secret E2E test (CC-0016).
 # References non-existent Secrets (missing-secret-keystone-db,
 # missing-secret-keystone-admin) to test SecretsReady=False recovery.
-# Uses brownfield database.host and cache.servers to avoid
-# MariaDB/Memcached CR dependencies during the initial failure assertion.
+# Uses managed mode (clusterRef) so the MariaDB User CR is created
+# automatically with the correct username derived from keystone.Name.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:
@@ -18,15 +18,15 @@ spec:
     repository: ghcr.io/c5c3/keystone
     tag: "2025.2"
   database:
-    host: openstack-db.openstack.svc.cluster.local
-    port: 3306
+    clusterRef:
+      name: openstack-db
     database: keystone_missing
     secretRef:
       name: missing-secret-keystone-db
   cache:
+    clusterRef:
+      name: openstack-memcached
     backend: dogpile.cache.pymemcache
-    servers:
-    - "openstack-memcached-0.openstack-memcached:11211"
   fernet:
     rotationSchedule: "0 0 * * 0"
     maxActiveKeys: 3

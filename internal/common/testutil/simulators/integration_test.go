@@ -61,9 +61,9 @@ func TestIntegration_SimulateMariaDBReady(t *testing.T) {
 	updated := newUnstructuredCR("k8s.mariadb.com", "v1alpha1", "MariaDB", "test-mariadb", ns.Name)
 	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
 
-	readyReplicas, found, _ := unstructured.NestedInt64(updated.Object, "status", "readyReplicas")
+	replicas, found, _ := unstructured.NestedInt64(updated.Object, "status", "replicas")
 	g.Expect(found).To(BeTrue())
-	g.Expect(readyReplicas).To(BeEquivalentTo(3))
+	g.Expect(replicas).To(BeEquivalentTo(3))
 
 	conditions, found, _ := unstructured.NestedSlice(updated.Object, "status", "conditions")
 	g.Expect(found).To(BeTrue())
@@ -132,7 +132,7 @@ func TestIntegration_SimulateExternalSecretSync(t *testing.T) {
 	g.Expect(c.Create(ctx, ns)).To(Succeed())
 
 	// Create the ExternalSecret resource.
-	es := newUnstructuredCR("external-secrets.io", "v1beta1", "ExternalSecret", "test-es", ns.Name)
+	es := newUnstructuredCR("external-secrets.io", "v1", "ExternalSecret", "test-es", ns.Name)
 	g.Expect(c.Create(ctx, es)).To(Succeed())
 
 	key := client.ObjectKey{Name: "test-es", Namespace: ns.Name}
@@ -141,7 +141,7 @@ func TestIntegration_SimulateExternalSecretSync(t *testing.T) {
 	g.Expect(SimulateExternalSecretSync(ctx, c, key)).To(Succeed())
 
 	// Verify status via a fresh Get.
-	updated := newUnstructuredCR("external-secrets.io", "v1beta1", "ExternalSecret", "test-es", ns.Name)
+	updated := newUnstructuredCR("external-secrets.io", "v1", "ExternalSecret", "test-es", ns.Name)
 	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
 
 	refreshTime, found, _ := unstructured.NestedString(updated.Object, "status", "refreshTime")
@@ -207,7 +207,11 @@ func TestIntegration_SimulateJobComplete(t *testing.T) {
 	g.Expect(updated.Status.CompletionTime).NotTo(BeNil())
 	g.Expect(updated.Status.Conditions).NotTo(BeEmpty())
 
-	cond := updated.Status.Conditions[0]
+	// SuccessCriteriaMet must come before Complete (K8s 1.35 requirement).
+	g.Expect(updated.Status.Conditions[0].Type).To(Equal(batchv1.JobSuccessCriteriaMet))
+	g.Expect(updated.Status.Conditions[0].Status).To(Equal(corev1.ConditionTrue))
+
+	cond := updated.Status.Conditions[1]
 	g.Expect(cond.Type).To(Equal(batchv1.JobComplete))
 	g.Expect(cond.Status).To(Equal(corev1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal("Completed"))

@@ -13,7 +13,7 @@ import (
 
 	envtestutil "github.com/c5c3/forge/internal/common/testutil/envtest"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
-	esov1beta1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1beta1"
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -31,17 +31,17 @@ func TestIntegration_WaitForExternalSecret(t *testing.T) {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-secrets-wait"}}
 	g.Expect(c.Create(ctx, ns)).To(Succeed())
 
-	es := &esov1beta1.ExternalSecret{
+	es := &esov1.ExternalSecret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "integration-es",
 			Namespace: ns.Name,
 		},
-		Spec: esov1beta1.ExternalSecretSpec{
-			SecretStoreRef: esov1beta1.SecretStoreRef{
+		Spec: esov1.ExternalSecretSpec{
+			SecretStoreRef: esov1.SecretStoreRef{
 				Name: "test-store",
 				Kind: "ClusterSecretStore",
 			},
-			Target: esov1beta1.ExternalSecretTarget{
+			Target: esov1.ExternalSecretTarget{
 				Name: "target-secret",
 			},
 		},

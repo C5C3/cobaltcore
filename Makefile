@@ -4,9 +4,6 @@
 # DEVIATION from architecture/01-project-setup.md (CC-0001):
 # - Architecture doc lists 9 targets; this Makefile defines 12 (adds deploy-infra,
 #   teardown-infra, install-test-deps) for completeness.
-# - Stub targets use $(error) to fail explicitly with a feature reference (e.g.,
-#   "S006: docker-build not yet implemented") rather than silently succeeding,
-#   preventing false confidence that a target works.
 # - generate/manifests use controller-gen to produce deepcopy functions and CRD/webhook
 #   manifests for each operator module that has an api/ directory (CC-0011).
 
@@ -20,6 +17,18 @@ endif
 
 # controller-gen generates deepcopy functions, CRD manifests, and webhook configs.
 CONTROLLER_GEN ?= controller-gen
+
+# setup-envtest downloads kubebuilder assets for envtest integration tests (CC-0018, REQ-003).
+# Default resolves via GOPATH so local runs work without manually exporting GOBIN.
+SETUP_ENVTEST ?= $(shell go env GOPATH)/bin/setup-envtest
+
+# Kubernetes version for envtest binary downloads (CC-0018).
+# Pin to a specific version for reproducible integration tests across runs.
+ENVTEST_K8S_VERSION ?= 1.35
+
+# Image tag for docker-build. Uses deferred evaluation so $(OPERATOR) is resolved
+# at recipe expansion time (CC-0018, REQ-010).
+IMG ?= ghcr.io/c5c3/$(OPERATOR)-operator:latest
 
 # ============================================================================
 # Build Targets
@@ -49,11 +58,26 @@ build:
 # the module root, and build follows the same pattern for consistency.
 test:
 	@echo "Testing internal/common module..."
-	@go test ./internal/common/...
+	@go test -coverprofile=cover-unit-common.out ./internal/common/...
 	@for op in $(OPERATORS); do \
 		echo "Testing operators/$$op module..."; \
-		go test ./operators/$$op/...; \
+		go test -coverprofile=cover-unit-$$op.out ./operators/$$op/... || exit 1; \
 	done
+
+.PHONY: test-common
+# test-common runs unit tests for internal/common only (CC-0018).
+# Used by CI to deduplicate common coverage into a single matrix leg.
+test-common:
+	@echo "Testing internal/common module..."
+	@go test -coverprofile=cover-unit-common.out ./internal/common/...
+
+.PHONY: test-operator
+# test-operator runs unit tests for a single operator without common (CC-0018).
+# Usage: make test-operator OPERATOR=keystone
+test-operator:
+	$(if $(OPERATOR),,$(error test-operator requires OPERATOR, e.g. make test-operator OPERATOR=keystone))
+	@echo "Testing operators/$(OPERATOR) module..."
+	@go test -coverprofile=cover-unit-$(OPERATOR).out ./operators/$(OPERATOR)/...
 
 # ============================================================================
 # Lint Targets
@@ -169,12 +193,19 @@ verify-crd-sync:
 # ============================================================================
 
 .PHONY: docker-build
+# docker-build builds the operator Docker image from operators/$(OPERATOR)/Dockerfile.
+# Build context is the repository root (required by go.work) (CC-0018, REQ-010).
+# Usage: make docker-build OPERATOR=keystone [IMG=custom:tag]
 docker-build:
-	$(error S006: docker-build not yet implemented)
+	$(if $(OPERATOR),,$(error docker-build requires OPERATOR, e.g. make docker-build OPERATOR=keystone))
+	docker build -t $(IMG) -f operators/$(OPERATOR)/Dockerfile .
 
 .PHONY: helm-package
+# helm-package packages the operator Helm chart (CC-0018, REQ-011).
+# Usage: make helm-package OPERATOR=keystone [CHART_VERSION=1.2.3]
 helm-package:
-	$(error S017: helm-package not yet implemented)
+	$(if $(OPERATOR),,$(error helm-package requires OPERATOR, e.g. make helm-package OPERATOR=keystone))
+	helm package operators/$(OPERATOR)/helm/$(OPERATOR)-operator/ $(if $(CHART_VERSION),--version $(CHART_VERSION))
 
 # ============================================================================
 # Testing and Infrastructure Targets
@@ -197,7 +228,23 @@ install-test-deps:
 	hack/install-test-deps.sh
 
 .PHONY: test-integration
-# TODO: Replace this stub when envtest CI infrastructure is added.
-# The CI workflow omits the test-integration job; re-add it when this target runs real tests.
+# test-integration runs envtest-based integration tests per operator (CC-0018, REQ-003).
+# Requires setup-envtest (go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest).
+# Usage: make test-integration [OPERATOR=keystone]
 test-integration:
-	$(error test-integration not yet implemented — envtest infrastructure pending)
+	@KUBEBUILDER_ASSETS=$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) -p path) && export KUBEBUILDER_ASSETS && \
+	echo "KUBEBUILDER_ASSETS=$$KUBEBUILDER_ASSETS" && \
+	for op in $(OPERATORS); do \
+		echo "Integration-testing operators/$$op module..."; \
+		go test -tags=integration -coverprofile=cover-integration-$$op.out ./operators/$$op/... || exit 1; \
+	done
+
+.PHONY: test-integration-common
+# test-integration-common runs envtest-based integration tests for internal/common (CC-0018).
+# Needed to meet the codecov 80% target for internal/common/**.
+# Usage: make test-integration-common
+test-integration-common:
+	@KUBEBUILDER_ASSETS=$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) -p path) && export KUBEBUILDER_ASSETS && \
+	echo "KUBEBUILDER_ASSETS=$$KUBEBUILDER_ASSETS" && \
+	echo "Integration-testing internal/common module..." && \
+	go test -tags=integration -coverprofile=cover-integration-common.out ./internal/common/...

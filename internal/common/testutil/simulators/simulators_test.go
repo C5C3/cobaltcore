@@ -10,7 +10,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	esov1beta1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1beta1"
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	"github.com/c5c3/forge/internal/common/deployment"
 	appsv1 "k8s.io/api/apps/v1"
@@ -42,7 +42,7 @@ func newScheme() *runtime.Scheme {
 	_ = batchv1.AddToScheme(s)
 	_ = mariadbv1alpha1.AddToScheme(s)
 	_ = appsv1.AddToScheme(s)
-	_ = esov1beta1.AddToScheme(s)
+	_ = esov1.AddToScheme(s)
 	return s
 }
 
@@ -244,7 +244,7 @@ func TestSimulateMemcachedReady_notFound(t *testing.T) {
 func TestSimulateExternalSecretSync(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	es := &esov1beta1.ExternalSecret{
+	es := &esov1.ExternalSecret{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-es", Namespace: "default"},
 	}
 
@@ -257,14 +257,14 @@ func TestSimulateExternalSecretSync(t *testing.T) {
 	err := SimulateExternalSecretSync(context.Background(), c, client.ObjectKeyFromObject(es))
 	g.Expect(err).NotTo(HaveOccurred())
 
-	updated := &esov1beta1.ExternalSecret{}
+	updated := &esov1.ExternalSecret{}
 	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(es), updated)).To(Succeed())
 
 	g.Expect(updated.Status.RefreshTime.IsZero()).To(BeFalse())
 	g.Expect(updated.Status.Conditions).To(HaveLen(1))
 
 	cond := updated.Status.Conditions[0]
-	g.Expect(cond.Type).To(Equal(esov1beta1.ExternalSecretReady))
+	g.Expect(cond.Type).To(Equal(esov1.ExternalSecretReady))
 	g.Expect(cond.Status).To(Equal(corev1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal("SecretSynced"))
 }
@@ -272,7 +272,7 @@ func TestSimulateExternalSecretSync(t *testing.T) {
 func TestSimulateExternalSecretSync_idempotent(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	es := &esov1beta1.ExternalSecret{
+	es := &esov1.ExternalSecret{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-es", Namespace: "default"},
 	}
 
@@ -288,7 +288,7 @@ func TestSimulateExternalSecretSync_idempotent(t *testing.T) {
 	g.Expect(SimulateExternalSecretSync(ctx, c, key)).To(Succeed())
 	g.Expect(SimulateExternalSecretSync(ctx, c, key)).To(Succeed())
 
-	updated := &esov1beta1.ExternalSecret{}
+	updated := &esov1.ExternalSecret{}
 	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
 
 	g.Expect(updated.Status.Conditions).To(HaveLen(1), "expected exactly 1 condition after two calls")

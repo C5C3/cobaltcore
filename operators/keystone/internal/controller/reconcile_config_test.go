@@ -140,14 +140,27 @@ func TestReconcileConfig_BasicManagedDatabaseAndCache(t *testing.T) {
 	g.Expect(keystoneConf).To(ContainSubstring("[oslo_middleware]"))
 	g.Expect(keystoneConf).To(ContainSubstring("[memcache]"))
 
-	// Managed database: connection uses service DNS.
-	g.Expect(keystoneConf).To(ContainSubstring("mysql+pymysql://keystone:secret123@mariadb-cluster.default.svc:3306/keystone"))
+	// Managed database: connection uses CR name as MySQL username and service DNS.
+	g.Expect(keystoneConf).To(ContainSubstring("mysql+pymysql://test-keystone:secret123@mariadb-cluster.default.svc:3306/keystone?charset=utf8"))
 
-	// Managed cache: uses cluster ref name pattern.
-	g.Expect(keystoneConf).To(ContainSubstring("memcached-0.memcached-cluster:11211,memcached-1.memcached-cluster:11211,memcached-2.memcached-cluster:11211"))
+	// Managed cache: uses Service DNS name.
+	g.Expect(keystoneConf).To(ContainSubstring("memcached-cluster:11211"))
 
-	// api-paste.ini present.
-	g.Expect(cm.Data["api-paste.ini"]).To(ContainSubstring("[pipeline:public_api]"))
+	// keystone.conf must contain [paste_deploy] with config_file (CC-0018).
+	g.Expect(keystoneConf).To(ContainSubstring("[paste_deploy]"))
+	g.Expect(keystoneConf).To(ContainSubstring("config_file = /etc/keystone/keystone.conf.d/api-paste.ini"))
+
+	// api-paste.ini must contain complete PasteDeploy configuration (CC-0018).
+	apiPaste := cm.Data["api-paste.ini"]
+	g.Expect(apiPaste).To(ContainSubstring("[pipeline:public_api]"))
+	g.Expect(apiPaste).To(ContainSubstring("[composite:main]"))
+	g.Expect(apiPaste).To(ContainSubstring("[app:admin_service]"))
+	g.Expect(apiPaste).To(ContainSubstring("use = egg:keystone#service_v3"))
+	g.Expect(apiPaste).To(ContainSubstring("[filter:cors]"))
+	g.Expect(apiPaste).To(ContainSubstring("[filter:sizelimit]"))
+	g.Expect(apiPaste).To(ContainSubstring("[filter:request_id]"))
+	g.Expect(apiPaste).To(ContainSubstring("[filter:url_normalize]"))
+	g.Expect(apiPaste).To(ContainSubstring("[filter:http_proxy_to_wsgi]"))
 }
 
 func TestReconcileConfig_BrownfieldDatabase(t *testing.T) {
@@ -166,7 +179,7 @@ func TestReconcileConfig_BrownfieldDatabase(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	keystoneConf := cm.Data["keystone.conf"]
-	g.Expect(keystoneConf).To(ContainSubstring("mysql+pymysql://ks_user:ks_pass@db.example.com:3306/keystone"))
+	g.Expect(keystoneConf).To(ContainSubstring("mysql+pymysql://ks_user:ks_pass@db.example.com:3306/keystone?charset=utf8"))
 }
 
 func TestReconcileConfig_SpecialCharactersInCredentialsAreURLEncoded(t *testing.T) {
@@ -188,7 +201,7 @@ func TestReconcileConfig_SpecialCharactersInCredentialsAreURLEncoded(t *testing.
 	keystoneConf := cm.Data["keystone.conf"]
 	// Special characters must be percent-encoded per RFC 3986 userinfo rules (CC-0013).
 	// url.UserPassword encodes '@', ':', and '/' in the password component.
-	g.Expect(keystoneConf).To(ContainSubstring("mysql+pymysql://user%40domain:p%40ss%3Aw%2Frd@db.example.com:3306/keystone"),
+	g.Expect(keystoneConf).To(ContainSubstring("mysql+pymysql://user%40domain:p%40ss%3Aw%2Frd@db.example.com:3306/keystone?charset=utf8"),
 		"special characters (@, :, /) in credentials must be percent-encoded for PyMySQL")
 }
 
@@ -238,8 +251,8 @@ func TestReconcileConfig_ManagedCacheCustomReplicas(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	keystoneConf := cm.Data["keystone.conf"]
-	// With 5 replicas, should generate exactly 5 endpoints (CC-0013).
-	g.Expect(keystoneConf).To(ContainSubstring("memcached-0.mc:11211,memcached-1.mc:11211,memcached-2.mc:11211,memcached-3.mc:11211,memcached-4.mc:11211"))
+	// Managed cache: uses Service DNS name (replicas field unused for endpoint generation).
+	g.Expect(keystoneConf).To(ContainSubstring("mc:11211"))
 }
 
 func TestReconcileConfig_PluginConfig(t *testing.T) {
@@ -599,40 +612,26 @@ func TestResolveCacheServers(t *testing.T) {
 			expected: "mc:11211",
 		},
 		{
-			name: "managed mode with default replicas",
+			name: "managed mode uses service DNS name",
 			keystone: &keystonev1alpha1.Keystone{
 				Spec: keystonev1alpha1.KeystoneSpec{
 					Cache: commonv1.CacheSpec{
 						ClusterRef: &corev1.LocalObjectReference{Name: "memcached"},
-						Replicas:   0,
 					},
 				},
 			},
-			expected: "memcached-0.memcached:11211,memcached-1.memcached:11211,memcached-2.memcached:11211",
+			expected: "memcached:11211",
 		},
 		{
-			name: "managed mode with custom replicas",
+			name: "managed mode with different cluster name",
 			keystone: &keystonev1alpha1.Keystone{
 				Spec: keystonev1alpha1.KeystoneSpec{
 					Cache: commonv1.CacheSpec{
 						ClusterRef: &corev1.LocalObjectReference{Name: "mc"},
-						Replicas:   5,
 					},
 				},
 			},
-			expected: "memcached-0.mc:11211,memcached-1.mc:11211,memcached-2.mc:11211,memcached-3.mc:11211,memcached-4.mc:11211",
-		},
-		{
-			name: "managed mode with single replica",
-			keystone: &keystonev1alpha1.Keystone{
-				Spec: keystonev1alpha1.KeystoneSpec{
-					Cache: commonv1.CacheSpec{
-						ClusterRef: &corev1.LocalObjectReference{Name: "mc"},
-						Replicas:   1,
-					},
-				},
-			},
-			expected: "memcached-0.mc:11211",
+			expected: "mc:11211",
 		},
 		{
 			name: "neither ClusterRef nor Servers set",

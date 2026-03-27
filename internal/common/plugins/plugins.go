@@ -21,8 +21,22 @@ type PipelineSpec struct {
 	// AppName is the terminal WSGI application name (e.g., "service_v3").
 	// If empty, no terminal application is appended to the pipeline directive.
 	AppName string
+	// AppFactory is the PasteDeploy "use" directive for the terminal app
+	// (e.g., "egg:keystone#service_v3"). When set, an [app:<AppName>] section
+	// is generated. Requires AppName to be non-empty.
+	AppFactory string
 	// BaseFilters contains the default filter names in pipeline order.
 	BaseFilters []string
+	// BaseFilterFactories maps base filter name to its PasteDeploy "use"
+	// directive (e.g., "egg:oslo.middleware#cors"). A [filter:<name>] section
+	// is generated for each entry.
+	BaseFilterFactories map[string]string
+	// BaseFilterConfigs contains extra config keys per base filter, merged
+	// into the [filter:<name>] section alongside the "use" directive.
+	BaseFilterConfigs map[string]map[string]string
+	// CompositeRoutes maps URL paths to pipeline names for a
+	// [composite:main] section (e.g., {"/v3": "public_api"}).
+	CompositeRoutes map[string]string
 	// Middleware contains additional middleware filters to insert.
 	Middleware []types.MiddlewareSpec
 }
@@ -111,6 +125,39 @@ func RenderPastePipeline(spec PipelineSpec) (map[string]map[string]string, error
 			filterConfig[k] = v
 		}
 		result[filterSection] = filterConfig
+	}
+
+	// Generate [app:<AppName>] section when AppFactory is set (CC-0018).
+	if spec.AppFactory != "" && spec.AppName != "" {
+		appSection := fmt.Sprintf("app:%s", spec.AppName)
+		result[appSection] = map[string]string{
+			"use": spec.AppFactory,
+		}
+	}
+
+	// Generate [filter:<name>] sections for base filter factories (CC-0018).
+	for name, factory := range spec.BaseFilterFactories {
+		filterSection := fmt.Sprintf("filter:%s", name)
+		filterConfig := map[string]string{
+			"use": factory,
+		}
+		if extra, ok := spec.BaseFilterConfigs[name]; ok {
+			for k, v := range extra {
+				filterConfig[k] = v
+			}
+		}
+		result[filterSection] = filterConfig
+	}
+
+	// Generate [composite:main] section when CompositeRoutes is set (CC-0018).
+	if len(spec.CompositeRoutes) > 0 {
+		compositeConfig := map[string]string{
+			"use": "egg:Paste#urlmap",
+		}
+		for path, pipelineName := range spec.CompositeRoutes {
+			compositeConfig[path] = pipelineName
+		}
+		result["composite:main"] = compositeConfig
 	}
 
 	return result, nil

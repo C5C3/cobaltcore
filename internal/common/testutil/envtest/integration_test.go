@@ -40,9 +40,9 @@ func allExpectedCRDs() []expectedCRD {
 	return []expectedCRD{
 		{name: "certificates.cert-manager.io", group: "cert-manager.io", version: "v1", kind: "Certificate", namespaced: true},
 		{name: "clusterissuers.cert-manager.io", group: "cert-manager.io", version: "v1", kind: "ClusterIssuer", namespaced: false},
-		{name: "clustersecretstores.external-secrets.io", group: "external-secrets.io", version: "v1beta1", kind: "ClusterSecretStore", namespaced: false},
+		{name: "clustersecretstores.external-secrets.io", group: "external-secrets.io", version: "v1", kind: "ClusterSecretStore", namespaced: false},
 		{name: "databases.k8s.mariadb.com", group: "k8s.mariadb.com", version: "v1alpha1", kind: "Database", namespaced: true},
-		{name: "externalsecrets.external-secrets.io", group: "external-secrets.io", version: "v1beta1", kind: "ExternalSecret", namespaced: true},
+		{name: "externalsecrets.external-secrets.io", group: "external-secrets.io", version: "v1", kind: "ExternalSecret", namespaced: true},
 		{name: "grants.k8s.mariadb.com", group: "k8s.mariadb.com", version: "v1alpha1", kind: "Grant", namespaced: true},
 		{name: "mariadbs.k8s.mariadb.com", group: "k8s.mariadb.com", version: "v1alpha1", kind: "MariaDB", namespaced: true},
 		{name: "memcacheds.memcached.c5c3.io", group: "memcached.c5c3.io", version: "v1beta1", kind: "Memcached", namespaced: true},

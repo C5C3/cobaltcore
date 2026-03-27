@@ -77,7 +77,7 @@ func newBootstrapTestReconciler(s *runtime.Scheme, objs ...client.Object) *Keyst
 // completedBootstrapJob returns a bootstrap Job that matches what buildBootstrapJob
 // produces for the given keystone and is marked as complete with the correct pod-spec hash.
 func completedBootstrapJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
-	desired := buildBootstrapJob(ks, "keystone-config-abc123")
+	desired := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
 	now := metav1.Now()
 	j := desired.DeepCopy()
 	j.Annotations = map[string]string{
@@ -96,7 +96,7 @@ func completedBootstrapJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 
 // failedBootstrapJob returns a bootstrap Job that is marked as permanently failed.
 func failedBootstrapJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
-	desired := buildBootstrapJob(ks, "keystone-config-abc123")
+	desired := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
 	j := desired.DeepCopy()
 	j.Annotations = map[string]string{
 		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
@@ -113,7 +113,7 @@ func failedBootstrapJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 
 // runningBootstrapJob returns a bootstrap Job that exists but is still running.
 func runningBootstrapJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
-	desired := buildBootstrapJob(ks, "keystone-config-abc123")
+	desired := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
 	j := desired.DeepCopy()
 	j.Annotations = map[string]string{
 		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
@@ -142,14 +142,12 @@ func TestReconcileBootstrap_JobCreated(t *testing.T) {
 	// Verify command and args.
 	container := createdJob.Spec.Template.Spec.Containers[0]
 	g.Expect(container.Name).To(Equal("bootstrap"))
-	g.Expect(container.Command).To(Equal([]string{"keystone-manage", "bootstrap"}))
-	g.Expect(container.Args).To(Equal([]string{
-		"--bootstrap-password", "$(BOOTSTRAP_PASSWORD)",
-		"--bootstrap-admin-url", fmt.Sprintf("http://%s-api.%s.svc.cluster.local:5000/v3", ks.Name, ks.Namespace),
-		"--bootstrap-internal-url", fmt.Sprintf("http://%s-api.%s.svc.cluster.local:5000/v3", ks.Name, ks.Namespace),
-		"--bootstrap-public-url", fmt.Sprintf("http://%s-api.%s.svc.cluster.local:5000/v3", ks.Name, ks.Namespace),
-		"--bootstrap-region-id", "RegionOne",
-	}))
+	g.Expect(container.Command[:3]).To(Equal([]string{"/bin/sh", "-eu", "-c"}))
+	g.Expect(container.Command[3]).To(ContainSubstring("keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap"))
+	expectedServiceURL := fmt.Sprintf("http://%s-api.%s.svc.cluster.local:5000/v3", ks.Name, ks.Namespace)
+	g.Expect(container.Command[3]).To(ContainSubstring(expectedServiceURL))
+	g.Expect(container.Command[3]).To(ContainSubstring("--bootstrap-region-id RegionOne"))
+	g.Expect(container.Args).To(BeNil())
 
 	// Verify env.
 	g.Expect(container.Env).To(HaveLen(1))
@@ -158,15 +156,22 @@ func TestReconcileBootstrap_JobCreated(t *testing.T) {
 	g.Expect(container.Env[0].ValueFrom.SecretKeyRef.Key).To(Equal("password"))
 
 	// Verify config volume mount is present (CC-0013: bootstrap needs keystone.conf for DB connection).
-	g.Expect(container.VolumeMounts).To(HaveLen(1))
+	g.Expect(container.VolumeMounts).To(HaveLen(2))
 	g.Expect(container.VolumeMounts[0].Name).To(Equal("config"))
 	g.Expect(container.VolumeMounts[0].MountPath).To(Equal("/etc/keystone/keystone.conf.d/"))
 	g.Expect(container.VolumeMounts[0].ReadOnly).To(BeTrue())
 
-	// Verify config volume references the ConfigMap.
-	g.Expect(createdJob.Spec.Template.Spec.Volumes).To(HaveLen(1))
+	// Verify fernet-keys volume mount (CC-0018: bootstrap needs fernet keys).
+	g.Expect(container.VolumeMounts[1].Name).To(Equal("fernet-keys"))
+	g.Expect(container.VolumeMounts[1].MountPath).To(Equal("/etc/keystone/fernet-keys/"))
+	g.Expect(container.VolumeMounts[1].ReadOnly).To(BeTrue())
+
+	// Verify volumes reference the ConfigMap and fernet-keys Secret.
+	g.Expect(createdJob.Spec.Template.Spec.Volumes).To(HaveLen(2))
 	g.Expect(createdJob.Spec.Template.Spec.Volumes[0].Name).To(Equal("config"))
 	g.Expect(createdJob.Spec.Template.Spec.Volumes[0].ConfigMap.Name).To(Equal("keystone-config-abc123"))
+	g.Expect(createdJob.Spec.Template.Spec.Volumes[1].Name).To(Equal("fernet-keys"))
+	g.Expect(createdJob.Spec.Template.Spec.Volumes[1].Secret.SecretName).To(Equal("test-keystone-fernet-keys"))
 
 	// Verify backoff limit.
 	g.Expect(*createdJob.Spec.BackoffLimit).To(Equal(int32(4)))
@@ -257,7 +262,7 @@ func TestReconcileBootstrap_StaleJobDetection(t *testing.T) {
 	}, &newJob)).To(Succeed())
 
 	// The new Job should have the correct hash.
-	desired := buildBootstrapJob(ks, "keystone-config-abc123")
+	desired := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
 	expectedHash := job.PodSpecHash(&desired.Spec.Template.Spec)
 	g.Expect(newJob.Annotations[job.PodSpecHashAnnotation]).To(Equal(expectedHash))
 }
@@ -319,14 +324,10 @@ func TestReconcileBootstrap_PublicEndpoint(t *testing.T) {
 	container := createdJob.Spec.Template.Spec.Containers[0]
 	// Admin and internal URLs should use cluster-local service.
 	internalURL := fmt.Sprintf("http://%s-api.%s.svc.cluster.local:5000/v3", ks.Name, ks.Namespace)
-	g.Expect(container.Args).To(ContainElements(
-		"--bootstrap-admin-url", internalURL,
-		"--bootstrap-internal-url", internalURL,
-	))
+	g.Expect(container.Command[3]).To(ContainSubstring("--bootstrap-admin-url " + internalURL))
+	g.Expect(container.Command[3]).To(ContainSubstring("--bootstrap-internal-url " + internalURL))
 	// Public URL should use the explicit PublicEndpoint (CC-0013).
-	g.Expect(container.Args).To(ContainElements(
-		"--bootstrap-public-url", "https://keystone.example.com/v3",
-	))
+	g.Expect(container.Command[3]).To(ContainSubstring("--bootstrap-public-url https://keystone.example.com/v3"))
 }
 
 func TestReconcileBootstrap_JobSpec_TTLAndBackoff(t *testing.T) {

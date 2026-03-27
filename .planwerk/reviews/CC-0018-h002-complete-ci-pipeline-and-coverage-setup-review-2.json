@@ -1,0 +1,102 @@
+{
+  "summary": "Review of changes addressing external review #1 feedback from berendt. All 6 WARNING findings (W-001 through W-006) and 2 INFO findings (I-001, I-002) are correctly addressed: fail-fast: false added to all matrix strategies, SERVICE_REF null guard added, tool versions pinned via env vars, setup-envtest K8s version pinned, internal/common added to test and integration matrices with dedicated Makefile targets, and latest tag restricted to default branch. The test matrix refactoring from [keystone, c5c3] to [common, keystone, c5c3] with test-common/test-operator/test-integration-common targets is clean and resolves the duplicate common coverage issue. However, docs/reference/ci-workflow.md was not updated to reflect the new matrix structure, pinned tool versions, and coverage upload changes, and .codecov.yml is missing flag definitions for the new unit-common and integration-common flags.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "New Makefile targets (test-common, test-operator, test-integration-common) produce correct coverage filenames", "checked": true},
+    {"item": "CI matrix conditional logic correctly routes common vs operator targets", "checked": true},
+    {"item": "Codecov upload filenames match Makefile target outputs for all matrix entries", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing Makefile target patterns (OPERATOR variable, .PHONY, comments)", "checked": true},
+    {"item": "CI workflow YAML is valid and well-structured", "checked": true},
+    {"item": "No code duplication introduced", "checked": true},
+    {"item": "Review pattern files are well-written with actionable detection hints", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "GITHUB_TOKEN used correctly for GHCR auth", "checked": true},
+    {"item": "SERVICE_REF null guard prevents confusing downstream failures", "checked": true},
+    {"item": "Latest tag restricted to default branch prevents cross-branch clobbering", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Matrix refactoring cleanly separates common from operator-specific tests", "checked": true},
+    {"item": "Pinned tool versions defined in single-source-of-truth env block", "checked": true},
+    {"item": "fail-fast: false applied consistently to all matrix strategies", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No unnecessary abstractions introduced", "checked": true},
+    {"item": "test-common and test-operator are minimal wrappers around go test", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "SERVICE_REF validated before downstream use", "checked": true},
+    {"item": "Makefile targets validate OPERATOR parameter before use", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "SERVICE_REF null/empty guard with descriptive ::error:: message", "checked": true},
+    {"item": "test-operator requires OPERATOR with clear error message", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "id": "DA3-001",
+      "severity": "major",
+      "check_id": "DA3",
+      "file": "docs/reference/ci-workflow.md",
+      "lines": "123-158",
+      "description": "Test job documentation describes old matrix structure. Section shows `operator: [keystone, c5c3]` with `make test OPERATOR=<matrix.operator>` and `cover-unit-common.out,cover-unit-${{ matrix.operator }}.out` coverage upload, but the implementation now uses `target: [common, keystone, c5c3]` with `test-common`/`test-operator` branching and single-file coverage upload (`cover-unit-${{ matrix.target }}.out`).",
+      "fix": "Update lines 123-158 to describe the new [common, keystone, c5c3] matrix with the if/else conditional running test-common or test-operator, and the single-file coverage upload pattern."
+    },
+    {
+      "id": "DA3-002",
+      "severity": "major",
+      "check_id": "DA3",
+      "file": "docs/reference/ci-workflow.md",
+      "lines": "160-184",
+      "description": "Test-integration job documentation describes old matrix structure and unpinned tool version. Section shows `operator: [keystone, c5c3]` and `go install setup-envtest@latest`, but the implementation now uses `target: [common, keystone, c5c3]` with `test-integration-common` branching and pinned `setup-envtest@${{ env.SETUP_ENVTEST_VERSION }}`.",
+      "fix": "Update to describe the new [common, keystone, c5c3] matrix with test-integration-common for the common leg, and reference the pinned SETUP_ENVTEST_VERSION."
+    },
+    {
+      "id": "DA3-003",
+      "severity": "major",
+      "check_id": "DA3",
+      "file": "docs/reference/ci-workflow.md",
+      "lines": "36-43",
+      "description": "Environment Variables section only documents REGISTRY and IMAGE_PREFIX, but the implementation now also includes CONTROLLER_GEN_VERSION (v0.17.3) and SETUP_ENVTEST_VERSION (v0.20.4) in the top-level env block.",
+      "fix": "Add CONTROLLER_GEN_VERSION and SETUP_ENVTEST_VERSION to the Environment Variables table with their purpose (pinned tool versions for CI reproducibility)."
+    },
+    {
+      "id": "DA3-004",
+      "severity": "major",
+      "check_id": "DA3",
+      "file": "docs/reference/ci-workflow.md",
+      "lines": "198",
+      "description": "Verify-codegen section documents `go install controller-gen@latest` but the implementation now uses `go install controller-gen@${{ env.CONTROLLER_GEN_VERSION }}`.",
+      "fix": "Update to reference the pinned CONTROLLER_GEN_VERSION env var."
+    },
+    {
+      "id": "DA3-005",
+      "severity": "major",
+      "check_id": "DA3",
+      "file": "docs/reference/ci-workflow.md",
+      "lines": "291-295",
+      "description": "Image tagging table shows `latest` applied on both main push and v* tag push, but the implementation now restricts latest to the default branch only (`enable={{is_default_branch}}`). On v* tags from non-main branches, latest is NOT applied.",
+      "fix": "Update the tagging table: main push gets `sha-<full-sha>, latest`; v* tag push gets `sha-<full-sha>, <version>` (no latest unless on default branch)."
+    },
+    {
+      "id": "DA3-006",
+      "severity": "major",
+      "check_id": "DA3",
+      "file": ".codecov.yml",
+      "lines": "28-46",
+      "description": "flag_management.individual_flags defines unit-keystone, unit-c5c3, integration-keystone, integration-c5c3 but is missing unit-common and integration-common. CI now uploads coverage under these flags (from the common matrix leg), but without flag definitions, the uploads lack path scoping. While default_rules.carryforward covers basic carryforward, the missing path configuration means common coverage data won't be properly scoped to internal/common/ paths.",
+      "fix": "Add two flag entries: unit-common (paths: [internal/common/], carryforward: true) and integration-common (paths: [internal/common/], carryforward: true)."
+    }
+  ],
+  "suggested_improvements": [],
+  "next_steps": [
+    "Update docs/reference/ci-workflow.md to reflect the new [common, keystone, c5c3] matrix structure, pinned tool versions, and revised image tagging behavior",
+    "Add unit-common and integration-common flag definitions to .codecov.yml flag_management.individual_flags"
+  ],
+  "detected_patterns": []
+}

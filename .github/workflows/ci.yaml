@@ -7,11 +7,18 @@ name: CI
 "on":
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
     branches: [main]
 
 permissions:
   contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/c5c3
+  # CC-0018: Pin tool versions for CI reproducibility (single source of truth).
+  CONTROLLER_GEN_VERSION: v0.20.1
 
 concurrency:
   group: ${{ github.ref }}-${{ github.workflow }}
@@ -43,7 +50,69 @@ jobs:
       - name: Run shellcheck on hack/*.sh
         run: shellcheck --severity=warning hack/*.sh
 
+  # CC-0018: Matrix over [common, keystone, c5c3] to deduplicate common coverage
+  # into a single leg (review comment #7/#8).
   test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [common, keystone, c5c3]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+        with:
+          go-version-file: go.work
+      - name: Run unit tests
+        run: |
+          if [ "${{ matrix.target }}" = "common" ]; then
+            make test-common
+          else
+            make test-operator OPERATOR=${{ matrix.target }}
+          fi
+      - name: Upload coverage
+        if: always()
+        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad # v5
+        with:
+          files: cover-unit-${{ matrix.target }}.out
+          flags: unit-${{ matrix.target }}
+          fail_ci_if_error: false
+
+  # CC-0018, REQ-003: Integration tests with envtest, coverage uploaded to Codecov
+  # (REQ-004). Includes internal/common to meet 80% codecov target (review comment #5).
+  test-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [common, keystone, c5c3]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+        with:
+          go-version-file: go.work
+      - name: Install setup-envtest
+        run: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+      - name: Run integration tests
+        run: |
+          if [ "${{ matrix.target }}" = "common" ]; then
+            make test-integration-common
+          else
+            make test-integration OPERATOR=${{ matrix.target }}
+          fi
+      - name: Upload coverage
+        if: always()
+        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad # v5
+        with:
+          files: cover-integration-${{ matrix.target }}.out
+          flags: integration-${{ matrix.target }}
+          fail_ci_if_error: false
+
+  # CC-0018, REQ-009: Verify generated code (CRD manifests, deepcopy) is committed
+  # and up-to-date. Fails if make manifests or make generate produces uncommitted diffs.
+  verify-codegen:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -51,20 +120,21 @@ jobs:
       - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
         with:
           go-version-file: go.work
-      - name: Run unit tests
-        run: make test
-
-  # TODO: Re-add test-integration job once make test-integration runs real envtest-based tests.
-  # test-integration:
-  #   runs-on: ubuntu-latest
-  #   timeout-minutes: 10
-  #   steps:
-  #     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-  #     - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-  #       with:
-  #         go-version-file: go.work
-  #     - name: Run integration tests
-  #       run: make test-integration
+      - name: Install controller-gen
+        run: go install sigs.k8s.io/controller-tools/cmd/controller-gen@${{ env.CONTROLLER_GEN_VERSION }}
+      - name: Run code generation
+        run: |
+          make manifests
+          make generate
+      # CC-0018: Verify Helm chart CRD copies match controller-gen output.
+      - name: Verify CRD sync
+        run: make verify-crd-sync
+      - name: Check for uncommitted changes
+        run: |
+          if ! git diff --exit-code; then
+            echo "::error::Generated code is out of date. Run 'make manifests && make generate' and commit the result."
+            exit 1
+          fi
 
   docs:
     runs-on: ubuntu-latest
@@ -131,3 +201,239 @@ jobs:
           name: e2e-infra-junit-report
           path: _output/reports/
           retention-days: 14
+
+  # CC-0018, REQ-005: End-to-end operator tests using kind cluster and Chainsaw.
+  # Builds the operator image, loads it into kind, deploys via Helm, and runs
+  # Chainsaw test suites per operator.
+  e2e-keystone:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [lint, shellcheck, test, test-integration, verify-codegen]
+    strategy:
+      fail-fast: false
+      matrix:
+        operator: [keystone]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+        with:
+          go-version-file: go.work
+      - name: Create kind cluster
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          config: hack/kind-config.yaml
+          cluster_name: forge-e2e
+      - name: Build operator image
+        run: make docker-build OPERATOR=${{ matrix.operator }} IMG=${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator:dev
+      - name: Build service image
+        run: |
+          # Resolve the upstream source ref for the service image.
+          SERVICE_REF=$(yq '."${{ matrix.operator }}"' releases/2025.2/source-refs.yaml)
+          # CC-0018: Guard against missing/null source ref (review comment #2).
+          if [ -z "$SERVICE_REF" ] || [ "$SERVICE_REF" = "null" ]; then
+            echo "::error::SERVICE_REF for '${{ matrix.operator }}' is null or empty in releases/2025.2/source-refs.yaml"
+            exit 1
+          fi
+          PIP_EXTRAS=$(yq -r '."${{ matrix.operator }}".pip_extras // [] | join(",")' releases/2025.2/extra-packages.yaml)
+          PIP_PACKAGES=$(yq -r '."${{ matrix.operator }}".pip_packages // [] | join(" ")' releases/2025.2/extra-packages.yaml)
+          APT_PACKAGES=$(yq -r '."${{ matrix.operator }}".apt_packages // [] | join(" ")' releases/2025.2/extra-packages.yaml)
+
+          # Clone upstream OpenStack source at the pinned ref.
+          git clone --depth 1 --branch "$SERVICE_REF" \
+            https://github.com/openstack/${{ matrix.operator }}.git /tmp/${{ matrix.operator }}-src
+
+          # Apply constraint overrides (idempotent, exits 0 if no overrides).
+          scripts/apply-constraint-overrides.sh 2025.2
+
+          # Build the image chain: python-base -> venv-builder -> service.
+          docker build -t python-base images/python-base/
+          docker build -t venv-builder images/venv-builder/
+          docker build -t ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2025.2 \
+            --build-arg PIP_EXTRAS="$PIP_EXTRAS" \
+            --build-arg PIP_PACKAGES="$PIP_PACKAGES" \
+            --build-arg EXTRA_APT_PACKAGES="$APT_PACKAGES" \
+            --build-context ${{ matrix.operator }}=/tmp/${{ matrix.operator }}-src \
+            --build-context upper-constraints=releases/2025.2 \
+            images/${{ matrix.operator }}/
+      - name: Load images into kind
+        run: |
+          # Tag the service image with the upgrade tag used by the image-upgrade E2E test.
+          docker tag ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2025.2 \
+            ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2025.2-upgraded
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator:dev --name forge-e2e
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2025.2 --name forge-e2e
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2025.2-upgraded --name forge-e2e
+      - name: Install Flux CLI
+        uses: fluxcd/flux2/action@871be9b40d53627786d3a3835a3ddba1e3234bd2 # v2.8.3
+      - name: Install test dependencies
+        run: |
+          make install-test-deps
+          echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
+      - name: Deploy infrastructure stack
+        run: make deploy-infra
+        env:
+          SKIP_KIND_CREATE: "true"
+      # CC-0018: Install CRDs before the operator so the API server's CRD
+      # watch cache is fully initialized by the time the controller starts.
+      # Helm installs CRDs and the operator simultaneously; the informer may
+      # miss initial watch events if the watch cache hasn't stabilized.
+      - name: Install operator CRDs
+        run: |
+          kubectl apply -f operators/${{ matrix.operator }}/helm/${{ matrix.operator }}-operator/crds/
+          kubectl wait crd --all --for condition=Established --timeout=60s
+      - name: Deploy operator
+        run: |
+          helm install ${{ matrix.operator }}-operator \
+            operators/${{ matrix.operator }}/helm/${{ matrix.operator }}-operator/ \
+            --set image.repository=${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator \
+            --set image.tag=dev \
+            --set image.pullPolicy=Never \
+            --wait --timeout 120s
+      - name: Run E2E tests
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/${{ matrix.operator }}/
+      - name: Dump diagnostic info
+        if: always()
+        run: |
+          echo "=== Operator pods ==="
+          kubectl get pods -l app.kubernetes.io/name=${{ matrix.operator }}-operator || true
+          echo "=== All pods ==="
+          kubectl get pods --all-namespaces || true
+          echo "=== Events (last 50) ==="
+          kubectl get events --all-namespaces --sort-by='.lastTimestamp' | tail -50 || true
+          echo "=== Operator logs ==="
+          kubectl logs -l app.kubernetes.io/name=${{ matrix.operator }}-operator --tail=100 || true
+          echo "=== Job descriptions ==="
+          for job in $(kubectl get jobs -n openstack -o name 2>/dev/null); do
+            echo "--- describe $job ---"
+            kubectl describe -n openstack "$job" 2>&1 | tail -30 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n openstack -o name 2>/dev/null); do
+            echo "--- logs for $job ---"
+            kubectl logs -n openstack "$job" --all-containers --tail=50 2>&1 || true
+          done
+          echo "=== All pod logs in openstack ==="
+          for pod in $(kubectl get pods -n openstack -o name 2>/dev/null); do
+            echo "--- $pod (current) ---"
+            kubectl logs -n openstack "$pod" --all-containers --tail=30 2>&1 || true
+            echo "--- $pod (previous) ---"
+            kubectl logs -n openstack "$pod" --all-containers --tail=30 --previous 2>&1 || true
+          done
+          echo "=== Keystone CR status ==="
+          kubectl get keystone -n openstack -o yaml 2>/dev/null | grep -A5 "conditions:" || true
+          echo "=== ConfigMaps in openstack namespace ==="
+          kubectl get cm -n openstack 2>/dev/null || true
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: e2e-${{ matrix.operator }}-junit-report
+          path: _output/reports/
+          retention-days: 14
+
+  # CC-0018, REQ-006: Build and push operator container images to GHCR.
+  # Runs only on push events (main branch or v* tags). Tags images with commit
+  # SHA and latest; adds version tag for v* tag pushes.
+  build-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [e2e-keystone]
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        operator: [keystone]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
+      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # CC-0018: Generate OCI annotations and tags via docker/metadata-action,
+      # consistent with the two-layer OCI annotation pattern in build-images.yaml.
+      # type=semver strips the v prefix (v0.1.0 -> 0.1.0).
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
+        with:
+          images: ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.operator }}-operator
+            org.opencontainers.image.description=Kubernetes operator for OpenStack ${{ matrix.operator }}
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.vendor=SAP SE
+      - uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
+        with:
+          context: .
+          file: operators/${{ matrix.operator }}/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.operator }}-operator
+          cache-to: type=gha,mode=max,scope=${{ matrix.operator }}-operator
+
+  # CC-0018, REQ-007: Package and push operator Helm charts to GHCR OCI registry.
+  # Runs only on push events. Uses versioned chart packaging for v* tag pushes.
+  helm-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [e2e-keystone]
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        operator: [keystone]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} --username ${{ github.actor }} --password-stdin
+      - name: Package and push Helm chart
+        env:
+          OPERATOR: ${{ matrix.operator }}
+        run: |
+          # Remove stale chart tarballs to prevent glob ambiguity (CC-0018).
+          rm -f "${OPERATOR}"-operator-*.tgz
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            make helm-package OPERATOR="${OPERATOR}" CHART_VERSION="${GITHUB_REF_NAME#v}"
+          else
+            make helm-package OPERATOR="${OPERATOR}"
+          fi
+          helm push "${OPERATOR}"-operator-*.tgz oci://${{ env.REGISTRY }}/c5c3/charts
+
+  # CC-0018, REQ-008: Create GitHub release with auto-generated release notes
+  # on v* tag pushes, after images and charts are published.
+  github-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [build-and-push, helm-push]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+      # CC-0018: Package Helm chart tarballs to attach as release assets.
+      - name: Package Helm charts
+        run: |
+          for op in keystone; do
+            make helm-package OPERATOR="${op}" CHART_VERSION="${GITHUB_REF_NAME#v}"
+          done
+      - uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
+        with:
+          generate_release_notes: true
+          files: "*-operator-*.tgz"

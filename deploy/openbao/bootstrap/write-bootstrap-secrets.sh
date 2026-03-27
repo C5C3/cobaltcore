@@ -52,7 +52,7 @@ write_secret_if_missing() {
     local key="${arg%%=*}"
     local val="${arg#*=}"
     if [[ "${val}" == "${GENERATED_PASSWORD}" ]]; then
-      put_args+=" ${key}=\"\$(bao write -field=random_bytes sys/tools/random/32 format=base64)\""
+      put_args+=" ${key}=\"\$(bao write -field=random_bytes sys/tools/random/32 format=hex)\""
     else
       # Quote non-generated values to guard against shell metacharacters
       # (spaces, equals signs in values, etc.) in the sh -c command string.

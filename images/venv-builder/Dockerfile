@@ -27,6 +27,7 @@ RUN python3 -m venv /var/lib/openstack
 # release-independent; constraints are applied in service Dockerfiles)
 RUN uv pip install --prefix /var/lib/openstack \
     cryptography \
+    pymemcache \
     pymysql \
     python-memcached \
     uwsgi

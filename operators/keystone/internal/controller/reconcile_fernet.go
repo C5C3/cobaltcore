@@ -33,7 +33,7 @@ import (
 // back to the Kubernetes Secret via the API using the pod's ServiceAccount token.
 // Only Python standard library modules are used to avoid image dependencies (CC-0013).
 const fernetRotateScript = `set -e
-keystone-manage fernet_rotate --keystone-user keystone --keystone-group keystone
+keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ fernet_rotate
 python3 << 'PYTHON'
 import os, json, base64, glob, ssl, http.client
 data = {}
@@ -58,7 +58,7 @@ PYTHON`
 // reconcileFernetKeys ensures that a Fernet keys Secret exists, a rotation
 // CronJob is configured, and a PushSecret backs up the keys to OpenBao.
 func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
-	keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+	keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
 
 	// 1. Ensure the Fernet keys Secret exists.
 	secretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
@@ -90,7 +90,7 @@ func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
 	}
 
 	// 3. Ensure the rotation CronJob exists.
-	cronJob := fernetRotationCronJob(keystone)
+	cronJob := fernetRotationCronJob(keystone, configMapName)
 	if err := job.EnsureCronJob(ctx, r.Client, r.Scheme, keystone, cronJob); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring fernet rotation cronjob: %w", err)
 	}
@@ -215,7 +215,7 @@ func generateFernetKey() (string, error) {
 //  2. Uses an init container to copy keys to a writable emptyDir.
 //  3. Runs keystone-manage fernet_rotate against the emptyDir.
 //  4. Pushes the updated keys to the K8s API using the pod's ServiceAccount (CC-0013).
-func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone) *batchv1.CronJob {
+func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName string) *batchv1.CronJob {
 	secretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
 	saName := fmt.Sprintf("%s-fernet-rotate", keystone.Name)
 	image := fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag)
@@ -259,6 +259,7 @@ func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone) *batchv1.CronJob
 								},
 								VolumeMounts: []corev1.VolumeMount{
 									{Name: "fernet-keys", MountPath: "/etc/keystone/fernet-keys"},
+									{Name: "config", MountPath: "/etc/keystone/keystone.conf.d/", ReadOnly: true},
 								},
 							}},
 							Volumes: []corev1.Volume{
@@ -272,6 +273,14 @@ func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone) *batchv1.CronJob
 									Name: "fernet-keys",
 									VolumeSource: corev1.VolumeSource{
 										EmptyDir: &corev1.EmptyDirVolumeSource{},
+									},
+								},
+								{
+									Name: "config",
+									VolumeSource: corev1.VolumeSource{
+										ConfigMap: &corev1.ConfigMapVolumeSource{
+											LocalObjectReference: corev1.LocalObjectReference{Name: configMapName},
+										},
 									},
 								},
 							},
@@ -293,7 +302,7 @@ func fernetKeysPushSecret(keystone *keystonev1alpha1.Keystone) *esov1alpha1.Push
 		Spec: esov1alpha1.PushSecretSpec{
 			SecretStoreRefs: []esov1alpha1.PushSecretStoreRef{{
 				Kind: "ClusterSecretStore",
-				Name: "openbao",
+				Name: "openbao-cluster-store",
 			}},
 			Selector: esov1alpha1.PushSecretSelector{
 				Secret: &esov1alpha1.PushSecretSecret{

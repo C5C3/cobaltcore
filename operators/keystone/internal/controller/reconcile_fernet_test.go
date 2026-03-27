@@ -13,7 +13,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
-	esov1beta1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1beta1"
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -34,7 +34,7 @@ func fernetTestScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(s)
 	_ = keystonev1alpha1.AddToScheme(s)
-	_ = esov1beta1.SchemeBuilder.AddToScheme(s)
+	_ = esov1.SchemeBuilder.AddToScheme(s)
 	_ = esov1alpha1.SchemeBuilder.AddToScheme(s)
 	_ = batchv1.AddToScheme(s)
 	return s
@@ -88,7 +88,7 @@ func TestReconcileFernetKeys_NoSecret_CreatesSecretAndRequeues(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileFernetKeys(context.Background(), ks)
+	result, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	// Must requeue to confirm the secret is available before proceeding (CC-0013).
@@ -142,7 +142,7 @@ func TestReconcileFernetKeys_SecretAlreadyExists(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileFernetKeys(context.Background(), ks)
+	result, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
@@ -221,7 +221,7 @@ func TestReconcileFernetKeys_CronJobScheduleUpdated(t *testing.T) {
 	// Change the schedule in the spec.
 	ks.Spec.Fernet.RotationSchedule = "0 */6 * * *"
 
-	result, err := r.reconcileFernetKeys(context.Background(), ks)
+	result, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
@@ -252,7 +252,7 @@ func TestReconcileFernetKeys_GeneratedKeysAreValid(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks)
+	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var secret corev1.Secret
@@ -293,7 +293,7 @@ func TestReconcileFernetKeys_CronJobScheduleMatchesSpec(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks)
+	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cronJob batchv1.CronJob
@@ -325,7 +325,7 @@ func TestReconcileFernetKeys_PushSecretReferencesCorrectSecret(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks)
+	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var ps esov1alpha1.PushSecret
@@ -338,7 +338,7 @@ func TestReconcileFernetKeys_PushSecretReferencesCorrectSecret(t *testing.T) {
 	g.Expect(ps.Spec.Selector.Secret.Name).To(Equal("test-keystone-fernet-keys"))
 	g.Expect(ps.Spec.SecretStoreRefs).To(HaveLen(1))
 	g.Expect(ps.Spec.SecretStoreRefs[0].Kind).To(Equal("ClusterSecretStore"))
-	g.Expect(ps.Spec.SecretStoreRefs[0].Name).To(Equal("openbao"))
+	g.Expect(ps.Spec.SecretStoreRefs[0].Name).To(Equal("openbao-cluster-store"))
 	g.Expect(ps.Spec.Data).To(HaveLen(1))
 	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal("kv-v2/data/openstack/keystone/fernet-keys"))
 }
@@ -385,7 +385,7 @@ func TestReconcileFernetKeys_MinActiveKeysFloor(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks)
+	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var secret corev1.Secret
@@ -423,7 +423,7 @@ func TestReconcileFernetKeys_ConditionMessages(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks)
+	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// The final condition should be FernetKeysAvailable with the correct message.
@@ -456,7 +456,7 @@ func TestReconcileFernetKeys_CronJobSpec(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks)
+	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cronJob batchv1.CronJob
@@ -491,23 +491,30 @@ func TestReconcileFernetKeys_CronJobSpec(t *testing.T) {
 	g.Expect(container.Env[2].Name).To(Equal("OS_fernet_tokens__max_active_keys"))
 	g.Expect(container.Env[2].Value).To(Equal("3"))
 
-	// Verify volume mount on main container.
-	g.Expect(container.VolumeMounts).To(HaveLen(1))
+	// Verify volume mounts on main container: fernet-keys + config.
+	g.Expect(container.VolumeMounts).To(HaveLen(2))
 	g.Expect(container.VolumeMounts[0].Name).To(Equal("fernet-keys"))
 	g.Expect(container.VolumeMounts[0].MountPath).To(Equal("/etc/keystone/fernet-keys"))
+	g.Expect(container.VolumeMounts[1].Name).To(Equal("config"))
+	g.Expect(container.VolumeMounts[1].MountPath).To(Equal("/etc/keystone/keystone.conf.d/"))
+	g.Expect(container.VolumeMounts[1].ReadOnly).To(BeTrue())
 
-	// Verify volumes: fernet-keys-src (Secret, read-only) and fernet-keys (emptyDir, writable).
-	g.Expect(podSpec.Volumes).To(HaveLen(2))
-	var srcVol, workVol corev1.Volume
+	// Verify volumes: fernet-keys-src (Secret), fernet-keys (emptyDir), config (ConfigMap).
+	g.Expect(podSpec.Volumes).To(HaveLen(3))
+	var srcVol, workVol, cfgVol corev1.Volume
 	for _, v := range podSpec.Volumes {
 		switch v.Name {
 		case "fernet-keys-src":
 			srcVol = v
 		case "fernet-keys":
 			workVol = v
+		case "config":
+			cfgVol = v
 		}
 	}
 	g.Expect(srcVol.Secret).NotTo(BeNil())
 	g.Expect(srcVol.Secret.SecretName).To(Equal("test-keystone-fernet-keys"))
 	g.Expect(workVol.EmptyDir).NotTo(BeNil())
+	g.Expect(cfgVol.ConfigMap).NotTo(BeNil())
+	g.Expect(cfgVol.ConfigMap.Name).To(Equal("test-keystone-config-abc123"))
 }

@@ -1,0 +1,90 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# CC-0018, REQ-012: Codecov configuration with component-level coverage thresholds.
+# Components enforce per-area coverage targets so regressions are caught at the
+# module level rather than hidden by project-wide averages.
+---
+coverage:
+  status:
+    # Project-level check: overall coverage must not decrease.
+    project:
+      default:
+        target: auto
+        threshold: 1%
+    # Patch-level check: new/changed lines in a PR must meet this target.
+    patch:
+      default:
+        target: 90%
+
+# CC-0018: Flag management links CI-uploaded flags (unit-<operator>,
+# integration-<operator>) to coverage tracking rules. Carryforward ensures
+# missing flags (e.g., when only one operator is changed) do not reduce
+# the reported coverage.
+flag_management:
+  default_rules:
+    carryforward: true
+  individual_flags:
+    - name: unit-common
+      paths:
+        - internal/common/
+      carryforward: true
+    - name: unit-keystone
+      paths:
+        - operators/keystone/
+      carryforward: true
+    - name: unit-c5c3
+      paths:
+        - operators/c5c3/
+      carryforward: true
+    - name: integration-common
+      paths:
+        - internal/common/
+      carryforward: true
+    - name: integration-keystone
+      paths:
+        - operators/keystone/
+      carryforward: true
+    - name: integration-c5c3
+      paths:
+        - operators/c5c3/
+      carryforward: true
+
+# Component-level thresholds: each component is tracked independently on the
+# Codecov dashboard, with its own target percentage.
+component_management:
+  default_rules:
+    statuses:
+      - type: project
+        target: auto
+
+  individual_components:
+    # Shared library code — high coverage expected since it underpins all operators.
+    - component_id: common
+      name: common
+      paths:
+        - internal/common/**
+      statuses:
+        - type: project
+          target: 80%
+
+    # Controller reconciliation logic — medium coverage target to account for
+    # envtest-dependent code paths that are harder to cover exhaustively.
+    - component_id: controllers
+      name: controllers
+      paths:
+        - operators/*/internal/controller/**
+      statuses:
+        - type: project
+          target: 70%
+
+    # Webhook validation and defaulting — highest coverage target because
+    # incorrect admission logic causes silent data corruption.
+    - component_id: webhooks
+      name: webhooks
+      paths:
+        - operators/*/api/**
+      statuses:
+        - type: project
+          target: 90%

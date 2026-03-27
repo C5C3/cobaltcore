@@ -27,7 +27,8 @@ import (
 func (r *KeystoneReconciler) reconcileBootstrap(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	done, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, buildBootstrapJob(keystone, configMapName))
+	fernetSecretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
+	done, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, buildBootstrapJob(keystone, configMapName, fernetSecretName))
 	if err != nil {
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               "BootstrapReady",
@@ -66,7 +67,7 @@ func bootstrapServiceURL(keystone *keystonev1alpha1.Keystone) string {
 	return fmt.Sprintf("http://%s-api.%s.svc.cluster.local:5000/v3", keystone.Name, keystone.Namespace)
 }
 
-func buildBootstrapJob(keystone *keystonev1alpha1.Keystone, configMapName string) *batchv1.Job {
+func buildBootstrapJob(keystone *keystonev1alpha1.Keystone, configMapName string, fernetSecretName string) *batchv1.Job {
 	backoffLimit := int32(4)
 	ttl := int32(300)
 
@@ -75,6 +76,31 @@ func buildBootstrapJob(keystone *keystonev1alpha1.Keystone, configMapName string
 	if keystone.Spec.Bootstrap.PublicEndpoint != "" {
 		publicURL = keystone.Spec.Bootstrap.PublicEndpoint
 	}
+
+	bootstrapScript := fmt.Sprintf(`python3 -c '
+import configparser, glob, pymysql
+from urllib.parse import urlparse, parse_qs
+conf = configparser.RawConfigParser()
+for f in sorted(glob.glob("/etc/keystone/keystone.conf.d/*.conf")):
+    conf.read(f)
+url = urlparse(conf.get("database", "connection"))
+db = url.path.lstrip("/")
+qs = parse_qs(url.query)
+charset = qs.get("charset", ["utf8"])[0]
+conn = pymysql.connect(host=url.hostname, port=url.port or 3306,
+    user=url.username, password=url.password, database=db, charset=charset)
+cur = conn.cursor()
+cur.execute("INSERT IGNORE INTO region (id, description, extra) VALUES (%%s, %%s, %%s)", ("%s", "", "{}"))
+conn.commit()
+conn.close()
+'
+exec keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap \
+  --bootstrap-password "$BOOTSTRAP_PASSWORD" \
+  --bootstrap-admin-url %s \
+  --bootstrap-internal-url %s \
+  --bootstrap-public-url %s \
+  --bootstrap-region-id %s
+`, keystone.Spec.Bootstrap.Region, internalURL, internalURL, publicURL, keystone.Spec.Bootstrap.Region)
 
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -86,18 +112,11 @@ func buildBootstrapJob(keystone *keystonev1alpha1.Keystone, configMapName string
 			TTLSecondsAfterFinished: &ttl,
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyOnFailure,
+					RestartPolicy: corev1.RestartPolicyNever,
 					Containers: []corev1.Container{{
 						Name:    "bootstrap",
 						Image:   fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag),
-						Command: []string{"keystone-manage", "bootstrap"},
-						Args: []string{
-							"--bootstrap-password", "$(BOOTSTRAP_PASSWORD)",
-							"--bootstrap-admin-url", internalURL,
-							"--bootstrap-internal-url", internalURL,
-							"--bootstrap-public-url", publicURL,
-							"--bootstrap-region-id", keystone.Spec.Bootstrap.Region,
-						},
+						Command: []string{"/bin/sh", "-eu", "-c", bootstrapScript},
 						Env: []corev1.EnvVar{{
 							Name: "BOOTSTRAP_PASSWORD",
 							ValueFrom: &corev1.EnvVarSource{
@@ -109,22 +128,39 @@ func buildBootstrapJob(keystone *keystonev1alpha1.Keystone, configMapName string
 								},
 							},
 						}},
-						VolumeMounts: []corev1.VolumeMount{{
-							Name:      "config",
-							MountPath: "/etc/keystone/keystone.conf.d/",
-							ReadOnly:  true,
-						}},
-					}},
-					Volumes: []corev1.Volume{{
-						Name: "config",
-						VolumeSource: corev1.VolumeSource{
-							ConfigMap: &corev1.ConfigMapVolumeSource{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: configMapName,
-								},
+						VolumeMounts: []corev1.VolumeMount{
+							{
+								Name:      "config",
+								MountPath: "/etc/keystone/keystone.conf.d/",
+								ReadOnly:  true,
+							},
+							{
+								Name:      "fernet-keys",
+								MountPath: "/etc/keystone/fernet-keys/",
+								ReadOnly:  true,
 							},
 						},
 					}},
+					Volumes: []corev1.Volume{
+						{
+							Name: "config",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: configMapName,
+									},
+								},
+							},
+						},
+						{
+							Name: "fernet-keys",
+							VolumeSource: corev1.VolumeSource{
+								Secret: &corev1.SecretVolumeSource{
+									SecretName: fernetSecretName,
+								},
+							},
+						},
+					},
 				},
 			},
 		},

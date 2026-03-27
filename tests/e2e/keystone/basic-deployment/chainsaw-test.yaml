@@ -53,6 +53,36 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
+          echo "=== Terminated container statuses ==="
+          kubectl get pods -n $NAMESPACE -o json 2>/dev/null | jq -r '.items[] | select(.status.containerStatuses) | .metadata.name + ": " + (.status.containerStatuses[] | .state | tostring)' || true
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== ConfigMap content ==="
+          for cm in $(kubectl get cm -n $NAMESPACE -o name 2>/dev/null | grep config-); do
+            echo "--- $cm ---"
+            kubectl get -n $NAMESPACE "$cm" -o jsonpath='{.data}' 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
   # ── Step 3: Assert Deployment and Service ──────────────────────────────
   - try:
     - assert:
@@ -126,5 +156,7 @@ spec:
   # ── Step 6: Assert API accessibility ───────────────────────────────────
   - try:
     - script:
+        timeout: 30s
         content: |
-          curl -sf http://keystone-basic-api.openstack.svc:5000/v3
+          kubectl run curl-test --image=ghcr.io/c5c3/keystone:2025.2 --rm -i --restart=Never \
+            --command -- python3 -c "import urllib.request; print(urllib.request.urlopen('http://keystone-basic-api.openstack.svc:5000/v3').read().decode())"

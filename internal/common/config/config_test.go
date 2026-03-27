@@ -82,6 +82,13 @@ func TestRenderINI(t *testing.T) {
 			},
 			want: "[database]\nconnection = mysql+pymysql://user:p@ss=word@host:3306/db?charset=utf8\n",
 		},
+		{
+			name: "percent in value is preserved for oslo.config compatibility",
+			sections: map[string]map[string]string{
+				"database": {"connection": "mysql+pymysql://user:p%25ssword@host:3306/db"},
+			},
+			want: "[database]\nconnection = mysql+pymysql://user:p%25ssword@host:3306/db\n",
+		},
 	}
 
 	for _, tt := range tests {

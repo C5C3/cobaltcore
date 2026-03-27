@@ -11,7 +11,7 @@ import (
 
 	. "github.com/onsi/gomega"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
-	esov1beta1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1beta1"
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -38,7 +38,7 @@ func testScheme() *runtime.Scheme {
 	_ = clientgoscheme.AddToScheme(s)
 	_ = keystonev1alpha1.AddToScheme(s)
 	_ = esov1alpha1.SchemeBuilder.AddToScheme(s)
-	_ = esov1beta1.SchemeBuilder.AddToScheme(s)
+	_ = esov1.SchemeBuilder.AddToScheme(s)
 	_ = mariadbv1alpha1.AddToScheme(s)
 	return s
 }
@@ -73,19 +73,19 @@ func testKeystone() *keystonev1alpha1.Keystone {
 // testReadyExternalSecrets returns ready ExternalSecret objects for the DB and
 // admin credentials referenced by testKeystone.
 func testReadyExternalSecrets() []runtime.Object {
-	dbES := &esov1beta1.ExternalSecret{
+	dbES := &esov1.ExternalSecret{
 		ObjectMeta: metav1.ObjectMeta{Name: "keystone-db", Namespace: "default"},
-		Status: esov1beta1.ExternalSecretStatus{
-			Conditions: []esov1beta1.ExternalSecretStatusCondition{
-				{Type: esov1beta1.ExternalSecretReady, Status: corev1.ConditionTrue},
+		Status: esov1.ExternalSecretStatus{
+			Conditions: []esov1.ExternalSecretStatusCondition{
+				{Type: esov1.ExternalSecretReady, Status: corev1.ConditionTrue},
 			},
 		},
 	}
-	adminES := &esov1beta1.ExternalSecret{
+	adminES := &esov1.ExternalSecret{
 		ObjectMeta: metav1.ObjectMeta{Name: "keystone-admin", Namespace: "default"},
-		Status: esov1beta1.ExternalSecretStatus{
-			Conditions: []esov1beta1.ExternalSecretStatusCondition{
-				{Type: esov1beta1.ExternalSecretReady, Status: corev1.ConditionTrue},
+		Status: esov1.ExternalSecretStatus{
+			Conditions: []esov1.ExternalSecretStatusCondition{
+				{Type: esov1.ExternalSecretReady, Status: corev1.ConditionTrue},
 			},
 		},
 	}
@@ -184,7 +184,7 @@ func testReadyKeystoneDeployment() runtime.Object {
 // testCompletedBootstrapJob returns a completed bootstrap Job for testKeystone.
 func testCompletedBootstrapJob(configMapName string) runtime.Object {
 	ks := testKeystone()
-	desired := buildBootstrapJob(ks, configMapName)
+	desired := buildBootstrapJob(ks, configMapName, fmt.Sprintf("%s-fernet-keys", ks.Name))
 	now := metav1.Now()
 	j := desired.DeepCopy()
 	j.Annotations = map[string]string{
@@ -230,7 +230,7 @@ func newTestReconciler(objs ...runtime.Object) *KeystoneReconciler {
 	for _, obj := range objs {
 		cb = cb.WithRuntimeObjects(obj)
 	}
-	cb = cb.WithStatusSubresource(&keystonev1alpha1.Keystone{}, &esov1beta1.ExternalSecret{})
+	cb = cb.WithStatusSubresource(&keystonev1alpha1.Keystone{}, &esov1.ExternalSecret{})
 	return &KeystoneReconciler{
 		Client:   cb.Build(),
 		Scheme:   s,

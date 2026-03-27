@@ -4,7 +4,7 @@
 
 # ExternalSecret for Keystone database credentials.
 # Pulls username and password from the OpenBao path "openstack/keystone/db"
-# and materialises them as a Kubernetes Secret named "keystone-db-credentials" in the
+# and materialises them as a Kubernetes Secret named "keystone-db" in the
 # openstack namespace.
 # Feature: CC-0009
 ---
@@ -19,7 +19,7 @@ spec:
     name: openbao-cluster-store
     kind: ClusterSecretStore
   target:
-    name: keystone-db-credentials
+    name: keystone-db
     creationPolicy: Owner
   data:
     - secretKey: username

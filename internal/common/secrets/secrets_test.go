@@ -11,7 +11,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
-	esov1beta1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1beta1"
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -24,7 +24,7 @@ import (
 func newScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = corev1.AddToScheme(s)
-	_ = esov1beta1.SchemeBuilder.AddToScheme(s)
+	_ = esov1.SchemeBuilder.AddToScheme(s)
 	_ = esov1alpha1.SchemeBuilder.AddToScheme(s)
 	return s
 }
@@ -45,15 +45,15 @@ func TestWaitForExternalSecret_ready(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := newScheme()
 
-	es := &esov1beta1.ExternalSecret{
+	es := &esov1.ExternalSecret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-es",
 			Namespace: "default",
 		},
-		Status: esov1beta1.ExternalSecretStatus{
-			Conditions: []esov1beta1.ExternalSecretStatusCondition{
+		Status: esov1.ExternalSecretStatus{
+			Conditions: []esov1.ExternalSecretStatusCondition{
 				{
-					Type:   esov1beta1.ExternalSecretReady,
+					Type:   esov1.ExternalSecretReady,
 					Status: corev1.ConditionTrue,
 				},
 			},
@@ -75,7 +75,7 @@ func TestWaitForExternalSecret_notReady(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := newScheme()
 
-	es := &esov1beta1.ExternalSecret{
+	es := &esov1.ExternalSecret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-es",
 			Namespace: "default",

@@ -15,7 +15,7 @@ import (
 	"time"
 
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
-	esov1beta1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1beta1"
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
@@ -161,14 +161,14 @@ func createPrerequisites(t testing.TB, ctx context.Context, c client.Client, ns 
 	g := NewGomegaWithT(t)
 
 	// Create DB credentials ExternalSecret and Secret.
-	dbES := &esov1beta1.ExternalSecret{
+	dbES := &esov1.ExternalSecret{
 		ObjectMeta: metav1.ObjectMeta{Name: "keystone-db", Namespace: ns},
-		Spec: esov1beta1.ExternalSecretSpec{
-			SecretStoreRef: esov1beta1.SecretStoreRef{
+		Spec: esov1.ExternalSecretSpec{
+			SecretStoreRef: esov1.SecretStoreRef{
 				Kind: "ClusterSecretStore",
-				Name: "openbao",
+				Name: "openbao-cluster-store",
 			},
-			Target: esov1beta1.ExternalSecretTarget{
+			Target: esov1.ExternalSecretTarget{
 				Name: "keystone-db",
 			},
 		},
@@ -185,14 +185,14 @@ func createPrerequisites(t testing.TB, ctx context.Context, c client.Client, ns 
 	g.Expect(c.Create(ctx, dbSecret)).To(Succeed(), "create DB Secret")
 
 	// Create admin credentials ExternalSecret and Secret.
-	adminES := &esov1beta1.ExternalSecret{
+	adminES := &esov1.ExternalSecret{
 		ObjectMeta: metav1.ObjectMeta{Name: "keystone-admin", Namespace: ns},
-		Spec: esov1beta1.ExternalSecretSpec{
-			SecretStoreRef: esov1beta1.SecretStoreRef{
+		Spec: esov1.ExternalSecretSpec{
+			SecretStoreRef: esov1.SecretStoreRef{
 				Kind: "ClusterSecretStore",
-				Name: "openbao",
+				Name: "openbao-cluster-store",
 			},
-			Target: esov1beta1.ExternalSecretTarget{
+			Target: esov1.ExternalSecretTarget{
 				Name: "keystone-admin",
 			},
 		},
@@ -346,11 +346,11 @@ func TestIntegration_ConditionProgression(t *testing.T) {
 	// Phase 0: Create ExternalSecrets and Secrets but do NOT simulate sync yet.
 	// The reconciler should see SecretsReady=False because ESO hasn't set the
 	// Ready condition on the ExternalSecret.
-	dbES := &esov1beta1.ExternalSecret{
+	dbES := &esov1.ExternalSecret{
 		ObjectMeta: metav1.ObjectMeta{Name: "keystone-db", Namespace: ns.Name},
-		Spec: esov1beta1.ExternalSecretSpec{
-			SecretStoreRef: esov1beta1.SecretStoreRef{Kind: "ClusterSecretStore", Name: "openbao"},
-			Target:         esov1beta1.ExternalSecretTarget{Name: "keystone-db"},
+		Spec: esov1.ExternalSecretSpec{
+			SecretStoreRef: esov1.SecretStoreRef{Kind: "ClusterSecretStore", Name: "openbao-cluster-store"},
+			Target:         esov1.ExternalSecretTarget{Name: "keystone-db"},
 		},
 	}
 	g.Expect(c.Create(ctx, dbES)).To(Succeed())
@@ -364,11 +364,11 @@ func TestIntegration_ConditionProgression(t *testing.T) {
 	}
 	g.Expect(c.Create(ctx, dbSecret)).To(Succeed())
 
-	adminES := &esov1beta1.ExternalSecret{
+	adminES := &esov1.ExternalSecret{
 		ObjectMeta: metav1.ObjectMeta{Name: "keystone-admin", Namespace: ns.Name},
-		Spec: esov1beta1.ExternalSecretSpec{
-			SecretStoreRef: esov1beta1.SecretStoreRef{Kind: "ClusterSecretStore", Name: "openbao"},
-			Target:         esov1beta1.ExternalSecretTarget{Name: "keystone-admin"},
+		Spec: esov1.ExternalSecretSpec{
+			SecretStoreRef: esov1.SecretStoreRef{Kind: "ClusterSecretStore", Name: "openbao-cluster-store"},
+			Target:         esov1.ExternalSecretTarget{Name: "keystone-admin"},
 		},
 	}
 	g.Expect(c.Create(ctx, adminES)).To(Succeed())
@@ -641,10 +641,13 @@ func TestIntegration_FullReconcile_Managed(t *testing.T) {
 	g.Expect(simulators.SimulateGrantReady(ctx, c, grantKey)).To(Succeed(), "simulate Grant ready")
 
 	// Wait for the db-sync Job to appear and simulate its completion.
+	// Uses eventuallyLongTimeout because the reconciler relies on RequeueAfter(30s)
+	// to discover MariaDB readiness changes; after Grant becomes ready the next
+	// reconciliation may be up to 30s away.
 	dbSyncKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-db-sync", ks.Name)}
 	g.Eventually(func() error {
 		return c.Get(ctx, dbSyncKey, &batchv1.Job{})
-	}, eventuallyTimeout, pollInterval).Should(Succeed(), "db-sync Job should appear")
+	}, eventuallyLongTimeout, pollInterval).Should(Succeed(), "db-sync Job should appear")
 	g.Expect(simulators.SimulateJobComplete(ctx, c, dbSyncKey)).To(Succeed())
 
 	// Wait for DatabaseReady=True.
@@ -771,21 +774,31 @@ func TestIntegration_CronJobDetailedSpec(t *testing.T) {
 		"OS_fernet_tokens__max_active_keys should match spec.fernet.maxActiveKeys")
 
 	// Verify main container volume mounts.
-	g.Expect(mainContainer.VolumeMounts).To(HaveLen(1))
+	g.Expect(mainContainer.VolumeMounts).To(HaveLen(2))
 	g.Expect(mainContainer.VolumeMounts[0].Name).To(Equal("fernet-keys"))
 	g.Expect(mainContainer.VolumeMounts[0].MountPath).To(Equal("/etc/keystone/fernet-keys"))
+	g.Expect(mainContainer.VolumeMounts[1].Name).To(Equal("config"))
+	g.Expect(mainContainer.VolumeMounts[1].MountPath).To(Equal("/etc/keystone/keystone.conf.d/"))
+	g.Expect(mainContainer.VolumeMounts[1].ReadOnly).To(BeTrue())
 
-	// Verify volumes: fernet-keys-src (Secret) and fernet-keys (emptyDir).
+	// Verify volumes: fernet-keys-src (Secret), fernet-keys (emptyDir), and config (ConfigMap).
 	volMap := map[string]corev1.Volume{}
 	for _, v := range podSpec.Volumes {
 		volMap[v.Name] = v
 	}
+	g.Expect(volMap).To(HaveLen(3))
+
 	g.Expect(volMap).To(HaveKey("fernet-keys-src"))
 	g.Expect(volMap["fernet-keys-src"].Secret).NotTo(BeNil(), "fernet-keys-src volume should be a Secret")
 	g.Expect(volMap["fernet-keys-src"].Secret.SecretName).To(Equal(fmt.Sprintf("%s-fernet-keys", ks.Name)))
 
 	g.Expect(volMap).To(HaveKey("fernet-keys"))
 	g.Expect(volMap["fernet-keys"].EmptyDir).NotTo(BeNil(), "fernet-keys volume should be an emptyDir")
+
+	g.Expect(volMap).To(HaveKey("config"))
+	g.Expect(volMap["config"].ConfigMap).NotTo(BeNil(), "config volume should be a ConfigMap")
+	g.Expect(volMap["config"].ConfigMap.Name).To(HavePrefix(fmt.Sprintf("%s-config-", ks.Name)),
+		"config volume should reference a ConfigMap with the expected name prefix")
 }
 
 // --- Task CC-0015/2.2: Bootstrap Job detailed spec test (REQ-007) ---
@@ -865,18 +878,13 @@ func TestIntegration_BootstrapJobDetailedSpec(t *testing.T) {
 	expectedImage := fmt.Sprintf("%s:%s", ks.Spec.Image.Repository, ks.Spec.Image.Tag)
 	g.Expect(container.Image).To(Equal(expectedImage))
 
-	// Verify command (REQ-007).
-	g.Expect(container.Command).To(Equal([]string{"keystone-manage", "bootstrap"}))
-
-	// Verify args include all bootstrap parameters.
+	// Verify command uses shell wrapper for idempotent bootstrap (REQ-007).
+	g.Expect(container.Command[:3]).To(Equal([]string{"/bin/sh", "-eu", "-c"}))
+	g.Expect(container.Command[3]).To(ContainSubstring("keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap"))
 	expectedServiceURL := fmt.Sprintf("http://%s-api.%s.svc.cluster.local:5000/v3", ks.Name, ns.Name)
-	g.Expect(container.Args).To(Equal([]string{
-		"--bootstrap-password", "$(BOOTSTRAP_PASSWORD)",
-		"--bootstrap-admin-url", expectedServiceURL,
-		"--bootstrap-internal-url", expectedServiceURL,
-		"--bootstrap-public-url", expectedServiceURL,
-		"--bootstrap-region-id", ks.Spec.Bootstrap.Region,
-	}))
+	g.Expect(container.Command[3]).To(ContainSubstring(expectedServiceURL))
+	g.Expect(container.Command[3]).To(ContainSubstring("--bootstrap-region-id " + ks.Spec.Bootstrap.Region))
+	g.Expect(container.Args).To(BeNil())
 
 	// Verify BOOTSTRAP_PASSWORD env from SecretKeyRef (REQ-007).
 	g.Expect(container.Env).To(HaveLen(1))
@@ -889,18 +897,28 @@ func TestIntegration_BootstrapJobDetailedSpec(t *testing.T) {
 	g.Expect(pwEnv.ValueFrom.SecretKeyRef.Key).To(Equal("password"))
 
 	// Verify config volume mount (REQ-007).
-	g.Expect(container.VolumeMounts).To(HaveLen(1))
+	g.Expect(container.VolumeMounts).To(HaveLen(2))
 	g.Expect(container.VolumeMounts[0].Name).To(Equal("config"))
 	g.Expect(container.VolumeMounts[0].MountPath).To(Equal("/etc/keystone/keystone.conf.d/"))
 	g.Expect(container.VolumeMounts[0].ReadOnly).To(BeTrue())
 
+	// Verify fernet-keys volume mount (CC-0018: bootstrap needs fernet keys).
+	g.Expect(container.VolumeMounts[1].Name).To(Equal("fernet-keys"))
+	g.Expect(container.VolumeMounts[1].MountPath).To(Equal("/etc/keystone/fernet-keys/"))
+	g.Expect(container.VolumeMounts[1].ReadOnly).To(BeTrue())
+
 	// Verify config volume source is a ConfigMap with the expected name prefix.
-	g.Expect(podSpec.Volumes).To(HaveLen(1))
+	g.Expect(podSpec.Volumes).To(HaveLen(2))
 	g.Expect(podSpec.Volumes[0].Name).To(Equal("config"))
 	g.Expect(podSpec.Volumes[0].ConfigMap).NotTo(BeNil())
 	g.Expect(podSpec.Volumes[0].ConfigMap.Name).To(HavePrefix(fmt.Sprintf("%s-config-", ks.Name)),
 		"config volume should reference a ConfigMap with the expected name prefix")
 
+	// Verify fernet-keys volume references the Secret.
+	g.Expect(podSpec.Volumes[1].Name).To(Equal("fernet-keys"))
+	g.Expect(podSpec.Volumes[1].Secret).NotTo(BeNil())
+	g.Expect(podSpec.Volumes[1].Secret.SecretName).To(Equal(fmt.Sprintf("%s-fernet-keys", ks.Name)))
+
 	// Verify RestartPolicy.
-	g.Expect(podSpec.RestartPolicy).To(Equal(corev1.RestartPolicyOnFailure))
+	g.Expect(podSpec.RestartPolicy).To(Equal(corev1.RestartPolicyNever))
 }

@@ -112,8 +112,8 @@ func buildDatabase(keystone *keystonev1alpha1.Keystone) *mariadbv1alpha1.Databas
 					Name: keystone.Spec.Database.ClusterRef.Name,
 				},
 			},
-			CharacterSet: "utf8mb4",
-			Collate:      "utf8mb4_general_ci",
+			CharacterSet: "utf8",
+			Collate:      "utf8_general_ci",
 			Name:         keystone.Spec.Database.Database,
 		},
 	}
@@ -172,11 +172,11 @@ func buildDBSyncJob(keystone *keystonev1alpha1.Keystone, configMapName string) *
 			BackoffLimit: &backoffLimit,
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyOnFailure,
+					RestartPolicy: corev1.RestartPolicyNever,
 					Containers: []corev1.Container{{
 						Name:    "db-sync",
 						Image:   fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag),
-						Command: []string{"keystone-manage", "db_sync"},
+						Command: []string{"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync"},
 						VolumeMounts: []corev1.VolumeMount{{
 							Name:      "config",
 							MountPath: "/etc/keystone/keystone.conf.d/",

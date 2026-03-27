@@ -12,7 +12,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	esov1beta1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1beta1"
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,7 +34,7 @@ func secretsTestScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(s)
 	_ = keystonev1alpha1.AddToScheme(s)
-	_ = esov1beta1.SchemeBuilder.AddToScheme(s)
+	_ = esov1.SchemeBuilder.AddToScheme(s)
 	return s
 }
 
@@ -66,16 +66,16 @@ func secretsTestKeystone() *keystonev1alpha1.Keystone {
 }
 
 // readyExternalSecret returns an ExternalSecret with a Ready=True condition.
-func readyExternalSecret(name, namespace string) *esov1beta1.ExternalSecret {
-	return &esov1beta1.ExternalSecret{
+func readyExternalSecret(name, namespace string) *esov1.ExternalSecret {
+	return &esov1.ExternalSecret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
-		Status: esov1beta1.ExternalSecretStatus{
-			Conditions: []esov1beta1.ExternalSecretStatusCondition{
+		Status: esov1.ExternalSecretStatus{
+			Conditions: []esov1.ExternalSecretStatusCondition{
 				{
-					Type:   esov1beta1.ExternalSecretReady,
+					Type:   esov1.ExternalSecretReady,
 					Status: corev1.ConditionTrue,
 				},
 			},
@@ -84,8 +84,8 @@ func readyExternalSecret(name, namespace string) *esov1beta1.ExternalSecret {
 }
 
 // notReadyExternalSecret returns an ExternalSecret without a Ready condition.
-func notReadyExternalSecret(name, namespace string) *esov1beta1.ExternalSecret {
-	return &esov1beta1.ExternalSecret{
+func notReadyExternalSecret(name, namespace string) *esov1.ExternalSecret {
+	return &esov1.ExternalSecret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
@@ -213,7 +213,7 @@ func TestReconcileSecrets_ErrorFetchingExternalSecret(t *testing.T) {
 		WithScheme(s).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-				if _, ok := obj.(*esov1beta1.ExternalSecret); ok {
+				if _, ok := obj.(*esov1.ExternalSecret); ok {
 					return fmt.Errorf("simulated API server error")
 				}
 				return c.Get(ctx, key, obj, opts...)
