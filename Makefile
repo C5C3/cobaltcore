@@ -239,6 +239,14 @@ test-integration:
 		go test -tags=integration -coverprofile=cover-integration-$$op.out ./operators/$$op/... || exit 1; \
 	done
 
+.PHONY: tempest-test
+# tempest-test runs Tempest API tests against a service in the kind cluster (CC-0035 REQ-007).
+# Requires a running kind cluster with the service deployed (see deploy-infra, e2e).
+# Usage: make tempest-test SERVICE=keystone
+tempest-test:
+	$(if $(SERVICE),,$(error tempest-test requires SERVICE, e.g. make tempest-test SERVICE=keystone))
+	hack/run-tempest.sh $(SERVICE)
+
 .PHONY: test-integration-common
 # test-integration-common runs envtest-based integration tests for internal/common (CC-0018).
 # Needed to meet the codecov 80% target for internal/common/**.

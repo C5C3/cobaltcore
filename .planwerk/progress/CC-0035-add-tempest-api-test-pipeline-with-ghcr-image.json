@@ -522,6 +522,7 @@
       "description": "Create hack/run-tempest.sh following the pattern from hack/deploy-infra.sh. SPDX header, set -euo pipefail, SCRIPT_DIR/REPO_ROOT resolution, configurable variables (CLUSTER_NAME=forge-e2e, TEMPEST_TIMEOUT=600, SERVICE required). log() function matching deploy-infra.sh pattern. Steps: (1) validate SERVICE is set, (2) resolve versions from releases/2025.2/test-refs.yaml via yq, (3) build image chain (docker build -t python-base images/python-base/, docker build -t venv-builder images/venv-builder/, docker build tempest image with --build-arg versions and --build-context upper-constraints=releases/2025.2), (4) kind load docker-image into $CLUSTER_NAME, (5) run Tempest container in kind cluster with mounted tempest.conf from tests/tempest/$SERVICE/, (6) extract JUnit XML to _output/reports/. Exit non-zero on test failure.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-011"
@@ -533,6 +534,7 @@
       "description": "Add to Makefile in the 'Testing and Infrastructure Targets' section (after the e2e target at line 216): '.PHONY: tempest-test' with comment referencing CC-0035 and usage instructions, guard using $(if $(SERVICE),,$(error ...)) pattern from docker-build target, delegating to SERVICE=$(SERVICE) hack/run-tempest.sh.",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
