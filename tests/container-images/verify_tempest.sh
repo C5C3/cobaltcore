@@ -10,6 +10,7 @@
 
 set -euo pipefail
 
+# Convenience default for manual testing; update when test-refs.yaml version changes.
 IMAGE="${1:-c5c3/tempest:45.0.0}"
 
 PASS=0

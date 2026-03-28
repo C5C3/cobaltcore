@@ -218,7 +218,7 @@ spec:
         - /bin/bash
         - -c
         - |
-          set -uo pipefail
+          set -euo pipefail
           TEMPEST_RC=0
 
           # Substitute admin password placeholder in tempest.conf.
@@ -346,6 +346,9 @@ main() {
 
   # Always collect results regardless of test outcome.
   collect_results "${service}"
+
+  # Clean up pod and ConfigMap to prevent resource accumulation across local retries.
+  cleanup "${service}"
 
   if [[ "${rc}" -eq 0 ]]; then
     log ""

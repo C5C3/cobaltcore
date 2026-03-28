@@ -285,12 +285,12 @@ All configuration is via environment variables with sensible defaults:
 
 ### Lifecycle Stages
 
-The script executes six stages sequentially:
+The script executes seven stages sequentially:
 
 ```text
 validate() ──▶ build_tempest_image() ──▶ load_image() ──▶ create_configmap()
                                                                   │
-                              cleanup() ◀── collect_results() ◀── run_tempest()
+                  cleanup() ◀── collect_results() ◀── run_tempest()
 ```
 
 | Stage | Function | Details |
@@ -301,8 +301,9 @@ validate() ──▶ build_tempest_image() ──▶ load_image() ──▶ crea
 | 4. ConfigMap | `create_configmap()` | Creates a Kubernetes ConfigMap (`tempest-config-<service>`) from `tempest.conf`, `include-tests.txt`, `exclude-tests.txt` |
 | 5. Run | `run_tempest()` | Applies an inline Pod manifest that substitutes credentials, initializes a Tempest workspace, runs tests, and converts results to JUnit XML |
 | 6. Collect | `collect_results()` | Copies JUnit XML from the pod to `OUTPUT_DIR`, prints pod logs for visibility |
+| 7. Cleanup | `cleanup()` | Deletes the Tempest pod and ConfigMap to prevent resource accumulation across local retries |
 
-Results are always collected regardless of test outcome (the `collect_results` call is
+Results and cleanup always run regardless of test outcome (these calls are
 outside the error-checking block). The script exits non-zero if any Tempest test fails.
 
 ### Pod Specification

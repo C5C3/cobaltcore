@@ -298,8 +298,18 @@ jobs:
       # "Build service image" step; Docker layer cache avoids rebuild.
       - name: Build Tempest image
         run: |
+          # Sync: version resolution duplicated in build-images.yaml (build-tempest-image job,
+          # "Resolve Tempest versions" step). Keep both in sync when changing keys or file path.
           TEMPEST_VERSION=$(yq '.tempest' releases/2025.2/test-refs.yaml)
           KEYSTONE_PLUGIN_VERSION=$(yq '."keystone-tempest-plugin"' releases/2025.2/test-refs.yaml)
+          if [ -z "$TEMPEST_VERSION" ] || [ "$TEMPEST_VERSION" = "null" ]; then
+            echo "::error::tempest version not found in releases/2025.2/test-refs.yaml"
+            exit 1
+          fi
+          if [ -z "$KEYSTONE_PLUGIN_VERSION" ] || [ "$KEYSTONE_PLUGIN_VERSION" = "null" ]; then
+            echo "::error::keystone-tempest-plugin version not found in releases/2025.2/test-refs.yaml"
+            exit 1
+          fi
           docker build -t c5c3/tempest:local \
             --build-arg "TEMPEST_VERSION=${TEMPEST_VERSION}" \
             --build-arg "KEYSTONE_TEMPEST_PLUGIN_VERSION=${KEYSTONE_PLUGIN_VERSION}" \

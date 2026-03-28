@@ -801,6 +801,8 @@ jobs:
       - name: Resolve Tempest versions
         id: versions
         run: |
+          # Sync: version resolution duplicated in ci.yaml (e2e-keystone job,
+          # "Build Tempest image" step). Keep both in sync when changing keys or file path.
           tempest=$(yq '.tempest' releases/2025.2/test-refs.yaml)
           plugin=$(yq '."keystone-tempest-plugin"' releases/2025.2/test-refs.yaml)
           if [ -z "$tempest" ] || [ "$tempest" = "null" ]; then

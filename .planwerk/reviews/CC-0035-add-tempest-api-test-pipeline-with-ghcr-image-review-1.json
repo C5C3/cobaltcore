@@ -1,0 +1,111 @@
+{
+  "summary": "Well-structured Tempest API test infrastructure spanning 12 files (~1300 lines). Dockerfile follows the 2-stage pattern, verify script uses the PASS/FAIL counter + exit-code-guard pattern, orchestration script follows deploy-infra.sh conventions, build-images job implements the full SBOM/Grype/Attest/Cosign supply chain. Two correctness issues need fixing: missing yq null/empty guard in ci.yaml (build-images.yaml has it) and missing -e in the pod inline script. Documentation has three inaccuracies that drift from the implementation. cleanup() is defined but never called.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "verify_tempest.sh exists with 5 test cases covering version, plugin, subunit2junitxml, user, and build tools", "checked": true},
+    {"item": "Exit-code guard pattern (|| exit_code=$?) applied consistently in all command substitutions", "checked": true},
+    {"item": "PASS/FAIL counter pattern with final summary and exit 1 on failure", "checked": true},
+    {"item": "assertions.sh sourced for assert_eq, assert_not_empty, assert_nonzero_exit", "checked": true},
+    {"item": "Edge cases: negative assertions (gcc/python3-dev/uv not found) verify build tools excluded", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing Dockerfile 2-stage build pattern (venv-builder → python-base)", "checked": true},
+    {"item": "Follows verify_keystone.sh script structure", "checked": true},
+    {"item": "Follows deploy-infra.sh log() and orchestration pattern", "checked": true},
+    {"item": "Follows Makefile $(if) guard pattern", "checked": true},
+    {"item": "Follows build-images.yaml SBOM/Grype/Attest/Cosign chain", "checked": true},
+    {"item": "SPDX Apache-2.0 header on all new files", "checked": true},
+    {"item": "No dead code", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "Credentials injected via K8s Secret (secretKeyRef), not CLI arguments", "checked": true},
+    {"item": "Password substitution via sed inside pod, not exposed in process listing", "checked": true},
+    {"item": "All GitHub Actions pinned to full SHA with version comment", "checked": true},
+    {"item": "No hardcoded secrets in Dockerfile, workflows, or scripts", "checked": true},
+    {"item": "Version-only tag restricted to main branch (no cross-branch clobbering)", "checked": true},
+    {"item": "Supply chain: SBOM + Grype + SARIF + Attestation + Cosign on push", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Version pins in single source of truth (test-refs.yaml)", "checked": true},
+    {"item": "Per-service test config directory structure (tests/tempest/<service>/)", "checked": true},
+    {"item": "CI steps correctly placed after Chainsaw, before diagnostic dump", "checked": true},
+    {"item": "build-tempest-image depends on build-base-images + verify-base-images", "checked": true},
+    {"item": "Solution is as simple as possible for the scope", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code within files", "checked": true},
+    {"item": "Duplicated version resolution logic between ci.yaml and build-images.yaml has sync comments", "checked": false}
+  ],
+  "fail_fast_checklist": [
+    {"item": "hack/run-tempest.sh validates SERVICE, config files, CLI tools, cluster existence", "checked": true},
+    {"item": "build-images.yaml has yq null/empty guards", "checked": true},
+    {"item": "ci.yaml has yq null/empty guards", "checked": false}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs validated in hack/run-tempest.sh", "checked": true},
+    {"item": "Pod script uses set -euo pipefail for early abort on failure", "checked": false},
+    {"item": "ConfigMap deletion is idempotent (--ignore-not-found)", "checked": true},
+    {"item": "Result collection is best-effort (|| true) regardless of test outcome", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "C2",
+      "severity": "BLOCKING",
+      "description": "ci.yaml e2e-keystone 'Build Tempest image' step resolves versions from test-refs.yaml via yq but lacks null/empty guards. The review criteria explicitly requires 'yq null/empty guards for version resolution'. build-images.yaml:806-812 has them; ci.yaml:299-307 does not. If test-refs.yaml is malformed or the key is missing, yq returns 'null' and docker build installs 'tempest==null' from PyPI, producing a confusing pip error instead of a descriptive ::error:: annotation.",
+      "location": ".github/workflows/ci.yaml:299-307",
+      "fix": "Add null/empty guard after yq resolution, before docker build. Copy the exact pattern from build-images.yaml:806-812:\n\n          TEMPEST_VERSION=$(yq '.tempest' releases/2025.2/test-refs.yaml)\n          KEYSTONE_PLUGIN_VERSION=$(yq '.\"keystone-tempest-plugin\"' releases/2025.2/test-refs.yaml)\n          if [ -z \"$TEMPEST_VERSION\" ] || [ \"$TEMPEST_VERSION\" = \"null\" ]; then\n            echo \"::error::tempest version not found in releases/2025.2/test-refs.yaml\"\n            exit 1\n          fi\n          if [ -z \"$KEYSTONE_PLUGIN_VERSION\" ] || [ \"$KEYSTONE_PLUGIN_VERSION\" = \"null\" ]; then\n            echo \"::error::keystone-tempest-plugin version not found in releases/2025.2/test-refs.yaml\"\n            exit 1\n          fi",
+      "evidence": "ci.yaml:301-302:\n  TEMPEST_VERSION=$(yq '.tempest' releases/2025.2/test-refs.yaml)\n  KEYSTONE_PLUGIN_VERSION=$(yq '.\"keystone-tempest-plugin\"' releases/2025.2/test-refs.yaml)\n  docker build -t c5c3/tempest:local \\\n    --build-arg \"TEMPEST_VERSION=${TEMPEST_VERSION}\" ...\n\nNo guard between yq calls and docker build. Compare with build-images.yaml:806-812 which has:\n  if [ -z \"$tempest\" ] || [ \"$tempest\" = \"null\" ]; then\n    echo \"::error::tempest version not found...\"\n    exit 1\n  fi",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "C3",
+      "severity": "MAJOR",
+      "description": "Pod inline script at hack/run-tempest.sh:221 uses 'set -uo pipefail' without '-e'. Commands before 'tempest run' (tempest init workspace, cd workspace, sed substitution) will NOT abort on failure. If 'tempest init' fails, the script continues into a broken state — cd fails, sed writes to a nonexistent path, and tempest run executes with missing/wrong config. The '|| TEMPEST_RC=$?' pattern on the tempest run line is correctly structured to survive -e, so adding -e is safe.",
+      "location": "hack/run-tempest.sh:221",
+      "fix": "Change 'set -uo pipefail' to 'set -euo pipefail'. The '|| TEMPEST_RC=$?' on line 235 prevents -e from aborting on tempest run failure, and '|| true' on line 239 prevents -e from aborting on the JUnit conversion.",
+      "evidence": "hack/run-tempest.sh:221:\n          set -uo pipefail\n          TEMPEST_RC=0\n\n          # Substitute admin password placeholder in tempest.conf.\n          cd /tmp\n          tempest init workspace\n          cd workspace\n          sed \"s|\\${KEYSTONE_ADMIN_PASSWORD}|${KEYSTONE_ADMIN_PASSWORD}|\" \\\n            /etc/tempest/tempest.conf > etc/tempest.conf\n\nThe outer script (line 20) correctly uses 'set -euo pipefail'. The pod script omits -e.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "DA3",
+      "severity": "MAJOR",
+      "description": "Documentation has three inaccuracies vs implementation: (1) Line 107 claims 'Each resolution includes a null/empty guard' but ci.yaml e2e-keystone step lacks it. (2) Lines 290-293 lifecycle diagram shows 'cleanup() ◀── collect_results() ◀── run_tempest()' but main() never calls cleanup(). (3) Lines 383-384 claim 'the build step fails with a descriptive ::error:: annotation before attempting the Docker build' for ci.yaml — it doesn't.",
+      "location": "docs/reference/tempest-test-infrastructure.md:107,293,383",
+      "fix": "After fixing the ci.yaml guard (C2), update: (1) line 107 is then accurate, (2) either add cleanup() call to main() and keep the diagram, or remove cleanup() from the diagram and note resources are left for debugging, (3) lines 383-384 become accurate once ci.yaml guard is added.",
+      "evidence": "docs line 107: 'Each resolution includes a null/empty guard that fails the step with a descriptive error'\n\nci.yaml:299-307: No guard between yq and docker build.\n\ndocs line 293: 'cleanup() ◀── collect_results() ◀── run_tempest()'\n\nhack/run-tempest.sh:324-363 main(): calls validate, build, load, create_configmap, run_tempest, collect_results, then exits. cleanup() is never called.\n\ndocs line 383-384: 'the build step fails with a descriptive ::error:: annotation before attempting the Docker build'\n\nci.yaml: No ::error:: annotation.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "Q7",
+      "severity": "MAJOR",
+      "description": "cleanup() function (lines 311-319) is defined but never called from main(). The function deletes the Tempest pod and ConfigMap. In CI, the cluster is torn down afterward so this is harmless. For local runs via 'make tempest-test', resources accumulate across retries (mitigated by the idempotent delete at run_tempest:192 which cleans up before each run).",
+      "location": "hack/run-tempest.sh:311-319",
+      "fix": "Either: (a) add cleanup() call at the end of main() or via 'trap cleanup EXIT' (passing service), or (b) remove the unused function and update the docs lifecycle diagram. Given that run_tempest() already deletes the previous pod (line 192), option (b) may be simpler — or keep cleanup() as a documented manual utility.",
+      "evidence": "hack/run-tempest.sh:311-319:\ncleanup() {\n  local service=\"$1\"\n  local pod_name=\"tempest-${service}\"\n  local cm_name=\"tempest-config-${service}\"\n  log \"Cleaning up Tempest resources...\"\n  kubectl delete pod \"${pod_name}\" ...\n  kubectl delete configmap \"${cm_name}\" ...\n}\n\nmain() at lines 324-363 never calls cleanup().\ngrep 'cleanup' hack/run-tempest.sh shows only the function definition, no call sites.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "PC3",
+      "severity": "MINOR",
+      "description": "Duplicated version resolution logic between ci.yaml (lines 301-302) and build-images.yaml (lines 804-805). Both independently resolve tempest and keystone-tempest-plugin versions from test-refs.yaml via yq. Per external review pattern 'Flag duplicated logic blocks with sync cross-references', these blocks should cross-reference each other to prevent drift.",
+      "location": ".github/workflows/ci.yaml:301 and .github/workflows/build-images.yaml:804",
+      "fix": "Add a sync comment above both version resolution blocks, e.g.:\n# NOTE: This version resolution MUST stay in sync with the 'Resolve Tempest versions'\n# step in build-images.yaml (build-tempest-image job). If the yq query format or\n# variable names change, update both locations.",
+      "evidence": "ci.yaml:301-302:\n  TEMPEST_VERSION=$(yq '.tempest' releases/2025.2/test-refs.yaml)\n  KEYSTONE_PLUGIN_VERSION=$(yq '.\"keystone-tempest-plugin\"' releases/2025.2/test-refs.yaml)\n\nbuild-images.yaml:804-805:\n  tempest=$(yq '.tempest' releases/2025.2/test-refs.yaml)\n  plugin=$(yq '.\"keystone-tempest-plugin\"' releases/2025.2/test-refs.yaml)\n\nSame logic, different variable names, no cross-reference.",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider extracting the release version ('2025.2') to a configurable variable in hack/run-tempest.sh instead of hardcoding 'releases/2025.2/test-refs.yaml' in 3 places (lines 116, 117, 140). This would simplify future release series additions.",
+    "The default image tag in verify_tempest.sh (line 13: 'c5c3/tempest:45.0.0') will go stale when test-refs.yaml version changes. This matches the verify_keystone.sh pattern, but a comment noting it's a convenience default for manual testing would clarify intent."
+  ],
+  "next_steps": [
+    "Add yq null/empty guard to ci.yaml Build Tempest image step (copy from build-images.yaml:806-812)",
+    "Change pod script from 'set -uo pipefail' to 'set -euo pipefail' at hack/run-tempest.sh:221",
+    "Decide on cleanup() — either wire it into main() or remove it, then update docs lifecycle diagram",
+    "Update docs/reference/tempest-test-infrastructure.md lines 107, 293, 383-384 to match implementation",
+    "Add sync cross-reference comments between ci.yaml and build-images.yaml version resolution blocks"
+  ],
+  "detected_patterns": []
+}
