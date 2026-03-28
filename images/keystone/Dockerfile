@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # ---------- Stage 1: build ----------
+# hadolint ignore=DL3006
 FROM venv-builder AS build
 
 # Comma-separated Python extras (e.g. "ldap,oauth1").
@@ -34,6 +35,7 @@ application = initialize_public_application()\n' \
     chmod +x /var/lib/openstack/bin/keystone-wsgi-public
 
 # ---------- Stage 2: runtime ----------
+# hadolint ignore=DL3006
 FROM python-base
 
 # DEVIATION from architecture/docs/08-container-images/01-build-pipeline.md:
@@ -51,6 +53,7 @@ COPY --from=build --link /var/lib/openstack /var/lib/openstack
 # --build-arg EXTRA_APT_PACKAGES=...), skip the install to avoid
 # "E: No packages specified" from apt-get. CI always provides packages
 # via the workflow's "Resolve extra packages" step.
+# hadolint ignore=DL3008
 RUN if [ -n "${EXTRA_APT_PACKAGES}" ]; then \
     DEBIAN_FRONTEND=noninteractive apt-get update && \
     apt-get install -y --no-install-recommends ${EXTRA_APT_PACKAGES} && \

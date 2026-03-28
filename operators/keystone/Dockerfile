@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # ---------- Stage 1: builder ----------
-FROM golang:1.25 AS builder
+FROM golang:1.25@sha256:dfae680962532eeea67ab297f1166c2c4e686edb9a8f05f9d02d96fc9191833e AS builder
 
 WORKDIR /workspace
 
@@ -25,7 +25,7 @@ WORKDIR /workspace/operators/keystone
 RUN CGO_ENABLED=0 GOOS=linux go build -o manager main.go
 
 # ---------- Stage 2: runtime ----------
-FROM gcr.io/distroless/static:nonroot
+FROM gcr.io/distroless/static:nonroot@sha256:e3f945647ffb95b5839c07038d64f9811adf17308b9121d8a2b87b6a22a80a39
 
 WORKDIR /
 

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-FROM ubuntu:noble
+FROM ubuntu:noble@sha256:186072bba1b2f436cbb91ef2567abca677337cfc786c86e107d25b7072feef0c
 
 ENV PATH=/var/lib/openstack/bin:$PATH
 ENV LANG=C.UTF-8

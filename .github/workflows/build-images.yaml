@@ -12,19 +12,23 @@ name: Build Images
       - stable/**
     paths:
       - images/**
+      - operators/keystone/Dockerfile
       - releases/**
       - patches/**
       - scripts/**
       - tests/container-images/**
       - .github/workflows/build-images.yaml
+      - .hadolint.yaml
   pull_request:
     paths:
       - images/**
+      - operators/keystone/Dockerfile
       - releases/**
       - patches/**
       - scripts/**
       - tests/container-images/**
       - .github/workflows/build-images.yaml
+      - .hadolint.yaml
 
 permissions:
   contents: read
@@ -34,7 +38,30 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  lint-dockerfiles:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        dockerfile:
+          - images/python-base/Dockerfile
+          - images/venv-builder/Dockerfile
+          - images/keystone/Dockerfile
+          - operators/keystone/Dockerfile
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Lint ${{ matrix.dockerfile }}
+        uses: hadolint/hadolint-action@2332a7b74a6de0dda2e2221d575162eba76ba5e5 # v3.3.0
+        with:
+          dockerfile: ${{ matrix.dockerfile }}
+          failure-threshold: warning
+          config: .hadolint.yaml
+
   build-base-images:
+    needs: lint-dockerfiles
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
