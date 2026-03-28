@@ -191,6 +191,29 @@ run_tempest() {
   # Clean up any previous pod.
   kubectl delete pod "${pod_name}" -n "${TEMPEST_NAMESPACE}" --ignore-not-found=true 2>/dev/null
 
+  # ── Diagnostics (run from CI runner, not the Tempest pod) ───────────
+  log "--- Pre-Tempest diagnostics ---"
+  # 1) Keystone API pod logs (last 10 lines) — look for config/DB errors.
+  log "Keystone API pod logs (last 10 lines per pod):"
+  for pod in $(kubectl get pods -n "${TEMPEST_NAMESPACE}" -l c5c3.io/service="${service}" \
+    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+    log "  --- ${pod} ---"
+    kubectl logs -n "${TEMPEST_NAMESPACE}" "${pod}" --tail=10 2>/dev/null || true
+  done
+  # 2) Fernet key secret — auth fails if keys don't exist.
+  log "Fernet keys secret:"
+  kubectl get secret -n "${TEMPEST_NAMESPACE}" -l app.kubernetes.io/name="${service}" \
+    -o custom-columns=NAME:.metadata.name,KEYS:.data 2>/dev/null \
+    | head -5 || log "  (no fernet secrets found)"
+  # 3) ConfigMap content — verify [database] and [auth] sections exist.
+  log "Keystone ConfigMap sections:"
+  for cm in $(kubectl get cm -n "${TEMPEST_NAMESPACE}" -o name 2>/dev/null | grep "${service}.*config"); do
+    log "  --- ${cm} ---"
+    kubectl get -n "${TEMPEST_NAMESPACE}" "${cm}" -o jsonpath='{.data.keystone\.conf}' 2>/dev/null \
+      | grep -E '^\[|^connection |^methods |^provider ' || true
+  done
+  log "--- End diagnostics ---"
+
   log "Running Tempest pod '${pod_name}' in namespace '${TEMPEST_NAMESPACE}'..."
 
   # Apply the pod manifest. The inline script:
@@ -240,25 +263,74 @@ spec:
           fi
           echo "Config ready (admin_password length: \${#KEYSTONE_ADMIN_PASSWORD})"
 
-          # Pre-flight: verify admin auth works before running Tempest.
-          echo "Verifying admin authentication..."
+          # Pre-flight: comprehensive auth diagnostic.
+          echo "=== Pre-flight auth diagnostic ==="
           python3 << 'PYEOF'
-          import json, urllib.request, urllib.error, os, sys, configparser
+          import json, urllib.request, urllib.error, os, sys, configparser, hashlib
+
           c = configparser.ConfigParser()
           c.read('etc/tempest.conf')
           base = c.get('identity', 'uri_v3')
           pw = os.environ['KEYSTONE_ADMIN_PASSWORD']
-          body = json.dumps({'auth': {'identity': {'methods': ['password'],
-              'password': {'user': {'name': 'admin', 'password': pw,
-                                    'domain': {'name': 'Default'}}}}}}).encode()
-          req = urllib.request.Request(f'{base}/auth/tokens', body,
-                                      headers={'Content-Type': 'application/json'})
+          print(f'uri_v3: {base}')
+          print(f'password length: {len(pw)}, sha256[:16]: {hashlib.sha256(pw.encode()).hexdigest()[:16]}')
+
+          def fetch(url, data=None):
+              headers = {'Content-Type': 'application/json'} if data else {}
+              body = json.dumps(data).encode() if data else None
+              return urllib.request.urlopen(urllib.request.Request(url, body, headers))
+
+          # 1) GET /v3 — is the API reachable?
           try:
-              r = urllib.request.urlopen(req)
-              print(f'Admin auth OK (HTTP {r.status})')
-          except urllib.error.HTTPError as e:
-              print(f'Admin auth FAILED (HTTP {e.code}): {e.read().decode()[:300]}')
+              r = fetch(base)
+              info = json.loads(r.read())
+              print(f'1. GET /v3: OK (status={info.get("version",{}).get("status","?")})')
+          except Exception as e:
+              print(f'1. GET /v3: FAILED — {e}')
               sys.exit(1)
+
+          # 2) Unscoped auth (domain name) — tests password + user existence.
+          auth = {'auth': {'identity': {'methods': ['password'], 'password': {
+              'user': {'name': 'admin', 'password': pw, 'domain': {'name': 'Default'}}}}}}
+          try:
+              r = fetch(f'{base}/auth/tokens', auth)
+              token = r.headers['X-Subject-Token']
+              print(f'2. Unscoped auth (domain name): OK')
+          except urllib.error.HTTPError as e:
+              body = e.read().decode()[:500]
+              print(f'2. Unscoped auth (domain name): FAILED ({e.code}) — {body}')
+              # 2b) Try domain ID instead of name.
+              auth2 = {'auth': {'identity': {'methods': ['password'], 'password': {
+                  'user': {'name': 'admin', 'password': pw, 'domain': {'id': 'default'}}}}}}
+              try:
+                  r = fetch(f'{base}/auth/tokens', auth2)
+                  print(f'2b. Unscoped auth (domain id): OK — domain name mismatch?')
+                  token = r.headers['X-Subject-Token']
+              except urllib.error.HTTPError as e2:
+                  print(f'2b. Unscoped auth (domain id): FAILED ({e2.code})')
+                  token = None
+
+          if not token:
+              # 2c) Try with first 4 chars of password — detect truncation.
+              auth3 = {'auth': {'identity': {'methods': ['password'], 'password': {
+                  'user': {'name': 'admin', 'password': pw[:4], 'domain': {'id': 'default'}}}}}}
+              try:
+                  r = fetch(f'{base}/auth/tokens', auth3)
+                  print(f'2c. Auth with pw[:4]: OK — PASSWORD TRUNCATED IN DB!')
+              except urllib.error.HTTPError:
+                  print(f'2c. Auth with pw[:4]: FAILED (expected)')
+              print('Auth failed — stopping.')
+              sys.exit(1)
+
+          # 3) Scoped auth — tests project existence.
+          auth['auth']['scope'] = {'project': {'name': 'admin', 'domain': {'name': 'Default'}}}
+          try:
+              r = fetch(f'{base}/auth/tokens', auth)
+              print(f'3. Scoped auth (project=admin): OK')
+          except urllib.error.HTTPError as e:
+              print(f'3. Scoped auth (project=admin): FAILED ({e.code}) — {e.read().decode()[:300]}')
+
+          print('=== Pre-flight OK ===')
           PYEOF
 
           echo "Running Tempest tests..."

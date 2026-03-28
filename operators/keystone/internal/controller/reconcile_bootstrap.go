@@ -92,6 +92,12 @@ conn = pymysql.connect(host=url.hostname, port=url.port or 3306,
 cur = conn.cursor()
 cur.execute("INSERT IGNORE INTO region (id, description, extra) VALUES (%%s, %%s, %%s)", ("%s", "", "{}"))
 conn.commit()
+cur.execute("SELECT id, domain_id FROM user")
+users = cur.fetchall()
+print(f"[pre-bootstrap] database={db}, users={len(users)}: {users[:5]}")
+cur.execute("SELECT user_id, name, domain_id FROM local_user")
+local_users = cur.fetchall()
+print(f"[pre-bootstrap] local_users={len(local_users)}: {local_users[:5]}")
 conn.close()
 '
 exec keystone-manage --config-file /etc/keystone/keystone.conf.d/keystone.conf bootstrap \
