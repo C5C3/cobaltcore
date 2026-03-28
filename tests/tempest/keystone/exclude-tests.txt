@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Tempest exclude list for Keystone identity API tests (CC-0035 REQ-004).
+# One regex pattern per line. Lines starting with # are comments.
+# Blank lines are ignored. Patterns are matched against test IDs.
+
+# Exclude tests that require compute service (Nova not deployed)
+tempest\.api\.identity\..*compute
+
+# Exclude tests that require network service (Neutron not deployed)
+tempest\.api\.identity\..*network
+
+# Exclude tests that depend on LDAP backend (requires external LDAP server)
+keystone_tempest_plugin\.tests\..*ldap
+
+# Exclude federation tests that require external IdP (SAML2/OAuth2 not available)
+keystone_tempest_plugin\.tests\..*federation
+
+# Exclude OAuth2/OIDC tests (require external IdP configuration)
+keystone_tempest_plugin\.tests\..*oauth2

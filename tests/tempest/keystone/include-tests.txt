@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Tempest include list for Keystone identity API tests (CC-0035 REQ-004).
+# One regex pattern per line. Lines starting with # are comments.
+# Only identity-related tests are included since only Keystone is deployed.
+tempest.api.identity
+keystone_tempest_plugin.tests

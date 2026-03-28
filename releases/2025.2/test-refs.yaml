@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PyPI version pins for test tooling (CC-0035 REQ-001).
+# This file is the single source of truth for test framework versions.
+# CI workflows and Dockerfiles resolve versions from this file via yq.
+# Separate from source-refs.yaml, which tracks upstream git refs.
+tempest: "45.0.0"
+keystone-tempest-plugin: "0.19.0"

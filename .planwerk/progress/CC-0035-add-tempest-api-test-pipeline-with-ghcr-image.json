@@ -465,6 +465,7 @@
       "description": "Create releases/2025.2/test-refs.yaml with SPDX header and two entries: tempest: '45.0.0' and keystone-tempest-plugin: '0.19.0'. Follow the YAML structure of releases/2025.2/source-refs.yaml (simple key-value pairs). This file is read by CI workflows via yq to resolve PyPI package versions for the Dockerfile build.",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-001"
       ]
@@ -475,6 +476,7 @@
       "description": "Create images/tempest/Dockerfile following the pattern from images/keystone/Dockerfile. Stage 1 (FROM venv-builder AS build): ARGs for TEMPEST_VERSION and KEYSTONE_TEMPEST_PLUGIN_VERSION with defaults, RUN --mount upper-constraints to install tempest==$TEMPEST_VERSION keystone-tempest-plugin==$KEYSTONE_TEMPEST_PLUGIN_VERSION python-subunit junitxml via uv pip. Unlike keystone, no --build-context for service source and no WSGI entry-point script. Stage 2 (FROM python-base): COPY --from=build --link /var/lib/openstack, OCI LABELs (title=tempest, description=OpenStack Tempest testing framework, licenses=Apache-2.0, vendor=SAP SE), USER openstack. Include SPDX header and hadolint ignore=DL3006,DL3008 comments.",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-011"
@@ -486,6 +488,7 @@
       "description": "Create tests/tempest/keystone/tempest.conf with SPDX header. Sections: [DEFAULT] (log_dir, log_file), [identity] (uri_v3=http://keystone-basic-api.openstack.svc:5000/v3), [auth] (admin_username=admin, admin_password=${KEYSTONE_ADMIN_PASSWORD}, admin_project_name=admin, admin_domain_name=Default, use_dynamic_credentials=false), [service_available] (identity=true, compute=false, network=false, volume=false, image=false, object-storage=false), [identity-feature-enabled] (api_v3=true). The admin_password will be injected at runtime from the keystone-admin K8s secret.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -496,6 +499,7 @@
       "description": "Create include-tests.txt with SPDX header and regex patterns: 'tempest.api.identity' and 'keystone_tempest_plugin.tests'. Create exclude-tests.txt with SPDX header and patterns excluding tests that require services not deployed (compute, network, volume, image, object-storage related tests, and any known flaky tests). Follow the comment/pattern format from releases/2025.2/test-excludes/keystone.txt.",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -506,6 +510,7 @@
       "description": "Create verify_tempest.sh following the exact pattern from verify_keystone.sh. Tests: (1) tempest --version exits 0 and outputs non-empty version, (2) python3 -c 'import keystone_tempest_plugin' exits 0, (3) which subunit2junitxml exits 0, (4) container runs as openstack user (whoami outputs 'openstack'), (5) no build tools in final image (gcc, python3-dev, uv not found). Source tests/lib/assertions.sh, use PASS/FAIL counters, print results summary, exit 1 on any failure. Default IMAGE to c5c3/tempest:45.0.0.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-011"
