@@ -578,6 +578,7 @@
       "description": "Create docs/reference/backend/tempest-testing.md documenting: (1) test-refs.yaml format and purpose, (2) Dockerfile build chain and build args, (3) tempest.conf configuration reference (all sections and keys), (4) include-tests.txt and exclude-tests.txt format, (5) verify_tempest.sh test cases, (6) hack/run-tempest.sh usage and environment variables, (7) Makefile target usage. Include examples for adding new services (new tempest.conf + test lists directory).",
       "level": 4,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
