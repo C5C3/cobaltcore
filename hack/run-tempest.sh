@@ -243,48 +243,22 @@ spec:
           # Pre-flight: verify admin auth works before running Tempest.
           echo "Verifying admin authentication..."
           python3 << 'PYEOF'
-          import json, urllib.request, urllib.error, os, sys
-
-          base = 'http://keystone-basic-api.openstack.svc:5000/v3'
+          import json, urllib.request, urllib.error, os, sys, configparser
+          c = configparser.ConfigParser()
+          c.read('etc/tempest.conf')
+          base = c.get('identity', 'uri_v3')
           pw = os.environ['KEYSTONE_ADMIN_PASSWORD']
-
-          def post(url, data):
-              req = urllib.request.Request(url, json.dumps(data).encode(),
-                                          headers={'Content-Type': 'application/json'})
-              return urllib.request.urlopen(req)
-
-          # 1) Unscoped auth — tests credentials only.
-          unscoped = {'auth': {'identity': {'methods': ['password'],
+          body = json.dumps({'auth': {'identity': {'methods': ['password'],
               'password': {'user': {'name': 'admin', 'password': pw,
-                                    'domain': {'name': 'Default'}}}}}}
-          try:
-              r = post(f'{base}/auth/tokens', unscoped)
-              token = r.headers['X-Subject-Token']
-              print(f'Unscoped auth OK (HTTP {r.status})')
-          except urllib.error.HTTPError as e:
-              print(f'Unscoped auth FAILED (HTTP {e.code}): {e.read().decode()[:500]}')
-              sys.exit(1)
-
-          # 2) Scoped auth — tests project existence.
-          scoped = dict(unscoped)
-          scoped['auth']['scope'] = {'project': {'name': 'admin',
-                                                  'domain': {'name': 'Default'}}}
-          try:
-              r = post(f'{base}/auth/tokens', scoped)
-              print(f'Scoped auth OK (HTTP {r.status})')
-          except urllib.error.HTTPError as e:
-              print(f'Scoped auth FAILED (HTTP {e.code}): {e.read().decode()[:500]}')
-
-          # 3) List projects visible to admin.
-          req = urllib.request.Request(f'{base}/auth/projects',
-                                      headers={'X-Auth-Token': token})
+                                    'domain': {'name': 'Default'}}}}}}).encode()
+          req = urllib.request.Request(f'{base}/auth/tokens', body,
+                                      headers={'Content-Type': 'application/json'})
           try:
               r = urllib.request.urlopen(req)
-              projects = json.loads(r.read())
-              names = [p['name'] for p in projects.get('projects', [])]
-              print(f'Admin projects: {names}')
+              print(f'Admin auth OK (HTTP {r.status})')
           except urllib.error.HTTPError as e:
-              print(f'List projects FAILED (HTTP {e.code}): {e.read().decode()[:200]}')
+              print(f'Admin auth FAILED (HTTP {e.code}): {e.read().decode()[:300]}')
+              sys.exit(1)
           PYEOF
 
           echo "Running Tempest tests..."
