@@ -49,6 +49,7 @@ jobs:
           - images/python-base/Dockerfile
           - images/venv-builder/Dockerfile
           - images/keystone/Dockerfile
+          - images/tempest/Dockerfile
           - operators/keystone/Dockerfile
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -780,3 +781,166 @@ jobs:
         run: |
           docker pull "$IMAGE_REF"
           bash tests/container-images/verify_${{ matrix.service }}.sh "$IMAGE_REF"
+
+  # CC-0035 REQ-009: Build and publish Tempest API test image to GHCR.
+  # Follows the same supply-chain security pattern as service images:
+  # SBOM generation, Grype vulnerability scanning, SBOM attestation, and cosign signing.
+  build-tempest-image:
+    needs: [build-base-images, verify-base-images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write         # CC-0029, CC-0030: Sigstore OIDC signing
+      attestations: write     # CC-0029: GitHub Attestations API
+      security-events: write  # CC-0032: GitHub Security tab SARIF upload
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Resolve Tempest versions
+        id: versions
+        run: |
+          tempest=$(yq '.tempest' releases/2025.2/test-refs.yaml)
+          plugin=$(yq '."keystone-tempest-plugin"' releases/2025.2/test-refs.yaml)
+          if [ -z "$tempest" ] || [ "$tempest" = "null" ]; then
+            echo "::error::tempest version not found in releases/2025.2/test-refs.yaml"
+            exit 1
+          fi
+          if [ -z "$plugin" ] || [ "$plugin" = "null" ]; then
+            echo "::error::keystone-tempest-plugin version not found in releases/2025.2/test-refs.yaml"
+            exit 1
+          fi
+          echo "tempest=${tempest}" >> "$GITHUB_OUTPUT"
+          echo "plugin=${plugin}" >> "$GITHUB_OUTPUT"
+          echo "Resolved tempest=${tempest}, keystone-tempest-plugin=${plugin}"
+
+      - name: Derive tags
+        id: tags
+        env:
+          VERSION: ${{ steps.versions.outputs.tempest }}
+          IMAGE_OWNER: ${{ github.repository_owner }}
+        run: |
+          IMAGE_OWNER="${IMAGE_OWNER,,}"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          BRANCH="${GITHUB_REF_NAME//\//-}"
+          IMAGE="ghcr.io/${IMAGE_OWNER}/tempest"
+          COMPOSITE="${VERSION}-${BRANCH}-${SHORT_SHA}"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "composite=${IMAGE}:${COMPOSITE}" >> "$GITHUB_OUTPUT"
+          echo "version=${IMAGE}:${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "sha=${IMAGE}:${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "Tags: ${COMPOSITE}, ${VERSION}, ${SHORT_SHA}"
+
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
+
+      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # CC-0030: Install cosign for image signing
+      - uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4
+
+      # CC-0035: Generate OCI annotations for Tempest image
+      - name: Generate metadata for Tempest image
+        id: meta-tempest
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
+        with:
+          images: ${{ steps.tags.outputs.image }}
+          tags: |
+            type=raw,value=${{ steps.versions.outputs.tempest }}
+          labels: |
+            org.opencontainers.image.title=tempest
+            org.opencontainers.image.description=OpenStack Tempest testing framework
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.vendor=SAP SE
+
+      - name: Build Tempest image
+        id: build-tempest
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
+        with:
+          context: images/tempest
+          file: images/tempest/Dockerfile
+          build-args: |
+            TEMPEST_VERSION=${{ steps.versions.outputs.tempest }}
+            KEYSTONE_TEMPEST_PLUGIN_VERSION=${{ steps.versions.outputs.plugin }}
+          build-contexts: |
+            python-base=docker-image://${{ needs.build-base-images.outputs.python-base-image }}
+            venv-builder=docker-image://${{ needs.build-base-images.outputs.venv-builder-image }}
+            upper-constraints=releases/2025.2/
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          load: ${{ github.event_name == 'pull_request' }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ steps.tags.outputs.composite }}
+            ${{ github.ref_name == 'main' && steps.tags.outputs.version || '' }}
+            ${{ steps.tags.outputs.sha }}
+          labels: |
+            ${{ steps.meta-tempest.outputs.labels }}
+            org.opencontainers.image.base.name=${{ needs.build-base-images.outputs.python-base-name }}
+            org.opencontainers.image.base.digest=${{ needs.build-base-images.outputs.python-base-digest }}
+          cache-from: type=gha,scope=tempest
+          cache-to: type=gha,mode=max,scope=tempest
+
+      # CC-0029: Generate and attest SBOM for Tempest image
+      - name: Generate SBOM for Tempest image
+        if: github.event_name != 'pull_request'
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ${{ steps.tags.outputs.image }}@${{ steps.build-tempest.outputs.digest }}
+          format: cyclonedx-json
+          output-file: sbom-tempest.cyclonedx.json
+          upload-artifact: false
+
+      # CC-0032: Scan Tempest image for vulnerabilities
+      - name: Scan Tempest image for vulnerabilities (SBOM)
+        if: github.event_name != 'pull_request'
+        id: grype-tempest-sbom
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
+        with:
+          sbom: sbom-tempest.cyclonedx.json
+          severity-cutoff: high
+          fail-build: false
+          output-format: sarif
+
+      - name: Scan Tempest image for vulnerabilities (image)
+        if: github.event_name == 'pull_request'
+        id: grype-tempest-image
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
+        with:
+          image: ${{ steps.tags.outputs.composite }}
+          severity-cutoff: high
+          fail-build: false
+          output-format: sarif
+
+      - name: Upload SARIF for Tempest image
+        if: >-
+          always() &&
+          (steps.grype-tempest-sbom.outputs.sarif != '' ||
+           steps.grype-tempest-image.outputs.sarif != '')
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
+        with:
+          sarif_file: ${{ steps.grype-tempest-sbom.outputs.sarif || steps.grype-tempest-image.outputs.sarif }}
+          category: grype-tempest
+
+      - name: Attest SBOM for Tempest image
+        if: github.event_name != 'pull_request'
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4
+        with:
+          subject-name: ${{ steps.tags.outputs.image }}
+          subject-digest: ${{ steps.build-tempest.outputs.digest }}
+          sbom-path: sbom-tempest.cyclonedx.json
+          push-to-registry: true
+
+      # CC-0030: Sign Tempest image with cosign keyless signing
+      - name: Sign Tempest image
+        if: github.event_name != 'pull_request'
+        run: cosign sign --yes ${{ steps.tags.outputs.image }}@${{ steps.build-tempest.outputs.digest }}
+
+      - name: Verify Tempest image (PR)
+        if: github.event_name == 'pull_request'
+        env:
+          IMAGE_REF: ${{ steps.tags.outputs.composite }}
+        run: bash tests/container-images/verify_tempest.sh "$IMAGE_REF"

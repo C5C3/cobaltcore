@@ -545,6 +545,7 @@
       "description": "Insert new steps into ci.yaml e2e-keystone job after the 'Run E2E tests' step (after line 295) and before the 'Dump diagnostic info' step (line 296). New steps: (1) 'Resolve Tempest versions' — read TEMPEST_VERSION and KEYSTONE_TEMPEST_PLUGIN_VERSION from test-refs.yaml via yq with null/empty guards, (2) 'Build Tempest image' — docker build tempest image using python-base and venv-builder already built at lines 249-250, passing --build-arg TEMPEST_VERSION and --build-arg KEYSTONE_TEMPEST_PLUGIN_VERSION, --build-context upper-constraints=releases/2025.2, (3) 'Load Tempest image into kind' — kind load docker-image tempest:$TEMPEST_VERSION --name forge-e2e, (4) 'Run Tempest API tests' — kubectl run/exec tempest pod in openstack namespace with mounted tempest.conf, include-tests.txt, exclude-tests.txt from tests/tempest/${{ matrix.operator }}/, admin password from keystone-admin secret, subunit output piped to subunit2junitxml writing to _output/reports/, (5) 'Upload Tempest JUnit report' — uses: actions/upload-artifact with name: e2e-tempest-${{ matrix.operator }}-junit-report, path: _output/reports/, retention-days: 14, if: always().",
       "level": 3,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -555,6 +556,7 @@
       "description": "Add a new 'build-tempest' job to build-images.yaml, placed after build-service-images. Needs: [build-base-images, verify-base-images]. Permissions: contents:read, packages:write, id-token:write, attestations:write, security-events:write. Steps following the build-service-images pattern: (1) checkout, (2) normalize image owner, (3) resolve tempest version from test-refs.yaml via yq, (4) derive tags — IMAGE=ghcr.io/<owner>/tempest, COMPOSITE=<version>-<branch>-<sha>, (5) setup-buildx, (6) docker login to ghcr.io, (7) install cosign, (8) generate metadata via docker/metadata-action, (9) build-push-action with context=images/tempest, build-args for TEMPEST_VERSION and KEYSTONE_TEMPEST_PLUGIN_VERSION, build-contexts for python-base (digest from build-base-images), venv-builder (digest from build-base-images), upper-constraints=releases/2025.2/, (10) generate SBOM, (11) Grype scan (SBOM for non-PR, image for PR), (12) upload SARIF category grype-tempest, (13) attest SBOM, (14) cosign sign, (15) verify_tempest.sh on PR (inline). Push on non-PR, load on PR. Multi-arch linux/amd64,linux/arm64 for non-PR, linux/amd64 for PR.",
       "level": 3,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -565,6 +567,7 @@
       "description": "Modify the lint-dockerfiles job matrix in build-images.yaml (line 48-52) to add '- images/tempest/Dockerfile' to the dockerfile list. This ensures the new Tempest Dockerfile is linted by hadolint on every push/PR that touches images/**.",
       "level": 3,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-010"
       ]

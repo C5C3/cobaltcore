@@ -293,6 +293,29 @@ jobs:
         run: |
           mkdir -p _output/reports
           chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/${{ matrix.operator }}/
+      # CC-0035 REQ-008: Build and run Tempest API tests after Chainsaw E2E.
+      # Base images (python-base, venv-builder) are already built by the
+      # "Build service image" step; Docker layer cache avoids rebuild.
+      - name: Build Tempest image
+        run: |
+          TEMPEST_VERSION=$(yq '.tempest' releases/2025.2/test-refs.yaml)
+          KEYSTONE_PLUGIN_VERSION=$(yq '."keystone-tempest-plugin"' releases/2025.2/test-refs.yaml)
+          docker build -t c5c3/tempest:local \
+            --build-arg "TEMPEST_VERSION=${TEMPEST_VERSION}" \
+            --build-arg "KEYSTONE_TEMPEST_PLUGIN_VERSION=${KEYSTONE_PLUGIN_VERSION}" \
+            --build-context upper-constraints=releases/2025.2 \
+            images/tempest/
+      - name: Run Tempest API tests
+        run: hack/run-tempest.sh ${{ matrix.operator }}
+        env:
+          SKIP_BUILD: "true"
+      - name: Upload Tempest report
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: tempest-${{ matrix.operator }}-junit-report
+          path: _output/reports/tempest-*
+          retention-days: 14
       - name: Dump diagnostic info
         if: always()
         run: |
