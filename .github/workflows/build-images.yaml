@@ -201,7 +201,7 @@ jobs:
       # CC-0035: Attest build provenance for python-base (SLSA Level 2+)
       - name: Attest build provenance for python-base
         if: github.event_name != 'pull_request'
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4
         with:
           subject-name: ghcr.io/${{ steps.meta.outputs.owner }}/python-base
           subject-digest: ${{ steps.build-python-base.outputs.digest }}
@@ -297,7 +297,7 @@ jobs:
       # CC-0035: Attest build provenance for venv-builder (SLSA Level 2+)
       - name: Attest build provenance for venv-builder
         if: github.event_name != 'pull_request'
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4
         with:
           subject-name: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder
           subject-digest: ${{ steps.build-venv-builder.outputs.digest }}
@@ -559,7 +559,7 @@ jobs:
       # CC-0035: Attest build provenance for service image (SLSA Level 2+)
       - name: Attest build provenance for service image
         if: github.event_name != 'pull_request'
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4
         with:
           subject-name: ${{ steps.tags.outputs.image }}
           subject-digest: ${{ steps.build-service.outputs.digest }}
