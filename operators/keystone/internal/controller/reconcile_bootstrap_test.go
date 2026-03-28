@@ -143,7 +143,7 @@ func TestReconcileBootstrap_JobCreated(t *testing.T) {
 	container := createdJob.Spec.Template.Spec.Containers[0]
 	g.Expect(container.Name).To(Equal("bootstrap"))
 	g.Expect(container.Command[:3]).To(Equal([]string{"/bin/sh", "-eu", "-c"}))
-	g.Expect(container.Command[3]).To(ContainSubstring("keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap"))
+	g.Expect(container.Command[3]).To(ContainSubstring("keystone-manage --config-file /etc/keystone/keystone.conf.d/keystone.conf bootstrap"))
 	expectedServiceURL := fmt.Sprintf("http://%s-api.%s.svc.cluster.local:5000/v3", ks.Name, ks.Namespace)
 	g.Expect(container.Command[3]).To(ContainSubstring(expectedServiceURL))
 	g.Expect(container.Command[3]).To(ContainSubstring("--bootstrap-region-id RegionOne"))

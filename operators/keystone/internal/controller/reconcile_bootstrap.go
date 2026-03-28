@@ -94,7 +94,7 @@ cur.execute("INSERT IGNORE INTO region (id, description, extra) VALUES (%%s, %%s
 conn.commit()
 conn.close()
 '
-exec keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap \
+exec keystone-manage --config-file /etc/keystone/keystone.conf.d/keystone.conf bootstrap \
   --bootstrap-password "$BOOTSTRAP_PASSWORD" \
   --bootstrap-admin-url %s \
   --bootstrap-internal-url %s \

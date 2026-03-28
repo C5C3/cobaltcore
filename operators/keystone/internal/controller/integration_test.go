@@ -880,7 +880,7 @@ func TestIntegration_BootstrapJobDetailedSpec(t *testing.T) {
 
 	// Verify command uses shell wrapper for idempotent bootstrap (REQ-007).
 	g.Expect(container.Command[:3]).To(Equal([]string{"/bin/sh", "-eu", "-c"}))
-	g.Expect(container.Command[3]).To(ContainSubstring("keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap"))
+	g.Expect(container.Command[3]).To(ContainSubstring("keystone-manage --config-file /etc/keystone/keystone.conf.d/keystone.conf bootstrap"))
 	expectedServiceURL := fmt.Sprintf("http://%s-api.%s.svc.cluster.local:5000/v3", ks.Name, ns.Name)
 	g.Expect(container.Command[3]).To(ContainSubstring(expectedServiceURL))
 	g.Expect(container.Command[3]).To(ContainSubstring("--bootstrap-region-id " + ks.Spec.Bootstrap.Region))
