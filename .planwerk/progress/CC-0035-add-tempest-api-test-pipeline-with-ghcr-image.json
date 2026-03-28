@@ -2,8 +2,8 @@
   "feature_id": "CC-0035",
   "title": "Add Tempest API test pipeline with GHCR image",
   "slug": "add-tempest-api-test-pipeline-with-ghcr-image",
-  "status": "prepared",
-  "phase": null,
+  "status": "processing",
+  "phase": "implementing",
   "summary": "",
   "description": "**Size:** 🏗️ large\n**Category:** infrastructure\n**Priority:** high\n**Source:** Proposed for 'Analogous to the execution of the unit tests for the Se'\n\nImplement end-to-end Tempest API testing infrastructure: (1) `images/tempest/Dockerfile` — 3-stage build (python-base → venv-builder → tempest) installing Tempest 45.0.0 + keystone-tempest-plugin 0.19.0 + python-subunit + junitxml via uv pip with upper-constraints, OCI LABELs, running as openstack user (UID 42424); (2) `releases/2025.2/test-refs.yaml` — version pins for PyPI test tooling separate from git-ref-based source-refs.yaml; (3) `tests/tempest/keystone/tempest.conf` + include-tests.txt + exclude-tests.txt — per-service config targeting keystone-basic-api:5000/v3 with admin credentials from keystone-admin ExternalSecret, scoped to tempest.api.identity.* and keystone_tempest_plugin.tests.*; (4) `.github/workflows/ci.yaml` modification — append Tempest steps to e2e-keystone job after Chainsaw (resolve version from test-refs.yaml via yq, build/load image into kind, run tempest with --subunit, convert to JUnit XML, upload artifact e2e-tempest-keystone-junit-report with 14-day retention); (5) `.github/workflows/build-images.yaml` modification — new build-tempest job with SBOM (anchore/sbom-action), Grype scanning, GitHub attestations, cosign signing, pushing to ghcr.io/c5c3/tempest:45.0.0-<branch>-<sha>; (6) `tests/container-images/verify_tempest.sh` — shell test with PASS/FAIL counters and exit-code guards verifying tempest --version, plugin presence, subunit2junitxml availability; (7) `Makefile` targets tempest-test / tempest-test SERVICE=keystone delegating to `hack/run-tempest.sh`; (8) `hack/run-tempest.sh` — orchestration script with set -euo pipefail, log() delimiters, configurable timeouts for local kind execution.\n\n**Rationale:** Current CI validates operator Go code (unit/integration/E2E) and container image build correctness (verify_*.sh), but never exercises the upstream OpenStack code base packaged inside service images through real API calls. A packaging regression (wrong dependency version, missing config, broken WSGI pipeline) would pass all existing checks but fail in production. Tempest API tests close this gap by validating that the Keystone identity API responds correctly to standard OpenStack operations, catching functional regressions at the container image level before merge. Publishing the Tempest image to GHCR enables reuse across future services and local developer testing without rebuilding.\n\n**Affected Areas:**\n- images/tempest/Dockerfile\n- releases/2025.2/test-refs.yaml\n- tests/tempest/keystone/tempest.conf\n- tests/tempest/keystone/include-tests.txt\n- tests/tempest/keystone/exclude-tests.txt\n- tests/container-images/verify_tempest.sh\n- .github/workflows/ci.yaml\n- .github/workflows/build-images.yaml\n- hack/run-tempest.sh\n- Makefile",
   "stories": [
@@ -706,6 +706,10 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-03-28T10:02:31.712198"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-28T10:06:01.057796"
     }
   },
   "execution_history": [
