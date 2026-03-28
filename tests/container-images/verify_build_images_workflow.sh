@@ -1104,6 +1104,102 @@ test_sbom_steps_pr_skip_guard() {
   fi
 }
 
+# --- CC-0035: build provenance attestation steps exist (SLSA Level 2+) ---
+test_build_provenance_steps_exist() {
+  echo "Test: build provenance attestation steps exist in both build jobs (CC-0035)"
+
+  local base_prov_count
+  base_prov_count=$(yq_count '.jobs["build-base-images"]["steps"][] | select(.uses and (.uses | test("actions/attest-build-provenance@"))) | .uses' "$WORKFLOW")
+  assert_eq "build-base-images has 2 build-provenance attestation steps" "2" "$base_prov_count"
+
+  local service_prov_count
+  service_prov_count=$(yq_count '.jobs["build-service-images"]["steps"][] | select(.uses and (.uses | test("actions/attest-build-provenance@"))) | .uses' "$WORKFLOW")
+  assert_eq "build-service-images has 1 build-provenance attestation step" "1" "$service_prov_count"
+}
+
+# --- CC-0035: build provenance steps have PR-skip guard ---
+test_build_provenance_steps_pr_skip_guard() {
+  echo "Test: build provenance steps have PR-skip guard (CC-0035)"
+
+  local base_prov_ifs
+  base_prov_ifs=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.uses and (.uses | test("actions/attest-build-provenance@"))) | .if' "$WORKFLOW" || true)
+
+  local all_guarded=true
+  while IFS= read -r val; do
+    [ -z "$val" ] && continue
+    if [[ "$val" != *"github.event_name != 'pull_request'"* ]]; then
+      echo "  FAIL: build-base-images provenance step missing PR guard: $val"
+      FAIL=$((FAIL + 1))
+      all_guarded=false
+    fi
+  done <<< "$base_prov_ifs"
+
+  if $all_guarded && [ -n "$base_prov_ifs" ]; then
+    echo "  PASS: all build-base-images provenance steps have PR-skip guard"
+    PASS=$((PASS + 1))
+  elif [ -z "$base_prov_ifs" ]; then
+    echo "  FAIL: build-base-images provenance steps not found or missing PR guard"
+    FAIL=$((FAIL + 1))
+  else
+    echo "  FAIL: some build-base-images provenance steps missing PR-skip guard (see above)"
+    FAIL=$((FAIL + 1))
+  fi
+
+  local service_prov_ifs
+  service_prov_ifs=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.uses and (.uses | test("actions/attest-build-provenance@"))) | .if' "$WORKFLOW" || true)
+
+  local service_all_guarded=true
+  while IFS= read -r val; do
+    [ -z "$val" ] && continue
+    if [[ "$val" != *"github.event_name != 'pull_request'"* ]]; then
+      echo "  FAIL: build-service-images provenance step missing PR guard: $val"
+      FAIL=$((FAIL + 1))
+      service_all_guarded=false
+    fi
+  done <<< "$service_prov_ifs"
+
+  if $service_all_guarded && [ -n "$service_prov_ifs" ]; then
+    echo "  PASS: all build-service-images provenance steps have PR-skip guard"
+    PASS=$((PASS + 1))
+  elif [ -z "$service_prov_ifs" ]; then
+    echo "  FAIL: build-service-images provenance steps not found or missing PR guard"
+    FAIL=$((FAIL + 1))
+  else
+    echo "  FAIL: some build-service-images provenance steps missing PR-skip guard (see above)"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+# --- CC-0035: build provenance push-to-registry is true ---
+test_build_provenance_push_to_registry() {
+  echo "Test: build provenance push-to-registry is true (CC-0035)"
+
+  local base_push_values
+  base_push_values=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.uses and (.uses | test("actions/attest-build-provenance@"))) | .with["push-to-registry"]' "$WORKFLOW" || true)
+
+  local all_true=true
+  while IFS= read -r val; do
+    [ -z "$val" ] && continue
+    if [[ "$val" != "true" ]]; then
+      echo "  FAIL: build-base-images provenance step push-to-registry is not true: $val"
+      FAIL=$((FAIL + 1))
+      all_true=false
+    fi
+  done <<< "$base_push_values"
+
+  if $all_true && [ -n "$base_push_values" ]; then
+    echo "  PASS: all build-base-images provenance steps have push-to-registry: true"
+    PASS=$((PASS + 1))
+  elif [ -z "$base_push_values" ]; then
+    echo "  FAIL: no build-base-images provenance steps found (empty yq result)"
+    FAIL=$((FAIL + 1))
+  fi
+
+  local service_push
+  service_push=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.uses and (.uses | test("actions/attest-build-provenance@"))) | .with["push-to-registry"]' "$WORKFLOW" || true)
+  assert_eq "build-service-images provenance push-to-registry is true" "true" "$service_push"
+}
+
 # --- CC-0031: metadata-action steps exist in build-base-images (REQ-002) ---
 test_metadata_action_steps_exist_in_build_base_images() {
   echo "Test: metadata-action steps exist in build-base-images (CC-0031, REQ-002)"
@@ -1967,6 +2063,12 @@ echo ""
 test_sbom_attestation_push_to_registry
 echo ""
 test_sbom_steps_pr_skip_guard
+echo ""
+test_build_provenance_steps_exist
+echo ""
+test_build_provenance_steps_pr_skip_guard
+echo ""
+test_build_provenance_push_to_registry
 echo ""
 test_metadata_action_steps_exist_in_build_base_images
 echo ""
