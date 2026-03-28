@@ -315,14 +315,14 @@ The Tempest pod created by `run_tempest()`:
 | Name | `tempest-<service>` |
 | Image | `${TEMPEST_IMAGE}` with `imagePullPolicy: Never` |
 | Restart policy | `Never` |
-| Config mount | `/etc/tempest` (read-only, from ConfigMap) |
+| Config mount | `/mnt/tempest-config` (read-only, from ConfigMap) |
 | Credential source | `KEYSTONE_ADMIN_PASSWORD` env var from `keystone-admin` Secret |
 | Result location | `/tmp/tempest-results.xml` (JUnit XML) |
 
 The pod's inline script:
 
-1. Substitutes `${KEYSTONE_ADMIN_PASSWORD}` in `tempest.conf` via `sed`
-2. Initializes a Tempest workspace with `tempest init workspace`
+1. Initializes a Tempest workspace with `tempest init workspace`
+2. Substitutes `${KEYSTONE_ADMIN_PASSWORD}` in `tempest.conf` via `sed`
 3. Runs `tempest run --include-list --exclude-list`
 4. Converts subunit output to JUnit XML via `tempest last --subunit | subunit2junitxml`
 5. Exits with the Tempest exit code (non-zero on test failure)
@@ -470,10 +470,10 @@ test-refs.yaml ──yq──▶ TEMPEST_VERSION + KEYSTONE_TEMPEST_PLUGIN_VERSI
                  │         Never)                                   │
                  │  Env: KEYSTONE_ADMIN_PASSWORD (from              │
                  │       keystone-admin Secret)                     │
-                 │  Mount: /etc/tempest (from ConfigMap)            │
+                 │  Mount: /mnt/tempest-config (from ConfigMap)      │
                  │                                                  │
-                 │  1. sed substitute password in tempest.conf      │
-                 │  2. tempest init workspace                       │
+                 │  1. tempest init workspace                       │
+                 │  2. sed substitute password in tempest.conf      │
                  │  3. tempest run --include-list --exclude-list    │
                  │  4. tempest last --subunit | subunit2junitxml    │
                  │     ▶ /tmp/tempest-results.xml                   │

@@ -35,4 +35,6 @@ LABEL org.opencontainers.image.title="tempest" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.vendor="SAP SE"
 
+RUN chown openstack:openstack /var/lib/openstack
+
 USER openstack

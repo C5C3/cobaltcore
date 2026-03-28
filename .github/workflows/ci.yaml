@@ -293,6 +293,11 @@ jobs:
         run: |
           mkdir -p _output/reports
           chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/${{ matrix.operator }}/
+      - name: Deploy Keystone for Tempest
+        run: |
+          kubectl apply -f tests/e2e/keystone/basic-deployment/00-keystone-cr.yaml
+          kubectl wait keystone keystone-basic -n openstack \
+            --for=condition=Ready --timeout=300s
       # CC-0035 REQ-008: Build and run Tempest API tests after Chainsaw E2E.
       # Base images (python-base, venv-builder) are already built by the
       # "Build service image" step; Docker layer cache avoids rebuild.

@@ -221,25 +221,86 @@ spec:
           set -euo pipefail
           TEMPEST_RC=0
 
-          # Substitute admin password placeholder in tempest.conf.
+          mkdir -p /tmp/tempest-logs
+
+          # Ensure Tempest logs are always printed to stdout for kubectl logs.
+          trap 'echo "=== Tempest log ===" && cat /tmp/tempest-logs/tempest.log 2>/dev/null || echo "(no log file)" && echo "=== End Tempest log ==="' EXIT
+
+          echo "Initializing Tempest workspace..."
           cd /tmp
           tempest init workspace
           cd workspace
           sed "s|\\\${KEYSTONE_ADMIN_PASSWORD}|\${KEYSTONE_ADMIN_PASSWORD}|" \
-            /etc/tempest/tempest.conf > etc/tempest.conf
+            /mnt/tempest-config/tempest.conf > etc/tempest.conf
 
-          # Run Tempest with include/exclude lists.
+          # Verify password was substituted (diagnostic, no secrets in logs).
+          if grep -q '\${KEYSTONE_ADMIN_PASSWORD}' etc/tempest.conf; then
+            echo "ERROR: Password placeholder was not substituted in tempest.conf"
+            exit 1
+          fi
+          echo "Config ready (admin_password length: \${#KEYSTONE_ADMIN_PASSWORD})"
+
+          # Pre-flight: verify admin auth works before running Tempest.
+          echo "Verifying admin authentication..."
+          python3 << 'PYEOF'
+          import json, urllib.request, urllib.error, os, sys
+
+          base = 'http://keystone-basic-api.openstack.svc:5000/v3'
+          pw = os.environ['KEYSTONE_ADMIN_PASSWORD']
+
+          def post(url, data):
+              req = urllib.request.Request(url, json.dumps(data).encode(),
+                                          headers={'Content-Type': 'application/json'})
+              return urllib.request.urlopen(req)
+
+          # 1) Unscoped auth — tests credentials only.
+          unscoped = {'auth': {'identity': {'methods': ['password'],
+              'password': {'user': {'name': 'admin', 'password': pw,
+                                    'domain': {'name': 'Default'}}}}}}
+          try:
+              r = post(f'{base}/auth/tokens', unscoped)
+              token = r.headers['X-Subject-Token']
+              print(f'Unscoped auth OK (HTTP {r.status})')
+          except urllib.error.HTTPError as e:
+              print(f'Unscoped auth FAILED (HTTP {e.code}): {e.read().decode()[:500]}')
+              sys.exit(1)
+
+          # 2) Scoped auth — tests project existence.
+          scoped = dict(unscoped)
+          scoped['auth']['scope'] = {'project': {'name': 'admin',
+                                                  'domain': {'name': 'Default'}}}
+          try:
+              r = post(f'{base}/auth/tokens', scoped)
+              print(f'Scoped auth OK (HTTP {r.status})')
+          except urllib.error.HTTPError as e:
+              print(f'Scoped auth FAILED (HTTP {e.code}): {e.read().decode()[:500]}')
+
+          # 3) List projects visible to admin.
+          req = urllib.request.Request(f'{base}/auth/projects',
+                                      headers={'X-Auth-Token': token})
+          try:
+              r = urllib.request.urlopen(req)
+              projects = json.loads(r.read())
+              names = [p['name'] for p in projects.get('projects', [])]
+              print(f'Admin projects: {names}')
+          except urllib.error.HTTPError as e:
+              print(f'List projects FAILED (HTTP {e.code}): {e.read().decode()[:200]}')
+          PYEOF
+
+          echo "Running Tempest tests..."
           tempest run \
-            --include-list /etc/tempest/include-tests.txt \
-            --exclude-list /etc/tempest/exclude-tests.txt \
+            --include-list /mnt/tempest-config/include-tests.txt \
+            --exclude-list /mnt/tempest-config/exclude-tests.txt \
             || TEMPEST_RC=\$?
 
-          # Convert results to JUnit XML (best-effort).
+          echo "Converting results to JUnit XML..."
           tempest last --subunit 2>/dev/null \
             | subunit2junitxml > /tmp/tempest-results.xml 2>/dev/null || true
 
           exit \${TEMPEST_RC}
       env:
+        - name: TEMPEST_CONFIG_DIR
+          value: /tmp/workspace/etc
         - name: KEYSTONE_ADMIN_PASSWORD
           valueFrom:
             secretKeyRef:
@@ -247,7 +308,7 @@ spec:
               key: password
       volumeMounts:
         - name: tempest-config
-          mountPath: /etc/tempest
+          mountPath: /mnt/tempest-config
           readOnly: true
   volumes:
     - name: tempest-config
@@ -257,25 +318,23 @@ EOF
 
   log "Waiting up to ${TEMPEST_TIMEOUT}s for Tempest pod to complete..."
 
-  # Wait for pod to succeed. If it fails or times out, capture the exit code.
-  local rc=0
-  kubectl wait pod "${pod_name}" -n "${TEMPEST_NAMESPACE}" \
-    --for=jsonpath='{.status.phase}'=Succeeded \
-    --timeout="${TEMPEST_TIMEOUT}s" 2>/dev/null || rc=$?
-
-  if [[ "${rc}" -ne 0 ]]; then
-    local phase
+  local elapsed=0
+  local phase=""
+  while [[ "${elapsed}" -lt "${TEMPEST_TIMEOUT}" ]]; do
     phase=$(kubectl get pod "${pod_name}" -n "${TEMPEST_NAMESPACE}" \
       -o jsonpath='{.status.phase}' 2>/dev/null) || true
-
-    if [[ "${phase}" == "Failed" ]]; then
-      log "Tempest tests reported failures."
-    else
-      log "ERROR: Tempest pod did not complete within ${TEMPEST_TIMEOUT}s (phase: ${phase:-Unknown})."
-    fi
-  fi
-
-  return "${rc}"
+    case "${phase}" in
+      Succeeded) return 0 ;;
+      Failed)
+        log "Tempest tests reported failures."
+        return 1
+        ;;
+    esac
+    sleep 5
+    elapsed=$((elapsed + 5))
+  done
+  log "ERROR: Tempest pod did not complete within ${TEMPEST_TIMEOUT}s (phase: ${phase:-Unknown})."
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -295,7 +354,7 @@ collect_results() {
 
   # Print pod logs for CI visibility.
   log "--- Tempest pod logs ---"
-  kubectl logs "${pod_name}" -n "${TEMPEST_NAMESPACE}" 2>/dev/null || true
+  kubectl logs "${pod_name}" -n "${TEMPEST_NAMESPACE}" || true
   log "--- End of Tempest pod logs ---"
 
   if [[ -f "${OUTPUT_DIR}/tempest-${service}-results.xml" ]]; then
