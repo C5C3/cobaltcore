@@ -201,18 +201,23 @@ test_service_images_depend_on_base() {
 
   assert_contains "build-service-images needs build-base-images" "$needs" "build-base-images"
   assert_contains "build-service-images needs verify-base-images" "$needs" "verify-base-images"
+  assert_contains "build-service-images needs generate-matrix" "$needs" "generate-matrix"
 }
 
-# --- REQ-004: Matrix includes service and release ---
+# --- REQ-004: Matrix is dynamic via fromJson ---
 test_matrix_includes_service_and_release() {
-  echo "Test: matrix includes service and release (REQ-004)"
+  echo "Test: matrix is dynamic via fromJson(needs.generate-matrix.outputs.matrix) (REQ-004)"
 
-  local services releases
-  services=$(yq_raw '.jobs["build-service-images"]["strategy"]["matrix"]["service"][]' "$WORKFLOW" || true)
-  releases=$(yq_raw '.jobs["build-service-images"]["strategy"]["matrix"]["release"][]' "$WORKFLOW" || true)
+  local matrix_expr
+  matrix_expr=$(yq_raw '.jobs["build-service-images"]["strategy"]["matrix"]' "$WORKFLOW" || true)
 
-  assert_contains "matrix includes keystone service" "$services" "keystone"
-  assert_contains "matrix includes 2025.2 release" "$releases" "2025.2"
+  assert_contains "build-service-images matrix uses fromJson" "$matrix_expr" "fromJson"
+  assert_contains "build-service-images matrix reads generate-matrix output" "$matrix_expr" "generate-matrix"
+
+  local gen_matrix_output
+  gen_matrix_output=$(yq_raw '.jobs["generate-matrix"]["outputs"]["matrix"]' "$WORKFLOW" || true)
+
+  assert_contains "generate-matrix job exposes matrix output" "$gen_matrix_output" "matrix"
 }
 
 # --- REQ-004: Source ref resolution step exists ---
@@ -328,16 +333,18 @@ test_verify_service_images_depends_on_service_images() {
 
   assert_contains "verify-service-images needs build-service-images" "$needs" "build-service-images"
   assert_contains "verify-service-images needs test-service-images" "$needs" "test-service-images"
+  assert_contains "verify-service-images needs generate-matrix" "$needs" "generate-matrix"
 }
 
-# --- REQ-007: verify-service-images has its own matrix strategy for multi-service support ---
+# --- REQ-007: verify-service-images uses dynamic matrix via fromJson ---
 test_verify_service_images_has_matrix() {
-  echo "Test: verify-service-images has its own matrix strategy (REQ-007)"
+  echo "Test: verify-service-images uses dynamic matrix via fromJson (REQ-007)"
 
-  local services
-  services=$(yq_raw '.jobs["verify-service-images"]["strategy"]["matrix"]["service"][]' "$WORKFLOW" || true)
+  local matrix_expr
+  matrix_expr=$(yq_raw '.jobs["verify-service-images"]["strategy"]["matrix"]' "$WORKFLOW" || true)
 
-  assert_contains "verify-service-images matrix includes keystone" "$services" "keystone"
+  assert_contains "verify-service-images matrix uses fromJson" "$matrix_expr" "fromJson"
+  assert_contains "verify-service-images matrix reads generate-matrix output" "$matrix_expr" "generate-matrix"
 }
 
 # --- REQ-007: verify-service-images derives image ref independently ---
@@ -640,13 +647,12 @@ test_test_service_images_depends_on_base() {
 test_test_service_images_has_matrix() {
   echo "Test: test-service-images has matrix strategy (CC-0034 REQ-001)"
 
-  local services releases fail_fast
-  services=$(yq_raw '.jobs["test-service-images"]["strategy"]["matrix"]["service"][]' "$WORKFLOW" || true)
-  releases=$(yq_raw '.jobs["test-service-images"]["strategy"]["matrix"]["release"][]' "$WORKFLOW" || true)
+  local matrix_expr fail_fast
+  matrix_expr=$(yq_raw '.jobs["test-service-images"]["strategy"]["matrix"]' "$WORKFLOW" || true)
   fail_fast=$(yq_raw '.jobs["test-service-images"]["strategy"]["fail-fast"]' "$WORKFLOW" || echo "null")
 
-  assert_contains "test-service-images matrix includes keystone" "$services" "keystone"
-  assert_contains "test-service-images matrix includes release 2025.2" "$releases" "2025.2"
+  assert_contains "test-service-images matrix uses fromJson" "$matrix_expr" "fromJson"
+  assert_contains "test-service-images matrix reads generate-matrix output" "$matrix_expr" "generate-matrix"
   assert_eq "test-service-images has fail-fast: false" "false" "$fail_fast"
 }
 

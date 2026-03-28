@@ -342,8 +342,41 @@ jobs:
           VENV_BUILDER_IMAGE: ${{ needs.build-base-images.outputs.venv-builder-image }}
         run: bash tests/container-images/verify_venv_builder.sh "$VENV_BUILDER_IMAGE"
 
-  build-service-images:
+  generate-matrix:
     needs: [build-base-images, verify-base-images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: mikefarah/yq@b534aa9ee5d38001fba3cd8fe254a037e4847b37 # v4.45.4
+
+      - name: Generate service×release matrix
+        id: matrix
+        run: |
+          matrix=$(
+            shopt -s nullglob
+            dirs=(releases/*/)
+            if [[ ${#dirs[@]} -eq 0 ]]; then
+              echo '{"include":[]}'
+            else
+              for release_dir in "${dirs[@]}"; do
+                release="${release_dir%/}"
+                release="${release#releases/}"
+                while IFS= read -r service; do
+                  echo "{\"service\":\"${service}\",\"release\":\"${release}\"}"
+                done < <(yq 'keys | .[]' "releases/${release}/source-refs.yaml")
+              done | jq -sc '{"include": .}'
+            fi
+          )
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+
+  build-service-images:
+    needs: [build-base-images, verify-base-images, generate-matrix]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -354,9 +387,7 @@ jobs:
       security-events: write  # CC-0032: GitHub Security tab SARIF upload
     strategy:
       fail-fast: false
-      matrix:
-        service: [keystone]
-        release: ["2025.2"]
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -578,7 +609,7 @@ jobs:
 
   # CC-0034: Run upstream unit tests for each service inside the venv-builder container
   test-service-images:
-    needs: [build-base-images, verify-base-images]
+    needs: [build-base-images, verify-base-images, generate-matrix]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -612,9 +643,7 @@ jobs:
           --health-retries=5
     strategy:
       fail-fast: false
-      matrix:
-        service: [keystone]
-        release: ["2025.2"]
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -754,7 +783,7 @@ jobs:
 
   verify-service-images:
     if: github.event_name != 'pull_request'
-    needs: [build-service-images, test-service-images]
+    needs: [build-service-images, test-service-images, generate-matrix]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -762,9 +791,7 @@ jobs:
       packages: read
     strategy:
       fail-fast: false
-      matrix:
-        service: [keystone]
-        release: ["2025.2"]
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
