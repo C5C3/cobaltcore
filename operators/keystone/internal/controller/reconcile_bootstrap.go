@@ -101,15 +101,16 @@ print(f"[pre-bootstrap] local_users={len(local_users)}: {local_users[:5]}")
 conn.close()
 '
 
-# Diagnostic: print what oslo.config resolves as the database connection.
-python3 -c '
-from oslo_config import cfg
-import keystone.conf
-keystone.conf.configure(cfg.CONF)
-cfg.CONF(["--config-file", "/etc/keystone/keystone.conf.d/keystone.conf"], project="keystone")
-c = cfg.CONF.database.connection
-print(f"[oslo.config] database.connection = {c[:20]}...{c[-30:]}" if len(c) > 50 else f"[oslo.config] database.connection = {c}")
-' 2>&1 || echo "[oslo.config] FAILED to read config"
+# Diagnostic: dump everything relevant.
+echo "[diag] === config-dir listing ==="
+ls -la /etc/keystone/keystone.conf.d/ 2>&1
+echo "[diag] === keystone.conf FULL CONTENT ==="
+cat /etc/keystone/keystone.conf.d/keystone.conf 2>&1
+echo "[diag] === default config at /etc/keystone/keystone.conf ==="
+cat /etc/keystone/keystone.conf 2>&1 || echo "(does not exist)"
+echo "[diag] === SQLite .db files ==="
+find / -name "*.db" 2>/dev/null | head -10 || echo "(none)"
+echo "[diag] === end ==="
 
 exec keystone-manage --config-file /etc/keystone/keystone.conf.d/keystone.conf bootstrap \
   --bootstrap-password "$BOOTSTRAP_PASSWORD" \
