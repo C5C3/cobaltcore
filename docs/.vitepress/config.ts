@@ -13,6 +13,12 @@ export default defineConfig({
     ],
     sidebar: [
       {
+        text: 'Getting Started',
+        items: [
+          { text: 'Quick Start (Kind)', link: '/quick-start' },
+        ],
+      },
+      {
         text: 'Reference',
         items: [
           { text: 'Keystone CRD', link: '/reference/keystone-crd' },
