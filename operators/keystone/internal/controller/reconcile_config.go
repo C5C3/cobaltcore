@@ -30,6 +30,7 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 		"DEFAULT": {
 			"keystone_user":  "",
 			"keystone_group": "",
+			"debug":          "true",
 		},
 		"token": {
 			"provider": "fernet",

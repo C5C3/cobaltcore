@@ -212,6 +212,17 @@ run_tempest() {
     kubectl get -n "${TEMPEST_NAMESPACE}" "${cm}" -o jsonpath='{.data.keystone\.conf}' 2>/dev/null \
       | grep -E '^\[|^connection |^methods |^provider ' || true
   done
+  # 4) Exec into API pod: verify config and fernet keys are mounted.
+  local api_pod
+  api_pod=$(kubectl get pods -n "${TEMPEST_NAMESPACE}" -o name 2>/dev/null \
+    | grep "keystone-tempest-api" | head -1 | sed 's|pod/||') || true
+  if [[ -n "${api_pod}" ]]; then
+    log "API pod: ${api_pod}"
+    kubectl exec -n "${TEMPEST_NAMESPACE}" "${api_pod}" -- \
+      sh -c 'echo "=== config ===" && grep -E "^\[|connection" /etc/keystone/keystone.conf.d/keystone.conf && echo "=== fernet keys ===" && ls /etc/keystone/fernet-keys/' 2>&1 || true
+  else
+    log "WARNING: No keystone-tempest-api pod found"
+  fi
   log "--- End diagnostics ---"
 
   log "Running Tempest pod '${pod_name}' in namespace '${TEMPEST_NAMESPACE}'..."
