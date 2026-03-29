@@ -33,7 +33,7 @@ import (
 // back to the Kubernetes Secret via the API using the pod's ServiceAccount token.
 // Only Python standard library modules are used to avoid image dependencies (CC-0013).
 const fernetRotateScript = `set -e
-keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ fernet_rotate
+keystone-manage --config-file=/etc/keystone/keystone.conf.d/keystone.conf fernet_rotate
 python3 << 'PYTHON'
 import os, json, base64, glob, ssl, http.client
 data = {}

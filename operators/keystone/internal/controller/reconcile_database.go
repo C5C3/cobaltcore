@@ -176,7 +176,7 @@ func buildDBSyncJob(keystone *keystonev1alpha1.Keystone, configMapName string) *
 					Containers: []corev1.Container{{
 						Name:    "db-sync",
 						Image:   fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag),
-						Command: []string{"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync"},
+						Command: []string{"keystone-manage", "--config-file=/etc/keystone/keystone.conf.d/keystone.conf", "db_sync"},
 						VolumeMounts: []corev1.VolumeMount{{
 							Name:      "config",
 							MountPath: "/etc/keystone/keystone.conf.d/",

@@ -130,7 +130,7 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 							"--need-app",
 							"--processes", "2",
 							"--threads", "2",
-							"--pyargv=--config-dir=/etc/keystone/keystone.conf.d/",
+							"--pyargv=--config-file=/etc/keystone/keystone.conf.d/keystone.conf",
 						},
 						Ports: []corev1.ContainerPort{{
 							Name:          "keystone-api",
