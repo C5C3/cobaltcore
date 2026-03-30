@@ -61,13 +61,14 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 
 | Job | Additional Permissions | Reason |
 | --- | --- | --- |
-| `build-and-push` | `packages: write` | Push container images to GHCR |
+| `build-and-push` | `packages: write` | Push per-platform operator image digests to GHCR |
+| `merge-operator-images` | `packages: write` | Push final multi-arch operator image manifest list |
 | `helm-push` | `packages: write` | Push Helm charts to GHCR OCI registry |
 | `github-release` | `contents: write` | Create GitHub Releases |
 
 ## Job Dependency DAG
 
-The workflow defines 11 jobs organised in a directed acyclic graph (CC-0018):
+The workflow defines 12 jobs organised in a directed acyclic graph (CC-0018):
 
 ```
 Gate Jobs (always run):
@@ -82,11 +83,12 @@ E2E Jobs (depends on gates):
   e2e-keystone ──> needs: [lint, shellcheck, test, test-integration, verify-codegen]
 
 Publish Jobs (main/tags only, depends on E2E):
-  build-and-push ──> needs: [e2e-keystone], if: push event
-  helm-push ────────> needs: [e2e-keystone], if: push event
+  build-and-push (matrix: operator × platform) ──> needs: [e2e-keystone], if: push event
+    └──> merge-operator-images ──> needs: [build-and-push], if: push event
+  helm-push ──> needs: [e2e-keystone], if: push event
 
 Release Job (v* tags only, depends on publish):
-  github-release ──> needs: [build-and-push, helm-push], if: v* tag
+  github-release ──> needs: [merge-operator-images, helm-push], if: v* tag
 
 Independent:
   docs (no dependencies, no gates)
@@ -278,20 +280,63 @@ build, Helm deploy, and Chainsaw test execution).
 
 ### build-and-push
 
-Builds and pushes operator container images to GHCR (CC-0018 REQ-006). Runs only on push
-events (main branch or v* tags) — skipped on pull requests.
+Builds operator container images per platform on native runners and pushes each
+single-arch image by digest (CC-0018 REQ-006). Runs only on push events (main branch or
+v* tags) — skipped on pull requests. The multi-arch manifest list and final tags are
+assembled by the subsequent `merge-operator-images` job.
 
-**Dependencies:** `needs: [e2e-keystone]`
-**Condition:** `if: github.event_name == 'push'`
+**Dependencies:** `needs: [changes, e2e-operator]`
+**Condition:** `if: github.event_name == 'push' && needs.e2e-operator.result == 'success'`
 **Permissions:** `contents: read`, `packages: write`
 
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
-| 2 | `docker/setup-buildx-action@v4` | Sets up Docker Buildx for multi-platform builds |
-| 3 | `docker/login-action@v4` | Authenticates to GHCR (`github.actor` / `GITHUB_TOKEN`) |
-| 4 | `docker/metadata-action@v6` | Generates OCI labels and image tags (two-layer annotation pattern) |
-| 5 | `docker/build-push-action@v7` | Builds and pushes image with GHA cache, OCI labels |
+| 2 | Prepare platform pair | Shell | Converts `linux/amd64` → `linux-amd64` for artifact names and cache scopes |
+| 3 | `docker/setup-buildx-action@v4` | Sets up Docker Buildx |
+| 4 | `docker/login-action@v4` | Authenticates to GHCR (`github.actor` / `GITHUB_TOKEN`) |
+| 5 | `docker/metadata-action@v6` | Generates OCI labels (two-layer annotation pattern) |
+| 6 | `docker/build-push-action@v7` | Builds single-platform image; `push-by-digest=true`; digest exported as artifact |
+| 7 | Export digest | Shell | Writes digest filename to `/tmp/digests/` |
+| 8 | Upload digest | `actions/upload-artifact@v7` | Artifact name: `digests-operator-<operator>-<platform-pair>`, retention: 1 day |
+
+**Matrix strategy:**
+
+```yaml
+strategy:
+  fail-fast: false
+  matrix:
+    operator: ${{ fromJson(needs.changes.outputs.e2e-operators).operator }}
+    platform: [linux/amd64, linux/arm64]
+    include:
+      - platform: linux/amd64
+        runner: ubuntu-latest
+      - platform: linux/arm64
+        runner: ubuntu-24.04-arm
+```
+
+Build context is the repository root (required by `go.work`), with the Dockerfile at
+`operators/<operator>/Dockerfile`. GitHub Actions cache (`type=gha`) is scoped per
+platform (`<operator>-operator-linux-amd64` / `<operator>-operator-linux-arm64`).
+
+### merge-operator-images
+
+Downloads per-platform digests from `build-and-push`, assembles the multi-arch manifest
+list, and pushes it with the final tags (CC-0018 REQ-006).
+
+**Dependencies:** `needs: [changes, build-and-push]`
+**Condition:** `if: github.event_name == 'push' && needs.build-and-push.result == 'success'`
+**Permissions:** `contents: read`, `packages: write`
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 2 | `docker/setup-buildx-action@v4` + `docker/login-action@v4` | Authenticates to GHCR |
+| 3 | `docker/metadata-action@v6` | Generates final image tags |
+| 4 | Download digests | `actions/download-artifact@v4` | Downloads all `digests-operator-<operator>-*` artifacts |
+| 5 | Create and push manifest list | Shell | `docker buildx imagetools create` assembles per-platform digests under the final tags from step 3 |
+
+**Matrix strategy:** Same `operator` dimension as `build-and-push` (via `fromJson(needs.changes.outputs.e2e-operators)`).
 
 **Image tagging strategy:**
 
@@ -301,18 +346,7 @@ events (main branch or v* tags) — skipped on pull requests.
 | Push v* tag (from main) | `sha-<full-sha>`, `latest`, `<version>` (e.g. `0.1.0`, v prefix stripped) |
 | Push v* tag (from non-main) | `sha-<full-sha>`, `<version>` (no `latest` — restricted to default branch) |
 
-**Matrix strategy:**
-
-```yaml
-strategy:
-  matrix:
-    operator: [keystone]
-```
-
-Images are pushed to `ghcr.io/c5c3/<operator>-operator:<tag>`. Build context is the
-repository root (required by `go.work`), with the Dockerfile at
-`operators/<operator>/Dockerfile`. GitHub Actions cache (`type=gha`) is used for layer
-caching.
+Images are published at `ghcr.io/c5c3/<operator>-operator:<tag>`.
 
 ### helm-push
 
@@ -353,8 +387,8 @@ When `CHART_VERSION` is set (for tag pushes), it overrides the version in `Chart
 Creates a GitHub Release with auto-generated release notes on v* tag pushes (CC-0018
 REQ-008).
 
-**Dependencies:** `needs: [build-and-push, helm-push]`
-**Condition:** `if: startsWith(github.ref, 'refs/tags/v')`
+**Dependencies:** `needs: [changes, merge-operator-images, helm-push]`
+**Condition:** `if: startsWith(github.ref, 'refs/tags/v') && needs.merge-operator-images.result == 'success' && needs.helm-push.result == 'success'`
 **Permissions:** `contents: write`
 
 | Step | Action | Details |
@@ -364,8 +398,9 @@ REQ-008).
 | 3 | Package Helm charts | Packages operator Helm charts with release version |
 | 4 | `softprops/action-gh-release@v2` | Creates release with `generate_release_notes: true` and attaches chart tarballs |
 
-This job runs only after both `build-and-push` and `helm-push` complete successfully,
-ensuring all artifacts are published before the release is created. Helm chart tarballs
+This job runs only after both `merge-operator-images` and `helm-push` complete
+successfully, ensuring the final multi-arch manifest list and charts are published before
+the release is created. Helm chart tarballs
 are attached as release assets for direct download. Timeout: 5 minutes.
 
 ## Go Setup Convention

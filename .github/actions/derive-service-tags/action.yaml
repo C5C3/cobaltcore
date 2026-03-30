@@ -1,0 +1,71 @@
+name: Derive service image tags
+description: >
+  Compute the image name and all tags (composite, version, SHA) for a service
+  image. Used by both build-service-images and merge-service-images so that
+  tag derivation stays in a single, authoritative location.
+
+inputs:
+  service:
+    description: OpenStack service name (e.g. keystone)
+    required: true
+  release:
+    description: Release directory name (e.g. 2025.2)
+    required: true
+  repository-owner:
+    description: GitHub repository owner (github.repository_owner)
+    required: true
+
+outputs:
+  image:
+    description: Bare image name without tag (e.g. ghcr.io/owner/keystone)
+    value: ${{ steps.run.outputs.image }}
+  composite:
+    description: Full composite tag reference (e.g. ghcr.io/owner/keystone:28.0.0-p0-main-abc1234)
+    value: ${{ steps.run.outputs.composite }}
+  version:
+    description: Version-only tag reference (e.g. ghcr.io/owner/keystone:28.0.0)
+    value: ${{ steps.run.outputs.version }}
+  sha:
+    description: Short-SHA tag reference (e.g. ghcr.io/owner/keystone:abc1234)
+    value: ${{ steps.run.outputs.sha }}
+  version-ref:
+    description: Raw upstream version string (e.g. 28.0.0)
+    value: ${{ steps.run.outputs.version-ref }}
+
+runs:
+  using: composite
+  steps:
+    - name: Derive tags
+      id: run
+      shell: bash
+      env:
+        MATRIX_SERVICE: ${{ inputs.service }}
+        MATRIX_RELEASE: ${{ inputs.release }}
+        IMAGE_OWNER: ${{ inputs.repository-owner }}
+      run: |
+        VERSION=$(yq ".\"${MATRIX_SERVICE}\"" "releases/${MATRIX_RELEASE}/source-refs.yaml")
+        if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+          echo "::error::No source-ref found for '${MATRIX_SERVICE}' in releases/${MATRIX_RELEASE}/source-refs.yaml"
+          exit 1
+        fi
+
+        IMAGE_OWNER="${IMAGE_OWNER,,}"
+        SHORT_SHA="${GITHUB_SHA::7}"
+        BRANCH="${GITHUB_REF_NAME//\//-}"
+
+        PATCH_DIR="patches/${MATRIX_SERVICE}/${MATRIX_RELEASE}"
+        if [ -d "$PATCH_DIR" ]; then
+          PATCH_COUNT=$(find "$PATCH_DIR" -name '*.patch' -type f | wc -l | xargs)
+        else
+          PATCH_COUNT=0
+        fi
+
+        IMAGE="ghcr.io/${IMAGE_OWNER}/${MATRIX_SERVICE}"
+        COMPOSITE="${VERSION}-p${PATCH_COUNT}-${BRANCH}-${SHORT_SHA}"
+
+        echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+        echo "composite=${IMAGE}:${COMPOSITE}" >> "$GITHUB_OUTPUT"
+        echo "version=${IMAGE}:${VERSION}" >> "$GITHUB_OUTPUT"
+        echo "sha=${IMAGE}:${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+        echo "version-ref=${VERSION}" >> "$GITHUB_OUTPUT"
+        echo "Tags: ${COMPOSITE}, ${VERSION}, ${SHORT_SHA}"

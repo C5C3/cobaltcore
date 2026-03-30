@@ -464,14 +464,88 @@ jobs:
           path: _output/reports/
           retention-days: 14
 
-  # CC-0018, REQ-006: Build and push operator container images to GHCR.
+  # CC-0018, REQ-006: Build operator container images per platform on native runners.
+  # Each platform is pushed by digest; merge-operator-images assembles the manifest list.
   # Runs only on push events (main branch or v* tags) after E2E passed.
-  # Tags images with commit SHA and latest; adds version tag for v* tag pushes.
   build-and-push:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     needs: [changes, e2e-operator]
     if: github.event_name == 'push' && needs.e2e-operator.result == 'success'
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        operator: ${{ fromJson(needs.changes.outputs.e2e-operators).operator }}
+        platform: [linux/amd64, linux/arm64]
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Prepare platform pair
+        id: platform-pair
+        run: echo "value=${PLATFORM//\//-}" >> "$GITHUB_OUTPUT"
+        env:
+          PLATFORM: ${{ matrix.platform }}
+
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
+      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # CC-0018: Generate OCI annotations consistent with the two-layer OCI annotation
+      # pattern in build-images.yaml. type=semver strips the v prefix (v0.1.0 -> 0.1.0).
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
+        with:
+          images: ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator
+          labels: |
+            org.opencontainers.image.title=${{ matrix.operator }}-operator
+            org.opencontainers.image.description=Kubernetes operator for OpenStack ${{ matrix.operator }}
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.vendor=SAP SE
+
+      - uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
+        id: build
+        with:
+          context: .
+          file: operators/${{ matrix.operator }}/Dockerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+          tags: ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.operator }}-operator-${{ steps.platform-pair.outputs.value }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.operator }}-operator-${{ steps.platform-pair.outputs.value }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: digests-operator-${{ matrix.operator }}-${{ steps.platform-pair.outputs.value }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # CC-0018, REQ-006: Assemble per-platform digests into multi-arch manifest lists
+  # and push with final tags (SHA, latest, semver).
+  merge-operator-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [changes, build-and-push]
+    if: github.event_name == 'push' && needs.build-and-push.result == 'success'
     permissions:
       contents: read
       packages: write
@@ -486,8 +560,8 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # CC-0018: Generate OCI annotations and tags via docker/metadata-action,
-      # consistent with the two-layer OCI annotation pattern in build-images.yaml.
+
+      # CC-0018: Generate OCI tags via docker/metadata-action.
       # type=semver strips the v prefix (v0.1.0 -> 0.1.0).
       - name: Generate image metadata
         id: meta
@@ -503,16 +577,23 @@ jobs:
             org.opencontainers.image.description=Kubernetes operator for OpenStack ${{ matrix.operator }}
             org.opencontainers.image.licenses=Apache-2.0
             org.opencontainers.image.vendor=SAP SE
-      - uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
+
+      - name: Download digests
+        uses: actions/download-artifact@c850b930e6ba138125429b7e5c93fc707a7f8427 # v4.1.4
         with:
-          context: .
-          file: operators/${{ matrix.operator }}/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.operator }}-operator
-          cache-to: type=gha,mode=max,scope=${{ matrix.operator }}-operator
+          pattern: digests-operator-${{ matrix.operator }}-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: Create and push manifest list
+        env:
+          IMAGE: ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator
+        run: |
+          cd /tmp/digests
+          [[ $(ls | wc -l) -ge 1 ]] || { echo "::error::No digests found for ${{ matrix.operator }}-operator"; exit 1; }
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${IMAGE}@sha256:%s " *)
 
   # CC-0018, REQ-007: Package and push operator Helm charts to GHCR OCI registry.
   # Runs only on push events after E2E passed. Uses versioned chart packaging
@@ -551,10 +632,10 @@ jobs:
   github-release:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [changes, build-and-push, helm-push]
+    needs: [changes, merge-operator-images, helm-push]
     if: |
       startsWith(github.ref, 'refs/tags/v') &&
-      needs.build-and-push.result == 'success' &&
+      needs.merge-operator-images.result == 'success' &&
       needs.helm-push.result == 'success'
     permissions:
       contents: write

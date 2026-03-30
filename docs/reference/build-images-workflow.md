@@ -69,18 +69,20 @@ permissions:
   packages: read
 ```
 
-`contents: read` allows repository checkout. `packages: write` is granted only to
-`build-base-images` and `build-service-images` for pushing images to GHCR.
+`contents: read` allows repository checkout. `packages: write` is granted to
+`build-base-images`, `build-service-images` (for pushing per-platform digests) and
+to `merge-base-images`, `merge-service-images` (for pushing manifest lists).
 `id-token: write` enables Sigstore keyless OIDC signing — the GitHub Actions runner
 requests a short-lived OIDC token bound to the workflow identity, which Sigstore uses to
 sign the attestation without managing keys (CC-0029). `attestations: write` grants
 access to the GitHub Attestations API for storing signed attestations.
 `security-events: write` allows uploading Grype vulnerability scan results in SARIF
-format to the GitHub Security tab (CC-0032). The verification jobs (`verify-base-images`,
-`verify-service-images`) do **not** receive `id-token`, `attestations`, or
-`security-events` permissions — they only need `contents: read` (for checkout and test
-scripts) and `packages: read` (for pulling images from GHCR), following the principle of
-least privilege (CC-0028).
+format to the GitHub Security tab (CC-0032). These three permissions are scoped to the
+merge jobs (`merge-base-images`, `merge-service-images`), not the per-platform build jobs.
+The verification jobs (`verify-base-images`, `verify-service-images`) do **not** receive
+`id-token`, `attestations`, or `security-events` permissions — they only need
+`contents: read` (for checkout and test scripts) and `packages: read` (for pulling images
+from GHCR), following the principle of least privilege (CC-0028).
 
 ## Concurrency
 
@@ -98,40 +100,48 @@ ensuring every merge commit produces a complete set of images.
 
 ## Jobs
 
-The workflow defines five jobs with a dependency graph (CC-0028, CC-0034):
+The workflow defines seven jobs with a dependency graph (CC-0028, CC-0034):
 
 ```text
-build-base-images ──> verify-base-images ──┬──> build-service-images ──┬──> verify-service-images (push only)
-                                           │                           │
-                                           └──> test-service-images  ──┘
-                                                      │
-                                                      └── stestr run (upstream unit tests)
+build-base-images (matrix: amd64 + arm64)
+  └──> merge-base-images ──> verify-base-images ──┬──> build-service-images (matrix: service × release × platform)
+                                                  │       └──> merge-service-images ──> verify-service-images (push only)
+                                                  │
+                                                  └──> test-service-images
+                                                            └── stestr run (upstream unit tests)
 ```
+
+Each platform (linux/amd64 on `ubuntu-latest`, linux/arm64 on `ubuntu-24.04-arm`) is
+built on a native runner and pushed by digest. `merge-base-images` then assembles the
+multi-arch manifest list and runs SBOM generation, vulnerability scanning, attestation,
+and cosign signing on the final manifest. The same pattern applies to service images via
+`build-service-images` and `merge-service-images`.
 
 The `verify-base-images` job validates base image properties (Python version, user
 UID/GID, PATH, uv version) before service image builds begin. This catches base image
 regressions before they cascade into service image failures. The `test-service-images`
 job (CC-0034) runs upstream unit tests for each service inside the `venv-builder`
 container, in parallel with `build-service-images`. On push events, the
-`verify-service-images` job validates service images pulled from GHCR and gates on both
-`build-service-images` and `test-service-images`. On PRs, the equivalent image
+`verify-service-images` job validates service images pulled from GHCR and gates on
+`merge-service-images` and `test-service-images`. On PRs, the equivalent image
 verification runs as an inline step within `build-service-images` because `--load` makes
-the image available only on the same runner.
+the image available only on the same runner (ARM64 is excluded on PRs).
 
 ### build-base-images
 
-Builds the two base images (`python-base` and `venv-builder`) sequentially and pushes
-them to GHCR (REQ-002). These must always be pushed — even on PRs — because downstream
-service builds reference them via `docker-image://` URIs, which require registry
-availability.
+Builds the two base images (`python-base` and `venv-builder`) per platform on native
+runners and pushes each single-arch image by digest (REQ-002). These must always be
+pushed — even on PRs — because downstream service builds reference them via
+`docker-image://` URIs, which require registry availability. The multi-arch manifest list
+is assembled by the subsequent `merge-base-images` job.
 
 | Property | Value |
 | --- | --- |
-| `runs-on` | `ubuntu-latest` |
+| `runs-on` | <code v-pre>${{ matrix.runner }}</code> (`ubuntu-latest` for amd64, `ubuntu-24.04-arm` for arm64) |
 | `timeout-minutes` | `30` |
 | `needs` | *(none — first job)* |
-| Architectures | `linux/amd64,linux/arm64` (always multi-arch) |
-| Push behavior | Always pushes to GHCR (even on PRs) |
+| Matrix | `platform: [linux/amd64, linux/arm64]` × native runner |
+| Push behavior | Pushes by digest to GHCR (even on PRs); tags assigned by `merge-base-images` |
 
 **Steps:**
 
@@ -142,29 +152,53 @@ availability.
 | 1 | Reject fork PRs | Shell (conditional) | Fails fast with `::error::` if the PR originates from a fork (CC-0007) |
 | 2 | Checkout | `actions/checkout@v6` | Checks out the repository |
 | 3 | Normalize image owner | Shell script | Outputs lowercase `owner` value from `${{ github.repository_owner }}` for use in image references (CC-0007) |
-| 4 | Set up Buildx | `docker/setup-buildx-action@v4` | Enables multi-platform builds |
-| 5 | Login to GHCR | `docker/login-action@v4` | Authenticates with `GITHUB_TOKEN` |
-| 6 | Install cosign | `sigstore/cosign-installer@v4` | Installs cosign for image signing (CC-0030) |
+| 4 | Prepare platform pair | Shell | Converts `linux/amd64` → `linux-amd64` for use in artifact names and cache scopes |
+| 5 | Set up Buildx | `docker/setup-buildx-action@v4` | Enables single-platform builds on the native runner |
+| 6 | Login to GHCR | `docker/login-action@v4` | Authenticates with `GITHUB_TOKEN` |
 | 7 | Generate metadata for python-base | `docker/metadata-action@v5` | Produces OCI labels (title, description, licenses, vendor) for python-base (CC-0031) |
-| 8 | Build python-base | `docker/build-push-action@v7` | Context: `images/python-base`, multi-arch, push: true, tags: `:latest` and `:${{ github.sha }}`, labels from step 7 |
-| 9 | Generate SBOM for python-base | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed python-base image by digest. Output: `sbom-python-base.cyclonedx.json` (CC-0029) |
-| 10 | Scan python-base for vulnerabilities | `anchore/scan-action@v7` | Scans via SBOM on push, via image on PR. Reports high/critical CVEs without failing the build (`fail-build: false`). Output: SARIF (CC-0032) |
-| 11 | Upload SARIF for python-base | `github/codeql-action/upload-sarif@v3` | Runs always when SARIF output exists (`if: always() && outputs.sarif != ''`). Uploads Grype results to GitHub Security tab with category `grype-python-base` (CC-0032) |
-| 12 | Attest SBOM for python-base | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
-| 13 | Sign python-base | Shell | Skipped on PRs. Signs python-base by digest with cosign keyless OIDC (`cosign sign --yes`) (CC-0030) |
-| 14 | Generate metadata for venv-builder | `docker/metadata-action@v5` | Produces OCI labels (title, description, licenses, vendor) for venv-builder (CC-0031) |
-| 15 | Build venv-builder | `docker/build-push-action@v7` | Context: `images/venv-builder`, multi-arch, push: true, tags: `:latest` and `:${{ github.sha }}`, labels from step 14, `--build-context python-base=docker-image://...` |
-| 16 | Generate SBOM for venv-builder | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed venv-builder image by digest. Output: `sbom-venv-builder.cyclonedx.json` (CC-0029) |
-| 17 | Scan venv-builder for vulnerabilities | `anchore/scan-action@v7` | Scans via SBOM on push, via image on PR. Reports high/critical CVEs without failing the build (`fail-build: false`). Output: SARIF (CC-0032) |
-| 18 | Upload SARIF for venv-builder | `github/codeql-action/upload-sarif@v3` | Runs always when SARIF output exists (`if: always() && outputs.sarif != ''`). Uploads Grype results to GitHub Security tab with category `grype-venv-builder` (CC-0032) |
-| 19 | Attest SBOM for venv-builder | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
-| 20 | Sign venv-builder | Shell | Skipped on PRs. Signs venv-builder by digest with cosign keyless OIDC (`cosign sign --yes`) (CC-0030) |
+| 8 | Build python-base | `docker/build-push-action@v7` | Context: `images/python-base`, single platform, `push-by-digest=true`; digest exported as artifact |
+| 9 | Export python-base digest | Shell | Writes digest filename to `/tmp/digests/python-base/` |
+| 10 | Upload python-base digest | `actions/upload-artifact@v7` | Artifact name: `digests-python-base-<platform-pair>`, retention: 1 day |
+| 11 | Generate metadata for venv-builder | `docker/metadata-action@v5` | Produces OCI labels for venv-builder (CC-0031) |
+| 12 | Build venv-builder | `docker/build-push-action@v7` | Context: `images/venv-builder`, single platform, `push-by-digest=true`; uses python-base from step 8 by digest |
+| 13 | Export venv-builder digest | Shell | Writes digest filename to `/tmp/digests/venv-builder/` |
+| 14 | Upload venv-builder digest | `actions/upload-artifact@v7` | Artifact name: `digests-venv-builder-<platform-pair>`, retention: 1 day |
 
 :::
 
-The `venv-builder` build uses a `docker-image://` build context pointing at the
-just-pushed `python-base` image (referenced by digest), ensuring its `FROM python-base`
-directive resolves to the exact image built in step 7.
+### merge-base-images
+
+Downloads per-platform digests from `build-base-images`, assembles multi-arch manifest
+lists, then runs SBOM generation, vulnerability scanning, attestation, and cosign signing
+on the final manifests.
+
+| Property | Value |
+| --- | --- |
+| `runs-on` | `ubuntu-latest` |
+| `timeout-minutes` | `15` |
+| `needs` | `[build-base-images]` |
+| Permissions | `contents: read`, `packages: write`, `id-token: write`, `attestations: write`, `security-events: write` |
+
+**Steps:**
+
+::: v-pre
+
+| # | Step | Action / Command | Details |
+| --- | --- | --- | --- |
+| 1 | Checkout | `actions/checkout@v6` | Checks out the repository |
+| 2 | Set up Buildx + Login | `docker/setup-buildx-action@v4`, `docker/login-action@v4` | Authenticates with `GITHUB_TOKEN` |
+| 3 | Install cosign | `sigstore/cosign-installer@v4` | Installs cosign for image signing (CC-0030) |
+| 4 | Download python-base digests | `actions/download-artifact@v4` | Downloads all `digests-python-base-*` artifacts, merges into `/tmp/digests/python-base/` |
+| 5 | Create python-base manifest | Shell | `docker buildx imagetools create` assembles all per-platform digests; tags `:latest` and `:${{ github.sha }}`; outputs merged manifest digest |
+| 6 | Generate SBOM for python-base | `anchore/sbom-action@v0` | Skipped on PRs. Scans the merged manifest by digest. Output: `sbom-python-base.cyclonedx.json` (CC-0029) |
+| 7 | Scan python-base for vulnerabilities | `anchore/scan-action@v7` | Scans via SBOM on push, via image on PR. Reports high/critical CVEs without failing the build (`fail-build: false`). Output: SARIF (CC-0032) |
+| 8 | Upload SARIF for python-base | `github/codeql-action/upload-sarif@v3` | Runs always when SARIF output exists. Category: `grype-python-base` (CC-0032) |
+| 9 | Attest SBOM for python-base | `actions/attest@v4` | Skipped on PRs. Signs the SBOM and pushes attestation to GHCR as an OCI referrer artifact (CC-0029) |
+| 10 | Attest build provenance for python-base | `actions/attest-build-provenance@v4` | Skipped on PRs. SLSA Level 2+ provenance attestation (CC-0035) |
+| 11 | Sign python-base | Shell | Skipped on PRs. Signs python-base manifest by digest with cosign keyless OIDC (CC-0030) |
+| 12–22 | venv-builder equivalent steps | *(same pattern as 4–11 for venv-builder)* | Downloads digests, creates manifest, SBOM, scan, attest, sign |
+
+:::
 
 ::: v-pre
 
@@ -182,20 +216,20 @@ mapping from any base image in GHCR back to the commit that produced it (CC-0007
 | `venv-builder-image` | `ghcr.io/<owner>/venv-builder@sha256:<digest>` | `ghcr.io/c5c3/venv-builder@sha256:def456...` |
 
 These outputs are consumed by `verify-base-images` and `build-service-images` via
-`needs.build-base-images.outputs` (REQ-003).
+`needs.merge-base-images.outputs` (REQ-003).
 
 ### verify-base-images
 
-Validates that just-built base images meet expected properties before service image
-builds begin (CC-0028). Runs after `build-base-images` and blocks
+Validates that just-assembled base image manifests meet expected properties before
+service image builds begin (CC-0028). Runs after `merge-base-images` and blocks
 `build-service-images`, forming the dependency chain:
-`build-base-images` → `verify-base-images` → `build-service-images`.
+`build-base-images` → `merge-base-images` → `verify-base-images` → `build-service-images`.
 
 | Property | Value |
 | --- | --- |
 | `runs-on` | `ubuntu-latest` |
 | `timeout-minutes` | `10` |
-| `needs` | `[build-base-images]` |
+| `needs` | `[merge-base-images]` |
 | Permissions | `contents: read`, `packages: read` |
 
 **Steps:**
@@ -215,22 +249,25 @@ builds begin (CC-0028). Runs after `build-base-images` and blocks
 | `tests/container-images/verify_python_base.sh` | Python version, `openstack` user (UID/GID 42424), PATH includes `/opt/openstack/bin`, virtualenv at `/opt/openstack` |
 | `tests/container-images/verify_venv_builder.sh` | uv version (from Dockerfile), pip available, virtualenv at `/var/lib/openstack` |
 
-The job receives image references via `needs.build-base-images.outputs` (digest-pinned),
-ensuring the exact images that were just built are the ones being tested.
+The job receives image references via `needs.merge-base-images.outputs` (digest-pinned),
+ensuring the exact manifests that were just assembled are the ones being tested.
 
 ### build-service-images
 
-Builds service images using a matrix strategy over `service x release` (REQ-004).
-Depends on `build-base-images` for image references (REQ-003) and on
+Builds service images per platform on native runners and pushes each single-arch image by
+digest (REQ-004). Depends on `merge-base-images` for image references (REQ-003) and on
 `verify-base-images` to ensure base images are valid before building on top of them
-(CC-0028).
+(CC-0028). The multi-arch manifest list is assembled by `merge-service-images`.
+
+On pull requests, ARM64 is excluded (only `linux/amd64` is built) and the image is loaded
+locally for inline verification instead of being pushed to GHCR.
 
 | Property | Value |
 | --- | --- |
-| `runs-on` | `ubuntu-latest` |
+| `runs-on` | <code v-pre>${{ matrix.runner }}</code> (`ubuntu-latest` for amd64, `ubuntu-24.04-arm` for arm64) |
 | `timeout-minutes` | `30` |
-| `needs` | `[build-base-images, verify-base-images]` |
-| Matrix | `service: [keystone]`, `release: ["2025.2"]` |
+| `needs` | `[merge-base-images, verify-base-images, generate-matrix]` |
+| Matrix | `service × release × platform × runner` (from `generate-matrix.build-matrix`; ARM64 excluded on PRs) |
 
 **Steps:**
 
@@ -244,18 +281,57 @@ Depends on `build-base-images` for image references (REQ-003) and on
 | 4 | Apply patches | Shell (conditional) | Runs `git apply` for patches in `patches/<service>/<release>/` — skipped if no `.patch` files exist |
 | 5 | Apply constraint overrides | Shell | Runs `scripts/apply-constraint-overrides.sh <release>` (idempotent) |
 | 6 | Resolve extra packages | Shell | Reads `releases/<release>/extra-packages.yaml` via `yq` to extract `pip_extras` (comma-joined), `pip_packages` (space-joined), and `apt_packages` (space-joined). All three fields tolerate empty values — the Dockerfile handles them via conditional guards (CC-0027). |
-| 7 | Derive tags | Shell | Computes three image tags and the lowercase `image` path (see [Tag Schema](#tag-schema)) (REQ-005, CC-0029) |
-| 8 | Set up Buildx | `docker/setup-buildx-action@v4` | Enables multi-platform builds |
-| 9 | Login to GHCR | `docker/login-action@v4` | Authenticates with `GITHUB_TOKEN` |
-| 10 | Install cosign | `sigstore/cosign-installer@v4` | Installs cosign for image signing (CC-0030) |
+| 7 | Derive tags | `.github/actions/derive-service-tags` | Composite action. Computes image name and all tags (see [Tag Schema](#tag-schema)) (REQ-005, CC-0029) |
+| 8 | Prepare platform pair | Shell | Converts `linux/amd64` → `linux-amd64` for artifact names and cache scopes |
+| 9 | Set up Buildx | `docker/setup-buildx-action@v4` | Enables single-platform builds on the native runner |
+| 10 | Login to GHCR | `docker/login-action@v4` | Authenticates with `GITHUB_TOKEN` |
 | 11 | Generate metadata for service image | `docker/metadata-action@v5` | Produces OCI labels and overrides version to the upstream release ref via `type=raw` strategy (CC-0031) |
-| 12 | Build service image | `docker/build-push-action@v7` | Builds with four named build contexts and three build args, conditional platform/push/load, labels from step 11 (REQ-006) |
-| 13 | Generate SBOM for service image | `anchore/sbom-action@v0` | Skipped on PRs. Scans the just-pushed service image by digest. Output: `sbom-${{ matrix.service }}.cyclonedx.json` (CC-0029) |
-| 14 | Scan service image for vulnerabilities | `anchore/scan-action@v7` | Scans via SBOM on push, via composite tag on PR. Reports high/critical CVEs without failing the build (`fail-build: false`). Output: SARIF (CC-0032) |
-| 15 | Upload SARIF for service image | `github/codeql-action/upload-sarif@v3` | Runs always when SARIF output exists (`if: always() && outputs.sarif != ''`). Uploads Grype results to GitHub Security tab with category `grype-${{ matrix.service }}` (CC-0032) |
-| 16 | Attest SBOM for service image | `actions/attest@v4` | Skipped on PRs. Signs the SBOM via Sigstore and pushes the attestation to GHCR as an OCI referrer artifact (CC-0029) |
-| 17 | Sign service image | Shell | Skipped on PRs. Signs service image by digest with cosign keyless OIDC (`cosign sign --yes`) (CC-0030) |
-| 18 | Verify service image (PR) | Shell (conditional) | On PRs only: runs `verify_${{ matrix.service }}.sh` with the locally loaded image ref (CC-0028) |
+| 12 | Build service image | `docker/build-push-action@v7` | Builds with four named build contexts and three build args. Non-PR: `push-by-digest=true`, digest exported as artifact. PR: `load: true`, composite tag (REQ-006) |
+| 13 | Export service image digest | Shell | Non-PR only: writes digest filename to `/tmp/digests/` |
+| 14 | Upload service image digest | `actions/upload-artifact@v7` | Non-PR only. Artifact name: `digests-service-<service>-<release>-<platform-pair>`, retention: 1 day |
+| 15 | Scan service image for vulnerabilities (PR) | `anchore/scan-action@v7` | PR only: scans locally loaded image. Reports high/critical CVEs without failing the build (`fail-build: false`). Output: SARIF (CC-0032) |
+| 16 | Upload SARIF for service image (PR) | `github/codeql-action/upload-sarif@v3` | PR only. Category: `grype-<service>-<platform-pair>` (CC-0032) |
+| 17 | Verify service image (PR) | Shell (conditional) | PR only: runs `verify_${{ matrix.service }}.sh` with the locally loaded image ref (CC-0028) |
+
+:::
+
+### merge-service-images
+
+Downloads per-platform digests from `build-service-images`, assembles multi-arch manifest
+lists, then runs SBOM generation, vulnerability scanning, attestation, and cosign signing.
+Runs only on push events.
+
+| Property | Value |
+| --- | --- |
+| `runs-on` | `ubuntu-latest` |
+| `timeout-minutes` | `30` |
+| `needs` | `[merge-base-images, build-service-images, generate-matrix]` |
+| `if` | `github.event_name != 'pull_request'` |
+| Matrix | `service × release` (from `generate-matrix.matrix`) |
+| Permissions | `contents: read`, `packages: write`, `id-token: write`, `attestations: write`, `security-events: write` |
+
+Tag derivation uses the same `.github/actions/derive-service-tags` composite action as
+`build-service-images`, ensuring the manifest is assembled under the exact same tags that
+were computed during the build.
+
+**Steps:**
+
+::: v-pre
+
+| # | Step | Action / Command | Details |
+| --- | --- | --- | --- |
+| 1 | Checkout | `actions/checkout@v6` | Checks out the repository |
+| 2 | Install yq | `mikefarah/yq@v4` | Required by the derive-service-tags composite action |
+| 3 | Set up Buildx + Login + cosign | *(three steps)* | Authenticates and installs cosign (CC-0030) |
+| 4 | Derive tags | `.github/actions/derive-service-tags` | Composite action. Computes image name and all tags (REQ-005) |
+| 5 | Download service image digests | `actions/download-artifact@v4` | Downloads all `digests-service-<service>-<release>-*` artifacts |
+| 6 | Create and push service image manifest | Shell | `docker buildx imagetools create` assembles all per-platform digests; applies composite, SHA, and (on main) version tags; outputs merged manifest digest |
+| 7 | Generate SBOM for service image | `anchore/sbom-action@v0` | Scans the merged manifest by digest. Output: `sbom-<service>.cyclonedx.json` (CC-0029) |
+| 8 | Scan service image for vulnerabilities | `anchore/scan-action@v7` | SBOM-based scan. Category: `grype-<service>` (CC-0032) |
+| 9 | Upload SARIF for service image | `github/codeql-action/upload-sarif@v3` | Runs always when SARIF output exists (CC-0032) |
+| 10 | Attest SBOM for service image | `actions/attest@v4` | Signs SBOM and pushes attestation to GHCR as an OCI referrer artifact (CC-0029) |
+| 11 | Attest build provenance | `actions/attest-build-provenance@v4` | SLSA Level 2+ provenance attestation (CC-0035) |
+| 12 | Sign service image | Shell | Signs service image manifest by digest with cosign keyless OIDC (CC-0030) |
 
 :::
 
@@ -304,16 +380,16 @@ skips known-failing tests via `stestr run --exclude-list`.
 :::
 
 This job runs in parallel with `build-service-images` — both depend on
-`build-base-images` and `verify-base-images`, but not on each other. The
+`merge-base-images` and `verify-base-images`, but not on each other. The
 `verify-service-images` job gates on both.
 
 | Property | Value |
 | --- | --- |
 | `runs-on` | `ubuntu-latest` |
 | `timeout-minutes` | `60` |
-| `needs` | `[build-base-images, verify-base-images]` |
+| `needs` | `[merge-base-images, verify-base-images, generate-matrix]` |
 | Permissions | `contents: read`, `packages: read` |
-| Matrix | `service: [keystone]`, `release: ["2025.2"]` |
+| Matrix | `service × release` (from `generate-matrix.matrix`) |
 
 **Steps:**
 
@@ -397,10 +473,10 @@ On PRs, the equivalent verification runs as an inline step within `build-service
 | --- | --- |
 | `runs-on` | `ubuntu-latest` |
 | `timeout-minutes` | `10` |
-| `needs` | `[build-service-images, test-service-images]` |
+| `needs` | `[merge-service-images, test-service-images, generate-matrix]` |
 | `if` | `github.event_name != 'pull_request'` |
 | Permissions | `contents: read`, `packages: read` |
-| Matrix | `service: [keystone]`, `release: ["2025.2"]` |
+| Matrix | `service × release` (from `generate-matrix.matrix`) |
 
 **Steps:**
 
@@ -410,7 +486,7 @@ On PRs, the equivalent verification runs as an inline step within `build-service
 | --- | --- | --- | --- |
 | 1 | Checkout | `actions/checkout@v6` | Checks out the repository (needed for test scripts, `source-refs.yaml`, and patch counting) |
 | 2 | Login to GHCR | `docker/login-action@v4` | Authenticates to pull the image |
-| 3 | Derive image ref | Shell | Reconstructs the composite tag from the same inputs as `build-service-images` |
+| 3 | Derive tags | `.github/actions/derive-service-tags` | Composite action. Reconstructs tags using the same logic as `build-service-images` and `merge-service-images` |
 | 4 | Pull and verify | Shell | `docker pull <image-ref>` then runs `verify_${{ matrix.service }}.sh` with the pulled image ref |
 
 :::
@@ -421,8 +497,9 @@ On PRs, the equivalent verification runs as an inline step within `build-service
 | --- | --- |
 | `tests/container-images/verify_<service>.sh` | Service-specific checks (e.g. `keystone-manage --version` exits 0), runs as `openstack` user, no build tools (gcc, python3-dev, uv), runtime apt packages installed |
 
-The job fails the workflow if the verify script exits non-zero. The tag derivation
-step must stay in sync with the "Derive tags" step in `build-service-images`.
+The job fails the workflow if the verify script exits non-zero. Tag derivation uses the
+`.github/actions/derive-service-tags` composite action, which is the single source of
+truth shared by `build-service-images`, `merge-service-images`, and `verify-service-images`.
 
 ## Tag Schema
 
@@ -457,18 +534,18 @@ The workflow behaves differently depending on the trigger event (REQ-006):
 
 | Aspect | Pull Request | Push (main / stable/**) |
 | --- | --- | --- |
-| Base images | Multi-arch, pushed to GHCR | Multi-arch, pushed to GHCR |
+| Base images | Per-platform digests pushed; multi-arch manifest assembled by `merge-base-images` | Same |
 | Base image verification | `verify-base-images` job (always runs) | `verify-base-images` job (always runs) |
-| Service image platforms | `linux/amd64` only | `linux/amd64,linux/arm64` |
-| Service image push | No (`push: false`, `load: true`) | Yes (`push: true`) |
+| Service image platforms | `linux/amd64` only (ARM64 excluded) | `linux/amd64,linux/arm64` |
+| Service image push | No (`load: true` on amd64 runner) | Yes (by digest, tags assigned by `merge-service-images`) |
 | Service image tags | Computed but not published | Published to GHCR |
-| SBOM generation | Skipped (CC-0029) | CycloneDX JSON for every image |
-| Vulnerability scanning | Image-based scan via `image:` input (CC-0032) | SBOM-based scan via `sbom:` input (CC-0032) |
+| SBOM generation | Skipped (CC-0029) | CycloneDX JSON for every merged manifest |
+| Vulnerability scanning | Image-based scan on PR (`image:` input in `build-service-images`) (CC-0032) | SBOM-based scan in `merge-service-images` (`sbom:` input) (CC-0032) |
 | SBOM attestation | Skipped (CC-0029) | Sigstore-signed, pushed to GHCR |
-| Cosign signing | Skipped (CC-0030) | Keyless signature for every image |
-| OIDC token request | None | Requested for Sigstore signing (CC-0029, CC-0030) |
+| Cosign signing | Skipped (CC-0030) | Keyless signature for every merged manifest |
+| OIDC token request | None | Requested in merge jobs for Sigstore signing (CC-0029, CC-0030) |
 | Service image verification | Inline step in `build-service-images` | Separate `verify-service-images` job |
-| Verification image source | Locally loaded image (same runner) | Pulled from GHCR |
+| Verification image source | Locally loaded image (same amd64 runner) | Pulled from GHCR |
 
 **Why base images are always pushed:** Service Dockerfiles reference base images via
 `docker-image://` URIs in build contexts. This Docker BuildKit feature requires the
@@ -476,9 +553,11 @@ referenced image to exist in a registry — local images are not sufficient. Pus
 small base images on every PR is a deliberate trade-off to keep Dockerfiles
 registry-independent.
 
-**Why PRs use single-arch:** `docker/build-push-action` with `load: true` only supports
-single-platform builds. Multi-platform images cannot be loaded into the local Docker
-daemon. Since the verification step needs the image locally, PRs build only `linux/amd64`.
+**Why PRs use single-arch for service images:** `docker/build-push-action` with
+`load: true` only supports single-platform builds. Multi-platform images cannot be loaded
+into the local Docker daemon. Since the inline verification step needs the image locally,
+PRs build only `linux/amd64`. Base images are still built for both platforms on PRs (by
+digest), so the native ARM runner is exercised without requiring a locally loaded result.
 
 ## GHA Caching
 
@@ -490,13 +569,13 @@ cache-from: type=gha,scope=<scope>
 cache-to: type=gha,mode=max,scope=<scope>
 ```
 
-Each image has a unique cache scope to prevent collisions:
+Each image has a unique cache scope per platform to prevent cross-arch cache collisions:
 
 | Image | Scope |
 | --- | --- |
-| `python-base` | `python-base` |
-| `venv-builder` | `venv-builder` |
-| Service images | `<service>-<release>` (e.g., `keystone-2025.2`) |
+| `python-base` | `python-base-linux-amd64` / `python-base-linux-arm64` |
+| `venv-builder` | `venv-builder-linux-amd64` / `venv-builder-linux-arm64` |
+| Service images | `<service>-<release>-linux-amd64` / `<service>-<release>-linux-arm64` (e.g., `keystone-2025.2-linux-amd64`) |
 
 The `mode=max` setting caches all intermediate layers, not just the final image layer.
 
@@ -530,12 +609,12 @@ build time.
 
 ### How It Works
 
-After each `docker/build-push-action` step pushes an image to GHCR, two additional steps
-run:
+After per-platform images are pushed by digest and the multi-arch manifest list is
+assembled by the merge job, two additional steps run in the merge job:
 
-1. **SBOM generation** (`anchore/sbom-action`) — Syft scans the pushed image (referenced
-   by digest) and produces a CycloneDX JSON file covering both OS packages (dpkg) and
-   Python packages (dist-info).
+1. **SBOM generation** (`anchore/sbom-action`) — Syft scans the merged manifest
+   (referenced by digest) and produces a CycloneDX JSON file covering both OS packages
+   (dpkg) and Python packages (dist-info).
 
 2. **SBOM attestation** (`actions/attest`) — The CycloneDX file is signed via
    Sigstore keyless OIDC (using the GitHub Actions workflow identity) and pushed to GHCR
@@ -548,9 +627,9 @@ This pattern is applied to all three image types:
 
 | Image | SBOM output file | Job |
 | --- | --- | --- |
-| `python-base` | `sbom-python-base.cyclonedx.json` | `build-base-images` |
-| `venv-builder` | `sbom-venv-builder.cyclonedx.json` | `build-base-images` |
-| Service (e.g., `keystone`) | `sbom-${{ matrix.service }}.cyclonedx.json` | `build-service-images` |
+| `python-base` | `sbom-python-base.cyclonedx.json` | `merge-base-images` |
+| `venv-builder` | `sbom-venv-builder.cyclonedx.json` | `merge-base-images` |
+| Service (e.g., `keystone`) | `sbom-${{ matrix.service }}.cyclonedx.json` | `merge-service-images` |
 
 :::
 
