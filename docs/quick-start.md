@@ -188,6 +188,7 @@ kubectl wait crd --all --for condition=Established --timeout=60s
 # 4. Install the chart
 helm install keystone-operator \
   operators/keystone/helm/keystone-operator/ \
+  -n openstack --create-namespace \
   --set image.repository=ghcr.io/c5c3/keystone-operator \
   --set image.tag=dev \
   --set image.pullPolicy=Never \
@@ -461,6 +462,38 @@ Available test suites under `tests/e2e/keystone/`:
 | `invalid-cr` | Webhook rejects invalid cron expressions and duplicate plugins |
 
 JUnit XML reports are written to `_output/reports/` after each run.
+
+---
+
+## Running Tempest API tests
+
+With the Keystone CR Ready from Step 7, validate the identity API with the OpenStack Tempest
+test suite:
+
+```bash
+SERVICE=keystone hack/run-tempest.sh
+```
+
+The script handles everything automatically:
+
+1. Builds the Tempest container image from the pinned versions in `releases/2025.2/test-refs.yaml`
+2. Establishes a port-forward to the Keystone API (skipped if one is already running)
+3. Runs the identity tests defined in `tests/tempest/keystone/`
+
+Results land in `_output/tempest/`:
+
+| File | Content |
+|------|---------|
+| `tempest-results.xml` | JUnit XML — open in your IDE or import into a CI viewer |
+| `tempest.subunit` | Raw subunit stream for further processing |
+
+::: tip Faster re-runs
+The image build is skipped when `BUILD_IMAGE=false`, which saves ~30 s on repeated runs:
+
+```bash
+BUILD_IMAGE=false SERVICE=keystone hack/run-tempest.sh
+```
+:::
 
 ---
 

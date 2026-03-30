@@ -142,6 +142,7 @@ func TestReconcileConfig_BasicManagedDatabaseAndCache(t *testing.T) {
 	g.Expect(keystoneConf).To(ContainSubstring("[database]"))
 	g.Expect(keystoneConf).To(ContainSubstring("[identity]"))
 	g.Expect(keystoneConf).To(ContainSubstring("[oslo_middleware]"))
+	g.Expect(keystoneConf).To(ContainSubstring("[oslo_policy]"))
 	g.Expect(keystoneConf).To(ContainSubstring("[memcache]"))
 	g.Expect(keystoneConf).To(ContainSubstring("[credential]"))
 
@@ -512,6 +513,27 @@ func TestReconcileConfig_CredentialKeysCustomMaxActiveKeys(t *testing.T) {
 	keystoneConf := cm.Data["keystone.conf"]
 	g.Expect(keystoneConf).To(ContainSubstring("[credential]"))
 	g.Expect(keystoneConf).To(ContainSubstring("max_active_keys = 7"))
+}
+
+func TestReconcileConfig_OsloPolicyEnforceScopeDefaults(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+
+	ks := configTestKeystone()
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+	r := newConfigTestReconciler(s, ks, secret)
+
+	configMapName, err := r.reconcileConfig(context.Background(), ks)
+
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	keystoneConf := cm.Data["keystone.conf"]
+	g.Expect(keystoneConf).To(ContainSubstring("[oslo_policy]"))
+	g.Expect(keystoneConf).To(ContainSubstring("enforce_scope = true"))
+	g.Expect(keystoneConf).To(ContainSubstring("enforce_new_defaults = true"))
 }
 
 func TestResolveDatabaseHost(t *testing.T) {

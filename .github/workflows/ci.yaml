@@ -64,6 +64,8 @@ jobs:
               - 'scripts/**'
               - 'images/python-base/**'
               - 'images/venv-builder/**'
+              - 'images/tempest/**'
+              - 'tests/tempest/**'
               - 'releases/**'
               - '.github/workflows/ci.yaml'
             # Per-operator paths — only the relevant E2E job is triggered.
@@ -214,7 +216,7 @@ jobs:
         with:
           go-version-file: go.work
       - name: Install setup-envtest
-        run: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+        run: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.23
       - name: Run integration tests
         run: |
           if [ "${{ matrix.target }}" = "common" ]; then
@@ -463,6 +465,193 @@ jobs:
           name: e2e-${{ matrix.operator }}-junit-report
           path: _output/reports/
           retention-days: 14
+
+  # CC-0035: Tempest API integration tests.
+  # Deploys services into a kind cluster and runs the OpenStack Tempest test
+  # suite against them.  Currently tests Keystone; designed so additional
+  # services can be added to this single job without needing separate runs.
+  tempest:
+    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]
+    if: |
+      needs.changes.outputs.has-e2e-operators == 'true' &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+        with:
+          go-version-file: go.work
+      - name: Create kind cluster
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          config: hack/kind-config.yaml
+          cluster_name: forge-e2e
+      # -- Keystone --------------------------------------------------------
+      - name: Build operator image (keystone)
+        run: make docker-build OPERATOR=keystone IMG=${{ env.IMAGE_PREFIX }}/keystone-operator:dev
+      - name: Build service image (keystone)
+        run: |
+          SERVICE_REF=$(yq '.keystone' releases/2025.2/source-refs.yaml)
+          if [ -z "$SERVICE_REF" ] || [ "$SERVICE_REF" = "null" ]; then
+            echo "::error::SERVICE_REF for 'keystone' is null or empty in releases/2025.2/source-refs.yaml"
+            exit 1
+          fi
+          PIP_EXTRAS=$(yq -r '.keystone.pip_extras // [] | join(",")' releases/2025.2/extra-packages.yaml)
+          PIP_PACKAGES=$(yq -r '.keystone.pip_packages // [] | join(" ")' releases/2025.2/extra-packages.yaml)
+          APT_PACKAGES=$(yq -r '.keystone.apt_packages // [] | join(" ")' releases/2025.2/extra-packages.yaml)
+          git clone --depth 1 --branch "$SERVICE_REF" \
+            https://github.com/openstack/keystone.git /tmp/keystone-src
+          scripts/apply-constraint-overrides.sh 2025.2
+          docker build -t python-base images/python-base/
+          docker build -t venv-builder images/venv-builder/
+          docker build -t ${{ env.IMAGE_PREFIX }}/keystone:2025.2 \
+            --build-arg PIP_EXTRAS="$PIP_EXTRAS" \
+            --build-arg PIP_PACKAGES="$PIP_PACKAGES" \
+            --build-arg EXTRA_APT_PACKAGES="$APT_PACKAGES" \
+            --build-context keystone=/tmp/keystone-src \
+            --build-context upper-constraints=releases/2025.2 \
+            images/keystone/
+      - name: Build Tempest image
+        run: |
+          TEMPEST_VERSION=$(hack/resolve-test-ref.sh releases/2025.2/test-refs.yaml tempest)
+          KTP_VERSION=$(hack/resolve-test-ref.sh releases/2025.2/test-refs.yaml keystone-tempest-plugin)
+          echo "Building Tempest image (tempest=${TEMPEST_VERSION}, keystone-tempest-plugin=${KTP_VERSION})"
+          docker build \
+            -t c5c3/tempest:local \
+            -f images/tempest/Dockerfile \
+            --build-arg "TEMPEST_VERSION=${TEMPEST_VERSION}" \
+            --build-arg "KEYSTONE_TEMPEST_PLUGIN_VERSION=${KTP_VERSION}" \
+            --build-context upper-constraints=releases/2025.2/ \
+            images/tempest/
+      - name: Load images into kind
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name forge-e2e
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name forge-e2e
+      # -- Infrastructure ---------------------------------------------------
+      - name: Install Flux CLI
+        uses: fluxcd/flux2/action@871be9b40d53627786d3a3835a3ddba1e3234bd2 # v2.8.3
+      - name: Install test dependencies
+        run: |
+          make install-test-deps
+          echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
+      - name: Deploy infrastructure stack
+        run: make deploy-infra
+        env:
+          SKIP_KIND_CREATE: "true"
+      # -- Deploy Keystone operator -----------------------------------------
+      - name: Install operator CRDs (keystone)
+        run: |
+          kubectl apply -f operators/keystone/helm/keystone-operator/crds/
+          kubectl wait crd --all --for condition=Established --timeout=60s
+      - name: Deploy operator (keystone)
+        run: |
+          helm install keystone-operator \
+            operators/keystone/helm/keystone-operator/ \
+            --set image.repository=${{ env.IMAGE_PREFIX }}/keystone-operator \
+            --set image.tag=dev \
+            --set image.pullPolicy=Never \
+            --wait --timeout 120s
+      - name: Deploy Keystone CR for Tempest
+        run: |
+          kubectl apply -f tests/tempest/keystone/00-keystone-cr.yaml
+          kubectl wait keystone/keystone-tempest -n openstack \
+            --for=condition=Ready --timeout=300s
+      # -- Tempest run -------------------------------------------------------
+      - name: Run Tempest API tests
+        run: |
+          mkdir -p _output/tempest _output/tempest/config
+          chmod o+w _output/tempest
+          CONFIG_DIR="tests/tempest/keystone"
+
+          ADMIN_PASSWORD=$(kubectl get secret keystone-admin -n openstack \
+            -o jsonpath='{.data.password}' | base64 -d)
+
+          kubectl port-forward svc/keystone-tempest-api -n openstack 5000:5000 >/dev/null 2>&1 &
+          PF_PID=$!
+          trap 'kill "${PF_PID}" 2>/dev/null || true' EXIT
+          ready=false
+          for i in $(seq 1 10); do
+            if curl -sf http://localhost:5000/ >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [ "${ready}" != "true" ]; then
+            echo "::error::Keystone API at http://localhost:5000 did not become reachable after 10 attempts"
+            exit 1
+          fi
+
+          sed -e 's|keystone-tempest-api\.openstack\.svc:5000|localhost:5000|' \
+              -e "s|\${KEYSTONE_ADMIN_PASSWORD}|${ADMIN_PASSWORD}|" \
+              "${CONFIG_DIR}/tempest.conf" > _output/tempest/config/tempest.conf
+          [[ -f "${CONFIG_DIR}/include-tests.txt" ]] && cp "${CONFIG_DIR}/include-tests.txt" _output/tempest/config/
+          [[ -f "${CONFIG_DIR}/exclude-tests.txt" ]] && cp "${CONFIG_DIR}/exclude-tests.txt" _output/tempest/config/
+
+          TEMPEST_CMD="tempest run"
+          [[ -f "_output/tempest/config/include-tests.txt" ]] && TEMPEST_CMD+=" --include-list /etc/tempest/include-tests.txt"
+          [[ -f "_output/tempest/config/exclude-tests.txt" ]] && TEMPEST_CMD+=" --exclude-list /etc/tempest/exclude-tests.txt"
+          TEMPEST_CMD+=" --concurrency 1 --subunit"
+
+          CATALOG_SVC="keystone-tempest-api.openstack.svc.cluster.local"
+          docker run --rm \
+            --network host \
+            --add-host "${CATALOG_SVC}:127.0.0.1" \
+            --add-host "keystone-tempest-api.openstack.svc:127.0.0.1" \
+            -v "${GITHUB_WORKSPACE}/_output/tempest/config:/etc/tempest:ro" \
+            -v "${GITHUB_WORKSPACE}/_output/tempest:/output" \
+            c5c3/tempest:local \
+            bash -c "
+              set -euo pipefail
+              export HOME=/tmp
+              mkdir -p /tmp/tempest-workspace /tmp/tempest-logs
+              cd /tmp/tempest-workspace
+              tempest init .
+              cp /etc/tempest/tempest.conf etc/tempest.conf
+              set +e
+              ${TEMPEST_CMD} | tee /output/tempest.subunit | subunit2pyunit 2>&1 | grep --line-buffered -E '\.\.\. '
+              rc=\${PIPESTATUS[0]}
+              set -e
+              if [[ -f /output/tempest.subunit ]]; then
+                subunit2junitxml < /output/tempest.subunit > /output/tempest-results.xml 2>/dev/null || true
+              fi
+              # Guard against tempest run --subunit exiting 0 on test failures:
+              # check the JUnit XML for reported failures or errors.
+              if [[ \${rc} -eq 0 && -f /output/tempest-results.xml ]]; then
+                if grep -qE 'failures=\"[1-9]|errors=\"[1-9]' /output/tempest-results.xml; then
+                  echo '::error::Tempest reported test failures.'
+                  rc=1
+                fi
+              fi
+              exit \${rc}
+            "
+      - name: Upload Tempest results
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: tempest-results
+          path: _output/tempest/
+          retention-days: 14
+      - name: Dump diagnostic info
+        if: always()
+        run: |
+          echo "=== Operator pods (keystone) ==="
+          kubectl get pods -l app.kubernetes.io/name=keystone-operator || true
+          echo "=== All pods ==="
+          kubectl get pods --all-namespaces || true
+          echo "=== Events (last 50) ==="
+          kubectl get events --all-namespaces --sort-by='.lastTimestamp' | tail -50 || true
+          echo "=== Operator logs (keystone) ==="
+          kubectl logs -l app.kubernetes.io/name=keystone-operator --tail=100 || true
+          echo "=== Keystone Tempest CR status ==="
+          kubectl get keystone keystone-tempest -n openstack -o yaml 2>/dev/null | grep -A5 "conditions:" || true
+          echo "=== All pod logs in openstack ==="
+          for pod in $(kubectl get pods -n openstack -o name 2>/dev/null); do
+            echo "--- $pod (current) ---"
+            kubectl logs -n openstack "$pod" --all-containers --tail=30 2>&1 || true
+          done
 
   # CC-0018, REQ-006: Build operator container images per platform on native runners.
   # Each platform is pushed by digest; merge-operator-images assembles the manifest list.

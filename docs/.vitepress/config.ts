@@ -26,6 +26,7 @@ export default defineConfig({
           { text: 'CI Workflow', link: '/reference/ci-workflow' },
           { text: 'Build Images Workflow', link: '/reference/build-images-workflow' },
           { text: 'Container Images', link: '/reference/container-images' },
+          { text: 'Tempest Test Infrastructure', link: '/reference/tempest-test-infrastructure' },
           { text: 'Infrastructure Manifests', link: '/reference/infrastructure-manifests' },
           { text: 'Kubernetes Packages', link: '/reference/kubernetes-packages' },
         ],

@@ -215,6 +215,14 @@ helm-package:
 e2e:
 	chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/
 
+.PHONY: tempest-test
+# tempest-test runs Tempest API tests against a deployed OpenStack service (CC-0035 REQ-007).
+# Requires a running kind cluster with the service deployed.
+# Usage: make tempest-test SERVICE=keystone
+tempest-test:
+	$(if $(SERVICE),,$(error tempest-test requires SERVICE, e.g. make tempest-test SERVICE=keystone))
+	SERVICE=$(SERVICE) hack/run-tempest.sh
+
 .PHONY: deploy-infra
 deploy-infra:
 	hack/deploy-infra.sh

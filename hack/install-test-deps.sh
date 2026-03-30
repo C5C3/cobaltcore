@@ -29,24 +29,34 @@ KUBECTL_VERSION="v1.33.1"
 # Chainsaw v0.2.14 hashes are fetched from upstream (not pinned) because pinned
 # values were not available at authoring time. Pin them here once verified.
 # ---------------------------------------------------------------------------
-declare -A FLUX_SHA256=(
-  ["linux_amd64"]="f64c85db4b94aefcdf6e0f2825c32573fc2bd234e5489ff332fee62776973ec3"
-  ["linux_arm64"]="35b6160d6b3c9ec3bbfe3f526927e713d877c274e7debffd13e270e47221a79f"
-  ["darwin_amd64"]="8618395bbdd35b681768e26612e1c2f9cb6d67060f7e2df0f8d36ca67783478e"
-  ["darwin_arm64"]="68c025b8059934457978d8952c0c62fd06c585d46b334804da72d268eaf630d4"
-)
-declare -A KIND_SHA256=(
-  ["linux_amd64"]="a6875aaea358acf0ac07786b1a6755d08fd640f4c79b7a2e46681cc13f49a04b"
-  ["linux_arm64"]="5e4507a41c69679562610b1be82ba4f80693a7826f4e9c6e39236169a3e4f9d0"
-  ["darwin_amd64"]="3435134325b6b9406ccfec417b13bb46a808fc74e9a2ebb0ca31b379c8293863"
-  ["darwin_arm64"]="5240ca1acb587e1d0386532dd8c3373d81f5173b5af322919fc56f0cdd646596"
-)
-declare -A KUBECTL_SHA256=(
-  ["linux_amd64"]="5de4e9f2266738fd112b721265a0c1cd7f4e5208b670f811861f699474a100a3"
-  ["linux_arm64"]="d595d1a26b7444e0beb122e25750ee4524e74414bbde070b672b423139295ce6"
-  ["darwin_amd64"]="8d36a5c66142547ad16e332942fd16a0ca2b3346d9ebaab6c348de2c70d9d875"
-  ["darwin_arm64"]="8ae6823839993bb2e394c3cf1919748e530642c625dc9100159595301f53bdeb"
-)
+# Use plain variables instead of associative arrays for bash 3.2 (macOS) compatibility.
+# These are referenced via indirect expansion (e.g. ${!_flux_var}).
+# shellcheck disable=SC2034
+FLUX_SHA256_linux_amd64="f64c85db4b94aefcdf6e0f2825c32573fc2bd234e5489ff332fee62776973ec3"
+# shellcheck disable=SC2034
+FLUX_SHA256_linux_arm64="35b6160d6b3c9ec3bbfe3f526927e713d877c274e7debffd13e270e47221a79f"
+# shellcheck disable=SC2034
+FLUX_SHA256_darwin_amd64="8618395bbdd35b681768e26612e1c2f9cb6d67060f7e2df0f8d36ca67783478e"
+# shellcheck disable=SC2034
+FLUX_SHA256_darwin_arm64="68c025b8059934457978d8952c0c62fd06c585d46b334804da72d268eaf630d4"
+
+# shellcheck disable=SC2034
+KIND_SHA256_linux_amd64="a6875aaea358acf0ac07786b1a6755d08fd640f4c79b7a2e46681cc13f49a04b"
+# shellcheck disable=SC2034
+KIND_SHA256_linux_arm64="5e4507a41c69679562610b1be82ba4f80693a7826f4e9c6e39236169a3e4f9d0"
+# shellcheck disable=SC2034
+KIND_SHA256_darwin_amd64="3435134325b6b9406ccfec417b13bb46a808fc74e9a2ebb0ca31b379c8293863"
+# shellcheck disable=SC2034
+KIND_SHA256_darwin_arm64="5240ca1acb587e1d0386532dd8c3373d81f5173b5af322919fc56f0cdd646596"
+
+# shellcheck disable=SC2034
+KUBECTL_SHA256_linux_amd64="5de4e9f2266738fd112b721265a0c1cd7f4e5208b670f811861f699474a100a3"
+# shellcheck disable=SC2034
+KUBECTL_SHA256_linux_arm64="d595d1a26b7444e0beb122e25750ee4524e74414bbde070b672b423139295ce6"
+# shellcheck disable=SC2034
+KUBECTL_SHA256_darwin_amd64="8d36a5c66142547ad16e332942fd16a0ca2b3346d9ebaab6c348de2c70d9d875"
+# shellcheck disable=SC2034
+KUBECTL_SHA256_darwin_arm64="8ae6823839993bb2e394c3cf1919748e530642c625dc9100159595301f53bdeb"
 
 # ---------------------------------------------------------------------------
 # log — Print a timestamped log message (ISO 8601 UTC).
@@ -177,7 +187,8 @@ install_flux() {
   curl -fsSL "${url}" -o "${tmpdir}/flux.tar.gz"
 
   # Verify download integrity against pinned SHA256 hash (CC-0010).
-  local expected_hash="${FLUX_SHA256[${OS}_${ARCH}]}"
+  local _flux_var="FLUX_SHA256_${OS}_${ARCH}"
+  local expected_hash="${!_flux_var:-}"
   if [[ -z "${expected_hash}" ]]; then
     log "ERROR: No pinned SHA256 hash for flux ${want} on ${OS}/${ARCH}."
     exit 1
@@ -214,7 +225,8 @@ install_kind() {
   curl -fsSL "${url}" -o "${tmpdir}/kind"
 
   # Verify download integrity against pinned SHA256 hash (CC-0010).
-  local expected_hash="${KIND_SHA256[${OS}_${ARCH}]}"
+  local _kind_var="KIND_SHA256_${OS}_${ARCH}"
+  local expected_hash="${!_kind_var:-}"
   if [[ -z "${expected_hash}" ]]; then
     log "ERROR: No pinned SHA256 hash for kind ${want} on ${OS}/${ARCH}."
     exit 1
@@ -250,7 +262,8 @@ install_kubectl() {
   curl -fsSL "${url}" -o "${tmpdir}/kubectl"
 
   # Verify download integrity against pinned SHA256 hash (CC-0010).
-  local expected_hash="${KUBECTL_SHA256[${OS}_${ARCH}]}"
+  local _kubectl_var="KUBECTL_SHA256_${OS}_${ARCH}"
+  local expected_hash="${!_kubectl_var:-}"
   if [[ -z "${expected_hash}" ]]; then
     log "ERROR: No pinned SHA256 hash for kubectl ${want} on ${OS}/${ARCH}."
     exit 1

@@ -52,6 +52,10 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 		"oslo_middleware": {
 			"enable_proxy_headers_parsing": "true",
 		},
+		"oslo_policy": {
+			"enforce_scope":        "true",
+			"enforce_new_defaults": "true",
+		},
 		"identity": {
 			"default_domain_id": "default",
 		},

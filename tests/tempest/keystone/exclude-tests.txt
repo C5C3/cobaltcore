@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Tempest exclude list for Keystone identity API tests (CC-0035 REQ-004).
+#
+# One regex pattern per line. Lines starting with # are comments.
+# Blank lines are ignored. Patterns are matched against test IDs.
+# Follows the same format as releases/2025.2/test-excludes/keystone.txt.
+
+# Exclude tests that require a live LDAP server (not available in CI kind cluster)
+keystone_tempest_plugin\.tests\..*ldap
+
+# Exclude federation tests that require an external IdP (SAML2/OAuth2 not available in CI)
+keystone_tempest_plugin\.tests\..*federation
+
+# Exclude OAuth2 tests requiring external authorization server
+keystone_tempest_plugin\.tests\..*oauth2
+
+# Exclude RBAC tests with known mismatches between keystone-tempest-plugin 0.19.0
+# and Keystone 2025.2 default policies (enforce_scope=true, enforce_new_defaults=true).
+# test_identity_update_domain: all 11 persona classes fail (unexpected status codes)
+keystone_tempest_plugin\.tests\.rbac\.v3\.test_domain\..*\.test_identity_update_domain
+# test_endpoint: delete/get/update fail for domain-scoped and non-admin personas
+keystone_tempest_plugin\.tests\.rbac\.v3\.test_endpoint\..*\.test_identity_delete_endpoint
+keystone_tempest_plugin\.tests\.rbac\.v3\.test_endpoint\..*\.test_identity_get_endpoint
+keystone_tempest_plugin\.tests\.rbac\.v3\.test_endpoint\..*\.test_identity_update_endpoint

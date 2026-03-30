@@ -1,0 +1,146 @@
+{
+  "summary": "Implements Tempest API testing infrastructure: Dockerfile (2-stage build), test-refs.yaml version pins, per-service tempest config (keystone), verify_tempest.sh image tests, hack/run-tempest.sh orchestration, Makefile target, CI integration in both ci.yaml (e2e-keystone job) and build-images.yaml (build-tempest + merge-tempest-image jobs with full supply chain security). Overall implementation is well-structured and follows established patterns, but has two blocking issues: version tag cross-branch clobbering and missing yq null guards.",
+  "verdict": "BLOCKED",
+  "tests_checklist": [
+    {"item": "verify_tempest.sh follows PASS/FAIL counter pattern and sources assertions.sh", "checked": true},
+    {"item": "verify_tempest.sh uses exit-code guard pattern (|| exit_code=$?) consistently", "checked": true},
+    {"item": "verify_tempest.sh covers all 5 planned test cases (version, plugin import, subunit2junitxml, user, no build tools)", "checked": true},
+    {"item": "Test names are descriptive and follow test_* naming convention", "checked": true},
+    {"item": "No tests for hack/run-tempest.sh preflight checks or error paths", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Dockerfile follows 2-stage build pattern from images/keystone/Dockerfile", "checked": true},
+    {"item": "Shell scripts use set -euo pipefail", "checked": true},
+    {"item": "SPDX Apache-2.0 headers on all new files", "checked": true},
+    {"item": "CC-0035 feature ID referenced in all files", "checked": true},
+    {"item": "log() function matches ISO 8601 UTC pattern from deploy-infra.sh", "checked": true},
+    {"item": "Makefile guard uses $(if $(SERVICE),,$(error ...)) pattern consistent with docker-build", "checked": true},
+    {"item": "Shebang lines consistent (#!/bin/bash for verify_*, #!/usr/bin/env bash for hack/*)", "checked": true},
+    {"item": "TEMPEST_TIMEOUT declared but never used (dead variable)", "checked": false},
+    {"item": "No hardcoded versions in Dockerfile or workflows (all from test-refs.yaml)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets in source files", "checked": true},
+    {"item": "Admin password placeholder in tempest.conf uses env var reference, not literal", "checked": true},
+    {"item": "Docker container runs as non-root openstack user", "checked": true},
+    {"item": "Secrets not exposed in process arguments (docker -e, sed)", "checked": false},
+    {"item": "Action SHA pins match across all jobs (no mutable tag references)", "checked": true},
+    {"item": "Cosign keyless signing follows established pattern", "checked": true},
+    {"item": "SBOM + Grype + SARIF + Attest chain follows existing supply chain pattern", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "build-tempest follows per-platform build + merge manifest pattern", "checked": true},
+    {"item": "Tempest steps correctly placed after Chainsaw and before diagnostic dump in ci.yaml", "checked": true},
+    {"item": "lint-dockerfiles matrix includes images/tempest/Dockerfile", "checked": true},
+    {"item": "test-refs.yaml separate from source-refs.yaml for independent versioning", "checked": true},
+    {"item": "Version-only tag not gated to main branch (cross-branch clobbering)", "checked": false}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code between verify_tempest.sh and verify_keystone.sh (shared assertions.sh)", "checked": true},
+    {"item": "CI and local paths use different but appropriate credential injection mechanisms", "checked": true},
+    {"item": "No unnecessary abstractions", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "preflight_checks validates SERVICE, tools, Docker, config dir, test-refs.yaml", "checked": true},
+    {"item": "yq version resolution has null/empty guards", "checked": false},
+    {"item": "extract_admin_password fails fast if secret is empty", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Exit code guards on all docker run command substitutions in verify_tempest.sh", "checked": true},
+    {"item": "set -euo pipefail on all shell scripts", "checked": true},
+    {"item": "Error messages include context (file paths, variable names)", "checked": true}
+  ],
+  "security_findings": [
+    {
+      "severity": "MEDIUM",
+      "description": "S5 [ASK]: Admin password passed via docker run -e exposes the secret in host process listing (/proc/<pid>/cmdline). The shell expands ${admin_password} before docker runs, so the plaintext password appears as a docker CLI argument. Matches external review pattern 'never-pass-secrets-as-command-line-arguments-through-kubectl-exec' (severity: WARNING). For a local dev script the risk is moderate — the password is transient and on the developer's own machine — but the established project convention is to avoid this pattern.",
+      "location": "hack/run-tempest.sh:191",
+      "fix": "Pass the password via stdin or a tmpfs-mounted file instead of -e. For example: echo \"${admin_password}\" | docker run --rm -i ... -e KEYSTONE_ADMIN_PASSWORD_FILE=/dev/stdin ... Or use --env-file with a temporary file that is immediately deleted.",
+      "fix_classification": "ASK"
+    },
+    {
+      "severity": "LOW",
+      "description": "S5 [ASK]: Admin password interpolated into sed command argument in CI. The password (from kubectl get secret, NOT a GitHub secret so not automatically masked) appears in the sed process argument list on the ephemeral runner. Lower risk due to ephemeral CI environment.",
+      "location": ".github/workflows/ci.yaml:477-478",
+      "fix": "Use envsubst instead of sed for credential substitution: KEYSTONE_ADMIN_PASSWORD=\"${ADMIN_PASSWORD}\" envsubst < \"${CONFIG_DIR}/tempest.conf\" | sed 's|keystone-basic-api\\.openstack\\.svc:5000|localhost:5000|' > _output/tempest/tempest.conf",
+      "fix_classification": "ASK"
+    }
+  ],
+  "architecture_findings": [
+    {
+      "severity": "BLOCKING",
+      "description": "PC3 [AUTO_FIX]: Version-only tag (:45.0.0) pushed unconditionally from all branches. The merge-tempest-image job pushes -t \"${IMAGE}:${{ steps.versions.outputs.tempest }}\" without gating to main branch. Since build-images.yaml triggers on push to both 'main' and 'stable/**', a push from stable/2025.2 silently overwrites the :45.0.0 tag pushed from main. The existing merge-service-images job (line 992) already has the fix: 'if [[ \"${GITHUB_REF_NAME}\" == \"main\" ]]; then version_tag=...; fi'. The tempest merge job must follow the same pattern. Matches external review pattern 'check-mutable-tags-for-cross-branch-clobbering' (severity: BLOCKING).",
+      "location": ".github/workflows/build-images.yaml:634-636",
+      "fix": "Gate the version tag to main branch: version_tag=\"\"; if [[ \"${GITHUB_REF_NAME}\" == \"main\" ]]; then version_tag=\"-t ${IMAGE}:${{ steps.versions.outputs.tempest }}\"; fi; then use ${version_tag} in the imagetools create command.",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "issues_found": [
+    {
+      "check_id": "PC3",
+      "severity": "BLOCKER",
+      "description": "Version-only tag (:45.0.0) pushed unconditionally from all branches in merge-tempest-image, but merge-service-images gates version tags behind 'if [[ \"${GITHUB_REF_NAME}\" == \"main\" ]]' (line 992). Cross-branch clobbering: stable/** push silently overwrites the version tag from main.",
+      "location": ".github/workflows/build-images.yaml:634-636",
+      "fix": "Gate version tag push to main branch only, matching the merge-service-images pattern at line 992.",
+      "evidence": "Lines 634-636: docker buildx imagetools create -t \"${IMAGE}:latest\" -t \"${IMAGE}:${{ steps.versions.outputs.tempest }}\" -t \"${IMAGE}:${{ github.sha }}\" ... vs merge-service-images lines 991-994: if [[ \"${GITHUB_REF_NAME}\" == \"main\" ]]; then version_tag=\"-t ${{ steps.tags.outputs.version }}\"; release_tag=\"-t ${{ steps.tags.outputs.release }}\"; fi",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "PC3",
+      "severity": "BLOCKER",
+      "description": "Missing yq null/empty guards for version resolution in build-tempest and merge-tempest-image jobs. The existing build-service-images job (lines 770-773) validates yq output with 'if [ -z \"$ref\" ] || [ \"$ref\" = \"null\" ]'. Task 3.1 plan explicitly required 'yq with null/empty guards for version resolution'. A malformed test-refs.yaml would produce empty version strings, causing cryptic downstream failures.",
+      "location": ".github/workflows/build-images.yaml:485-489",
+      "fix": "Add after each yq call: if [ -z \"${TEMPEST_VERSION}\" ] || [ \"${TEMPEST_VERSION}\" = \"null\" ]; then echo \"::error::No tempest version found in test-refs.yaml\"; exit 1; fi (same for KTP_VERSION). Apply to both build-tempest (line 487) and merge-tempest-image (line 607).",
+      "evidence": "Lines 485-489: TEMPEST_VERSION=$(yq -r '.tempest' releases/2025.2/test-refs.yaml); KTP_VERSION=$(yq -r '.[\"keystone-tempest-plugin\"]' releases/2025.2/test-refs.yaml) — no validation. Compare build-service-images lines 769-773: ref=$(yq ...); if [ -z \"$ref\" ] || [ \"$ref\" = \"null\" ]; then echo \"::error::...\"; exit 1; fi",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "DA2",
+      "severity": "MAJOR",
+      "description": "Documentation claims 'No changes to the Dockerfile, hack/run-tempest.sh, or CI workflows are needed' for adding new services, but both CI and local paths hardcode keystone-specific values. ci.yaml hardcodes 'keystone-basic-api' service name (line 469), 'keystone-admin' secret name (line 465), and port 5000 (line 469). hack/run-tempest.sh hardcodes 'keystone-admin' secret name (line 148). Adding a new service (e.g., glance) would require modifying both files.",
+      "location": "docs/reference/tempest-test-infrastructure.md:235-236",
+      "fix": "Update documentation to accurately state that adding a new service requires: (1) creating the tests/tempest/<service>/ directory, and (2) updating ci.yaml to add service-specific port-forwarding, secret extraction, and endpoint configuration. Remove the claim that no CI changes are needed. Alternatively, parameterize ci.yaml and run-tempest.sh to read service endpoint and secret info from a per-service config file.",
+      "evidence": "Docs line 235-236: 'No changes to the Dockerfile, hack/run-tempest.sh, or CI workflows are needed' — but ci.yaml line 465: ADMIN_PASSWORD=$(kubectl get secret keystone-admin ...), line 469: kubectl port-forward svc/keystone-basic-api ..., and hack/run-tempest.sh line 148: kubectl get secret keystone-admin ...",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "Q7",
+      "severity": "MAJOR",
+      "description": "TEMPEST_TIMEOUT variable is declared (line 31), documented in usage() (line 57), and logged (line 172) but never applied to the docker run command (lines 188-210). Users who set TEMPEST_TIMEOUT=120 expect the test to abort after 120 seconds, but it runs indefinitely. This is a dead variable that misleads users.",
+      "location": "hack/run-tempest.sh:31",
+      "fix": "Wrap the docker run command with timeout: timeout \"${TEMPEST_TIMEOUT}\" docker run --rm ... Or remove the variable entirely if timeout enforcement is not desired.",
+      "evidence": "Line 31: TEMPEST_TIMEOUT=\"${TEMPEST_TIMEOUT:-600}\"; Line 172: log \"  Timeout: ${TEMPEST_TIMEOUT}s\"; Lines 188-210: docker run --rm ... (no timeout applied)",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a trap 'kill \"${PF_PID}\" 2>/dev/null || true' EXIT before the port-forward in ci.yaml to ensure cleanup on workflow cancellation (ci.yaml:470-508)",
+    "Consider adding yq null/empty guards to ci.yaml tempest version resolution (lines 445-446) for consistency, even though the image build would fail anyway on empty versions",
+    "The hack/run-tempest.sh could use envsubst to resolve tempest.conf placeholders before mounting, instead of relying on oslo.config's env var substitution — this would make the credential injection mechanism explicit and consistent with the CI path"
+  ],
+  "next_steps": [
+    "Fix BLOCKER: Gate version-only tag (:tempest-version) to main branch in merge-tempest-image, matching merge-service-images pattern",
+    "Fix BLOCKER: Add yq null/empty guards to build-tempest and merge-tempest-image jobs",
+    "Fix MAJOR: Either apply TEMPEST_TIMEOUT to docker run or remove the dead variable",
+    "Fix MAJOR: Update docs to accurately describe CI changes needed for new services"
+  ],
+  "detected_patterns": [
+    {
+      "name": "Per-service Tempest config directory with tempest.conf + include/exclude test lists",
+      "component": "tests/tempest/*/",
+      "category": "testing",
+      "applies_when": "Adding Tempest API tests for a new OpenStack service (e.g., tests/tempest/glance/)",
+      "description": "Each service tested by Tempest has a directory under tests/tempest/<service>/ containing three files: tempest.conf (oslo.config format with service endpoint, auth credentials via ${ENV_VAR} placeholder, and service_available flags), include-tests.txt (regex patterns for tests to run), and exclude-tests.txt (regex patterns for tests to skip due to missing dependencies). The tempest.conf uses in-cluster DNS for the service endpoint (e.g., keystone-basic-api.openstack.svc:5000) which is rewritten to localhost in CI via sed. Both hack/run-tempest.sh and ci.yaml dynamically check for the existence of this directory before running Tempest. Currently only one service (keystone) exists, so this is an architectural decision that WILL recur as new services are added.",
+      "examples": [
+        {
+          "location": "tests/tempest/keystone/tempest.conf:9-32",
+          "code": "[DEFAULT]\nlog_dir = /tmp/tempest-logs\nlog_file = tempest.log\n\n[identity]\nuri_v3 = http://keystone-basic-api.openstack.svc:5000/v3\n\n[auth]\nuse_dynamic_credentials = false\nadmin_username = admin\nadmin_password = ${KEYSTONE_ADMIN_PASSWORD}\nadmin_project_name = admin\nadmin_domain_name = Default\n\n[identity-feature-enabled]\napi_v3 = true\n\n[service_available]\nidentity = true\ncompute = false\nnetwork = false\nvolume = false\nimage = false\nobject-storage = false"
+        },
+        {
+          "location": "tests/tempest/keystone/include-tests.txt:11-15",
+          "code": "# Core Tempest identity API tests\ntempest.api.identity\n\n# Keystone-specific plugin tests\nkeystone_tempest_plugin.tests"
+        }
+      ]
+    }
+  ]
+}
