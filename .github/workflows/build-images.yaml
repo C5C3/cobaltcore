@@ -747,15 +747,19 @@ jobs:
         run: |
           cd /tmp/digests
           [[ $(ls | wc -l) -ge 1 ]] || { echo "::error::No digests found for ${{ matrix.service }}-${{ matrix.release }}"; exit 1; }
-          # CC-0007: The version-only tag (e.g. keystone:28.0.0) is restricted
-          # to main to prevent silent overwrites across branches.
+          # CC-0007: The version-only and release tags (e.g. keystone:28.0.0,
+          # keystone:2025.2) are restricted to main to prevent silent overwrites
+          # across branches.
           version_tag=""
+          release_tag=""
           if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
             version_tag="-t ${{ steps.tags.outputs.version }}"
+            release_tag="-t ${{ steps.tags.outputs.release }}"
           fi
           docker buildx imagetools create \
             -t "${{ steps.tags.outputs.composite }}" \
             ${version_tag} \
+            ${release_tag} \
             -t "${{ steps.tags.outputs.sha }}" \
             $(printf "${IMAGE}@sha256:%s " *)
           digest=$(docker buildx imagetools inspect "${{ steps.tags.outputs.composite }}" \

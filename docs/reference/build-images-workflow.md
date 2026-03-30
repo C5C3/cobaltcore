@@ -325,7 +325,7 @@ were computed during the build.
 | 3 | Set up Buildx + Login + cosign | *(three steps)* | Authenticates and installs cosign (CC-0030) |
 | 4 | Derive tags | `.github/actions/derive-service-tags` | Composite action. Computes image name and all tags (REQ-005) |
 | 5 | Download service image digests | `actions/download-artifact@v4` | Downloads all `digests-service-<service>-<release>-*` artifacts |
-| 6 | Create and push service image manifest | Shell | `docker buildx imagetools create` assembles all per-platform digests; applies composite, SHA, and (on main) version tags; outputs merged manifest digest |
+| 6 | Create and push service image manifest | Shell | `docker buildx imagetools create` assembles all per-platform digests; applies composite and SHA tags (all branches), and version and release tags (main only); outputs merged manifest digest |
 | 7 | Generate SBOM for service image | `anchore/sbom-action@v0` | Scans the merged manifest by digest. Output: `sbom-<service>.cyclonedx.json` (CC-0029) |
 | 8 | Scan service image for vulnerabilities | `anchore/scan-action@v7` | SBOM-based scan. Category: `grype-<service>` (CC-0032) |
 | 9 | Upload SARIF for service image | `github/codeql-action/upload-sarif@v3` | Runs always when SARIF output exists (CC-0032) |
@@ -503,17 +503,18 @@ truth shared by `build-service-images`, `merge-service-images`, and `verify-serv
 
 ## Tag Schema
 
-Each service image build produces two or three tags on push events (REQ-005):
+Each service image build produces two to four tags on push events (REQ-005):
 
 | Tag | Format | Example | Branches |
 | --- | --- | --- | --- |
 | Composite | `<version>-p<N>-<branch>-<sha>` | `keystone:28.0.0-p0-main-a1b2c3d` | all |
 | Version | `<version>` | `keystone:28.0.0` | `main` only |
+| Release | `<release>` | `keystone:2025.2` | `main` only |
 | SHA | `<sha>` | `keystone:a1b2c3d` | all |
 
-The version-only tag is restricted to the `main` branch to prevent silent overwrites when
-multiple branches build the same upstream version. The composite tag already encodes the
-branch, so `stable/**` builds remain uniquely identifiable (CC-0007).
+The version-only and release tags are restricted to the `main` branch to prevent silent
+overwrites when multiple branches build the same upstream version. The composite tag
+already encodes the branch, so `stable/**` builds remain uniquely identifiable (CC-0007).
 
 **Tag components:**
 

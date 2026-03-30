@@ -28,6 +28,9 @@ outputs:
   sha:
     description: Short-SHA tag reference (e.g. ghcr.io/owner/keystone:abc1234)
     value: ${{ steps.run.outputs.sha }}
+  release:
+    description: Release tag reference (e.g. ghcr.io/owner/keystone:2025.2)
+    value: ${{ steps.run.outputs.release }}
   version-ref:
     description: Raw upstream version string (e.g. 28.0.0)
     value: ${{ steps.run.outputs.version-ref }}
@@ -67,5 +70,6 @@ runs:
         echo "composite=${IMAGE}:${COMPOSITE}" >> "$GITHUB_OUTPUT"
         echo "version=${IMAGE}:${VERSION}" >> "$GITHUB_OUTPUT"
         echo "sha=${IMAGE}:${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+        echo "release=${IMAGE}:${MATRIX_RELEASE}" >> "$GITHUB_OUTPUT"
         echo "version-ref=${VERSION}" >> "$GITHUB_OUTPUT"
-        echo "Tags: ${COMPOSITE}, ${VERSION}, ${SHORT_SHA}"
+        echo "Tags: ${IMAGE}:${COMPOSITE}, ${IMAGE}:${VERSION}, ${IMAGE}:${SHORT_SHA}, ${IMAGE}:${MATRIX_RELEASE}"
