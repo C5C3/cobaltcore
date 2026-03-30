@@ -324,16 +324,6 @@ preflight_checks() {
     exit 1
   fi
 
-  # Check that no existing kind cluster with the same name exists.
-  # Skipped when SKIP_KIND_CREATE=true (CI mode where helm/kind-action creates the cluster).
-  if [[ "${SKIP_KIND_CREATE:-false}" != "true" ]]; then
-    if kind get clusters 2>/dev/null | grep -qx "${CLUSTER_NAME}"; then
-      log "ERROR: Kind cluster '${CLUSTER_NAME}' already exists."
-      log "Run 'make teardown-infra' to delete it first, then retry."
-      exit 1
-    fi
-  fi
-
   log "Pre-flight checks passed."
 }
 
@@ -502,6 +492,8 @@ main() {
   log "=== Step 1/8: Create kind cluster ==="
   if [[ "${SKIP_KIND_CREATE:-false}" == "true" ]]; then
     log "SKIP_KIND_CREATE=true — assuming kind cluster '${CLUSTER_NAME}' already exists (CI mode)."
+  elif kind get clusters 2>/dev/null | grep -qx "${CLUSTER_NAME}"; then
+    log "Kind cluster '${CLUSTER_NAME}' already exists — skipping creation."
   else
     kind create cluster \
       --name "${CLUSTER_NAME}" \

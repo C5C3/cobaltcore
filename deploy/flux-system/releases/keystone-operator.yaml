@@ -30,6 +30,10 @@ spec:
     replicas: 2
     leaderElection:
       enabled: true
+    image:
+      # Use latest until a versioned release (v* git tag) publishes a semver image tag.
+      # The chart default (appVersion) only works once 0.1.0 has been released.
+      tag: latest
   install:
     crds: CreateReplace
     createNamespace: true
