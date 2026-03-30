@@ -238,7 +238,7 @@ jobs:
       - uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4
 
       - name: Download python-base digests
-        uses: actions/download-artifact@c850b930e6ba138125429b7e5c93fc707a7f8427 # v4.1.4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: digests-python-base-*
           path: /tmp/digests/python-base
@@ -329,7 +329,7 @@ jobs:
         run: cosign sign --yes ghcr.io/${{ steps.meta.outputs.owner }}/python-base@${{ steps.merge-python-base.outputs.digest }}
 
       - name: Download venv-builder digests
-        uses: actions/download-artifact@c850b930e6ba138125429b7e5c93fc707a7f8427 # v4.1.4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: digests-venv-builder-*
           path: /tmp/digests/venv-builder
@@ -734,7 +734,7 @@ jobs:
           repository-owner: ${{ github.repository_owner }}
 
       - name: Download service image digests
-        uses: actions/download-artifact@c850b930e6ba138125429b7e5c93fc707a7f8427 # v4.1.4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: digests-service-${{ matrix.service }}-${{ matrix.release }}-*
           path: /tmp/digests
