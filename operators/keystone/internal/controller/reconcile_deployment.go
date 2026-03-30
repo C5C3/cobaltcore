@@ -124,6 +124,7 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 						Command: []string{
 							"uwsgi",
 							"--http", ":5000",
+							"--http-keepalive",
 							"--wsgi-file", "/var/lib/openstack/bin/keystone-wsgi-public",
 							"--master",
 							"--lazy-apps",

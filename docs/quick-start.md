@@ -379,6 +379,57 @@ kubectl get keystone keystone -n openstack -o jsonpath='{.status.conditions}' | 
 
 ---
 
+## Access Keystone from your local machine
+
+The Keystone Service is of type `ClusterIP` and is only reachable inside the cluster. To access the
+API from your workstation, forward the port with `kubectl` and export the OpenStack credentials from
+the `keystone-admin` Secret that was synced from OpenBao during `make deploy-infra`.
+
+### Step 1 — Forward port 5000
+
+```bash
+kubectl port-forward svc/keystone-api -n openstack 5000:5000
+```
+
+Leave this running in a separate terminal. The API is now available at `http://localhost:5000`.
+
+### Step 2 — Export OpenStack credentials
+
+In a second terminal, read the admin password directly from the cluster and set the standard
+OpenStack environment variables:
+
+```bash
+export OS_AUTH_URL=http://localhost:5000/v3
+export OS_USERNAME=admin
+export OS_PASSWORD=$(kubectl get secret keystone-admin -n openstack -o jsonpath='{.data.password}' | base64 -d)
+export OS_PROJECT_NAME=admin
+export OS_USER_DOMAIN_NAME=Default
+export OS_PROJECT_DOMAIN_NAME=Default
+```
+
+### Step 3 — Verify access
+
+Check that the API responds and that authentication works:
+
+```bash
+# Unauthenticated version endpoint
+curl http://localhost:5000/v3
+
+# Authenticated token request (requires python-openstackclient)
+openstack token issue
+```
+
+A successful `curl` response begins with `{"version": {"id": "v3", ...}}`. A successful
+`openstack token issue` prints a table with the issued token and its expiry.
+
+> **Note:** The service catalog returned by Keystone contains cluster-internal endpoint URLs
+> (e.g. `http://keystone-api.openstack.svc.cluster.local:5000/v3`). Only `identity` commands
+> that authenticate directly against `OS_AUTH_URL` work via port-forward. Commands that resolve
+> other service endpoints from the catalog (Nova, Neutron, …) require additional port-forwards
+> for each service.
+
+---
+
 ## Running the E2E test suite
 
 The project ships a full [Chainsaw](https://kyverno.github.io/chainsaw/) test suite that validates
