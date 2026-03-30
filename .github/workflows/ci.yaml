@@ -25,7 +25,122 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Detect which areas of code changed to avoid running expensive jobs on
+  # unrelated changes (e.g. docs edits must not trigger E2E or image builds).
+  #
+  # The e2e-operators output is a JSON matrix that lists only the operators
+  # whose code (or shared code) actually changed, so E2E and image-push jobs
+  # run per-operator rather than all-or-nothing.
+  #
+  # To add a new operator (e.g. glance):
+  #   1. Add a filter block below (glance: ...)
+  #   2. Add the operator name to ALL_OPERATORS in the "Resolve effective changes" step
+  #   3. Add a matching FILTER_glance env var in the same step
+  #
+  # On tag pushes the full release pipeline must always run, so all areas and
+  # all operators are forced active regardless of which files were touched.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      go: ${{ steps.result.outputs.go }}
+      docs: ${{ steps.result.outputs.docs }}
+      e2e-infra: ${{ steps.result.outputs.e2e-infra }}
+      has-e2e-operators: ${{ steps.result.outputs.has-e2e-operators }}
+      e2e-operators: ${{ steps.result.outputs.e2e-operators }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        id: filter
+        with:
+          filters: |
+            # Shared Go infrastructure — a change here affects every operator.
+            go_common:
+              - 'internal/**'
+              - 'go.work'
+              - 'Makefile'
+              - '.golangci.yml'
+              - 'hack/**'
+              - 'scripts/**'
+              - 'images/python-base/**'
+              - 'images/venv-builder/**'
+              - 'releases/**'
+              - '.github/workflows/ci.yaml'
+            # Per-operator paths — only the relevant E2E job is triggered.
+            keystone:
+              - 'operators/keystone/**'
+              - 'images/keystone/**'
+              - 'tests/e2e/keystone/**'
+            # glance:                        # uncomment when glance is added
+            #   - 'operators/glance/**'
+            #   - 'images/glance/**'
+            #   - 'tests/e2e/glance/**'
+            docs:
+              - 'docs/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/ci.yaml'
+            e2e_infra:
+              - 'tests/e2e/infrastructure/**'
+              - 'hack/**'
+              - 'deploy/**'
+              - '.github/workflows/ci.yaml'
+      - name: Resolve effective changes
+        id: result
+        env:
+          # Single source of truth for all known operators (space-separated).
+          # To add a new operator: add it here, add a filter block above,
+          # and add a matching FILTER_<operator> line below.
+          ALL_OPERATORS: keystone
+          # Per-operator filter outputs exposed as env vars for shell indirection.
+          FILTER_keystone: ${{ steps.filter.outputs.keystone }}
+          # FILTER_glance: ${{ steps.filter.outputs.glance }}
+        run: |
+          ops=()
+          go_changed=false
+
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            # Tag push: run the full release pipeline for all known operators.
+            go_changed=true
+            read -ra ops <<< "$ALL_OPERATORS"
+            echo "docs=true"      >> "$GITHUB_OUTPUT"
+            echo "e2e-infra=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs=${{ steps.filter.outputs.docs }}"           >> "$GITHUB_OUTPUT"
+            echo "e2e-infra=${{ steps.filter.outputs.e2e_infra }}" >> "$GITHUB_OUTPUT"
+
+            if [[ "${{ steps.filter.outputs.go_common }}" == "true" ]]; then
+              # Shared-code change → all operators are potentially affected.
+              go_changed=true
+              read -ra ops <<< "$ALL_OPERATORS"
+            else
+              # Operator-specific change → include only changed operators.
+              for op in $ALL_OPERATORS; do
+                filter_var="FILTER_${op}"
+                if [[ "${!filter_var}" == "true" ]]; then
+                  go_changed=true
+                  ops+=("$op")
+                fi
+              done
+            fi
+          fi
+
+          echo "go=${go_changed}" >> "$GITHUB_OUTPUT"
+
+          # Emit operator matrix — single codepath for both tag and non-tag.
+          if [[ ${#ops[@]} -eq 0 ]]; then
+            echo "has-e2e-operators=false"                   >> "$GITHUB_OUTPUT"
+            # Always emit valid JSON so fromJson() never fails in downstream jobs.
+            echo 'e2e-operators={"operator":["__none__"]}'   >> "$GITHUB_OUTPUT"
+          else
+            matrix=$(printf '%s\n' "${ops[@]}" | jq -Rnc '[inputs] | {operator: .}')
+            echo "has-e2e-operators=true"                    >> "$GITHUB_OUTPUT"
+            echo "e2e-operators=${matrix}"                   >> "$GITHUB_OUTPUT"
+          fi
+
   lint:
+    needs: [changes]
+    if: needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -42,6 +157,7 @@ jobs:
 
   # CC-0010: Validate shell scripts with shellcheck to catch scripting issues
   # early.  shellcheck is pre-installed on ubuntu-latest runners.
+  # Runs unconditionally — it is fast and hack/ scripts are exercised in E2E.
   shellcheck:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -53,6 +169,8 @@ jobs:
   # CC-0018: Matrix over [common, keystone, c5c3] to deduplicate common coverage
   # into a single leg (review comment #7/#8).
   test:
+    needs: [changes]
+    if: needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -82,6 +200,8 @@ jobs:
   # CC-0018, REQ-003: Integration tests with envtest, coverage uploaded to Codecov
   # (REQ-004). Includes internal/common to meet 80% codecov target (review comment #5).
   test-integration:
+    needs: [changes]
+    if: needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -113,6 +233,8 @@ jobs:
   # CC-0018, REQ-009: Verify generated code (CRD manifests, deepcopy) is committed
   # and up-to-date. Fails if make manifests or make generate produces uncommitted diffs.
   verify-codegen:
+    needs: [changes]
+    if: needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -137,6 +259,8 @@ jobs:
           fi
 
   docs:
+    needs: [changes]
+    if: needs.changes.outputs.docs == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -156,6 +280,8 @@ jobs:
   # Deploys the full infrastructure stack to a kind cluster and validates health
   # of all operators, CRs, and ExternalSecrets via Chainsaw assertions.
   e2e-infra:
+    needs: [changes]
+    if: needs.changes.outputs.e2e-infra == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -205,14 +331,19 @@ jobs:
   # CC-0018, REQ-005: End-to-end operator tests using kind cluster and Chainsaw.
   # Builds the operator image, loads it into kind, deploys via Helm, and runs
   # Chainsaw test suites per operator.
-  e2e-keystone:
+  # Only runs when Go/operator code or E2E test definitions change, and only
+  # after all pre-flight checks (lint, tests, shellcheck) have passed.
+  e2e-operator:
+    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]
+    if: |
+      needs.changes.outputs.has-e2e-operators == 'true' &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: [lint, shellcheck, test, test-integration, verify-codegen]
     strategy:
       fail-fast: false
-      matrix:
-        operator: [keystone]
+      matrix: ${{ fromJson(needs.changes.outputs.e2e-operators) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
@@ -321,8 +452,8 @@ jobs:
             echo "--- $pod (previous) ---"
             kubectl logs -n openstack "$pod" --all-containers --tail=30 --previous 2>&1 || true
           done
-          echo "=== Keystone CR status ==="
-          kubectl get keystone -n openstack -o yaml 2>/dev/null | grep -A5 "conditions:" || true
+          echo "=== Operator CR status ==="
+          kubectl get ${{ matrix.operator }} -n openstack -o yaml 2>/dev/null | grep -A5 "conditions:" || true
           echo "=== ConfigMaps in openstack namespace ==="
           kubectl get cm -n openstack 2>/dev/null || true
       - name: Upload JUnit report
@@ -334,20 +465,19 @@ jobs:
           retention-days: 14
 
   # CC-0018, REQ-006: Build and push operator container images to GHCR.
-  # Runs only on push events (main branch or v* tags). Tags images with commit
-  # SHA and latest; adds version tag for v* tag pushes.
+  # Runs only on push events (main branch or v* tags) after E2E passed.
+  # Tags images with commit SHA and latest; adds version tag for v* tag pushes.
   build-and-push:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [e2e-keystone]
-    if: github.event_name == 'push'
+    needs: [changes, e2e-operator]
+    if: github.event_name == 'push' && needs.e2e-operator.result == 'success'
     permissions:
       contents: read
       packages: write
     strategy:
       fail-fast: false
-      matrix:
-        operator: [keystone]
+      matrix: ${{ fromJson(needs.changes.outputs.e2e-operators) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
@@ -384,19 +514,19 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.operator }}-operator
 
   # CC-0018, REQ-007: Package and push operator Helm charts to GHCR OCI registry.
-  # Runs only on push events. Uses versioned chart packaging for v* tag pushes.
+  # Runs only on push events after E2E passed. Uses versioned chart packaging
+  # for v* tag pushes.
   helm-push:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [e2e-keystone]
-    if: github.event_name == 'push'
+    needs: [changes, e2e-operator]
+    if: github.event_name == 'push' && needs.e2e-operator.result == 'success'
     permissions:
       contents: read
       packages: write
     strategy:
       fail-fast: false
-      matrix:
-        operator: [keystone]
+      matrix: ${{ fromJson(needs.changes.outputs.e2e-operators) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5
@@ -420,8 +550,11 @@ jobs:
   github-release:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [build-and-push, helm-push]
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [changes, build-and-push, helm-push]
+    if: |
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.build-and-push.result == 'success' &&
+      needs.helm-push.result == 'success'
     permissions:
       contents: write
     steps:
@@ -430,7 +563,7 @@ jobs:
       # CC-0018: Package Helm chart tarballs to attach as release assets.
       - name: Package Helm charts
         run: |
-          for op in keystone; do
+          for op in $(echo '${{ needs.changes.outputs.e2e-operators }}' | jq -r '.operator[]'); do
             make helm-package OPERATOR="${op}" CHART_VERSION="${GITHUB_REF_NAME#v}"
           done
       - uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
