@@ -1,0 +1,23 @@
+name: Normalize platform pair
+description: >
+  Convert a platform string (e.g. linux/amd64) to an artifact-safe name
+  (e.g. linux-amd64) by replacing slashes with dashes.
+
+inputs:
+  platform:
+    description: Platform string (e.g. linux/amd64)
+    required: true
+
+outputs:
+  value:
+    description: Artifact-safe platform string (e.g. linux-amd64)
+    value: ${{ steps.run.outputs.value }}
+
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      run: |
+        platform="${{ inputs.platform }}"
+        echo "value=${platform//\//-}" >> "$GITHUB_OUTPUT"

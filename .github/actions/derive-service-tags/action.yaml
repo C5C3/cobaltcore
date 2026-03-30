@@ -14,6 +14,10 @@ inputs:
   repository-owner:
     description: GitHub repository owner (github.repository_owner)
     required: true
+  install_yq:
+    description: Install yq before running. Set to 'false' if the caller already provides yq.
+    required: false
+    default: 'true'
 
 outputs:
   image:
@@ -38,6 +42,10 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Install yq
+      if: ${{ inputs.install_yq != 'false' }}
+      uses: mikefarah/yq@b534aa9ee5d38001fba3cd8fe254a037e4847b37 # v4.45.4
+
     - name: Derive tags
       id: run
       shell: bash

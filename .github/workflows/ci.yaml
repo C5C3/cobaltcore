@@ -468,7 +468,7 @@ jobs:
   # Each platform is pushed by digest; merge-operator-images assembles the manifest list.
   # Runs only on push events (main branch or v* tags) after E2E passed.
   build-and-push:
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 15
     needs: [changes, e2e-operator]
     if: github.event_name == 'push' && needs.e2e-operator.result == 'success'
@@ -479,20 +479,19 @@ jobs:
       fail-fast: false
       matrix:
         operator: ${{ fromJson(needs.changes.outputs.e2e-operators).operator }}
-        platform: [linux/amd64, linux/arm64]
-        include:
-          - platform: linux/amd64
+        platform:
+          - name: linux/amd64
             runner: ubuntu-latest
-          - platform: linux/arm64
+          - name: linux/arm64
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Prepare platform pair
         id: platform-pair
-        run: echo "value=${PLATFORM//\//-}" >> "$GITHUB_OUTPUT"
-        env:
-          PLATFORM: ${{ matrix.platform }}
+        uses: ./.github/actions/platform-pair
+        with:
+          platform: ${{ matrix.platform.name }}
 
       - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
       - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
@@ -519,7 +518,7 @@ jobs:
         with:
           context: .
           file: operators/${{ matrix.operator }}/Dockerfile
-          platforms: ${{ matrix.platform }}
+          platforms: ${{ matrix.platform.name }}
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
           tags: ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator
           labels: ${{ steps.meta.outputs.labels }}
