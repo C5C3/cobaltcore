@@ -7,6 +7,7 @@ package deployment
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"slices"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -38,6 +39,17 @@ func EnsureDeployment(ctx context.Context, c client.Client, scheme *runtime.Sche
 	}
 	if err != nil {
 		return false, fmt.Errorf("getting Deployment %s/%s: %w", deploy.Namespace, deploy.Name, err)
+	}
+
+	// If the selector has changed, the Deployment must be deleted and re-created:
+	// Kubernetes rejects .spec.selector mutations as immutable after creation.
+	// Returning (false, nil) causes the reconciler to requeue; on the next pass
+	// the Deployment no longer exists and will be created fresh (CC-0005).
+	if !reflect.DeepEqual(existing.Spec.Selector, deploy.Spec.Selector) {
+		if err := c.Delete(ctx, existing); err != nil {
+			return false, fmt.Errorf("deleting Deployment %s/%s for selector migration: %w", deploy.Namespace, deploy.Name, err)
+		}
+		return false, nil
 	}
 
 	// Always update the spec to the desired state. This avoids maintaining

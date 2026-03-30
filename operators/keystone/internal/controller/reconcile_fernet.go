@@ -184,6 +184,7 @@ func (r *KeystoneReconciler) createFernetKeysSecret(ctx context.Context,
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretName,
 			Namespace: keystone.Namespace,
+			Labels:    commonLabels(keystone),
 		},
 		Data: data,
 	}
@@ -224,12 +225,16 @@ func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName st
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-fernet-rotate", keystone.Name),
 			Namespace: keystone.Namespace,
+			Labels:    commonLabels(keystone),
 		},
 		Spec: batchv1.CronJobSpec{
 			Schedule: keystone.Spec.Fernet.RotationSchedule,
 			JobTemplate: batchv1.JobTemplateSpec{
 				Spec: batchv1.JobSpec{
 					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: commonLabels(keystone),
+						},
 						Spec: corev1.PodSpec{
 							ServiceAccountName: saName,
 							RestartPolicy:      corev1.RestartPolicyOnFailure,

@@ -276,9 +276,14 @@ func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
 	g.Expect(credentialVol.Secret.Optional).NotTo(BeNil())
 	g.Expect(*credentialVol.Secret.Optional).To(BeTrue(), "credential-keys volume should be optional until credential key management is implemented")
 
-	// Verify labels.
-	g.Expect(deploy.Spec.Template.Labels).To(HaveKeyWithValue("app", "test-keystone-api"))
-	g.Expect(deploy.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app", "test-keystone-api"))
+	// Verify labels on Deployment ObjectMeta, pod template, and selector.
+	g.Expect(deploy.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
+	g.Expect(deploy.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+	g.Expect(deploy.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "keystone-operator"))
+	g.Expect(deploy.Spec.Template.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
+	g.Expect(deploy.Spec.Template.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+	g.Expect(deploy.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
+	g.Expect(deploy.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
 
 	// Verify Service spec.
 	var svc corev1.Service
@@ -289,7 +294,11 @@ func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
 	g.Expect(svc.Spec.Ports[0].Port).To(Equal(int32(5000)))
 	g.Expect(svc.Spec.Ports[0].TargetPort.IntValue()).To(Equal(5000))
 	g.Expect(svc.Spec.Ports[0].Protocol).To(Equal(corev1.ProtocolTCP))
-	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue("app", "test-keystone-api"))
+	g.Expect(svc.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
+	g.Expect(svc.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+	g.Expect(svc.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "keystone-operator"))
+	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
+	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
 }
 
 func TestReconcileDeployment_NotReady_ConditionMessageAndGeneration(t *testing.T) {
@@ -352,8 +361,10 @@ func TestReconcileDeployment_ServiceCreatedAlongsideDeployment(t *testing.T) {
 	}, &svc)).To(Succeed())
 
 	// Verify the Service targets the Deployment's pods.
-	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue("app", "test-keystone-api"))
-	g.Expect(deploy.Spec.Template.Labels).To(HaveKeyWithValue("app", "test-keystone-api"))
+	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
+	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+	g.Expect(deploy.Spec.Template.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
+	g.Expect(deploy.Spec.Template.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
 
 	// Both should have owner references.
 	g.Expect(deploy.OwnerReferences).To(HaveLen(1))

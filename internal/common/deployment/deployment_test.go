@@ -175,6 +175,35 @@ func TestEnsureDeployment_notReadyWhenGenerationLags(t *testing.T) {
 	g.Expect(ready).To(BeFalse(), "should return false when ObservedGeneration lags behind Generation on update path")
 }
 
+func TestEnsureDeployment_deletesAndRequeuesOnSelectorChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	// Pre-create a deployment with the old selector.
+	existing := testDeployment()
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		WithStatusSubresource(existing).
+		Build()
+
+	// Desired deployment has a different selector.
+	desired := testDeployment()
+	desired.Spec.Selector = &metav1.LabelSelector{
+		MatchLabels: map[string]string{"app.kubernetes.io/name": "test", "app.kubernetes.io/instance": "test-instance"},
+	}
+
+	ready, err := EnsureDeployment(context.Background(), c, s, owner, desired)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ready).To(BeFalse(), "should not be ready when deleted for selector migration")
+
+	// The old Deployment should have been deleted.
+	list := &appsv1.DeploymentList{}
+	g.Expect(c.List(context.Background(), list, client.InNamespace("default"))).To(Succeed())
+	g.Expect(list.Items).To(BeEmpty(), "Deployment should have been deleted for selector migration")
+}
+
 func TestEnsureDeployment_idempotent(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := newScheme()

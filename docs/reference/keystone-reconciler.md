@@ -549,7 +549,8 @@ The `fernetKeysHash()` helper:
 | --- | --- |
 | Name | `keystone-api` |
 | Replicas | `spec.replicas` |
-| Labels / Selector | `app: keystone-api` |
+| Labels | `app.kubernetes.io/name=keystone`, `app.kubernetes.io/instance={name}`, `app.kubernetes.io/managed-by=keystone-operator` |
+| Selector | `app.kubernetes.io/name=keystone`, `app.kubernetes.io/instance={name}` |
 | Container name | `keystone-api` |
 | Image | `{spec.image.repository}:{spec.image.tag}` |
 | Port | 5000 (named `keystone-api`) |
@@ -580,7 +581,7 @@ The `fernetKeysHash()` helper:
 | Field | Value |
 | --- | --- |
 | Name | `keystone-api` |
-| Selector | `app: keystone-api` |
+| Selector | `app.kubernetes.io/name=keystone`, `app.kubernetes.io/instance={name}` |
 | Port | 5000 TCP |
 
 **Status Endpoint:**

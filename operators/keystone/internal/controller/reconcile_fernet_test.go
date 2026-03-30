@@ -103,6 +103,9 @@ func TestReconcileFernetKeys_NoSecret_CreatesSecretAndRequeues(t *testing.T) {
 	g.Expect(secret.Data).To(HaveLen(3))
 	g.Expect(secret.OwnerReferences).To(HaveLen(1))
 	g.Expect(secret.OwnerReferences[0].Name).To(Equal("test-keystone"))
+	g.Expect(secret.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
+	g.Expect(secret.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+	g.Expect(secret.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "keystone-operator"))
 
 	// CronJob and PushSecret are NOT created on this cycle (early return after secret creation).
 
@@ -161,6 +164,9 @@ func TestReconcileFernetKeys_SecretAlreadyExists(t *testing.T) {
 		Namespace: "default",
 		Name:      "test-keystone-fernet-rotate",
 	}, &cronJob)).To(Succeed())
+	g.Expect(cronJob.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
+	g.Expect(cronJob.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+	g.Expect(cronJob.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "keystone-operator"))
 
 	var ps esov1alpha1.PushSecret
 	g.Expect(c.Get(context.Background(), client.ObjectKey{
@@ -465,7 +471,16 @@ func TestReconcileFernetKeys_CronJobSpec(t *testing.T) {
 		Name:      "test-keystone-fernet-rotate",
 	}, &cronJob)).To(Succeed())
 
-	podSpec := cronJob.Spec.JobTemplate.Spec.Template.Spec
+	// Verify labels on CronJob ObjectMeta and pod template.
+	g.Expect(cronJob.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
+	g.Expect(cronJob.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+	g.Expect(cronJob.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "keystone-operator"))
+	podTemplate := cronJob.Spec.JobTemplate.Spec.Template
+	g.Expect(podTemplate.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
+	g.Expect(podTemplate.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+	g.Expect(podTemplate.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "keystone-operator"))
+
+	podSpec := podTemplate.Spec
 
 	// Verify ServiceAccount (CC-0013).
 	g.Expect(podSpec.ServiceAccountName).To(Equal("test-keystone-fernet-rotate"))

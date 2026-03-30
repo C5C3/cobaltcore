@@ -89,14 +89,30 @@ func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *
 	return ctrl.Result{}, nil
 }
 
-// keystoneAppLabel returns the label value used to select pods for this Keystone instance.
-func keystoneAppLabel(keystone *keystonev1alpha1.Keystone) string {
-	return fmt.Sprintf("%s-api", keystone.Name)
+// commonLabels returns the standard Kubernetes labels applied to all resources
+// owned by this Keystone instance.
+func commonLabels(keystone *keystonev1alpha1.Keystone) map[string]string {
+	return map[string]string{
+		"app.kubernetes.io/name":       "keystone",
+		"app.kubernetes.io/instance":   keystone.Name,
+		"app.kubernetes.io/managed-by": "keystone-operator",
+	}
+}
+
+// selectorLabels returns the minimal label set used as the Deployment pod
+// selector. It is a subset of commonLabels and must remain stable for the
+// lifetime of a Deployment (selectors are immutable after creation).
+func selectorLabels(keystone *keystonev1alpha1.Keystone) map[string]string {
+	labels := commonLabels(keystone)
+	return map[string]string{
+		"app.kubernetes.io/name":     labels["app.kubernetes.io/name"],
+		"app.kubernetes.io/instance": labels["app.kubernetes.io/instance"],
+	}
 }
 
 func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName string, fernetKeysHash string) *appsv1.Deployment {
-	appLabel := keystoneAppLabel(keystone)
-	labels := map[string]string{"app": appLabel}
+	selector := selectorLabels(keystone)
+	labels := commonLabels(keystone)
 	replicas := int32(keystone.Spec.Replicas)
 	fernetSecretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
 	credentialSecretName := fmt.Sprintf("%s-credential-keys", keystone.Name)
@@ -104,11 +120,12 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-api", keystone.Name),
 			Namespace: keystone.Namespace,
+			Labels:    labels,
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{
-				MatchLabels: labels,
+				MatchLabels: selector,
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
@@ -213,14 +230,14 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 }
 
 func buildKeystoneService(keystone *keystonev1alpha1.Keystone) *corev1.Service {
-	appLabel := keystoneAppLabel(keystone)
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-api", keystone.Name),
 			Namespace: keystone.Namespace,
+			Labels:    commonLabels(keystone),
 		},
 		Spec: corev1.ServiceSpec{
-			Selector: map[string]string{"app": appLabel},
+			Selector: selectorLabels(keystone),
 			Ports: []corev1.ServicePort{{
 				Port:       5000,
 				TargetPort: intstr.FromInt32(5000),

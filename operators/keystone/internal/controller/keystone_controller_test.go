@@ -155,17 +155,18 @@ func testCompletedDBSyncJob(configMapName string) runtime.Object {
 func testReadyKeystoneDeployment() runtime.Object {
 	ks := testKeystone()
 	replicas := int32(3)
-	appLabel := keystoneAppLabel(ks)
-	labels := map[string]string{"app": appLabel}
+	sel := selectorLabels(ks)
+	labels := commonLabels(ks)
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       fmt.Sprintf("%s-api", ks.Name),
 			Namespace:  "default",
 			Generation: 1,
+			Labels:     labels,
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Selector: &metav1.LabelSelector{MatchLabels: sel},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "keystone-api", Image: "ghcr.io/c5c3/keystone:2025.2"}}},
@@ -600,6 +601,83 @@ func TestSecretToKeystoneMapper_ReferencedSecrets(t *testing.T) {
 	}
 	reqs = mapper(context.Background(), unrelated)
 	g.Expect(reqs).To(BeEmpty())
+}
+
+// TestCommonLabels_ExactKeyValues pins the exact key/value pairs produced by
+// commonLabels so that future label refactors are caught immediately.
+func TestCommonLabels_ExactKeyValues(t *testing.T) {
+	ks := testKeystone()
+
+	labels := commonLabels(ks)
+
+	expected := map[string]string{
+		"app.kubernetes.io/name":       "keystone",
+		"app.kubernetes.io/instance":   ks.Name,
+		"app.kubernetes.io/managed-by": "keystone-operator",
+	}
+	if len(labels) != len(expected) {
+		t.Fatalf("commonLabels returned %d labels, expected %d: %#v", len(labels), len(expected), labels)
+	}
+	for k, v := range expected {
+		got, ok := labels[k]
+		if !ok {
+			t.Fatalf("commonLabels missing expected key %q", k)
+		}
+		if got != v {
+			t.Fatalf("commonLabels[%q] = %q, expected %q", k, got, v)
+		}
+	}
+}
+
+// TestSelectorLabels_ExactKeyValues pins the exact key/value pairs produced by
+// selectorLabels so that future label refactors are caught immediately.
+func TestSelectorLabels_ExactKeyValues(t *testing.T) {
+	ks := testKeystone()
+
+	sel := selectorLabels(ks)
+
+	expected := map[string]string{
+		"app.kubernetes.io/name":     "keystone",
+		"app.kubernetes.io/instance": ks.Name,
+	}
+	if len(sel) != len(expected) {
+		t.Fatalf("selectorLabels returned %d labels, expected %d: %#v", len(sel), len(expected), sel)
+	}
+	for k, v := range expected {
+		got, ok := sel[k]
+		if !ok {
+			t.Fatalf("selectorLabels missing expected key %q", k)
+		}
+		if got != v {
+			t.Fatalf("selectorLabels[%q] = %q, expected %q", k, got, v)
+		}
+	}
+}
+
+// TestSelectorLabels_SubsetOfCommonLabels verifies that every selector label
+// key/value is present in commonLabels and that managed-by is excluded from
+// the selector (keeping the Deployment selector stable across operator changes).
+func TestSelectorLabels_SubsetOfCommonLabels(t *testing.T) {
+	ks := testKeystone()
+
+	common := commonLabels(ks)
+	sel := selectorLabels(ks)
+
+	for k, v := range sel {
+		cv, ok := common[k]
+		if !ok {
+			t.Fatalf("selector key %q not present in commonLabels", k)
+		}
+		if cv != v {
+			t.Fatalf("value mismatch for key %q: selector=%q, common=%q", k, v, cv)
+		}
+	}
+	if _, ok := sel["app.kubernetes.io/managed-by"]; ok {
+		t.Fatalf("selectorLabels must not include app.kubernetes.io/managed-by")
+	}
+	if _, ok := common["app.kubernetes.io/managed-by"]; !ok {
+		t.Fatalf("commonLabels should include app.kubernetes.io/managed-by")
+	}
 }
 
 func TestSecretToKeystoneMapper_OwnedSecrets(t *testing.T) {
