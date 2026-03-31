@@ -1,0 +1,54 @@
+{
+  "feature_id": "CC-0036",
+  "title": "GitHub Review by sourcery-ai[bot]",
+  "summary": "The reviewer flags 3 issues:\n\n1. **Replace `for i := range numKeys` (ranging over an int) with conventional `for i := 0; i < numKeys; i++`** in both `reconcile_credential.go` and `reconcile_credential_test.go` — they consider it a compile error on older Go toolchains.\n2. **Normalize the `MaxActiveKeys == 0` handling** — currently 0 is allowed by validation but silently clamped to 3 only in `createCredentialKeysSecret`, while `reconcile_config` and the rotation CronJob pass the raw 0 through to Keystone. Pick one place to normalize (or reject 0 entirely).",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "sourcery-ai[bot]",
+  "date": "2026-03-31T06:06:07Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "Hey - I've found 3 issues, and left some high level feedback:\n\n- In `createCredentialKeysSecret` you’re using `for i := range numKeys` on an `int`; consider switching to a conventional `for i := 0; i < numKeys; i++ {}` loop for clearer intent and compatibility with older Go toolchains.\n- The handling of `CredentialKeys.MaxActiveKeys == 0` is inconsistent: validation explicitly allows 0, `createCredentialKeysSecret` still enforces a minimum of 3 keys, while both `reconcile_config` and the rotation CronJob env pass the literal value (possibly 0) into Keystone; consider normalizing 0 to 3 (or rejecting 0) in one place and using that normalized value everywhere.\n\n<details>\n<summary>Prompt for AI Agents</summary>\n\n~~~markdown\nPlease address the comments from this code review:\n\n## Overall Comments\n- In `createCredentialKeysSecret` you’re using `for i := range numKeys` on an `int`; consider switching to a conventional `for i := 0; i < numKeys; i++ {}` loop for clearer intent and compatibility with older Go toolchains.\n- The handling of `CredentialKeys.MaxActiveKeys == 0` is inconsistent: validation explicitly allows 0, `createCredentialKeysSecret` still enforces a minimum of 3 keys, while both `reconcile_config` and the rotation CronJob env pass the literal value (possibly 0) into Keystone; consider normalizing 0 to 3 (or rejecting 0) in one place and using that normalized value everywhere.\n\n## Individual Comments\n\n### Comment 1\n<location path=\"operators/keystone/internal/controller/reconcile_credential.go\" line_range=\"173-176\" />\n<code_context>\n+func (r *KeystoneReconciler) createCredentialKeysSecret(ctx context.Context,\n+\tkeystone *keystonev1alpha1.Keystone, secretName string) error {\n+\n+\tnumKeys := max(int(keystone.Spec.CredentialKeys.MaxActiveKeys), 3)\n+\n+\tdata := make(map[string][]byte, numKeys)\n+\tfor i := range numKeys {\n+\t\tkey, err := generateFernetKey()\n+\t\tif err != nil {\n</code_context>\n<issue_to_address>\n**issue (bug_risk):** Loop over numKeys is invalid Go and will not compile.\n\n`range` cannot be used on an `int` and will not compile. Replace this with a standard counted loop, e.g. `for i := 0; i < numKeys; i++ { ... }`.\n</issue_to_address>\n\n### Comment 2\n<location path=\"operators/keystone/internal/controller/reconcile_credential_test.go\" line_range=\"276\" />\n<code_context>\n+\n+\tg.Expect(secret.Data).To(HaveLen(5))\n+\n+\tfor i := range 5 {\n+\t\tkeyStr := string(secret.Data[strconv.Itoa(i)])\n+\t\tdecoded, err := base64.URLEncoding.DecodeString(keyStr)\n</code_context>\n<issue_to_address>\n**issue (bug_risk):** Loop syntax `for i := range 5` is invalid in Go and will prevent the tests from compiling.\n\nThis affects both this loop and the `for i := range 3` loop in `TestReconcileCredentialKeys_MinActiveKeysFloor`. Please switch to a standard indexed loop, for example:\n\n```go\nfor i := 0; i < 5; i++ {\n    keyStr := string(secret.Data[strconv.Itoa(i)])\n    decoded, err := base64.URLEncoding.DecodeString(keyStr)\n    g.Expect(err).NotTo(HaveOccurred(), \"key %d should be valid base64url\", i)\n    g.Expect(decoded).To(HaveLen(32), \"key %d should decode to 32 bytes\", i)\n}\n```\n</issue_to_address>\n\n### Comment 3\n<location path=\"operators/keystone/internal/controller/reconcile_credential_test.go\" line_range=\"412\" />\n<code_context>\n+\t// Even with MaxActiveKeys=1, at least 3 keys should be generated (CC-0036, REQ-009).\n+\tg.Expect(secret.Data).To(HaveLen(3))\n+\n+\tfor i := range 3 {\n+\t\tg.Expect(secret.Data).To(HaveKey(strconv.Itoa(i)))\n+\t}\n</code_context>\n<issue_to_address>\n**issue (bug_risk):** Second use of `for i := range 3` has the same non-compilable pattern and should be rewritten.\n\nThis loop also needs to use a standard index-based form so the file compiles, e.g.:\n\n```go\nfor i := 0; i < 3; i++ {\n    g.Expect(secret.Data).To(HaveKey(strconv.Itoa(i)))\n}\n```\n</issue_to_address>\n~~~\n\n</details>\n\n***\n\n<details>\n<summary>Sourcery is free for open source - if you like our reviews please consider sharing them ✨</summary>\n\n- [X](https://twitter.com/intent/tweet?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [Mastodon](https://mastodon.social/share?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [LinkedIn](https://www.linkedin.com/sharing/share-offsite/?url=https://sourcery.ai)\n- [Facebook](https://www.facebook.com/sharer/sharer.php?u=https://sourcery.ai)\n\n</details>\n\n<sub>\nHelp me be more useful! Please click 👍 or 👎 on each comment and I'll use the feedback to improve your reviews.\n</sub>",
+  "code_comments": [
+    {
+      "body": "**issue (bug_risk):** Loop over numKeys is invalid Go and will not compile.\n\n`range` cannot be used on an `int` and will not compile. Replace this with a standard counted loop, e.g. `for i := 0; i < numKeys; i++ { ... }`.",
+      "path": "operators/keystone/internal/controller/reconcile_credential.go",
+      "line": 176,
+      "author": "sourcery-ai[bot]",
+      "created_at": "2026-03-31T06:06:07Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "**issue (bug_risk):** Loop syntax `for i := range 5` is invalid in Go and will prevent the tests from compiling.\n\nThis affects both this loop and the `for i := range 3` loop in `TestReconcileCredentialKeys_MinActiveKeysFloor`. Please switch to a standard indexed loop, for example:\n\n```go\nfor i := 0; i < 5; i++ {\n    keyStr := string(secret.Data[strconv.Itoa(i)])\n    decoded, err := base64.URLEncoding.DecodeString(keyStr)\n    g.Expect(err).NotTo(HaveOccurred(), \"key %d should be valid base64url\", i)\n    g.Expect(decoded).To(HaveLen(32), \"key %d should decode to 32 bytes\", i)\n}\n```",
+      "path": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "line": 276,
+      "author": "sourcery-ai[bot]",
+      "created_at": "2026-03-31T06:06:07Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "**issue (bug_risk):** Second use of `for i := range 3` has the same non-compilable pattern and should be rewritten.\n\nThis loop also needs to use a standard index-based form so the file compiles, e.g.:\n\n```go\nfor i := 0; i < 3; i++ {\n    g.Expect(secret.Data).To(HaveKey(strconv.Itoa(i)))\n}\n```",
+      "path": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "line": 412,
+      "author": "sourcery-ai[bot]",
+      "created_at": "2026-03-31T06:06:07Z",
+      "id": null,
+      "resolution": ""
+    }
+  ],
+  "github_review_id": 4034894745
+}

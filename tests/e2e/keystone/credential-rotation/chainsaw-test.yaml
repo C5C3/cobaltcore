@@ -1,0 +1,151 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for credential key rotation (CC-0036).
+# Verifies:
+#   - CronJob schedule matches spec.credentialKeys.rotationSchedule
+#   - Manual rotation via kubectl create job --from=cronjob changes Secret data
+#   - Deployment pod-template annotation keystone.c5c3.io/credential-keys-hash
+#     updates after rotation (triggering rolling restart)
+#
+# REQ-001 through REQ-012 (CC-0036)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-credential-rotation
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR ──────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Wait for Ready=True ────────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-credential
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== ConfigMap content ==="
+          for cm in $(kubectl get cm -n $NAMESPACE -o name 2>/dev/null | grep config-); do
+            echo "--- $cm ---"
+            kubectl get -n $NAMESPACE "$cm" -o jsonpath='{.data}' 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Assert CronJob schedule matches spec ───────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: keystone-credential-credential-rotate
+            namespace: openstack
+          spec:
+            schedule: "0 0 * * 0"
+  # ── Step 4: Trigger rotation and verify Secret + Deployment changed ────
+  - try:
+    - script:
+        timeout: 180s
+        content: |
+          set -eu
+
+          # Record state before rotation
+          BEFORE_HASH=$(kubectl get secret keystone-credential-credential-keys -n openstack \
+            -o jsonpath='{.data}' | sha256sum | cut -d' ' -f1)
+          BEFORE_ANNOTATION=$(kubectl get deploy keystone-credential-api -n openstack \
+            -o jsonpath='{.spec.template.metadata.annotations.keystone\.c5c3\.io/credential-keys-hash}')
+
+          # Trigger manual credential key rotation
+          kubectl create job keystone-credential-manual-rotate \
+            --from=cronjob/keystone-credential-credential-rotate -n openstack
+          kubectl wait --for=condition=complete \
+            job/keystone-credential-manual-rotate -n openstack --timeout=120s
+
+          # Verify Secret data changed
+          AFTER_HASH=$(kubectl get secret keystone-credential-credential-keys -n openstack \
+            -o jsonpath='{.data}' | sha256sum | cut -d' ' -f1)
+          if [ "$BEFORE_HASH" = "$AFTER_HASH" ]; then
+            echo "ERROR: Credential Secret data did not change after rotation"
+            exit 1
+          fi
+          echo "OK: Credential Secret data changed"
+
+          # Wait for reconciler to detect the Secret change and update
+          # the Deployment annotation (poll every 5s, timeout 120s).
+          TIMEOUT=120
+          ELAPSED=0
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            AFTER_ANNOTATION=$(kubectl get deploy keystone-credential-api -n openstack \
+              -o jsonpath='{.spec.template.metadata.annotations.keystone\.c5c3\.io/credential-keys-hash}')
+            if [ "$BEFORE_ANNOTATION" != "$AFTER_ANNOTATION" ]; then
+              echo "OK: Deployment credential-keys-hash annotation changed"
+              break
+            fi
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+          done
+          if [ "$BEFORE_ANNOTATION" = "$AFTER_ANNOTATION" ]; then
+            echo "ERROR: Deployment credential-keys-hash annotation did not change within ${TIMEOUT}s"
+            exit 1
+          fi
+    catch:
+    - script:
+        content: |
+          echo "=== Credential rotation Job pods ==="
+          kubectl get pods -n $NAMESPACE -l job-name=keystone-credential-manual-rotate -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name=keystone-credential-manual-rotate -o name 2>/dev/null); do
+            echo "--- $pod logs ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 2>&1 || true
+            echo "--- $pod previous logs ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 --previous 2>&1 || true
+            echo "--- $pod describe ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -20 || true
+  # ── Step 5: Assert Ready=True maintained after rotation ────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-credential
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady

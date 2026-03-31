@@ -30,8 +30,9 @@ import (
 // The Ready condition is True only when all of these are True.
 var subConditionTypes = []string{
 	"SecretsReady",
-	"DatabaseReady",
 	"FernetKeysReady",
+	"CredentialKeysReady",
+	"DatabaseReady",
 	"DeploymentReady",
 	"BootstrapReady",
 }
@@ -80,6 +81,10 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	if result, err := r.reconcileFernetKeys(ctx, &keystone, configMapName); !result.IsZero() || err != nil {
+		return r.updateStatus(ctx, &keystone, result, err)
+	}
+
+	if result, err := r.reconcileCredentialKeys(ctx, &keystone, configMapName); !result.IsZero() || err != nil {
 		return r.updateStatus(ctx, &keystone, result, err)
 	}
 

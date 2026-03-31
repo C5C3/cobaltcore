@@ -79,7 +79,7 @@ func newDeployTestReconciler(s *runtime.Scheme, objs ...client.Object) *Keystone
 // readyDeployment returns a Deployment that matches what buildKeystoneDeployment
 // would produce, but with status indicating it is available and ready.
 func readyDeployment(ks *keystonev1alpha1.Keystone, configMapName string) *appsv1.Deployment {
-	deploy := buildKeystoneDeployment(ks, configMapName, "")
+	deploy := buildKeystoneDeployment(ks, configMapName, "", "")
 	replicas := int32(ks.Spec.Replicas)
 	deploy.Spec.Replicas = &replicas
 	deploy.Generation = 1
@@ -96,7 +96,7 @@ func readyDeployment(ks *keystonev1alpha1.Keystone, configMapName string) *appsv
 
 // notReadyDeployment returns a Deployment that exists but is not yet available.
 func notReadyDeployment(ks *keystonev1alpha1.Keystone, configMapName string) *appsv1.Deployment {
-	deploy := buildKeystoneDeployment(ks, configMapName, "")
+	deploy := buildKeystoneDeployment(ks, configMapName, "", "")
 	deploy.Generation = 1
 	deploy.Status.ObservedGeneration = 1
 	deploy.Status.ReadyReplicas = 0
@@ -273,8 +273,7 @@ func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
 	g.Expect(fernetVol.Secret.SecretName).To(Equal("test-keystone-fernet-keys"))
 	g.Expect(credentialVol.Secret).NotTo(BeNil())
 	g.Expect(credentialVol.Secret.SecretName).To(Equal("test-keystone-credential-keys"))
-	g.Expect(credentialVol.Secret.Optional).NotTo(BeNil())
-	g.Expect(*credentialVol.Secret.Optional).To(BeTrue(), "credential-keys volume should be optional until credential key management is implemented")
+	g.Expect(credentialVol.Secret.Optional).To(BeNil(), "credential-keys volume should not be optional now that credential key management is implemented (CC-0036)")
 
 	// Verify labels on Deployment ObjectMeta, pod template, and selector.
 	g.Expect(deploy.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
@@ -391,7 +390,7 @@ func TestBuildKeystoneDeployment_FernetKeysHashAnnotation(t *testing.T) {
 	ks := deployTestKeystone()
 	hash := "abc123def456"
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", hash)
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", hash, "")
 
 	g.Expect(deploy.Spec.Template.Annotations).To(HaveKeyWithValue(
 		"keystone.c5c3.io/fernet-keys-hash", hash,
@@ -402,10 +401,121 @@ func TestBuildKeystoneDeployment_FernetKeysHashAnnotation_EmptyHash(t *testing.T
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	g.Expect(deploy.Spec.Template.Annotations).To(HaveKeyWithValue(
 		"keystone.c5c3.io/fernet-keys-hash", "",
+	))
+}
+
+// Feature: CC-0036
+
+func deployTestCredentialKeysSecret(ks *keystonev1alpha1.Keystone) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ks.Name + "-credential-keys",
+			Namespace: ks.Namespace,
+		},
+		Data: map[string][]byte{
+			"0": []byte("credential-key-0"),
+			"1": []byte("credential-key-1"),
+		},
+	}
+}
+
+func TestBuildKeystoneDeployment_CredentialKeysHashAnnotation(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+	hash := "cred789hash012"
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", hash)
+
+	g.Expect(deploy.Spec.Template.Annotations).To(HaveKeyWithValue(
+		"keystone.c5c3.io/credential-keys-hash", hash,
+	))
+}
+
+func TestBuildKeystoneDeployment_CredentialKeysHashAnnotation_EmptyHash(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
+
+	g.Expect(deploy.Spec.Template.Annotations).To(HaveKeyWithValue(
+		"keystone.c5c3.io/credential-keys-hash", "",
+	))
+}
+
+func TestCredentialKeysHash_Deterministic(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+
+	secret1 := deployTestCredentialKeysSecret(ks)
+	secret2 := deployTestCredentialKeysSecret(ks)
+
+	// Two identical secrets must produce the same hash.
+	r1 := newDeployTestReconciler(s, ks, secret1)
+	hash1, err := r1.credentialKeysHash(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	r2 := newDeployTestReconciler(s, ks, secret2)
+	hash2, err := r2.credentialKeysHash(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(hash1).To(Equal(hash2))
+
+	// Verify hash is a 64-char hex string (SHA-256 = 32 bytes = 64 hex chars).
+	g.Expect(hash1).To(MatchRegexp("^[0-9a-f]{64}$"))
+
+	// Modify one key and verify different hash.
+	secret3 := deployTestCredentialKeysSecret(ks)
+	secret3.Data["0"] = []byte("different-credential-key")
+	r3 := newDeployTestReconciler(s, ks, secret3)
+	hash3, err := r3.credentialKeysHash(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(hash3).NotTo(Equal(hash1))
+}
+
+func TestCredentialKeysHash_SecretNotFound(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+
+	// No credential-keys Secret in the fake client — expect not-found error (CC-0036).
+	r := newDeployTestReconciler(s, ks)
+
+	hash, err := r.credentialKeysHash(context.Background(), ks)
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "expected not-found error, got: %v", err)
+	g.Expect(hash).To(Equal(""))
+}
+
+func TestReconcileDeployment_CredentialKeysHashFromSecret(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+	secret := deployTestCredentialKeysSecret(ks)
+	r := newDeployTestReconciler(s, ks, secret)
+
+	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	// Deployment just created, not ready yet — should requeue.
+	g.Expect(result.RequeueAfter).To(Equal(10 * time.Second))
+
+	// Verify the created Deployment has the credential-keys hash annotation.
+	var deploy appsv1.Deployment
+	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
+		Name: "test-keystone-api", Namespace: "default",
+	}, &deploy)).To(Succeed())
+
+	// Compute the expected hash from the secret data.
+	data, _ := json.Marshal(secret.Data)
+	sum := sha256.Sum256(data)
+	expectedHash := hex.EncodeToString(sum[:])
+
+	g.Expect(deploy.Spec.Template.Annotations).To(HaveKeyWithValue(
+		"keystone.c5c3.io/credential-keys-hash", expectedHash,
 	))
 }
 

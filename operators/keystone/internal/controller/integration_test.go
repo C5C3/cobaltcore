@@ -774,19 +774,22 @@ func TestIntegration_CronJobDetailedSpec(t *testing.T) {
 		"OS_fernet_tokens__max_active_keys should match spec.fernet.maxActiveKeys")
 
 	// Verify main container volume mounts.
-	g.Expect(mainContainer.VolumeMounts).To(HaveLen(2))
+	g.Expect(mainContainer.VolumeMounts).To(HaveLen(3))
 	g.Expect(mainContainer.VolumeMounts[0].Name).To(Equal("fernet-keys"))
 	g.Expect(mainContainer.VolumeMounts[0].MountPath).To(Equal("/etc/keystone/fernet-keys"))
-	g.Expect(mainContainer.VolumeMounts[1].Name).To(Equal("config"))
-	g.Expect(mainContainer.VolumeMounts[1].MountPath).To(Equal("/etc/keystone/keystone.conf.d/"))
+	g.Expect(mainContainer.VolumeMounts[1].Name).To(Equal("credential-keys"))
+	g.Expect(mainContainer.VolumeMounts[1].MountPath).To(Equal("/etc/keystone/credential-keys"))
 	g.Expect(mainContainer.VolumeMounts[1].ReadOnly).To(BeTrue())
+	g.Expect(mainContainer.VolumeMounts[2].Name).To(Equal("config"))
+	g.Expect(mainContainer.VolumeMounts[2].MountPath).To(Equal("/etc/keystone/keystone.conf.d/"))
+	g.Expect(mainContainer.VolumeMounts[2].ReadOnly).To(BeTrue())
 
-	// Verify volumes: fernet-keys-src (Secret), fernet-keys (emptyDir), and config (ConfigMap).
+	// Verify volumes: fernet-keys-src (Secret), fernet-keys (emptyDir), credential-keys (Secret), and config (ConfigMap).
 	volMap := map[string]corev1.Volume{}
 	for _, v := range podSpec.Volumes {
 		volMap[v.Name] = v
 	}
-	g.Expect(volMap).To(HaveLen(3))
+	g.Expect(volMap).To(HaveLen(4))
 
 	g.Expect(volMap).To(HaveKey("fernet-keys-src"))
 	g.Expect(volMap["fernet-keys-src"].Secret).NotTo(BeNil(), "fernet-keys-src volume should be a Secret")
@@ -794,6 +797,10 @@ func TestIntegration_CronJobDetailedSpec(t *testing.T) {
 
 	g.Expect(volMap).To(HaveKey("fernet-keys"))
 	g.Expect(volMap["fernet-keys"].EmptyDir).NotTo(BeNil(), "fernet-keys volume should be an emptyDir")
+
+	g.Expect(volMap).To(HaveKey("credential-keys"))
+	g.Expect(volMap["credential-keys"].Secret).NotTo(BeNil(), "credential-keys volume should be a Secret")
+	g.Expect(volMap["credential-keys"].Secret.SecretName).To(Equal(fmt.Sprintf("%s-credential-keys", ks.Name)))
 
 	g.Expect(volMap).To(HaveKey("config"))
 	g.Expect(volMap["config"].ConfigMap).NotTo(BeNil(), "config volume should be a ConfigMap")

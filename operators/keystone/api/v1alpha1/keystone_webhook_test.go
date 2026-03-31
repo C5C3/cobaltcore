@@ -27,6 +27,10 @@ func validKeystone() *Keystone {
 				RotationSchedule: "0 0 * * 0",
 				MaxActiveKeys:    3,
 			},
+			CredentialKeys: CredentialKeysSpec{
+				RotationSchedule: "0 0 * * 0",
+				MaxActiveKeys:    3,
+			},
 			Bootstrap: BootstrapSpec{
 				AdminUser:              "admin",
 				AdminPasswordSecretRef: commonv1.SecretRefSpec{Name: "keystone-admin"},
@@ -47,6 +51,7 @@ func TestDefault_SetsZeroValueDefaults(t *testing.T) {
 
 	g.Expect(k.Spec.Replicas).To(Equal(int32(3)))
 	g.Expect(k.Spec.Fernet.MaxActiveKeys).To(Equal(int32(3)))
+	g.Expect(k.Spec.CredentialKeys.MaxActiveKeys).To(Equal(int32(3)))
 	g.Expect(k.Spec.Cache.Backend).To(Equal("dogpile.cache.pymemcache"))
 	g.Expect(k.Spec.Bootstrap.AdminUser).To(Equal("admin"))
 	g.Expect(k.Spec.Bootstrap.Region).To(Equal("RegionOne"))
@@ -61,6 +66,7 @@ func TestDefault_DoesNotSetFernetRotationSchedule(t *testing.T) {
 
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 	g.Expect(k.Spec.Fernet.RotationSchedule).To(BeEmpty())
+	g.Expect(k.Spec.CredentialKeys.RotationSchedule).To(BeEmpty())
 }
 
 func TestDefault_ZeroValueObjectRemainsInvalid(t *testing.T) {
@@ -77,6 +83,7 @@ func TestDefault_ZeroValueObjectRemainsInvalid(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("cache"))
 	g.Expect(err.Error()).To(ContainSubstring("database"))
 	g.Expect(err.Error()).To(ContainSubstring("rotationSchedule"))
+	g.Expect(err.Error()).To(ContainSubstring("credentialKeys"))
 }
 
 func TestDefault_PreservesExplicitValues(t *testing.T) {
@@ -90,6 +97,10 @@ func TestDefault_PreservesExplicitValues(t *testing.T) {
 				RotationSchedule: "0 */6 * * *",
 				MaxActiveKeys:    7,
 			},
+			CredentialKeys: CredentialKeysSpec{
+				RotationSchedule: "0 */12 * * *",
+				MaxActiveKeys:    5,
+			},
 			Bootstrap: BootstrapSpec{
 				AdminUser: "custom-admin",
 				Region:    "EU-West",
@@ -102,6 +113,8 @@ func TestDefault_PreservesExplicitValues(t *testing.T) {
 	g.Expect(k.Spec.Replicas).To(Equal(int32(5)))
 	g.Expect(k.Spec.Fernet.RotationSchedule).To(Equal("0 */6 * * *"))
 	g.Expect(k.Spec.Fernet.MaxActiveKeys).To(Equal(int32(7)))
+	g.Expect(k.Spec.CredentialKeys.RotationSchedule).To(Equal("0 */12 * * *"))
+	g.Expect(k.Spec.CredentialKeys.MaxActiveKeys).To(Equal(int32(5)))
 	g.Expect(k.Spec.Cache.Backend).To(Equal("dogpile.cache.memcache"))
 	g.Expect(k.Spec.Bootstrap.AdminUser).To(Equal("custom-admin"))
 	g.Expect(k.Spec.Bootstrap.Region).To(Equal("EU-West"))
@@ -210,6 +223,106 @@ func TestValidate_MaxActiveKeysAboveMinimumAccepted(t *testing.T) {
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// --- CredentialKeys MaxActiveKeys validation tests (CC-0036, REQ-009) ---
+
+func TestValidate_CredentialKeysMaxActiveKeysBelowMinimumRejected(t *testing.T) {
+	w := &KeystoneWebhook{}
+	cases := []struct {
+		name string
+		val  int32
+	}{
+		{"one", 1},
+		{"two", 2},
+		{"negative", -1},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			k := validKeystone()
+			k.Spec.CredentialKeys.MaxActiveKeys = tc.val
+			_, err := w.ValidateCreate(context.Background(), k)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("credentialKeys"))
+			g.Expect(err.Error()).To(ContainSubstring("maxActiveKeys"))
+		})
+	}
+}
+
+func TestValidate_CredentialKeysMaxActiveKeysZeroAllowed(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.CredentialKeys.MaxActiveKeys = 0
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_CredentialKeysMaxActiveKeysThreeAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.CredentialKeys.MaxActiveKeys = 3
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// --- CredentialKeys Cron validation tests (CC-0036, REQ-005) ---
+
+func TestValidate_CredentialKeysValidCronExpressions(t *testing.T) {
+	w := &KeystoneWebhook{}
+	expressions := []string{
+		"0 0 * * 0",
+		"*/5 * * * *",
+		"0 */6 * * *",
+	}
+
+	for _, expr := range expressions {
+		t.Run(expr, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			k := validKeystone()
+			k.Spec.CredentialKeys.RotationSchedule = expr
+			_, err := w.ValidateCreate(context.Background(), k)
+			g.Expect(err).NotTo(HaveOccurred())
+		})
+	}
+}
+
+func TestValidate_CredentialKeysInvalidCronExpressions(t *testing.T) {
+	w := &KeystoneWebhook{}
+	expressions := []string{
+		"not-a-cron",
+		"* * *",
+		"60 * * * *",
+	}
+
+	for _, expr := range expressions {
+		t.Run(expr, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			k := validKeystone()
+			k.Spec.CredentialKeys.RotationSchedule = expr
+			_, err := w.ValidateCreate(context.Background(), k)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("credentialKeys"))
+			g.Expect(err.Error()).To(ContainSubstring("rotationSchedule"))
+		})
+	}
+}
+
+func TestValidate_CredentialKeysEmptyRotationScheduleReturnsRequiredError(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.CredentialKeys.RotationSchedule = ""
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("credentialKeys"))
+	g.Expect(err.Error()).To(ContainSubstring("rotationSchedule"))
 }
 
 // --- Cron validation tests (CC-0011, REQ-002) ---
@@ -500,6 +613,8 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	k.Spec.Replicas = 0
 	k.Spec.Fernet.MaxActiveKeys = 1
 	k.Spec.Fernet.RotationSchedule = "bad-cron"
+	k.Spec.CredentialKeys.MaxActiveKeys = 1
+	k.Spec.CredentialKeys.RotationSchedule = "bad-cron"
 	k.Spec.Plugins = []commonv1.PluginSpec{
 		{Name: "a", ConfigSection: "dup"},
 		{Name: "b", ConfigSection: "dup"},
@@ -522,6 +637,7 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g.Expect(errMsg).To(ContainSubstring("policyOverrides"))
 	g.Expect(errMsg).To(ContainSubstring("cache"))
 	g.Expect(errMsg).To(ContainSubstring("database"))
+	g.Expect(errMsg).To(ContainSubstring("credentialKeys"))
 }
 
 func TestValidateUpdate_RunsSameValidation(t *testing.T) {

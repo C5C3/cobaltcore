@@ -29,8 +29,8 @@ import (
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
-// fernetTestScheme returns a runtime.Scheme with all types needed for Fernet tests.
-func fernetTestScheme() *runtime.Scheme {
+// credentialTestScheme returns a runtime.Scheme with all types needed for credential tests.
+func credentialTestScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(s)
 	_ = keystonev1alpha1.AddToScheme(s)
@@ -40,8 +40,8 @@ func fernetTestScheme() *runtime.Scheme {
 	return s
 }
 
-// fernetTestKeystone returns a minimal Keystone CR for reconcileFernetKeys tests.
-func fernetTestKeystone() *keystonev1alpha1.Keystone {
+// credentialTestKeystone returns a minimal Keystone CR for reconcileCredentialKeys tests.
+func credentialTestKeystone() *keystonev1alpha1.Keystone {
 	return &keystonev1alpha1.Keystone{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-keystone",
@@ -63,6 +63,10 @@ func fernetTestKeystone() *keystonev1alpha1.Keystone {
 				RotationSchedule: "0 0 * * 0",
 				MaxActiveKeys:    3,
 			},
+			CredentialKeys: keystonev1alpha1.CredentialKeysSpec{
+				RotationSchedule: "0 0 * * 0",
+				MaxActiveKeys:    3,
+			},
 			Bootstrap: keystonev1alpha1.BootstrapSpec{
 				AdminUser:              "admin",
 				AdminPasswordSecretRef: commonv1.SecretRefSpec{Name: "keystone-admin"},
@@ -72,10 +76,10 @@ func fernetTestKeystone() *keystonev1alpha1.Keystone {
 	}
 }
 
-func TestReconcileFernetKeys_NoSecret_CreatesSecretAndRequeues(t *testing.T) {
+func TestReconcileCredentialKeys_NoSecret_CreatesSecretAndRequeues(t *testing.T) {
 	g := NewGomegaWithT(t)
-	s := fernetTestScheme()
-	ks := fernetTestKeystone()
+	s := credentialTestScheme()
+	ks := credentialTestKeystone()
 
 	c := fake.NewClientBuilder().
 		WithScheme(s).
@@ -88,17 +92,17 @@ func TestReconcileFernetKeys_NoSecret_CreatesSecretAndRequeues(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
+	result, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
 
 	g.Expect(err).NotTo(HaveOccurred())
-	// Must requeue to confirm the secret is available before proceeding (CC-0013).
+	// Must requeue to confirm the secret is available before proceeding (CC-0036).
 	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
 
 	// Verify the Secret was created with the right number of keys.
 	var secret corev1.Secret
 	g.Expect(c.Get(context.Background(), client.ObjectKey{
 		Namespace: "default",
-		Name:      "test-keystone-fernet-keys",
+		Name:      "test-keystone-credential-keys",
 	}, &secret)).To(Succeed())
 	g.Expect(secret.Data).To(HaveLen(3))
 	g.Expect(secret.OwnerReferences).To(HaveLen(1))
@@ -109,22 +113,22 @@ func TestReconcileFernetKeys_NoSecret_CreatesSecretAndRequeues(t *testing.T) {
 
 	// CronJob and PushSecret are NOT created on this cycle (early return after secret creation).
 
-	// Verify FernetKeysReady condition is False (will be True on next reconcile).
-	cond := meta.FindStatusCondition(ks.Status.Conditions, "FernetKeysReady")
+	// Verify CredentialKeysReady condition is False (will be True on next reconcile).
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "CredentialKeysReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal("GeneratingKeys"))
 }
 
-func TestReconcileFernetKeys_SecretAlreadyExists(t *testing.T) {
+func TestReconcileCredentialKeys_SecretAlreadyExists(t *testing.T) {
 	g := NewGomegaWithT(t)
-	s := fernetTestScheme()
-	ks := fernetTestKeystone()
+	s := credentialTestScheme()
+	ks := credentialTestKeystone()
 
-	// Pre-create the fernet keys Secret.
-	fernetSecret := &corev1.Secret{
+	// Pre-create the credential keys Secret.
+	credentialSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-keystone-fernet-keys",
+			Name:      "test-keystone-credential-keys",
 			Namespace: "default",
 		},
 		Data: map[string][]byte{
@@ -136,7 +140,7 @@ func TestReconcileFernetKeys_SecretAlreadyExists(t *testing.T) {
 
 	c := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(ks, fernetSecret).
+		WithObjects(ks, credentialSecret).
 		Build()
 
 	r := &KeystoneReconciler{
@@ -145,7 +149,7 @@ func TestReconcileFernetKeys_SecretAlreadyExists(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
+	result, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
@@ -154,7 +158,7 @@ func TestReconcileFernetKeys_SecretAlreadyExists(t *testing.T) {
 	var secret corev1.Secret
 	g.Expect(c.Get(context.Background(), client.ObjectKey{
 		Namespace: "default",
-		Name:      "test-keystone-fernet-keys",
+		Name:      "test-keystone-credential-keys",
 	}, &secret)).To(Succeed())
 	g.Expect(string(secret.Data["0"])).To(Equal("existing-key-0"))
 
@@ -162,7 +166,7 @@ func TestReconcileFernetKeys_SecretAlreadyExists(t *testing.T) {
 	var cronJob batchv1.CronJob
 	g.Expect(c.Get(context.Background(), client.ObjectKey{
 		Namespace: "default",
-		Name:      "test-keystone-fernet-rotate",
+		Name:      "test-keystone-credential-rotate",
 	}, &cronJob)).To(Succeed())
 	g.Expect(cronJob.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(cronJob.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
@@ -171,23 +175,23 @@ func TestReconcileFernetKeys_SecretAlreadyExists(t *testing.T) {
 	var ps esov1alpha1.PushSecret
 	g.Expect(c.Get(context.Background(), client.ObjectKey{
 		Namespace: "default",
-		Name:      "test-keystone-fernet-keys-backup",
+		Name:      "test-keystone-credential-keys-backup",
 	}, &ps)).To(Succeed())
 
-	cond := meta.FindStatusCondition(ks.Status.Conditions, "FernetKeysReady")
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "CredentialKeysReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 }
 
-func TestReconcileFernetKeys_CronJobScheduleUpdated(t *testing.T) {
+func TestReconcileCredentialKeys_CronJobScheduleUpdated(t *testing.T) {
 	g := NewGomegaWithT(t)
-	s := fernetTestScheme()
-	ks := fernetTestKeystone()
+	s := credentialTestScheme()
+	ks := credentialTestKeystone()
 
 	// Pre-create Secret and CronJob with old schedule.
-	fernetSecret := &corev1.Secret{
+	credentialSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-keystone-fernet-keys",
+			Name:      "test-keystone-credential-keys",
 			Namespace: "default",
 		},
 		Data: map[string][]byte{"0": []byte("key")},
@@ -195,7 +199,7 @@ func TestReconcileFernetKeys_CronJobScheduleUpdated(t *testing.T) {
 
 	oldCronJob := &batchv1.CronJob{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-keystone-fernet-rotate",
+			Name:      "test-keystone-credential-rotate",
 			Namespace: "default",
 		},
 		Spec: batchv1.CronJobSpec{
@@ -205,7 +209,7 @@ func TestReconcileFernetKeys_CronJobScheduleUpdated(t *testing.T) {
 					Template: corev1.PodTemplateSpec{
 						Spec: corev1.PodSpec{
 							RestartPolicy: corev1.RestartPolicyOnFailure,
-							Containers:    []corev1.Container{{Name: "fernet-rotate", Image: "old:image"}},
+							Containers:    []corev1.Container{{Name: "credential-rotate", Image: "old:image"}},
 						},
 					},
 				},
@@ -215,7 +219,7 @@ func TestReconcileFernetKeys_CronJobScheduleUpdated(t *testing.T) {
 
 	c := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(ks, fernetSecret, oldCronJob).
+		WithObjects(ks, credentialSecret, oldCronJob).
 		Build()
 
 	r := &KeystoneReconciler{
@@ -225,9 +229,9 @@ func TestReconcileFernetKeys_CronJobScheduleUpdated(t *testing.T) {
 	}
 
 	// Change the schedule in the spec.
-	ks.Spec.Fernet.RotationSchedule = "0 */6 * * *"
+	ks.Spec.CredentialKeys.RotationSchedule = "0 */6 * * *"
 
-	result, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
+	result, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
@@ -236,16 +240,16 @@ func TestReconcileFernetKeys_CronJobScheduleUpdated(t *testing.T) {
 	var cronJob batchv1.CronJob
 	g.Expect(c.Get(context.Background(), client.ObjectKey{
 		Namespace: "default",
-		Name:      "test-keystone-fernet-rotate",
+		Name:      "test-keystone-credential-rotate",
 	}, &cronJob)).To(Succeed())
 	g.Expect(cronJob.Spec.Schedule).To(Equal("0 */6 * * *"))
 }
 
-func TestReconcileFernetKeys_GeneratedKeysAreValid(t *testing.T) {
+func TestReconcileCredentialKeys_GeneratedKeysAreValid(t *testing.T) {
 	g := NewGomegaWithT(t)
-	s := fernetTestScheme()
-	ks := fernetTestKeystone()
-	ks.Spec.Fernet.MaxActiveKeys = 5
+	s := credentialTestScheme()
+	ks := credentialTestKeystone()
+	ks.Spec.CredentialKeys.MaxActiveKeys = 5
 
 	c := fake.NewClientBuilder().
 		WithScheme(s).
@@ -258,18 +262,18 @@ func TestReconcileFernetKeys_GeneratedKeysAreValid(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var secret corev1.Secret
 	g.Expect(c.Get(context.Background(), client.ObjectKey{
 		Namespace: "default",
-		Name:      "test-keystone-fernet-keys",
+		Name:      "test-keystone-credential-keys",
 	}, &secret)).To(Succeed())
 
 	g.Expect(secret.Data).To(HaveLen(5))
 
-	for i := range 5 {
+	for i := 0; i < 5; i++ {
 		keyStr := string(secret.Data[strconv.Itoa(i)])
 		decoded, err := base64.URLEncoding.DecodeString(keyStr)
 		g.Expect(err).NotTo(HaveOccurred(), "key %d should be valid base64url", i)
@@ -277,20 +281,20 @@ func TestReconcileFernetKeys_GeneratedKeysAreValid(t *testing.T) {
 	}
 }
 
-func TestReconcileFernetKeys_CronJobScheduleMatchesSpec(t *testing.T) {
+func TestReconcileCredentialKeys_CronJobScheduleMatchesSpec(t *testing.T) {
 	g := NewGomegaWithT(t)
-	s := fernetTestScheme()
-	ks := fernetTestKeystone()
-	ks.Spec.Fernet.RotationSchedule = "30 2 * * 1"
+	s := credentialTestScheme()
+	ks := credentialTestKeystone()
+	ks.Spec.CredentialKeys.RotationSchedule = "30 2 * * 1"
 
-	fernetSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone-fernet-keys", Namespace: "default"},
+	credentialSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone-credential-keys", Namespace: "default"},
 		Data:       map[string][]byte{"0": []byte("key")},
 	}
 
 	c := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(ks, fernetSecret).
+		WithObjects(ks, credentialSecret).
 		Build()
 
 	r := &KeystoneReconciler{
@@ -299,30 +303,30 @@ func TestReconcileFernetKeys_CronJobScheduleMatchesSpec(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cronJob batchv1.CronJob
 	g.Expect(c.Get(context.Background(), client.ObjectKey{
 		Namespace: "default",
-		Name:      "test-keystone-fernet-rotate",
+		Name:      "test-keystone-credential-rotate",
 	}, &cronJob)).To(Succeed())
 	g.Expect(cronJob.Spec.Schedule).To(Equal("30 2 * * 1"))
 }
 
-func TestReconcileFernetKeys_PushSecretReferencesCorrectSecret(t *testing.T) {
+func TestReconcileCredentialKeys_PushSecretReferencesCorrectSecret(t *testing.T) {
 	g := NewGomegaWithT(t)
-	s := fernetTestScheme()
-	ks := fernetTestKeystone()
+	s := credentialTestScheme()
+	ks := credentialTestKeystone()
 
-	fernetSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone-fernet-keys", Namespace: "default"},
+	credentialSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone-credential-keys", Namespace: "default"},
 		Data:       map[string][]byte{"0": []byte("key")},
 	}
 
 	c := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(ks, fernetSecret).
+		WithObjects(ks, credentialSecret).
 		Build()
 
 	r := &KeystoneReconciler{
@@ -331,27 +335,28 @@ func TestReconcileFernetKeys_PushSecretReferencesCorrectSecret(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var ps esov1alpha1.PushSecret
 	g.Expect(c.Get(context.Background(), client.ObjectKey{
 		Namespace: "default",
-		Name:      "test-keystone-fernet-keys-backup",
+		Name:      "test-keystone-credential-keys-backup",
 	}, &ps)).To(Succeed())
 
 	g.Expect(ps.Spec.Selector.Secret).NotTo(BeNil())
-	g.Expect(ps.Spec.Selector.Secret.Name).To(Equal("test-keystone-fernet-keys"))
+	g.Expect(ps.Spec.Selector.Secret.Name).To(Equal("test-keystone-credential-keys"))
 	g.Expect(ps.Spec.SecretStoreRefs).To(HaveLen(1))
 	g.Expect(ps.Spec.SecretStoreRefs[0].Kind).To(Equal("ClusterSecretStore"))
 	g.Expect(ps.Spec.SecretStoreRefs[0].Name).To(Equal("openbao-cluster-store"))
 	g.Expect(ps.Spec.Data).To(HaveLen(1))
-	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal("kv-v2/data/openstack/keystone/fernet-keys"))
+	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal("kv-v2/data/openstack/keystone/credential-keys"))
 }
 
-func TestGenerateFernetKey_Valid(t *testing.T) {
+func TestCredentialKeyGeneration_Valid(t *testing.T) {
 	g := NewGomegaWithT(t)
 
+	// Credential keys reuse generateFernetKey (same 32-byte base64url format) (CC-0036).
 	key, err := generateFernetKey()
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(key).NotTo(BeEmpty())
@@ -361,9 +366,10 @@ func TestGenerateFernetKey_Valid(t *testing.T) {
 	g.Expect(decoded).To(HaveLen(32))
 }
 
-func TestGenerateFernetKey_Unique(t *testing.T) {
+func TestCredentialKeyGeneration_Unique(t *testing.T) {
 	g := NewGomegaWithT(t)
 
+	// Credential keys reuse generateFernetKey (same 32-byte base64url format) (CC-0036).
 	key1, err := generateFernetKey()
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -373,12 +379,12 @@ func TestGenerateFernetKey_Unique(t *testing.T) {
 	g.Expect(key1).NotTo(Equal(key2))
 }
 
-func TestReconcileFernetKeys_MinActiveKeysFloor(t *testing.T) {
+func TestReconcileCredentialKeys_MinActiveKeysFloor(t *testing.T) {
 	g := NewGomegaWithT(t)
-	s := fernetTestScheme()
-	ks := fernetTestKeystone()
+	s := credentialTestScheme()
+	ks := credentialTestKeystone()
 	// Set MaxActiveKeys below the floor of 3.
-	ks.Spec.Fernet.MaxActiveKeys = 1
+	ks.Spec.CredentialKeys.MaxActiveKeys = 1
 
 	c := fake.NewClientBuilder().
 		WithScheme(s).
@@ -391,36 +397,36 @@ func TestReconcileFernetKeys_MinActiveKeysFloor(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var secret corev1.Secret
 	g.Expect(c.Get(context.Background(), client.ObjectKey{
 		Namespace: "default",
-		Name:      "test-keystone-fernet-keys",
+		Name:      "test-keystone-credential-keys",
 	}, &secret)).To(Succeed())
 
-	// Even with MaxActiveKeys=1, at least 3 keys should be generated.
+	// Even with MaxActiveKeys=1, at least 3 keys should be generated (CC-0036, REQ-009).
 	g.Expect(secret.Data).To(HaveLen(3))
 
-	for i := range 3 {
+	for i := 0; i < 3; i++ {
 		g.Expect(secret.Data).To(HaveKey(strconv.Itoa(i)))
 	}
 }
 
-func TestReconcileFernetKeys_ConditionMessages(t *testing.T) {
+func TestReconcileCredentialKeys_ConditionMessages(t *testing.T) {
 	g := NewGomegaWithT(t)
-	s := fernetTestScheme()
-	ks := fernetTestKeystone()
+	s := credentialTestScheme()
+	ks := credentialTestKeystone()
 
-	fernetSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone-fernet-keys", Namespace: "default"},
+	credentialSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone-credential-keys", Namespace: "default"},
 		Data:       map[string][]byte{"0": []byte("key"), "1": []byte("key"), "2": []byte("key")},
 	}
 
 	c := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(ks, fernetSecret).
+		WithObjects(ks, credentialSecret).
 		Build()
 
 	r := &KeystoneReconciler{
@@ -429,31 +435,31 @@ func TestReconcileFernetKeys_ConditionMessages(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
 
-	// The final condition should be FernetKeysAvailable with the correct message.
-	cond := meta.FindStatusCondition(ks.Status.Conditions, "FernetKeysReady")
+	// The final condition should be CredentialKeysAvailable with the correct message.
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "CredentialKeysReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-	g.Expect(cond.Reason).To(Equal("FernetKeysAvailable"))
-	g.Expect(cond.Message).To(Equal("Fernet keys Secret exists and rotation CronJob is configured"))
+	g.Expect(cond.Reason).To(Equal("CredentialKeysAvailable"))
+	g.Expect(cond.Message).To(Equal("Credential keys Secret exists and rotation CronJob is configured"))
 	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
 }
 
-func TestReconcileFernetKeys_CronJobSpec(t *testing.T) {
+func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 	g := NewGomegaWithT(t)
-	s := fernetTestScheme()
-	ks := fernetTestKeystone()
+	s := credentialTestScheme()
+	ks := credentialTestKeystone()
 
-	fernetSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone-fernet-keys", Namespace: "default"},
+	credentialSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone-credential-keys", Namespace: "default"},
 		Data:       map[string][]byte{"0": []byte("key")},
 	}
 
 	c := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(ks, fernetSecret).
+		WithObjects(ks, credentialSecret).
 		Build()
 
 	r := &KeystoneReconciler{
@@ -462,13 +468,13 @@ func TestReconcileFernetKeys_CronJobSpec(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cronJob batchv1.CronJob
 	g.Expect(c.Get(context.Background(), client.ObjectKey{
 		Namespace: "default",
-		Name:      "test-keystone-fernet-rotate",
+		Name:      "test-keystone-credential-rotate",
 	}, &cronJob)).To(Succeed())
 
 	// Verify labels on CronJob ObjectMeta and pod template.
@@ -482,61 +488,65 @@ func TestReconcileFernetKeys_CronJobSpec(t *testing.T) {
 
 	podSpec := podTemplate.Spec
 
-	// Verify ServiceAccount (CC-0013).
-	g.Expect(podSpec.ServiceAccountName).To(Equal("test-keystone-fernet-rotate"))
+	// Verify ServiceAccount (CC-0036).
+	g.Expect(podSpec.ServiceAccountName).To(Equal("test-keystone-credential-rotate"))
 
-	// Verify init container copies keys from read-only Secret to writable emptyDir (CC-0013).
+	// Verify init container copies keys from read-only Secret to writable emptyDir (CC-0036).
 	g.Expect(podSpec.InitContainers).To(HaveLen(1))
 	initContainer := podSpec.InitContainers[0]
 	g.Expect(initContainer.Name).To(Equal("copy-keys"))
 	g.Expect(initContainer.Image).To(Equal("ghcr.io/c5c3/keystone:2025.2"))
 	g.Expect(initContainer.VolumeMounts).To(HaveLen(2))
 
-	// Verify main container uses shell script for rotation + K8s API push (CC-0013).
+	// Verify main container uses shell script for rotation + migration + K8s API push (CC-0036).
 	container := podSpec.Containers[0]
-	g.Expect(container.Name).To(Equal("fernet-rotate"))
+	g.Expect(container.Name).To(Equal("credential-rotate"))
 	g.Expect(container.Image).To(Equal("ghcr.io/c5c3/keystone:2025.2"))
-	g.Expect(container.Command).To(Equal([]string{"sh", "-c", fernetRotateScript}))
+	g.Expect(container.Command).To(Equal([]string{"sh", "-c", credentialRotateScript}))
 
-	// Verify env vars for Secret update via K8s API and oslo.config override (CC-0013).
+	// Verify the rotation script includes both credential_rotate and credential_migrate (CC-0036).
+	g.Expect(credentialRotateScript).To(ContainSubstring("credential_rotate"))
+	g.Expect(credentialRotateScript).To(ContainSubstring("credential_migrate"))
+
+	// Verify env vars for Secret update via K8s API and oslo.config override (CC-0036).
 	g.Expect(container.Env).To(HaveLen(3))
 	g.Expect(container.Env[0].Name).To(Equal("SECRET_NAME"))
-	g.Expect(container.Env[0].Value).To(Equal("test-keystone-fernet-keys"))
+	g.Expect(container.Env[0].Value).To(Equal("test-keystone-credential-keys"))
 	g.Expect(container.Env[1].Name).To(Equal("SECRET_NAMESPACE"))
-	g.Expect(container.Env[2].Name).To(Equal("OS_fernet_tokens__max_active_keys"))
+	g.Expect(container.Env[2].Name).To(Equal("OS_credential__max_active_keys"))
 	g.Expect(container.Env[2].Value).To(Equal("3"))
 
-	// Verify volume mounts on main container: fernet-keys + credential-keys (read-only) + config.
+	// Verify volume mounts on main container: credential-keys + fernet-keys (read-only) + config.
 	g.Expect(container.VolumeMounts).To(HaveLen(3))
-	g.Expect(container.VolumeMounts[0].Name).To(Equal("fernet-keys"))
-	g.Expect(container.VolumeMounts[0].MountPath).To(Equal("/etc/keystone/fernet-keys"))
-	g.Expect(container.VolumeMounts[1].Name).To(Equal("credential-keys"))
-	g.Expect(container.VolumeMounts[1].MountPath).To(Equal("/etc/keystone/credential-keys"))
+	g.Expect(container.VolumeMounts[0].Name).To(Equal("credential-keys"))
+	g.Expect(container.VolumeMounts[0].MountPath).To(Equal("/etc/keystone/credential-keys"))
+	g.Expect(container.VolumeMounts[1].Name).To(Equal("fernet-keys"))
+	g.Expect(container.VolumeMounts[1].MountPath).To(Equal("/etc/keystone/fernet-keys"))
 	g.Expect(container.VolumeMounts[1].ReadOnly).To(BeTrue())
 	g.Expect(container.VolumeMounts[2].Name).To(Equal("config"))
 	g.Expect(container.VolumeMounts[2].MountPath).To(Equal("/etc/keystone/keystone.conf.d/"))
 	g.Expect(container.VolumeMounts[2].ReadOnly).To(BeTrue())
 
-	// Verify volumes: fernet-keys-src (Secret), fernet-keys (emptyDir), credential-keys (Secret), config (ConfigMap).
+	// Verify volumes: credential-keys-src (Secret), credential-keys (emptyDir), fernet-keys (Secret), config (ConfigMap).
 	g.Expect(podSpec.Volumes).To(HaveLen(4))
-	var srcVol, workVol, credVol, cfgVol corev1.Volume
+	var srcVol, workVol, fernetVol, cfgVol corev1.Volume
 	for _, v := range podSpec.Volumes {
 		switch v.Name {
-		case "fernet-keys-src":
+		case "credential-keys-src":
 			srcVol = v
-		case "fernet-keys":
-			workVol = v
 		case "credential-keys":
-			credVol = v
+			workVol = v
+		case "fernet-keys":
+			fernetVol = v
 		case "config":
 			cfgVol = v
 		}
 	}
 	g.Expect(srcVol.Secret).NotTo(BeNil())
-	g.Expect(srcVol.Secret.SecretName).To(Equal("test-keystone-fernet-keys"))
+	g.Expect(srcVol.Secret.SecretName).To(Equal("test-keystone-credential-keys"))
 	g.Expect(workVol.EmptyDir).NotTo(BeNil())
-	g.Expect(credVol.Secret).NotTo(BeNil())
-	g.Expect(credVol.Secret.SecretName).To(Equal("test-keystone-credential-keys"))
+	g.Expect(fernetVol.Secret).NotTo(BeNil())
+	g.Expect(fernetVol.Secret.SecretName).To(Equal("test-keystone-fernet-keys"))
 	g.Expect(cfgVol.ConfigMap).NotTo(BeNil())
 	g.Expect(cfgVol.ConfigMap.Name).To(Equal("test-keystone-config-abc123"))
 }

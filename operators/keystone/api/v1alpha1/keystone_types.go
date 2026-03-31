@@ -56,6 +56,9 @@ type KeystoneSpec struct {
 	// Fernet configures Fernet key rotation.
 	Fernet FernetSpec `json:"fernet,omitempty"`
 
+	// CredentialKeys configures credential key rotation.
+	CredentialKeys CredentialKeysSpec `json:"credentialKeys,omitempty"`
+
 	// Federation configures Keystone federation (optional).
 	// +optional
 	Federation *FederationSpec `json:"federation,omitempty"`
@@ -92,6 +95,18 @@ type FernetSpec struct {
 	RotationSchedule string `json:"rotationSchedule,omitempty"`
 
 	// MaxActiveKeys is the maximum number of active Fernet keys.
+	// +kubebuilder:validation:Minimum=3
+	// +kubebuilder:default=3
+	MaxActiveKeys int32 `json:"maxActiveKeys,omitempty"`
+}
+
+// CredentialKeysSpec defines credential key rotation configuration.
+type CredentialKeysSpec struct {
+	// RotationSchedule is a cron expression for credential key rotation.
+	// +kubebuilder:default="0 0 * * 0"
+	RotationSchedule string `json:"rotationSchedule,omitempty"`
+
+	// MaxActiveKeys is the maximum number of active credential keys.
 	// +kubebuilder:validation:Minimum=3
 	// +kubebuilder:default=3
 	MaxActiveKeys int32 `json:"maxActiveKeys,omitempty"`

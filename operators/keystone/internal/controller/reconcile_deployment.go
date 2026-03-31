@@ -18,7 +18,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -29,17 +28,17 @@ import (
 
 // Feature: CC-0013
 
-// fernetKeysHash reads the fernet-keys Secret for the given Keystone instance
-// and returns a deterministic SHA-256 hex digest of its Data map. If the Secret
-// does not exist, the not-found error is returned to the caller (CC-0015).
-func (r *KeystoneReconciler) fernetKeysHash(ctx context.Context, keystone *keystonev1alpha1.Keystone) (string, error) {
-	secretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
+// keysHash reads the named Secret for the given Keystone instance and returns
+// a deterministic SHA-256 hex digest of its Data map. If the Secret does not
+// exist, the not-found error is returned to the caller.
+func (r *KeystoneReconciler) keysHash(ctx context.Context, keystone *keystonev1alpha1.Keystone, suffix string) (string, error) {
+	secretName := fmt.Sprintf("%s-%s", keystone.Name, suffix)
 	var secret corev1.Secret
 	if err := r.Get(ctx, types.NamespacedName{
 		Name:      secretName,
 		Namespace: keystone.Namespace,
 	}, &secret); err != nil {
-		return "", fmt.Errorf("getting fernet-keys Secret %s/%s: %w", keystone.Namespace, secretName, err)
+		return "", fmt.Errorf("getting %s Secret %s/%s: %w", suffix, keystone.Namespace, secretName, err)
 	}
 	// json.Marshal sorts map keys, so the hash is deterministic (CC-0015).
 	data, _ := json.Marshal(secret.Data)
@@ -47,15 +46,31 @@ func (r *KeystoneReconciler) fernetKeysHash(ctx context.Context, keystone *keyst
 	return hex.EncodeToString(sum[:]), nil
 }
 
+// fernetKeysHash reads the fernet-keys Secret for the given Keystone instance
+// and returns a deterministic SHA-256 hex digest of its Data map (CC-0015).
+func (r *KeystoneReconciler) fernetKeysHash(ctx context.Context, keystone *keystonev1alpha1.Keystone) (string, error) {
+	return r.keysHash(ctx, keystone, "fernet-keys")
+}
+
+// credentialKeysHash reads the credential-keys Secret for the given Keystone instance
+// and returns a deterministic SHA-256 hex digest of its Data map (CC-0036).
+func (r *KeystoneReconciler) credentialKeysHash(ctx context.Context, keystone *keystonev1alpha1.Keystone) (string, error) {
+	return r.keysHash(ctx, keystone, "credential-keys")
+}
+
 // reconcileDeployment ensures the Keystone API Deployment and Service exist
 // with the correct spec. It sets the DeploymentReady condition and the
 // status endpoint when the Deployment becomes available (CC-0013, REQ-006, REQ-012).
 func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
-	hash, err := r.fernetKeysHash(ctx, keystone)
+	fernetHash, err := r.fernetKeysHash(ctx, keystone)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, fmt.Errorf("computing fernet-keys hash: %w", err)
 	}
-	deploy := buildKeystoneDeployment(keystone, configMapName, hash)
+	credentialHash, err := r.credentialKeysHash(ctx, keystone)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, fmt.Errorf("computing credential-keys hash: %w", err)
+	}
+	deploy := buildKeystoneDeployment(keystone, configMapName, fernetHash, credentialHash)
 	ready, err := deployment.EnsureDeployment(ctx, r.Client, r.Scheme, keystone, deploy)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring Deployment: %w", err)
@@ -110,7 +125,7 @@ func selectorLabels(keystone *keystonev1alpha1.Keystone) map[string]string {
 	}
 }
 
-func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName string, fernetKeysHash string) *appsv1.Deployment {
+func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName string, fernetKeysHash string, credentialKeysHash string) *appsv1.Deployment {
 	selector := selectorLabels(keystone)
 	labels := commonLabels(keystone)
 	replicas := int32(keystone.Spec.Replicas)
@@ -131,7 +146,8 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
 					Annotations: map[string]string{
-						"keystone.c5c3.io/fernet-keys-hash": fernetKeysHash,
+						"keystone.c5c3.io/fernet-keys-hash":     fernetKeysHash,
+						"keystone.c5c3.io/credential-keys-hash": credentialKeysHash,
 					},
 				},
 				Spec: corev1.PodSpec{
@@ -216,11 +232,7 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 							VolumeSource: corev1.VolumeSource{
 								Secret: &corev1.SecretVolumeSource{
 									SecretName: credentialSecretName,
-								// TODO(CC-0013): Credential key management is deferred to a future feature.
-								// Optional=true prevents MountVolume.SetUp errors until the secret is created
-								// by a dedicated reconcileCredentialKeys sub-reconciler.
-								Optional: ptr.To(true),
-							},
+								},
 							},
 						},
 					},

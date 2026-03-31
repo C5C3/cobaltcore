@@ -59,6 +59,10 @@ func configTestKeystone() *keystonev1alpha1.Keystone {
 				RotationSchedule: "0 0 * * 0",
 				MaxActiveKeys:    3,
 			},
+			CredentialKeys: keystonev1alpha1.CredentialKeysSpec{
+				RotationSchedule: "0 0 * * 0",
+				MaxActiveKeys:    3,
+			},
 			Bootstrap: keystonev1alpha1.BootstrapSpec{
 				AdminUser:              "admin",
 				AdminPasswordSecretRef: commonv1.SecretRefSpec{Name: "keystone-admin"},
@@ -139,6 +143,7 @@ func TestReconcileConfig_BasicManagedDatabaseAndCache(t *testing.T) {
 	g.Expect(keystoneConf).To(ContainSubstring("[identity]"))
 	g.Expect(keystoneConf).To(ContainSubstring("[oslo_middleware]"))
 	g.Expect(keystoneConf).To(ContainSubstring("[memcache]"))
+	g.Expect(keystoneConf).To(ContainSubstring("[credential]"))
 
 	// Managed database: connection uses CR name as MySQL username and service DNS.
 	g.Expect(keystoneConf).To(ContainSubstring("mysql+pymysql://test-keystone:secret123@mariadb-cluster.default.svc:3306/keystone?charset=utf8"))
@@ -464,6 +469,49 @@ func TestReconcileConfig_ImmutableConfigMapWithOwnerReference(t *testing.T) {
 	g.Expect(cm.OwnerReferences).To(HaveLen(1))
 	g.Expect(cm.OwnerReferences[0].Name).To(Equal("test-keystone"))
 	g.Expect(cm.OwnerReferences[0].UID).To(Equal(ks.UID))
+}
+
+func TestReconcileConfig_CredentialKeysSectionPresent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+
+	ks := configTestKeystone()
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+	r := newConfigTestReconciler(s, ks, secret)
+
+	configMapName, err := r.reconcileConfig(context.Background(), ks)
+
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	keystoneConf := cm.Data["keystone.conf"]
+	// REQ-011 (CC-0036): [credential] section must be present with correct values.
+	g.Expect(keystoneConf).To(ContainSubstring("[credential]"))
+	g.Expect(keystoneConf).To(ContainSubstring("key_repository = /etc/keystone/credential-keys"))
+	g.Expect(keystoneConf).To(ContainSubstring("max_active_keys = 3"))
+}
+
+func TestReconcileConfig_CredentialKeysCustomMaxActiveKeys(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+
+	ks := configTestKeystone()
+	ks.Spec.CredentialKeys.MaxActiveKeys = 7
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+	r := newConfigTestReconciler(s, ks, secret)
+
+	configMapName, err := r.reconcileConfig(context.Background(), ks)
+
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	keystoneConf := cm.Data["keystone.conf"]
+	g.Expect(keystoneConf).To(ContainSubstring("[credential]"))
+	g.Expect(keystoneConf).To(ContainSubstring("max_active_keys = 7"))
 }
 
 func TestResolveDatabaseHost(t *testing.T) {

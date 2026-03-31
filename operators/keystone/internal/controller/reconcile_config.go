@@ -36,7 +36,11 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 		},
 		"fernet_tokens": {
 			"key_repository":  "/etc/keystone/fernet-keys",
-			"max_active_keys": fmt.Sprintf("%d", keystone.Spec.Fernet.MaxActiveKeys),
+			"max_active_keys": fmt.Sprintf("%d", normalizedFernetMaxActiveKeys(keystone)),
+		},
+		"credential": {
+			"key_repository":  "/etc/keystone/credential-keys",
+			"max_active_keys": fmt.Sprintf("%d", normalizedCredentialMaxActiveKeys(keystone)),
 		},
 		"cache": {
 			"enabled": "true",

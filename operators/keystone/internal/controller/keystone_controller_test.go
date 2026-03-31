@@ -61,6 +61,10 @@ func testKeystone() *keystonev1alpha1.Keystone {
 				RotationSchedule: "0 0 * * 0",
 				MaxActiveKeys:    3,
 			},
+			CredentialKeys: keystonev1alpha1.CredentialKeysSpec{
+				RotationSchedule: "0 0 * * 0",
+				MaxActiveKeys:    3,
+			},
 			Bootstrap: keystonev1alpha1.BootstrapSpec{
 				AdminUser:              "admin",
 				AdminPasswordSecretRef: commonv1.SecretRefSpec{Name: "keystone-admin"},
@@ -125,6 +129,22 @@ func testFernetKeysSecret() runtime.Object {
 			"0": []byte("test-fernet-key-0"),
 			"1": []byte("test-fernet-key-1"),
 			"2": []byte("test-fernet-key-2"),
+		},
+	}
+}
+
+// testCredentialKeysSecret returns a pre-existing credential keys Secret so that
+// reconcileCredentialKeys does not early-return on the initial-creation path (CC-0036).
+func testCredentialKeysSecret() runtime.Object {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-keystone-credential-keys",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			"0": []byte("test-credential-key-0"),
+			"1": []byte("test-credential-key-1"),
+			"2": []byte("test-credential-key-2"),
 		},
 	}
 }
@@ -255,7 +275,7 @@ func TestReconcile_SetsAllSubConditionsTrue(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
 	configMapName := testComputeConfigMapName(t)
-	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret()}, testReadyExternalSecrets()...)
+	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
 	r := newTestReconciler(objs...)
 
 	result, err := r.Reconcile(context.Background(), reconcile.Request{
@@ -269,7 +289,7 @@ func TestReconcile_SetsAllSubConditionsTrue(t *testing.T) {
 	var updated keystonev1alpha1.Keystone
 	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
 
-	for _, condType := range []string{"SecretsReady", "DatabaseReady", "FernetKeysReady", "DeploymentReady", "BootstrapReady"} {
+	for _, condType := range []string{"SecretsReady", "FernetKeysReady", "CredentialKeysReady", "DatabaseReady", "DeploymentReady", "BootstrapReady"} {
 		cond := meta.FindStatusCondition(updated.Status.Conditions, condType)
 		g.Expect(cond).NotTo(BeNil(), "condition %s should exist", condType)
 		g.Expect(cond.Status).To(Equal(metav1.ConditionTrue), "condition %s should be True", condType)
@@ -280,7 +300,7 @@ func TestReconcile_AggregatesReadyCondition(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
 	configMapName := testComputeConfigMapName(t)
-	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret()}, testReadyExternalSecrets()...)
+	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
 	r := newTestReconciler(objs...)
 
 	_, err := r.Reconcile(context.Background(), reconcile.Request{
@@ -301,7 +321,7 @@ func TestReconcile_StatusUpdatePersisted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
 	configMapName := testComputeConfigMapName(t)
-	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret()}, testReadyExternalSecrets()...)
+	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
 	r := newTestReconciler(objs...)
 
 	_, err := r.Reconcile(context.Background(), reconcile.Request{
@@ -319,7 +339,7 @@ func TestReconcile_Idempotent(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
 	configMapName := testComputeConfigMapName(t)
-	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret()}, testReadyExternalSecrets()...)
+	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
 	r := newTestReconciler(objs...)
 
 	// First reconcile.
@@ -364,8 +384,9 @@ func TestAggregateReady_AllTrue(t *testing.T) {
 	g := NewGomegaWithT(t)
 	conditions := []metav1.Condition{
 		{Type: "SecretsReady", Status: metav1.ConditionTrue},
-		{Type: "DatabaseReady", Status: metav1.ConditionTrue},
 		{Type: "FernetKeysReady", Status: metav1.ConditionTrue},
+		{Type: "CredentialKeysReady", Status: metav1.ConditionTrue},
+		{Type: "DatabaseReady", Status: metav1.ConditionTrue},
 		{Type: "DeploymentReady", Status: metav1.ConditionTrue},
 		{Type: "BootstrapReady", Status: metav1.ConditionTrue},
 	}
@@ -376,8 +397,9 @@ func TestAggregateReady_OneFalse(t *testing.T) {
 	g := NewGomegaWithT(t)
 	conditions := []metav1.Condition{
 		{Type: "SecretsReady", Status: metav1.ConditionTrue},
-		{Type: "DatabaseReady", Status: metav1.ConditionFalse},
 		{Type: "FernetKeysReady", Status: metav1.ConditionTrue},
+		{Type: "CredentialKeysReady", Status: metav1.ConditionTrue},
+		{Type: "DatabaseReady", Status: metav1.ConditionFalse},
 		{Type: "DeploymentReady", Status: metav1.ConditionTrue},
 		{Type: "BootstrapReady", Status: metav1.ConditionTrue},
 	}
@@ -434,9 +456,9 @@ func TestReconcile_EarlyReturnOnSecretsNotReady(t *testing.T) {
 func TestReconcile_EarlyReturnOnDatabaseNotReady(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
-	// Secrets, fernet keys, and DB credentials are ready, but no completed db_sync Job exists.
+	// Secrets, fernet keys, credential keys, and DB credentials are ready, but no completed db_sync Job exists.
 	// reconcileConfig runs before reconcileDatabase, so it needs DB credentials and fernet keys.
-	objs := append([]runtime.Object{ks, testDBCredentialsSecret(), testAdminCredentialsSecret(), testFernetKeysSecret()}, testReadyExternalSecrets()...)
+	objs := append([]runtime.Object{ks, testDBCredentialsSecret(), testAdminCredentialsSecret(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
 	r := newTestReconciler(objs...)
 
 	ctx := context.Background()
@@ -496,6 +518,7 @@ func TestReconcile_SequentialProgression(t *testing.T) {
 		g.Expect(r.Client.Create(ctx, obj.(client.Object))).To(Succeed())
 	}
 	g.Expect(r.Client.Create(ctx, testFernetKeysSecret().(client.Object))).To(Succeed())
+	g.Expect(r.Client.Create(ctx, testCredentialKeysSecret().(client.Object))).To(Succeed())
 	g.Expect(r.Client.Create(ctx, testDBCredentialsSecret().(client.Object))).To(Succeed())
 	g.Expect(r.Client.Create(ctx, testAdminCredentialsSecret().(client.Object))).To(Succeed())
 
@@ -521,9 +544,9 @@ func TestReconcile_ReadyFalseWhenDeploymentNotAvailable(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
 	configMapName := testComputeConfigMapName(t)
-	// All prerequisites are ready: secrets, DB sync completed, DB credentials secret, fernet keys.
+	// All prerequisites are ready: secrets, DB sync completed, DB credentials secret, fernet keys, credential keys.
 	// But no ready deployment — EnsureDeployment will create it (returns false).
-	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testFernetKeysSecret()}, testReadyExternalSecrets()...)
+	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
 	r := newTestReconciler(objs...)
 
 	ctx := context.Background()
@@ -551,7 +574,7 @@ func TestReconcile_ObservedGenerationTracked(t *testing.T) {
 	ks := testKeystone()
 	ks.Generation = 42 // Use a distinctive generation value.
 	configMapName := testComputeConfigMapName(t)
-	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret()}, testReadyExternalSecrets()...)
+	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
 	r := newTestReconciler(objs...)
 
 	ctx := context.Background()

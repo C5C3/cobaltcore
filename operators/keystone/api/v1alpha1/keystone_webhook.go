@@ -49,6 +49,9 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 	if obj.Spec.Fernet.MaxActiveKeys == 0 {
 		obj.Spec.Fernet.MaxActiveKeys = 3
 	}
+	if obj.Spec.CredentialKeys.MaxActiveKeys == 0 {
+		obj.Spec.CredentialKeys.MaxActiveKeys = 3
+	}
 	if obj.Spec.Cache.Backend == "" {
 		obj.Spec.Cache.Backend = "dogpile.cache.pymemcache"
 	}
@@ -102,6 +105,16 @@ func (w *KeystoneWebhook) validate(k *Keystone) error {
 		))
 	}
 
+	// REQ-009 (CC-0036): Defense-in-depth credentialKeys maxActiveKeys check alongside the
+	// +kubebuilder:validation:Minimum=3 marker.
+	if k.Spec.CredentialKeys.MaxActiveKeys < 3 && k.Spec.CredentialKeys.MaxActiveKeys != 0 {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("credentialKeys", "maxActiveKeys"),
+			k.Spec.CredentialKeys.MaxActiveKeys,
+			"maxActiveKeys must be at least 3",
+		))
+	}
+
 	// REQ-009 (CC-0011): Defense-in-depth cache mutual-exclusivity check alongside the
 	// +kubebuilder:validation:XValidation CEL rule on KeystoneSpec.Cache.
 	if (k.Spec.Cache.ClusterRef != nil) == (len(k.Spec.Cache.Servers) > 0) {
@@ -136,6 +149,20 @@ func (w *KeystoneWebhook) validate(k *Keystone) error {
 		allErrs = append(allErrs, field.Invalid(
 			specPath.Child("fernet", "rotationSchedule"),
 			k.Spec.Fernet.RotationSchedule,
+			fmt.Sprintf("invalid cron expression: %v", err),
+		))
+	}
+
+	// REQ-005 (CC-0036): Validate cron expression for credential key rotation schedule.
+	if k.Spec.CredentialKeys.RotationSchedule == "" {
+		allErrs = append(allErrs, field.Required(
+			specPath.Child("credentialKeys", "rotationSchedule"),
+			"rotationSchedule must be set; default is \"0 0 * * 0\"",
+		))
+	} else if _, err := cron.ParseStandard(k.Spec.CredentialKeys.RotationSchedule); err != nil {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("credentialKeys", "rotationSchedule"),
+			k.Spec.CredentialKeys.RotationSchedule,
 			fmt.Sprintf("invalid cron expression: %v", err),
 		))
 	}
