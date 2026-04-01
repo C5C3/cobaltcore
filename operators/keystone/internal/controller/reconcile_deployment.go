@@ -14,6 +14,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -79,6 +80,11 @@ func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *
 	svc := buildKeystoneService(keystone)
 	if err := deployment.EnsureService(ctx, r.Client, r.Scheme, keystone, svc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring Service: %w", err)
+	}
+
+	pdb := buildPodDisruptionBudget(keystone)
+	if err := deployment.EnsurePDB(ctx, r.Client, r.Scheme, keystone, pdb); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensuring PodDisruptionBudget: %w", err)
 	}
 
 	if !ready {
@@ -240,6 +246,40 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 			},
 		},
 	}
+}
+
+// Feature: CC-0037
+
+// buildPodDisruptionBudget constructs the desired PDB for the Keystone API
+// deployment. When replicas > 1, minAvailable=1 guarantees at least one pod
+// remains during voluntary disruptions. When replicas == 1, maxUnavailable=1
+// is used instead to avoid drain deadlock (a PDB with minAvailable=1 on a
+// single-replica deployment would block all evictions). When replicas == 0
+// (e.g. during scale-down), maxUnavailable=1 is set explicitly for clarity
+// even though it has no practical effect with zero pods (CC-0037).
+func buildPodDisruptionBudget(keystone *keystonev1alpha1.Keystone) *policyv1.PodDisruptionBudget {
+	pdb := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-api", keystone.Name),
+			Namespace: keystone.Namespace,
+			Labels:    commonLabels(keystone),
+		},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			Selector: &metav1.LabelSelector{
+				MatchLabels: selectorLabels(keystone),
+			},
+		},
+	}
+
+	if keystone.Spec.Replicas > 1 {
+		minAvailable := intstr.FromInt32(1)
+		pdb.Spec.MinAvailable = &minAvailable
+	} else {
+		maxUnavailable := intstr.FromInt32(1)
+		pdb.Spec.MaxUnavailable = &maxUnavailable
+	}
+
+	return pdb
 }
 
 func buildKeystoneService(keystone *keystonev1alpha1.Keystone) *corev1.Service {

@@ -65,6 +65,7 @@ The controller watches the primary Keystone CR and all owned resources:
 | `Service` | `Owns()` | Triggers reconciliation when owned Service changes |
 | `ConfigMap` | `Owns()` | Triggers reconciliation when owned ConfigMap changes |
 | `Job` | `Owns()` | Triggers reconciliation when owned Job changes |
+| `PodDisruptionBudget` | `Owns()` | Triggers reconciliation when owned PDB changes |
 | `CronJob` | `Owns()` | Triggers reconciliation when owned CronJob changes |
 | `Secret` | `Watches()` | Triggers reconciliation for controller-owned Secrets only |
 
@@ -106,6 +107,7 @@ RBAC markers on the reconciler generate the required ClusterRole:
 | `batch` | `jobs`, `cronjobs` | get, list, watch, create, update, patch, delete |
 | `k8s.mariadb.com` | `databases`, `users`, `grants` | get, list, watch, create, update, patch, delete |
 | `external-secrets.io` | `externalsecrets`, `pushsecrets` | get, list, watch, create, update, patch |
+| `policy` | `poddisruptionbudgets` | get, list, watch, create, update, patch, delete |
 
 ---
 
@@ -592,6 +594,23 @@ When the Deployment becomes ready, `status.endpoint` is set to:
 http://keystone-api.{namespace}.svc.cluster.local:5000/v3
 ```
 
+**PodDisruptionBudget (CC-0037):**
+
+After ensuring the Deployment and Service, `reconcileDeployment` creates or updates
+a PodDisruptionBudget via `deployment.EnsurePDB()`. The PDB uses a replica-aware
+disruption budget strategy:
+
+| Replicas | Field | Value | Rationale |
+| --- | --- | --- | --- |
+| `> 1` | `minAvailable` | `1` | Guarantees at least one pod remains during voluntary disruptions |
+| `<= 1` | `maxUnavailable` | `1` | Avoids drain deadlock — a PDB with `minAvailable=1` on a single-replica deployment would block all evictions |
+
+| PDB Field | Value |
+| --- | --- |
+| Name | `{name}-api` |
+| Labels | Same as Deployment (`commonLabels`) |
+| Selector | Same as Deployment (`selectorLabels`) |
+
 **Condition Contract:**
 
 | Status | Reason | Message | RequeueAfter |
@@ -599,11 +618,12 @@ http://keystone-api.{namespace}.svc.cluster.local:5000/v3
 | `False` | `WaitingForDeployment` | "Keystone API deployment is not yet available" | 10s |
 | `True` | `DeploymentReady` | "Keystone API deployment is available" | — |
 
-**Error handling:** Errors from `deployment.EnsureDeployment()` and
-`deployment.EnsureService()` are wrapped with context and returned.
+**Error handling:** Errors from `deployment.EnsureDeployment()`,
+`deployment.EnsureService()`, and `deployment.EnsurePDB()` are wrapped with context
+and returned.
 
 **Shared library calls:** `deployment.EnsureDeployment()`,
-`deployment.EnsureService()`
+`deployment.EnsureService()`, `deployment.EnsurePDB()`
 
 ---
 
@@ -699,6 +719,7 @@ Keystone CR via `controllerutil.SetControllerReference()`. This enables:
 | Job | `keystone-bootstrap` | Keystone CR |
 | Deployment | `keystone-api` | Keystone CR |
 | Service | `keystone-api` | Keystone CR |
+| PodDisruptionBudget | `{name}-api` | Keystone CR |
 | Database | `keystone` | Keystone CR (managed mode only) |
 | User | `keystone` | Keystone CR (managed mode only) |
 | Grant | `keystone` | Keystone CR (managed mode only) |

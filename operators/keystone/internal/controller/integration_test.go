@@ -21,10 +21,12 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -74,6 +76,7 @@ func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, c
 				Owns(&corev1.Service{}).
 				Owns(&corev1.ConfigMap{}).
 				Owns(&batchv1.Job{}).
+				Owns(&policyv1.PodDisruptionBudget{}).
 				Owns(&batchv1.CronJob{}).
 				Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
 					secretToKeystoneMapper(mgr.GetClient()),
@@ -528,6 +531,10 @@ func TestIntegration_ResourceCreation(t *testing.T) {
 	// PushSecret.
 	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-fernet-keys-backup"}, &esov1alpha1.PushSecret{})).
 		To(Succeed(), "PushSecret test-keystone-fernet-keys-backup should exist")
+
+	// PodDisruptionBudget (CC-0037).
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-api"}, &policyv1.PodDisruptionBudget{})).
+		To(Succeed(), "PodDisruptionBudget test-keystone-api should exist")
 }
 
 func TestIntegration_StatusEndpoint(t *testing.T) {
@@ -928,4 +935,97 @@ func TestIntegration_BootstrapJobDetailedSpec(t *testing.T) {
 
 	// Verify RestartPolicy.
 	g.Expect(podSpec.RestartPolicy).To(Equal(corev1.RestartPolicyNever))
+}
+
+// --- Task CC-0037: PodDisruptionBudget tests ---
+
+func TestIntegration_PDBSpec(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-pdb-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	// Fetch the PDB (CC-0037).
+	pdb := &policyv1.PodDisruptionBudget{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-api"}, pdb)).
+		To(Succeed(), "PDB test-keystone-api should exist")
+
+	// Verify labels match commonLabels (CC-0037).
+	g.Expect(pdb.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
+	g.Expect(pdb.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+	g.Expect(pdb.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "keystone-operator"))
+
+	// Verify selector matches selectorLabels (CC-0037).
+	g.Expect(pdb.Spec.Selector).NotTo(BeNil())
+	g.Expect(pdb.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
+	g.Expect(pdb.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+
+	// Verify PDB selector matches Deployment selector (CC-0037).
+	deploy := &appsv1.Deployment{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-api"}, deploy)).To(Succeed())
+	g.Expect(pdb.Spec.Selector.MatchLabels).To(Equal(deploy.Spec.Selector.MatchLabels))
+
+	// Replicas=3 → minAvailable=1 (CC-0037).
+	g.Expect(pdb.Spec.MinAvailable).NotTo(BeNil())
+	g.Expect(*pdb.Spec.MinAvailable).To(Equal(intstr.FromInt32(1)))
+	g.Expect(pdb.Spec.MaxUnavailable).To(BeNil())
+
+	// Verify owner reference (CC-0037).
+	g.Expect(pdb.OwnerReferences).To(HaveLen(1))
+	g.Expect(pdb.OwnerReferences[0].Name).To(Equal("test-keystone"))
+}
+
+func TestIntegration_PDBUpdatedOnReplicaChange(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-pdb-replica-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+	pdbKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-api"}
+
+	// Initial state: replicas=3 → minAvailable=1 (CC-0037).
+	pdb := &policyv1.PodDisruptionBudget{}
+	g.Expect(c.Get(ctx, pdbKey, pdb)).To(Succeed())
+	g.Expect(pdb.Spec.MinAvailable).NotTo(BeNil())
+	g.Expect(pdb.Spec.MaxUnavailable).To(BeNil())
+
+	// Update replicas to 1 → PDB should switch to maxUnavailable=1 (CC-0037).
+	updated := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
+	updated.Spec.Replicas = 1
+	g.Expect(c.Update(ctx, updated)).To(Succeed())
+
+	// Wait for the controller to reconcile and update the PDB (CC-0037).
+	g.Eventually(func() *intstr.IntOrString {
+		p := &policyv1.PodDisruptionBudget{}
+		if err := c.Get(ctx, pdbKey, p); err != nil {
+			return nil
+		}
+		return p.Spec.MaxUnavailable
+	}, eventuallyTimeout, pollInterval).ShouldNot(BeNil(), "PDB should switch to maxUnavailable")
+
+	g.Expect(c.Get(ctx, pdbKey, pdb)).To(Succeed())
+	g.Expect(*pdb.Spec.MaxUnavailable).To(Equal(intstr.FromInt32(1)))
+	g.Expect(pdb.Spec.MinAvailable).To(BeNil())
 }

@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -16,15 +17,18 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -35,6 +39,7 @@ import (
 func deployTestScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(s)
+	_ = policyv1.AddToScheme(s)
 	_ = keystonev1alpha1.AddToScheme(s)
 	return s
 }
@@ -590,4 +595,203 @@ func TestReconcileDeployment_FernetKeysHashFromSecret(t *testing.T) {
 	g.Expect(deploy.Spec.Template.Annotations).To(HaveKeyWithValue(
 		"keystone.c5c3.io/fernet-keys-hash", expectedHash,
 	))
+}
+
+// Feature: CC-0037
+
+func TestReconcileDeployment_PDBCreated(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+	ks.Spec.Replicas = 3 // explicit: PDB expectations depend on this value (CC-0037)
+	r := newDeployTestReconciler(s, ks)
+
+	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var pdb policyv1.PodDisruptionBudget
+	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
+		Name: "test-keystone-api", Namespace: "default",
+	}, &pdb)).To(Succeed())
+
+	g.Expect(pdb.OwnerReferences).To(HaveLen(1))
+	g.Expect(pdb.OwnerReferences[0].Name).To(Equal("test-keystone"))
+}
+
+func TestReconcileDeployment_PDBLabelsAndSelector(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+	r := newDeployTestReconciler(s, ks)
+
+	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var pdb policyv1.PodDisruptionBudget
+	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
+		Name: "test-keystone-api", Namespace: "default",
+	}, &pdb)).To(Succeed())
+
+	// PDB labels match commonLabels (CC-0037).
+	g.Expect(pdb.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
+	g.Expect(pdb.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+	g.Expect(pdb.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "keystone-operator"))
+
+	// PDB selector matches selectorLabels (CC-0037).
+	g.Expect(pdb.Spec.Selector).NotTo(BeNil())
+	g.Expect(pdb.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
+	g.Expect(pdb.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+}
+
+func TestReconcileDeployment_PDBMinAvailableForMultipleReplicas(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+	ks.Spec.Replicas = 3 // explicit: PDB expectations depend on this value (CC-0037)
+	r := newDeployTestReconciler(s, ks)
+
+	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var pdb policyv1.PodDisruptionBudget
+	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
+		Name: "test-keystone-api", Namespace: "default",
+	}, &pdb)).To(Succeed())
+
+	g.Expect(pdb.Spec.MinAvailable).NotTo(BeNil())
+	g.Expect(*pdb.Spec.MinAvailable).To(Equal(intstr.FromInt32(1)))
+	g.Expect(pdb.Spec.MaxUnavailable).To(BeNil())
+}
+
+func TestReconcileDeployment_PDBMaxUnavailableForSingleReplica(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+	ks.Spec.Replicas = 1
+	r := newDeployTestReconciler(s, ks)
+
+	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var pdb policyv1.PodDisruptionBudget
+	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
+		Name: "test-keystone-api", Namespace: "default",
+	}, &pdb)).To(Succeed())
+
+	g.Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
+	g.Expect(*pdb.Spec.MaxUnavailable).To(Equal(intstr.FromInt32(1)))
+	g.Expect(pdb.Spec.MinAvailable).To(BeNil())
+}
+
+func TestReconcileDeployment_PDBUpdatedOnReplicaChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+	ks.Spec.Replicas = 3 // explicit: PDB expectations depend on this value (CC-0037)
+	r := newDeployTestReconciler(s, ks)
+
+	ctx := context.Background()
+
+	// First reconcile with replicas=3 → minAvailable=1.
+	_, err := r.reconcileDeployment(ctx, ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var pdb policyv1.PodDisruptionBudget
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{
+		Name: "test-keystone-api", Namespace: "default",
+	}, &pdb)).To(Succeed())
+	g.Expect(pdb.Spec.MinAvailable).NotTo(BeNil())
+
+	// Change to replicas=1 and re-reconcile → maxUnavailable=1.
+	ks.Spec.Replicas = 1
+	_, err = r.reconcileDeployment(ctx, ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{
+		Name: "test-keystone-api", Namespace: "default",
+	}, &pdb)).To(Succeed())
+	g.Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
+	g.Expect(*pdb.Spec.MaxUnavailable).To(Equal(intstr.FromInt32(1)))
+	g.Expect(pdb.Spec.MinAvailable).To(BeNil())
+}
+
+func TestReconcileDeployment_PDBSelectorMatchesDeployment(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+	r := newDeployTestReconciler(s, ks)
+
+	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var deploy appsv1.Deployment
+	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
+		Name: "test-keystone-api", Namespace: "default",
+	}, &deploy)).To(Succeed())
+
+	var pdb policyv1.PodDisruptionBudget
+	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
+		Name: "test-keystone-api", Namespace: "default",
+	}, &pdb)).To(Succeed())
+
+	g.Expect(pdb.Spec.Selector.MatchLabels).To(Equal(deploy.Spec.Selector.MatchLabels))
+}
+
+func TestBuildPodDisruptionBudget_BoundaryReplicas2(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+	ks.Spec.Replicas = 2
+
+	pdb := buildPodDisruptionBudget(ks)
+
+	g.Expect(pdb.Spec.MinAvailable).NotTo(BeNil())
+	g.Expect(*pdb.Spec.MinAvailable).To(Equal(intstr.FromInt32(1)))
+	g.Expect(pdb.Spec.MaxUnavailable).To(BeNil())
+}
+
+func TestBuildPodDisruptionBudget_ZeroReplicas(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+	ks.Spec.Replicas = 0
+
+	pdb := buildPodDisruptionBudget(ks)
+
+	// Zero replicas explicitly sets MaxUnavailable=1 for clarity (CC-0037).
+	g.Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
+	g.Expect(*pdb.Spec.MaxUnavailable).To(Equal(intstr.FromInt32(1)))
+	g.Expect(pdb.Spec.MinAvailable).To(BeNil())
+}
+
+func TestReconcileDeployment_PDBEnsureError(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+	ks.Spec.Replicas = 3 // explicit: PDB expectations depend on this value (CC-0037)
+
+	// Use an interceptor to inject an error when creating a PodDisruptionBudget (CC-0037).
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks).
+		WithStatusSubresource(&keystonev1alpha1.Keystone{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if _, ok := obj.(*policyv1.PodDisruptionBudget); ok {
+					return fmt.Errorf("simulated PDB creation error")
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		}).
+		Build()
+
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("ensuring PodDisruptionBudget"))
+	g.Expect(err.Error()).To(ContainSubstring("simulated PDB creation error"))
 }

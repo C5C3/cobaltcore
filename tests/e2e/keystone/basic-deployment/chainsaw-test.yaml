@@ -104,6 +104,23 @@ spec:
           spec:
             ports:
             - port: 5000
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: keystone-basic-api
+            namespace: openstack
+            labels:
+              app.kubernetes.io/name: keystone
+              app.kubernetes.io/instance: keystone-basic
+              app.kubernetes.io/managed-by: keystone-operator
+          spec:
+            minAvailable: 1
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: keystone
+                app.kubernetes.io/instance: keystone-basic
   # ── Step 4: Assert Fernet resources ────────────────────────────────────
   - try:
     - assert:

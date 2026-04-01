@@ -12,6 +12,8 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -123,6 +125,77 @@ func EnsureService(ctx context.Context, c client.Client, scheme *runtime.Scheme,
 	if err := c.Update(ctx, existing); err != nil {
 		return fmt.Errorf("updating Service %s/%s: %w", svc.Namespace, svc.Name, err)
 	}
+	return nil
+}
+
+// EnsurePDB creates a PodDisruptionBudget if it does not exist or updates its
+// spec and metadata if it already exists. An owner reference is set on the PDB
+// so that it is garbage-collected when the owning resource is deleted. On the
+// update path, owner references, labels, and annotations are reconciled to
+// correct any out-of-band drift (CC-0037).
+func EnsurePDB(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, pdb *policyv1.PodDisruptionBudget) error {
+	existing := &policyv1.PodDisruptionBudget{}
+	err := c.Get(ctx, client.ObjectKeyFromObject(pdb), existing)
+
+	// PDB does not exist yet: set owner reference and create.
+	if apierrors.IsNotFound(err) {
+		if err := controllerutil.SetControllerReference(owner, pdb, scheme); err != nil {
+			return fmt.Errorf("setting owner reference on PodDisruptionBudget %s/%s: %w", pdb.Namespace, pdb.Name, err)
+		}
+		if err := c.Create(ctx, pdb); err != nil {
+			return fmt.Errorf("creating PodDisruptionBudget %s/%s: %w", pdb.Namespace, pdb.Name, err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("getting PodDisruptionBudget %s/%s: %w", pdb.Namespace, pdb.Name, err)
+	}
+
+	// PDB exists: reconcile metadata (ownerRefs/labels/annotations) and spec.
+	// Snapshot before mutations to detect whether an update is necessary (CC-0037).
+	before := existing.DeepCopy()
+
+	// Ensure controller owner reference is enforced so garbage collection
+	// behaves correctly even if the ref was removed out-of-band (CC-0037).
+	if err := controllerutil.SetControllerReference(owner, existing, scheme); err != nil {
+		return fmt.Errorf("updating owner reference on PodDisruptionBudget %s/%s: %w", existing.Namespace, existing.Name, err)
+	}
+
+	// Merge desired labels into existing labels; extra user-added keys are
+	// preserved, keys present on the desired PDB are authoritative (CC-0037).
+	if pdb.Labels != nil {
+		if existing.Labels == nil {
+			existing.Labels = make(map[string]string, len(pdb.Labels))
+		}
+		for k, v := range pdb.Labels {
+			existing.Labels[k] = v
+		}
+	}
+
+	// Merge desired annotations into existing annotations (CC-0037).
+	if pdb.Annotations != nil {
+		if existing.Annotations == nil {
+			existing.Annotations = make(map[string]string, len(pdb.Annotations))
+		}
+		for k, v := range pdb.Annotations {
+			existing.Annotations[k] = v
+		}
+	}
+
+	// Reconcile spec to the desired state (CC-0037).
+	existing.Spec = pdb.Spec
+
+	// Only issue an API update when something actually changed to avoid
+	// unnecessary write load and events (CC-0037).
+	if !apiequality.Semantic.DeepEqual(existing.Spec, before.Spec) ||
+		!apiequality.Semantic.DeepEqual(existing.Labels, before.Labels) ||
+		!apiequality.Semantic.DeepEqual(existing.Annotations, before.Annotations) ||
+		!apiequality.Semantic.DeepEqual(existing.OwnerReferences, before.OwnerReferences) {
+		if err := c.Update(ctx, existing); err != nil {
+			return fmt.Errorf("updating PodDisruptionBudget %s/%s: %w", existing.Namespace, existing.Name, err)
+		}
+	}
+
 	return nil
 }
 

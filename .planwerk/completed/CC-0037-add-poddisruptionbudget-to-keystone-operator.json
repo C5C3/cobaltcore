@@ -2,8 +2,8 @@
   "feature_id": "CC-0037",
   "title": "Add PodDisruptionBudget to Keystone operator",
   "slug": "add-poddisruptionbudget-to-keystone-operator",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 🔧 small\n**Category:** backend\n**Priority:** high\n**Source:** Proposed for 'Implement PodDisruptionBudget\n  - In reconcileDeplo'\n\nImplement PDB support in the Keystone operator:\n\n1. **`buildPodDisruptionBudget()`** in `operators/keystone/internal/controller/reconcile_deployment.go`: Construct `policyv1.PodDisruptionBudget` named `{keystone.Name}-api`, using `commonLabels()` on ObjectMeta and `selectorLabels()` on `Spec.Selector.MatchLabels`. Use `minAvailable: 1` when `replicas > 1`, `maxUnavailable: 1` when `replicas == 1` to prevent drain deadlocks.\n\n2. **`EnsurePDB()`** in `internal/common/deployment/deployment.go`: Reusable get-or-create/update helper following the existing `EnsureDeployment`/`EnsureService` contract — set owner reference via `SetControllerReference` on create, patch spec on update, return error only (no readiness bool). Use symmetric DeepCopy-then-normalize before spec comparison per codebase patterns.\n\n3. **RBAC marker** on `Reconcile()` in `operators/keystone/internal/controller/keystone_controller.go`: Add `+kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete` alongside existing markers.\n\n4. **`SetupWithManager` watch** in `keystone_controller.go`: Add `Owns(&policyv1.PodDisruptionBudget{})` so PDB changes trigger reconciliation.\n\n5. **Import** `policyv1 \"k8s.io/api/policy/v1\"` in both controller and deployment helper files.\n\n6. **Call site** in `reconcileDeployment`: Invoke `buildPodDisruptionBudget()` + `EnsurePDB()` after `EnsureService`, before setting the `DeploymentReady` condition.\n\n7. **Tests** in `operators/keystone/internal/controller/reconcile_deployment_test.go`: Add `policyv1` to `deployTestScheme()`. Test PDB creation (owner ref, labels, selector matches Deployment pod selector), correct `minAvailable`/`maxUnavailable` for replica counts >1 and ==1, and update-on-replica-change behavior. Follow existing Gomega BDD patterns with `NewGomegaWithT`.\n\n**Rationale:** Keystone currently has no PodDisruptionBudget. During voluntary disruptions (kubectl drain, node upgrades, cluster maintenance), all Keystone API pods can be evicted simultaneously, causing a complete API outage. With a PDB, Kubernetes guarantees at least one pod remains available during rolling disruptions, providing zero-downtime resilience for the identity service that all other OpenStack components depend on.\n\n**Affected Areas:**\n- operators/keystone/internal/controller/reconcile_deployment.go\n- operators/keystone/internal/controller/reconcile_deployment_test.go\n- operators/keystone/internal/controller/keystone_controller.go\n- internal/common/deployment/deployment.go",
   "stories": [
@@ -270,6 +270,7 @@
       "description": "In internal/common/deployment/deployment.go: (1) Add import policyv1 \"k8s.io/api/policy/v1\". (2) Add EnsurePDB function following the EnsureService/EnsureCronJob contract — signature: func EnsurePDB(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, pdb *policyv1.PodDisruptionBudget) error. Logic: Get existing by ObjectKey; if NotFound → SetControllerReference + Create; if found → replace existing.Spec = pdb.Spec then Update. Wrap all errors with fmt.Errorf context. In deployment_test.go: (3) Add policyv1 import and policyv1.AddToScheme to newScheme(). (4) Add testPDB() factory returning a PDB with MinAvailable=1 and selector. (5) Add tests: TestEnsurePDB_creates (verify owner ref), TestEnsurePDB_updatesExisting (change MinAvailable, verify updated), TestEnsurePDB_idempotent (call twice, one PDB exists). Follow existing TestEnsureService_* and TestEnsureDeployment_* patterns.",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-006",
@@ -282,6 +283,7 @@
       "description": "In operators/keystone/internal/controller/reconcile_deployment.go: (1) Add policyv1 \"k8s.io/api/policy/v1\" to imports alongside existing appsv1/corev1 imports. (2) Add buildPodDisruptionBudget(keystone *keystonev1alpha1.Keystone) *policyv1.PodDisruptionBudget function after buildKeystoneService (after line 261). Name: fmt.Sprintf(\"%s-api\", keystone.Name). Namespace: keystone.Namespace. Labels: commonLabels(keystone). Spec.Selector: &metav1.LabelSelector{MatchLabels: selectorLabels(keystone)}. Replica logic: replicas := int32(keystone.Spec.Replicas); if replicas > 1 { set MinAvailable = intstr.FromInt32(1) } else { set MaxUnavailable = intstr.FromInt32(1) }. Use intstr.IntOrString pointer for the set field, leave the other nil.",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-003",
@@ -294,6 +296,7 @@
       "description": "In reconcileDeployment function (line 83, after EnsureService block): Add pdb := buildPodDisruptionBudget(keystone) followed by if err := deployment.EnsurePDB(ctx, r.Client, r.Scheme, keystone, pdb); err != nil { return ctrl.Result{}, fmt.Errorf(\"ensuring PDB: %w\", err) }. This goes after the Service ensure block (line 82) and before the if !ready check (line 84).",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-001"
       ]
@@ -304,6 +307,7 @@
       "description": "In operators/keystone/internal/controller/keystone_controller.go: (1) Add policyv1 \"k8s.io/api/policy/v1\" to the import block after batchv1 import. (2) Add RBAC marker after line 56: // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete. (3) In SetupWithManager, add .Owns(&policyv1.PodDisruptionBudget{}) after .Owns(&batchv1.CronJob{}) (after line 152).",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-006"
@@ -315,6 +319,7 @@
       "description": "In operators/keystone/internal/controller/reconcile_deployment_test.go: (1) Add policyv1 \"k8s.io/api/policy/v1\" to imports. (2) Add _ = policyv1.AddToScheme(s) to deployTestScheme(). (3) Add test TestReconcileDeployment_PDBCreated: run reconcileDeployment with deployTestKeystone (replicas=3), verify PDB test-keystone-api exists via client.Get, check OwnerReferences has len 1 with Name test-keystone. (4) Add TestReconcileDeployment_PDBLabelsAndSelector: verify PDB labels match commonLabels, PDB Spec.Selector.MatchLabels match selectorLabels, and PDB selector equals Deployment selector. (5) Add TestReconcileDeployment_PDBMinAvailableForMultipleReplicas: with replicas=3 verify MinAvailable=intstr.FromInt32(1) and MaxUnavailable is nil. (6) Add TestReconcileDeployment_PDBMaxUnavailableForSingleReplica: create Keystone with Replicas=1, verify MaxUnavailable=intstr.FromInt32(1) and MinAvailable is nil. (7) Add TestReconcileDeployment_PDBUpdatedOnReplicaChange: first reconcile with replicas=3, then change ks.Spec.Replicas=1, re-run reconcileDeployment, verify PDB switched from minAvailable to maxUnavailable. (8) Add TestBuildPodDisruptionBudget_BoundaryReplicas2: replicas=2, verify minAvailable=1. (9) Add TestReconcileDeployment_PDBSelectorMatchesDeployment: verify PDB and Deployment selector labels are identical. Follow existing Gomega BDD patterns with NewGomegaWithT(t).",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-008",
         "REQ-002",
@@ -392,6 +397,286 @@
       "story": "PDB uses minAvailable when replicas > 1 and maxUnavailable when replicas == 1",
       "expected": "With replicas=2, PDB uses minAvailable=1 (boundary: smallest multi-replica value)",
       "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureDeployment_creates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureDeployment_updatesExisting",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureDeployment_readyWhenAvailable",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureDeployment_notReadyWhenGenerationLags",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureDeployment_deletesAndRequeuesOnSelectorChange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureDeployment_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_creates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_updatesPreservingClusterIP",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_doesNotMutateCallerObject",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_updatesPreservingNodePorts",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_preservesNodePortWhenProtocolOmitted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_failsOnClusterIPConflict",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_failsOnClusterIPsConflict",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_failsOnIPFamiliesConflict",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_allowsMatchingImmutableFields",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestIsDeploymentReady_true",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestIsDeploymentReady_false_observedGenerationLag",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestIsDeploymentReady_false_notEnoughReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestIsDeploymentReady_false_noCondition",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestIsDeploymentReady_false_noStatus",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestIsDeploymentReady_nilReplicas_defaults1",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_DeploymentAndServiceCreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_NotReady_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_Ready_SetsEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_OwnerReferences",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_DeploymentSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_NotReady_ConditionMessageAndGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_Ready_ConditionMessageAndGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_ServiceCreatedAlongsideDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_FernetKeysHashAnnotation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_FernetKeysHashAnnotation_EmptyHash",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_CredentialKeysHashAnnotation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_CredentialKeysHashAnnotation_EmptyHash",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestCredentialKeysHash_Deterministic",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestCredentialKeysHash_SecretNotFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_CredentialKeysHashFromSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestFernetKeysHash_Deterministic",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestFernetKeysHash_SecretNotFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_FernetKeysHashFromSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],
@@ -421,8 +706,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-01T14:29:30.015312"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-01T14:32:15.770027"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-01T17:01:17.785401"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/115",
+  "pr_number": 115,
   "execution_history": [
     {
       "run_id": "6c079986-d1f2-41be-af4b-3bbb2dae31b5",
@@ -434,6 +729,78 @@
           "name": "prepare",
           "duration": 318.79110455513,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "85e50365-251a-4f2a-babf-88e932bb576b",
+      "timestamp": "2026-04-01T14:46:21.078628",
+      "total_duration": 702.3821771144867,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (1 tasks)",
+          "duration": 322.8900237083435,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (3 tasks)",
+          "duration": 118.50898361206055,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (1 tasks)",
+          "duration": 51.40983557701111,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0037] Code Review",
+          "duration": 116.28119111061096,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0037] Improvements",
+          "duration": 45.003212213516235,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0037] Simplify",
+          "duration": 48.288930892944336,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "ea368e46-0f64-4bf4-94bf-288872b55349",
+      "timestamp": "2026-04-01T15:04:25.615396",
+      "total_duration": 811.8451313972473,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 811.8451313972473,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "f1445032-0e63-4901-b100-b5dfdf6cafb6",
+      "timestamp": "2026-04-01T16:40:44.528790",
+      "total_duration": 488.6426432132721,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 488.6426432132721,
+          "type": "review_address",
           "status": "done"
         }
       ]

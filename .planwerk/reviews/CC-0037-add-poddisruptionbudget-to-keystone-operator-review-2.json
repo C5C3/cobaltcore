@@ -1,0 +1,52 @@
+{
+  "summary": "PodDisruptionBudget support for the Keystone operator, addressing all 4 items from the sourcery-ai external review: explicit replicas=0 handling in buildPodDisruptionBudget, DeepCopy-then-compare guard to skip no-op updates in EnsurePDB, owner reference enforcement on the update path, and explicit replica count in tests. Implementation spans EnsurePDB helper (internal/common/deployment), buildPodDisruptionBudget + call site (operators/keystone), RBAC marker, Owns() watch, and 14 new tests across both packages.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "All existing tests pass (go test ./internal/common/deployment/... — 30 tests)", "checked": true},
+    {"item": "All existing tests pass (go test ./operators/keystone/internal/controller/... — PDB tests)", "checked": true},
+    {"item": "EnsurePDB unit tests: create, update, idempotent, ownerRef reconciliation, label merge, annotation merge", "checked": true},
+    {"item": "PDB integration tests: creation, labels/selector, minAvailable for replicas>1, maxUnavailable for replicas==1, update on replica change, selector matches Deployment", "checked": true},
+    {"item": "Boundary tests: replicas=2 (minAvailable=1), replicas=0 (maxUnavailable=1)", "checked": true},
+    {"item": "Tests explicitly set ks.Spec.Replicas where PDB expectations depend on it (CC-0037)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "EnsurePDB follows get-or-create/update contract with error-only return", "checked": true},
+    {"item": "Error messages include namespace/name context matching EnsureDeployment/EnsureService", "checked": true},
+    {"item": "buildPodDisruptionBudget is a pure function matching buildKeystoneDeployment/buildKeystoneService pattern", "checked": true},
+    {"item": "PDB named {keystone.Name}-api consistent with Deployment and Service naming", "checked": true},
+    {"item": "SPDX headers present on all files", "checked": true},
+    {"item": "Feature ID CC-0037 referenced in comments and docstrings", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "RBAC marker scoped to policy group, poddisruptionbudgets resource only", "checked": true},
+    {"item": "No hardcoded secrets or sensitive data", "checked": true},
+    {"item": "Owner references ensure garbage collection on CR deletion", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "EnsurePDB is a reusable helper in internal/common/deployment (not operator-specific)", "checked": true},
+    {"item": "Call site is after EnsureService and before DeploymentReady condition check", "checked": true},
+    {"item": "SetupWithManager includes Owns(&policyv1.PodDisruptionBudget{}) for watch reconciliation", "checked": true},
+    {"item": "PDB uses commonLabels() for ObjectMeta and selectorLabels() for Spec.Selector, matching Deployment", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code — EnsurePDB is the single PDB management helper", "checked": true},
+    {"item": "No unnecessary abstractions — buildPodDisruptionBudget is a focused builder", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors from EnsurePDB propagate immediately with context", "checked": true},
+    {"item": "SetControllerReference errors on both create and update paths are returned", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "replicas=0 handled explicitly with documented rationale", "checked": true},
+    {"item": "Owner reference drift corrected on update path", "checked": true},
+    {"item": "Labels and annotations merged (not replaced) to preserve user-added metadata", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "D2: EnsurePDB uses reflect.DeepEqual for spec comparison while other Ensure* functions (database, secrets, tls) use apiequality.Semantic.DeepEqual. For PDB specs this is functionally equivalent (no resource.Quantity or semantic types), but switching to apiequality.Semantic.DeepEqual would be more consistent across packages. Not actionable now since reflect is already imported for EnsureDeployment selector comparison in the same file."
+  ],
+  "next_steps": [],
+  "detected_patterns": []
+}

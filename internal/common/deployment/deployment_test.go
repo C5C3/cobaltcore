@@ -12,8 +12,10 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -24,6 +26,7 @@ func newScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = corev1.AddToScheme(s)
 	_ = appsv1.AddToScheme(s)
+	_ = policyv1.AddToScheme(s)
 	return s
 }
 
@@ -576,4 +579,158 @@ func TestIsDeploymentReady_nilReplicas_defaults1(t *testing.T) {
 		},
 	}
 	g.Expect(IsDeploymentReady(deploy)).To(BeTrue())
+}
+
+// --- EnsurePDB (CC-0037) ---
+
+func testPDB() *policyv1.PodDisruptionBudget {
+	minAvailable := intstr.FromInt32(1)
+	return &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-pdb",
+			Namespace: "default",
+		},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			MinAvailable: &minAvailable,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "test"},
+			},
+		},
+	}
+}
+
+func TestEnsurePDB_creates(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner).
+		Build()
+
+	err := EnsurePDB(context.Background(), c, s, owner, testPDB())
+	g.Expect(err).NotTo(HaveOccurred())
+
+	created := &policyv1.PodDisruptionBudget{}
+	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "test-pdb", Namespace: "default"}, created)).To(Succeed())
+	g.Expect(created.OwnerReferences).To(HaveLen(1))
+	g.Expect(created.OwnerReferences[0].Name).To(Equal("test-owner"))
+}
+
+func TestEnsurePDB_updatesExisting(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	existing := testPDB()
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		Build()
+
+	updated := testPDB()
+	maxUnavailable := intstr.FromInt32(1)
+	updated.Spec.MinAvailable = nil
+	updated.Spec.MaxUnavailable = &maxUnavailable
+
+	err := EnsurePDB(context.Background(), c, s, owner, updated)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	fetched := &policyv1.PodDisruptionBudget{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
+	g.Expect(fetched.Spec.MinAvailable).To(BeNil())
+	g.Expect(fetched.Spec.MaxUnavailable).NotTo(BeNil())
+	g.Expect(fetched.Spec.MaxUnavailable.IntValue()).To(Equal(1))
+}
+
+func TestEnsurePDB_idempotent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner).
+		Build()
+
+	ctx := context.Background()
+	g.Expect(EnsurePDB(ctx, c, s, owner, testPDB())).To(Succeed())
+	g.Expect(EnsurePDB(ctx, c, s, owner, testPDB())).To(Succeed())
+
+	list := &policyv1.PodDisruptionBudgetList{}
+	g.Expect(c.List(ctx, list, client.InNamespace("default"))).To(Succeed())
+	g.Expect(list.Items).To(HaveLen(1))
+}
+
+func TestEnsurePDB_reconciles_ownerRef_on_update(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	// Create a PDB without owner references (simulates out-of-band drift).
+	existing := testPDB()
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		Build()
+
+	err := EnsurePDB(context.Background(), c, s, owner, testPDB())
+	g.Expect(err).NotTo(HaveOccurred())
+
+	fetched := &policyv1.PodDisruptionBudget{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
+	g.Expect(fetched.OwnerReferences).To(HaveLen(1))
+	g.Expect(fetched.OwnerReferences[0].Name).To(Equal("test-owner"))
+}
+
+func TestEnsurePDB_merges_labels_on_update(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	// Existing PDB has a user-added label.
+	existing := testPDB()
+	existing.Labels = map[string]string{"user-key": "user-value"}
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		Build()
+
+	// Desired PDB introduces an operator-managed label.
+	desired := testPDB()
+	desired.Labels = map[string]string{"operator-key": "operator-value"}
+
+	err := EnsurePDB(context.Background(), c, s, owner, desired)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	fetched := &policyv1.PodDisruptionBudget{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
+	// Both the user-added and operator-managed labels must be present (CC-0037).
+	g.Expect(fetched.Labels).To(HaveKeyWithValue("user-key", "user-value"))
+	g.Expect(fetched.Labels).To(HaveKeyWithValue("operator-key", "operator-value"))
+}
+
+func TestEnsurePDB_merges_annotations_on_update(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	existing := testPDB()
+	existing.Annotations = map[string]string{"existing-ann": "val"}
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		Build()
+
+	desired := testPDB()
+	desired.Annotations = map[string]string{"new-ann": "new-val"}
+
+	err := EnsurePDB(context.Background(), c, s, owner, desired)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	fetched := &policyv1.PodDisruptionBudget{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
+	g.Expect(fetched.Annotations).To(HaveKeyWithValue("existing-ann", "val"))
+	g.Expect(fetched.Annotations).To(HaveKeyWithValue("new-ann", "new-val"))
 }

@@ -127,6 +127,19 @@ rules:
       - update
       - patch
       - delete
+  # policy - poddisruptionbudgets (CC-0037)
+  - apiGroups:
+      - policy
+    resources:
+      - poddisruptionbudgets
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
   # coordination.k8s.io - leases for leader election (CC-0018)
   - apiGroups:
       - coordination.k8s.io

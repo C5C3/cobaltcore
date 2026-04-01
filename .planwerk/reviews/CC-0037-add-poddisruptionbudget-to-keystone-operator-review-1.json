@@ -1,0 +1,55 @@
+{
+  "feature_id": "CC-0037",
+  "title": "Add PodDisruptionBudget to Keystone operator",
+  "date": "2026-04-01",
+  "summary": "Adds PodDisruptionBudget support to the Keystone operator: a reusable EnsurePDB helper in internal/common/deployment, a buildPodDisruptionBudget function with replica-aware disruption strategy (minAvailable=1 for replicas>1, maxUnavailable=1 for replicas==1), RBAC marker and Owns watch in keystone_controller.go, call site in reconcileDeployment after EnsureService, and comprehensive unit tests covering creation, labels/selector, both disruption strategies, update-on-replica-change, deployment selector matching, and boundary values.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "EnsurePDB unit tests exist and pass (creates, updates, idempotent)", "checked": true},
+    {"item": "PDB integration tests exist and pass (7 tests in reconcile_deployment_test.go)", "checked": true},
+    {"item": "Edge case: replicas==1 uses maxUnavailable instead of minAvailable", "checked": true},
+    {"item": "Edge case: boundary replicas==2 uses minAvailable", "checked": true},
+    {"item": "Update-on-replica-change verifies PDB switches strategy", "checked": true},
+    {"item": "PDB selector matches Deployment selector exactly", "checked": true},
+    {"item": "All existing tests pass (no regressions)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "EnsurePDB follows EnsureService/EnsureCronJob Get+Create/Update contract", "checked": true},
+    {"item": "Error wrapping includes namespace/name context", "checked": true},
+    {"item": "Owner reference set on create only (not update)", "checked": true},
+    {"item": "PDB name derived from CR name (no hardcoded names)", "checked": true},
+    {"item": "Labels use commonLabels(), selector uses selectorLabels()", "checked": true},
+    {"item": "Tests follow Gomega BDD patterns with NewGomegaWithT", "checked": true},
+    {"item": "Functions are small and single-purpose", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "RBAC marker uses least-privilege verbs for PDB management", "checked": true},
+    {"item": "No hardcoded secrets or sensitive data", "checked": true},
+    {"item": "No user input passes through unsanitized", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "EnsurePDB is reusable by other operators", "checked": true},
+    {"item": "Call site is after EnsureService and before DeploymentReady condition", "checked": true},
+    {"item": "Owns watch ensures PDB changes trigger reconciliation", "checked": true},
+    {"item": "Solution is minimal — no over-engineering", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code — reuses existing patterns", "checked": true},
+    {"item": "No unnecessary abstractions", "checked": true},
+    {"item": "No future-proofing beyond requirements", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors returned immediately with context", "checked": true},
+    {"item": "EnsurePDB propagates all errors to reconciler", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Drain deadlock prevented by replica-aware strategy", "checked": true},
+    {"item": "PDB spec always updated to desired state on reconciliation", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": []
+}
