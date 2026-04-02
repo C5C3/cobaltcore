@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch to add memory metric to autoscaling (CC-0038).
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-autoscaling
+  namespace: openstack
+spec:
+  autoscaling:
+    maxReplicas: 6
+    targetCPUUtilization: 80
+    targetMemoryUtilization: 70

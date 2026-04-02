@@ -140,6 +140,19 @@ rules:
       - update
       - patch
       - delete
+  # autoscaling - horizontalpodautoscalers (CC-0038)
+  - apiGroups:
+      - autoscaling
+    resources:
+      - horizontalpodautoscalers
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
   # coordination.k8s.io - leases for leader election (CC-0018)
   - apiGroups:
       - coordination.k8s.io

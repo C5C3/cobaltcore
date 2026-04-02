@@ -289,7 +289,7 @@ func TestReconcile_SetsAllSubConditionsTrue(t *testing.T) {
 	var updated keystonev1alpha1.Keystone
 	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
 
-	for _, condType := range []string{"SecretsReady", "FernetKeysReady", "CredentialKeysReady", "DatabaseReady", "DeploymentReady", "BootstrapReady"} {
+	for _, condType := range []string{"SecretsReady", "FernetKeysReady", "CredentialKeysReady", "DatabaseReady", "DeploymentReady", "HPAReady", "BootstrapReady"} {
 		cond := meta.FindStatusCondition(updated.Status.Conditions, condType)
 		g.Expect(cond).NotTo(BeNil(), "condition %s should exist", condType)
 		g.Expect(cond.Status).To(Equal(metav1.ConditionTrue), "condition %s should be True", condType)
@@ -388,6 +388,7 @@ func TestAggregateReady_AllTrue(t *testing.T) {
 		{Type: "CredentialKeysReady", Status: metav1.ConditionTrue},
 		{Type: "DatabaseReady", Status: metav1.ConditionTrue},
 		{Type: "DeploymentReady", Status: metav1.ConditionTrue},
+		{Type: "HPAReady", Status: metav1.ConditionTrue},
 		{Type: "BootstrapReady", Status: metav1.ConditionTrue},
 	}
 	g.Expect(aggregateReady(conditions)).To(BeTrue())
@@ -401,6 +402,7 @@ func TestAggregateReady_OneFalse(t *testing.T) {
 		{Type: "CredentialKeysReady", Status: metav1.ConditionTrue},
 		{Type: "DatabaseReady", Status: metav1.ConditionFalse},
 		{Type: "DeploymentReady", Status: metav1.ConditionTrue},
+		{Type: "HPAReady", Status: metav1.ConditionTrue},
 		{Type: "BootstrapReady", Status: metav1.ConditionTrue},
 	}
 	g.Expect(aggregateReady(conditions)).To(BeFalse())
@@ -449,6 +451,8 @@ func TestReconcile_EarlyReturnOnSecretsNotReady(t *testing.T) {
 		"DatabaseReady should not be set when secrets are not ready")
 	g.Expect(meta.FindStatusCondition(updated.Status.Conditions, "DeploymentReady")).To(BeNil(),
 		"DeploymentReady should not be set when secrets are not ready")
+	g.Expect(meta.FindStatusCondition(updated.Status.Conditions, "HPAReady")).To(BeNil(),
+		"HPAReady should not be set when secrets are not ready")
 	g.Expect(meta.FindStatusCondition(updated.Status.Conditions, "BootstrapReady")).To(BeNil(),
 		"BootstrapReady should not be set when secrets are not ready")
 }
@@ -481,9 +485,11 @@ func TestReconcile_EarlyReturnOnDatabaseNotReady(t *testing.T) {
 	g.Expect(dbCond).NotTo(BeNil(), "DatabaseReady condition should be set")
 	g.Expect(dbCond.Status).To(Equal(metav1.ConditionFalse))
 
-	// Deployment and Bootstrap should not have run.
+	// Deployment, HPA, and Bootstrap should not have run.
 	g.Expect(meta.FindStatusCondition(updated.Status.Conditions, "DeploymentReady")).To(BeNil(),
 		"DeploymentReady should not be set when database is not ready")
+	g.Expect(meta.FindStatusCondition(updated.Status.Conditions, "HPAReady")).To(BeNil(),
+		"HPAReady should not be set when database is not ready")
 	g.Expect(meta.FindStatusCondition(updated.Status.Conditions, "BootstrapReady")).To(BeNil(),
 		"BootstrapReady should not be set when database is not ready")
 }
@@ -564,7 +570,9 @@ func TestReconcile_ReadyFalseWhenDeploymentNotAvailable(t *testing.T) {
 	g.Expect(deployCond).NotTo(BeNil(), "DeploymentReady condition should be set")
 	g.Expect(deployCond.Status).To(Equal(metav1.ConditionFalse))
 
-	// BootstrapReady should not be set (deployment not ready means bootstrap didn't run).
+	// HPAReady and BootstrapReady should not be set (deployment not ready means they didn't run).
+	g.Expect(meta.FindStatusCondition(updated.Status.Conditions, "HPAReady")).To(BeNil(),
+		"HPAReady should not be set when deployment is not available")
 	g.Expect(meta.FindStatusCondition(updated.Status.Conditions, "BootstrapReady")).To(BeNil(),
 		"BootstrapReady should not be set when deployment is not available")
 }

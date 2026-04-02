@@ -1,7 +1,7 @@
 ---
 title: Keystone CRD API Reference
 quadrant: operator
-feature: CC-0011, CC-0012, CC-0016
+feature: CC-0011, CC-0012, CC-0016, CC-0038
 ---
 
 # Keystone CRD API Reference
@@ -62,6 +62,10 @@ spec:
   fernet:
     rotationSchedule: "0 0 * * 0"
     maxActiveKeys: 3
+  autoscaling:
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilization: 80
   bootstrap:
     adminUser: admin
     adminPasswordSecretRef:
@@ -104,6 +108,7 @@ status:
 | `middleware` | `[]MiddlewareSpec` | No | `nil` | WSGI middleware filters for api-paste.ini. |
 | `plugins` | `[]PluginSpec` | No | `nil` | Service plugins/drivers to configure. |
 | `policyOverrides` | [`*PolicySpec`](#policyspec) | No | `nil` | Custom oslo.policy rules. |
+| `autoscaling` | [`*AutoscalingSpec`](#autoscalingspec) | No | `nil` | Horizontal pod autoscaling configuration. When set, an HPA is created targeting the `{name}-api` Deployment. When removed, the HPA is deleted (CC-0038). |
 | `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for additional configuration. |
 
 ### CEL Validation Rules
@@ -115,8 +120,67 @@ webhooks are invoked:
 | --- | --- | --- |
 | `spec.database` | `has(self.clusterRef) != has(self.host)` | "exactly one of clusterRef or host must be set" |
 | `spec.policyOverrides` | `self.rules != null \|\| self.configMapRef != null` | "at least one of rules or configMapRef must be set" |
+| `spec.autoscaling` | `has(self.targetCPUUtilization) \|\| has(self.targetMemoryUtilization)` | "at least one of targetCPUUtilization or targetMemoryUtilization must be set" |
 | `spec.replicas` | Minimum: 1 | — |
 | `spec.fernet.maxActiveKeys` | Minimum: 3 | — |
+
+---
+
+## AutoscalingSpec
+
+Configures horizontal pod autoscaling for the Keystone API Deployment (CC-0038).
+This is a pointer field (`*AutoscalingSpec`) on `KeystoneSpec` — when `nil`,
+no HPA is created and the `HPAReady` condition is set to `True` with reason
+`HPANotRequired`. When set, a `HorizontalPodAutoscaler` (autoscaling/v2) is
+created targeting the `{name}-api` Deployment. Removing the field deletes the
+existing HPA.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `minReplicas` | `*int32` | No | `spec.replicas` | Lower bound for the number of replicas. Minimum: 1. Defaults to `spec.replicas` when unset, allowing the HPA to scale down to the static replica count. |
+| `maxReplicas` | `int32` | Yes | — | Upper bound for the number of replicas. Minimum: 1. |
+| `targetCPUUtilization` | `*int32` | No\* | — | Target average CPU utilization as a percentage. Range: 1–100. At least one of `targetCPUUtilization` or `targetMemoryUtilization` must be set. |
+| `targetMemoryUtilization` | `*int32` | No\* | — | Target average memory utilization as a percentage. Range: 1–100. At least one of `targetCPUUtilization` or `targetMemoryUtilization` must be set. |
+
+\* At least one of `targetCPUUtilization` or `targetMemoryUtilization` is required
+(enforced by CEL XValidation).
+
+### HPA Resource Mapping
+
+The HPA created from this spec has the following shape:
+
+| HPA Field | Value |
+| --- | --- |
+| `metadata.name` | `{name}-api` |
+| `metadata.labels` | `commonLabels` (same as Deployment) |
+| `spec.scaleTargetRef.apiVersion` | `apps/v1` |
+| `spec.scaleTargetRef.kind` | `Deployment` |
+| `spec.scaleTargetRef.name` | `{name}-api` |
+| `spec.minReplicas` | `autoscaling.minReplicas` (or `spec.replicas` if unset) |
+| `spec.maxReplicas` | `autoscaling.maxReplicas` |
+| `spec.metrics` | CPU and/or memory `Resource` metrics based on which targets are set |
+| `ownerReferences` | Points to the Keystone CR (controller: true) |
+
+### Example
+
+```yaml
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone
+  namespace: openstack
+spec:
+  replicas: 3
+  image:
+    repository: c5c3/keystone
+    tag: "2025.1"
+  # ... other required fields ...
+  autoscaling:
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilization: 80
+    targetMemoryUtilization: 70
+```
 
 ---
 
@@ -297,6 +361,10 @@ single `apierrors.NewInvalid` error. It does **not** short-circuit on the first 
 | Duplicate plugin sections | `spec.plugins[i].configSection` | `field.Duplicate` | Two or more plugins share the same `configSection` value. |
 | Policy source required | `spec.policyOverrides` | `field.Required` | `policyOverrides` is set but both `rules` and `configMapRef` are nil/empty. |
 | Empty policy rule name | `spec.policyOverrides.rules` | `field.Invalid` | A key in `rules` map is the empty string. |
+| Autoscaling maxReplicas minimum | `spec.autoscaling.maxReplicas` | `field.Invalid` | `maxReplicas < 1`. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker (CC-0038). |
+| Autoscaling minReplicas minimum | `spec.autoscaling.minReplicas` | `field.Invalid` | `minReplicas < 1` when set. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker (CC-0038). |
+| Autoscaling min exceeds max | `spec.autoscaling.minReplicas` | `field.Invalid` | `minReplicas > maxReplicas` when set (CC-0038). |
+| Autoscaling no metric targets | `spec.autoscaling` | `field.Required` | Neither `targetCPUUtilization` nor `targetMemoryUtilization` is set. Defense-in-depth alongside the CEL XValidation rule (CC-0038). |
 
 **Error format:** All validation errors are returned as a structured
 `apierrors.StatusError` with `GroupKind{Group: "keystone.openstack.c5c3.io", Kind: "Keystone"}`,
@@ -431,6 +499,7 @@ Both targets are parameterized by operator directory in the Makefile. Generated
 - `KeystoneList`
 - `KeystoneSpec`
 - `KeystoneStatus`
+- `AutoscalingSpec`
 - `FernetSpec`
 - `FederationSpec`
 - `BootstrapSpec`

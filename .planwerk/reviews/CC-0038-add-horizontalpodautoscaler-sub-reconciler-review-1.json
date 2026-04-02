@@ -1,0 +1,87 @@
+{
+  "feature_id": "CC-0038",
+  "title": "Add HorizontalPodAutoscaler sub-reconciler",
+  "date": "2026-04-01",
+  "summary": "Adds optional spec.autoscaling field to the Keystone CRD with AutoscalingSpec struct (MinReplicas, MaxReplicas, TargetCPUUtilization, TargetMemoryUtilization), CEL XValidation requiring at least one metric target, and kubebuilder validation markers. Implements reconcileHPA sub-reconciler with three lifecycle paths (autoscaling nil → delete/skip, autoscaling set → ensure), EnsureHPA/DeleteHPA shared helpers following EnsurePDB pattern, HPAReady condition with ObservedGeneration, RBAC markers, Owns() watch, defense-in-depth webhook validation, and comprehensive unit/integration tests. Documentation updated for both CRD reference and reconciler architecture.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Unit tests exist for EnsureHPA (create, update, idempotent, ownerRef reconciliation, label merge, annotation merge)", "checked": true},
+    {"item": "Unit tests exist for DeleteHPA (deletes, noop when absent)", "checked": true},
+    {"item": "Unit tests exist for reconcileHPA (all three lifecycle paths)", "checked": true},
+    {"item": "Unit tests exist for buildKeystoneHPA (scaleTargetRef, labels, minReplicas default, explicit minReplicas, maxReplicas, CPU only, memory only, both metrics, pointer independence)", "checked": true},
+    {"item": "Error propagation tests (ensure error, delete error with interceptors)", "checked": true},
+    {"item": "ObservedGeneration tested for both enabled and not-required paths", "checked": true},
+    {"item": "Webhook validation tests for autoscaling (valid CPU/memory/both, invalid no targets, maxReplicas zero, min exceeds max, nil is valid)", "checked": true},
+    {"item": "Integration tests updated (FullReconcile_Brownfield, FullReconcile_Managed, ConditionProgression, EarlyReturn scenarios)", "checked": true},
+    {"item": "Controller orchestration tests updated (SetsAllSubConditionsTrue, AggregateReady, EarlyReturn scenarios)", "checked": true},
+    {"item": "TestValidateCreate_RunsAllValidations includes autoscaling violations", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "EnsureHPA follows EnsurePDB pattern exactly (Get+IsNotFound+Create, DeepCopy snapshot, ownerRef, label/annotation merge, spec update, apiequality guard)", "checked": true},
+    {"item": "reconcileHPA correctly implements all three lifecycle paths", "checked": true},
+    {"item": "HPAReady condition uses correct reasons (HPAReady vs HPANotRequired) with ObservedGeneration", "checked": true},
+    {"item": "buildKeystoneHPA produces correct scaleTargetRef and conditional metrics", "checked": true},
+    {"item": "Error messages wrap with descriptive context", "checked": true},
+    {"item": "No dead code, no magic numbers, clear naming", "checked": true},
+    {"item": "Functions are focused and small (reconcileHPA: 30 lines, buildKeystoneHPA: 53 lines, EnsureHPA: 60 lines)", "checked": true},
+    {"item": "SPDX headers present on new files", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "RBAC marker includes all required verbs (get;list;watch;create;update;patch;delete) for autoscaling group", "checked": true},
+    {"item": "No hardcoded secrets or sensitive data", "checked": true},
+    {"item": "Input validated via kubebuilder markers, CEL XValidation, and webhook defense-in-depth", "checked": true},
+    {"item": "SetControllerReference used for ownership (garbage collection)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "HPAReady added to subConditionTypes in correct position (after DeploymentReady, before BootstrapReady)", "checked": true},
+    {"item": "Owns(&autoscalingv2.HorizontalPodAutoscaler{}) registered in SetupWithManager", "checked": true},
+    {"item": "reconcileHPA placed after reconcileDeployment in reconcile chain", "checked": true},
+    {"item": "HPA name follows {name}-api convention matching Deployment name", "checked": true},
+    {"item": "DeleteHPA is idempotent (no-op when HPA absent)", "checked": true},
+    {"item": "AutoscalingSpec uses pointer-for-optional pattern matching FederationSpec", "checked": true},
+    {"item": "DeepCopy generated correctly for AutoscalingSpec (all pointer fields handled)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "EnsureHPA reuses established EnsurePDB pattern from shared library", "checked": true},
+    {"item": "No unnecessary abstractions or future-proofing", "checked": true},
+    {"item": "commonLabels reused from existing helper", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors from EnsureHPA and DeleteHPA propagated immediately", "checked": true},
+    {"item": "Condition set before returning on both success paths", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "CEL XValidation enforces at least one metric target at CRD admission", "checked": true},
+    {"item": "Webhook defense-in-depth validates maxReplicas >= 1, minReplicas >= 1, minReplicas <= maxReplicas", "checked": true},
+    {"item": "Webhook defense-in-depth validates at least one metric target", "checked": true},
+    {"item": "Defense-in-depth bounds checks for TargetCPUUtilization (1-100) and TargetMemoryUtilization (1-100)", "checked": false}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "PC3 [AUTO_FIX]",
+      "severity": "MAJOR",
+      "description": "Missing defense-in-depth bounds checks for TargetCPUUtilization and TargetMemoryUtilization. Both fields carry +kubebuilder:validation:Minimum=1 and +kubebuilder:validation:Maximum=100 markers, but the webhook validate() function has no corresponding runtime guards. In the same code block, MinReplicas (*int32, Minimum=1) and MaxReplicas (int32, Minimum=1) both have runtime guards. This inconsistency matches the external review pattern 'Apply defense-in-depth checks consistently to all similarly-marked fields' (observed in CC-0011). If CRD admission is bypassed (direct etcd write, admission misconfiguration), values like 0 or 150 would be accepted for utilization targets.",
+      "location": "operators/keystone/api/v1alpha1/keystone_webhook.go:228",
+      "fix": "Add bounds checks for both utilization fields inside the existing `if k.Spec.Autoscaling != nil` block, after the MinReplicas checks and before the 'at least one metric' check:\n\n```go\nif k.Spec.Autoscaling.TargetCPUUtilization != nil {\n    v := *k.Spec.Autoscaling.TargetCPUUtilization\n    if v < 1 || v > 100 {\n        allErrs = append(allErrs, field.Invalid(\n            autoscalingPath.Child(\"targetCPUUtilization\"),\n            v,\n            \"targetCPUUtilization must be between 1 and 100\",\n        ))\n    }\n}\nif k.Spec.Autoscaling.TargetMemoryUtilization != nil {\n    v := *k.Spec.Autoscaling.TargetMemoryUtilization\n    if v < 1 || v > 100 {\n        allErrs = append(allErrs, field.Invalid(\n            autoscalingPath.Child(\"targetMemoryUtilization\"),\n            v,\n            \"targetMemoryUtilization must be between 1 and 100\",\n        ))\n    }\n}\n```\nAlso add corresponding unit tests: TestValidate_Autoscaling_Invalid_CPUUtilizationZero, TestValidate_Autoscaling_Invalid_CPUUtilizationExceeds100, TestValidate_Autoscaling_Invalid_MemoryUtilizationZero, TestValidate_Autoscaling_Invalid_MemoryUtilizationExceeds100.",
+      "evidence": "Lines 207-227 guard MinReplicas (Minimum=1) and MaxReplicas (Minimum=1) but lines 228-233 only check that at least one metric is non-nil — no range validation for the metric values themselves:\n```go\nif k.Spec.Autoscaling.MaxReplicas < 1 {  // guarded\n...\nif k.Spec.Autoscaling.MinReplicas != nil && *k.Spec.Autoscaling.MinReplicas < 1 {  // guarded\n...\nif k.Spec.Autoscaling.TargetCPUUtilization == nil && k.Spec.Autoscaling.TargetMemoryUtilization == nil {  // only nil check, no range\n```\nCompare with keystone_types.go:112-120:\n```go\n// +kubebuilder:validation:Minimum=1\n// +kubebuilder:validation:Maximum=100\nTargetCPUUtilization *int32\n// +kubebuilder:validation:Minimum=1\n// +kubebuilder:validation:Maximum=100\nTargetMemoryUtilization *int32\n```",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "TE1 [AUTO_FIX]",
+      "severity": "MAJOR",
+      "description": "TestValidateCreate_RunsAllValidations does not include autoscaling validation. Per the external review pattern 'Ensure test names accurately describe their coverage scope', this test claims to exercise all validation paths simultaneously but omits autoscaling. All other validation domains (replicas, fernet, credentialKeys, plugins, policyOverrides, cache, database) are represented.",
+      "location": "operators/keystone/api/v1alpha1/keystone_webhook_test.go:712-744",
+      "fix": "Add an autoscaling violation to the test input and assert its presence in the error message:\n```go\n// REQ-001 (CC-0038): Break autoscaling — set with no metric targets.\nk.Spec.Autoscaling = &AutoscalingSpec{\n    MaxReplicas: 5,\n}\n```\nAnd add assertion:\n```go\ng.Expect(errMsg).To(ContainSubstring(\"autoscaling\"))\n```",
+      "evidence": "Lines 715-731 set invalid values for replicas, fernet, credentialKeys, plugins, policyOverrides, cache, and database — but k.Spec.Autoscaling is never set. Lines 736-743 assert all domains except autoscaling:\n```go\ng.Expect(errMsg).To(ContainSubstring(\"replicas\"))\ng.Expect(errMsg).To(ContainSubstring(\"maxActiveKeys\"))\n...\ng.Expect(errMsg).To(ContainSubstring(\"database\"))\ng.Expect(errMsg).To(ContainSubstring(\"credentialKeys\"))\n// no autoscaling assertion\n```",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [],
+  "next_steps": [
+    "Add defense-in-depth bounds checks for TargetCPUUtilization and TargetMemoryUtilization in the webhook validate() function with corresponding unit tests",
+    "Update TestValidateCreate_RunsAllValidations to include autoscaling violation and assertion"
+  ],
+  "detected_patterns": []
+}

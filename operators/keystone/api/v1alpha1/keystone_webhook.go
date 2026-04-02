@@ -200,6 +200,65 @@ func (w *KeystoneWebhook) validate(k *Keystone) error {
 		}
 	}
 
+	// REQ-001 (CC-0038): Defense-in-depth autoscaling validation alongside
+	// kubebuilder markers and CEL rules.
+	if k.Spec.Autoscaling != nil {
+		autoscalingPath := specPath.Child("autoscaling")
+		if k.Spec.Autoscaling.MaxReplicas < 1 {
+			allErrs = append(allErrs, field.Invalid(
+				autoscalingPath.Child("maxReplicas"),
+				k.Spec.Autoscaling.MaxReplicas,
+				"maxReplicas must be at least 1",
+			))
+		}
+		if k.Spec.Autoscaling.MinReplicas != nil && *k.Spec.Autoscaling.MinReplicas < 1 {
+			allErrs = append(allErrs, field.Invalid(
+				autoscalingPath.Child("minReplicas"),
+				*k.Spec.Autoscaling.MinReplicas,
+				"minReplicas must be at least 1",
+			))
+		}
+		if k.Spec.Autoscaling.MinReplicas != nil && *k.Spec.Autoscaling.MinReplicas > k.Spec.Autoscaling.MaxReplicas {
+			allErrs = append(allErrs, field.Invalid(
+				autoscalingPath.Child("minReplicas"),
+				*k.Spec.Autoscaling.MinReplicas,
+				"minReplicas must not exceed maxReplicas",
+			))
+		}
+		// When minReplicas is unset, the reconciler defaults it to spec.replicas.
+		// Reject configurations where the implicit default would exceed maxReplicas,
+		// which would produce an HPA rejected by the API server (CC-0038).
+		if k.Spec.Autoscaling.MinReplicas == nil && k.Spec.Replicas > k.Spec.Autoscaling.MaxReplicas {
+			allErrs = append(allErrs, field.Invalid(
+				autoscalingPath.Child("maxReplicas"),
+				k.Spec.Autoscaling.MaxReplicas,
+				fmt.Sprintf("maxReplicas must be >= spec.replicas (%d) when minReplicas is not set, because minReplicas defaults to spec.replicas", k.Spec.Replicas),
+			))
+		}
+		// REQ-001 (CC-0038): Defense-in-depth bounds checks for utilization targets
+		// alongside +kubebuilder:validation:Minimum=1 and +kubebuilder:validation:Maximum=100 markers.
+		if k.Spec.Autoscaling.TargetCPUUtilization != nil && (*k.Spec.Autoscaling.TargetCPUUtilization < 1 || *k.Spec.Autoscaling.TargetCPUUtilization > 100) {
+			allErrs = append(allErrs, field.Invalid(
+				autoscalingPath.Child("targetCPUUtilization"),
+				*k.Spec.Autoscaling.TargetCPUUtilization,
+				"targetCPUUtilization must be between 1 and 100",
+			))
+		}
+		if k.Spec.Autoscaling.TargetMemoryUtilization != nil && (*k.Spec.Autoscaling.TargetMemoryUtilization < 1 || *k.Spec.Autoscaling.TargetMemoryUtilization > 100) {
+			allErrs = append(allErrs, field.Invalid(
+				autoscalingPath.Child("targetMemoryUtilization"),
+				*k.Spec.Autoscaling.TargetMemoryUtilization,
+				"targetMemoryUtilization must be between 1 and 100",
+			))
+		}
+		if k.Spec.Autoscaling.TargetCPUUtilization == nil && k.Spec.Autoscaling.TargetMemoryUtilization == nil {
+			allErrs = append(allErrs, field.Required(
+				autoscalingPath,
+				"at least one of targetCPUUtilization or targetMemoryUtilization must be set",
+			))
+		}
+	}
+
 	if len(allErrs) > 0 {
 		return apierrors.NewInvalid(
 			schema.GroupKind{Group: GroupVersion.Group, Kind: "Keystone"},

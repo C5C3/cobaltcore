@@ -19,6 +19,7 @@ import (
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -77,6 +78,7 @@ func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, c
 				Owns(&corev1.ConfigMap{}).
 				Owns(&batchv1.Job{}).
 				Owns(&policyv1.PodDisruptionBudget{}).
+				Owns(&autoscalingv2.HorizontalPodAutoscaler{}).
 				Owns(&batchv1.CronJob{}).
 				Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
 					secretToKeystoneMapper(mgr.GetClient()),
@@ -313,8 +315,8 @@ func TestIntegration_FullReconcile_Brownfield(t *testing.T) {
 	updated := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
 
-	// Verify all 6 conditions are True.
-	for _, condType := range []string{"SecretsReady", "FernetKeysReady", "DatabaseReady", "DeploymentReady", "BootstrapReady", "Ready"} {
+	// Verify all 7 conditions are True.
+	for _, condType := range []string{"SecretsReady", "FernetKeysReady", "DatabaseReady", "DeploymentReady", "HPAReady", "BootstrapReady", "Ready"} {
 		cond := meta.FindStatusCondition(updated.Status.Conditions, condType)
 		g.Expect(cond).NotTo(BeNil(), "condition %s should exist", condType)
 		g.Expect(cond.Status).To(Equal(metav1.ConditionTrue), "condition %s should be True", condType)
@@ -399,6 +401,8 @@ func TestIntegration_ConditionProgression(t *testing.T) {
 			"DatabaseReady should be absent when SecretsReady is False")
 		ig.Expect(meta.FindStatusCondition(ksState.Status.Conditions, "DeploymentReady")).To(BeNil(),
 			"DeploymentReady should be absent when SecretsReady is False")
+		ig.Expect(meta.FindStatusCondition(ksState.Status.Conditions, "HPAReady")).To(BeNil(),
+			"HPAReady should be absent when SecretsReady is False")
 		ig.Expect(meta.FindStatusCondition(ksState.Status.Conditions, "BootstrapReady")).To(BeNil(),
 			"BootstrapReady should be absent when SecretsReady is False")
 	}, 2*time.Second, pollInterval).Should(Succeed())
@@ -438,6 +442,10 @@ func TestIntegration_ConditionProgression(t *testing.T) {
 	g.Expect(simulators.SimulateDeploymentReady(ctx, c, deployKey, ptr.Deref(deploy.Spec.Replicas, 1))).To(Succeed())
 
 	waitForCondition(t, ctx, c, key, "DeploymentReady", metav1.ConditionTrue, eventuallyTimeout)
+
+	// HPAReady should be True with reason HPANotRequired (no autoscaling configured, CC-0038).
+	hpaCond := waitForCondition(t, ctx, c, key, "HPAReady", metav1.ConditionTrue, eventuallyTimeout)
+	g.Expect(hpaCond.Reason).To(Equal("HPANotRequired"), "HPAReady reason should be HPANotRequired when autoscaling is nil")
 
 	// BootstrapReady should appear as False (BootstrapInProgress).
 	bootstrapCond := waitForCondition(t, ctx, c, key, "BootstrapReady", metav1.ConditionFalse, eventuallyTimeout)
@@ -684,8 +692,8 @@ func TestIntegration_FullReconcile_Managed(t *testing.T) {
 	updated := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
 
-	// All 6 conditions should be True.
-	for _, condType := range []string{"SecretsReady", "FernetKeysReady", "DatabaseReady", "DeploymentReady", "BootstrapReady", "Ready"} {
+	// All 7 conditions should be True.
+	for _, condType := range []string{"SecretsReady", "FernetKeysReady", "DatabaseReady", "DeploymentReady", "HPAReady", "BootstrapReady", "Ready"} {
 		cond := meta.FindStatusCondition(updated.Status.Conditions, condType)
 		g.Expect(cond).NotTo(BeNil(), "condition %s should exist", condType)
 		g.Expect(cond.Status).To(Equal(metav1.ConditionTrue), "condition %s should be True", condType)
@@ -1028,4 +1036,167 @@ func TestIntegration_PDBUpdatedOnReplicaChange(t *testing.T) {
 	g.Expect(c.Get(ctx, pdbKey, pdb)).To(Succeed())
 	g.Expect(*pdb.Spec.MaxUnavailable).To(Equal(intstr.FromInt32(1)))
 	g.Expect(pdb.Spec.MinAvailable).To(BeNil())
+}
+
+// --- HPA integration tests (CC-0038) ---
+
+// integrationBrownfieldKeystoneWithAutoscaling returns a valid Keystone CR with autoscaling
+// configured for integration tests (CC-0038).
+func integrationBrownfieldKeystoneWithAutoscaling(name, namespace string, maxReplicas int32, cpuUtil *int32) *keystonev1alpha1.Keystone {
+	ks := integrationBrownfieldKeystone(name, namespace)
+	ks.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{
+		MaxReplicas:         maxReplicas,
+		TargetCPUUtilization: cpuUtil,
+	}
+	return ks
+}
+
+func TestIntegration_HPASpec(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-hpa-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	cpuUtil := int32(80)
+	ks := integrationBrownfieldKeystoneWithAutoscaling("test-keystone", ns.Name, 10, &cpuUtil)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	// Fetch the HPA (CC-0038).
+	hpa := &autoscalingv2.HorizontalPodAutoscaler{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-api"}, hpa)).
+		To(Succeed(), "HPA test-keystone-api should exist")
+
+	// Verify ScaleTargetRef (CC-0038).
+	g.Expect(hpa.Spec.ScaleTargetRef.Kind).To(Equal("Deployment"))
+	g.Expect(hpa.Spec.ScaleTargetRef.Name).To(Equal("test-keystone-api"))
+	g.Expect(hpa.Spec.ScaleTargetRef.APIVersion).To(Equal("apps/v1"))
+
+	// MinReplicas defaults to spec.replicas (3) when not explicitly set (CC-0038).
+	g.Expect(hpa.Spec.MinReplicas).NotTo(BeNil())
+	g.Expect(*hpa.Spec.MinReplicas).To(Equal(int32(3)))
+
+	// MaxReplicas (CC-0038).
+	g.Expect(hpa.Spec.MaxReplicas).To(Equal(int32(10)))
+
+	// CPU metric (CC-0038).
+	g.Expect(hpa.Spec.Metrics).To(HaveLen(1))
+	g.Expect(hpa.Spec.Metrics[0].Resource.Name).To(Equal(corev1.ResourceCPU))
+	g.Expect(*hpa.Spec.Metrics[0].Resource.Target.AverageUtilization).To(Equal(int32(80)))
+
+	// Verify labels (CC-0038).
+	g.Expect(hpa.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
+	g.Expect(hpa.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+	g.Expect(hpa.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "keystone-operator"))
+
+	// Verify owner reference (CC-0038).
+	g.Expect(hpa.OwnerReferences).To(HaveLen(1))
+	g.Expect(hpa.OwnerReferences[0].Name).To(Equal("test-keystone"))
+
+	// Verify HPAReady condition (CC-0038).
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+	ksState := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, key, ksState)).To(Succeed())
+	hpaCond := meta.FindStatusCondition(ksState.Status.Conditions, "HPAReady")
+	g.Expect(hpaCond).NotTo(BeNil())
+	g.Expect(hpaCond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(hpaCond.Reason).To(Equal("HPAReady"))
+}
+
+func TestIntegration_HPAUpdatedOnAutoscalingChange(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-hpa-update-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	cpuUtil := int32(80)
+	ks := integrationBrownfieldKeystoneWithAutoscaling("test-keystone", ns.Name, 10, &cpuUtil)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	hpaKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-api"}
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+
+	// Initial state: maxReplicas=10 (CC-0038).
+	hpa := &autoscalingv2.HorizontalPodAutoscaler{}
+	g.Expect(c.Get(ctx, hpaKey, hpa)).To(Succeed())
+	g.Expect(hpa.Spec.MaxReplicas).To(Equal(int32(10)))
+
+	// Update maxReplicas to 20 (CC-0038).
+	updated := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
+	updated.Spec.Autoscaling.MaxReplicas = 20
+	g.Expect(c.Update(ctx, updated)).To(Succeed())
+
+	// Wait for the controller to reconcile and update the HPA (CC-0038).
+	g.Eventually(func() int32 {
+		h := &autoscalingv2.HorizontalPodAutoscaler{}
+		if err := c.Get(ctx, hpaKey, h); err != nil {
+			return 0
+		}
+		return h.Spec.MaxReplicas
+	}, eventuallyTimeout, pollInterval).Should(Equal(int32(20)), "HPA maxReplicas should be updated to 20")
+}
+
+func TestIntegration_HPADeletedWhenAutoscalingRemoved(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-hpa-delete-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	cpuUtil := int32(80)
+	ks := integrationBrownfieldKeystoneWithAutoscaling("test-keystone", ns.Name, 10, &cpuUtil)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	hpaKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-api"}
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+
+	// HPA should exist initially (CC-0038).
+	hpa := &autoscalingv2.HorizontalPodAutoscaler{}
+	g.Expect(c.Get(ctx, hpaKey, hpa)).To(Succeed(), "HPA should exist when autoscaling is configured")
+
+	// Remove autoscaling (CC-0038).
+	updated := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
+	updated.Spec.Autoscaling = nil
+	g.Expect(c.Update(ctx, updated)).To(Succeed())
+
+	// Wait for the HPA to be deleted (CC-0038).
+	g.Eventually(func() bool {
+		h := &autoscalingv2.HorizontalPodAutoscaler{}
+		err := c.Get(ctx, hpaKey, h)
+		return err != nil
+	}, eventuallyTimeout, pollInterval).Should(BeTrue(), "HPA should be deleted when autoscaling is removed")
+
+	// Verify HPAReady condition switches to HPANotRequired (CC-0038).
+	g.Eventually(func() string {
+		ksState := &keystonev1alpha1.Keystone{}
+		if err := c.Get(ctx, key, ksState); err != nil {
+			return ""
+		}
+		cond := meta.FindStatusCondition(ksState.Status.Conditions, "HPAReady")
+		if cond == nil {
+			return ""
+		}
+		return cond.Reason
+	}, eventuallyTimeout, pollInterval).Should(Equal("HPANotRequired"), "HPAReady reason should be HPANotRequired")
 }

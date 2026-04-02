@@ -11,6 +11,7 @@ import (
 	"slices"
 
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -52,6 +53,39 @@ func EnsureDeployment(ctx context.Context, c client.Client, scheme *runtime.Sche
 			return false, fmt.Errorf("deleting Deployment %s/%s for selector migration: %w", deploy.Namespace, deploy.Name, err)
 		}
 		return false, nil
+	}
+
+	// DECISION: I-001 — Backported metadata reconciliation from EnsurePDB/EnsureHPA
+	// to align sibling Ensure* functions in the same package. DeepEqual spec guard
+	// is NOT added because the mandatory pattern for mutable resources (Deployments)
+	// specifies unconditional spec updates to avoid maintaining a normalization
+	// layer. Reviewer: please verify. (CC-0038)
+
+	// Ensure controller owner reference is enforced so garbage collection
+	// behaves correctly even if the ref was removed out-of-band (CC-0038).
+	if err := controllerutil.SetControllerReference(owner, existing, scheme); err != nil {
+		return false, fmt.Errorf("updating owner reference on Deployment %s/%s: %w", existing.Namespace, existing.Name, err)
+	}
+
+	// Merge desired labels into existing labels; extra user-added keys are
+	// preserved, keys present on the desired Deployment are authoritative (CC-0038).
+	if deploy.Labels != nil {
+		if existing.Labels == nil {
+			existing.Labels = make(map[string]string, len(deploy.Labels))
+		}
+		for k, v := range deploy.Labels {
+			existing.Labels[k] = v
+		}
+	}
+
+	// Merge desired annotations into existing annotations (CC-0038).
+	if deploy.Annotations != nil {
+		if existing.Annotations == nil {
+			existing.Annotations = make(map[string]string, len(deploy.Annotations))
+		}
+		for k, v := range deploy.Annotations {
+			existing.Annotations[k] = v
+		}
 	}
 
 	// Always update the spec to the desired state. This avoids maintaining
@@ -96,6 +130,35 @@ func EnsureService(ctx context.Context, c client.Client, scheme *runtime.Scheme,
 	// assigned. This indicates a programming error in the caller (CC-0005).
 	if err := validateImmutableServiceFields(svc, existing); err != nil {
 		return err
+	}
+
+	// DECISION: I-001 — Backported metadata reconciliation from EnsurePDB/EnsureHPA.
+	// DeepEqual spec guard is NOT added — see EnsureDeployment. (CC-0038)
+
+	// Ensure controller owner reference is enforced so garbage collection
+	// behaves correctly even if the ref was removed out-of-band (CC-0038).
+	if err := controllerutil.SetControllerReference(owner, existing, scheme); err != nil {
+		return fmt.Errorf("updating owner reference on Service %s/%s: %w", existing.Namespace, existing.Name, err)
+	}
+
+	// Merge desired labels into existing labels (CC-0038).
+	if svc.Labels != nil {
+		if existing.Labels == nil {
+			existing.Labels = make(map[string]string, len(svc.Labels))
+		}
+		for k, v := range svc.Labels {
+			existing.Labels[k] = v
+		}
+	}
+
+	// Merge desired annotations into existing annotations (CC-0038).
+	if svc.Annotations != nil {
+		if existing.Annotations == nil {
+			existing.Annotations = make(map[string]string, len(svc.Annotations))
+		}
+		for k, v := range svc.Annotations {
+			existing.Annotations[k] = v
+		}
 	}
 
 	// Work on a copy of the desired spec so the caller's svc is never
@@ -188,8 +251,8 @@ func EnsurePDB(ctx context.Context, c client.Client, scheme *runtime.Scheme, own
 	// Only issue an API update when something actually changed to avoid
 	// unnecessary write load and events (CC-0037).
 	if !apiequality.Semantic.DeepEqual(existing.Spec, before.Spec) ||
-		!apiequality.Semantic.DeepEqual(existing.Labels, before.Labels) ||
-		!apiequality.Semantic.DeepEqual(existing.Annotations, before.Annotations) ||
+		!apiequality.Semantic.DeepEqual(normalizeMap(existing.Labels), normalizeMap(before.Labels)) ||
+		!apiequality.Semantic.DeepEqual(normalizeMap(existing.Annotations), normalizeMap(before.Annotations)) ||
 		!apiequality.Semantic.DeepEqual(existing.OwnerReferences, before.OwnerReferences) {
 		if err := c.Update(ctx, existing); err != nil {
 			return fmt.Errorf("updating PodDisruptionBudget %s/%s: %w", existing.Namespace, existing.Name, err)
@@ -197,6 +260,98 @@ func EnsurePDB(ctx context.Context, c client.Client, scheme *runtime.Scheme, own
 	}
 
 	return nil
+}
+
+// EnsureHPA creates a HorizontalPodAutoscaler if it does not exist or updates
+// its spec and metadata if it already exists. An owner reference is set on the
+// HPA so that it is garbage-collected when the owning resource is deleted. On
+// the update path, owner references, labels, and annotations are reconciled to
+// correct any out-of-band drift (CC-0038).
+func EnsureHPA(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, hpa *autoscalingv2.HorizontalPodAutoscaler) error {
+	existing := &autoscalingv2.HorizontalPodAutoscaler{}
+	err := c.Get(ctx, client.ObjectKeyFromObject(hpa), existing)
+
+	// HPA does not exist yet: set owner reference and create.
+	if apierrors.IsNotFound(err) {
+		if err := controllerutil.SetControllerReference(owner, hpa, scheme); err != nil {
+			return fmt.Errorf("setting owner reference on HorizontalPodAutoscaler %s/%s: %w", hpa.Namespace, hpa.Name, err)
+		}
+		if err := c.Create(ctx, hpa); err != nil {
+			return fmt.Errorf("creating HorizontalPodAutoscaler %s/%s: %w", hpa.Namespace, hpa.Name, err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("getting HorizontalPodAutoscaler %s/%s: %w", hpa.Namespace, hpa.Name, err)
+	}
+
+	// HPA exists: reconcile metadata (ownerRefs/labels/annotations) and spec.
+	// Snapshot before mutations to detect whether an update is necessary (CC-0038).
+	before := existing.DeepCopy()
+
+	// Ensure controller owner reference is enforced so garbage collection
+	// behaves correctly even if the ref was removed out-of-band (CC-0038).
+	if err := controllerutil.SetControllerReference(owner, existing, scheme); err != nil {
+		return fmt.Errorf("updating owner reference on HorizontalPodAutoscaler %s/%s: %w", existing.Namespace, existing.Name, err)
+	}
+
+	// Merge desired labels into existing labels; extra user-added keys are
+	// preserved, keys present on the desired HPA are authoritative (CC-0038).
+	if hpa.Labels != nil {
+		if existing.Labels == nil {
+			existing.Labels = make(map[string]string, len(hpa.Labels))
+		}
+		for k, v := range hpa.Labels {
+			existing.Labels[k] = v
+		}
+	}
+
+	// Merge desired annotations into existing annotations (CC-0038).
+	if hpa.Annotations != nil {
+		if existing.Annotations == nil {
+			existing.Annotations = make(map[string]string, len(hpa.Annotations))
+		}
+		for k, v := range hpa.Annotations {
+			existing.Annotations[k] = v
+		}
+	}
+
+	// Reconcile spec to the desired state (CC-0038).
+	existing.Spec = hpa.Spec
+
+	// Only issue an API update when something actually changed to avoid
+	// unnecessary write load and events (CC-0038).
+	if !apiequality.Semantic.DeepEqual(existing.Spec, before.Spec) ||
+		!apiequality.Semantic.DeepEqual(normalizeMap(existing.Labels), normalizeMap(before.Labels)) ||
+		!apiequality.Semantic.DeepEqual(normalizeMap(existing.Annotations), normalizeMap(before.Annotations)) ||
+		!apiequality.Semantic.DeepEqual(existing.OwnerReferences, before.OwnerReferences) {
+		if err := c.Update(ctx, existing); err != nil {
+			return fmt.Errorf("updating HorizontalPodAutoscaler %s/%s: %w", existing.Namespace, existing.Name, err)
+		}
+	}
+
+	return nil
+}
+
+// DeleteHPA deletes the HorizontalPodAutoscaler identified by namespace and
+// name. It is a no-op if the HPA does not exist (CC-0038).
+func DeleteHPA(ctx context.Context, c client.Client, namespace, name string) error {
+	hpa := &autoscalingv2.HorizontalPodAutoscaler{}
+	hpa.SetName(name)
+	hpa.SetNamespace(namespace)
+	if err := client.IgnoreNotFound(c.Delete(ctx, hpa)); err != nil {
+		return fmt.Errorf("deleting HorizontalPodAutoscaler %s/%s: %w", namespace, name, err)
+	}
+	return nil
+}
+
+// normalizeMap converts empty maps to nil so apiequality.Semantic.DeepEqual
+// does not report spurious diffs between nil and empty maps (CC-0038).
+func normalizeMap(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	return m
 }
 
 // validateImmutableServiceFields returns an error if the desired Service spec

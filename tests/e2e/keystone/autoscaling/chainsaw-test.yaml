@@ -1,0 +1,149 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for HorizontalPodAutoscaler reconciliation (CC-0038).
+# Verifies that the operator creates, updates, and deletes HPAs based on
+# spec.autoscaling:
+#   - Initial deployment with CPU autoscaling (maxReplicas: 6, CPU: 80%)
+#   - Add memory metric (CPU: 80%, Memory: 70%)
+#   - Disable autoscaling (HPA deleted)
+#
+# REQ-001, REQ-003, REQ-004 (CC-0038)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-autoscaling
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR with CPU autoscaling ───────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert Ready and HPA created ─────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-autoscaling
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            (conditions[?type == 'HPAReady']):
+            - status: "True"
+              reason: HPAReady
+    - assert:
+        resource:
+          apiVersion: autoscaling/v2
+          kind: HorizontalPodAutoscaler
+          metadata:
+            name: keystone-autoscaling-api
+            namespace: openstack
+            labels:
+              app.kubernetes.io/name: keystone
+              app.kubernetes.io/instance: keystone-autoscaling
+              app.kubernetes.io/managed-by: keystone-operator
+          spec:
+            scaleTargetRef:
+              apiVersion: apps/v1
+              kind: Deployment
+              name: keystone-autoscaling-api
+            minReplicas: 3
+            maxReplicas: 6
+            metrics:
+            - type: Resource
+              resource:
+                name: cpu
+                target:
+                  type: Utilization
+                  averageUtilization: 80
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== ConfigMap content ==="
+          for cm in $(kubectl get cm -n $NAMESPACE -o name 2>/dev/null | grep config-); do
+            echo "--- $cm ---"
+            kubectl get -n $NAMESPACE "$cm" -o jsonpath='{.data}' 2>&1 || true
+          done
+          echo "=== HPA status ==="
+          kubectl get hpa -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Add memory metric ────────────────────────────────────────────
+  - try:
+    - patch:
+        file: 01-patch-add-memory-metric.yaml
+  # ── Step 4: Assert HPA updated with both metrics ─────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: autoscaling/v2
+          kind: HorizontalPodAutoscaler
+          metadata:
+            name: keystone-autoscaling-api
+            namespace: openstack
+          spec:
+            maxReplicas: 6
+            metrics:
+            - type: Resource
+              resource:
+                name: cpu
+                target:
+                  type: Utilization
+                  averageUtilization: 80
+            - type: Resource
+              resource:
+                name: memory
+                target:
+                  type: Utilization
+                  averageUtilization: 70
+  # ── Step 5: Disable autoscaling ──────────────────────────────────────────
+  - try:
+    - patch:
+        file: 02-patch-disable-autoscaling.yaml
+  # ── Step 6: Assert HPA deleted and condition updated ─────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-autoscaling
+            namespace: openstack
+          status:
+            (conditions[?type == 'HPAReady']):
+            - status: "True"
+              reason: HPANotRequired
+    - script:
+        content: |
+          # Verify HPA no longer exists (CC-0038, REQ-003).
+          if kubectl get hpa keystone-autoscaling-api -n $NAMESPACE 2>/dev/null; then
+            echo "FAIL: HPA should have been deleted"
+            exit 1
+          fi
+          echo "PASS: HPA correctly deleted"

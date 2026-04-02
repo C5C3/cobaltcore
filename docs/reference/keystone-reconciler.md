@@ -1,7 +1,7 @@
 ---
 title: Keystone Reconciler Architecture
 quadrant: operator
-feature: CC-0013, CC-0015
+feature: CC-0013, CC-0015, CC-0038
 ---
 
 # Keystone Reconciler Architecture
@@ -66,6 +66,7 @@ The controller watches the primary Keystone CR and all owned resources:
 | `ConfigMap` | `Owns()` | Triggers reconciliation when owned ConfigMap changes |
 | `Job` | `Owns()` | Triggers reconciliation when owned Job changes |
 | `PodDisruptionBudget` | `Owns()` | Triggers reconciliation when owned PDB changes |
+| `HorizontalPodAutoscaler` | `Owns()` | Triggers reconciliation when owned HPA changes |
 | `CronJob` | `Owns()` | Triggers reconciliation when owned CronJob changes |
 | `Secret` | `Watches()` | Triggers reconciliation for controller-owned Secrets only |
 
@@ -108,6 +109,7 @@ RBAC markers on the reconciler generate the required ClusterRole:
 | `k8s.mariadb.com` | `databases`, `users`, `grants` | get, list, watch, create, update, patch, delete |
 | `external-secrets.io` | `externalsecrets`, `pushsecrets` | get, list, watch, create, update, patch |
 | `policy` | `poddisruptionbudgets` | get, list, watch, create, update, patch, delete |
+| `autoscaling` | `horizontalpodautoscalers` | get, list, watch, create, update, patch, delete |
 
 ---
 
@@ -154,6 +156,12 @@ RBAC markers on the reconciler generate the required ClusterRole:
 │  └────────┬─────────────┘  Requeue: 10s                                      │
 │           │                                                                  │
 │           ▼                                                                  │
+│  ┌──────────────┐                                                            │
+│  │ reconcileHPA │  Create/update/delete HPA based on spec.autoscaling        │
+│  │              │  Sets: HPAReady                                            │
+│  └────────┬─────┘  Requeue: none                                             │
+│           │                                                                  │
+│           ▼                                                                  │
 │  ┌─────────────────────┐                                                     │
 │  │ reconcileBootstrap  │  Run keystone-manage bootstrap Job                  │
 │  │                     │  Sets: BootstrapReady                                │
@@ -196,7 +204,7 @@ exponential backoff.
 
 ### Ready Condition Aggregation
 
-After all sub-reconcilers succeed, `setReadyCondition()` evaluates whether all five
+After all sub-reconcilers succeed, `setReadyCondition()` evaluates whether all
 sub-condition types are `True` using `conditions.AllTrue()`:
 
 | All Sub-Conditions True | Ready Condition | Reason |
@@ -228,6 +236,7 @@ sub-reconciler is responsible for:
 | `DatabaseReady` | `reconcileDatabase` | MariaDB CRs ready and db_sync complete |
 | `FernetKeysReady` | `reconcileFernetKeys` | Fernet Secret, CronJob, and PushSecret ensured |
 | `DeploymentReady` | `reconcileDeployment` | Deployment available and Service created |
+| `HPAReady` | `reconcileHPA` | HPA configured or not required |
 | `BootstrapReady` | `reconcileBootstrap` | Bootstrap Job completed successfully |
 
 ---
@@ -627,6 +636,65 @@ and returned.
 
 ---
 
+### reconcileHPA
+
+**File:** `operators/keystone/internal/controller/reconcile_hpa.go`
+
+**Signature:**
+
+```go
+func (r *KeystoneReconciler) reconcileHPA(ctx context.Context,
+    keystone *keystonev1alpha1.Keystone) (ctrl.Result, error)
+```
+
+**Purpose:** Manage the HorizontalPodAutoscaler for the Keystone API Deployment
+(CC-0038). Three lifecycle paths:
+
+1. **Autoscaling disabled** (`spec.autoscaling` is nil): Delete any existing HPA
+   and set `HPAReady=True` with reason `HPANotRequired`.
+2. **Autoscaling enabled** (`spec.autoscaling` is set): Build the desired HPA via
+   `buildKeystoneHPA()` and call `deployment.EnsureHPA()` to create or update it.
+   Set `HPAReady=True` with reason `HPAReady`.
+3. **Error**: Propagate errors from ensure/delete operations with descriptive context.
+
+**HPA Construction (`buildKeystoneHPA`):**
+
+| HPA Field | Value |
+| --- | --- |
+| Name | `{name}-api` |
+| Labels | `commonLabels(keystone)` |
+| `scaleTargetRef.apiVersion` | `apps/v1` |
+| `scaleTargetRef.kind` | `Deployment` |
+| `scaleTargetRef.name` | `{name}-api` |
+| `minReplicas` | `spec.autoscaling.minReplicas` (falls back to `spec.replicas` when nil) |
+| `maxReplicas` | `spec.autoscaling.maxReplicas` |
+
+**Metrics:**
+
+| Target Field Set | Metric Type | Resource | Target |
+| --- | --- | --- | --- |
+| `targetCPUUtilization` | `Resource` | `cpu` | `AverageUtilization` at specified percentage |
+| `targetMemoryUtilization` | `Resource` | `memory` | `AverageUtilization` at specified percentage |
+
+Both metrics can be set simultaneously. At least one is required (enforced by CEL
+validation on the CRD).
+
+**Condition Contract:**
+
+| Status | Reason | Message | RequeueAfter |
+| --- | --- | --- | --- |
+| `True` | `HPANotRequired` | "Autoscaling is not configured" | — |
+| `True` | `HPAReady` | "HorizontalPodAutoscaler is configured" | — |
+
+**Error handling:** Errors from `deployment.EnsureHPA()` are wrapped with
+"ensuring HorizontalPodAutoscaler" context. Errors from `deployment.DeleteHPA()`
+are wrapped with "deleting HorizontalPodAutoscaler" context. Both are returned
+directly to controller-runtime for exponential backoff.
+
+**Shared library calls:** `deployment.EnsureHPA()`, `deployment.DeleteHPA()`
+
+---
+
 ### reconcileBootstrap
 
 **File:** `operators/keystone/internal/controller/reconcile_bootstrap.go`
@@ -691,6 +759,7 @@ run multiple times without side effects.
 | `reconcileFernetKeys` | — | — | API error → exponential backoff |
 | `reconcileConfig` | — | — | Secret read failure, render failure → exponential backoff |
 | `reconcileDeployment` | Deployment not available | 10s | API error → exponential backoff |
+| `reconcileHPA` | — | — | API error → exponential backoff |
 | `reconcileBootstrap` | Job running | 60s | `ErrJobFailed` from bootstrap |
 
 All errors are wrapped with descriptive context via `fmt.Errorf("...: %w", err)`.
@@ -720,6 +789,7 @@ Keystone CR via `controllerutil.SetControllerReference()`. This enables:
 | Deployment | `keystone-api` | Keystone CR |
 | Service | `keystone-api` | Keystone CR |
 | PodDisruptionBudget | `{name}-api` | Keystone CR |
+| HorizontalPodAutoscaler | `{name}-api` | Keystone CR (only when `spec.autoscaling` is set) |
 | Database | `keystone` | Keystone CR (managed mode only) |
 | User | `keystone` | Keystone CR (managed mode only) |
 | Grant | `keystone` | Keystone CR (managed mode only) |
@@ -749,6 +819,7 @@ For end-to-end Chainsaw tests that validate the reconciler in a real cluster, se
 | `reconcile_fernet_test.go` | Key generation, Secret idempotency, CronJob schedule, PushSecret, key validity |
 | `reconcile_config_test.go` | INI generation, extraConfig merge, plugin config, policy overrides, ConfigMap hashing |
 | `reconcile_deployment_test.go` | Deployment spec, Service creation, readiness, endpoint, owner references, fernet-keys hash annotation (CC-0015) |
+| `reconcile_hpa_test.go` | HPA creation, update, deletion, metrics (CPU/memory), minReplicas defaulting, condition contract, error propagation (CC-0038) |
 | `reconcile_bootstrap_test.go` | Job creation, completion, failure, stale detection, TTL/backoff |
 | `integration_test.go` | Full reconciliation envtest: CronJob spec, bootstrap Job spec, brownfield mode, condition progression (CC-0015) |
 
@@ -771,6 +842,7 @@ operators/keystone/
     │   ├── reconcile_fernet.go                 reconcileFernetKeys sub-reconciler
     │   ├── reconcile_config.go                 reconcileConfig sub-reconciler
     │   ├── reconcile_deployment.go             reconcileDeployment sub-reconciler
+    │   ├── reconcile_hpa.go                   reconcileHPA sub-reconciler (CC-0038)
     │   ├── reconcile_bootstrap.go              reconcileBootstrap sub-reconciler
     │   ├── keystone_controller_test.go         Orchestration tests
     │   ├── reconcile_secrets_test.go           Secrets tests
@@ -778,6 +850,7 @@ operators/keystone/
     │   ├── reconcile_fernet_test.go            Fernet tests
     │   ├── reconcile_config_test.go            Config tests
     │   ├── reconcile_deployment_test.go        Deployment tests
+    │   ├── reconcile_hpa_test.go              HPA tests (CC-0038)
     │   ├── reconcile_bootstrap_test.go         Bootstrap tests
     │   └── integration_test.go                 Envtest integration tests (CC-0015)
     └── testutil/

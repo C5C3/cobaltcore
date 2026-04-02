@@ -82,10 +82,42 @@ type KeystoneSpec struct {
 	// +kubebuilder:validation:XValidation:rule="!has(self.rules) || self.rules.all(k, k != '')",message="policy rule name must not be empty"
 	PolicyOverrides *commonv1.PolicySpec `json:"policyOverrides,omitempty"`
 
+	// Autoscaling configures horizontal pod autoscaling for the Keystone API deployment.
+	// When set, a HorizontalPodAutoscaler is created targeting the deployment.
+	// When removed, the HPA is deleted.
+	// +optional
+	Autoscaling *AutoscalingSpec `json:"autoscaling,omitempty"`
+
 	// ExtraConfig provides free-form INI sections for configuration
 	// not covered by explicit CRD fields.
 	// +optional
 	ExtraConfig map[string]map[string]string `json:"extraConfig,omitempty"`
+}
+
+// AutoscalingSpec defines the parameters for horizontal pod autoscaling (CC-0038).
+// +kubebuilder:validation:XValidation:rule="has(self.targetCPUUtilization) || has(self.targetMemoryUtilization)",message="at least one of targetCPUUtilization or targetMemoryUtilization must be set"
+type AutoscalingSpec struct {
+	// MinReplicas is the lower bound for the number of replicas.
+	// Defaults to the current spec.replicas value if unset.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	MinReplicas *int32 `json:"minReplicas,omitempty"`
+
+	// MaxReplicas is the upper bound for the number of replicas.
+	// +kubebuilder:validation:Minimum=1
+	MaxReplicas int32 `json:"maxReplicas"`
+
+	// TargetCPUUtilization is the target average CPU utilization (percentage).
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	TargetCPUUtilization *int32 `json:"targetCPUUtilization,omitempty"`
+
+	// TargetMemoryUtilization is the target average memory utilization (percentage).
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	TargetMemoryUtilization *int32 `json:"targetMemoryUtilization,omitempty"`
 }
 
 // FernetSpec defines Fernet key rotation configuration.

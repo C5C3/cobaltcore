@@ -1,0 +1,53 @@
+{
+  "feature_id": "CC-0038",
+  "title": "Add HorizontalPodAutoscaler sub-reconciler",
+  "date": "2026-04-01",
+  "summary": "Review #3 following external review feedback from berendt. All three blocking/warning issues have been correctly addressed: (1) autoscaling RBAC rule added to Helm ClusterRole template with correct apiGroup, resource, and verbs matching the kubebuilder marker; (2) CRD YAMLs regenerated in both config/crd/bases/ and helm/crds/ with complete autoscaling schema including CEL XValidation; (3) normalizeMap closure extracted to a package-level unexported function, eliminating duplication between EnsurePDB and EnsureHPA. All tests pass, go vet clean.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass", "checked": true},
+    {"item": "Edge cases are covered", "checked": true},
+    {"item": "EnsureHPA tests in deployment_test.go pass", "checked": true},
+    {"item": "reconcileHPA tests in reconcile_hpa_test.go pass", "checked": true},
+    {"item": "Types test in keystone_types_test.go pass", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns", "checked": true},
+    {"item": "normalizeMap extracted as package-level function (W-001 fix)", "checked": true},
+    {"item": "No inline closure duplication remains", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "RBAC rule in Helm ClusterRole matches controller markers (B-001 fix)", "checked": true},
+    {"item": "All 12 kubebuilder RBAC markers have matching Helm ClusterRole entries", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "CRD YAML regenerated with autoscaling schema (B-002 fix)", "checked": true},
+    {"item": "Both CRD copies (config/crd/bases and helm/crds) are consistent", "checked": true},
+    {"item": "CEL XValidation rule present in CRD schema", "checked": true},
+    {"item": "Solution is as simple as possible", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "normalizeMap shared between EnsurePDB and EnsureHPA", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early", "checked": true},
+    {"item": "CEL validation prevents invalid autoscaling config at admission", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs validated", "checked": true},
+    {"item": "Kubebuilder markers enforce min/max constraints", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "I-002 from berendt review: Consider introducing a shared test-utils package to consolidate int32Ptr and ptr[T] helpers across test packages (follow-up, not blocking)",
+    "I-001 from berendt review: Consider backporting the update-guard pattern from EnsurePDB/EnsureHPA to EnsureDeployment and EnsureService in a follow-up PR"
+  ],
+  "next_steps": [
+    "PR is ready for final merge — all blocking and warning issues from external review #2 have been addressed"
+  ],
+  "detected_patterns": []
+}

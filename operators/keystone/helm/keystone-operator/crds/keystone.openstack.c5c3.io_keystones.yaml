@@ -52,6 +52,46 @@ spec:
           spec:
             description: KeystoneSpec defines the desired state of Keystone.
             properties:
+              autoscaling:
+                description: |-
+                  Autoscaling configures horizontal pod autoscaling for the Keystone API deployment.
+                  When set, a HorizontalPodAutoscaler is created targeting the deployment.
+                  When removed, the HPA is deleted.
+                properties:
+                  maxReplicas:
+                    description: MaxReplicas is the upper bound for the number of
+                      replicas.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  minReplicas:
+                    description: |-
+                      MinReplicas is the lower bound for the number of replicas.
+                      Defaults to the current spec.replicas value if unset.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  targetCPUUtilization:
+                    description: TargetCPUUtilization is the target average CPU utilization
+                      (percentage).
+                    format: int32
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+                  targetMemoryUtilization:
+                    description: TargetMemoryUtilization is the target average memory
+                      utilization (percentage).
+                    format: int32
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+                required:
+                - maxReplicas
+                type: object
+                x-kubernetes-validations:
+                - message: at least one of targetCPUUtilization or targetMemoryUtilization
+                    must be set
+                  rule: has(self.targetCPUUtilization) || has(self.targetMemoryUtilization)
               bootstrap:
                 description: Bootstrap configures the initial Keystone bootstrap.
                 properties:

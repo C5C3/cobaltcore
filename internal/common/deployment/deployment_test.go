@@ -11,6 +11,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -27,6 +28,7 @@ func newScheme() *runtime.Scheme {
 	_ = corev1.AddToScheme(s)
 	_ = appsv1.AddToScheme(s)
 	_ = policyv1.AddToScheme(s)
+	_ = autoscalingv2.AddToScheme(s)
 	return s
 }
 
@@ -227,6 +229,109 @@ func TestEnsureDeployment_idempotent(t *testing.T) {
 	list := &appsv1.DeploymentList{}
 	g.Expect(c.List(ctx, list, client.InNamespace("default"))).To(Succeed())
 	g.Expect(list.Items).To(HaveLen(1))
+}
+
+func TestEnsureDeployment_reconciles_ownerRef_on_update(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	// Create a Deployment without owner references (simulates out-of-band drift).
+	existing := testDeployment()
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		WithStatusSubresource(existing).
+		Build()
+
+	_, err := EnsureDeployment(context.Background(), c, s, owner, testDeployment())
+	g.Expect(err).NotTo(HaveOccurred())
+
+	fetched := &appsv1.Deployment{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
+	g.Expect(fetched.OwnerReferences).To(HaveLen(1))
+	g.Expect(fetched.OwnerReferences[0].Name).To(Equal("test-owner"))
+}
+
+func TestEnsureDeployment_merges_labels_on_update(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	// Existing Deployment has a user-added label.
+	existing := testDeployment()
+	existing.Labels = map[string]string{"user-key": "user-value"}
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		WithStatusSubresource(existing).
+		Build()
+
+	// Desired Deployment introduces an operator-managed label.
+	desired := testDeployment()
+	desired.Labels = map[string]string{"operator-key": "operator-value"}
+
+	_, err := EnsureDeployment(context.Background(), c, s, owner, desired)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	fetched := &appsv1.Deployment{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
+	// Both the user-added and operator-managed labels must be present (CC-0038).
+	g.Expect(fetched.Labels).To(HaveKeyWithValue("user-key", "user-value"))
+	g.Expect(fetched.Labels).To(HaveKeyWithValue("operator-key", "operator-value"))
+}
+
+func TestEnsureDeployment_preserves_labels_when_desired_labels_nil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	// Existing Deployment has a user-added label.
+	existing := testDeployment()
+	existing.Labels = map[string]string{"user-key": "user-value"}
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		WithStatusSubresource(existing).
+		Build()
+
+	// Desired Deployment does not specify any labels (Labels == nil).
+	desired := testDeployment()
+	desired.Labels = nil
+
+	_, err := EnsureDeployment(context.Background(), c, s, owner, desired)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	fetched := &appsv1.Deployment{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
+
+	// User labels must be preserved when desired.Labels is nil (CC-0038).
+	g.Expect(fetched.Labels).To(HaveKeyWithValue("user-key", "user-value"))
+}
+
+func TestEnsureDeployment_merges_annotations_on_update(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	existing := testDeployment()
+	existing.Annotations = map[string]string{"existing-ann": "val"}
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		WithStatusSubresource(existing).
+		Build()
+
+	desired := testDeployment()
+	desired.Annotations = map[string]string{"new-ann": "new-val"}
+
+	_, err := EnsureDeployment(context.Background(), c, s, owner, desired)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	fetched := &appsv1.Deployment{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
+	g.Expect(fetched.Annotations).To(HaveKeyWithValue("existing-ann", "val"))
+	g.Expect(fetched.Annotations).To(HaveKeyWithValue("new-ann", "new-val"))
 }
 
 // --- EnsureService ---
@@ -503,6 +608,105 @@ func TestEnsureService_allowsMatchingImmutableFields(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
+func TestEnsureService_reconciles_ownerRef_on_update(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	// Create a Service without owner references (simulates out-of-band drift).
+	existing := testService()
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		Build()
+
+	err := EnsureService(context.Background(), c, s, owner, testService())
+	g.Expect(err).NotTo(HaveOccurred())
+
+	fetched := &corev1.Service{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
+	g.Expect(fetched.OwnerReferences).To(HaveLen(1))
+	g.Expect(fetched.OwnerReferences[0].Name).To(Equal("test-owner"))
+}
+
+func TestEnsureService_merges_labels_on_update(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	// Existing Service has a user-added label.
+	existing := testService()
+	existing.Labels = map[string]string{"user-key": "user-value"}
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		Build()
+
+	// Desired Service introduces an operator-managed label.
+	desired := testService()
+	desired.Labels = map[string]string{"operator-key": "operator-value"}
+
+	err := EnsureService(context.Background(), c, s, owner, desired)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	fetched := &corev1.Service{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
+	// Both the user-added and operator-managed labels must be present (CC-0038).
+	g.Expect(fetched.Labels).To(HaveKeyWithValue("user-key", "user-value"))
+	g.Expect(fetched.Labels).To(HaveKeyWithValue("operator-key", "operator-value"))
+}
+
+func TestEnsureService_preserves_labels_when_desired_labels_nil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	// Existing Service has a user-added label.
+	existing := testService()
+	existing.Labels = map[string]string{"user-key": "user-value"}
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		Build()
+
+	// Desired Service does not specify any labels (Labels == nil).
+	desired := testService()
+	desired.Labels = nil
+
+	err := EnsureService(context.Background(), c, s, owner, desired)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	fetched := &corev1.Service{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
+
+	// User labels must be preserved when desired.Labels is nil (CC-0038).
+	g.Expect(fetched.Labels).To(HaveKeyWithValue("user-key", "user-value"))
+}
+
+func TestEnsureService_merges_annotations_on_update(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	existing := testService()
+	existing.Annotations = map[string]string{"existing-ann": "val"}
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		Build()
+
+	desired := testService()
+	desired.Annotations = map[string]string{"new-ann": "new-val"}
+
+	err := EnsureService(context.Background(), c, s, owner, desired)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	fetched := &corev1.Service{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
+	g.Expect(fetched.Annotations).To(HaveKeyWithValue("existing-ann", "val"))
+	g.Expect(fetched.Annotations).To(HaveKeyWithValue("new-ann", "new-val"))
+}
+
 // --- IsDeploymentReady ---
 
 func TestIsDeploymentReady_true(t *testing.T) {
@@ -711,6 +915,33 @@ func TestEnsurePDB_merges_labels_on_update(t *testing.T) {
 	g.Expect(fetched.Labels).To(HaveKeyWithValue("operator-key", "operator-value"))
 }
 
+func TestEnsurePDB_preserves_labels_when_desired_labels_nil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	// Existing PDB has a user-added label.
+	existing := testPDB()
+	existing.Labels = map[string]string{"user-key": "user-value"}
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		Build()
+
+	// Desired PDB does not specify any labels (Labels == nil).
+	desired := testPDB()
+	desired.Labels = nil
+
+	err := EnsurePDB(context.Background(), c, s, owner, desired)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	fetched := &policyv1.PodDisruptionBudget{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
+
+	// User labels must be preserved when desired.Labels is nil (CC-0038).
+	g.Expect(fetched.Labels).To(HaveKeyWithValue("user-key", "user-value"))
+}
+
 func TestEnsurePDB_merges_annotations_on_update(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := newScheme()
@@ -733,4 +964,227 @@ func TestEnsurePDB_merges_annotations_on_update(t *testing.T) {
 	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
 	g.Expect(fetched.Annotations).To(HaveKeyWithValue("existing-ann", "val"))
 	g.Expect(fetched.Annotations).To(HaveKeyWithValue("new-ann", "new-val"))
+}
+
+// --- EnsureHPA (CC-0038) ---
+
+func testHPA() *autoscalingv2.HorizontalPodAutoscaler {
+	return &autoscalingv2.HorizontalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-hpa",
+			Namespace: "default",
+		},
+		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
+				APIVersion: "apps/v1",
+				Kind:       "Deployment",
+				Name:       "test-deploy",
+			},
+			MinReplicas: ptr(int32(1)),
+			MaxReplicas: 5,
+			Metrics: []autoscalingv2.MetricSpec{
+				{
+					Type: autoscalingv2.ResourceMetricSourceType,
+					Resource: &autoscalingv2.ResourceMetricSource{
+						Name: corev1.ResourceCPU,
+						Target: autoscalingv2.MetricTarget{
+							Type:               autoscalingv2.UtilizationMetricType,
+							AverageUtilization: ptr(int32(80)),
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func TestEnsureHPA_creates(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner).
+		Build()
+
+	err := EnsureHPA(context.Background(), c, s, owner, testHPA())
+	g.Expect(err).NotTo(HaveOccurred())
+
+	created := &autoscalingv2.HorizontalPodAutoscaler{}
+	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "test-hpa", Namespace: "default"}, created)).To(Succeed())
+	g.Expect(created.OwnerReferences).To(HaveLen(1))
+	g.Expect(created.OwnerReferences[0].Name).To(Equal("test-owner"))
+}
+
+func TestEnsureHPA_updatesExisting(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	existing := testHPA()
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		Build()
+
+	updated := testHPA()
+	updated.Spec.MaxReplicas = 10
+
+	err := EnsureHPA(context.Background(), c, s, owner, updated)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	fetched := &autoscalingv2.HorizontalPodAutoscaler{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
+	g.Expect(fetched.Spec.MaxReplicas).To(Equal(int32(10)))
+}
+
+func TestEnsureHPA_idempotent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner).
+		Build()
+
+	ctx := context.Background()
+	g.Expect(EnsureHPA(ctx, c, s, owner, testHPA())).To(Succeed())
+	g.Expect(EnsureHPA(ctx, c, s, owner, testHPA())).To(Succeed())
+
+	list := &autoscalingv2.HorizontalPodAutoscalerList{}
+	g.Expect(c.List(ctx, list, client.InNamespace("default"))).To(Succeed())
+	g.Expect(list.Items).To(HaveLen(1))
+}
+
+func TestEnsureHPA_reconciles_ownerRef_on_update(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	// Create an HPA without owner references (simulates out-of-band drift).
+	existing := testHPA()
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		Build()
+
+	err := EnsureHPA(context.Background(), c, s, owner, testHPA())
+	g.Expect(err).NotTo(HaveOccurred())
+
+	fetched := &autoscalingv2.HorizontalPodAutoscaler{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
+	g.Expect(fetched.OwnerReferences).To(HaveLen(1))
+	g.Expect(fetched.OwnerReferences[0].Name).To(Equal("test-owner"))
+}
+
+func TestEnsureHPA_merges_labels_on_update(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	// Existing HPA has a user-added label.
+	existing := testHPA()
+	existing.Labels = map[string]string{"user-key": "user-value"}
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		Build()
+
+	// Desired HPA introduces an operator-managed label.
+	desired := testHPA()
+	desired.Labels = map[string]string{"operator-key": "operator-value"}
+
+	err := EnsureHPA(context.Background(), c, s, owner, desired)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	fetched := &autoscalingv2.HorizontalPodAutoscaler{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
+	// Both the user-added and operator-managed labels must be present (CC-0038).
+	g.Expect(fetched.Labels).To(HaveKeyWithValue("user-key", "user-value"))
+	g.Expect(fetched.Labels).To(HaveKeyWithValue("operator-key", "operator-value"))
+}
+
+func TestEnsureHPA_preserves_labels_when_desired_labels_nil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	// Existing HPA has a user-added label.
+	existing := testHPA()
+	existing.Labels = map[string]string{"user-key": "user-value"}
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		Build()
+
+	// Desired HPA does not specify any labels (Labels == nil).
+	desired := testHPA()
+	desired.Labels = nil
+
+	err := EnsureHPA(context.Background(), c, s, owner, desired)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	fetched := &autoscalingv2.HorizontalPodAutoscaler{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
+
+	// User labels must be preserved when desired.Labels is nil (CC-0038).
+	g.Expect(fetched.Labels).To(HaveKeyWithValue("user-key", "user-value"))
+}
+
+func TestEnsureHPA_merges_annotations_on_update(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	existing := testHPA()
+	existing.Annotations = map[string]string{"existing-ann": "val"}
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		Build()
+
+	desired := testHPA()
+	desired.Annotations = map[string]string{"new-ann": "new-val"}
+
+	err := EnsureHPA(context.Background(), c, s, owner, desired)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	fetched := &autoscalingv2.HorizontalPodAutoscaler{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
+	g.Expect(fetched.Annotations).To(HaveKeyWithValue("existing-ann", "val"))
+	g.Expect(fetched.Annotations).To(HaveKeyWithValue("new-ann", "new-val"))
+}
+
+// --- DeleteHPA (CC-0038) ---
+
+func TestDeleteHPA_deletes(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+
+	existing := testHPA()
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(existing).
+		Build()
+
+	err := DeleteHPA(context.Background(), c, "default", "test-hpa")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	list := &autoscalingv2.HorizontalPodAutoscalerList{}
+	g.Expect(c.List(context.Background(), list, client.InNamespace("default"))).To(Succeed())
+	g.Expect(list.Items).To(BeEmpty())
+}
+
+func TestDeleteHPA_noop_when_absent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		Build()
+
+	err := DeleteHPA(context.Background(), c, "default", "nonexistent-hpa")
+	g.Expect(err).NotTo(HaveOccurred())
 }

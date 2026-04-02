@@ -99,7 +99,7 @@ func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
-	keystone.Status.Endpoint = fmt.Sprintf("http://%s-api.%s.svc.cluster.local:5000/v3", keystone.Name, keystone.Namespace)
+	keystone.Status.Endpoint = fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", apiResourceName(keystone), keystone.Namespace)
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 		Type:               "DeploymentReady",
 		Status:             metav1.ConditionTrue,
@@ -139,7 +139,7 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 	credentialSecretName := fmt.Sprintf("%s-credential-keys", keystone.Name)
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-api", keystone.Name),
+			Name:      apiResourceName(keystone),
 			Namespace: keystone.Namespace,
 			Labels:    labels,
 		},
@@ -260,7 +260,7 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 func buildPodDisruptionBudget(keystone *keystonev1alpha1.Keystone) *policyv1.PodDisruptionBudget {
 	pdb := &policyv1.PodDisruptionBudget{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-api", keystone.Name),
+			Name:      apiResourceName(keystone),
 			Namespace: keystone.Namespace,
 			Labels:    commonLabels(keystone),
 		},
@@ -285,7 +285,7 @@ func buildPodDisruptionBudget(keystone *keystonev1alpha1.Keystone) *policyv1.Pod
 func buildKeystoneService(keystone *keystonev1alpha1.Keystone) *corev1.Service {
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-api", keystone.Name),
+			Name:      apiResourceName(keystone),
 			Namespace: keystone.Namespace,
 			Labels:    commonLabels(keystone),
 		},

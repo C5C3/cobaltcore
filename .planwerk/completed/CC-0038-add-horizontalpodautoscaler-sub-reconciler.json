@@ -2,8 +2,8 @@
   "feature_id": "CC-0038",
   "title": "Add HorizontalPodAutoscaler sub-reconciler",
   "slug": "add-horizontalpodautoscaler-sub-reconciler",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 🔨 medium\n**Category:** backend\n**Priority:** high\n**Source:** HorizontalPodAutoscaler Sub-Reconciler\n\nAdd an optional `spec.autoscaling` field to the Keystone CRD that, when set, creates a `HorizontalPodAutoscaler` targeting the Keystone API Deployment. The HPA is reconciled via a new `reconcileHPA` sub-reconciler following the established condition contract pattern (`HPAReady` added to `subConditionTypes`). When `spec.autoscaling` is removed, the HPA is explicitly deleted. This enables production workloads to auto-scale based on CPU and/or memory utilization.\n\nThe sub-reconciler implements the optional sub-resource lifecycle with three paths:\n1. **spec.autoscaling nil + no existing HPA** → set `HPAReady=True` reason `HPANotRequired`, return early\n2. **spec.autoscaling nil + existing HPA found** → explicit `client.Delete`, set `HPAReady=True` reason `HPANotRequired`\n3. **spec.autoscaling set** → call `EnsureHPA` (create-or-update with `SetControllerReference`), set `HPAReady=True` reason `HPAReady`\n\nIncludes `AutoscalingSpec` struct (`MinReplicas`, `MaxReplicas`, `TargetCPUUtilization`, `TargetMemoryUtilization`), kubebuilder validation markers, CEL `XValidation` requiring at least one metric target, RBAC markers for `autoscaling` group, `Owns(&autoscalingv2.HorizontalPodAutoscaler{})` watch, and unit tests.\n\n**Affected Areas:**\n- operators/keystone/api/v1alpha1/keystone_types.go\n- operators/keystone/internal/controller/reconcile_hpa.go\n- operators/keystone/internal/controller/reconcile_hpa_test.go\n- operators/keystone/internal/controller/keystone_controller.go\n- operators/keystone/internal/common/deployment/deployment.go",
   "stories": [
@@ -300,6 +300,7 @@
       "description": "In `operators/keystone/api/v1alpha1/keystone_types.go`: (1) Add `AutoscalingSpec` struct with fields `MinReplicas *int32` (optional, kubebuilder:validation:Minimum=1), `MaxReplicas int32` (required, kubebuilder:validation:Minimum=1), `TargetCPUUtilization *int32` (optional, kubebuilder:validation:Minimum=1,Maximum=100), `TargetMemoryUtilization *int32` (optional, kubebuilder:validation:Minimum=1,Maximum=100). (2) Add CEL XValidation rule on AutoscalingSpec: `has(self.targetCPUUtilization) || has(self.targetMemoryUtilization)` with message 'at least one of targetCPUUtilization or targetMemoryUtilization must be set'. (3) Add `Autoscaling *AutoscalingSpec` field to `KeystoneSpec` with `+optional` and `json:\"autoscaling,omitempty\"` tags, following the existing `Federation *FederationSpec` pointer-for-optional pattern. (4) Add unit test for zero-value check in `keystone_types_test.go` verifying `spec.Autoscaling` is nil by default. (5) Run `make generate` to regenerate deepcopy.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -310,6 +311,7 @@
       "description": "In `internal/common/deployment/deployment.go`: (1) Add `autoscalingv2 \"k8s.io/api/autoscaling/v2\"` import. (2) Implement `EnsureHPA(ctx, c, scheme, owner, hpa)` following EnsurePDB pattern exactly: Get→IsNotFound→Create with SetControllerReference; on existing: snapshot via DeepCopy, re-apply SetControllerReference, merge labels, merge annotations, set spec, guard Update with apiequality.Semantic.DeepEqual check on Spec/Labels/Annotations/OwnerReferences. Returns `error` only. (3) Add `autoscalingv2` scheme registration to `newScheme()` in `deployment_test.go`. (4) Add `testHPA()` helper returning a minimal HPA. (5) Add tests: `TestEnsureHPA_creates`, `TestEnsureHPA_updatesExisting`, `TestEnsureHPA_idempotent`, `TestEnsureHPA_reconciles_ownerRef_on_update`, `TestEnsureHPA_merges_labels_on_update`, `TestEnsureHPA_merges_annotations_on_update` — all mirroring the EnsurePDB test structure.",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-002"
@@ -321,6 +323,7 @@
       "description": "Create new file `operators/keystone/internal/controller/reconcile_hpa.go`: (1) Implement `reconcileHPA(ctx, keystone, configMapName) (ctrl.Result, error)` with three paths: Path 1 — spec.autoscaling nil + no existing HPA (IsNotFound) → set HPAReady=True reason HPANotRequired, return early. Path 2 — spec.autoscaling nil + existing HPA found → client.Delete, set HPAReady=True reason HPANotRequired. Path 3 — spec.autoscaling set → call buildKeystoneHPA, call deployment.EnsureHPA, set HPAReady=True reason HPAReady. Error wrapping: 'ensuring HorizontalPodAutoscaler' and 'deleting HorizontalPodAutoscaler'. HPA name: `{keystone.Name}-api` (same as Deployment). (2) Implement `buildKeystoneHPA(keystone)` returning `*autoscalingv2.HorizontalPodAutoscaler` with: scaleTargetRef={apiVersion:apps/v1, kind:Deployment, name:{name}-api}, minReplicas from spec.autoscaling.MinReplicas, maxReplicas from spec.autoscaling.MaxReplicas, metrics built conditionally from TargetCPUUtilization and TargetMemoryUtilization (only non-nil fields), commonLabels. (3) All conditions use conditions.SetCondition with ObservedGeneration=keystone.Generation.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-003",
@@ -334,6 +337,7 @@
       "description": "Create new file `operators/keystone/internal/controller/reconcile_hpa_test.go`: (1) `hpaTestScheme()` registering clientgoscheme, autoscalingv2, keystonev1alpha1. (2) `hpaTestKeystone()` returning minimal valid CR (reuse pattern from deployTestKeystone). (3) `newHPATestReconciler(s, objs...)` with fake client, status subresource, fake recorder. (4) Tests: `TestReconcileHPA_AutoscalingNil_NoExistingHPA_SetsHPANotRequired` — verifies HPAReady=True reason=HPANotRequired, no HPA created. `TestReconcileHPA_AutoscalingNil_ExistingHPA_DeletesHPA` — pre-creates HPA, verifies deletion and HPANotRequired condition. `TestReconcileHPA_AutoscalingSet_CreatesHPA` — verifies HPA created with correct scaleTargetRef, metrics, ownerRef. `TestReconcileHPA_AutoscalingSet_CPUOnly` — CPU metric only, no memory metric. `TestReconcileHPA_AutoscalingSet_MemoryOnly` — memory metric only, no CPU metric. `TestReconcileHPA_AutoscalingSet_BothMetrics` — both CPU and memory metrics present. `TestReconcileHPA_AutoscalingSet_MinReplicasOmitted` — MinReplicas nil on HPA. `TestReconcileHPA_AutoscalingSet_MinReplicasSet` — MinReplicas correctly propagated. `TestReconcileHPA_ConditionObservedGeneration` — ObservedGeneration matches keystone.Generation for both active and not-required paths. `TestReconcileHPA_EnsureError_Propagated` — interceptor-injected create error, verifies error wrapping. `TestReconcileHPA_DeleteError_Propagated` — interceptor-injected delete error, verifies error wrapping. `TestReconcileHPA_HPALabelsAndOwnerReference` — verifies commonLabels and ownerReference on created HPA. `TestBuildKeystoneHPA_ScaleTargetRef` — verifies scaleTargetRef points to correct Deployment. `TestBuildKeystoneHPA_Labels` — verifies commonLabels on HPA ObjectMeta.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-003",
@@ -347,6 +351,7 @@
       "description": "In `operators/keystone/internal/controller/keystone_controller.go`: (1) Add `autoscalingv2 \"k8s.io/api/autoscaling/v2\"` import. (2) Add `\"HPAReady\"` to `subConditionTypes` slice (after DeploymentReady, before BootstrapReady). (3) Add RBAC marker: `// +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete` (after existing policy RBAC marker). (4) Add `Owns(&autoscalingv2.HorizontalPodAutoscaler{})` to SetupWithManager (after existing Owns(&policyv1.PodDisruptionBudget{})). (5) Add reconcileHPA call after reconcileDeployment in the Reconcile method: `if result, err := r.reconcileHPA(ctx, &keystone, configMapName); !result.IsZero() || err != nil { return r.updateStatus(ctx, &keystone, result, err) }` — between the reconcileDeployment and reconcileBootstrap blocks.",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-007"
@@ -358,6 +363,7 @@
       "description": "Create `docs/reference/backend/keystone-autoscaling.md`: (1) Document the AutoscalingSpec struct fields with types, constraints, and defaults. (2) Document the CEL validation rule. (3) Document the three reconciliation paths (autoscaling nil/existing HPA/active). (4) Include a minimal example YAML snippet showing spec.autoscaling with CPU and memory targets. (5) Reference the HPAReady condition semantics (HPAReady vs HPANotRequired reasons).",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-005"
@@ -511,6 +517,832 @@
       "story": "Operator user enables CPU-based autoscaling for Keystone API",
       "expected": "buildKeystoneHPA produces HPA with commonLabels on ObjectMeta [unit]",
       "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureDeployment_creates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureDeployment_updatesExisting",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureDeployment_readyWhenAvailable",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureDeployment_notReadyWhenGenerationLags",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureDeployment_deletesAndRequeuesOnSelectorChange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureDeployment_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_creates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_updatesPreservingClusterIP",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_doesNotMutateCallerObject",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_updatesPreservingNodePorts",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_preservesNodePortWhenProtocolOmitted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_failsOnClusterIPConflict",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_failsOnClusterIPsConflict",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_failsOnIPFamiliesConflict",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureService_allowsMatchingImmutableFields",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestIsDeploymentReady_true",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestIsDeploymentReady_false_observedGenerationLag",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestIsDeploymentReady_false_notEnoughReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestIsDeploymentReady_false_noCondition",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestIsDeploymentReady_false_noStatus",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestIsDeploymentReady_nilReplicas_defaults1",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsurePDB_creates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsurePDB_updatesExisting",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsurePDB_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsurePDB_reconciles_ownerRef_on_update",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsurePDB_merges_labels_on_update",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsurePDB_merges_annotations_on_update",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestDeleteHPA_deletes",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestDeleteHPA_noop_when_absent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_SetsZeroValueDefaults",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_DoesNotSetFernetRotationSchedule",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_ZeroValueObjectRemainsInvalid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_PreservesExplicitValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_CacheBackendAppliedWhenEmpty",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_ReplicasZeroRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_ReplicasNegativeRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_ReplicasOneAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_MaxActiveKeysBelowMinimumRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_MaxActiveKeysZeroAllowed",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_MaxActiveKeysThreeAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_MaxActiveKeysAboveMinimumAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CredentialKeysMaxActiveKeysBelowMinimumRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CredentialKeysMaxActiveKeysZeroAllowed",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CredentialKeysMaxActiveKeysThreeAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CredentialKeysValidCronExpressions",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CredentialKeysInvalidCronExpressions",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CredentialKeysEmptyRotationScheduleReturnsRequiredError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_ValidCronExpressions",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_InvalidCronExpressions",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_EmptyRotationScheduleReturnsRequiredError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CacheWithServersOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CacheWithClusterRefOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CacheBothClusterRefAndServersRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CacheNeitherClusterRefNorServersRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_DatabaseWithHostOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_DatabaseWithClusterRefOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_DatabaseBothClusterRefAndHostRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_DatabaseNeitherClusterRefNorHostRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_UniquePlugins",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_DuplicatePluginConfigSection",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_NoPlugins",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_PolicyOverridesNil",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_PolicyOverridesWithRulesOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_PolicyOverridesWithConfigMapRefOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_PolicyOverridesWithBothSources",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_PolicyOverridesWithNoSources",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_EmptyPolicyRuleNameRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_NonEmptyPolicyRuleNamesAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Valid_CPUOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Valid_MemoryOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Valid_Both",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Invalid_NoTargets",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Invalid_MaxReplicasZero",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Invalid_MinExceedsMax",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Nil_IsValid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidateCreate_RunsAllValidations",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidateUpdate_RunsSameValidation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidateDelete_AlwaysAllows",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestKeystoneWebhook_ImplementsInterfaces",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FullReconcile_Brownfield",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_ConditionProgression",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_ResourceCreation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_StatusEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_ObservedGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FullReconcile_Managed",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_CronJobDetailedSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_BootstrapJobDetailedSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PDBSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PDBUpdatedOnReplicaChange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_NotFound_ReturnsEmptyResult",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_SetsAllSubConditionsTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_AggregatesReadyCondition",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_StatusUpdatePersisted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_Idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSetupWithManager_RegistersWithoutError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_AllTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_OneFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_MissingCondition",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_Empty",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_EarlyReturnOnSecretsNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_EarlyReturnOnDatabaseNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_SequentialProgression",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_ReadyFalseWhenDeploymentNotAvailable",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_ObservedGenerationTracked",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSecretToKeystoneMapper_ReferencedSecrets",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestCommonLabels_ExactKeyValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSelectorLabels_ExactKeyValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSelectorLabels_SubsetOfCommonLabels",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSecretToKeystoneMapper_OwnedSecrets",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestReconcileHPA_AutoscalingEnabled_HPAUpdated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestBuildKeystoneHPA_MinReplicasDefaultsToSpecReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestBuildKeystoneHPA_ExplicitMinReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestBuildKeystoneHPA_MaxReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestBuildKeystoneHPA_CPUMetricOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestBuildKeystoneHPA_MemoryMetricOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestBuildKeystoneHPA_BothCPUAndMemoryMetrics",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestBuildKeystoneHPA_MinReplicasDefaultIndependentOfPointer",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],
@@ -540,8 +1372,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-01T18:39:01.027625"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-01T18:39:59.074214"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-02T10:19:24.979004"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/116",
+  "pr_number": 116,
   "execution_history": [
     {
       "run_id": "1b94cf92-0297-423b-bdff-519e7dfe7dda",
@@ -553,6 +1395,84 @@
           "name": "prepare",
           "duration": 343.758163690567,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "a5d2e8d3-24c2-4aa6-ac78-f35afe5a58cd",
+      "timestamp": "2026-04-01T19:24:04.617256",
+      "total_duration": 2411.3603010177612,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (2 tasks)",
+          "duration": 445.1787383556366,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (2 tasks)",
+          "duration": 357.31407594680786,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (1 tasks)",
+          "duration": 762.8115391731262,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (1 tasks)",
+          "duration": 307.10911440849304,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0038] Code Review",
+          "duration": 320.32248759269714,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0038] Improvements",
+          "duration": 97.07553696632385,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0038] Simplify",
+          "duration": 121.54880857467651,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "1ba1f447-89ab-4808-b3d1-d39443ac31ea",
+      "timestamp": "2026-04-01T20:02:16.958473",
+      "total_duration": 931.6355202198029,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 931.6355202198029,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "2046de5a-a5f7-4c4d-9454-960aa0936597",
+      "timestamp": "2026-04-01T21:36:36.930773",
+      "total_duration": 922.2187643051147,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 922.2187643051147,
+          "type": "review_address",
           "status": "done"
         }
       ]

@@ -604,6 +604,232 @@ func TestValidate_NonEmptyPolicyRuleNamesAccepted(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
+// --- Autoscaling validation tests (CC-0038, REQ-001) ---
+
+func TestValidate_Autoscaling_Valid_CPUOnly(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	cpu := int32(80)
+	k.Spec.Autoscaling = &AutoscalingSpec{
+		MaxReplicas:          5,
+		TargetCPUUtilization: &cpu,
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_Autoscaling_Valid_MemoryOnly(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	mem := int32(70)
+	k.Spec.Autoscaling = &AutoscalingSpec{
+		MaxReplicas:             5,
+		TargetMemoryUtilization: &mem,
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_Autoscaling_Valid_Both(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	cpu := int32(80)
+	mem := int32(70)
+	k.Spec.Autoscaling = &AutoscalingSpec{
+		MaxReplicas:             5,
+		TargetCPUUtilization:    &cpu,
+		TargetMemoryUtilization: &mem,
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_Autoscaling_Invalid_NoTargets(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Autoscaling = &AutoscalingSpec{
+		MaxReplicas: 5,
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("autoscaling"))
+	g.Expect(err.Error()).To(ContainSubstring("targetCPUUtilization or targetMemoryUtilization"))
+}
+
+func TestValidate_Autoscaling_Invalid_MaxReplicasZero(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	cpu := int32(80)
+	k.Spec.Autoscaling = &AutoscalingSpec{
+		MaxReplicas:          0,
+		TargetCPUUtilization: &cpu,
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("maxReplicas"))
+}
+
+func TestValidate_Autoscaling_Invalid_MinExceedsMax(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	cpu := int32(80)
+	min := int32(10)
+	k.Spec.Autoscaling = &AutoscalingSpec{
+		MinReplicas:          &min,
+		MaxReplicas:          5,
+		TargetCPUUtilization: &cpu,
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("minReplicas"))
+	g.Expect(err.Error()).To(ContainSubstring("must not exceed maxReplicas"))
+}
+
+func TestValidate_Autoscaling_Invalid_ImplicitMinExceedsMax(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Replicas = 5
+	cpu := int32(80)
+	// MinReplicas is nil — defaults to spec.replicas (5) in the reconciler,
+	// which exceeds maxReplicas (3). Validation must reject this (CC-0038).
+	k.Spec.Autoscaling = &AutoscalingSpec{
+		MaxReplicas:          3,
+		TargetCPUUtilization: &cpu,
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("maxReplicas"))
+	g.Expect(err.Error()).To(ContainSubstring("spec.replicas"))
+}
+
+func TestValidate_Autoscaling_Valid_ImplicitMinEqualsMax(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Replicas = 5
+	cpu := int32(80)
+	// MinReplicas is nil — defaults to spec.replicas (5), which equals maxReplicas.
+	// This is a valid edge case (CC-0038).
+	k.Spec.Autoscaling = &AutoscalingSpec{
+		MaxReplicas:          5,
+		TargetCPUUtilization: &cpu,
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_Autoscaling_Invalid_CPUUtilizationOutOfRange(t *testing.T) {
+	w := &KeystoneWebhook{}
+	cases := []struct {
+		name string
+		val  int32
+	}{
+		{"zero", 0},
+		{"negative", -1},
+		{"above_100", 101},
+		{"far_above", 150},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			k := validKeystone()
+			v := tc.val
+			k.Spec.Autoscaling = &AutoscalingSpec{
+				MaxReplicas:          5,
+				TargetCPUUtilization: &v,
+			}
+			_, err := w.ValidateCreate(context.Background(), k)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("targetCPUUtilization"))
+			g.Expect(err.Error()).To(ContainSubstring("between 1 and 100"))
+		})
+	}
+}
+
+func TestValidate_Autoscaling_Invalid_MemoryUtilizationOutOfRange(t *testing.T) {
+	w := &KeystoneWebhook{}
+	cases := []struct {
+		name string
+		val  int32
+	}{
+		{"zero", 0},
+		{"negative", -1},
+		{"above_100", 101},
+		{"far_above", 150},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			k := validKeystone()
+			v := tc.val
+			k.Spec.Autoscaling = &AutoscalingSpec{
+				MaxReplicas:             5,
+				TargetMemoryUtilization: &v,
+			}
+			_, err := w.ValidateCreate(context.Background(), k)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("targetMemoryUtilization"))
+			g.Expect(err.Error()).To(ContainSubstring("between 1 and 100"))
+		})
+	}
+}
+
+func TestValidate_Autoscaling_Valid_BoundaryValues(t *testing.T) {
+	w := &KeystoneWebhook{}
+	cases := []struct {
+		name string
+		cpu  int32
+		mem  int32
+	}{
+		{"min_boundary", 1, 1},
+		{"max_boundary", 100, 100},
+		{"mid_range", 50, 50},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			k := validKeystone()
+			cpu := tc.cpu
+			mem := tc.mem
+			k.Spec.Autoscaling = &AutoscalingSpec{
+				MaxReplicas:             5,
+				TargetCPUUtilization:    &cpu,
+				TargetMemoryUtilization: &mem,
+			}
+			_, err := w.ValidateCreate(context.Background(), k)
+			g.Expect(err).NotTo(HaveOccurred())
+		})
+	}
+}
+
+func TestValidate_Autoscaling_Nil_IsValid(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Autoscaling = nil
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
 // --- ValidateCreate and ValidateUpdate consistency (CC-0011, REQ-005, REQ-006) ---
 
 func TestValidateCreate_RunsAllValidations(t *testing.T) {
@@ -626,6 +852,12 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	k.Spec.Cache.ClusterRef = &corev1.LocalObjectReference{Name: "memcached"}
 	// REQ-010 (CC-0011): Break database mutual-exclusivity — set both clusterRef and host.
 	k.Spec.Database.ClusterRef = &corev1.LocalObjectReference{Name: "mariadb"}
+	// REQ-001 (CC-0038): Break autoscaling — set out-of-range utilization target.
+	invalidCPU := int32(0)
+	k.Spec.Autoscaling = &AutoscalingSpec{
+		MaxReplicas:          5,
+		TargetCPUUtilization: &invalidCPU,
+	}
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
@@ -638,6 +870,7 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g.Expect(errMsg).To(ContainSubstring("cache"))
 	g.Expect(errMsg).To(ContainSubstring("database"))
 	g.Expect(errMsg).To(ContainSubstring("credentialKeys"))
+	g.Expect(errMsg).To(ContainSubstring("targetCPUUtilization"))
 }
 
 func TestValidateUpdate_RunsSameValidation(t *testing.T) {
