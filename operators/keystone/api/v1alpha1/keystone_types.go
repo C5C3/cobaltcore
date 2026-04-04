@@ -5,6 +5,7 @@
 package v1alpha1
 
 import (
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -88,6 +89,12 @@ type KeystoneSpec struct {
 	// +optional
 	Autoscaling *AutoscalingSpec `json:"autoscaling,omitempty"`
 
+	// NetworkPolicy configures network isolation for Keystone API pods.
+	// When set, a NetworkPolicy is created restricting ingress and egress traffic.
+	// When removed (nil), the NetworkPolicy is deleted and traffic flows unrestricted.
+	// +optional
+	NetworkPolicy *NetworkPolicySpec `json:"networkPolicy,omitempty"`
+
 	// ExtraConfig provides free-form INI sections for configuration
 	// not covered by explicit CRD fields.
 	// +optional
@@ -118,6 +125,41 @@ type AutoscalingSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=100
 	TargetMemoryUtilization *int32 `json:"targetMemoryUtilization,omitempty"`
+}
+
+// NetworkPolicySpec defines network isolation for Keystone API pods (CC-0039).
+// When applied, the operator creates a NetworkPolicy that restricts ingress
+// to TCP 5000 from the specified sources and auto-derives egress rules for
+// DNS, MariaDB (from database.ClusterRef), and Memcached (from cache.ClusterRef).
+// +kubebuilder:validation:XValidation:rule="size(self.ingress) > 0",message="at least one ingress source must be specified"
+type NetworkPolicySpec struct {
+	// Ingress defines the sources allowed to reach Keystone API on TCP 5000.
+	// Each source specifies a namespace selector and an optional pod selector.
+	// Multiple sources produce multiple From peers in a single ingress rule
+	// (OR across peers, AND within a peer's selectors).
+	Ingress []NetworkPolicyIngressSource `json:"ingress"`
+
+	// AdditionalEgress defines extra egress rules appended after auto-derived
+	// rules (DNS, MariaDB, Memcached). Use this for brownfield backends,
+	// external APIs, or any target not covered by ClusterRef auto-derivation.
+	// +optional
+	AdditionalEgress []networkingv1.NetworkPolicyEgressRule `json:"additionalEgress,omitempty"`
+}
+
+// NetworkPolicyIngressSource defines a source from which traffic is allowed
+// to reach the Keystone API pods on TCP 5000 (CC-0039).
+type NetworkPolicyIngressSource struct {
+	// NamespaceSelector selects namespaces from which traffic is allowed.
+	// All pods in matching namespaces can reach Keystone on port 5000
+	// unless PodSelector further restricts the set.
+	NamespaceSelector map[string]string `json:"namespaceSelector"`
+
+	// PodSelector optionally restricts allowed traffic to pods matching
+	// these labels within the selected namespaces. When set, only pods
+	// matching both NamespaceSelector AND PodSelector can reach Keystone
+	// (AND logic within a single peer).
+	// +optional
+	PodSelector map[string]string `json:"podSelector,omitempty"`
 }
 
 // FernetSpec defines Fernet key rotation configuration.

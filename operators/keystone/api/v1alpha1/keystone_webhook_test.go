@@ -830,6 +830,46 @@ func TestValidate_Autoscaling_Nil_IsValid(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
+// --- NetworkPolicy validation tests (CC-0039, REQ-001) ---
+
+func TestValidate_NetworkPolicy_Nil_IsValid(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.NetworkPolicy = nil
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_NetworkPolicy_WithIngress_IsValid(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.NetworkPolicy = &NetworkPolicySpec{
+		Ingress: []NetworkPolicyIngressSource{
+			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "ingress-nginx"}},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_NetworkPolicy_EmptyIngress_Rejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.NetworkPolicy = &NetworkPolicySpec{
+		Ingress: []NetworkPolicyIngressSource{},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("networkPolicy"))
+	g.Expect(err.Error()).To(ContainSubstring("ingress"))
+}
+
 // --- ValidateCreate and ValidateUpdate consistency (CC-0011, REQ-005, REQ-006) ---
 
 func TestValidateCreate_RunsAllValidations(t *testing.T) {
@@ -858,6 +898,10 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 		MaxReplicas:          5,
 		TargetCPUUtilization: &invalidCPU,
 	}
+	// REQ-001 (CC-0039): Break networkPolicy — set empty ingress.
+	k.Spec.NetworkPolicy = &NetworkPolicySpec{
+		Ingress: []NetworkPolicyIngressSource{},
+	}
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
@@ -871,6 +915,7 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g.Expect(errMsg).To(ContainSubstring("database"))
 	g.Expect(errMsg).To(ContainSubstring("credentialKeys"))
 	g.Expect(errMsg).To(ContainSubstring("targetCPUUtilization"))
+	g.Expect(errMsg).To(ContainSubstring("networkPolicy"))
 }
 
 func TestValidateUpdate_RunsSameValidation(t *testing.T) {

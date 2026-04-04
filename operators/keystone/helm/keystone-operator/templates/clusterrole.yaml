@@ -153,6 +153,19 @@ rules:
       - update
       - patch
       - delete
+  # networking.k8s.io - networkpolicies (CC-0039)
+  - apiGroups:
+      - networking.k8s.io
+    resources:
+      - networkpolicies
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
   # coordination.k8s.io - leases for leader election (CC-0018)
   - apiGroups:
       - coordination.k8s.io

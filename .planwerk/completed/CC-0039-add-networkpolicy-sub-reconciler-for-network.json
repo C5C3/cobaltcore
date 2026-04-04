@@ -2,8 +2,8 @@
   "feature_id": "CC-0039",
   "title": "Add NetworkPolicy sub-reconciler for network isolation",
   "slug": "add-networkpolicy-sub-reconciler-for-network",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 🔨 medium\n**Category:** backend\n**Priority:** critical\n**Source:** NetworkPolicy Sub-Reconciler\n\nAdd an optional `spec.networkPolicy` field to the Keystone CRD that, when set, creates Kubernetes `NetworkPolicy` resources restricting traffic to and from Keystone API pods. Ingress is limited to port 5000 from user-defined namespace/pod selectors. Egress is auto-derived from existing spec fields (`spec.database.ClusterRef` → MariaDB:3306, `spec.cache.ClusterRef` → Memcached:11211) plus implicit DNS (UDP+TCP 53), with support for additional user-defined egress rules via `additionalEgress`. This implements Zero-Trust/Defense-in-Depth for the Identity Service.\n\nThe sub-reconciler implements the optional sub-resource lifecycle with three paths:\n1. **spec.networkPolicy nil + no existing NetworkPolicy** → set `NetworkPolicyReady=True` reason `NetworkPolicyNotRequired`, return early\n2. **spec.networkPolicy nil + existing NetworkPolicy found** → explicit `client.Delete`, set `NetworkPolicyReady=True` reason `NetworkPolicyNotRequired`\n3. **spec.networkPolicy set** → build NetworkPolicy with auto-derived egress + user ingress/additional egress → create-or-update with `SetControllerReference`, set `NetworkPolicyReady=True`\n\nDesign decisions: OpenBao egress is excluded (ESO controller handles PushSecret communication, not Keystone pods). Brownfield auto-derivation is excluded (external host:port targets are too varied; users configure via `additionalEgress`).\n\nIncludes `NetworkPolicySpec` struct, CEL `XValidation` requiring at least one ingress source, RBAC markers for `networking.k8s.io`, `Owns(&networkingv1.NetworkPolicy{})` watch, and unit tests.\n\n**Affected Areas:**\n- operators/keystone/api/v1alpha1/keystone_types.go\n- operators/keystone/internal/controller/reconcile_networkpolicy.go\n- operators/keystone/internal/controller/reconcile_networkpolicy_test.go\n- operators/keystone/internal/controller/keystone_controller.go",
   "stories": [
@@ -357,6 +357,7 @@
       "description": "In operators/keystone/api/v1alpha1/keystone_types.go: (1) Add import for networkingv1 'k8s.io/api/networking/v1'. (2) Add NetworkPolicyIngressSource struct with NamespaceSelector map[string]string (required) and PodSelector map[string]string (optional). (3) Add NetworkPolicySpec struct with Ingress []NetworkPolicyIngressSource (required) and AdditionalEgress []networkingv1.NetworkPolicyEgressRule (optional). (4) Add CEL XValidation on NetworkPolicySpec: rule='size(self.ingress) > 0', message='at least one ingress source must be specified'. (5) Add optional pointer field NetworkPolicy *NetworkPolicySpec on KeystoneSpec (after Autoscaling, before ExtraConfig) with +optional marker and json tag 'networkPolicy,omitempty'. Follow existing pattern from Autoscaling *AutoscalingSpec at line 89. Run 'go vet ./...' from operators/keystone/ to verify compilation.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-005",
@@ -370,6 +371,7 @@
       "description": "Create operators/keystone/internal/controller/reconcile_networkpolicy.go. Implement: (1) reconcileNetworkPolicy(ctx, *Keystone) (ctrl.Result, error) — three-path lifecycle: if spec.networkPolicy nil → deleteNetworkPolicy + set NetworkPolicyReady=True/NetworkPolicyNotRequired; if set → buildNetworkPolicy + ensureNetworkPolicy + set NetworkPolicyReady=True/NetworkPolicyReady. (2) buildNetworkPolicy(*Keystone) *networkingv1.NetworkPolicy — constructs NetworkPolicy with: name=apiResourceName(), labels=commonLabels(), podSelector=selectorLabels(), policyTypes=[Ingress,Egress], ingress=[TCP 5000 from user sources], egress=[DNS always + MariaDB TCP 3306 if database.ClusterRef set + Memcached TCP 11211 if cache.ClusterRef set + additionalEgress]. (3) ensureNetworkPolicy(ctx, client, scheme, owner, *NetworkPolicy) error — get existing, create if not found (SetControllerReference), update if exists (snapshot-compare pattern from EnsureHPA). (4) deleteNetworkPolicy(ctx, client, namespace, name) error — client.Delete with IgnoreNotFound. Follow CC-0038 reconcile_hpa.go pattern exactly. Use SPDX license header. Feature comment: '// Feature: CC-0039'.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -387,6 +389,7 @@
       "description": "Create operators/keystone/internal/controller/reconcile_networkpolicy_test.go. Follow reconcile_hpa_test.go conventions: (1) npTestScheme() — clientgoscheme + networkingv1 + keystonev1alpha1. (2) npTestKeystone() — minimal fixture with managed database (ClusterRef) and managed cache (ClusterRef). (3) newNPTestReconciler(scheme, ...objs). Tests: TestBuildNetworkPolicy_PodSelector (selectorLabels match), TestBuildNetworkPolicy_Labels (commonLabels), TestBuildNetworkPolicy_PolicyTypes (Ingress+Egress), TestBuildNetworkPolicy_MariaDBEgressFromClusterRef (TCP 3306 present), TestBuildNetworkPolicy_NoMariaDBEgressWhenBrownfield (no ClusterRef → no rule), TestBuildNetworkPolicy_MemcachedEgressFromClusterRef (TCP 11211 present), TestBuildNetworkPolicy_NoMemcachedEgressWhenBrownfield, TestBuildNetworkPolicy_DNSEgressAlwaysPresent, TestBuildNetworkPolicy_DNSEgressIncludesUDPAndTCP, TestBuildNetworkPolicy_IngressFromNamespaceSelector, TestBuildNetworkPolicy_IngressWithPodSelector, TestBuildNetworkPolicy_MultipleIngressSources, TestBuildNetworkPolicy_AdditionalEgressAppended, TestBuildNetworkPolicy_NoAdditionalEgressWhenEmpty, TestBuildNetworkPolicy_BrownfieldOnlyHasDNSEgressOnly. Use NewGomegaWithT(t) assertions. SPDX header. Feature: CC-0039.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -402,6 +405,7 @@
       "description": "In the same test file (reconcile_networkpolicy_test.go), add lifecycle tests following reconcile_hpa_test.go patterns: TestReconcileNetworkPolicy_PolicySet_CreatesNetworkPolicy (verify resource created, ownerRef set, condition=True/NetworkPolicyReady), TestReconcileNetworkPolicy_PolicySet_UpdatesExisting (create first, modify spec, re-reconcile, verify updated), TestReconcileNetworkPolicy_PolicyNil_NoExisting_SetsNotRequired (nil spec, no pre-existing NP, condition=True/NetworkPolicyNotRequired), TestReconcileNetworkPolicy_PolicyNil_ExistingDeleted (pre-create NP, nil spec, verify deleted and condition set), TestReconcileNetworkPolicy_ConditionObservedGeneration (test both paths with specific generation values), TestReconcileNetworkPolicy_EnsureError_Propagated (interceptor.Funcs on Create for *networkingv1.NetworkPolicy, verify error wrapping), TestReconcileNetworkPolicy_DeleteError_Propagated (interceptor.Funcs on Delete, verify error wrapping). Use fake.NewClientBuilder().WithInterceptorFuncs() for error injection.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-007",
         "REQ-010"
@@ -413,6 +417,7 @@
       "description": "In operators/keystone/internal/controller/keystone_controller.go: (1) Add 'NetworkPolicyReady' to subConditionTypes slice (after 'HPAReady', before 'BootstrapReady'). (2) Add import: networkingv1 'k8s.io/api/networking/v1'. (3) Add RBAC marker: '// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete' (after the autoscaling RBAC marker). (4) Add Owns(&networkingv1.NetworkPolicy{}) in SetupWithManager after Owns(&autoscalingv2.HorizontalPodAutoscaler{}). (5) Add reconcileNetworkPolicy call in the Reconcile method after reconcileHPA and before reconcileBootstrap: 'if result, err := r.reconcileNetworkPolicy(ctx, &keystone); !result.IsZero() || err != nil { return r.updateStatus(ctx, &keystone, result, err) }'. Run 'go vet ./...' and 'go build ./...' from operators/keystone/ to verify.",
       "level": 3,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -572,6 +577,251 @@
       "story": "Platform engineer disables NetworkPolicy by removing the field",
       "expected": "When deleting NetworkPolicy fails (non-NotFound, via interceptor.Funcs), error should be wrapped with 'deleting NetworkPolicy' context and propagated",
       "requirement_id": "REQ-010"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_NotFound_ReturnsEmptyResult",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_SetsAllSubConditionsTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_AggregatesReadyCondition",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_StatusUpdatePersisted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_Idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSetupWithManager_RegistersWithoutError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_AllTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_OneFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_MissingCondition",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_Empty",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_EarlyReturnOnSecretsNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_EarlyReturnOnDatabaseNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_SequentialProgression",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_ReadyFalseWhenDeploymentNotAvailable",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_ObservedGenerationTracked",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSecretToKeystoneMapper_ReferencedSecrets",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestCommonLabels_ExactKeyValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSelectorLabels_ExactKeyValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSelectorLabels_SubsetOfCommonLabels",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSecretToKeystoneMapper_OwnedSecrets",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildKeystoneNetworkPolicy_NameAndNamespace",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildKeystoneNetworkPolicy_Labels",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildKeystoneNetworkPolicy_PodSelector",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildKeystoneNetworkPolicy_PolicyTypes",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildKeystoneNetworkPolicy_IngressRules_SingleSource",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildKeystoneNetworkPolicy_IngressRules_MultipleSources_WithPodSelector",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_BrownfieldOnly_DNSOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_ManagedDB",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_ManagedCache",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_BothManaged",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildKeystoneNetworkPolicy_AdditionalEgress",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestReconcileNetworkPolicy_NetworkPolicySet_CreatesNetworkPolicy",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestReconcileNetworkPolicy_NetworkPolicyEnabled_NetworkPolicyUpdated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestReconcileNetworkPolicy_NetworkPolicyNil_NoExistingNP_SetsNotRequired",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestReconcileNetworkPolicy_NetworkPolicyNil_ExistingNP_DeletesNetworkPolicy",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],
@@ -600,8 +850,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-02T14:05:45.727695"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-02T14:13:27.984617"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-04T13:52:40.947130"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/118",
+  "pr_number": 118,
   "execution_history": [
     {
       "run_id": "72a88a47-7faf-442d-9588-fc2458e6af5c",
@@ -613,6 +873,78 @@
           "name": "prepare",
           "duration": 714.4185810089111,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "4d77bd38-4034-425d-8219-6c5fbc966fde",
+      "timestamp": "2026-04-02T14:50:16.390913",
+      "total_duration": 2020.5712251663208,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (1 tasks)",
+          "duration": 301.4391760826111,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (3 tasks)",
+          "duration": 751.0689101219177,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (1 tasks)",
+          "duration": 217.70873641967773,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0039] Code Review",
+          "duration": 290.74587297439575,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0039] Improvements",
+          "duration": 345.6195025444031,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0039] Simplify",
+          "duration": 113.98902702331543,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "fc555d33-8c87-46f9-a01f-55b0f55473f5",
+      "timestamp": "2026-04-03T07:11:21.482068",
+      "total_duration": 559.2668137550354,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 559.2668137550354,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "62f58a2e-7fc1-4eb7-8d6c-8afb787a2b15",
+      "timestamp": "2026-04-03T09:02:01.321362",
+      "total_duration": 862.5947797298431,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 862.5947797298431,
+          "type": "review_address",
           "status": "done"
         }
       ]

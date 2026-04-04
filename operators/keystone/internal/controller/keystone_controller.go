@@ -13,6 +13,7 @@ import (
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,6 +38,7 @@ var subConditionTypes = []string{
 	"DatabaseReady",
 	"DeploymentReady",
 	"HPAReady",
+	"NetworkPolicyReady",
 	"BootstrapReady",
 }
 
@@ -58,6 +60,7 @@ type KeystoneReconciler struct {
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets;pushsecrets,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is the main reconciliation loop for the Keystone CR.
@@ -94,6 +97,14 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	if result, err := r.reconcileDatabase(ctx, &keystone, configMapName); !result.IsZero() || err != nil {
+		return r.updateStatus(ctx, &keystone, result, err)
+	}
+
+	// NetworkPolicy runs before Deployment so that pods are born into a
+	// restricted network rather than running unrestricted until the policy is
+	// applied. The NetworkPolicy has no data dependency on the Deployment — it
+	// uses selectorLabels derived from the CR (CC-0039).
+	if result, err := r.reconcileNetworkPolicy(ctx, &keystone); !result.IsZero() || err != nil {
 		return r.updateStatus(ctx, &keystone, result, err)
 	}
 
@@ -160,6 +171,7 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&batchv1.Job{}).
 		Owns(&policyv1.PodDisruptionBudget{}).
 		Owns(&autoscalingv2.HorizontalPodAutoscaler{}).
+		Owns(&networkingv1.NetworkPolicy{}).
 		Owns(&batchv1.CronJob{}).
 		// Watch Secrets and map to the Keystone CRs that reference them.
 		// ESO-managed secrets (spec.database.secretRef, spec.bootstrap.adminPasswordSecretRef)

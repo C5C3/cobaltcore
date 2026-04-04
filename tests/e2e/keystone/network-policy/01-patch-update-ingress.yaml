@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch to update ingress sources — add a second source (CC-0039).
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-netpol
+  namespace: openstack
+spec:
+  networkPolicy:
+    ingress:
+    - namespaceSelector:
+        kubernetes.io/metadata.name: ingress-nginx
+    - namespaceSelector:
+        kubernetes.io/metadata.name: monitoring

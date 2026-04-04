@@ -1,0 +1,65 @@
+{
+  "feature_id": "CC-0039",
+  "title": "Add NetworkPolicy sub-reconciler for network isolation",
+  "date": "2026-04-03",
+  "verdict": "APPROVED",
+  "summary": "All external reviewer feedback (berendt, review #2) has been correctly addressed: B-001 webhook defense-in-depth validation added with 3 dedicated tests + aggregate test update; B-002 Chainsaw E2E tests added covering create/update/delete lifecycle; W-001 reconcile ordering moved NetworkPolicy before Deployment with rationale comment; W-002 controller test updated to assert NetworkPolicyReady is set before Deployment; I-001 code comments document egress destination limitation; I-002 acknowledged as intentional duplication. All tests pass, go vet clean, no lint errors. Code follows existing patterns consistently.",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (go test ./... all OK)", "checked": true},
+    {"item": "Edge cases covered (empty ingress guard, brownfield-only DNS, nil networkPolicy paths)", "checked": true},
+    {"item": "Error cases tested (ensure error propagation, delete error propagation)", "checked": true},
+    {"item": "Webhook validation tests: nil valid, with-ingress valid, empty-ingress rejected", "checked": true},
+    {"item": "Aggregate RunsAllValidations test updated with networkPolicy", "checked": true},
+    {"item": "E2E Chainsaw tests cover create, update, and delete lifecycle", "checked": true},
+    {"item": "ObservedGeneration tracked in both enabled and not-required paths", "checked": true},
+    {"item": "No-op update detection tested (snapshot comparison guard)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing sub-reconciler patterns (HPA reference)", "checked": true},
+    {"item": "Error wrapping uses fmt.Errorf('verb context: %w', err)", "checked": true},
+    {"item": "Functions have single responsibility", "checked": true},
+    {"item": "No dead code or unused functions", "checked": true},
+    {"item": "Constants used for condition types and reasons", "checked": true},
+    {"item": "DECISION comments document non-obvious choices", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "CEL XValidation mirrors webhook validation semantics (size(self.ingress) > 0)", "checked": true},
+    {"item": "Defense-in-depth: webhook, reconciler guard, and CRD validation all reject empty ingress", "checked": true},
+    {"item": "SetControllerReference on both create and update paths", "checked": true},
+    {"item": "Fail closed on empty ingress (no NetworkPolicy created)", "checked": true},
+    {"item": "Helm ClusterRole template includes networking.k8s.io/networkpolicies rule", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Reconcile ordering: NetworkPolicy before Deployment (pods born into restricted network)", "checked": true},
+    {"item": "Owns(&networkingv1.NetworkPolicy{}) correctly registered (operator creates with ownerRef)", "checked": true},
+    {"item": "NetworkPolicy name derived from CR name via apiResourceName() (multi-instance safe)", "checked": true},
+    {"item": "RBAC marker matches Helm ClusterRole template", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code beyond acknowledged npNormalizeMap (documented, awaiting second consumer)", "checked": true},
+    {"item": "No unnecessary abstractions", "checked": true},
+    {"item": "No future-proofing beyond requirements", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Empty ingress returns error immediately before any NetworkPolicy creation", "checked": true},
+    {"item": "Errors propagated with wrapping context", "checked": true},
+    {"item": "deleteNetworkPolicy uses IgnoreNotFound for idempotency", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Three-layer validation: CRD CEL, webhook, reconciler guard", "checked": true},
+    {"item": "Snapshot comparison prevents no-op API writes", "checked": true},
+    {"item": "Owner reference enforced on update path (re-set if removed out-of-band)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "I-001 acknowledged: egress rules currently allow any destination on MariaDB/Memcached ports. Code comments document this as a known limitation with deferred tightening. No action needed now.",
+    "The catch block in the E2E test (Step 2) includes NetworkPolicy-specific diagnostics (kubectl get networkpolicy) which is a good addition over the autoscaling reference pattern."
+  ],
+  "next_steps": [
+    "Merge: all blocking and major checks pass, all external reviewer feedback addressed"
+  ],
+  "detected_patterns": []
+}

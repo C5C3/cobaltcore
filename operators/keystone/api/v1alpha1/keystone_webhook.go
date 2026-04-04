@@ -259,6 +259,15 @@ func (w *KeystoneWebhook) validate(k *Keystone) error {
 		}
 	}
 
+	// REQ-001 (CC-0039): Defense-in-depth networkPolicy ingress check alongside the
+	// +kubebuilder:validation:XValidation CEL rule on NetworkPolicySpec (CC-0039).
+	if k.Spec.NetworkPolicy != nil && len(k.Spec.NetworkPolicy.Ingress) == 0 {
+		allErrs = append(allErrs, field.Required(
+			specPath.Child("networkPolicy", "ingress"),
+			"at least one ingress source must be specified",
+		))
+	}
+
 	if len(allErrs) > 0 {
 		return apierrors.NewInvalid(
 			schema.GroupKind{Group: GroupVersion.Group, Kind: "Keystone"},

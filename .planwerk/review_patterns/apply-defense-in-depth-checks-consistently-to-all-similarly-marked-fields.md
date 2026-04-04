@@ -3,7 +3,7 @@
 **Review-Area**: validation
 **Detection-Hint**: When a webhook validate() function has an explicit defense-in-depth check for one field's kubebuilder marker (e.g., Minimum), scan for all other fields with the same type of marker. If any lack a corresponding runtime check, flag the inconsistency.
 **Severity**: WARNING
-**Occurrences**: 2
+**Occurrences**: 3
 
 ## What to check
 
@@ -24,3 +24,8 @@ An established defense-in-depth pattern applied to some fields but not others cr
 - **Feedback**: `Cache` has both a `+kubebuilder:validation:XValidation` CEL rule and a matching runtime guard in `validate()`. `Database` has the same CEL XOR constraint but no corresponding defense-in-depth check exists in `validate()`. If CRD admission is bypassed, a `Keystone` with both `database.clusterRef` and `database.host` set is accepted silently.
 - **What was missed**: For every struct field carrying a +kubebuilder:validation:XValidation (or similar declarative constraint), verify that the same logical check is duplicated in the runtime validation function. Compare the set of CEL-guarded fields against the set of runtime-guarded fields and ensure they match.
 - **Fix**: Added a runtime mutual-exclusivity check for Database (REQ-010) immediately after the existing Cache check, using the same pattern: `if (k.Spec.Database.ClusterRef != nil) == (k.Spec.Database.Host != "")`. Added corresponding rejection tests mirroring the Cache test cases.
+
+### CC-0039 — berendt
+- **Feedback**: The webhook validates every other optional spec field with defense-in-depth checks (autoscaling, cache, database, policyOverrides), but the networkPolicy field has no webhook validation.
+- **What was missed**: Open the webhook file and confirm the new field has an admission-time validation block that mirrors the reconciler guard. Compare the set of fields validated in the webhook against the set validated in the reconciler; they should match.
+- **Fix**: Added a webhook validation block for networkPolicy after the autoscaling block, rejecting empty ingress at admission time, plus three dedicated unit tests (nil-valid, with-ingress-valid, empty-ingress-rejected) and an update to the aggregate-validation test.

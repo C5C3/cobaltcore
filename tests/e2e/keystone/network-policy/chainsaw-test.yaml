@@ -1,0 +1,148 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for NetworkPolicy reconciliation (CC-0039).
+# Verifies that the operator creates, updates, and deletes NetworkPolicies
+# based on spec.networkPolicy:
+#   - Initial deployment with ingress from ingress-nginx namespace
+#   - Update ingress sources (add monitoring namespace)
+#   - Disable networkPolicy (NetworkPolicy deleted)
+#
+# REQ-001, REQ-003, REQ-004 (CC-0039)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-network-policy
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR with networkPolicy ─────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert Ready and NetworkPolicy created ───────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-netpol
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyReady
+    - assert:
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: keystone-netpol-api
+            namespace: openstack
+            labels:
+              app.kubernetes.io/name: keystone
+              app.kubernetes.io/instance: keystone-netpol
+              app.kubernetes.io/managed-by: keystone-operator
+          spec:
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: keystone
+                app.kubernetes.io/instance: keystone-netpol
+            policyTypes:
+            - Ingress
+            - Egress
+            ingress:
+            - ports:
+              - protocol: TCP
+                port: 5000
+              from:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: ingress-nginx
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== ConfigMap content ==="
+          for cm in $(kubectl get cm -n $NAMESPACE -o name 2>/dev/null | grep config-); do
+            echo "--- $cm ---"
+            kubectl get -n $NAMESPACE "$cm" -o jsonpath='{.data}' 2>&1 || true
+          done
+          echo "=== NetworkPolicy status ==="
+          kubectl get networkpolicy -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Update ingress sources ───────────────────────────────────────
+  - try:
+    - patch:
+        file: 01-patch-update-ingress.yaml
+  # ── Step 4: Assert NetworkPolicy updated with both ingress sources ───────
+  - try:
+    - assert:
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: keystone-netpol-api
+            namespace: openstack
+          spec:
+            ingress:
+            - ports:
+              - protocol: TCP
+                port: 5000
+              from:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: ingress-nginx
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: monitoring
+  # ── Step 5: Disable networkPolicy ────────────────────────────────────────
+  - try:
+    - patch:
+        file: 02-patch-disable-networkpolicy.yaml
+  # ── Step 6: Assert NetworkPolicy deleted and condition updated ───────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-netpol
+            namespace: openstack
+          status:
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyNotRequired
+    - script:
+        content: |
+          # Verify NetworkPolicy no longer exists (CC-0039, REQ-003).
+          if kubectl get networkpolicy keystone-netpol-api -n $NAMESPACE 2>/dev/null; then
+            echo "FAIL: NetworkPolicy should have been deleted"
+            exit 1
+          fi
+          echo "PASS: NetworkPolicy correctly deleted"

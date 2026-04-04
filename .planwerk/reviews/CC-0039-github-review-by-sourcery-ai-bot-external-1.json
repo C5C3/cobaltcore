@@ -1,0 +1,37 @@
+{
+  "feature_id": "CC-0039",
+  "title": "GitHub Review by sourcery-ai[bot]",
+  "summary": "The reviewer wants three changes: (1) extract hard-coded condition type/reason strings (e.g., \"NetworkPolicyReady\") into typed constants, (2) clarify or fix the label/annotation merge strategy in `ensureNetworkPolicy` so the operator is explicitly authoritative rather than silently preserving stale fields, and (3) add a defensive runtime check for empty ingress sources in `buildKeystoneNetworkPolicy` to fail closed if CRD validation is bypassed.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "sourcery-ai[bot]",
+  "date": "2026-04-02T14:53:15Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "Hey - I've found 1 issue, and left some high level feedback:\n\n- The NetworkPolicy reconciliation logic uses hard-coded condition type/reason strings (e.g., \"NetworkPolicyReady\", \"NetworkPolicyNotRequired\") in multiple places; consider centralizing these as typed constants to avoid typos and make future refactors less error-prone.\n- In ensureNetworkPolicy you overwrite the existing NetworkPolicy.Spec and merge labels/annotations only in one direction (desired -> existing), which means removed labels/annotations and any user-added spec fields will be silently preserved or dropped; if you want the operator to be truly authoritative, it may be worth explicitly documenting or adjusting this merge strategy so consumers understand which mutations are allowed to stick.\n\n<details>\n<summary>Prompt for AI Agents</summary>\n\n~~~markdown\nPlease address the comments from this code review:\n\n## Overall Comments\n- The NetworkPolicy reconciliation logic uses hard-coded condition type/reason strings (e.g., \"NetworkPolicyReady\", \"NetworkPolicyNotRequired\") in multiple places; consider centralizing these as typed constants to avoid typos and make future refactors less error-prone.\n- In ensureNetworkPolicy you overwrite the existing NetworkPolicy.Spec and merge labels/annotations only in one direction (desired -> existing), which means removed labels/annotations and any user-added spec fields will be silently preserved or dropped; if you want the operator to be truly authoritative, it may be worth explicitly documenting or adjusting this merge strategy so consumers understand which mutations are allowed to stick.\n\n## Individual Comments\n\n### Comment 1\n<location path=\"operators/keystone/internal/controller/reconcile_networkpolicy.go\" line_range=\"70-79\" />\n<code_context>\n+func buildKeystoneNetworkPolicy(keystone *keystonev1alpha1.Keystone) *networkingv1.NetworkPolicy {\n</code_context>\n<issue_to_address>\n**🚨 issue (security):** Guard against empty ingress sources to avoid accidentally allowing all ingress if validation is bypassed.\n\nToday CRD/XValidation requires `size(self.ingress) > 0`, but if validation is bypassed (old objects, disabled validation, direct etcd writes), `npSpec.Ingress` may be empty. In that case an `Ingress` rule with an empty `From` effectively allows all sources on port 5000, which is an unsafe default for a hardening feature. Please add a defensive check (e.g., return an error from `reconcileNetworkPolicy` or skip NetworkPolicy creation) when `len(npSpec.Ingress) == 0` so we fail closed rather than open.\n</issue_to_address>\n~~~\n\n</details>\n\n***\n\n<details>\n<summary>Sourcery is free for open source - if you like our reviews please consider sharing them ✨</summary>\n\n- [X](https://twitter.com/intent/tweet?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [Mastodon](https://mastodon.social/share?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [LinkedIn](https://www.linkedin.com/sharing/share-offsite/?url=https://sourcery.ai)\n- [Facebook](https://www.facebook.com/sharer/sharer.php?u=https://sourcery.ai)\n\n</details>\n\n<sub>\nHelp me be more useful! Please click 👍 or 👎 on each comment and I'll use the feedback to improve your reviews.\n</sub>",
+  "code_comments": [
+    {
+      "body": "**🚨 issue (security):** Guard against empty ingress sources to avoid accidentally allowing all ingress if validation is bypassed.\n\nToday CRD/XValidation requires `size(self.ingress) > 0`, but if validation is bypassed (old objects, disabled validation, direct etcd writes), `npSpec.Ingress` may be empty. In that case an `Ingress` rule with an empty `From` effectively allows all sources on port 5000, which is an unsafe default for a hardening feature. Please add a defensive check (e.g., return an error from `reconcileNetworkPolicy` or skip NetworkPolicy creation) when `len(npSpec.Ingress) == 0` so we fail closed rather than open.",
+      "path": "operators/keystone/internal/controller/reconcile_networkpolicy.go",
+      "line": 79,
+      "author": "sourcery-ai[bot]",
+      "created_at": "2026-04-02T14:53:15Z",
+      "id": null,
+      "resolution": "Added a defensive guard at reconcile_networkpolicy.go:56-63 that checks len(keystone.Spec.NetworkPolicy.Ingress) == 0 before building the NetworkPolicy and returns an error refusing to create a policy that would allow all ingress. A test (TestReconcileNetworkPolicy_EmptyIngress_ReturnsError at line 525) verifies the error is returned and no NetworkPolicy is created, ensuring fail-closed behavior when CRD validation is bypassed."
+    }
+  ],
+  "resolution_summary": "All three review items were addressed in reconcile_networkpolicy.go and reconcile_networkpolicy_test.go. Hard-coded condition strings were extracted into typed constants (conditionTypeNetworkPolicyReady, conditionReasonNetworkPolicyReady, conditionReasonNetworkPolicyNotRequired) at lines 29-33 and used throughout. The ensureNetworkPolicy function received an explicit doc comment (lines 199-207) documenting the merge strategy: Spec is fully overwritten, labels/annotations are additively merged preserving user-added keys. The security issue was addressed with a defensive guard (lines 56-63) that returns an error when ingress sources are empty, failing closed rather than open, with a corresponding test added.",
+  "github_review_id": 4051228786
+}

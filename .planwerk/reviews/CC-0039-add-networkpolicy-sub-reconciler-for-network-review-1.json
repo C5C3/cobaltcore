@@ -1,0 +1,122 @@
+{
+  "summary": "NetworkPolicy sub-reconciler implementing three-path lifecycle (set/nil+absent/nil+exists) with auto-derived egress for DNS/MariaDB/Memcached, CEL validation, RBAC marker, Owns watch, and unit tests. Two blocking issues: CRD YAML not regenerated after types change, and Helm ClusterRole missing networking.k8s.io RBAC rule. One major issue: ensureNetworkPolicy always calls c.Update without snapshot comparison, violating the established EnsureHPA/EnsurePDB pattern.",
+  "verdict": "BLOCKED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (go test ./... passes)", "checked": true},
+    {"item": "buildKeystoneNetworkPolicy unit tests cover pod selector, labels, policy types, ingress, egress auto-derivation, DNS, additionalEgress", "checked": true},
+    {"item": "Lifecycle tests cover create, update, nil paths, ObservedGeneration, error propagation", "checked": true},
+    {"item": "Edge cases covered: brownfield-only (DNS only), multiple ingress sources, pod selector with namespace selector", "checked": true},
+    {"item": "Error injection via interceptor.Funcs for both Create and Delete errors", "checked": true},
+    {"item": "Controller-level tests updated for NetworkPolicyReady in all condition lists", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing sub-reconciler pattern (reconcileHPA)", "checked": true},
+    {"item": "SPDX header present", "checked": true},
+    {"item": "Feature comment CC-0039 present", "checked": true},
+    {"item": "Error wrapping follows fmt.Errorf('verb context: %%w', err) convention", "checked": true},
+    {"item": "Functions have clear single responsibility", "checked": true},
+    {"item": "ensureNetworkPolicy uses snapshot comparison before Update (matches EnsureHPA/EnsurePDB pattern)", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "RBAC marker uses least-privilege verbs", "checked": true},
+    {"item": "NetworkPolicy restricts both ingress and egress (PolicyTypes includes both)", "checked": true},
+    {"item": "Helm ClusterRole template synced with kubebuilder RBAC markers", "checked": false}
+  ],
+  "architecture_checklist": [
+    {"item": "Reconciliation chain order correct (after HPA, before Bootstrap)", "checked": true},
+    {"item": "Owns(&networkingv1.NetworkPolicy{}) watch registered", "checked": true},
+    {"item": "NetworkPolicyReady in subConditionTypes", "checked": true},
+    {"item": "SetControllerReference on both create and update paths", "checked": true},
+    {"item": "CRD YAML regenerated after API type changes", "checked": false}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unused code", "checked": true},
+    {"item": "No over-engineering (additionalEgress is required by spec, not speculative)", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors propagated immediately via return", "checked": true},
+    {"item": "deleteNetworkPolicy uses IgnoreNotFound correctly", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Nil checks for spec.networkPolicy before access", "checked": true},
+    {"item": "CEL XValidation enforces at least one ingress source", "checked": true},
+    {"item": "PodSelector only set when len > 0", "checked": true}
+  ],
+  "security_findings": [
+    {
+      "severity": "HIGH",
+      "description": "Helm ClusterRole template is missing the networking.k8s.io apiGroup rule for networkpolicies. The kubebuilder RBAC marker was added to keystone_controller.go but the Helm template was not updated. When deployed via Helm, the operator will receive 403 Forbidden on every NetworkPolicy get/create/update/delete call, silently breaking reconciliation.",
+      "location": "operators/keystone/helm/keystone-operator/templates/clusterrole.yaml:155",
+      "fix": "Add a new RBAC rule block after the autoscaling entry: apiGroups: [networking.k8s.io], resources: [networkpolicies], verbs: [get, list, watch, create, update, patch, delete] with comment '# networking.k8s.io - networkpolicies (CC-0039)'",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "architecture_findings": [
+    {
+      "severity": "BLOCKING",
+      "description": "CRD YAML (config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml) was not regenerated after adding NetworkPolicySpec, NetworkPolicyIngressSource, and the NetworkPolicy field to keystone_types.go. The CRD schema has no networkPolicy field, no CEL XValidation rule, and no kubebuilder validation markers for the new types. This means the API server will reject any CR with spec.networkPolicy set, or silently strip the field.",
+      "location": "operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml",
+      "fix": "Run 'make generate' and 'make manifests' from operators/keystone/ to regenerate zz_generated.deepcopy.go and the CRD YAML. Commit the generated files.",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "issues_found": [
+    {
+      "check_id": "PC1",
+      "severity": "BLOCKING",
+      "description": "CRD YAML not regenerated after API type changes. keystone_types.go adds NetworkPolicySpec, NetworkPolicyIngressSource, and NetworkPolicy *NetworkPolicySpec field, but config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml contains no networkPolicy field. Matches mandatory review pattern 'regenerate-auto-generated-files-after-api-type-changes'.",
+      "location": "operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml",
+      "fix": "Run 'make generate && make manifests' from operators/keystone/ to regenerate the CRD YAML.",
+      "evidence": "grep -c networkPolicy operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml returns 0 matches",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "PC3",
+      "severity": "BLOCKING",
+      "description": "Helm ClusterRole template missing networking.k8s.io RBAC rule. The kubebuilder marker '+kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,...' was added at keystone_controller.go:63, but the Helm ClusterRole template has no networking.k8s.io entry. Matches mandatory review pattern 'sync-rbac-markers-with-helm-clusterrole-templates'. The operator will get 403 Forbidden at runtime when deployed via Helm.",
+      "location": "operators/keystone/helm/keystone-operator/templates/clusterrole.yaml:155",
+      "fix": "Add after line 155 (autoscaling block):\n  # networking.k8s.io - networkpolicies (CC-0039)\n  - apiGroups:\n      - networking.k8s.io\n    resources:\n      - networkpolicies\n    verbs:\n      - get\n      - list\n      - watch\n      - create\n      - update\n      - patch\n      - delete",
+      "evidence": "grep 'networking.k8s.io' operators/keystone/helm/keystone-operator/templates/clusterrole.yaml returns no matches, but keystone_controller.go:63 has: // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "PC3",
+      "severity": "MAJOR",
+      "description": "ensureNetworkPolicy always calls c.Update without snapshot comparison, violating the established pattern used by EnsurePDB and EnsureHPA. Both EnsurePDB (deployment.go:219) and EnsureHPA (deployment.go:290) use 'before := existing.DeepCopy()' and guard the c.Update call with apiequality.Semantic.DeepEqual checks to skip no-op updates. ensureNetworkPolicy at reconcile_networkpolicy.go:217 unconditionally calls c.Update, causing unnecessary API writes, spurious watch events, and potential 409 Conflict errors on every reconciliation.",
+      "location": "operators/keystone/internal/controller/reconcile_networkpolicy.go:216-219",
+      "fix": "Add snapshot comparison before the Update call, matching EnsureHPA/EnsurePDB:\n  before := existing.DeepCopy()\n  // ... mutations ...\n  if !apiequality.Semantic.DeepEqual(existing.Spec, before.Spec) ||\n    !apiequality.Semantic.DeepEqual(normalizeMap(existing.Labels), normalizeMap(before.Labels)) ||\n    !apiequality.Semantic.DeepEqual(normalizeMap(existing.Annotations), normalizeMap(before.Annotations)) ||\n    !apiequality.Semantic.DeepEqual(existing.OwnerReferences, before.OwnerReferences) {\n    if err := c.Update(ctx, existing); err != nil { ... }\n  }\nAlternatively, move ensureNetworkPolicy and deleteNetworkPolicy to internal/common/deployment/ as EnsureNetworkPolicy/DeleteNetworkPolicy to fully align with the shared Ensure* pattern.",
+      "evidence": "EnsureHPA (deployment.go:290): 'before := existing.DeepCopy()' ... 'if !apiequality.Semantic.DeepEqual(existing.Spec, before.Spec)' guards Update.\nEnsurePDB (deployment.go:219): same pattern.\nensureNetworkPolicy (reconcile_networkpolicy.go:217): 'existing.Spec = np.Spec\\nif err := c.Update(ctx, existing); err != nil {' — no guard.",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider moving ensureNetworkPolicy and deleteNetworkPolicy to internal/common/deployment/ package (as EnsureNetworkPolicy/DeleteNetworkPolicy) to align with EnsureHPA, EnsurePDB, and EnsureDeployment. This centralizes the create-or-update pattern and enables reuse by future operators.",
+    "DNS egress rule currently allows traffic to any destination on port 53. Consider restricting to kube-system namespace selector if the deployment environment guarantees CoreDNS runs there, matching the review criteria's 'to kube-system' specification."
+  ],
+  "next_steps": [
+    "Run 'make generate && make manifests' from operators/keystone/ to regenerate CRD YAML and deepcopy files",
+    "Add networking.k8s.io RBAC rule to Helm ClusterRole template (clusterrole.yaml)",
+    "Add snapshot-comparison guard (before := existing.DeepCopy() + apiequality check) to ensureNetworkPolicy update path"
+  ],
+  "detected_patterns": [
+    {
+      "name": "Optional sub-reconciler with three-path nil-check lifecycle",
+      "component": "operators/keystone/internal/controller",
+      "category": "service-structure",
+      "applies_when": "Implementing a sub-reconciler for an optional spec field (pointer type) that creates a Kubernetes sub-resource when set and deletes it when nil",
+      "description": "Optional sub-reconcilers follow a three-path lifecycle: (1) spec field nil → delete any existing sub-resource + set condition True with reason '{Resource}NotRequired', (2) spec field set → build desired resource + ensure (create-or-update) + set condition True with reason '{Resource}Ready', (3) error → propagate wrapped error. The condition type is '{Resource}Ready' and uses ObservedGeneration. The build function is named build{CR}{Resource} and the ensure/delete helpers follow the established Get+Create/Update pattern. Both reconcileHPA (CC-0038) and reconcileNetworkPolicy (CC-0039) follow this structure.",
+      "examples": [
+        {
+          "location": "operators/keystone/internal/controller/reconcile_hpa.go:35-66",
+          "code": "func (r *KeystoneReconciler) reconcileHPA(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {\n\thpaName := apiResourceName(keystone)\n\tif keystone.Spec.Autoscaling == nil {\n\t\tif err := deployment.DeleteHPA(ctx, r.Client, keystone.Namespace, hpaName); err != nil {\n\t\t\treturn ctrl.Result{}, fmt.Errorf(\"deleting HorizontalPodAutoscaler: %w\", err)\n\t\t}\n\t\tconditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{\n\t\t\tType: \"HPAReady\", Status: metav1.ConditionTrue,\n\t\t\tObservedGeneration: keystone.Generation,\n\t\t\tReason: \"HPANotRequired\", Message: \"Autoscaling is not configured\",\n\t\t})\n\t\treturn ctrl.Result{}, nil\n\t}\n\thpa := buildKeystoneHPA(keystone)\n\tif err := deployment.EnsureHPA(ctx, r.Client, r.Scheme, keystone, hpa); err != nil {\n\t\treturn ctrl.Result{}, fmt.Errorf(\"ensuring HorizontalPodAutoscaler: %w\", err)\n\t}\n\tconditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{\n\t\tType: \"HPAReady\", Status: metav1.ConditionTrue,\n\t\tObservedGeneration: keystone.Generation,\n\t\tReason: \"HPAReady\", Message: \"HorizontalPodAutoscaler is configured\",\n\t})\n\treturn ctrl.Result{}, nil\n}"
+        },
+        {
+          "location": "operators/keystone/internal/controller/reconcile_networkpolicy.go:32-63",
+          "code": "func (r *KeystoneReconciler) reconcileNetworkPolicy(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {\n\tnpName := apiResourceName(keystone)\n\tif keystone.Spec.NetworkPolicy == nil {\n\t\tif err := deleteNetworkPolicy(ctx, r.Client, keystone.Namespace, npName); err != nil {\n\t\t\treturn ctrl.Result{}, fmt.Errorf(\"deleting NetworkPolicy: %w\", err)\n\t\t}\n\t\tconditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{\n\t\t\tType: \"NetworkPolicyReady\", Status: metav1.ConditionTrue,\n\t\t\tObservedGeneration: keystone.Generation,\n\t\t\tReason: \"NetworkPolicyNotRequired\", Message: \"Network isolation is not configured\",\n\t\t})\n\t\treturn ctrl.Result{}, nil\n\t}\n\tnp := buildKeystoneNetworkPolicy(keystone)\n\tif err := ensureNetworkPolicy(ctx, r.Client, r.Scheme, keystone, np); err != nil {\n\t\treturn ctrl.Result{}, fmt.Errorf(\"ensuring NetworkPolicy: %w\", err)\n\t}\n\tconditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{\n\t\tType: \"NetworkPolicyReady\", Status: metav1.ConditionTrue,\n\t\tObservedGeneration: keystone.Generation,\n\t\tReason: \"NetworkPolicyReady\", Message: \"NetworkPolicy is configured\",\n\t})\n\treturn ctrl.Result{}, nil\n}"
+        }
+      ]
+    }
+  ]
+}
