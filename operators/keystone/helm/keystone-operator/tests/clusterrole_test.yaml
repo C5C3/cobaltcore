@@ -1,0 +1,254 @@
+# CC-0041, REQ-007: ClusterRole RBAC rules unit tests.
+suite: ClusterRole
+templates:
+  - templates/clusterrole.yaml
+tests:
+  - it: should have the correct number of rules
+    asserts:
+      - lengthEqual:
+          path: rules
+          count: 14
+
+  - it: should grant full CRUD on keystones
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - keystone.openstack.c5c3.io
+            resources:
+              - keystones
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant get/update/patch on keystones/status
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - keystone.openstack.c5c3.io
+            resources:
+              - keystones/status
+            verbs:
+              - get
+              - update
+              - patch
+
+  - it: should grant update on keystones/finalizers
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - keystone.openstack.c5c3.io
+            resources:
+              - keystones/finalizers
+            verbs:
+              - update
+
+  - it: should grant full CRUD on apps/deployments
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - apps
+            resources:
+              - deployments
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on core resources
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - services
+              - configmaps
+              - secrets
+              - serviceaccounts
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should restrict events to create and patch only
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - events
+            verbs:
+              - create
+              - patch
+
+  - it: should grant full CRUD on batch resources
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - batch
+            resources:
+              - jobs
+              - cronjobs
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on mariadb resources
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - k8s.mariadb.com
+            resources:
+              - databases
+              - users
+              - grants
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant read/write without delete on external-secrets resources
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - external-secrets.io
+            resources:
+              - externalsecrets
+              - pushsecrets
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+
+  - it: should grant full CRUD on rbac resources
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - rbac.authorization.k8s.io
+            resources:
+              - roles
+              - rolebindings
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on poddisruptionbudgets
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - policy
+            resources:
+              - poddisruptionbudgets
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on horizontalpodautoscalers
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - autoscaling
+            resources:
+              - horizontalpodautoscalers
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on networkpolicies
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - networking.k8s.io
+            resources:
+              - networkpolicies
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on leases for leader election
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - coordination.k8s.io
+            resources:
+              - leases
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete

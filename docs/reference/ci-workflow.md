@@ -1,14 +1,14 @@
 ---
 title: CI Workflow
 quadrant: infrastructure
-feature: CC-0003, CC-0018
+feature: CC-0003, CC-0018, CC-0041
 ---
 
 ::: v-pre
 
 # CI Workflow
 
-Reference documentation for the GitHub Actions CI workflow (CC-0003, CC-0018).
+Reference documentation for the GitHub Actions CI workflow (CC-0003, CC-0018, CC-0041).
 
 ## File Location
 
@@ -68,7 +68,7 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 
 ## Job Dependency DAG
 
-The workflow defines 12 jobs organised in a directed acyclic graph (CC-0018):
+The workflow defines 13 jobs organised in a directed acyclic graph (CC-0018, CC-0041):
 
 ```
 Gate Jobs (always run):
@@ -77,6 +77,10 @@ Gate Jobs (always run):
   verify-codegen ───┤
   test (matrix) ────┼──> E2E Jobs + Publish Jobs
   test-integration ─┘
+
+Conditional Jobs (path-filtered via changes job):
+  helm-validate ──> needs: [changes], if: helm == 'true'
+  docs ──────────> needs: [changes], if: docs == 'true'
 
 E2E Jobs (depends on gates):
   e2e-infra (independent — no gate dependency)
@@ -89,9 +93,6 @@ Publish Jobs (main/tags only, depends on E2E):
 
 Release Job (v* tags only, depends on publish):
   github-release ──> needs: [merge-operator-images, helm-push], if: v* tag
-
-Independent:
-  docs (no dependencies, no gates)
 ```
 
 ## Jobs
@@ -214,7 +215,11 @@ instructions to run `make manifests && make generate` locally and commit the res
 
 ### docs
 
-Builds the VitePress documentation site to catch broken links and build errors.
+Builds the VitePress documentation site to catch broken links and build errors (CC-0003).
+
+**Dependencies:** `needs: [changes]`
+**Condition:** `if: needs.changes.outputs.docs == 'true'`
+**Path filter:** `docs/**`, `package.json`, `package-lock.json`
 
 | Step | Action | Details |
 | --- | --- | --- |
@@ -223,7 +228,47 @@ Builds the VitePress documentation site to catch broken links and build errors.
 | 3 | `npm ci` | Installs dependencies from lockfile |
 | 4 | `npm run docs:build` | Builds the documentation site |
 
-This job runs independently with no gate dependencies.
+### helm-validate
+
+Validates Helm chart structure, template rendering, and unit tests without requiring a
+cluster (CC-0041). Runs `helm lint`, `helm template` with four value override scenarios,
+and `helm unittest` to catch chart regressions at PR time.
+
+**Dependencies:** `needs: [changes]`
+**Condition:** `if: needs.changes.outputs.helm == 'true'`
+**Path filter:** `operators/keystone/helm/**` (forced `true` on `v*` tag pushes)
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 2 | `azure/setup-helm@v5` | Installs Helm CLI (SHA-pinned) |
+| 3 | `helm plugin install helm-unittest` | Installs helm-unittest plugin (pinned to `v1.0.3`) |
+| 4 | `helm lint` | Validates chart structure and syntax for `operators/keystone/helm/keystone-operator/` |
+| 5 | `helm template` (4 scenarios) | Renders chart with value overrides to catch broken conditionals and invalid YAML |
+| 6 | `helm unittest` | Runs unit test suites from `operators/keystone/helm/keystone-operator/tests/` |
+
+**Template scenarios (step 5):**
+
+| Scenario | Values | Purpose |
+| --- | --- | --- |
+| 1 — default values | (none) | Validates baseline rendering with chart defaults |
+| 2 — webhook disabled | `webhook.enabled=false` | Validates conditional exclusion of webhook resources |
+| 3 — external service account | `serviceAccount.create=false`, `serviceAccount.name=existing-sa` | Validates ServiceAccount conditional logic |
+| 4 — custom resources | `resources.limits.cpu=100m`, `resources.limits.memory=64Mi` | Validates resource override wiring |
+
+**Unit test suites (step 6):**
+
+| Test File | Template Under Test | Key Assertions |
+| --- | --- | --- |
+| `deployment_test.yaml` | `deployment.yaml` | Image, replicas, resources, securityContext, probes, args, conditional webhook volume mount |
+| `clusterrole_test.yaml` | `clusterrole.yaml` | All 14 RBAC rule blocks with correct verbs |
+| `clusterrolebinding_test.yaml` | `clusterrolebinding.yaml` | roleRef and ServiceAccount subject binding |
+| `service_test.yaml` | `service.yaml` | Metrics port (8080), conditional webhook port (443→9443) |
+| `serviceaccount_test.yaml` | `serviceaccount.yaml` | Conditional creation (create=true/false), custom name override, standard labels |
+| `webhook_test.yaml` | `webhook-configuration.yaml` | Mutating/Validating configs when enabled, absent when disabled, cert-manager annotation |
+| `certificate_test.yaml` | `certificate.yaml` | Issuer and Certificate when enabled, absent when disabled, DNS names, issuer reference |
+
+Timeout: 10 minutes.
 
 ### e2e-infra
 

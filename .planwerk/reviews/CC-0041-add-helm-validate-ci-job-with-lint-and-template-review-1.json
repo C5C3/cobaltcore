@@ -1,0 +1,70 @@
+{
+  "feature_id": "CC-0041",
+  "title": "Add helm-validate CI job with lint and template tests",
+  "date": "2026-04-04",
+  "summary": "Adds a helm-validate CI job gated by a new 'helm' path filter. The job runs helm lint, helm template with 4 value override scenarios, and helm-unittest with 5 test suites (36 tests total). CI workflow additions are clean — no existing jobs modified. All SHA-pinned actions match existing conventions. All 5 test suites pass, helm lint exits 0, and all 4 template scenarios render successfully. One minor docs inaccuracy found.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "All 5 helm-unittest test suites pass (36/36 tests)", "checked": true},
+    {"item": "helm lint exits 0", "checked": true},
+    {"item": "All 4 helm template scenarios exit 0", "checked": true},
+    {"item": "Deployment tests cover image, replicas, resources, securityContext, probes, args, webhook volume mount, webhook disabled", "checked": true},
+    {"item": "ClusterRole tests cover all 14 RBAC rules with correct verbs", "checked": true},
+    {"item": "ClusterRoleBinding tests cover roleRef and ServiceAccount subject", "checked": true},
+    {"item": "Service tests cover metrics port, conditional webhook port (enabled/disabled)", "checked": true},
+    {"item": "Webhook tests cover Mutating/Validating configs, cert-manager annotation, absent when disabled", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing CI job conventions (SHA-pinned actions, timeout, needs/if)", "checked": true},
+    {"item": "azure/setup-helm SHA matches existing helm-push job (dda3372f)", "checked": true},
+    {"item": "helm-unittest plugin version pinned to v0.7.1 (not @latest)", "checked": true},
+    {"item": "CI YAML is syntactically valid", "checked": true},
+    {"item": "No existing CI jobs modified", "checked": true},
+    {"item": "Test files follow helm-unittest conventions", "checked": true},
+    {"item": "Feature ID CC-0041 referenced consistently", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No secrets or credentials in workflow additions", "checked": true},
+    {"item": "All actions SHA-pinned (checkout, setup-helm)", "checked": true},
+    {"item": "No elevated permissions required (read-only default sufficient)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "helm-validate is independent gate job (needs only changes, no E2E dependency)", "checked": true},
+    {"item": "Path filter correctly scoped to operators/keystone/helm/**", "checked": true},
+    {"item": "Helm output wired through all 3 required paths (dorny filter, tag-push force, non-tag else)", "checked": true},
+    {"item": "Job placement follows existing DAG structure", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code across test files", "checked": true},
+    {"item": "No unnecessary abstractions", "checked": true},
+    {"item": "Implements exactly what was requested", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "helm lint runs before template rendering", "checked": true},
+    {"item": "Each template scenario is a separate invocation (fails independently)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "timeout-minutes: 10 set on helm-validate job", "checked": true},
+    {"item": "Path filter prevents unnecessary runs", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "DA3",
+      "severity": "MAJOR",
+      "description": "Documentation states 'All 12 RBAC rule blocks' but the actual clusterrole.yaml template has 14 rules and the clusterrole_test.yaml correctly asserts count: 14. The docs reference is stale — it predates the CC-0037 (policy/poddisruptionbudgets), CC-0038 (autoscaling/horizontalpodautoscalers) additions.",
+      "location": "docs/reference/ci-workflow.md:262",
+      "fix": "Change 'All 12 RBAC rule blocks with correct verbs' to 'All 14 RBAC rule blocks with correct verbs' in the Unit test suites table.",
+      "evidence": "| `clusterrole_test.yaml` | `clusterrole.yaml` | All 12 RBAC rule blocks with correct verbs |",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a serviceaccount_test.yaml to cover the conditional ServiceAccount creation logic (serviceAccount.create=true/false, serviceAccount.name override) — currently only tested indirectly via helm template scenario 3."
+  ],
+  "next_steps": [
+    "Fix the '12 RBAC rule blocks' count in docs/reference/ci-workflow.md:262 to '14 RBAC rule blocks'"
+  ],
+  "detected_patterns": []
+}

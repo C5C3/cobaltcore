@@ -1,0 +1,144 @@
+# CC-0041, REQ-006: Deployment template unit tests.
+suite: Deployment
+templates:
+  - templates/deployment.yaml
+tests:
+  - it: should set container image from Chart.AppVersion when tag is empty
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: "ghcr.io/c5c3/keystone-operator:0.1.0"
+
+  - it: should set replicas from values
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 2
+
+  - it: should set resource limits and requests
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.cpu
+          value: 500m
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.memory
+          value: 128Mi
+      - equal:
+          path: spec.template.spec.containers[0].resources.requests.cpu
+          value: 10m
+      - equal:
+          path: spec.template.spec.containers[0].resources.requests.memory
+          value: 64Mi
+
+  - it: should set pod securityContext
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.securityContext.runAsUser
+          value: 65532
+      - equal:
+          path: spec.template.spec.securityContext.runAsGroup
+          value: 65532
+      - equal:
+          path: spec.template.spec.securityContext.fsGroup
+          value: 65532
+      - equal:
+          path: spec.template.spec.securityContext.seccompProfile.type
+          value: RuntimeDefault
+
+  - it: should set container securityContext
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
+          value: false
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.capabilities.drop
+          value:
+            - ALL
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.seccompProfile.type
+          value: RuntimeDefault
+
+  - it: should set liveness and readiness probes
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /healthz
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.port
+          value: 8081
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /readyz
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.port
+          value: 8081
+
+  - it: should set container args with leader election enabled
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value:
+            - --leader-elect
+            - --metrics-bind-address=:8080
+            - --health-probe-bind-address=:8081
+
+  - it: should include all ports when webhook is enabled
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: metrics
+            containerPort: 8080
+            protocol: TCP
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: health
+            containerPort: 8081
+            protocol: TCP
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: webhook
+            containerPort: 9443
+            protocol: TCP
+
+  - it: should mount webhook certs when webhook is enabled
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[0].name
+          value: webhook-certs
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[0].mountPath
+          value: /tmp/k8s-webhook-server/serving-certs
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[0].readOnly
+          value: true
+      - equal:
+          path: spec.template.spec.volumes[0].name
+          value: webhook-certs
+
+  - it: should not include webhook resources when webhook is disabled
+    set:
+      webhook:
+        enabled: false
+    asserts:
+      - isNull:
+          path: spec.template.spec.containers[0].volumeMounts
+      - isNull:
+          path: spec.template.spec.volumes
+      - lengthEqual:
+          path: spec.template.spec.containers[0].ports
+          count: 2
+      - notContains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: webhook
+            containerPort: 9443
+            protocol: TCP

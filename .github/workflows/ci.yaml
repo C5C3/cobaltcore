@@ -45,6 +45,7 @@ jobs:
     outputs:
       go: ${{ steps.result.outputs.go }}
       docs: ${{ steps.result.outputs.docs }}
+      helm: ${{ steps.result.outputs.helm }}
       e2e-infra: ${{ steps.result.outputs.e2e-infra }}
       has-e2e-operators: ${{ steps.result.outputs.has-e2e-operators }}
       e2e-operators: ${{ steps.result.outputs.e2e-operators }}
@@ -82,6 +83,9 @@ jobs:
               - 'package.json'
               - 'package-lock.json'
               - '.github/workflows/ci.yaml'
+            # CC-0041: Helm chart changes trigger the helm-validate job.
+            helm:
+              - 'operators/keystone/helm/**'
             e2e_infra:
               - 'tests/e2e/infrastructure/**'
               - 'hack/**'
@@ -106,9 +110,11 @@ jobs:
             go_changed=true
             read -ra ops <<< "$ALL_OPERATORS"
             echo "docs=true"      >> "$GITHUB_OUTPUT"
+            echo "helm=true"      >> "$GITHUB_OUTPUT"
             echo "e2e-infra=true" >> "$GITHUB_OUTPUT"
           else
             echo "docs=${{ steps.filter.outputs.docs }}"           >> "$GITHUB_OUTPUT"
+            echo "helm=${{ steps.filter.outputs.helm }}"           >> "$GITHUB_OUTPUT"
             echo "e2e-infra=${{ steps.filter.outputs.e2e_infra }}" >> "$GITHUB_OUTPUT"
 
             if [[ "${{ steps.filter.outputs.go_common }}" == "true" ]]; then
@@ -277,6 +283,36 @@ jobs:
         run: npm ci
       - name: Build documentation
         run: npm run docs:build
+
+  # CC-0041: Validate Helm chart structure, template rendering, and unit tests.
+  # Runs helm lint, helm template with multiple value override scenarios, and
+  # helm-unittest to catch chart regressions early without requiring a cluster.
+  helm-validate:
+    needs: [changes]
+    if: needs.changes.outputs.helm == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5
+      - name: Install helm-unittest plugin
+        # NOTE: --verify=false because helm-unittest does not publish GPG signatures for plugin releases.
+        run: helm plugin install https://github.com/helm-unittest/helm-unittest --version v1.0.3 --verify=false
+      - name: Helm lint
+        run: helm lint operators/keystone/helm/keystone-operator/
+      - name: Helm template
+        run: |
+          CHART=operators/keystone/helm/keystone-operator
+          echo "--- Scenario 1: default values ---"
+          helm template test "$CHART"
+          echo "--- Scenario 2: webhook disabled ---"
+          helm template test "$CHART" --set webhook.enabled=false
+          echo "--- Scenario 3: external service account ---"
+          helm template test "$CHART" --set serviceAccount.create=false --set serviceAccount.name=existing-sa
+          echo "--- Scenario 4: custom resources ---"
+          helm template test "$CHART" --set resources.limits.cpu=100m --set resources.limits.memory=64Mi
+      - name: Helm unittest
+        run: helm unittest operators/keystone/helm/keystone-operator/
 
   # CC-0010, REQ-009: End-to-end infrastructure deployment and Chainsaw test.
   # Deploys the full infrastructure stack to a kind cluster and validates health

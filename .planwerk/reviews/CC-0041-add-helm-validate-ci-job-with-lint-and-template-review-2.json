@@ -1,0 +1,52 @@
+{
+  "feature_id": "CC-0041",
+  "title": "Add helm-validate CI job with lint and template tests",
+  "date": "2026-04-05",
+  "summary": "Post-external-review improvement cycle addressing 4 warnings and 1 info item from reviewer berendt. Changes: (1) added inline comment explaining --verify=false on helm-unittest plugin install, (2) split docs DAG section from conditional jobs to its own heading, (3) created certificate_test.yaml with 5 test cases covering Issuer/Certificate enabled/disabled states, DNS names, and issuer reference, (4) updated review pattern files and progress tracking. All 7 helm-unittest suites (45 tests) pass. Helm lint and all 4 template scenarios exit 0. CI YAML is syntactically valid.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "All helm-unittest suites pass (7 suites, 45 tests)", "checked": true},
+    {"item": "certificate_test.yaml covers enabled state (Issuer + Certificate assertions)", "checked": true},
+    {"item": "certificate_test.yaml covers disabled state (hasDocuments: count: 0)", "checked": true},
+    {"item": "certificate_test.yaml verifies DNS names match template output", "checked": true},
+    {"item": "certificate_test.yaml verifies issuerRef and secretName", "checked": true},
+    {"item": "helm lint passes without errors", "checked": true},
+    {"item": "All 4 helm template scenarios exit 0", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "certificate_test.yaml follows existing test file pattern (comment header, suite, templates, documentIndex, set for disabled)", "checked": true},
+    {"item": "CI YAML change is minimal (single comment addition)", "checked": true},
+    {"item": "Review pattern files follow established format (name, review-area, detection-hint, severity, occurrences, sections)", "checked": true},
+    {"item": "No existing CI jobs modified", "checked": true},
+    {"item": "Documentation entry for certificate_test.yaml added to ci-workflow.md table", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "--verify=false rationale documented with inline comment (W-002 fix)", "checked": true},
+    {"item": "No new security-sensitive flags introduced", "checked": true},
+    {"item": "Review pattern for TLS/signature verification updated with CC-0041 occurrence", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Changes are minimal and targeted to external review feedback only", "checked": true},
+    {"item": "No scope creep beyond addressing the 4 warnings and 1 info item", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated test logic", "checked": true},
+    {"item": "certificate_test.yaml reuses same patterns as webhook_test.yaml", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Tests assert both positive (enabled) and negative (disabled) cases", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "certificate_test.yaml verifies both documents (Issuer at index 0, Certificate at index 1)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "docs/reference/ci-workflow.md:84 — The DAG section now labels docs as 'Independent Jobs (always run, no dependencies)' but the actual CI YAML shows docs has needs: [changes] and if: needs.changes.outputs.docs == 'true' (lines 270-271). This pre-existing inaccuracy was restructured per the external reviewer's W-001 suggestion. Consider correcting the DAG to show docs under 'Conditional Jobs' with its actual dependency: 'docs ──> needs: [changes], if: docs == true'. This would match the actual workflow behavior."
+  ],
+  "next_steps": [
+    "Verify helm-unittest v1.0.3 is the latest release (W-003 from external review — non-blocking)"
+  ],
+  "detected_patterns": []
+}

@@ -2,8 +2,8 @@
   "feature_id": "CC-0041",
   "title": "Add helm-validate CI job with lint and template tests",
   "slug": "add-helm-validate-ci-job-with-lint-and-template",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 📦 medium\n**Category:** infrastructure\n**Priority:** high\n**Source:** GitHub Issue [#121](https://github.com/C5C3/forge/issues/121)\n\nAdd a `helm-validate` job to `.github/workflows/ci.yaml` gated by a new `helm` path filter (`operators/keystone/helm/**`) in the existing `dorny/paths-filter` config. The job: (1) sets up Helm via `azure/setup-helm`, (2) installs helm-unittest plugin with pinned version via `helm plugin install`, (3) runs `helm lint` on the keystone-operator chart, (4) runs `helm template` with 4 value override scenarios (defaults, webhook.enabled=false, serviceAccount.create=false+serviceAccount.name=existing-sa, minimal resource overrides), (5) runs `helm unittest`. Create unittest files under `operators/keystone/helm/keystone-operator/tests/` for deployment (image, replicas, resources, securityContext, probes, leader-elect arg, webhook volume mount), clusterrole (RBAC rules coverage), clusterrolebinding (role ref + subject), service (metrics port, conditional webhook port), and webhook-configuration (present when enabled, absent when disabled).\n\n**Rationale:** The CI pipeline validates Go code but has zero Helm chart validation. Template errors, broken value wiring, and invalid YAML are only caught at deploy time. This has caused silent breakage when chart values were renamed or conditionals were misconfigured. Adding lint+template+unittest catches these issues at PR time and prevents broken releases.\n\n**Affected Areas:**\n- .github/workflows/ci.yaml\n- operators/keystone/helm/keystone-operator/tests/deployment_test.yaml\n- operators/keystone/helm/keystone-operator/tests/clusterrole_test.yaml\n- operators/keystone/helm/keystone-operator/tests/clusterrolebinding_test.yaml\n- operators/keystone/helm/keystone-operator/tests/service_test.yaml\n- operators/keystone/helm/keystone-operator/tests/webhook_test.yaml",
   "stories": [
@@ -422,6 +422,7 @@
       "description": "Modify .github/workflows/ci.yaml to: (1) Add 'helm' filter in dorny/paths-filter matching 'operators/keystone/helm/**'. (2) Add 'helm' output to the changes job outputs: helm: ${{ steps.result.outputs.helm }}. (3) In the 'Resolve effective changes' step, add 'echo \"helm=true\" >> \"$GITHUB_OUTPUT\"' in the tag-push block and 'echo \"helm=${{ steps.filter.outputs.helm }}\" >> \"$GITHUB_OUTPUT\"' in the non-tag else block. (4) Add a new 'helm-validate' job after the docs job with: needs: [changes], if: needs.changes.outputs.helm == 'true', runs-on: ubuntu-latest, timeout-minutes: 10, steps: checkout (SHA-pinned), azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5, install helm-unittest plugin (pinned version), helm lint, helm template (4 scenarios: defaults, webhook.enabled=false, serviceAccount.create=false+serviceAccount.name=existing-sa, resources.limits.cpu=100m+resources.limits.memory=64Mi), helm unittest.",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -436,6 +437,7 @@
       "description": "Create operators/keystone/helm/keystone-operator/tests/deployment_test.yaml with helm-unittest assertions for: container image (repository + appVersion tag), replicas (2), resources (limits and requests), pod securityContext (runAsNonRoot, user 65532, group 65532, fsGroup, seccomp RuntimeDefault), container securityContext (no privilege escalation, drop ALL, readOnlyRootFilesystem, seccomp), liveness probe (/healthz:8081), readiness probe (/readyz:8081), container args (--leader-elect, --metrics-bind-address=:8080, --health-probe-bind-address=:8081), container ports (metrics 8080, health 8081, webhook 9443 conditional), webhook volume mount (present when enabled, absent when disabled), webhook volume (present when enabled, absent when disabled). Use 'set' to test webhook.enabled=false scenario.",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -446,6 +448,7 @@
       "description": "Create operators/keystone/helm/keystone-operator/tests/clusterrole_test.yaml with helm-unittest assertions covering all 12 RBAC rule blocks in templates/clusterrole.yaml. Assert each apiGroup and its resources are present: keystone.openstack.c5c3.io (keystones, keystones/status, keystones/finalizers), apps (deployments), core/\"\" (services, configmaps, secrets, serviceaccounts + events), batch (jobs, cronjobs), k8s.mariadb.com (databases, users, grants), external-secrets.io (externalsecrets, pushsecrets), rbac.authorization.k8s.io (roles, rolebindings), policy (poddisruptionbudgets), autoscaling (horizontalpodautoscalers), networking.k8s.io (networkpolicies), coordination.k8s.io (leases). Verify verb restrictions: events has only [create, patch], externalsecrets has no delete.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -456,6 +459,7 @@
       "description": "Create operators/keystone/helm/keystone-operator/tests/clusterrolebinding_test.yaml with helm-unittest assertions for: kind is ClusterRoleBinding, roleRef.apiGroup=rbac.authorization.k8s.io, roleRef.kind=ClusterRole, roleRef.name matches fullname, subjects[0].kind=ServiceAccount, subjects[0].name matches serviceAccountName, subjects[0].namespace matches Release.Namespace.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -466,6 +470,7 @@
       "description": "Create operators/keystone/helm/keystone-operator/tests/service_test.yaml with helm-unittest assertions for: service type=ClusterIP, metrics port (name=metrics, port=8080, targetPort=8080, protocol=TCP), conditional webhook port with webhook.enabled=true (name=webhook, port=443, targetPort=9443, protocol=TCP), and webhook port absent with webhook.enabled=false. Use 'set' to test both webhook enabled and disabled scenarios.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -476,6 +481,7 @@
       "description": "Create operators/keystone/helm/keystone-operator/tests/webhook_test.yaml with helm-unittest assertions for: MutatingWebhookConfiguration rendered when webhook.enabled=true (name ending -mutating, webhook path, admissionReviewVersions, failurePolicy, sideEffects, rules), ValidatingWebhookConfiguration rendered when webhook.enabled=true (name ending -validating, webhook path, operations include DELETE), cert-manager.io/inject-ca-from annotation on both configs, and no documents rendered when webhook.enabled=false. Use documentIndex to select individual documents from the multi-document template.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-010"
       ]
@@ -486,6 +492,7 @@
       "description": "Update docs/reference/ci-workflow.md to document the new helm-validate job. Add: (1) 'helm' entry to the Path Filters section with pattern operators/keystone/helm/**. (2) helm-validate to the Job Dependency DAG (independent gate job, like docs). (3) A new 'helm-validate' subsection under Jobs following the existing format (table of steps, timeout, description of each step). (4) 'helm: ${{ steps.result.outputs.helm }}' to the changes job outputs table. Follow the existing documentation style (markdown tables, step descriptions, CC feature ID references).",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-011"
       ]
@@ -702,8 +709,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-04T15:13:18.954846"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-04T15:25:03.856545"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-05T07:30:50.349479"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/124",
+  "pr_number": 124,
   "execution_history": [
     {
       "run_id": "fd7ae9ff-8f32-4c5d-823b-030301d8bf11",
@@ -715,6 +732,58 @@
           "name": "prepare",
           "duration": 525.043536901474,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "989ef1d8-06db-41d1-a303-7d711f315254",
+      "timestamp": "2026-04-04T15:46:02.356854",
+      "total_duration": 1118.733701467514,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (6 tasks)",
+          "duration": 609.0749206542969,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (1 tasks)",
+          "duration": 192.62673997879028,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0041] Code Review",
+          "duration": 189.69365286827087,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0041] Improvements",
+          "duration": 86.3617775440216,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0041] Simplify",
+          "duration": 40.9766104221344,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "cc68665f-4b62-4b49-9388-6251a61de3f3",
+      "timestamp": "2026-04-05T06:39:05.321870",
+      "total_duration": 507.8755271434784,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 507.8755271434784,
+          "type": "review_address",
           "status": "done"
         }
       ]
