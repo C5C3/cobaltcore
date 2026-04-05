@@ -114,8 +114,11 @@ exec keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap \
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyNever,
 					Containers: []corev1.Container{{
-						Name:    "bootstrap",
-						Image:   fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag),
+						Name:  "bootstrap",
+						Image: fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag),
+						// TODO(CC-0042): Wire spec.Resources (or a smaller Job-specific default) to
+						// this container. Currently runs as BestEffort QoS. See reconcile_deployment.go
+						// containerResources() for the pattern used by the keystone-api container.
 						Command: []string{"/bin/sh", "-eu", "-c", bootstrapScript},
 						Env: []corev1.EnvVar{{
 							Name: "BOOTSTRAP_PASSWORD",

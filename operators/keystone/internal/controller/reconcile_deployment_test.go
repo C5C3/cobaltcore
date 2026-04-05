@@ -20,6 +20,7 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -66,6 +67,16 @@ func deployTestKeystone() *keystonev1alpha1.Keystone {
 				AdminUser:              "admin",
 				AdminPasswordSecretRef: commonv1.SecretRefSpec{Name: "keystone-admin"},
 				Region:                 "RegionOne",
+			},
+			Resources: &corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceMemory: keystonev1alpha1.DefaultMemoryRequest.DeepCopy(),
+					corev1.ResourceCPU:    keystonev1alpha1.DefaultCPURequest.DeepCopy(),
+				},
+				Limits: corev1.ResourceList{
+					corev1.ResourceMemory: keystonev1alpha1.DefaultMemoryLimit.DeepCopy(),
+					corev1.ResourceCPU:    keystonev1alpha1.DefaultCPULimit.DeepCopy(),
+				},
 			},
 		},
 	}
@@ -760,6 +771,62 @@ func TestBuildPodDisruptionBudget_ZeroReplicas(t *testing.T) {
 	g.Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
 	g.Expect(*pdb.Spec.MaxUnavailable).To(Equal(intstr.FromInt32(1)))
 	g.Expect(pdb.Spec.MinAvailable).To(BeNil())
+}
+
+// Feature: CC-0042
+
+func TestReconcileDeployment_ContainerResources(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
+
+	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
+	container := deploy.Spec.Template.Spec.Containers[0]
+	g.Expect(container.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, keystonev1alpha1.DefaultMemoryRequest))
+	g.Expect(container.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, keystonev1alpha1.DefaultCPURequest))
+	g.Expect(container.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, keystonev1alpha1.DefaultMemoryLimit))
+	g.Expect(container.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, keystonev1alpha1.DefaultCPULimit))
+}
+
+func TestReconcileDeployment_CustomResources(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+	ks.Spec.Resources = &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("1Gi"),
+			corev1.ResourceCPU:    resource.MustParse("200m"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("2Gi"),
+			corev1.ResourceCPU:    resource.MustParse("1"),
+		},
+	}
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
+
+	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
+	container := deploy.Spec.Template.Spec.Containers[0]
+	g.Expect(container.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, resource.MustParse("1Gi")))
+	g.Expect(container.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, resource.MustParse("200m")))
+	g.Expect(container.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, resource.MustParse("2Gi")))
+	g.Expect(container.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, resource.MustParse("1")))
+}
+
+// TestReconcileDeployment_NilResources verifies the nil-safety fallback in
+// containerResources(): when spec.Resources is nil (e.g. pre-existing CRs that
+// bypassed the webhook), the container gets a zero-value ResourceRequirements
+// instead of a nil-pointer panic (CC-0042).
+func TestReconcileDeployment_NilResources(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+	ks.Spec.Resources = nil
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
+
+	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
+	container := deploy.Spec.Template.Spec.Containers[0]
+	g.Expect(container.Resources).To(Equal(corev1.ResourceRequirements{}))
 }
 
 func TestReconcileDeployment_PDBEnsureError(t *testing.T) {

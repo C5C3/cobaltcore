@@ -5,6 +5,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -94,6 +95,13 @@ type KeystoneSpec struct {
 	// When removed (nil), the NetworkPolicy is deleted and traffic flows unrestricted.
 	// +optional
 	NetworkPolicy *NetworkPolicySpec `json:"networkPolicy,omitempty"`
+
+	// Resources defines the CPU and memory requests and limits for the Keystone API
+	// container. When unset, the defaulting webhook injects sensible defaults
+	// (256Mi/512Mi memory, 100m/500m CPU) to ensure Burstable QoS class and
+	// enable HPA utilization calculations (CC-0042).
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 
 	// ExtraConfig provides free-form INI sections for configuration
 	// not covered by explicit CRD fields.

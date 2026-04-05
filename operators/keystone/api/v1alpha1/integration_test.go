@@ -14,6 +14,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -325,4 +326,90 @@ func TestIntegration_WebhookDefaultsPreservesExplicit(t *testing.T) {
 	g.Expect(got.Spec.Cache.Backend).To(Equal("dogpile.cache.memcache"), "explicit cache.backend should be preserved")
 	g.Expect(got.Spec.Bootstrap.AdminUser).To(Equal("custom-admin"), "explicit bootstrap.adminUser should be preserved")
 	g.Expect(got.Spec.Bootstrap.Region).To(Equal("EU-West"), "explicit bootstrap.region should be preserved")
+}
+
+// --- Task CC-0042: Resources defaulting and validation integration tests ---
+
+func TestIntegration_ResourcesDefaultedWhenNil(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-res-default-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	k := validIntegrationKeystone("res-default", ns.Name)
+	k.Spec.Resources = nil
+
+	g.Expect(c.Create(ctx, k)).To(Succeed(), "CR without spec.resources should be accepted")
+
+	got := &Keystone{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "res-default", Namespace: ns.Name}, got)).To(Succeed())
+
+	g.Expect(got.Spec.Resources).NotTo(BeNil(), "resources should be defaulted")
+	g.Expect(got.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryRequest))
+	g.Expect(got.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPURequest))
+	g.Expect(got.Spec.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryLimit))
+	g.Expect(got.Spec.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPULimit))
+}
+
+func TestIntegration_ResourcesPreservedWhenExplicit(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-res-explicit-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	k := validIntegrationKeystone("res-explicit", ns.Name)
+	k.Spec.Resources = &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("1Gi"),
+			corev1.ResourceCPU:    resource.MustParse("200m"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("2Gi"),
+			corev1.ResourceCPU:    resource.MustParse("1"),
+		},
+	}
+
+	g.Expect(c.Create(ctx, k)).To(Succeed(), "CR with explicit resources should be accepted")
+
+	got := &Keystone{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "res-explicit", Namespace: ns.Name}, got)).To(Succeed())
+
+	g.Expect(got.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, resource.MustParse("1Gi")))
+	g.Expect(got.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, resource.MustParse("200m")))
+	g.Expect(got.Spec.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, resource.MustParse("2Gi")))
+	g.Expect(got.Spec.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, resource.MustParse("1")))
+}
+
+func TestIntegration_ResourcesRequestExceedsLimitRejected(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-res-invalid-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	k := validIntegrationKeystone("res-invalid", ns.Name)
+	k.Spec.Resources = &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("1000m"),
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("500m"),
+			corev1.ResourceMemory: resource.MustParse("512Mi"),
+		},
+	}
+
+	err := c.Create(ctx, k)
+	g.Expect(err).To(HaveOccurred(), "CPU request > limit should be rejected")
+	g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
+		fmt.Sprintf("expected Invalid or Forbidden status error, got: %v", err))
+	g.Expect(err.Error()).To(ContainSubstring("resources"))
 }

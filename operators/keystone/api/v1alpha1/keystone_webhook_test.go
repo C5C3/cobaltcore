@@ -10,6 +10,7 @@ import (
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
@@ -55,6 +56,12 @@ func TestDefault_SetsZeroValueDefaults(t *testing.T) {
 	g.Expect(k.Spec.Cache.Backend).To(Equal("dogpile.cache.pymemcache"))
 	g.Expect(k.Spec.Bootstrap.AdminUser).To(Equal("admin"))
 	g.Expect(k.Spec.Bootstrap.Region).To(Equal("RegionOne"))
+	// REQ-004 (CC-0042): Verify Resources defaults are applied.
+	g.Expect(k.Spec.Resources).NotTo(BeNil())
+	g.Expect(k.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryRequest))
+	g.Expect(k.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPURequest))
+	g.Expect(k.Spec.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryLimit))
+	g.Expect(k.Spec.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPULimit))
 }
 
 func TestDefault_DoesNotSetFernetRotationSchedule(t *testing.T) {
@@ -902,6 +909,15 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	k.Spec.NetworkPolicy = &NetworkPolicySpec{
 		Ingress: []NetworkPolicyIngressSource{},
 	}
+	// REQ-004 (CC-0042): Break resources — CPU request exceeds limit.
+	k.Spec.Resources = &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU: resource.MustParse("1000m"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU: resource.MustParse("500m"),
+		},
+	}
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
@@ -916,6 +932,7 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g.Expect(errMsg).To(ContainSubstring("credentialKeys"))
 	g.Expect(errMsg).To(ContainSubstring("targetCPUUtilization"))
 	g.Expect(errMsg).To(ContainSubstring("networkPolicy"))
+	g.Expect(errMsg).To(ContainSubstring("resources"))
 }
 
 func TestValidateUpdate_RunsSameValidation(t *testing.T) {
@@ -930,6 +947,28 @@ func TestValidateUpdate_RunsSameValidation(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("rotationSchedule"))
 }
 
+// TestValidateUpdate_ResourcesRequestExceedsLimit verifies that ValidateUpdate
+// delegates resource validation correctly by submitting resources where the CPU
+// request exceeds the limit (CC-0042, REQ-004).
+func TestValidateUpdate_ResourcesRequestExceedsLimit(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	old := validKeystone()
+	updated := validKeystone()
+	updated.Spec.Resources = &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU: resource.MustParse("1000m"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU: resource.MustParse("500m"),
+		},
+	}
+
+	_, err := w.ValidateUpdate(context.Background(), old, updated)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("resources"))
+}
+
 func TestValidateDelete_AlwaysAllows(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
@@ -938,6 +977,208 @@ func TestValidateDelete_AlwaysAllows(t *testing.T) {
 	warnings, err := w.ValidateDelete(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(warnings).To(BeNil())
+}
+
+// --- Resources defaulting tests (CC-0042, REQ-004) ---
+
+func TestDefault_ResourcesSetWhenNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := &Keystone{}
+
+	g.Expect(w.Default(context.Background(), k)).To(Succeed())
+
+	g.Expect(k.Spec.Resources).NotTo(BeNil())
+	g.Expect(k.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryRequest))
+	g.Expect(k.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPURequest))
+	g.Expect(k.Spec.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryLimit))
+	g.Expect(k.Spec.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPULimit))
+}
+
+// TestDefault_ResourcesSetWhenEmpty verifies that `resources: {}` (non-nil but
+// empty ResourceRequirements) triggers defaulting. Without this, the container
+// gets no resources (BestEffort QoS) and HPA breaks (CC-0042).
+func TestDefault_ResourcesSetWhenEmpty(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := &Keystone{
+		Spec: KeystoneSpec{
+			Resources: &corev1.ResourceRequirements{},
+		},
+	}
+
+	g.Expect(w.Default(context.Background(), k)).To(Succeed())
+
+	g.Expect(k.Spec.Resources).NotTo(BeNil())
+	g.Expect(k.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryRequest))
+	g.Expect(k.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPURequest))
+	g.Expect(k.Spec.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryLimit))
+	g.Expect(k.Spec.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPULimit))
+}
+
+func TestDefault_ResourcesPreservedWhenExplicit(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := &Keystone{
+		Spec: KeystoneSpec{
+			Resources: &corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceMemory: resource.MustParse("1Gi"),
+					corev1.ResourceCPU:    resource.MustParse("200m"),
+				},
+				Limits: corev1.ResourceList{
+					corev1.ResourceMemory: resource.MustParse("2Gi"),
+					corev1.ResourceCPU:    resource.MustParse("1"),
+				},
+			},
+		},
+	}
+
+	g.Expect(w.Default(context.Background(), k)).To(Succeed())
+
+	g.Expect(k.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, resource.MustParse("1Gi")))
+	g.Expect(k.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, resource.MustParse("200m")))
+	g.Expect(k.Spec.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, resource.MustParse("2Gi")))
+	g.Expect(k.Spec.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, resource.MustParse("1")))
+}
+
+// TestDefault_ResourcesPreservedWhenPartial verifies that partially-set resources
+// (e.g., only Requests set, Limits empty) are not overwritten by the defaulting
+// webhook. This ensures users can opt into a Guaranteed QoS by setting only
+// requests, or any other partial configuration (CC-0042).
+func TestDefault_ResourcesPreservedWhenPartial(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := &Keystone{
+		Spec: KeystoneSpec{
+			Resources: &corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceMemory: resource.MustParse("512Mi"),
+					corev1.ResourceCPU:    resource.MustParse("250m"),
+				},
+				// Limits intentionally empty — user only sets requests.
+			},
+		},
+	}
+
+	g.Expect(w.Default(context.Background(), k)).To(Succeed())
+
+	// Requests must be preserved as-is.
+	g.Expect(k.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, resource.MustParse("512Mi")))
+	g.Expect(k.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, resource.MustParse("250m")))
+	// Limits must remain empty — the webhook must not inject defaults.
+	g.Expect(k.Spec.Resources.Limits).To(BeEmpty())
+}
+
+// --- Resources validation tests (CC-0042, REQ-004) ---
+
+func TestValidate_ResourcesValidAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Resources = &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("100m"),
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("500m"),
+			corev1.ResourceMemory: resource.MustParse("512Mi"),
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_ResourcesCPURequestExceedsLimitRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Resources = &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("1000m"),
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("500m"),
+			corev1.ResourceMemory: resource.MustParse("512Mi"),
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("resources"))
+	g.Expect(err.Error()).To(ContainSubstring("cpu"))
+	g.Expect(err.Error()).To(ContainSubstring("must not exceed limit"))
+}
+
+func TestValidate_ResourcesMemoryRequestExceedsLimitRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Resources = &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("100m"),
+			corev1.ResourceMemory: resource.MustParse("1Gi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("500m"),
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("resources"))
+	g.Expect(err.Error()).To(ContainSubstring("memory"))
+	g.Expect(err.Error()).To(ContainSubstring("must not exceed limit"))
+}
+
+func TestValidate_ResourcesBothExceedReportsBothErrors(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Resources = &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("1000m"),
+			corev1.ResourceMemory: resource.MustParse("1Gi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("500m"),
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("cpu"))
+	g.Expect(err.Error()).To(ContainSubstring("memory"))
+}
+
+func TestValidate_ResourcesNilAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Resources = nil
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_ResourcesRequestsOnlyAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Resources = &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("100m"),
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
 }
 
 // --- Interface compliance (CC-0011) ---

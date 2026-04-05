@@ -1,7 +1,7 @@
 ---
 title: Keystone CRD API Reference
 quadrant: operator
-feature: CC-0011, CC-0012, CC-0016, CC-0038
+feature: CC-0011, CC-0012, CC-0016, CC-0038, CC-0042
 ---
 
 # Keystone CRD API Reference
@@ -66,6 +66,13 @@ spec:
     minReplicas: 2
     maxReplicas: 10
     targetCPUUtilization: 80
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 100m
+    limits:
+      memory: 512Mi
+      cpu: 500m
   bootstrap:
     adminUser: admin
     adminPasswordSecretRef:
@@ -109,6 +116,7 @@ status:
 | `plugins` | `[]PluginSpec` | No | `nil` | Service plugins/drivers to configure. |
 | `policyOverrides` | [`*PolicySpec`](#policyspec) | No | `nil` | Custom oslo.policy rules. |
 | `autoscaling` | [`*AutoscalingSpec`](#autoscalingspec) | No | `nil` | Horizontal pod autoscaling configuration. When set, an HPA is created targeting the `{name}-api` Deployment. When removed, the HPA is deleted (CC-0038). |
+| `resources` | [`*corev1.ResourceRequirements`](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#resources) | No | See below | CPU and memory requests and limits for the Keystone API container. When unset, the defaulting webhook injects sensible defaults to ensure Burstable QoS class and enable HPA utilization calculations (CC-0042). |
 | `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for additional configuration. |
 
 ### CEL Validation Rules
@@ -328,6 +336,7 @@ Sets spec fields to their documented defaults when they carry zero values. Expli
 | `spec.cache.backend` | `== ""` | `"dogpile.cache.pymemcache"` |
 | `spec.bootstrap.adminUser` | `== ""` | `"admin"` |
 | `spec.bootstrap.region` | `== ""` | `"RegionOne"` |
+| `spec.resources` | `== nil` or empty (`requests` and `limits` both unset) | `{requests: {memory: 256Mi, cpu: 100m}, limits: {memory: 512Mi, cpu: 500m}}` — ensures Burstable QoS class and enables HPA utilization calculations (CC-0042). |
 
 **Design note:** `spec.fernet.rotationSchedule` is NOT defaulted by the webhook — it
 relies solely on the Kubebuilder `+kubebuilder:default="0 0 * * 0"` marker (plan
@@ -365,6 +374,7 @@ single `apierrors.NewInvalid` error. It does **not** short-circuit on the first 
 | Autoscaling minReplicas minimum | `spec.autoscaling.minReplicas` | `field.Invalid` | `minReplicas < 1` when set. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker (CC-0038). |
 | Autoscaling min exceeds max | `spec.autoscaling.minReplicas` | `field.Invalid` | `minReplicas > maxReplicas` when set (CC-0038). |
 | Autoscaling no metric targets | `spec.autoscaling` | `field.Required` | Neither `targetCPUUtilization` nor `targetMemoryUtilization` is set. Defense-in-depth alongside the CEL XValidation rule (CC-0038). |
+| Resource request exceeds limit | `spec.resources.requests.<resource>` | `field.Invalid` | A resource request exceeds its corresponding limit (e.g., CPU request 1000m > limit 500m). Checked per resource type when both requests and limits are set (CC-0042). |
 
 **Error format:** All validation errors are returned as a structured
 `apierrors.StatusError` with `GroupKind{Group: "keystone.openstack.c5c3.io", Kind: "Keystone"}`,
@@ -459,6 +469,14 @@ exercise the CRD schema constraints.
 | --- | --- | --- |
 | `TestIntegration_WebhookDefaultsSetsZeroValues` | Defaults applied | Creates a CR with zero-valued defaultable fields; verifies `replicas=3`, `cache.backend="dogpile.cache.pymemcache"`, `bootstrap.adminUser="admin"`, `bootstrap.region="RegionOne"`, `fernet.maxActiveKeys=3` after admission. |
 | `TestIntegration_WebhookDefaultsPreservesExplicit` | Explicit values preserved | Creates a CR with `replicas=5` and `region="EU-West"`; verifies these values are not overwritten by the defaulting webhook. |
+| `TestIntegration_ResourcesDefaultedWhenNil` | Resources defaulted | Creates a CR with `spec.resources` unset (`nil`); verifies the defaulting webhook injects `{requests: {memory: 256Mi, cpu: 100m}, limits: {memory: 512Mi, cpu: 500m}}` (CC-0042). |
+| `TestIntegration_ResourcesPreservedWhenExplicit` | Explicit resources preserved | Creates a CR with explicit `spec.resources` (1Gi/2Gi memory, 200m/1 CPU); verifies the defaulting webhook does not overwrite them (CC-0042). |
+
+#### Webhook Validation Rejection
+
+| Test | Requirement | Trigger | Expected Error |
+| --- | --- | --- | --- |
+| `TestIntegration_ResourcesRequestExceedsLimitRejected` | Request must not exceed limit | `spec.resources` with CPU request 1000m > limit 500m | Invalid/Forbidden containing "resources" (CC-0042). |
 
 ### Chainsaw E2E Tests
 

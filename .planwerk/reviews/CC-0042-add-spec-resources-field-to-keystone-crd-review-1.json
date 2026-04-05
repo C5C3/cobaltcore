@@ -1,0 +1,94 @@
+{
+  "feature_id": "CC-0042",
+  "title": "Add spec.resources field to Keystone CRD",
+  "date": "2026-04-05",
+  "summary": "Adds an optional spec.resources field (*corev1.ResourceRequirements) to KeystoneSpec with webhook defaulting (256Mi/512Mi memory, 100m/500m CPU), validation (request must not exceed limit), deployment wiring via containerResources() helper, CRD regeneration + Helm sync, integration tests, and CRD reference documentation. Implementation is clean, follows existing patterns, and all tests pass. Two test coverage gaps need addressing before approval.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "All unit tests pass (go test ./...)", "checked": true},
+    {"item": "go vet passes with no errors", "checked": true},
+    {"item": "Webhook defaulting tests cover nil→defaults and explicit preserved", "checked": true},
+    {"item": "Webhook validation tests cover valid, CPU exceeds, memory exceeds, both exceed, nil, requests-only", "checked": true},
+    {"item": "Deployment builder tests cover default resources and custom resources", "checked": true},
+    {"item": "Integration tests cover defaulting, preservation, and rejection", "checked": true},
+    {"item": "TestDefault_SetsZeroValueDefaults updated to assert Resources non-nil", "checked": false},
+    {"item": "TestValidateCreate_RunsAllValidations updated to include resources violation", "checked": false},
+    {"item": "containerResources() nil path has dedicated test", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing webhook defaulting pattern (nil-check → assign)", "checked": true},
+    {"item": "Follows field.ErrorList accumulation without short-circuiting", "checked": true},
+    {"item": "Uses specPath.Child() for field paths consistently", "checked": true},
+    {"item": "containerResources() helper is nil-safe with defense-in-depth comment", "checked": true},
+    {"item": "DeepCopy regenerated correctly for pointer field", "checked": true},
+    {"item": "Functions are small and single-responsibility", "checked": true},
+    {"item": "No dead code or commented-out code", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "All user inputs validated (resource requests vs limits)", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "No injection vulnerabilities", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is minimal — one field, one defaulting block, one validation block, one helper", "checked": true},
+    {"item": "Field placement in KeystoneSpec follows existing ordering convention (after NetworkPolicy, before ExtraConfig)", "checked": true},
+    {"item": "CRD manifest regenerated and synced to Helm chart", "checked": true},
+    {"item": "No new RBAC markers needed (resources wired into existing deployment)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No over-engineering — containerResources() is the minimum necessary abstraction", "checked": true},
+    {"item": "No unused imports or dead code", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Validation errors accumulated into field.ErrorList (no short-circuit)", "checked": true},
+    {"item": "Nil-safety in containerResources() prevents panic on webhook-bypass CRs", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Webhook defaulting guards with nil check", "checked": true},
+    {"item": "Validation guards with Resources != nil && Limits != nil before iterating", "checked": true},
+    {"item": "containerResources() returns zero-value on nil (defense-in-depth for webhook bypass)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "TE1",
+      "severity": "MAJOR",
+      "description": "TestDefault_SetsZeroValueDefaults (line 46-59) does not assert that Resources is non-nil with correct defaults after defaulting. Task 2.1 item 5 explicitly required: 'Update TestDefault_SetsZeroValueDefaults to also assert Resources is non-nil with defaults.' This means the comprehensive zero-value defaults test does not verify the new Resources defaulting, breaking the contract that this test covers ALL defaulted fields.",
+      "location": "operators/keystone/api/v1alpha1/keystone_webhook_test.go:46",
+      "fix": "Add assertions after line 58: g.Expect(k.Spec.Resources).NotTo(BeNil()), g.Expect(k.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, resource.MustParse(\"256Mi\"))), and equivalent for CPU, Limits.Memory, Limits.CPU.",
+      "evidence": "func TestDefault_SetsZeroValueDefaults(t *testing.T) {\n\tg := NewGomegaWithT(t)\n\tw := &KeystoneWebhook{}\n\tk := &Keystone{}\n\n\tg.Expect(w.Default(context.Background(), k)).To(Succeed())\n\n\tg.Expect(k.Spec.Replicas).To(Equal(int32(3)))\n\tg.Expect(k.Spec.Fernet.MaxActiveKeys).To(Equal(int32(3)))\n\tg.Expect(k.Spec.CredentialKeys.MaxActiveKeys).To(Equal(int32(3)))\n\tg.Expect(k.Spec.Cache.Backend).To(Equal(\"dogpile.cache.pymemcache\"))\n\tg.Expect(k.Spec.Bootstrap.AdminUser).To(Equal(\"admin\"))\n\tg.Expect(k.Spec.Bootstrap.Region).To(Equal(\"RegionOne\"))\n}\n// ← No assertion for Resources",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "TE1",
+      "severity": "MAJOR",
+      "description": "TestValidateCreate_RunsAllValidations (line 876-920) claims to exercise ALL validation paths simultaneously to prove error accumulation (no short-circuiting), but does not include a broken spec.resources entry. Per external review pattern 'ensure-test-names-accurately-describe-their-coverage-scope': the test name contains a universal quantifier ('AllValidations') but the new resources validation path is not exercised. This gives false confidence that the test proves all errors are accumulated.",
+      "location": "operators/keystone/api/v1alpha1/keystone_webhook_test.go:876",
+      "fix": "Add resources violation after the networkPolicy setup (around line 905): k.Spec.Resources = &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(\"1000m\")}, Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(\"500m\")}}. Add assertion: g.Expect(errMsg).To(ContainSubstring(\"resources\")).",
+      "evidence": "// REQ-001 (CC-0039): Break networkPolicy — set empty ingress.\n\tk.Spec.NetworkPolicy = &NetworkPolicySpec{\n\t\tIngress: []NetworkPolicyIngressSource{},\n\t}\n\n\t_, err := w.ValidateCreate(context.Background(), k)\n\t// ... assertions check replicas, maxActiveKeys, rotationSchedule, configSection,\n\t// policyOverrides, cache, database, credentialKeys, targetCPUUtilization, networkPolicy\n\t// ← No assertion for \"resources\"",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "TE2",
+      "severity": "MAJOR",
+      "description": "No test covers containerResources() with nil spec.Resources input. The function has an explicit nil-safety fallback (return corev1.ResourceRequirements{}) for CRs that bypass the webhook, but this defense-in-depth path is untested. If the nil check were accidentally removed, no test would catch the resulting nil-pointer panic.",
+      "location": "operators/keystone/internal/controller/reconcile_deployment.go:290",
+      "fix": "Add TestReconcileDeployment_NilResources: create a Keystone via deployTestKeystone(), set ks.Spec.Resources = nil, call buildKeystoneDeployment(), assert container.Resources equals corev1.ResourceRequirements{} (zero value with empty Requests and Limits).",
+      "evidence": "func containerResources(keystone *keystonev1alpha1.Keystone) corev1.ResourceRequirements {\n\tif keystone.Spec.Resources != nil {\n\t\treturn *keystone.Spec.Resources\n\t}\n\treturn corev1.ResourceRequirements{}\n}\n// ← No test exercises the nil branch",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider including the limit value in the validation error message for better operator UX: fmt.Sprintf(\"%s request must not exceed limit (%s)\", resourceName, limit.String()) — the plan specified this format and it gives operators the limit value without requiring them to look at the CR spec.",
+    "The networkPolicy row added to the KeystoneSpec docs table (line 119) appears to be a documentation gap fix from CC-0039, not part of CC-0042 scope. Consider splitting this into a separate commit for clean traceability, or add a comment noting it fills a CC-0039 documentation gap."
+  ],
+  "next_steps": [
+    "Fix MAJOR: Add Resources assertions to TestDefault_SetsZeroValueDefaults",
+    "Fix MAJOR: Add resources violation to TestValidateCreate_RunsAllValidations with assertion for 'resources' in error message",
+    "Fix MAJOR: Add TestReconcileDeployment_NilResources for the nil-safety fallback path",
+    "Re-run go test ./operators/keystone/... to confirm all tests pass after fixes"
+  ],
+  "detected_patterns": []
+}

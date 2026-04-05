@@ -256,8 +256,11 @@ func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName st
 								},
 							}},
 							Containers: []corev1.Container{{
-								Name:    "fernet-rotate",
-								Image:   image,
+								Name:  "fernet-rotate",
+								Image: image,
+								// TODO(CC-0042): Wire spec.Resources (or a smaller Job-specific default) to
+								// this container. Currently runs as BestEffort QoS. See reconcile_deployment.go
+								// containerResources() for the pattern used by the keystone-api container.
 								Command: []string{"sh", "-c", fernetRotateScript},
 								Env: []corev1.EnvVar{
 									{Name: "SECRET_NAME", Value: secretName},

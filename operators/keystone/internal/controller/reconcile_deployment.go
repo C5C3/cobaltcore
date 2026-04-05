@@ -158,8 +158,9 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 				},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
-						Name:  "keystone-api",
-						Image: fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag),
+						Name:      "keystone-api",
+						Image:     fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag),
+						Resources: containerResources(keystone),
 						Command: []string{
 							"uwsgi",
 							"--http", ":5000",
@@ -280,6 +281,17 @@ func buildPodDisruptionBudget(keystone *keystonev1alpha1.Keystone) *policyv1.Pod
 	}
 
 	return pdb
+}
+
+// containerResources returns the ResourceRequirements for the keystone-api
+// container. It dereferences spec.Resources if set, falling back to a zero
+// value if nil (safe fallback for CRs that bypassed the webhook, e.g.
+// pre-existing CRs during operator upgrade) (CC-0042).
+func containerResources(keystone *keystonev1alpha1.Keystone) corev1.ResourceRequirements {
+	if keystone.Spec.Resources != nil {
+		return *keystone.Spec.Resources
+	}
+	return corev1.ResourceRequirements{}
 }
 
 func buildKeystoneService(keystone *keystonev1alpha1.Keystone) *corev1.Service {

@@ -175,7 +175,10 @@ func buildDBSyncJob(keystone *keystonev1alpha1.Keystone, configMapName string) *
 					RestartPolicy: corev1.RestartPolicyNever,
 					Containers: []corev1.Container{{
 						Name:    "db-sync",
-						Image:   fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag),
+						Image: fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag),
+						// TODO(CC-0042): Wire spec.Resources (or a smaller Job-specific default) to
+						// this container. Currently runs as BestEffort QoS. See reconcile_deployment.go
+						// containerResources() for the pattern used by the keystone-api container.
 						Command: []string{"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync"},
 						VolumeMounts: []corev1.VolumeMount{{
 							Name:      "config",

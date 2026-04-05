@@ -3,7 +3,7 @@
 **Review-Area**: validation
 **Detection-Hint**: When a PR description claims to fix or rename a value, search the entire diff for every occurrence of both the old and new value. Confirm the source-of-truth file was updated, not just downstream consumers or documentation.
 **Severity**: BLOCKING
-**Occurrences**: 2
+**Occurrences**: 3
 
 ## What to check
 
@@ -24,3 +24,8 @@ Fixing a value in docs and downstream files but not in the source-of-truth YAML 
 - **Feedback**: The early-return gate uses `result.RequeueAfter > 0` to decide whether to stop the chain, but this misses the case where a sub-reconciler returns `ctrl.Result{Requeue: true}` (immediate re-enqueue without a timer). The PR description itself specifies the correct guard: `!result.IsZero() || err != nil`.
 - **What was missed**: When a PR description specifies behavioral contracts (e.g., 'stop the chain if result is non-zero or error is non-nil'), verify the implementation matches exactly. Check that all fields of a result struct are handled in guard conditions, not just one field.
 - **Fix**: Changed all 5 sub-reconciler early-return guards from `result.RequeueAfter > 0` to `!result.IsZero() || err != nil`.
+
+### CC-0042 — berendt
+- **Feedback**: TODO comments were added to reconcile_bootstrap.go, reconcile_credential.go, and reconcile_fernet.go, but reconcile_database.go is missing its TODO comment, creating an asymmetry across the four Job-creating files.
+- **What was missed**: If a change is applied to N of M similar code locations, verify M == N. Search for the shared pattern (e.g., corev1.Container literal inside Job specs) across the entire codebase and cross-reference with the diff.
+- **Fix**: Add the same TODO comment to reconcile_database.go to maintain consistency with the other three Job files.

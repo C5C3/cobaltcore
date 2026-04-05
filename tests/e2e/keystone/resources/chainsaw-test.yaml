@@ -1,0 +1,131 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for spec.resources defaulting and propagation (CC-0042).
+# Validates that:
+#   - A Keystone CR without explicit resources gets webhook defaults
+#     (256Mi/100m requests, 512Mi/500m limits) propagated to the Deployment
+#   - Patching spec.resources updates the Deployment container resources
+#
+# REQ-004 (CC-0042)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-resources
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR without explicit resources ────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert Ready and Deployment has default resources ───────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-resources
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-resources-api
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: keystone-api
+                  resources:
+                    requests:
+                      memory: 256Mi
+                      cpu: 100m
+                    limits:
+                      memory: 512Mi
+                      cpu: 500m
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
+          echo "=== Deployment resources ==="
+          kubectl get deployment keystone-resources-api -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].resources}' 2>&1 || true
+          echo ""
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Patch spec.resources with custom values ─────────────────────
+  - try:
+    - patch:
+        file: 01-patch-custom-resources.yaml
+  # ── Step 4: Assert Deployment updated with custom resources ─────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-resources-api
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: keystone-api
+                  resources:
+                    requests:
+                      memory: 512Mi
+                      cpu: 200m
+                    limits:
+                      memory: 1Gi
+                      cpu: "1"
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-resources-api
+            namespace: openstack
+          status:
+            (updatedReplicas): 3
+            (availableReplicas): 3
+    catch:
+    - podLogs:
+        selector: application=keystone
+        namespace: openstack
+        tail: 50
+    - command:
+        entrypoint: kubectl
+        args:
+        - get
+        - deployments
+        - -n
+        - openstack
+        - -o
+        - yaml
+    - events:
+        namespace: openstack

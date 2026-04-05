@@ -2,8 +2,8 @@
   "feature_id": "CC-0042",
   "title": "Add spec.resources field to Keystone CRD",
   "slug": "add-spec-resources-field-to-keystone-crd",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 🔧 small\n**Category:** backend\n**Priority:** critical\n**Source:** GitHub Issue [#120](https://github.com/C5C3/forge/issues/120)\n\nAdd an optional `spec.resources` field of type `*corev1.ResourceRequirements` to `KeystoneSpec` in `keystone_types.go` with `+optional` marker and `omitempty` JSON tag. In the defaulting webhook (`Default()` in `keystone_webhook.go`), inject sensible defaults (256Mi/512Mi memory, 100m/500m CPU) when `spec.Resources == nil`. In the validation webhook (`validateKeystone()`), reject specs where any resource request exceeds its corresponding limit via `specPath.Child(\"resources\")` accumulated into `field.ErrorList`. Wire `spec.Resources` into the `keystone-api` container in `buildKeystoneDeployment()` in `reconcile_deployment.go`. Regenerate the CRD manifest via `controller-gen`. Add unit tests for webhook defaulting (nil → defaults, explicit preserved), validation (valid, request > limit rejected), and deployment builder (resources in container spec). Update CRD reference docs at `docs/reference/keystone-crd.md`.\n\n**Rationale:** Without resource requests, pods run as BestEffort QoS and the existing HPA (CC-0038) cannot compute utilization ratios since it targets CPU/memory utilization percentages against undefined baselines. This is a correctness bug — HPA is effectively non-functional without defined resource requests to compute percentages against.\n\n**Affected Areas:**\n- operators/keystone/api/v1alpha1/keystone_types.go\n- operators/keystone/api/v1alpha1/keystone_webhook.go\n- operators/keystone/api/v1alpha1/keystone_webhook_test.go\n- operators/keystone/internal/controller/reconcile_deployment.go\n- operators/keystone/internal/controller/reconcile_deployment_test.go\n- helm/keystone-operator/crds/keystone.openstack.c5c3.io_keystones.yaml\n- docs/reference/keystone-crd.md",
   "stories": [
@@ -246,6 +246,7 @@
       "description": "In operators/keystone/api/v1alpha1/keystone_types.go: (1) Add import corev1 \"k8s.io/api/core/v1\". (2) Add Resources field to KeystoneSpec after NetworkPolicy: `// Resources defines resource requests and limits for the Keystone API container.\\n// +optional\\nResources *corev1.ResourceRequirements \\`json:\"resources,omitempty\"\\``. (3) Run `make generate` to regenerate zz_generated.deepcopy.go with the new pointer field.",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -256,6 +257,7 @@
       "description": "In operators/keystone/api/v1alpha1/keystone_webhook.go: (1) Add imports corev1 \"k8s.io/api/core/v1\" and \"k8s.io/apimachinery/pkg/api/resource\". (2) In Default(), add nil-check block after existing defaults: if obj.Spec.Resources == nil, set to &corev1.ResourceRequirements{Requests: {memory: 256Mi, cpu: 100m}, Limits: {memory: 512Mi, cpu: 500m}}. In keystone_webhook_test.go: (3) Add TestDefault_ResourcesSetWhenNil verifying nil → default injection with exact values. (4) Add TestDefault_ResourcesPreservedWhenExplicit verifying custom values (1Gi/2Gi, 200m/1) are not overwritten. (5) Update TestDefault_SetsZeroValueDefaults to also assert Resources is non-nil with defaults.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001"
       ]
@@ -266,6 +268,7 @@
       "description": "In operators/keystone/api/v1alpha1/keystone_webhook.go validate(): (1) After the networkPolicy validation block, add: if k.Spec.Resources != nil, iterate over k.Spec.Resources.Requests; for each resourceName/request, check if Limits has the same key; if request.Cmp(limit) > 0, append field.Invalid at specPath.Child(\"resources\", \"requests\", string(resourceName)) with message fmt.Sprintf(\"request must not exceed limit (%s)\", limit.String()). In keystone_webhook_test.go: (2) TestValidate_ResourcesValidAccepted — valid requests <= limits passes. (3) TestValidate_ResourcesCPURequestExceedsLimitRejected — CPU 1000m > 500m rejected with error containing 'resources' and 'cpu'. (4) TestValidate_ResourcesMemoryRequestExceedsLimitRejected — memory 1Gi > 256Mi rejected with error containing 'resources' and 'memory'. (5) TestValidate_ResourcesBothExceedReportsBothErrors — both exceed → error contains both 'cpu' and 'memory'. (6) TestValidate_ResourcesNilAccepted — nil Resources → no error. (7) TestValidate_ResourcesRequestsOnlyAccepted — Requests without Limits → no error.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -276,6 +279,7 @@
       "description": "In operators/keystone/internal/controller/reconcile_deployment.go buildKeystoneDeployment(): (1) Before the return statement, declare `var resources corev1.ResourceRequirements; if keystone.Spec.Resources != nil { resources = *keystone.Spec.Resources }`. (2) Add `Resources: resources` to the keystone-api container struct literal. In reconcile_deployment_test.go: (3) Update deployTestKeystone() to include default Resources (256Mi/512Mi, 100m/500m). (4) Add imports for \"k8s.io/apimachinery/pkg/api/resource\". (5) Add TestReconcileDeployment_ContainerResources verifying the container has correct default resources (256Mi request, 512Mi limit, 100m request, 500m limit). (6) Add TestReconcileDeployment_CustomResources with custom Keystone (1Gi/2Gi, 500m/2) verifying custom resources appear in container.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -286,6 +290,7 @@
       "description": "Run `make manifests` to regenerate operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml with the new resources field schema. Run `make sync-crds` to copy the regenerated CRD to helm/keystone-operator/crds/keystone.openstack.c5c3.io_keystones.yaml with the sync header comment. Run `make verify-crd-sync` to verify the Helm CRD matches the generated source.",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -296,6 +301,7 @@
       "description": "In operators/keystone/api/v1alpha1/integration_test.go, add three tests with //go:build integration tag: (1) TestIntegration_ResourcesDefaultedWhenNil — create valid CR without resources, Get it back, verify spec.resources has 256Mi/512Mi/100m/500m defaults. (2) TestIntegration_ResourcesPreservedWhenExplicit — create valid CR with custom resources (1Gi/2Gi, 200m/1), Get it back, verify values preserved. (3) TestIntegration_ResourcesRequestExceedsLimitRejected — create CR with CPU request 1000m > limit 500m, expect apierrors.IsInvalid or IsForbidden with error containing 'resources'. Follow existing integration test patterns: use testutil.SkipIfEnvTestUnavailable(t), construct CR from integrationValidKeystone() helper, use unique names per test.",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002"
@@ -307,6 +313,7 @@
       "description": "In docs/reference/keystone-crd.md: (1) Add CC-0042 to feature header. (2) Add resources row to KeystoneSpec table: `| \\`resources\\` | [\\`*corev1.ResourceRequirements\\`](https://pkg.go.dev/k8s.io/api/core/v1#ResourceRequirements) | No | 256Mi/512Mi memory, 100m/500m CPU | Resource requests and limits for the Keystone API container. When nil, sensible defaults are injected by the webhook. |`. (3) Add resources to the Resource Shape example YAML with sample values. (4) Add row to Defaulting Webhook table: `| \\`spec.resources\\` | \\`== nil\\` | \\`{requests: {memory: 256Mi, cpu: 100m}, limits: {memory: 512Mi, cpu: 500m}}\\` |`. (5) Add row to Validation Rules table: `| Resource request exceeds limit | \\`spec.resources.requests.<type>\\` | \\`field.Invalid\\` | Any resource request value exceeds its corresponding limit (checked for each resource type independently). |`. (6) Add CredentialKeysSpec row to Generated DeepCopy Types list if missing, and add NetworkPolicySpec + NetworkPolicyIngressSource.",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -403,6 +410,762 @@
       "story": "Invalid resource specs are rejected with clear errors",
       "expected": "CR with CPU request=1000m > limit=500m should be rejected by the validating webhook with IsInvalid or IsForbidden error containing 'resources'",
       "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/integration_test.go",
+      "test_function": "TestIntegration_CRDInstalled",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/integration_test.go",
+      "test_function": "TestIntegration_ValidCRAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/integration_test.go",
+      "test_function": "TestIntegration_ValidCRWithClusterRefAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/integration_test.go",
+      "test_function": "TestIntegration_CELRejectsDBBothClusterRefAndHost",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/integration_test.go",
+      "test_function": "TestIntegration_CELRejectsCacheBothClusterRefAndServers",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/integration_test.go",
+      "test_function": "TestIntegration_CELRejectsReplicasBelowMinimum",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/integration_test.go",
+      "test_function": "TestIntegration_CELRejectsMaxActiveKeysBelowMinimum",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/integration_test.go",
+      "test_function": "TestIntegration_CELRejectsPolicyOverridesEmpty",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/integration_test.go",
+      "test_function": "TestIntegration_WebhookDefaultsSetsZeroValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/integration_test.go",
+      "test_function": "TestIntegration_WebhookDefaultsPreservesExplicit",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/integration_test.go",
+      "test_function": "TestIntegration_ResourcesDefaultedWhenNil",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/integration_test.go",
+      "test_function": "TestIntegration_ResourcesPreservedWhenExplicit",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/integration_test.go",
+      "test_function": "TestIntegration_ResourcesRequestExceedsLimitRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_SetsZeroValueDefaults",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_DoesNotSetFernetRotationSchedule",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_ZeroValueObjectRemainsInvalid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_PreservesExplicitValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_CacheBackendAppliedWhenEmpty",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_ReplicasZeroRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_ReplicasNegativeRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_ReplicasOneAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_MaxActiveKeysBelowMinimumRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_MaxActiveKeysZeroAllowed",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_MaxActiveKeysThreeAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_MaxActiveKeysAboveMinimumAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CredentialKeysMaxActiveKeysBelowMinimumRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CredentialKeysMaxActiveKeysZeroAllowed",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CredentialKeysMaxActiveKeysThreeAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CredentialKeysValidCronExpressions",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CredentialKeysInvalidCronExpressions",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CredentialKeysEmptyRotationScheduleReturnsRequiredError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_ValidCronExpressions",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_InvalidCronExpressions",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_EmptyRotationScheduleReturnsRequiredError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CacheWithServersOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CacheWithClusterRefOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CacheBothClusterRefAndServersRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CacheNeitherClusterRefNorServersRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_DatabaseWithHostOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_DatabaseWithClusterRefOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_DatabaseBothClusterRefAndHostRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_DatabaseNeitherClusterRefNorHostRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_UniquePlugins",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_DuplicatePluginConfigSection",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_NoPlugins",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_PolicyOverridesNil",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_PolicyOverridesWithRulesOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_PolicyOverridesWithConfigMapRefOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_PolicyOverridesWithBothSources",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_PolicyOverridesWithNoSources",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_EmptyPolicyRuleNameRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_NonEmptyPolicyRuleNamesAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Valid_CPUOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Valid_MemoryOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Valid_Both",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Invalid_NoTargets",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Invalid_MaxReplicasZero",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Invalid_MinExceedsMax",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Invalid_ImplicitMinExceedsMax",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Valid_ImplicitMinEqualsMax",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Invalid_CPUUtilizationOutOfRange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Invalid_MemoryUtilizationOutOfRange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Valid_BoundaryValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Nil_IsValid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_NetworkPolicy_Nil_IsValid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_NetworkPolicy_WithIngress_IsValid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_NetworkPolicy_EmptyIngress_Rejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidateCreate_RunsAllValidations",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidateUpdate_RunsSameValidation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidateDelete_AlwaysAllows",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_ResourcesSetWhenNil",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_ResourcesPreservedWhenExplicit",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_ResourcesValidAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_ResourcesCPURequestExceedsLimitRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_ResourcesMemoryRequestExceedsLimitRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_ResourcesBothExceedReportsBothErrors",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_ResourcesNilAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_ResourcesRequestsOnlyAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestKeystoneWebhook_ImplementsInterfaces",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_DeploymentAndServiceCreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_NotReady_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_Ready_SetsEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_OwnerReferences",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_DeploymentSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_NotReady_ConditionMessageAndGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_Ready_ConditionMessageAndGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_ServiceCreatedAlongsideDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_FernetKeysHashAnnotation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_FernetKeysHashAnnotation_EmptyHash",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_CredentialKeysHashAnnotation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_CredentialKeysHashAnnotation_EmptyHash",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestCredentialKeysHash_Deterministic",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestCredentialKeysHash_SecretNotFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_CredentialKeysHashFromSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestFernetKeysHash_Deterministic",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestFernetKeysHash_SecretNotFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_FernetKeysHashFromSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBCreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBLabelsAndSelector",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBMinAvailableForMultipleReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBMaxUnavailableForSingleReplica",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBUpdatedOnReplicaChange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBSelectorMatchesDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildPodDisruptionBudget_BoundaryReplicas2",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildPodDisruptionBudget_ZeroReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_ContainerResources",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_CustomResources",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBEnsureError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],
@@ -432,8 +1195,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-05T13:37:00.676477"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-05T13:37:36.983893"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-05T20:24:53.937784"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/125",
+  "pr_number": 125,
   "execution_history": [
     {
       "run_id": "89da3750-1d89-460c-afe2-d21ebd354d86",
@@ -445,6 +1218,78 @@
           "name": "prepare",
           "duration": 575.0693213939667,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "0e0e68ea-5cd9-4c88-91cd-f477ad7347a5",
+      "timestamp": "2026-04-05T14:02:55.221216",
+      "total_duration": 1315.7670731544495,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (1 tasks)",
+          "duration": 392.6768751144409,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (4 tasks)",
+          "duration": 140.02123975753784,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (2 tasks)",
+          "duration": 327.6416726112366,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0042] Code Review",
+          "duration": 243.27022290229797,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0042] Improvements",
+          "duration": 155.92580199241638,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0042] Simplify",
+          "duration": 56.231260776519775,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "1c49e554-a3ba-485b-b93f-9a923c007e34",
+      "timestamp": "2026-04-05T14:56:23.531778",
+      "total_duration": 993.5343818664551,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 993.5343818664551,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "0b59806b-22bb-44f9-996a-da3e203d2505",
+      "timestamp": "2026-04-05T19:34:20.681907",
+      "total_duration": 608.1381509304047,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 608.1381509304047,
+          "type": "review_address",
           "status": "done"
         }
       ]

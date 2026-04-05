@@ -15,6 +15,18 @@ spec:
   image:
     repository: ghcr.io/c5c3/keystone
     tag: "2025.2"
+  # Override the operator's default resource limits (100m/500m CPU,
+  # 256Mi/512Mi memory). The default CPU limit of 500m throttles the
+  # keystone-API pod to half a core, which more than doubled the Tempest
+  # run-time and pushed the job past its CI timeout. Give the tempest
+  # workload headroom so it matches the pre-CC-0042 behaviour (no limits).
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 1Gi
   database:
     clusterRef:
       name: openstack-db

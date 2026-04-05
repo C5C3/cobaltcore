@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: When a test asserts behavior that depends on a specific input value (e.g. replica count determining PDB policy), check whether that value is explicitly set in the test or inherited from a shared fixture/helper. If the test would break or become misleading when the helper's defaults change, the value should be set or asserted explicitly in the test.
 **Severity**: WARNING
-**Occurrences**: 2
+**Occurrences**: 3
 
 ## What to check
 
@@ -24,3 +24,8 @@ Implicit coupling to fixture defaults makes tests fragile and misleading. If the
 - **Feedback**: TestReconcileDeployment_PDBCreated uses deployTestKeystone() without setting Replicas explicitly. If the fixture default changes from Replicas: 3 to Replicas: 1, the test silently changes which PDB strategy path it exercises.
 - **What was missed**: Identify the key input values that drive the behavior under test. Verify those values are explicitly set in the test setup, not inherited from a shared fixture helper whose defaults could change independently.
 - **Fix**: Explicitly set Replicas in the test setup so the tested code path is pinned regardless of fixture defaults.
+
+### CC-0042 — berendt
+- **Feedback**: Step 4 asserts the Deployment spec has the new resources but does not verify status.updatedReplicas == replicas to prove new pods are actually running.
+- **What was missed**: After a spec mutation assertion in an e2e test, look for a corresponding status assertion that proves the new state is fully propagated (e.g., updatedReplicas, availableReplicas, observedGeneration). Asserting only the spec can pass even if the rollout is stuck or failing.
+- **Fix**: Add a status assertion (e.g., status.updatedReplicas == spec.replicas) after the spec mutation check to confirm the rollout completed successfully.

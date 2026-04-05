@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: When a test name contains universal quantifiers like 'All', 'Every', 'Runs all', or 'Full', verify that every branch or validation path in the function under test is actually exercised. Cross-reference the test setup with the production code's branches.
 **Severity**: WARNING
-**Occurrences**: 3
+**Occurrences**: 4
 
 ## What to check
 
@@ -29,3 +29,8 @@ Misleadingly named tests give false confidence that all paths are covered and th
 - **Feedback**: Every test CR specifies database: keystone in its spec. With parallel: 4, up to 4 concurrent keystone-manage db_sync Jobs will execute Alembic migrations against the same database simultaneously.
 - **What was missed**: For each resource name (database schema, queue, bucket, etc.) referenced in test fixtures, verify it is unique per test suite when tests run in parallel. Search for hardcoded shared names like `database: keystone` appearing across multiple test directories.
 - **Fix**: Assigned unique database names per test (e.g., `keystone_basic`, `keystone_scale`, `keystone_cleanup`) across all 9 CR fixture files.
+
+### CC-0042 — berendt
+- **Feedback**: The project has Chainsaw E2E tests for every existing feature (13 directories under tests/e2e/keystone/), but this PR adds no E2E test for the resources feature.
+- **What was missed**: When every existing feature has a corresponding test directory or test suite (e.g., 13 out of 13 features have tests/e2e/ directories), a PR adding a new feature must include the same kind of test. Absence is a gap, not an oversight to defer.
+- **Fix**: Created tests/e2e/keystone/resources/ with a chainsaw-test.yaml covering default resource propagation and custom resource patching.

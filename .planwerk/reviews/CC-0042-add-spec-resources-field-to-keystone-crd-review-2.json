@@ -1,0 +1,76 @@
+{
+  "summary": "Fix commit addresses all three W-level findings from berendt's review #1: (1) networkPolicy doc row scope creep removed, (2) Chainsaw E2E test added for resources feature, (3) TODO comments added to Job/CronJob reconcilers for resource propagation. Additionally addresses both I-level findings: default values extracted to exported constants (single source of truth), and empty-ResourceRequirements edge case handled. Code is clean, tests pass, patterns followed.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "All unit tests pass (go test ./operators/keystone/...)", "checked": true},
+    {"item": "Resource defaulting tested: nil, empty, explicit preserved", "checked": true},
+    {"item": "Resource validation tested: valid, CPU exceeds, memory exceeds, both exceed, nil, requests-only", "checked": true},
+    {"item": "Deployment builder tested: default and custom resources", "checked": true},
+    {"item": "Integration tests use exported constants", "checked": true},
+    {"item": "E2E chainsaw test covers default propagation and custom patch", "checked": true},
+    {"item": "Edge case: empty ResourceRequirements triggers defaulting (TestDefault_ResourcesSetWhenEmpty)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Default values extracted to exported constants (DRY)", "checked": true},
+    {"item": "DeepCopy() on resource.Quantity vars prevents mutation of package-level defaults", "checked": true},
+    {"item": "TODO comments reference CC-0042 and point to containerResources() pattern", "checked": true},
+    {"item": "Follows existing codebase patterns (gomega, chainsaw, envtest)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No new input surfaces or secret handling", "checked": true},
+    {"item": "No injection vectors introduced", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Single source of truth for default values via exported vars", "checked": true},
+    {"item": "E2E test follows chainsaw pattern from sibling tests", "checked": true},
+    {"item": "Review patterns captured for future reviews", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "Literal values replaced with constants across 4 files (webhook, webhook_test, integration_test, deployment_test)", "checked": true},
+    {"item": "No unnecessary abstractions added", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Empty-but-non-nil ResourceRequirements caught by defaulting webhook", "checked": true},
+    {"item": "Validation accumulates all errors without short-circuiting", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "DeepCopy() prevents mutation of package-level Quantity vars", "checked": true},
+    {"item": "Nil-safe handling in containerResources() and defaulting webhook", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "DA3",
+      "severity": "MINOR",
+      "description": "Documentation defaulting table says condition is `== nil` but the code now also handles non-nil empty ResourceRequirements (`resources: {}`). The condition column should reflect the actual implementation behavior.",
+      "location": "docs/reference/keystone-crd.md:339",
+      "fix": "Update the Condition column from `== nil` to `== nil or empty` to match the webhook code at keystone_webhook.go:80 which checks `obj.Spec.Resources == nil || (len(obj.Spec.Resources.Requests) == 0 && len(obj.Spec.Resources.Limits) == 0)`.",
+      "evidence": "| `spec.resources` | `== nil` | `{requests: ...}` |  — but code does: if obj.Spec.Resources == nil || (len(obj.Spec.Resources.Requests) == 0 && len(obj.Spec.Resources.Limits) == 0)",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a test for partially-set resources (e.g., only Requests set, Limits empty) to verify the defaulting webhook does not overwrite partial user configuration — currently this behavior is correct but untested."
+  ],
+  "next_steps": [],
+  "detected_patterns": [
+    {
+      "name": "Exported default constants with DeepCopy for webhook defaulting",
+      "component": "operators/*/api/v1alpha1/",
+      "category": "configuration",
+      "applies_when": "Adding a new defaulting webhook that injects Kubernetes resource types (e.g., ResourceRequirements, resource.Quantity) as defaults — export the default values as package-level vars and use DeepCopy() when assigning them to prevent mutation of the shared variables",
+      "description": "Default values for webhook-injected Kubernetes types are declared as exported package-level vars (e.g., DefaultMemoryRequest, DefaultCPULimit) using resource.MustParse(). The defaulting webhook uses DeepCopy() when assigning these to the spec to prevent mutation of the package-level variables. Tests reference the exported constants directly rather than duplicating literal values, establishing a single source of truth. This pattern is currently used in one operator (Keystone) but is an architectural decision that will recur as new operators add resource defaulting.",
+      "examples": [
+        {
+          "location": "operators/keystone/api/v1alpha1/keystone_webhook.go:25-30",
+          "code": "var (\n\tDefaultMemoryRequest = resource.MustParse(\"256Mi\")\n\tDefaultCPURequest    = resource.MustParse(\"100m\")\n\tDefaultMemoryLimit   = resource.MustParse(\"512Mi\")\n\tDefaultCPULimit      = resource.MustParse(\"500m\")\n)"
+        },
+        {
+          "location": "operators/keystone/api/v1alpha1/keystone_webhook.go:82-88",
+          "code": "\t\tobj.Spec.Resources = &corev1.ResourceRequirements{\n\t\t\tRequests: corev1.ResourceList{\n\t\t\t\tcorev1.ResourceMemory: DefaultMemoryRequest.DeepCopy(),\n\t\t\t\tcorev1.ResourceCPU:    DefaultCPURequest.DeepCopy(),\n\t\t\t},\n\t\t\tLimits: corev1.ResourceList{\n\t\t\t\tcorev1.ResourceMemory: DefaultMemoryLimit.DeepCopy(),\n\t\t\t\tcorev1.ResourceCPU:    DefaultCPULimit.DeepCopy(),\n\t\t\t},"
+        }
+      ]
+    }
+  ]
+}

@@ -9,12 +9,26 @@ import (
 	"fmt"
 
 	"github.com/robfig/cron/v3"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+)
+
+// Default resource requests and limits for the Keystone API container (CC-0042).
+// These constants are the single source of truth for the defaulting webhook.
+// They ensure Burstable QoS class and enable HPA utilization-based scaling.
+// Exported because the controller package tests (reconcile_deployment_test.go)
+// reference them for assertion. Mutation is safe: all call sites use DeepCopy().
+var (
+	DefaultMemoryRequest = resource.MustParse("256Mi")
+	DefaultCPURequest    = resource.MustParse("100m")
+	DefaultMemoryLimit   = resource.MustParse("512Mi")
+	DefaultCPULimit      = resource.MustParse("500m")
 )
 
 // KeystoneWebhook implements defaulting and validation webhooks for the Keystone CRD (CC-0011).
@@ -60,6 +74,22 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 	}
 	if obj.Spec.Bootstrap.Region == "" {
 		obj.Spec.Bootstrap.Region = "RegionOne"
+	}
+	// REQ-004 (CC-0042): Default resource requests and limits for Burstable QoS
+	// and HPA utilization calculations. Also defaults when Resources is non-nil
+	// but empty (e.g. `resources: {}`), which would otherwise produce BestEffort
+	// QoS and break HPA utilization calculations.
+	if obj.Spec.Resources == nil || (len(obj.Spec.Resources.Requests) == 0 && len(obj.Spec.Resources.Limits) == 0) {
+		obj.Spec.Resources = &corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceMemory: DefaultMemoryRequest.DeepCopy(),
+				corev1.ResourceCPU:    DefaultCPURequest.DeepCopy(),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceMemory: DefaultMemoryLimit.DeepCopy(),
+				corev1.ResourceCPU:    DefaultCPULimit.DeepCopy(),
+			},
+		}
 	}
 	return nil
 }
@@ -266,6 +296,19 @@ func (w *KeystoneWebhook) validate(k *Keystone) error {
 			specPath.Child("networkPolicy", "ingress"),
 			"at least one ingress source must be specified",
 		))
+	}
+
+	// REQ-004 (CC-0042): Validate that resource requests do not exceed limits.
+	if k.Spec.Resources != nil && k.Spec.Resources.Limits != nil {
+		for resourceName, request := range k.Spec.Resources.Requests {
+			if limit, hasLimit := k.Spec.Resources.Limits[resourceName]; hasLimit && request.Cmp(limit) > 0 {
+				allErrs = append(allErrs, field.Invalid(
+					specPath.Child("resources", "requests", string(resourceName)),
+					request.String(),
+					fmt.Sprintf("%s request must not exceed limit (%s)", resourceName, limit.String()),
+				))
+			}
+		}
 	}
 
 	if len(allErrs) > 0 {

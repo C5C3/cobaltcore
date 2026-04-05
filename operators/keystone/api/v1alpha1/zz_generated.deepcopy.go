@@ -10,7 +10,8 @@ package v1alpha1
 
 import (
 	"github.com/c5c3/forge/internal/common/types"
-	"k8s.io/api/networking/v1"
+	"k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
@@ -208,6 +209,11 @@ func (in *KeystoneSpec) DeepCopyInto(out *KeystoneSpec) {
 		*out = new(NetworkPolicySpec)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.Resources != nil {
+		in, out := &in.Resources, &out.Resources
+		*out = new(v1.ResourceRequirements)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.ExtraConfig != nil {
 		in, out := &in.ExtraConfig, &out.ExtraConfig
 		*out = make(map[string]map[string]string, len(*in))
@@ -301,7 +307,7 @@ func (in *NetworkPolicySpec) DeepCopyInto(out *NetworkPolicySpec) {
 	}
 	if in.AdditionalEgress != nil {
 		in, out := &in.AdditionalEgress, &out.AdditionalEgress
-		*out = make([]v1.NetworkPolicyEgressRule, len(*in))
+		*out = make([]networkingv1.NetworkPolicyEgressRule, len(*in))
 		for i := range *in {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
