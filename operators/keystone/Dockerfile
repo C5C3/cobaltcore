@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # ---------- Stage 1: builder ----------
-FROM golang:1.25@sha256:dfae680962532eeea67ab297f1166c2c4e686edb9a8f05f9d02d96fc9191833e AS builder
+FROM golang:1.25@sha256:e282f9e8023cc22767b4fc0bfe53b97db8edfcc395a603691c126bb0a6160703 AS builder
 
 WORKDIR /workspace
 
