@@ -142,3 +142,42 @@ tests:
             name: webhook
             containerPort: 9443
             protocol: TCP
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --enable-webhooks=false
+
+  # CC-0043: Namespace-scoped deployment tests.
+  - it: should include --namespace arg when rbac.namespaceScoped is true
+    set:
+      rbac:
+        namespaceScoped: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --namespace=NAMESPACE
+
+  - it: should not include --namespace arg when rbac.namespaceScoped is false
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --namespace=NAMESPACE
+
+  - it: should include both --leader-elect and --namespace when both enabled
+    set:
+      rbac:
+        namespaceScoped: true
+      leaderElection:
+        enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --leader-elect
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --namespace=NAMESPACE
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --metrics-bind-address=:8080
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --health-probe-bind-address=:8081

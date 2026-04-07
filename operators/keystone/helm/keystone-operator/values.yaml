@@ -16,6 +16,12 @@ resources:
     cpu: 10m
     memory: 64Mi
 
+rbac:
+  # CC-0043: Set to true to deploy with namespace-scoped Role/RoleBinding
+  # instead of ClusterRole/ClusterRoleBinding. Restricts the operator to its
+  # release namespace. Requires webhook.enabled=false.
+  namespaceScoped: false
+
 leaderElection:
   enabled: true
 

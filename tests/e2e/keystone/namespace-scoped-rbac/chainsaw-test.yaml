@@ -1,0 +1,115 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for namespace-scoped RBAC deployment (CC-0043).
+# Validates the operator deployed with rbac.namespaceScoped=true and
+# webhook.enabled=false can successfully reconcile a Keystone CR:
+#   - Operator deployed via Helm with namespace-scoped RBAC
+#   - Role/RoleBinding created (not ClusterRole/ClusterRoleBinding)
+#   - Keystone CR reconciles to Ready=True
+#
+# The test runs in the "openstack" namespace where the shared infrastructure
+# (MariaDB, Memcached, Secrets) lives, so standard managed mode (clusterRef)
+# works exactly as in all other E2E tests.
+#
+# REQ-001, REQ-002 (CC-0043)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-namespace-scoped-rbac
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Deploy operator with namespace-scoped RBAC ─────────────────
+  - try:
+    - script:
+        timeout: 120s
+        content: |
+          helm install keystone-operator-ns-scoped \
+            ${GITHUB_WORKSPACE:-.}/operators/keystone/helm/keystone-operator/ \
+            --namespace openstack \
+            --set rbac.namespaceScoped=true \
+            --set webhook.enabled=false \
+            --set image.repository=${IMAGE_PREFIX:-ghcr.io/c5c3}/keystone-operator \
+            --set image.tag=dev \
+            --set image.pullPolicy=Never \
+            --wait --timeout 90s
+    catch:
+    - script:
+        content: |
+          echo "=== Helm status ==="
+          helm status keystone-operator-ns-scoped -n openstack 2>&1 || true
+          echo "=== Pod status ==="
+          kubectl get pods -n openstack -o wide 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 2: Assert Role and RoleBinding exist (not ClusterRole) ────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: keystone-operator-ns-scoped
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: keystone-operator-ns-scoped
+            namespace: openstack
+    - script:
+        content: |
+          # Verify no ClusterRole was created for this release
+          if kubectl get clusterrole keystone-operator-ns-scoped 2>/dev/null; then
+            echo "FAIL: ClusterRole should not exist for namespace-scoped deployment"
+            exit 1
+          fi
+          echo "OK: No ClusterRole found (expected)"
+  # ── Step 3: Apply Keystone CR ──────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 4: Assert successful reconciliation ───────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-ns-scoped
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 5: Cleanup Helm release ───────────────────────────────────────
+  - try:
+    - script:
+        content: |
+          helm uninstall keystone-operator-ns-scoped -n openstack 2>&1 || true

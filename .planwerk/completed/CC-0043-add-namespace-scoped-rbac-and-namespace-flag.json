@@ -2,8 +2,8 @@
   "feature_id": "CC-0043",
   "title": "Add namespace-scoped RBAC and namespace flag",
   "slug": "add-namespace-scoped-rbac-and-namespace-flag",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 📦 medium\n**Category:** infrastructure\n**Priority:** high\n**Source:** GitHub Issue [#123](https://github.com/C5C3/forge/issues/123)\n\n1. Add `--namespace` string flag to `internal/common/bootstrap/manager.go` alongside existing flags (lines 66-84); when set, configure `cache.Options{DefaultNamespaces: map[string]cache.Config{ns: {}}}` at line 91.\n2. Add `rbac.namespaceScoped: false` toggle to `operators/keystone/helm/keystone-operator/values.yaml`.\n3. Create `templates/role.yaml` (new) mirroring the 12 apiGroup rule blocks from `clusterrole.yaml`, guarded by `{{- if .Values.rbac.namespaceScoped }}`.\n4. Create `templates/rolebinding.yaml` (new) binding ServiceAccount to Role, same conditional.\n5. Wrap existing `templates/clusterrole.yaml` and `templates/clusterrolebinding.yaml` in `{{- if not .Values.rbac.namespaceScoped }}`.\n6. Update `templates/deployment.yaml` to conditionally add `--namespace={{ .Release.Namespace }}` container arg when `rbac.namespaceScoped: true` (follow existing `--leader-elect` conditional pattern).\n7. Add multi-tenant deployment documentation describing when to use namespace-scoped mode, webhook limitation caveat (recommend `webhook.enabled: false`), and CRD installation remains cluster-admin concern.\n\nVerification: `helm template` with defaults produces ClusterRole (no Role); with `rbac.namespaceScoped=true` produces Role (no ClusterRole) and `--namespace` flag. `helm lint` passes both configs. Bootstrap tests verify flag populates cache options.\n\n**Rationale:** ClusterRole grants operator permissions across all namespaces, violating least-privilege in multi-tenant deployments. A compromised operator with ClusterRole can access resources in every namespace. Namespace-scoped RBAC limits blast radius to a single namespace, enabling secure multi-tenant patterns where each tenant gets an isolated operator instance.\n\n**Affected Areas:**\n- internal/common/bootstrap/manager.go\n- operators/keystone/helm/keystone-operator/values.yaml\n- operators/keystone/helm/keystone-operator/templates/clusterrole.yaml\n- operators/keystone/helm/keystone-operator/templates/clusterrolebinding.yaml\n- operators/keystone/helm/keystone-operator/templates/role.yaml\n- operators/keystone/helm/keystone-operator/templates/rolebinding.yaml\n- operators/keystone/helm/keystone-operator/templates/deployment.yaml\n- docs/",
   "stories": [
@@ -325,6 +325,7 @@
       "description": "In internal/common/bootstrap/manager.go: (1) Add a `var namespace string` variable and `flag.StringVar(&namespace, \"namespace\", \"\", ...)` alongside existing flags at lines 66-80. (2) Extract a `cacheOptions(syncPeriod time.Duration, namespace string) cache.Options` helper function that builds cache.Options with SyncPeriod and conditionally sets DefaultNamespaces when namespace is non-empty. (3) Use the helper in Run() at line 91. In internal/common/bootstrap/manager_test.go: Add TestCacheOptions_withNamespace, TestCacheOptions_withoutNamespace, TestCacheOptions_syncPeriodPreserved, TestCacheOptions_singleNamespaceEntry. Follow existing test style (standard library testing, Feature: CC-0043 comment).",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002"
@@ -336,6 +337,7 @@
       "description": "In values.yaml: Add `rbac:\\n  namespaceScoped: false` section. In templates/clusterrole.yaml: Add `{{- if not .Values.rbac.namespaceScoped }}` at line 1 and `{{- end }}` at the end. In templates/clusterrolebinding.yaml: Same conditional wrapping. In tests/clusterrole_test.yaml: Add test 'should not render when rbac.namespaceScoped is true' with `set: rbac.namespaceScoped: true` and `asserts: - hasDocuments: count: 0`. In tests/clusterrolebinding_test.yaml: Same pattern. Verify all existing tests still pass with default values (namespaceScoped=false).",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-006"
@@ -347,6 +349,7 @@
       "description": "Create templates/role.yaml: Copy clusterrole.yaml content, change kind from ClusterRole to Role, wrap in `{{- if .Values.rbac.namespaceScoped }}`. All 14 rule blocks must be identical to clusterrole.yaml. Create tests/role_test.yaml: Add suite with tests: (1) 'should not render when rbac.namespaceScoped is false (default)' with `asserts: - hasDocuments: count: 0`, (2) 'should render when rbac.namespaceScoped is true' with `set: rbac.namespaceScoped: true` verifying kind=Role and rule count=14, (3) individual rule verification tests for keystones CRUD, status, finalizers, deployments, core resources, events, batch, mariadb, external-secrets, rbac, policy, autoscaling, networking, leases. Follow clusterrole_test.yaml structure.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -357,6 +360,7 @@
       "description": "Create templates/rolebinding.yaml: Mirror clusterrolebinding.yaml structure but use kind: RoleBinding and roleRef.kind: Role. Wrap in `{{- if .Values.rbac.namespaceScoped }}`. Use same template helpers (fullname, labels, serviceAccountName). Create tests/rolebinding_test.yaml: Add suite with tests: (1) 'should not render when rbac.namespaceScoped is false' with `asserts: - hasDocuments: count: 0`, (2) 'should reference the correct Role' with `set: rbac.namespaceScoped: true` verifying roleRef.kind=Role, roleRef.name, roleRef.apiGroup, (3) 'should bind to the correct ServiceAccount' verifying subjects[0]. Follow clusterrolebinding_test.yaml structure.",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -367,6 +371,7 @@
       "description": "In templates/deployment.yaml: After the `{{- if .Values.leaderElection.enabled }}` / `{{- end }}` block (lines 31-33), add `{{- if .Values.rbac.namespaceScoped }}\\n            - --namespace={{ .Release.Namespace }}\\n            {{- end }}`. In tests/deployment_test.yaml: (1) Add test 'should include --namespace arg when rbac.namespaceScoped is true' with `set: rbac.namespaceScoped: true` verifying args contain --namespace=NAMESPACE. (2) Add test 'should include both --leader-elect and --namespace' with both enabled, verifying full args list. (3) Update existing args test description if needed to clarify it covers default values.",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -377,6 +382,7 @@
       "description": "In .github/workflows/ci.yaml: Add 'Scenario 5: namespace-scoped RBAC' to the 'Helm template' step (after line 313): `echo '--- Scenario 5: namespace-scoped RBAC ---'` followed by `helm template test \"$CHART\" --set rbac.namespaceScoped=true --set webhook.enabled=false`. This verifies that the namespace-scoped configuration produces valid manifests. The webhook.enabled=false follows the documented recommendation for namespace-scoped deployments.",
       "level": 3,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-006"
@@ -388,6 +394,7 @@
       "description": "Create docs/how-to/multi-tenant-deployment.md: VitePress frontmatter with title. Sections: (1) Overview - when to use namespace-scoped vs cluster-wide mode, security rationale. (2) Prerequisites - CRDs installed by cluster-admin, namespace exists. (3) Configuration - example Helm values with rbac.namespaceScoped=true and webhook.enabled=false. (4) Webhook Limitation - prominent caveat that MutatingWebhookConfiguration/ValidatingWebhookConfiguration are cluster-scoped resources and must be disabled in namespace-scoped mode. (5) CRD Installation - note that CRDs are always cluster-scoped. Update docs/.vitepress/config.ts sidebar: Add 'How-to Guides' section with 'Multi-tenant Deployment' link.",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -491,6 +498,34 @@
       "story": "Platform engineer deploys operator with namespace-scoped RBAC",
       "expected": "Container args include --leader-elect, --namespace=NAMESPACE, --metrics-bind-address, --health-probe-bind-address",
       "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "internal/common/bootstrap/manager_test.go",
+      "test_function": "TestManagerConfig_validate_nilScheme",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/bootstrap/manager_test.go",
+      "test_function": "TestManagerConfig_validate_emptyLeaderElectionID",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/bootstrap/manager_test.go",
+      "test_function": "TestManagerConfig_validate_valid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/bootstrap/manager_test.go",
+      "test_function": "TestManagerConfig_validate_validWithSetupFunc",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],
@@ -518,8 +553,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-06T07:59:42.472659"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-06T08:03:20.954844"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-07T14:04:32.152597"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/126",
+  "pr_number": 126,
   "execution_history": [
     {
       "run_id": "ee025e29-d283-4d18-b1e1-6d786b339756",
@@ -531,6 +576,78 @@
           "name": "prepare",
           "duration": 454.9086604118347,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "3ba26b40-740d-4174-8c5e-cc45ff9c4da0",
+      "timestamp": "2026-04-06T08:23:47.077334",
+      "total_duration": 1061.8181848526,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (1 tasks)",
+          "duration": 340.75315618515015,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (4 tasks)",
+          "duration": 128.87879300117493,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (2 tasks)",
+          "duration": 149.00913190841675,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0043] Code Review",
+          "duration": 274.3831117153168,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0043] Improvements",
+          "duration": 115.92736911773682,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0043] Simplify",
+          "duration": 52.86662292480469,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "86406022-a230-4077-9956-5be29cdceb5a",
+      "timestamp": "2026-04-06T17:35:40.437011",
+      "total_duration": 554.160397529602,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 554.160397529602,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "26ac192e-d521-40a8-a045-55c26fe53e36",
+      "timestamp": "2026-04-06T18:29:45.499610",
+      "total_duration": 635.2689816951752,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 635.2689816951752,
+          "type": "review_address",
           "status": "done"
         }
       ]

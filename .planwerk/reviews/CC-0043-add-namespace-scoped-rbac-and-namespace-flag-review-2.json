@@ -1,0 +1,55 @@
+{
+  "feature_id": "CC-0043",
+  "title": "Add namespace-scoped RBAC and namespace flag",
+  "date": "2026-04-06",
+  "summary": "Review #2 covers the changes addressing sourcery-ai[bot] feedback: (1) ManagerConfig.Namespace field added so callers can opt into namespace scoping programmatically without CLI flags, with CLI flag defaulting to cfg.Namespace and overriding when explicitly set; (2) RBAC rules extracted from duplicated inline blocks in clusterrole.yaml and role.yaml into a shared named template keystone-operator.rbacRules in _helpers.tpl, eliminating drift risk. All verification passes: 9/9 Go tests, 69/69 Helm tests, helm lint clean for both configs, helm template output correct for both modes, go vet clean.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Go unit tests pass (9/9 including new TestManagerConfig_validate_validWithNamespace)", "checked": true},
+    {"item": "Helm unittest tests pass (69/69 across 9 suites)", "checked": true},
+    {"item": "helm lint passes for default and namespace-scoped configurations", "checked": true},
+    {"item": "helm template with defaults produces ClusterRole (no Role)", "checked": true},
+    {"item": "helm template with rbac.namespaceScoped=true produces Role (no ClusterRole)", "checked": true},
+    {"item": "Edge cases covered: empty namespace = cluster-wide, non-empty = scoped", "checked": true},
+    {"item": "New Namespace field on ManagerConfig has dedicated validation test", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (flag registration style, ManagerConfig struct conventions)", "checked": true},
+    {"item": "cacheOptions helper is pure function with clear single responsibility", "checked": true},
+    {"item": "Helm shared partial eliminates code duplication between clusterrole.yaml and role.yaml", "checked": true},
+    {"item": "Clear naming (Namespace field, rbacRules template)", "checked": true},
+    {"item": "Feature IDs present in comments and docstrings (CC-0043)", "checked": true},
+    {"item": "No dead code or unnecessary changes", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No secrets or credentials in changes", "checked": true},
+    {"item": "RBAC rules are identical between Role and ClusterRole (shared partial)", "checked": true},
+    {"item": "No input validation bypass (namespace flag is optional string)", "checked": true},
+    {"item": "No path traversal or injection vectors", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "ManagerConfig.Namespace exposes config through both CLI and programmatic surfaces", "checked": true},
+    {"item": "CLI flag defaults to cfg.Namespace, overrides when explicitly set — clean precedence model", "checked": true},
+    {"item": "Shared RBAC rules partial prevents drift between Role and ClusterRole", "checked": true},
+    {"item": "Solution is minimal — no over-engineering", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "RBAC rules extracted to shared partial (DRY)", "checked": true},
+    {"item": "No unnecessary abstractions added", "checked": true},
+    {"item": "No speculative features beyond what was requested", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "ManagerConfig.validate() catches nil Scheme and empty LeaderElectionID early", "checked": true},
+    {"item": "cacheOptions handles empty namespace gracefully (nil DefaultNamespaces)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Empty namespace string correctly means cluster-wide (no DefaultNamespaces set)", "checked": true},
+    {"item": "Flag precedence documented: CLI --namespace overrides ManagerConfig.Namespace", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": []
+}

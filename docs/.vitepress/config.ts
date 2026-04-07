@@ -29,6 +29,7 @@ export default defineConfig({
           { text: 'Tempest Test Infrastructure', link: '/reference/tempest-test-infrastructure' },
           { text: 'Infrastructure Manifests', link: '/reference/infrastructure-manifests' },
           { text: 'Kubernetes Packages', link: '/reference/kubernetes-packages' },
+          { text: 'Multi-Tenant Deployment', link: '/reference/multi-tenant-deployment' },
         ],
       },
     ],

@@ -39,7 +39,7 @@ func main() {
 	if err := bootstrap.Run(bootstrap.ManagerConfig{
 		Scheme:           scheme,
 		LeaderElectionID: "keystone.openstack.c5c3.io",
-		SetupFunc: func(mgr ctrl.Manager) error {
+		SetupFunc: func(mgr ctrl.Manager, webhooks bool) error {
 			// +kubebuilder:scaffold:builder — register controllers here
 			if err := (&controller.KeystoneReconciler{
 				Client:   mgr.GetClient(),
@@ -48,8 +48,10 @@ func main() {
 			}).SetupWithManager(mgr); err != nil {
 				return err
 			}
-			if err := (&keystonev1alpha1.KeystoneWebhook{}).SetupWebhookWithManager(mgr); err != nil {
-				return err
+			if webhooks {
+				if err := (&keystonev1alpha1.KeystoneWebhook{}).SetupWebhookWithManager(mgr); err != nil {
+					return err
+				}
 			}
 			return nil
 		},

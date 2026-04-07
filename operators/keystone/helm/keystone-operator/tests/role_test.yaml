@@ -1,15 +1,63 @@
-# CC-0041, REQ-007: ClusterRole RBAC rules unit tests.
-suite: ClusterRole
+# CC-0043: Role RBAC tests for namespace-scoped mode.
+# Individual rule verification tests mirror clusterrole_test.yaml structure
+# to catch regressions in apiGroups, resources, or verbs (CC-0043).
+suite: Role
 templates:
-  - templates/clusterrole.yaml
+  - templates/role.yaml
 tests:
-  - it: should have the correct number of rules
+  - it: should render Role when rbac.namespaceScoped is true
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: kind
+          value: Role
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-keystone-operator
+      - isSubset:
+          path: metadata.labels
+          content:
+            app.kubernetes.io/name: keystone-operator
+            app.kubernetes.io/instance: RELEASE-NAME
+
+  - it: should fail when rbac.namespaceScoped is true and webhook.enabled is true
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: true
+    asserts:
+      - failedTemplate:
+          errorMessage: "rbac.namespaceScoped=true requires webhook.enabled=false — namespace-scoped operators cannot manage cluster-scoped webhook configurations"
+
+  - it: should not render Role when rbac.namespaceScoped is false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: should have 14 rules matching ClusterRole
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
     asserts:
       - lengthEqual:
           path: rules
           count: 14
 
   - it: should grant full CRUD on keystones
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
     asserts:
       - contains:
           path: rules
@@ -28,6 +76,11 @@ tests:
               - delete
 
   - it: should grant get/update/patch on keystones/status
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
     asserts:
       - contains:
           path: rules
@@ -42,6 +95,11 @@ tests:
               - patch
 
   - it: should grant update on keystones/finalizers
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
     asserts:
       - contains:
           path: rules
@@ -54,6 +112,11 @@ tests:
               - update
 
   - it: should grant full CRUD on apps/deployments
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
     asserts:
       - contains:
           path: rules
@@ -72,6 +135,11 @@ tests:
               - delete
 
   - it: should grant full CRUD on core resources
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
     asserts:
       - contains:
           path: rules
@@ -93,6 +161,11 @@ tests:
               - delete
 
   - it: should restrict events to create and patch only
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
     asserts:
       - contains:
           path: rules
@@ -106,6 +179,11 @@ tests:
               - patch
 
   - it: should grant full CRUD on batch resources
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
     asserts:
       - contains:
           path: rules
@@ -125,6 +203,11 @@ tests:
               - delete
 
   - it: should grant full CRUD on mariadb resources
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
     asserts:
       - contains:
           path: rules
@@ -145,6 +228,11 @@ tests:
               - delete
 
   - it: should grant read/write without delete on external-secrets resources
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
     asserts:
       - contains:
           path: rules
@@ -163,6 +251,11 @@ tests:
               - patch
 
   - it: should grant full CRUD on rbac resources
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
     asserts:
       - contains:
           path: rules
@@ -182,6 +275,11 @@ tests:
               - delete
 
   - it: should grant full CRUD on poddisruptionbudgets
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
     asserts:
       - contains:
           path: rules
@@ -200,6 +298,11 @@ tests:
               - delete
 
   - it: should grant full CRUD on horizontalpodautoscalers
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
     asserts:
       - contains:
           path: rules
@@ -218,6 +321,11 @@ tests:
               - delete
 
   - it: should grant full CRUD on networkpolicies
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
     asserts:
       - contains:
           path: rules
@@ -236,6 +344,11 @@ tests:
               - delete
 
   - it: should grant full CRUD on leases for leader election
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
     asserts:
       - contains:
           path: rules
@@ -252,12 +365,3 @@ tests:
               - update
               - patch
               - delete
-
-  # CC-0043: ClusterRole must not render in namespace-scoped mode.
-  - it: should not render ClusterRole when rbac.namespaceScoped is true
-    set:
-      rbac:
-        namespaceScoped: true
-    asserts:
-      - hasDocuments:
-          count: 0

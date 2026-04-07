@@ -29,7 +29,7 @@ func main() {
 	if err := bootstrap.Run(bootstrap.ManagerConfig{
 		Scheme:           scheme,
 		LeaderElectionID: "c5c3.openstack.c5c3.io",
-		SetupFunc: func(_ ctrl.Manager) error {
+		SetupFunc: func(_ ctrl.Manager, _ bool) error {
 			// +kubebuilder:scaffold:builder — register controllers here
 			return nil
 		},

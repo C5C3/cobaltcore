@@ -311,6 +311,8 @@ jobs:
           helm template test "$CHART" --set serviceAccount.create=false --set serviceAccount.name=existing-sa
           echo "--- Scenario 4: custom resources ---"
           helm template test "$CHART" --set resources.limits.cpu=100m --set resources.limits.memory=64Mi
+          echo "--- Scenario 5: namespace-scoped RBAC ---"
+          helm template test "$CHART" --set rbac.namespaceScoped=true --set webhook.enabled=false
       - name: Helm unittest
         run: helm unittest operators/keystone/helm/keystone-operator/
 

@@ -31,6 +31,12 @@ spec:
             {{- if .Values.leaderElection.enabled }}
             - --leader-elect
             {{- end }}
+            {{- if .Values.rbac.namespaceScoped }}
+            - --namespace={{ .Release.Namespace }}
+            {{- end }}
+            {{- if not .Values.webhook.enabled }}
+            - --enable-webhooks=false
+            {{- end }}
             - --metrics-bind-address=:{{ .Values.metrics.port }}
             - --health-probe-bind-address=:8081
           ports:

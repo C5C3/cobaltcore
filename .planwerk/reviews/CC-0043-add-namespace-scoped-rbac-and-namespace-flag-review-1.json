@@ -1,0 +1,122 @@
+{
+  "feature_id": "CC-0043",
+  "title": "Add namespace-scoped RBAC and namespace flag",
+  "date": "2026-04-06",
+  "summary": "Adds namespace-scoped RBAC support via rbac.namespaceScoped Helm toggle, --namespace bootstrap flag with cache restriction, Role/RoleBinding templates mirroring ClusterRole rules, conditional deployment args, CI validation scenario, and multi-tenant deployment documentation. Core implementation is correct and well-structured. All automated verification passes (Go tests, go vet, helm lint, helm unittest, helm template). Three gaps remain: role_test.yaml lacks individual rule verification tests (only count-based), VitePress sidebar not updated, and docs missing Prerequisites/CRD Installation sections.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Go unit tests pass (8/8 in bootstrap package)", "checked": true},
+    {"item": "go vet passes with no warnings", "checked": true},
+    {"item": "helm lint passes with default values", "checked": true},
+    {"item": "helm lint passes with rbac.namespaceScoped=true", "checked": true},
+    {"item": "helm unittest passes (55/55 tests across 9 suites)", "checked": true},
+    {"item": "helm template default produces ClusterRole/ClusterRoleBinding, no Role/RoleBinding", "checked": true},
+    {"item": "helm template namespaceScoped=true produces Role/RoleBinding, no ClusterRole/ClusterRoleBinding", "checked": true},
+    {"item": "Role rules identical to ClusterRole rules (diff confirms 0 differences)", "checked": true},
+    {"item": "Deployment args include --namespace only when namespaceScoped=true", "checked": true},
+    {"item": "Edge cases covered in tests (empty namespace, single entry, syncPeriod preserved)", "checked": true},
+    {"item": "Individual rule verification tests in role_test.yaml matching clusterrole_test.yaml structure", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "cacheOptions helper is a pure function, easy to test", "checked": true},
+    {"item": "Follows existing flag registration pattern in bootstrap", "checked": true},
+    {"item": "Helm conditional guards follow existing webhook.enabled pattern", "checked": true},
+    {"item": "role.yaml has sync comment referencing clusterrole.yaml", "checked": true},
+    {"item": "Test style matches existing tests in same files", "checked": true},
+    {"item": "Feature ID CC-0043 referenced in all new code", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "RBAC correctly scoped (Role vs ClusterRole mutual exclusion)", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "Namespace flag validated by controller-runtime (no custom validation needed)", "checked": true},
+    {"item": "Pod security context unchanged (runAsNonRoot, readOnlyRootFilesystem)", "checked": true},
+    {"item": "No path traversal or injection vectors", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is minimal — toggle + conditional templates + flag + helper", "checked": true},
+    {"item": "Shared bootstrap package serves both operators without code changes", "checked": true},
+    {"item": "No scope creep beyond requested changes", "checked": true},
+    {"item": "Documentation placed in existing docs/reference/ directory", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No unnecessary abstractions", "checked": true},
+    {"item": "role.yaml rules duplicated from clusterrole.yaml (necessary duplication due to Kubernetes API constraints, documented with sync comment)", "checked": true},
+    {"item": "No unused code", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Empty namespace string results in no cache restriction (graceful default)", "checked": true},
+    {"item": "Bootstrap validates required config before flag parsing", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Namespace flag defaults to empty (safe default = cluster-wide)", "checked": true},
+    {"item": "rbac.namespaceScoped defaults to false (backward compatible)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "TE1",
+      "severity": "MAJOR",
+      "description": "role_test.yaml has only 3 tests (render, no-render, rule count) but task 2.2 explicitly requires individual rule verification tests for all 14 apiGroup rules, matching the clusterrole_test.yaml structure which has 16 tests. The count-based assertion (lengthEqual: 14) would pass even if a rule had incorrect apiGroups, resources, or verbs, as long as the total count stays at 14. This makes the test suite weaker for detecting regression in namespace-scoped rules.",
+      "location": "operators/keystone/helm/keystone-operator/tests/role_test.yaml:1-37",
+      "fix": "Add 14 individual rule verification tests matching clusterrole_test.yaml structure: 'should grant full CRUD on keystones', 'should grant get/update/patch on keystones/status', 'should grant update on keystones/finalizers', etc. Each test should use `set: rbac.namespaceScoped: true` and assert the exact `contains` content for each rule block.",
+      "evidence": "role_test.yaml has 3 tests vs clusterrole_test.yaml has 16 tests (14 individual rules + rule count + namespace-scoped exclusion). Task 2.2 explicitly states: '(3) individual rule verification tests for keystones CRUD, status, finalizers, deployments, core resources, events, batch, mariadb, external-secrets, rbac, policy, autoscaling, networking, leases. Follow clusterrole_test.yaml structure.'",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "D5",
+      "severity": "MAJOR",
+      "description": "docs/.vitepress/config.ts sidebar not updated with a link to the multi-tenant deployment documentation. The page at docs/reference/multi-tenant-deployment.md exists but is unreachable from VitePress site navigation. Task 3.2 explicitly requires: 'Update docs/.vitepress/config.ts sidebar'.",
+      "location": "docs/.vitepress/config.ts:22-32",
+      "fix": "Add { text: 'Multi-Tenant Deployment', link: '/reference/multi-tenant-deployment' } to the Reference items array in the sidebar configuration.",
+      "evidence": "git diff main...HEAD -- docs/.vitepress/config.ts produces empty output (no changes). The sidebar Reference section at lines 22-32 has no multi-tenant-deployment entry.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "DA3",
+      "severity": "MAJOR",
+      "description": "Documentation missing Prerequisites section and CRD Installation note as required by both task 3.2 and review criteria. Task 3.2 specifies: '(2) Prerequisites - CRDs installed by cluster-admin, namespace exists' and '(5) CRD Installation - note that CRDs are always cluster-scoped'. Review criteria state: 'Documentation covers webhook limitation caveat, CRD installation note'. The doc covers webhook caveat and examples but omits the CRD operational prerequisite.",
+      "location": "docs/reference/multi-tenant-deployment.md:1-135",
+      "fix": "Add a '## Prerequisites' section after '## When to use namespace-scoped mode' containing: (1) CRDs must be installed by a cluster-admin before deploying namespace-scoped operators (CRDs are always cluster-scoped Kubernetes resources), (2) Target namespace must exist. Add a '## CRD installation' section noting that CRD installation remains a cluster-admin concern regardless of RBAC mode and is not affected by the namespaceScoped toggle.",
+      "evidence": "grep -i 'prerequisit\\|crd.*install\\|cluster.admin' docs/reference/multi-tenant-deployment.md returns no matches. Task 3.2 description explicitly lists 5 required sections, of which sections 2 (Prerequisites) and 5 (CRD Installation) are absent.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "PC3",
+      "severity": "MINOR",
+      "description": "rolebinding_test.yaml is missing the roleRef.apiGroup assertion that the sibling clusterrolebinding_test.yaml includes. The clusterrolebinding test verifies roleRef.apiGroup=rbac.authorization.k8s.io but the rolebinding test does not, creating an inconsistency between paired test files.",
+      "location": "operators/keystone/helm/keystone-operator/tests/rolebinding_test.yaml:6-24",
+      "fix": "Add `- equal: { path: roleRef.apiGroup, value: rbac.authorization.k8s.io }` to the 'should render RoleBinding referencing Role' test assertions, matching clusterrolebinding_test.yaml line 9-10.",
+      "evidence": "clusterrolebinding_test.yaml:9-10 has `- equal: { path: roleRef.apiGroup, value: rbac.authorization.k8s.io }` but rolebinding_test.yaml has no apiGroup assertion.",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a Helm chart validation (e.g., via helm-unittest or a CI check) that fails when rbac.namespaceScoped=true and webhook.enabled=true simultaneously, since this combination produces an invalid deployment (namespace-scoped RBAC cannot manage cluster-scoped webhook configurations)."
+  ],
+  "next_steps": [
+    "Add 14 individual rule verification tests to role_test.yaml matching clusterrole_test.yaml structure",
+    "Add sidebar link in docs/.vitepress/config.ts for multi-tenant deployment doc",
+    "Add Prerequisites and CRD Installation sections to docs/reference/multi-tenant-deployment.md",
+    "Add roleRef.apiGroup assertion to rolebinding_test.yaml"
+  ],
+  "detected_patterns": [
+    {
+      "name": "Helm RBAC conditional guard with sync-required comment",
+      "component": "operators/keystone/helm/keystone-operator/templates/",
+      "category": "configuration",
+      "applies_when": "Adding a new Helm chart that supports both cluster-wide and namespace-scoped RBAC deployment modes, or adding new RBAC rules to an existing dual-mode chart",
+      "description": "When a Helm chart supports both ClusterRole and namespace-scoped Role, the rules are duplicated across two template files (clusterrole.yaml and role.yaml) with mutually exclusive conditional guards: `{{- if not .Values.rbac.namespaceScoped }}` for ClusterRole and `{{- if .Values.rbac.namespaceScoped }}` for Role. The Role template includes a sync comment '# Rules MUST be kept in sync with clusterrole.yaml' to flag the coupling. The corresponding bindings (ClusterRoleBinding/RoleBinding) use matching guards. A values.yaml toggle `rbac.namespaceScoped: false` controls the mode. Deployment template conditionally injects `--namespace={{ .Release.Namespace }}` arg when namespaceScoped is true. Tests verify mutual exclusion (document count 0 when mode is off) and rule count parity.",
+      "examples": [
+        {
+          "location": "operators/keystone/helm/keystone-operator/templates/role.yaml:1-3",
+          "code": "{{- if .Values.rbac.namespaceScoped }}\n# CC-0043: Namespace-scoped Role (mirrors ClusterRole rules).\n# Rules MUST be kept in sync with clusterrole.yaml."
+        },
+        {
+          "location": "operators/keystone/helm/keystone-operator/templates/clusterrole.yaml:1",
+          "code": "{{- if not .Values.rbac.namespaceScoped }}"
+        }
+      ]
+    }
+  ]
+}

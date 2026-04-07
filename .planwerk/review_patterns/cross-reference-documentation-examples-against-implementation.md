@@ -3,7 +3,7 @@
 **Review-Area**: documentation
 **Detection-Hint**: When a PR modifies a Dockerfile, script, or configuration file, search the docs/ directory for code examples that reference or illustrate the same file. Compare the documented pattern against the actual changed code.
 **Severity**: WARNING
-**Occurrences**: 2
+**Occurrences**: 3
 
 ## What to check
 
@@ -24,3 +24,8 @@ Stale documentation examples mislead developers who follow the docs instead of r
 - **Feedback**: The Kubernetes auth role table has a single `TTL` column but `setup-auth.sh` configures both an initial TTL of 1 hour *and* a maximum lifetime of 4 hours on each role. Without a `Max TTL` column, an operator reading this table would believe ESO tokens can be renewed indefinitely beyond the initial lifetime — which is incorrect.
 - **What was missed**: For each table documenting infrastructure configuration, confirm that every parameter set in the referenced script or config file has a corresponding column. Diff the set of fields between the script and the table.
 - **Fix**: Added a `Max TTL` column with value `4h` to the Kubernetes auth role table to match the `setup-auth.sh` implementation.
+
+### CC-0043 — berendt
+- **Feedback**: The install example uses --set image.tag=latest which contradicts Helm and Kubernetes best practices. latest is a mutable tag that destroys deployment reproducibility and makes rollback ambiguous.
+- **What was missed**: All install/upgrade examples in documentation must use pinned, immutable image tags (e.g., v0.1.0) rather than 'latest'. Users copy-paste examples directly; mutable tags destroy reproducibility and make rollback ambiguous.
+- **Fix**: Replaced image.tag=latest with image.tag=v0.1.0 in the multi-tenant deployment documentation example.

@@ -32,11 +32,21 @@ type ManagerConfig struct {
 	// Must be non-empty and unique across operators sharing a namespace.
 	LeaderElectionID string
 
+	// Namespace restricts the operator to watch resources in this namespace
+	// only. When empty, the operator watches all namespaces (cluster-wide).
+	// This field allows callers constructing a manager programmatically to
+	// opt into namespace scoping without going through the --namespace CLI
+	// flag. If the --namespace flag is also set, the flag value takes
+	// precedence.
+	//
+	// Feature: CC-0043
+	Namespace string
+
 	// SetupFunc is an optional callback invoked after manager creation to
 	// register controllers and webhooks. This is where each operator wires
 	// its reconcilers. Corresponds to the +kubebuilder:scaffold:builder
 	// marker in a standard kubebuilder project.
-	SetupFunc func(ctrl.Manager) error
+	SetupFunc func(mgr ctrl.Manager, webhooks bool) error
 }
 
 // validate returns an error if required fields are missing.
@@ -48,6 +58,23 @@ func (c *ManagerConfig) validate() error {
 		return errors.New("bootstrap: LeaderElectionID must not be empty")
 	}
 	return nil
+}
+
+// cacheOptions builds cache.Options with the given sync period and optional
+// namespace restriction. When namespace is non-empty, DefaultNamespaces is
+// populated to restrict the informer cache to that single namespace.
+//
+// Feature: CC-0043
+func cacheOptions(syncPeriod time.Duration, namespace string) cache.Options {
+	opts := cache.Options{
+		SyncPeriod: &syncPeriod,
+	}
+	if namespace != "" {
+		opts.DefaultNamespaces = map[string]cache.Config{
+			namespace: {},
+		}
+	}
+	return opts
 }
 
 // Run bootstraps and starts a controller-runtime manager with standard flag
@@ -66,7 +93,9 @@ func Run(cfg ManagerConfig) error {
 	var metricsAddr string
 	var probeAddr string
 	var enableLeaderElection bool
+	var enableWebhooks bool
 	var syncPeriod time.Duration
+	var namespace string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080",
 		"The address the metric endpoint binds to.")
@@ -75,9 +104,16 @@ func Run(cfg ManagerConfig) error {
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager, "+
 			"ensuring only one active controller manager.")
+	flag.BoolVar(&enableWebhooks, "enable-webhooks", true,
+		"Enable admission webhooks. Set to false for namespace-scoped "+
+			"deployments where webhook infrastructure is not available (CC-0043).")
 	flag.DurationVar(&syncPeriod, "sync-period", 10*time.Minute,
 		"The minimum frequency at which watched resources are reconciled "+
 			"(e.g. 10m). Ensures eventual consistency if watch events are missed.")
+	flag.StringVar(&namespace, "namespace", cfg.Namespace,
+		"If set, restricts the operator to watch resources in this namespace only. "+
+			"Used for namespace-scoped deployments (CC-0043). "+
+			"Overrides ManagerConfig.Namespace when provided.")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -88,9 +124,7 @@ func Run(cfg ManagerConfig) error {
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: cfg.Scheme,
-		Cache: cache.Options{
-			SyncPeriod: &syncPeriod,
-		},
+		Cache:  cacheOptions(syncPeriod, namespace),
 		Metrics: metricsserver.Options{
 			BindAddress: metricsAddr,
 		},
@@ -103,7 +137,7 @@ func Run(cfg ManagerConfig) error {
 	}
 
 	if cfg.SetupFunc != nil {
-		if err := cfg.SetupFunc(mgr); err != nil {
+		if err := cfg.SetupFunc(mgr, enableWebhooks); err != nil {
 			return fmt.Errorf("unable to set up controllers: %w", err)
 		}
 	}
@@ -115,6 +149,9 @@ func Run(cfg ManagerConfig) error {
 		return fmt.Errorf("unable to set up ready check: %w", err)
 	}
 
+	if namespace != "" {
+		setupLog.Info("namespace-scoped mode enabled", "namespace", namespace)
+	}
 	setupLog.Info("starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		return fmt.Errorf("problem running manager: %w", err)
