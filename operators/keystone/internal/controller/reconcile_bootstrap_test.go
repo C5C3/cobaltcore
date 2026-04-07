@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 
 	. "github.com/onsi/gomega"
 
@@ -130,7 +129,7 @@ func TestReconcileBootstrap_JobCreated(t *testing.T) {
 
 	result, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(60 * time.Second))
+	g.Expect(result.RequeueAfter).To(Equal(RequeueBootstrapWait))
 
 	// Verify the Job was created.
 	var createdJob batchv1.Job
@@ -213,7 +212,7 @@ func TestReconcileBootstrap_JobRunning(t *testing.T) {
 
 	result, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(60 * time.Second))
+	g.Expect(result.RequeueAfter).To(Equal(RequeueBootstrapWait))
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "BootstrapReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -252,7 +251,7 @@ func TestReconcileBootstrap_StaleJobDetection(t *testing.T) {
 
 	result, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(60 * time.Second))
+	g.Expect(result.RequeueAfter).To(Equal(RequeueBootstrapWait))
 
 	// Verify the old Job was deleted and a new one was created.
 	var newJob batchv1.Job

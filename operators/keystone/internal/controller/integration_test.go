@@ -47,9 +47,9 @@ const (
 	// eventuallyTimeout is the default polling timeout for Eventually assertions.
 	eventuallyTimeout = 30 * time.Second
 	// eventuallyLongTimeout is used for MariaDB User/Grant CR polling, which
-	// depends on the controller's 30s RequeueAfter delay to discover readiness
-	// changes on unwatched MariaDB types.
-	eventuallyLongTimeout = 60 * time.Second
+	// depends on the controller's RequeueDatabaseWait delay to discover readiness
+	// changes on unwatched MariaDB types (CC-0044).
+	eventuallyLongTimeout = 2 * RequeueDatabaseWait
 	// pollInterval is the polling interval for Eventually assertions.
 	pollInterval = 500 * time.Millisecond
 )
@@ -637,7 +637,7 @@ func TestIntegration_FullReconcile_Managed(t *testing.T) {
 	g.Expect(simulators.SimulateDatabaseReady(ctx, c, dbKey)).To(Succeed(), "simulate Database ready")
 
 	// The controller does not watch MariaDB types, so it relies on
-	// RequeueAfter (30s) to discover readiness changes. The reconciler
+	// RequeueDatabaseWait to discover readiness changes. The reconciler
 	// creates User only after Database is ready, and Grant only after
 	// User is ready, so we must simulate each sequentially.
 
@@ -656,9 +656,9 @@ func TestIntegration_FullReconcile_Managed(t *testing.T) {
 	g.Expect(simulators.SimulateGrantReady(ctx, c, grantKey)).To(Succeed(), "simulate Grant ready")
 
 	// Wait for the db-sync Job to appear and simulate its completion.
-	// Uses eventuallyLongTimeout because the reconciler relies on RequeueAfter(30s)
+	// Uses eventuallyLongTimeout because the reconciler relies on RequeueDatabaseWait
 	// to discover MariaDB readiness changes; after Grant becomes ready the next
-	// reconciliation may be up to 30s away.
+	// reconciliation may be up to RequeueDatabaseWait away.
 	dbSyncKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-db-sync", ks.Name)}
 	g.Eventually(func() error {
 		return c.Get(ctx, dbSyncKey, &batchv1.Job{})

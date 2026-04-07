@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	. "github.com/onsi/gomega"
 
@@ -157,7 +156,7 @@ func TestReconcileSecrets_DBCredentialsNotReady(t *testing.T) {
 	result, err := r.reconcileSecrets(context.Background(), ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(15 * time.Second))
+	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -194,7 +193,7 @@ func TestReconcileSecrets_AdminCredentialsNotReady(t *testing.T) {
 	result, err := r.reconcileSecrets(context.Background(), ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(15 * time.Second))
+	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -324,7 +323,7 @@ func TestReconcileSecrets_DBSecretMissingKeys(t *testing.T) {
 	result, err := r.reconcileSecrets(context.Background(), ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(15 * time.Second))
+	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -365,7 +364,7 @@ func TestReconcileSecrets_AdminSecretMissingKeys(t *testing.T) {
 	result, err := r.reconcileSecrets(context.Background(), ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(15 * time.Second))
+	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -398,7 +397,7 @@ func TestReconcileSecrets_BothNotReady_DBCheckFirst(t *testing.T) {
 	result, err := r.reconcileSecrets(context.Background(), ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(15 * time.Second))
+	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
 
 	// DB credentials are checked first, so the reason should be WaitingForDBCredentials.
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")

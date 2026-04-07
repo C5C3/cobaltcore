@@ -1,0 +1,74 @@
+{
+  "feature_id": "CC-0044",
+  "title": "Replace hardcoded requeue intervals with constants",
+  "date": "2026-04-07",
+  "summary": "All 9 hardcoded requeue intervals in production code (4 in reconcile_secrets.go, 3 in reconcile_database.go, 1 in reconcile_bootstrap.go, 1 in reconcile_deployment.go) replaced with named constants defined in requeue_intervals.go. All 18 test assertions updated to reference the same constants. The time import removed from all 8 files where it is no longer needed. Integration test eventuallyLongTimeout now derives from 2*RequeueDatabaseWait. Constants file has SPDX header, CC-0044 feature ID, and descriptive doc comments for each constant. No behavioral change — all default values are identical to the original hardcoded values.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "All existing unit tests pass (42 tests, 0.666s)", "checked": true},
+    {"item": "Test assertions updated from literals to named constants (18 replacements)", "checked": true},
+    {"item": "Integration test timeout derives from RequeueDatabaseWait", "checked": true},
+    {"item": "No behavioral change in test expectations", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (SPDX header, package-level constants, doc comments)", "checked": true},
+    {"item": "Single Responsibility: constants isolated in dedicated file", "checked": true},
+    {"item": "No magic numbers remain in production or test code", "checked": true},
+    {"item": "Descriptive constant names explain rationale", "checked": true},
+    {"item": "No dead code or unused imports", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No security-relevant changes (pure refactoring of time constants)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible (package-level constants, no over-engineering)", "checked": true},
+    {"item": "No scope creep (no CR-configurable overrides added, staying within requested scope)", "checked": true},
+    {"item": "Constants are package-scoped (not exported beyond controller package)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code — constants defined once, used everywhere", "checked": true},
+    {"item": "No unnecessary abstractions (plain const block, not a config struct)", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Not applicable — no error paths changed", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Not applicable — no external inputs changed", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": [],
+  "verification": {
+    "go_vet": "PASS — no issues",
+    "go_test": "PASS — ok github.com/c5c3/forge/operators/keystone/internal/controller 0.666s",
+    "golangci_lint": "PASS — 1 pre-existing issue in unchanged file (reconcile_networkpolicy_test.go:540 QF1008), not related to this change",
+    "production_replacements": {
+      "reconcile_secrets.go": "4 instances (15s → RequeueSecretPolling)",
+      "reconcile_database.go": "3 instances (30s → RequeueDatabaseWait)",
+      "reconcile_bootstrap.go": "1 instance (60s → RequeueBootstrapWait)",
+      "reconcile_deployment.go": "1 instance (10s → RequeueDeploymentPolling)",
+      "total": 9
+    },
+    "test_replacements": {
+      "reconcile_secrets_test.go": "5 instances",
+      "reconcile_database_test.go": "5 instances",
+      "reconcile_bootstrap_test.go": "3 instances",
+      "reconcile_deployment_test.go": "5 instances",
+      "total": 18
+    },
+    "time_import_removed": [
+      "reconcile_secrets.go",
+      "reconcile_database.go",
+      "reconcile_bootstrap.go",
+      "reconcile_deployment.go",
+      "reconcile_secrets_test.go",
+      "reconcile_database_test.go",
+      "reconcile_bootstrap_test.go",
+      "reconcile_deployment_test.go"
+    ],
+    "remaining_hardcoded_time_second": 0
+  }
+}

@@ -10,7 +10,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -96,7 +95,7 @@ func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *
 			Reason:             "WaitingForDeployment",
 			Message:            "Keystone API deployment is not yet available",
 		})
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: RequeueDeploymentPolling}, nil
 	}
 
 	keystone.Status.Endpoint = fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", apiResourceName(keystone), keystone.Namespace)

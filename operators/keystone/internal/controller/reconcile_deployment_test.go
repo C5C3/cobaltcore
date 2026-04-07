@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
-	"time"
 
 	. "github.com/onsi/gomega"
 
@@ -128,7 +127,7 @@ func TestReconcileDeployment_DeploymentAndServiceCreated(t *testing.T) {
 	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
 	// Deployment just created, not ready yet — should requeue.
-	g.Expect(result.RequeueAfter).To(Equal(10 * time.Second))
+	g.Expect(result.RequeueAfter).To(Equal(RequeueDeploymentPolling))
 
 	// Verify Deployment was created.
 	var deploy appsv1.Deployment
@@ -152,7 +151,7 @@ func TestReconcileDeployment_NotReady_Requeues(t *testing.T) {
 
 	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(10 * time.Second))
+	g.Expect(result.RequeueAfter).To(Equal(RequeueDeploymentPolling))
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DeploymentReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -325,7 +324,7 @@ func TestReconcileDeployment_NotReady_ConditionMessageAndGeneration(t *testing.T
 
 	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(10 * time.Second))
+	g.Expect(result.RequeueAfter).To(Equal(RequeueDeploymentPolling))
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DeploymentReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -517,7 +516,7 @@ func TestReconcileDeployment_CredentialKeysHashFromSecret(t *testing.T) {
 	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
 	// Deployment just created, not ready yet — should requeue.
-	g.Expect(result.RequeueAfter).To(Equal(10 * time.Second))
+	g.Expect(result.RequeueAfter).To(Equal(RequeueDeploymentPolling))
 
 	// Verify the created Deployment has the credential-keys hash annotation.
 	var deploy appsv1.Deployment
@@ -590,7 +589,7 @@ func TestReconcileDeployment_FernetKeysHashFromSecret(t *testing.T) {
 	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
 	// Deployment just created, not ready yet — should requeue.
-	g.Expect(result.RequeueAfter).To(Equal(10 * time.Second))
+	g.Expect(result.RequeueAfter).To(Equal(RequeueDeploymentPolling))
 
 	// Verify the created Deployment has the fernet-keys hash annotation.
 	var deploy appsv1.Deployment

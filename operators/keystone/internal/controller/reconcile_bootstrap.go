@@ -7,7 +7,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -48,7 +47,7 @@ func (r *KeystoneReconciler) reconcileBootstrap(ctx context.Context, keystone *k
 			Reason:             "BootstrapInProgress",
 			Message:            "Keystone bootstrap job is running",
 		})
-		return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: RequeueBootstrapWait}, nil
 	}
 
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{

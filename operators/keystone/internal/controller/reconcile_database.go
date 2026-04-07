@@ -7,7 +7,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"time"
 
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -46,7 +45,7 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, keystone *ke
 				Reason:             "WaitingForDatabase",
 				Message:            "MariaDB Database CR is not ready",
 			})
-			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+			return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, nil
 		}
 
 		userReady, err := database.EnsureDatabaseUser(ctx, r.Client, r.Scheme, keystone, buildUser(keystone), buildGrant(keystone))
@@ -62,7 +61,7 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, keystone *ke
 				Reason:             "WaitingForDatabase",
 				Message:            "MariaDB User or Grant CR is not ready",
 			})
-			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+			return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, nil
 		}
 	}
 
@@ -87,7 +86,7 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, keystone *ke
 			Reason:             "DBSyncInProgress",
 			Message:            "db_sync job is running",
 		})
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, nil
 	}
 
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{

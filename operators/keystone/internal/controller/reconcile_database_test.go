@@ -7,7 +7,6 @@ package controller
 import (
 	"context"
 	"testing"
-	"time"
 
 	. "github.com/onsi/gomega"
 
@@ -205,7 +204,7 @@ func TestReconcileDatabase_Managed_DatabaseNotReady_Requeues(t *testing.T) {
 
 	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(30 * time.Second))
+	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -226,7 +225,7 @@ func TestReconcileDatabase_Managed_UserNotReady_Requeues(t *testing.T) {
 
 	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(30 * time.Second))
+	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -274,7 +273,7 @@ func TestReconcileDatabase_DBSyncRunning_Requeues(t *testing.T) {
 
 	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(30 * time.Second))
+	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -309,7 +308,7 @@ func TestReconcileDatabase_Brownfield_SkipsMariaDBCRs_CreatesDBSyncJob(t *testin
 
 	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(30 * time.Second))
+	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
 	// Verify no MariaDB CRs were created.
 	dbList := &mariadbv1alpha1.DatabaseList{}
@@ -365,7 +364,7 @@ func TestReconcileDatabase_StaleDBSyncJob_Recreated(t *testing.T) {
 
 	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(30 * time.Second))
+	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
 	// Verify the old Job was deleted and a new one created with the correct hash.
 	var newJob batchv1.Job

@@ -6,7 +6,6 @@ package controller
 
 import (
 	"context"
-	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -39,7 +38,7 @@ func (r *KeystoneReconciler) reconcileSecrets(ctx context.Context,
 			Reason:             "WaitingForDBCredentials",
 			Message:            "Waiting for ESO to sync database credentials from OpenBao",
 		})
-		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
 	}
 
 	// Verify the materialized DB Secret contains the expected keys (CC-0013).
@@ -57,7 +56,7 @@ func (r *KeystoneReconciler) reconcileSecrets(ctx context.Context,
 			Reason:             "WaitingForDBCredentials",
 			Message:            "Database credentials Secret exists but is missing expected keys",
 		})
-		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
 	}
 
 	// Check admin credentials ExternalSecret sync status.
@@ -73,7 +72,7 @@ func (r *KeystoneReconciler) reconcileSecrets(ctx context.Context,
 			Reason:             "WaitingForAdminCredentials",
 			Message:            "Waiting for ESO to sync admin credentials from OpenBao",
 		})
-		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
 	}
 
 	// Verify the materialized admin Secret contains the expected keys (CC-0013).
@@ -89,7 +88,7 @@ func (r *KeystoneReconciler) reconcileSecrets(ctx context.Context,
 			Reason:             "WaitingForAdminCredentials",
 			Message:            "Admin credentials Secret exists but is missing expected keys",
 		})
-		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
 	}
 
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
