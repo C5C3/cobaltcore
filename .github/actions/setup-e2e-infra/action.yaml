@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# CC-0050: Composite action encapsulating the Flux CLI + test deps + deploy-infra
+# sequence shared across e2e-infra, e2e-operator, and tempest jobs.
+
+name: Setup E2E infrastructure
+description: >
+  Install Flux CLI, E2E test dependencies, and deploy the full infrastructure
+  stack to the current kind cluster. Assumes a kind cluster already exists
+  (SKIP_KIND_CREATE is set automatically).
+
+runs:
+  using: composite
+  steps:
+    - name: Install Flux CLI
+      uses: fluxcd/flux2/action@871be9b40d53627786d3a3835a3ddba1e3234bd2 # v2.8.3
+
+    - name: Install test dependencies
+      shell: bash
+      run: |
+        make install-test-deps
+        echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
+
+    - name: Deploy infrastructure stack
+      shell: bash
+      env:
+        SKIP_KIND_CREATE: "true"
+      run: make deploy-infra

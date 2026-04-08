@@ -1,0 +1,36 @@
+{
+  "feature_id": "CC-0050",
+  "title": "GitHub Review by sourcery-ai[bot]",
+  "summary": "The reviewer wants two things: (1) all new CI helper scripts should compute and `cd` to `REPO_ROOT` so they work from any working directory, not just repo root; and (2) add explicit guard checks with clear error messages—for the admin password extraction in `ci-run-tempest.sh` and for the `flux` CLI availability in `ci-dump-diagnostics.sh`—instead of relying on `set -e` or bare `|| true` to silently handle missing dependencies.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "sourcery-ai[bot]",
+  "date": "2026-04-08T19:52:40Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "Hey - I've found 1 issue, and left some high level feedback:\n\n- The new CI helper scripts (e.g. `ci-build-service-image.sh`, `ci-deploy-operator.sh`) assume they are invoked from the repo root; consider computing and `cd`-ing to `REPO_ROOT` consistently (as you already do in the build scripts) so they behave correctly when run from arbitrary working directories locally.\n- In `hack/ci-run-tempest.sh`, extracting the admin password will currently fail with a generic `set -e` error if the secret or key is missing; adding an explicit check with a clearer `::error::` message (similar to the `SERVICE_REF` guard in the image build script) would make local/debug usage much easier.\n\n<details>\n<summary>Prompt for AI Agents</summary>\n\n~~~markdown\nPlease address the comments from this code review:\n\n## Overall Comments\n- The new CI helper scripts (e.g. `ci-build-service-image.sh`, `ci-deploy-operator.sh`) assume they are invoked from the repo root; consider computing and `cd`-ing to `REPO_ROOT` consistently (as you already do in the build scripts) so they behave correctly when run from arbitrary working directories locally.\n- In `hack/ci-run-tempest.sh`, extracting the admin password will currently fail with a generic `set -e` error if the secret or key is missing; adding an explicit check with a clearer `::error::` message (similar to the `SERVICE_REF` guard in the image build script) would make local/debug usage much easier.\n\n## Individual Comments\n\n### Comment 1\n<location path=\"hack/ci-dump-diagnostics.sh\" line_range=\"44-45\" />\n<code_context>\n-          kubectl describe daemonset -n chaos-mesh chaos-daemon 2>/dev/null || true\n-          echo \"=== Events (last 50) ===\"\n-          kubectl get events --all-namespaces --sort-by='.lastTimestamp' | tail -50 || true\n-          echo \"=== Flux logs ===\"\n-          flux logs --all-namespaces || true\n+        run: hack/ci-dump-diagnostics.sh\n       - name: Upload JUnit report\n</code_context>\n<issue_to_address>\n**suggestion:** Calling `flux` unconditionally can produce noisy 'command not found' output when Flux isn’t installed.\n\n`|| true` avoids failing when Flux is missing, but still prints `flux: command not found`, which can clutter CI/local logs. Consider guarding this with a check like `if command -v flux >/dev/null 2>&1; then ... fi` so it only runs when the Flux CLI is installed.\n</issue_to_address>\n~~~\n\n</details>\n\n***\n\n<details>\n<summary>Sourcery is free for open source - if you like our reviews please consider sharing them ✨</summary>\n\n- [X](https://twitter.com/intent/tweet?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [Mastodon](https://mastodon.social/share?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [LinkedIn](https://www.linkedin.com/sharing/share-offsite/?url=https://sourcery.ai)\n- [Facebook](https://www.facebook.com/sharer/sharer.php?u=https://sourcery.ai)\n\n</details>\n\n<sub>\nHelp me be more useful! Please click 👍 or 👎 on each comment and I'll use the feedback to improve your reviews.\n</sub>",
+  "code_comments": [
+    {
+      "body": "**suggestion:** Calling `flux` unconditionally can produce noisy 'command not found' output when Flux isn’t installed.\n\n`|| true` avoids failing when Flux is missing, but still prints `flux: command not found`, which can clutter CI/local logs. Consider guarding this with a check like `if command -v flux >/dev/null 2>&1; then ... fi` so it only runs when the Flux CLI is installed.",
+      "path": "hack/ci-dump-diagnostics.sh",
+      "line": 45,
+      "author": "sourcery-ai[bot]",
+      "created_at": "2026-04-08T19:52:40Z",
+      "id": null,
+      "resolution": ""
+    }
+  ],
+  "github_review_id": 4077850004
+}

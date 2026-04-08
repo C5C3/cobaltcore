@@ -2,8 +2,8 @@
   "feature_id": "CC-0050",
   "title": "Refactor CI workflow into reusable scripts and actions",
   "slug": "refactor-ci-workflow-into-reusable-scripts-and",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #143: Refactor CI workflow: extract inline scripts into reusable shell scripts and composite actions\n\n**Category**: improvement | **Scope**: Medium\n\n**Description**: `.github/workflows/ci.yaml` has grown to ~885 lines and contains large inline shell blocks that are duplicated across jobs. This makes the workflow hard to read, test locally, and maintain as new operators are added. The inline scripts should be extracted into standalone shell scripts under `hack/` (or a new `scripts/ci/` directory) and repeated step sequences should be consolidated into composite actions under `.github/actions/`.\n\nKey areas of duplication and complexity:\n\n1. **Diagnostic dump steps** — The `kubectl get pods`, `kubectl get events`, `kubectl logs` blocks are copy-pasted across `e2e-infra` (lines 353-366), `e2e-operator` (lines 472-502), and `tempest` (lines 680-696) with minor variations. Extract into a single `hack/ci-dump-diagnostics.sh` script.\n\n2. **Service image build logic** — The sequence of resolving source refs, cloning upstream, applying constraint overrides, and building the python-base → venv-builder → service image chain is duplicated between `e2e-operator` (lines 404-432) and `tempest` (lines 537-557). Extract into a reusable `hack/ci-build-service-image.sh` script.\n\n3. **Infrastructure setup sequence** — The kind cluster + Flux + test deps + deploy-infra pattern is repeated in `e2e-infra`, `e2e-operator`, and `tempest`. Consider a composite action (e.g. `.github/actions/setup-e2e-cluster`) that encapsulates this.\n\n4. **Operator deploy sequence** — CRD install + `kubectl wait` + `helm install` is repeated in `e2e-operator` (lines 456-466) and `tempest` (lines 587-597). Extract into a composite action or script.\n\n5. **Tempest run block** — The Tempest execution step (lines 604-671) is a ~70-line inline script with sed templating, port-forward setup, and a nested `docker run bash -c` block. This should be a standalone script that is easier to test and debug locally.\n\n**Motivation**: As more operators are added (glance, nova, etc.), each new operator will require copy-pasting these inline blocks, increasing the risk of drift between jobs. Standalone scripts can be tested locally with shellcheck and run outside of CI for debugging. The workflow file itself becomes a declarative orchestration layer rather than a container for business logic.\n\n**Affected Areas**:\n- `.github/workflows/ci.yaml`\n- `hack/` (new scripts)\n- `.github/actions/` (new or extended composite actions)\n\n**Acceptance Criteria**:\n- [ ] Diagnostic dump logic is a single shared script called from all E2E jobs\n- [ ] Service image build logic is extracted into a reusable script with parameters for operator name and release\n- [ ] Infrastructure + operator deployment steps are consolidated (composite action or script)\n- [ ] Tempest run block is extracted into a standalone script\n- [ ] CI workflow file is reduced to < 500 lines (orchestration only, no multi-line inline scripts beyond ~5 lines)\n- [ ] All extracted scripts pass shellcheck\n- [ ] No functional change to CI behavior — all existing jobs produce identical results\n- [ ] Extracted scripts are usable for local debugging (e.g. `hack/ci-dump-diagnostics.sh` works against any kubeconfig)\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/143",
   "stories": [
@@ -354,6 +354,7 @@
       "description": "Create hack/ci-dump-diagnostics.sh that accepts an optional OPERATOR env var. Without OPERATOR: dump HelmReleases, all pods, DaemonSets, chaos-daemon detail, events (last 50), Flux logs (matching e2e-infra). With OPERATOR set: additionally dump operator-specific pods, operator logs, job descriptions and logs in openstack namespace, pod logs (current+previous) in openstack, operator CR status, ConfigMaps (matching e2e-operator). Include SPDX header, set -euo pipefail, CC-0050 reference. Verify shellcheck --severity=warning passes.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-007"
@@ -365,6 +366,7 @@
       "description": "Create hack/ci-build-service-image.sh that accepts OPERATOR (required), RELEASE (default: 2025.2), and IMAGE_PREFIX (required) as env vars. The script: 1) resolves SERVICE_REF from releases/${RELEASE}/source-refs.yaml, 2) reads PIP_EXTRAS, PIP_PACKAGES, APT_PACKAGES from releases/${RELEASE}/extra-packages.yaml, 3) clones upstream at the pinned ref, 4) runs scripts/apply-constraint-overrides.sh, 5) builds python-base -> venv-builder -> ${IMAGE_PREFIX}/${OPERATOR}:${RELEASE}. Guard against null/empty source-ref with ::error:: annotation. Include SPDX header, set -euo pipefail, CC-0050 reference. Verify shellcheck passes.",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-007"
@@ -376,6 +378,7 @@
       "description": "Create hack/ci-deploy-operator.sh that accepts OPERATOR (required), IMAGE_REPO (required), IMAGE_TAG (default: dev) as env vars. The script: 1) kubectl apply -f operators/${OPERATOR}/helm/${OPERATOR}-operator/crds/, 2) kubectl wait crd --all --for condition=Established --timeout=60s, 3) helm install ${OPERATOR}-operator operators/${OPERATOR}/helm/${OPERATOR}-operator/ --set image.repository=${IMAGE_REPO} --set image.tag=${IMAGE_TAG} --set image.pullPolicy=Never --wait --timeout 120s. Include SPDX header, set -euo pipefail, CC-0050 reference. Verify shellcheck passes.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-007"
@@ -387,6 +390,7 @@
       "description": "Create hack/ci-run-tempest.sh that contains the CI-specific Tempest execution logic currently inline in ci.yaml (lines 604-671). The script: 1) creates _output/tempest and config dirs, 2) extracts admin password from K8s secret, 3) sets up port-forward with readiness loop, 4) generates tempest.conf via sed substitution, 5) copies include/exclude lists, 6) builds the tempest command with correct flags, 7) runs docker with --network host and host mappings, 8) checks JUnit XML for failures. Accepts SERVICE (default: keystone), CONFIG_DIR, NAMESPACE (default: openstack) env vars. The key difference from hack/run-tempest.sh (the local script) is that this CI wrapper uses the same docker invocation pattern as the current inline block — specifically the GITHUB_WORKSPACE-based volume mounts and failure detection in the JUnit XML. Include SPDX header, set -euo pipefail, CC-0050 reference. Verify shellcheck passes.",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-007"
@@ -398,6 +402,7 @@
       "description": "Create .github/actions/setup-e2e-infra/action.yaml composite action that: 1) installs Flux CLI using fluxcd/flux2/action@871be9b40d53627786d3a3835a3ddba1e3234bd2, 2) runs 'make install-test-deps' and adds ~/.local/bin to GITHUB_PATH, 3) runs 'make deploy-infra' with SKIP_KIND_CREATE=true. Follow the pattern of existing composite actions (derive-service-tags, platform-pair). Include SPDX header and description.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -408,6 +413,7 @@
       "description": "Modify the e2e-infra job in ci.yaml to: 1) replace the 3 inline steps (Flux CLI install, test deps install, deploy-infra) with 'uses: ./.github/actions/setup-e2e-infra', 2) replace the inline diagnostic dump step with 'run: hack/ci-dump-diagnostics.sh' (no OPERATOR set). Preserve all other steps: checkout, setup-go, kind-action, chainsaw test, upload artifact. Preserve the 'if: failure()' condition on diagnostics and 'if: always()' on upload.",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-005",
@@ -421,6 +427,7 @@
       "description": "Modify the e2e-operator job in ci.yaml to: 1) replace the inline 'Build service image' step (~30 lines) with 'run: hack/ci-build-service-image.sh' with OPERATOR, RELEASE, IMAGE_PREFIX env vars, 2) replace the 3 infra setup steps with 'uses: ./.github/actions/setup-e2e-infra', 3) replace the inline 'Install operator CRDs' and 'Deploy operator' steps with 'run: hack/ci-deploy-operator.sh' with OPERATOR, IMAGE_REPO, IMAGE_TAG env vars, 4) replace the inline diagnostic dump (~30 lines) with 'run: hack/ci-dump-diagnostics.sh' with OPERATOR env var. Preserve: checkout, setup-go, kind-action, 'Build operator image' (make docker-build), 'Load images into kind', chainsaw test, upload artifact steps.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -436,6 +443,7 @@
       "description": "Modify the tempest job in ci.yaml to: 1) replace the inline 'Build service image (keystone)' step with 'run: hack/ci-build-service-image.sh' with OPERATOR=keystone, RELEASE=2025.2, IMAGE_PREFIX env vars, 2) replace the 3 infra setup steps with 'uses: ./.github/actions/setup-e2e-infra', 3) replace the inline operator CRD install + deploy with 'run: hack/ci-deploy-operator.sh' with OPERATOR=keystone env vars, 4) replace the ~70-line inline 'Run Tempest API tests' step with 'run: hack/ci-run-tempest.sh' with appropriate env vars, 5) replace the inline diagnostic dump with 'run: hack/ci-dump-diagnostics.sh' with OPERATOR=keystone. Preserve: checkout, setup-go, kind-action, 'Build operator image', 'Build Tempest image', 'Load images into kind', 'Deploy Keystone CR for Tempest', upload artifacts steps.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -452,6 +460,7 @@
       "description": "Review the refactored ci.yaml: 1) verify wc -l shows under 500 lines, 2) manually check no inline run: block exceeds ~5 lines, 3) verify all job names are unchanged: changes, lint, shellcheck, test, test-integration, verify-codegen, docs, helm-validate, e2e-infra, e2e-operator, tempest, build-and-push, merge-operator-images, helm-push, github-release, 4) verify all needs: dependencies are unchanged, 5) verify all if: conditions are unchanged, 6) verify all matrix strategies are unchanged, 7) verify all artifact upload steps have the same artifact names and paths. Fix any discrepancies found.",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-008"
@@ -463,6 +472,7 @@
       "description": "Run 'shellcheck --severity=warning hack/*.sh' to verify all scripts pass. Fix any warnings in new scripts. Verify the CI shellcheck job glob (hack/*.sh) covers all new scripts — since all new scripts are in hack/, no glob change is needed.",
       "level": 3,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -473,6 +483,7 @@
       "description": "Update docs/reference/ci-workflow.md: 1) update the e2e-infra job step table to reflect composite action usage and script call for diagnostics, 2) update the e2e-operator (e2e-keystone) job step table to reflect script calls for service image build, composite action for infra, script for operator deploy, and script for diagnostics, 3) update the tempest job documentation (if exists, or note it in Dependencies section) to reflect script calls, 4) add new entries to the 'Dependencies on Prior Features' table for hack/ci-dump-diagnostics.sh, hack/ci-build-service-image.sh, hack/ci-deploy-operator.sh, hack/ci-run-tempest.sh, and .github/actions/setup-e2e-infra, 5) add the feature reference CC-0050 to the frontmatter.",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -617,8 +628,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-08T19:14:10.437892"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-08T19:15:43.933260"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-08T21:07:45.189771"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/149",
+  "pr_number": 149,
   "execution_history": [
     {
       "run_id": "4e8e3535-3a0f-42c7-a93f-189550fb6fde",
@@ -630,6 +651,78 @@
           "name": "prepare",
           "duration": 256.09288263320923,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "4cdde871-fd22-4e65-b61a-f4745a168e07",
+      "timestamp": "2026-04-08T19:49:06.242132",
+      "total_duration": 1802.1206593513489,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (5 tasks)",
+          "duration": 399.9533140659332,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (3 tasks)",
+          "duration": 318.74988627433777,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (3 tasks)",
+          "duration": 322.38149213790894,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0050] Code Review",
+          "duration": 427.1053638458252,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0050] Improvements",
+          "duration": 299.09966802597046,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0050] Simplify",
+          "duration": 34.83093500137329,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "79a8125a-b85c-4ffd-baa1-8bdf569fc7ef",
+      "timestamp": "2026-04-08T20:10:50.079153",
+      "total_duration": 638.683073759079,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 638.683073759079,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "e882d317-eeea-405b-9ba8-48b59a4c816e",
+      "timestamp": "2026-04-08T21:04:36.573837",
+      "total_duration": 1357.7895045280457,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 1357.7895045280457,
+          "type": "review_address",
           "status": "done"
         }
       ]

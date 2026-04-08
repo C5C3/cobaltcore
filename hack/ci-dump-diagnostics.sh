@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# hack/ci-dump-diagnostics.sh — Dump diagnostic info after E2E failures.
+# Feature: CC-0050
+#
+# Consolidates diagnostic dump logic shared across e2e-infra, e2e-operator,
+# and tempest CI jobs into a single script. Usable locally against any
+# kubeconfig.
+#
+# Usage:
+#   hack/ci-dump-diagnostics.sh                   # infra-only diagnostics
+#   OPERATOR=keystone hack/ci-dump-diagnostics.sh  # + operator-specific diagnostics
+#
+# REQ-001: Shared diagnostic dump script for all E2E jobs.
+# REQ-007: set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
+
+set -euo pipefail
+
+# Optional: operator name for operator-specific diagnostics.
+OPERATOR="${OPERATOR:-}"
+NAMESPACE="${NAMESPACE:-openstack}"
+
+# ---------------------------------------------------------------------------
+# Infrastructure diagnostics (always emitted)
+# ---------------------------------------------------------------------------
+echo "=== HelmReleases ==="
+kubectl get helmrelease --all-namespaces || true
+
+echo "=== Pods ==="
+kubectl get pods --all-namespaces || true
+
+echo "=== DaemonSets ==="
+kubectl get daemonsets --all-namespaces -o wide || true
+
+echo "=== DaemonSet chaos-daemon detail ==="
+kubectl describe daemonset -n chaos-mesh chaos-daemon 2>/dev/null || true
+
+echo "=== Events (last 50) ==="
+kubectl get events --all-namespaces --sort-by='.lastTimestamp' | tail -50 || true
+
+if command -v flux >/dev/null 2>&1; then
+  echo "=== Flux logs ==="
+  flux logs --all-namespaces || true
+fi
+
+# ---------------------------------------------------------------------------
+# Operator-specific diagnostics (only when OPERATOR is set)
+# ---------------------------------------------------------------------------
+if [[ -n "${OPERATOR}" ]]; then
+  echo "=== Operator pods ==="
+  kubectl get pods -l "app.kubernetes.io/name=${OPERATOR}-operator" || true
+
+  echo "=== Operator logs ==="
+  kubectl logs -l "app.kubernetes.io/name=${OPERATOR}-operator" --tail=100 || true
+
+  echo "=== Job descriptions ==="
+  for job in $(kubectl get jobs -n "${NAMESPACE}" -o name 2>/dev/null); do
+    echo "--- describe ${job} ---"
+    kubectl describe -n "${NAMESPACE}" "${job}" 2>&1 | tail -30 || true
+  done
+
+  echo "=== Failed Job logs ==="
+  for job in $(kubectl get jobs -n "${NAMESPACE}" -o name 2>/dev/null); do
+    echo "--- logs for ${job} ---"
+    kubectl logs -n "${NAMESPACE}" "${job}" --all-containers --tail=50 2>&1 || true
+  done
+
+  echo "=== All pod logs in ${NAMESPACE} ==="
+  for pod in $(kubectl get pods -n "${NAMESPACE}" -o name 2>/dev/null); do
+    echo "--- ${pod} (current) ---"
+    kubectl logs -n "${NAMESPACE}" "${pod}" --all-containers --tail=30 2>&1 || true
+    echo "--- ${pod} (previous) ---"
+    kubectl logs -n "${NAMESPACE}" "${pod}" --all-containers --tail=30 --previous 2>&1 || true
+  done
+
+  echo "=== Operator CR status ==="
+  kubectl get "${OPERATOR}" -n "${NAMESPACE}" -o yaml 2>/dev/null | grep -A30 "conditions:" || true
+
+  echo "=== ConfigMaps in ${NAMESPACE} namespace ==="
+  kubectl get cm -n "${NAMESPACE}" 2>/dev/null || true
+fi

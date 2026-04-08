@@ -1,0 +1,92 @@
+{
+  "feature_id": "CC-0050",
+  "title": "Refactor CI workflow into reusable scripts and actions",
+  "date": "2026-04-08",
+  "verdict": "APPROVED",
+  "summary": "Review #2 feedback from berendt (6 WARNINGs, 4 INFOs) properly addressed. Scope-creep reverts confirmed correct (setup-policies.sh and verify_spdx_headers.sh match main). New hack/ci-resolve-changes.sh cleanly extracts the 30-line changes-resolution block with proper SPDX header, set -euo pipefail, input validation, and CC-0050 reference. sed metacharacter escaping (W-004) and FQDN variant (W-006) correctly implemented. Structural test script (tests/ci/verify_ci_scripts.sh) follows project PASS/FAIL counter pattern with assertions.sh integration. ci.yaml reduced from 680 to 635 lines (28% total reduction from 884); gap to 500-line target acknowledged as follow-up. mktemp fix (I-003) and grep -A30 (I-001) and docs version fix (I-002) all applied. No new bugs introduced.",
+  "tests_checklist": [
+    {"item": "Tests exist and pass", "checked": true},
+    {"item": "Edge cases are covered", "checked": true},
+    {"item": "Test script follows project PASS/FAIL counter pattern", "checked": true},
+    {"item": "assertions.sh PASS/FAIL globals compatible with test script", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns", "checked": true},
+    {"item": "SPDX headers on all new files", "checked": true},
+    {"item": "set -euo pipefail in all scripts", "checked": true},
+    {"item": "CC-0050 feature reference in all new files", "checked": true},
+    {"item": "Scripts are executable (chmod +x)", "checked": true},
+    {"item": "No inline run: blocks exceed ~5 lines in new changes", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "sed metacharacters escaped in ADMIN_PASSWORD substitution", "checked": true},
+    {"item": "No secrets in command-line arguments", "checked": true},
+    {"item": "Shell indirection (${!filter_var}) used safely with controlled input", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "New script functionally equivalent to inline code", "checked": true},
+    {"item": "shellcheck CI job glob (hack/*.sh) covers new script", "checked": true},
+    {"item": "changes job path filters (hack/**) cover new script", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unnecessary abstractions", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early", "checked": true},
+    {"item": "ALL_OPERATORS validation with ::error:: annotation", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs validated", "checked": true},
+    {"item": "FILTER_* env vars default to false when unset", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "D2",
+      "severity": "MINOR",
+      "description": "ci.yaml at 635 lines, still above the 500-line acceptance criteria target. This is acknowledged in the review resolution as follow-up work. The remaining gap is primarily from inline blocks in non-E2E jobs (lint, test, docs, helm-validate, build-and-push, merge-operator-images, helm-push, github-release) which are each small (<5 lines) and not worth extracting individually.",
+      "location": ".github/workflows/ci.yaml:1",
+      "fix": "Document in the GitHub issue that the 500-line target requires further extraction in a follow-up PR, or adjust the acceptance criterion to reflect the practical minimum.",
+      "evidence": "wc -l .github/workflows/ci.yaml → 635",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "TE2",
+      "severity": "MINOR",
+      "description": "test_shellcheck() SKIP path (line 50-52) returns without incrementing PASS or FAIL. When shellcheck is not installed, the summary line understates the total test count. Not a correctness bug (the SKIP message is printed), but inconsistent with the require-explicit-failure-branch pattern. In CI (ubuntu-latest), shellcheck is pre-installed so this path is not exercised.",
+      "location": "tests/ci/verify_ci_scripts.sh:50",
+      "fix": "No action needed — shellcheck is always available in CI. The SKIP path is a reasonable local-dev fallback.",
+      "evidence": "if ! command -v shellcheck >/dev/null 2>&1; then\n    echo \"  SKIP: shellcheck not installed\"\n    return\n  fi",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider filing a follow-up issue to track the remaining ci.yaml line reduction from 635 to <500 if the acceptance criteria is still desired.",
+    "The validate-stated-acceptance-criteria-are-met.md review pattern is a good addition — it captures a real blind spot."
+  ],
+  "next_steps": [
+    "Merge: all blocking and major checks pass, all berendt feedback addressed."
+  ],
+  "detected_patterns": [
+    {
+      "name": "CI script extraction with env-var interface",
+      "component": "hack/ci-*.sh, .github/workflows/ci.yaml",
+      "category": "service-structure",
+      "applies_when": "Extracting inline shell blocks from GitHub Actions workflow steps into standalone hack/ci-*.sh scripts",
+      "description": "Inline workflow scripts are extracted into hack/ci-*.sh files. The workflow step passes GitHub Actions context (step outputs, built-in vars) as environment variables via the step's env: block. The script reads these via ${VAR:-default} with safe defaults. Required env vars are validated at script entry with ::error:: annotation and exit 1. The script writes outputs to GITHUB_OUTPUT. This keeps the workflow declarative (env mapping) and the script testable (env vars can be set locally).",
+      "examples": [
+        {
+          "location": ".github/workflows/ci.yaml:94-102",
+          "code": "      - name: Resolve effective changes\n        id: result\n        env:\n          ALL_OPERATORS: keystone\n          FILTER_keystone: ${{ steps.filter.outputs.keystone }}\n          FILTER_docs: ${{ steps.filter.outputs.docs }}\n          FILTER_helm: ${{ steps.filter.outputs.helm }}\n          FILTER_e2e_infra: ${{ steps.filter.outputs.e2e_infra }}\n          FILTER_go_common: ${{ steps.filter.outputs.go_common }}\n        run: hack/ci-resolve-changes.sh"
+        },
+        {
+          "location": "hack/ci-resolve-changes.sh:37-40",
+          "code": "if [[ -z \"${ALL_OPERATORS:-}\" ]]; then\n  echo \"::error::ALL_OPERATORS must be set (space-separated list of operator names)\"\n  exit 1\nfi"
+        }
+      ]
+    }
+  ]
+}
