@@ -541,7 +541,7 @@ main() {
   # Phase 3: Wait for remaining HelmReleases now that OpenBao can mount its TLS secret.
   log "Phase 3: Waiting for remaining HelmReleases..."
   wait_for_helmreleases "${HELMRELEASE_TIMEOUT}" \
-    prometheus-operator-crds openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator
+    prometheus-operator-crds openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator chaos-mesh
 
   # Step 5: Apply infrastructure kustomize overlay (CRD-dependent resources)
   log "=== Step 5/8: Apply infrastructure kustomize overlay ==="

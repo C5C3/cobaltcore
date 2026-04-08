@@ -95,3 +95,39 @@ patches:
         namespace: openstack
       spec:
         suspend: true
+
+  # Chaos Mesh: configure containerd runtime for kind, disable the dashboard
+  # (unnecessary in CI), and reduce resource requests for single-node clusters.
+  # Feature: CC-0046, REQ-005
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: chaos-mesh
+      namespace: chaos-mesh
+    patch: |
+      apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: chaos-mesh
+        namespace: chaos-mesh
+      spec:
+        values:
+          chaosDaemon:
+            runtime: containerd
+            socketPath: /run/containerd/containerd.sock
+            resources:
+              requests:
+                cpu: 25m
+                memory: 64Mi
+              limits:
+                memory: 128Mi
+          dashboard:
+            create: false
+          controllerManager:
+            resources:
+              requests:
+                cpu: 25m
+                memory: 64Mi
+              limits:
+                memory: 128Mi

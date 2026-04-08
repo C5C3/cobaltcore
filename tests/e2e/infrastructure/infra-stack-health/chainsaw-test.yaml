@@ -12,6 +12,7 @@
 #   - OpenBao StatefulSet readiness
 #   - Infrastructure CRs: ClusterIssuer, MariaDB, Memcached
 #   - ESO resources: ClusterSecretStore (Valid), ExternalSecrets (SecretSynced)
+#   - Chaos Mesh: controller-manager Deployment, chaos-daemon DaemonSet (CC-0046)
 #
 # REQ-008 (CC-0010)
 apiVersion: chainsaw.kyverno.io/v1alpha1
@@ -157,3 +158,25 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: SecretSynced
+  # ── Step 5: Chaos Mesh (CC-0046) ─────────────────────────────────────
+  # Verify that the Chaos Mesh controller-manager Deployment is available
+  # and the chaos-daemon DaemonSet is running on cluster nodes.
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: chaos-controller-manager
+            namespace: chaos-mesh
+          status:
+            (availableReplicas > `0`): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: DaemonSet
+          metadata:
+            name: chaos-daemon
+            namespace: chaos-mesh
+          status:
+            (numberReady >= `1`): true

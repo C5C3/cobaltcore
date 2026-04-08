@@ -1,0 +1,45 @@
+{
+  "feature_id": "CC-0046",
+  "title": "GitHub Review by sourcery-ai[bot]",
+  "summary": "Two issues: (1) Remove `createNamespace: true` from the Chaos Mesh `HelmRelease` since the namespace is already declared in `namespaces.yaml`, making it redundant. (2) Verify and document that the divergence between kind overlay settings (containerd, no dashboard, lower resources) and the base HelmRelease upstream defaults is intentional. Also a minor typo fix in the infrastructure docs.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "sourcery-ai[bot]",
+  "date": "2026-04-07T22:04:41Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "Hey - I've found 2 issues, and left some high level feedback:\n\n- The Chaos Mesh namespace is now declared explicitly in `namespaces.yaml` while `install.createNamespace: true` is still set on the `HelmRelease`; consider dropping one of these to avoid redundant/ambiguous namespace management.\n- The kind overlay patches Chaos Mesh to use containerd, disable the dashboard, and reduce resources, but the base `HelmRelease` uses upstream defaults; double-check that the divergence between kind and non-kind environments (e.g., dashboard enabled, higher resource usage) is intentional and documented where needed.\n\n<details>\n<summary>Prompt for AI Agents</summary>\n\n~~~markdown\nPlease address the comments from this code review:\n\n## Overall Comments\n- The Chaos Mesh namespace is now declared explicitly in `namespaces.yaml` while `install.createNamespace: true` is still set on the `HelmRelease`; consider dropping one of these to avoid redundant/ambiguous namespace management.\n- The kind overlay patches Chaos Mesh to use containerd, disable the dashboard, and reduce resources, but the base `HelmRelease` uses upstream defaults; double-check that the divergence between kind and non-kind environments (e.g., dashboard enabled, higher resource usage) is intentional and documented where needed.\n\n## Individual Comments\n\n### Comment 1\n<location path=\"deploy/flux-system/releases/chaos-mesh.yaml\" line_range=\"28-32\" />\n<code_context>\n+        kind: HelmRepository\n+        name: chaos-mesh\n+        namespace: flux-system\n+  install:\n+    crds: CreateReplace\n+    createNamespace: true\n+  upgrade:\n+    crds: CreateReplace\n</code_context>\n<issue_to_address>\n**suggestion:** Namespace is managed both via a standalone Namespace manifest and HelmRelease.createNamespace, which is redundant and can be simplified.\n\nSince the `chaos-mesh` namespace is already created via `deploy/flux-system/namespaces.yaml`, having `install.createNamespace: true` duplicates lifecycle management. To keep ownership clear and ensure future labels/annotations added via kustomize are the single source of truth, consider removing `createNamespace: true` and relying on the Flux-managed Namespace only.\n\n```suggestion\n  install:\n    crds: CreateReplace\n  upgrade:\n    crds: CreateReplace\n```\n</issue_to_address>\n\n### Comment 2\n<location path=\"docs/reference/infrastructure-manifests.md\" line_range=\"179\" />\n<code_context>\n+| Source | `mariadb-operator` HelmRepository |\n+| Dependencies | None |\n+\n+Separate CRD chart required since mariadb-operator v0.35.0. Must be installed before\n+mariadb-operator so CRDs are available for the operator and for infrastructure CRs\n+(e.g., MariaDB Galera cluster).\n</code_context>\n<issue_to_address>\n**nitpick (typo):** Consider adding a verb for grammatical completeness in this sentence.\n\nFor example: \"Separate CRD chart is required since mariadb-operator v0.35.0\" or \"A separate CRD chart is required since mariadb-operator v0.35.0.\"\n\n```suggestion\nA separate CRD chart is required since mariadb-operator v0.35.0. Must be installed before\n```\n</issue_to_address>\n~~~\n\n</details>\n\n***\n\n<details>\n<summary>Sourcery is free for open source - if you like our reviews please consider sharing them ✨</summary>\n\n- [X](https://twitter.com/intent/tweet?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [Mastodon](https://mastodon.social/share?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [LinkedIn](https://www.linkedin.com/sharing/share-offsite/?url=https://sourcery.ai)\n- [Facebook](https://www.facebook.com/sharer/sharer.php?u=https://sourcery.ai)\n\n</details>\n\n<sub>\nHelp me be more useful! Please click 👍 or 👎 on each comment and I'll use the feedback to improve your reviews.\n</sub>",
+  "code_comments": [
+    {
+      "body": "**suggestion:** Namespace is managed both via a standalone Namespace manifest and HelmRelease.createNamespace, which is redundant and can be simplified.\n\nSince the `chaos-mesh` namespace is already created via `deploy/flux-system/namespaces.yaml`, having `install.createNamespace: true` duplicates lifecycle management. To keep ownership clear and ensure future labels/annotations added via kustomize are the single source of truth, consider removing `createNamespace: true` and relying on the Flux-managed Namespace only.\n\n```suggestion\n  install:\n    crds: CreateReplace\n  upgrade:\n    crds: CreateReplace\n```",
+      "path": "deploy/flux-system/releases/chaos-mesh.yaml",
+      "line": 32,
+      "author": "sourcery-ai[bot]",
+      "created_at": "2026-04-07T22:04:41Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "**nitpick (typo):** Consider adding a verb for grammatical completeness in this sentence.\n\nFor example: \"Separate CRD chart is required since mariadb-operator v0.35.0\" or \"A separate CRD chart is required since mariadb-operator v0.35.0.\"\n\n```suggestion\nA separate CRD chart is required since mariadb-operator v0.35.0. Must be installed before\n```",
+      "path": "docs/reference/infrastructure-manifests.md",
+      "line": 179,
+      "author": "sourcery-ai[bot]",
+      "created_at": "2026-04-07T22:04:41Z",
+      "id": null,
+      "resolution": ""
+    }
+  ],
+  "github_review_id": 4071565450
+}

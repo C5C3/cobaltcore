@@ -17,24 +17,31 @@ infrastructure resources (applied after operators install their CRDs).
 ```text
 deploy/
 └── flux-system/
-    ├── kustomization.yaml            Base kustomize overlay (namespaces, sources, releases)
-    ├── namespaces.yaml               Namespace resources for all components
-    ├── sources/                      FluxCD HelmRepository CRs
-    │   ├── cert-manager.yaml         Jetstack Helm chart registry
-    │   ├── mariadb-operator.yaml     MariaDB Operator Helm chart registry
-    │   ├── external-secrets.yaml     External Secrets Operator Helm chart registry
-    │   ├── openbao.yaml              OpenBao Helm chart registry
-    │   └── c5c3-charts.yaml          C5C3 shared OCI chart registry
-    ├── releases/                     FluxCD HelmRelease CRs
-    │   ├── cert-manager.yaml         cert-manager
-    │   ├── mariadb-operator.yaml     MariaDB Operator
-    │   ├── external-secrets.yaml     External Secrets Operator
-    │   └── memcached-operator.yaml   Memcached Operator (from c5c3-charts)
-    └── infrastructure/               CRD-dependent infrastructure resources
-        ├── kustomization.yaml        Infrastructure kustomize overlay
-        ├── cluster-issuer.yaml       Self-signed ClusterIssuer (requires cert-manager CRDs)
-        ├── mariadb.yaml              MariaDB Galera cluster for OpenStack
-        └── memcached.yaml            Memcached cluster for OpenStack
+    ├── kustomization.yaml                Base kustomize overlay (namespaces, sources, releases)
+    ├── namespaces.yaml                   Namespace resources for all components
+    ├── sources/                          FluxCD HelmRepository CRs
+    │   ├── cert-manager.yaml             Jetstack Helm chart registry
+    │   ├── mariadb-operator.yaml         MariaDB Operator Helm chart registry
+    │   ├── external-secrets.yaml         External Secrets Operator Helm chart registry
+    │   ├── openbao.yaml                  OpenBao Helm chart registry
+    │   ├── c5c3-charts.yaml              C5C3 shared OCI chart registry
+    │   ├── prometheus-community.yaml     Prometheus Community OCI chart registry
+    │   └── chaos-mesh.yaml               Chaos Mesh Helm chart registry
+    ├── releases/                         FluxCD HelmRelease CRs
+    │   ├── cert-manager.yaml             cert-manager
+    │   ├── prometheus-operator-crds.yaml Prometheus Operator CRDs
+    │   ├── mariadb-operator-crds.yaml    MariaDB Operator CRDs
+    │   ├── mariadb-operator.yaml         MariaDB Operator
+    │   ├── external-secrets.yaml         External Secrets Operator
+    │   ├── memcached-operator.yaml       Memcached Operator (from c5c3-charts)
+    │   ├── openbao.yaml                  OpenBao HA Raft cluster
+    │   ├── keystone-operator.yaml        Keystone Operator (from c5c3-charts)
+    │   └── chaos-mesh.yaml               Chaos Mesh
+    └── infrastructure/                   CRD-dependent infrastructure resources
+        ├── kustomization.yaml            Infrastructure kustomize overlay
+        ├── cluster-issuer.yaml           Self-signed ClusterIssuer (requires cert-manager CRDs)
+        ├── mariadb.yaml                  MariaDB Galera cluster for OpenStack
+        └── memcached.yaml                Memcached cluster for OpenStack
 ```
 
 All YAML files carry the SPDX Apache-2.0 license header (3 lines: copyright, blank
@@ -42,7 +49,7 @@ comment, license identifier).
 
 ## Namespaces
 
-Five `Namespace` resources are defined in `namespaces.yaml` and included as the first
+Eight `Namespace` resources are defined in `namespaces.yaml` and included as the first
 entry in the base kustomization. Kustomize applies `Namespace` resources before other
 resource kinds, ensuring target namespaces exist before any namespaced resources are
 created.
@@ -52,8 +59,11 @@ created.
 | `cert-manager` | cert-manager operator and its resources |
 | `mariadb-system` | MariaDB Operator |
 | `external-secrets` | External Secrets Operator |
+| `monitoring-system` | Prometheus Operator CRDs (CC-0010) |
 | `memcached-system` | Memcached Operator |
 | `openstack` | Infrastructure instance CRs (MariaDB cluster, Memcached cluster) |
+| `openbao-system` | OpenBao HA Raft cluster (CC-0009) |
+| `chaos-mesh` | Chaos Mesh fault injection platform (CC-0046) |
 
 **Note:** The `install.createNamespace: true` setting on HelmReleases instructs FluxCD's
 helm-controller to create namespaces when installing charts. However, this does not help
@@ -63,7 +73,7 @@ solve this chicken-and-egg problem.
 
 ## HelmRepository Sources
 
-Five HelmRepository CRs define the Helm chart registries that FluxCD pulls from. All
+Seven HelmRepository CRs define the Helm chart registries that FluxCD pulls from. All
 use `apiVersion: source.toolkit.fluxcd.io/v1`, are deployed to the `flux-system`
 namespace, and poll at `interval: 1h`.
 
@@ -74,14 +84,18 @@ namespace, and poll at `interval: 1h`.
 | `sources/external-secrets.yaml` | `external-secrets` | `https://charts.external-secrets.io` | HTTPS |
 | `sources/openbao.yaml` | `openbao` | `https://openbao.github.io/openbao-helm` | HTTPS |
 | `sources/c5c3-charts.yaml` | `c5c3-charts` | `oci://ghcr.io/c5c3/charts` | OCI |
+| `sources/prometheus-community.yaml` | `prometheus-community` | `oci://ghcr.io/prometheus-community/charts` | OCI |
+| `sources/chaos-mesh.yaml` | `chaos-mesh` | `https://charts.chaos-mesh.org` | HTTPS |
 
-The `c5c3-charts` repository is the only OCI-type source (`spec.type: oci`). It hosts
-internally-built operator charts (e.g., memcached-operator) in the GitHub Container
-Registry. All other repositories use standard HTTPS Helm registries.
+The `c5c3-charts` and `prometheus-community` repositories are OCI-type sources
+(`spec.type: oci`). `c5c3-charts` hosts internally-built operator charts (e.g.,
+memcached-operator) in the GitHub Container Registry. `prometheus-community` hosts
+Prometheus community charts (e.g., prometheus-operator-crds). All other repositories
+use standard HTTPS Helm registries.
 
 ## HelmRelease Operators
 
-Four HelmRelease CRs deploy the infrastructure operators. All use
+Nine HelmRelease CRs deploy the infrastructure operators and CRD charts. All use
 `apiVersion: helm.toolkit.fluxcd.io/v2` and share these common settings:
 
 | Setting | Value | Purpose |
@@ -94,14 +108,21 @@ Four HelmRelease CRs deploy the infrastructure operators. All use
 
 ### Dependency Order
 
-cert-manager is the base layer (no `dependsOn`). All other operators depend on
-cert-manager because they require TLS certificates for webhook servers:
+cert-manager is the base layer (no `dependsOn`). The CRD-only charts
+(prometheus-operator-crds, mariadb-operator-crds) also have no dependencies. All other
+operators depend on cert-manager because they require TLS certificates for webhook
+servers. Some operators have additional dependencies on CRD charts or other operators:
 
 ```text
-cert-manager  (base — no dependencies)
-├── mariadb-operator     dependsOn: cert-manager/cert-manager
-├── external-secrets     dependsOn: cert-manager/cert-manager
-└── memcached-operator   dependsOn: cert-manager/cert-manager
+cert-manager              (base — no dependencies)
+prometheus-operator-crds  (no dependencies)
+mariadb-operator-crds     (no dependencies)
+├── mariadb-operator      dependsOn: cert-manager, mariadb-operator-crds
+├── external-secrets      dependsOn: cert-manager
+├── memcached-operator    dependsOn: cert-manager, prometheus-operator-crds
+├── openbao               dependsOn: cert-manager
+├── keystone-operator     dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets
+└── chaos-mesh            dependsOn: cert-manager
 ```
 
 FluxCD resolves this dependency graph and installs operators in the correct order.
@@ -123,7 +144,41 @@ If cert-manager is not ready, dependent operators are held in a pending state.
 
 | Key | Value | Purpose |
 | --- | --- | --- |
-| `prometheus.enabled` | `true` | Expose Prometheus metrics endpoint |
+| `crds.enabled` | `true` | Install CRDs via the Helm chart |
+| `prometheus.enabled` | `false` | Prometheus metrics disabled |
+| `startupapicheck.enabled` | `false` | Disable startup API check job |
+
+### Prometheus Operator CRDs
+
+**File:** `deploy/flux-system/releases/prometheus-operator-crds.yaml`
+
+| Property | Value |
+| --- | --- |
+| Target namespace | `monitoring-system` |
+| Chart | `prometheus-operator-crds` |
+| Version constraint | `>=17.0.0 <20.0.0` |
+| Source | `prometheus-community` HelmRepository |
+| Dependencies | None |
+
+The Prometheus Operator CRDs chart installs ServiceMonitor, PodMonitor, PrometheusRule,
+and related monitoring.coreos.com CRDs. These are required by the memcached-operator
+controller, which unconditionally watches ServiceMonitor resources via Owns() (CC-0010).
+
+### MariaDB Operator CRDs
+
+**File:** `deploy/flux-system/releases/mariadb-operator-crds.yaml`
+
+| Property | Value |
+| --- | --- |
+| Target namespace | `mariadb-system` |
+| Chart | `mariadb-operator-crds` |
+| Version constraint | `>=0.30.0 <1.0.0` |
+| Source | `mariadb-operator` HelmRepository |
+| Dependencies | None |
+
+A separate CRD chart is required since mariadb-operator v0.35.0. Must be installed before
+mariadb-operator so CRDs are available for the operator and for infrastructure CRs
+(e.g., MariaDB Galera cluster).
 
 ### MariaDB Operator
 
@@ -135,13 +190,13 @@ If cert-manager is not ready, dependent operators are held in a pending state.
 | Chart | `mariadb-operator` |
 | Version constraint | `>=0.30.0 <1.0.0` |
 | Source | `mariadb-operator` HelmRepository |
-| Dependencies | `cert-manager` in `cert-manager` namespace |
+| Dependencies | `cert-manager` in `cert-manager` namespace, `mariadb-operator-crds` in `mariadb-system` namespace |
 
 **Helm values:**
 
 | Key | Value | Purpose |
 | --- | --- | --- |
-| `metrics.enabled` | `true` | Expose Prometheus metrics |
+| `metrics.enabled` | `false` | Prometheus metrics disabled |
 | `webhook.enabled` | `true` | Enable admission webhooks for MariaDB CRDs |
 
 ### External Secrets Operator
@@ -160,6 +215,7 @@ If cert-manager is not ready, dependent operators are held in a pending state.
 
 | Key | Value | Purpose |
 | --- | --- | --- |
+| `installCRDs` | `true` | Install CRDs via the Helm chart |
 | `webhook.port` | `9443` | Webhook server listen port |
 | `certController.enabled` | `true` | Manage webhook TLS certificates |
 
@@ -173,7 +229,7 @@ If cert-manager is not ready, dependent operators are held in a pending state.
 | Chart | `memcached-operator` |
 | Version constraint | `>=0.1.0 <1.0.0` |
 | Source | `c5c3-charts` HelmRepository (shared OCI registry) |
-| Dependencies | `cert-manager` in `cert-manager` namespace |
+| Dependencies | `cert-manager` in `cert-manager` namespace, `prometheus-operator-crds` in `monitoring-system` namespace |
 
 **Source reference:** The Memcached Operator chart is published to the shared `c5c3-charts`
 OCI registry (`oci://ghcr.io/c5c3/charts`), not a dedicated HelmRepository. The
@@ -186,6 +242,88 @@ OCI registry (`oci://ghcr.io/c5c3/charts`), not a dedicated HelmRepository. The
 | `metrics.enabled` | `true` | Expose Prometheus metrics |
 | `webhook.enabled` | `true` | Enable admission webhooks for Memcached CRDs |
 
+### OpenBao
+
+**File:** `deploy/flux-system/releases/openbao.yaml`
+
+| Property | Value |
+| --- | --- |
+| Target namespace | `openbao-system` |
+| Chart | `openbao` |
+| Version constraint | `>=0.5.0 <1.0.0` |
+| Source | `openbao` HelmRepository |
+| Dependencies | `cert-manager` in `cert-manager` namespace |
+
+OpenBao is deployed as a 3-replica HA Raft cluster with TLS enabled. The injector is
+disabled. TLS certificates are sourced from a cert-manager-provisioned Secret
+(`openbao-tls`). See `architecture/docs/09-implementation/09-openbao-deployment.md` for
+design rationale (CC-0009).
+
+**Helm values:**
+
+| Key | Value | Purpose |
+| --- | --- | --- |
+| `global.tlsDisable` | `false` | Enable TLS globally |
+| `server.authDelegator.enabled` | `true` | Enable ClusterRoleBinding for TokenReview API (ESO auth) |
+| `server.ha.enabled` | `true` | Enable HA mode |
+| `server.ha.replicas` | `3` | 3-node Raft cluster |
+| `server.ha.raft.enabled` | `true` | Use Raft storage backend |
+| `server.dataStorage.size` | `10Gi` | Persistent volume size |
+| `injector.enabled` | `false` | Disable the Vault/Bao agent injector |
+
+### Keystone Operator
+
+**File:** `deploy/flux-system/releases/keystone-operator.yaml`
+
+| Property | Value |
+| --- | --- |
+| Target namespace | `openstack` |
+| Chart | `keystone-operator` |
+| Version constraint | `>=0.1.0 <1.0.0` |
+| Source | `c5c3-charts` HelmRepository (shared OCI registry) |
+| Dependencies | `cert-manager`, `mariadb-operator`, `memcached-operator`, `external-secrets` |
+
+The Keystone Operator manages OpenStack Keystone identity service instances. It depends
+on four upstream operators: cert-manager for TLS, mariadb-operator for database
+provisioning, memcached-operator for caching, and external-secrets for secret management.
+
+**Helm values:**
+
+| Key | Value | Purpose |
+| --- | --- | --- |
+| `replicas` | `2` | Run 2 controller replicas for HA |
+| `leaderElection.enabled` | `true` | Enable leader election for HA |
+| `image.tag` | `latest` | Use latest image until a versioned release publishes a semver tag |
+
+### Chaos Mesh
+
+**File:** `deploy/flux-system/releases/chaos-mesh.yaml`
+
+| Property | Value |
+| --- | --- |
+| Target namespace | `chaos-mesh` |
+| Chart | `chaos-mesh` |
+| Version constraint | `>=2.6.0 <3.0.0` |
+| Source | `chaos-mesh` HelmRepository |
+| Dependencies | `cert-manager` in `cert-manager` namespace |
+
+Chaos Mesh is a fault injection platform for chaos engineering. It installs a
+controller-manager Deployment, a chaos-daemon DaemonSet (one pod per node), and CRDs
+for fault types (PodChaos, NetworkChaos, etc.). The operator requires cert-manager for
+webhook TLS certificates (CC-0046).
+
+**Namespace management:** Like all other HelmReleases, chaos-mesh sets
+`install.createNamespace: true` as a safety net for FluxCD reconciliation edge cases,
+complementing the explicit `Namespace` resource in `namespaces.yaml`.
+
+**No Helm values in base release.** The base HelmRelease uses upstream chart defaults
+(dashboard enabled, default resource requests, auto-detected container runtime). The
+kind overlay (`deploy/kind/base/kustomization.yaml`) patches Chaos Mesh with
+containerd runtime settings, disabled dashboard, and reduced resource requests
+suitable for single-node kind clusters. This divergence is intentional: non-kind
+(production) environments use the upstream defaults, which include the dashboard and
+higher resource allocations appropriate for multi-node clusters.
+
 ## HelmRelease–HelmRepository Cross-Reference
 
 Each HelmRelease `sourceRef.name` must match a HelmRepository `metadata.name` in
@@ -194,12 +332,14 @@ Each HelmRelease `sourceRef.name` must match a HelmRepository `metadata.name` in
 | HelmRelease | `sourceRef.name` | HelmRepository file |
 | --- | --- | --- |
 | `cert-manager` | `cert-manager` | `sources/cert-manager.yaml` |
+| `prometheus-operator-crds` | `prometheus-community` | `sources/prometheus-community.yaml` |
+| `mariadb-operator-crds` | `mariadb-operator` | `sources/mariadb-operator.yaml` |
 | `mariadb-operator` | `mariadb-operator` | `sources/mariadb-operator.yaml` |
 | `external-secrets` | `external-secrets` | `sources/external-secrets.yaml` |
 | `memcached-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
-
-The `openbao` HelmRepository (`sources/openbao.yaml`) has no corresponding HelmRelease
-yet — it is provisioned for future use (CC-0009).
+| `openbao` | `openbao` | `sources/openbao.yaml` |
+| `keystone-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
+| `chaos-mesh` | `chaos-mesh` | `sources/chaos-mesh.yaml` |
 
 ## Infrastructure Custom Resources
 
@@ -288,14 +428,14 @@ The base kustomization uses `apiVersion: kustomize.config.k8s.io/v1beta1` and in
 namespaces, HelmRepository sources, and HelmRelease operators. These resources do not
 depend on any custom CRDs.
 
-**Resource count:** 10 files producing 14 Kubernetes resources.
+**Resource count:** 17 files producing 24 Kubernetes resources.
 
 | Category | Count | Resources |
 | --- | --- | --- |
-| Namespace | 5 | cert-manager, mariadb-system, external-secrets, memcached-system, openstack |
-| HelmRepository | 5 | cert-manager, mariadb-operator, external-secrets, openbao, c5c3-charts |
-| HelmRelease | 4 | cert-manager, mariadb-operator, external-secrets, memcached-operator |
-| **Total** | **14** | |
+| Namespace | 8 | cert-manager, mariadb-system, external-secrets, monitoring-system, memcached-system, openstack, openbao-system, chaos-mesh |
+| HelmRepository | 7 | cert-manager, mariadb-operator, external-secrets, openbao, c5c3-charts, prometheus-community, chaos-mesh |
+| HelmRelease | 9 | cert-manager, prometheus-operator-crds, mariadb-operator-crds, mariadb-operator, external-secrets, memcached-operator, openbao, keystone-operator, chaos-mesh |
+| **Total** | **24** | |
 
 ### Infrastructure Kustomization
 
@@ -322,7 +462,7 @@ kustomization and after operators have finished installing their CRDs.
 kubectl apply -k deploy/flux-system/
 ```
 
-This applies 14 resources: 5 namespaces, 5 HelmRepository sources, and 4 HelmRelease
+This applies 24 resources: 8 namespaces, 7 HelmRepository sources, and 9 HelmRelease
 operators. FluxCD resolves the dependency graph between HelmReleases and installs
 operators in the correct order. Wait for all operators to finish installing before
 proceeding to step 2.

@@ -1,0 +1,41 @@
+{
+  "feature_id": "CC-0046",
+  "title": "L001: Add Chaos Mesh FluxCD deployment infra",
+  "date": "2026-04-07",
+  "verdict": "APPROVED",
+  "summary": "Post-external-review changes correctly address both items from sourcery-ai[bot]: (1) removed redundant `createNamespace: true` from chaos-mesh HelmRelease since the namespace is already managed via `namespaces.yaml`, and (2) documented the intentional divergence between base HelmRelease (upstream defaults) and kind overlay (containerd, no dashboard, reduced resources). Grammar fix applied to infrastructure-manifests.md. All documentation sections updated consistently — common settings table, Chaos Mesh subsection, and Namespace auto-creation design decision all reference the exception. No new bugs introduced.",
+  "tests_checklist": [
+    {"item": "Existing E2E tests (infra-stack-health) unchanged and still assert chaos-mesh controller and daemon health", "checked": true},
+    {"item": "No new testable code introduced — changes are YAML config and documentation only", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing HelmRelease pattern with a single documented exception", "checked": true},
+    {"item": "Documentation updated in all relevant sections (common settings table, Chaos Mesh subsection, design decisions)", "checked": true},
+    {"item": "Review patterns capture the feedback for future reviews", "checked": true},
+    {"item": "No dead code or commented-out code", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No secrets or credentials in changed files", "checked": true},
+    {"item": "No user input handling — infrastructure YAML only", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Chaos-mesh namespace ownership is now unambiguous (single source: namespaces.yaml)", "checked": true},
+    {"item": "Exception from common HelmRelease pattern is documented in 3 locations", "checked": true},
+    {"item": "Kind vs non-kind divergence is intentional and documented", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated logic or unnecessary abstractions", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "N/A — no runtime code changed", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "N/A — no external inputs processed", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": []
+}

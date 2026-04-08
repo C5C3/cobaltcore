@@ -1,0 +1,76 @@
+{
+  "summary": "External review #2 feedback from berendt correctly addressed: version constraint tightened to single major (>=2.6.0 <3.0.0), createNamespace: true added, install.remediation.retries: 3 added, memory limits (128Mi) added to kind overlay, DaemonSet assertion tightened to == 1, and namespace auto-creation docs section reverted to 'All'. However, 3 documentation locations in docs/reference/infrastructure-manifests.md were NOT updated to reflect the code changes, creating code-docs inconsistencies.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "E2E infra-stack-health test includes Chaos Mesh controller-manager Deployment assertion", "checked": true},
+    {"item": "E2E infra-stack-health test includes chaos-daemon DaemonSet assertion", "checked": true},
+    {"item": "DaemonSet assertion uses exact match (== 1) per I-004", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "HelmRelease follows fluxcd-helmrelease-common-installupgrade-settings pattern", "checked": true},
+    {"item": "Version constraint pins within single major version", "checked": true},
+    {"item": "install.createNamespace: true matches all sibling HelmReleases", "checked": true},
+    {"item": "install.remediation.retries: 3 matches sibling pattern", "checked": true},
+    {"item": "Kind overlay includes memory limits alongside requests", "checked": true},
+    {"item": "Review patterns correctly document external feedback", "checked": true},
+    {"item": "All documentation locations updated consistently", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "No secrets in manifests", "checked": true},
+    {"item": "No TLS bypass flags", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "No scope creep beyond review feedback fixes", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unnecessary additions", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Memory limits prevent unbounded resource consumption in kind", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "DA3",
+      "severity": "MAJOR",
+      "description": "Common settings table still has stale exception for chaos-mesh. Line 105 says '(all except chaos-mesh — see below)' but chaos-mesh now sets createNamespace: true, matching all siblings.",
+      "location": "docs/reference/infrastructure-manifests.md:105",
+      "fix": "Change '(all except chaos-mesh — see below)' to '(all HelmReleases)' or simply remove the parenthetical exception.",
+      "evidence": "| `spec.install.createNamespace` | `true` | Auto-create target namespace (all except chaos-mesh — see below) |",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "DA3",
+      "severity": "MAJOR",
+      "description": "Chaos Mesh property table shows stale version constraint >=2.6.0 <4.0.0, but the actual manifest at deploy/flux-system/releases/chaos-mesh.yaml:23 now uses >=2.6.0 <3.0.0.",
+      "location": "docs/reference/infrastructure-manifests.md:306",
+      "fix": "Change '>=2.6.0 <4.0.0' to '>=2.6.0 <3.0.0' to match the actual manifest.",
+      "evidence": "| Version constraint | `>=2.6.0 <4.0.0` |",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "D6",
+      "severity": "MAJOR",
+      "description": "Namespace management paragraph (lines 315-318) still describes chaos-mesh as intentionally not setting createNamespace: true. This entire paragraph is now stale since chaos-mesh was updated to include createNamespace: true to match all sibling HelmReleases.",
+      "location": "docs/reference/infrastructure-manifests.md:315-318",
+      "fix": "Remove the entire 'Namespace management' paragraph (lines 315-318) since chaos-mesh no longer diverges from the standard pattern. Alternatively, replace with a brief note that chaos-mesh follows the standard install settings.",
+      "evidence": "**Namespace management:** Unlike other HelmReleases, chaos-mesh does not set\n`install.createNamespace: true`. The `chaos-mesh` namespace is managed exclusively via\nthe explicit `Namespace` resource in `namespaces.yaml`, avoiding redundant namespace\nlifecycle ownership.",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [],
+  "next_steps": [
+    "Fix the 3 documentation inconsistencies in docs/reference/infrastructure-manifests.md (lines 105, 306, 315-318)"
+  ],
+  "detected_patterns": [],
+  "feature_id": "CC-0046",
+  "title": "L001: Add Chaos Mesh FluxCD deployment infra",
+  "date": "2026-04-08",
+  "verdict_summary": "NEEDS_CHANGES — all code changes correctly address external review feedback (W-001, W-002, I-002, I-003, I-004), but 3 documentation locations in infrastructure-manifests.md still describe the pre-fix state, creating code-docs inconsistencies."
+}

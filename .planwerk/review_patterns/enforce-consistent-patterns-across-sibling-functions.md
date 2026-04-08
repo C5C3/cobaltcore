@@ -3,7 +3,7 @@
 **Review-Area**: validation
 **Detection-Hint**: When a new function follows the same structure as existing sibling functions (same loop+summary pattern, same counter logic), diff the control flow against the existing functions. Any deviation in branching (e.g., `else` vs `elif`) is a red flag.
 **Severity**: WARNING
-**Occurrences**: 3
+**Occurrences**: 4
 
 ## What to check
 
@@ -29,3 +29,8 @@ Inconsistency between sibling functions that follow the same pattern is a strong
 - **Feedback**: setup-envtest and controller-gen are installed at @latest in the test-integration and verify-codegen jobs respectively. A breaking release in either tool will silently start failing CI without any diff to review. All other tooling in the workflow uses pinned versions.
 - **What was missed**: All tool installations in CI (go install, pip install, npm install, etc.) must use pinned versions. No @latest. Version constants should be defined in a single location (env block or Makefile variable).
 - **Fix**: Pin both tools to specific versions (e.g. controller-gen@v0.17.3, setup-envtest@v0.20.4) and define those version constants in a top-level env: block or Makefile variable for single-source-of-truth maintenance.
+
+### CC-0046 — berendt
+- **Feedback**: The version constraint `>=2.6.0 <4.0.0` spans both 2.x and 3.x major versions, unlike every other HelmRelease in the repo which pins within a single major version.
+- **What was missed**: Does the new version constraint follow the same major-version pinning strategy as every other resource of the same kind in the repo? If existing HelmReleases all pin within a single major (e.g., >=X.Y.Z <X+1.0.0), a new one spanning two majors (>=2.6.0 <4.0.0) is an outlier that risks auto-adopting breaking changes.
+- **Fix**: Version constraint tightened from `>=2.6.0 <4.0.0` to `>=2.6.0 <3.0.0`.

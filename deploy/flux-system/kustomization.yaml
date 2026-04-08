@@ -28,6 +28,7 @@ resources:
   - sources/openbao.yaml
   - sources/c5c3-charts.yaml
   - sources/prometheus-community.yaml
+  - sources/chaos-mesh.yaml
 
   # HelmRelease operators (deployed via FluxCD)
   - releases/cert-manager.yaml
@@ -38,3 +39,4 @@ resources:
   - releases/memcached-operator.yaml
   - releases/openbao.yaml
   - releases/keystone-operator.yaml
+  - releases/chaos-mesh.yaml

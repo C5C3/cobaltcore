@@ -356,6 +356,10 @@ jobs:
           kubectl get helmrelease --all-namespaces || true
           echo "=== Pods ==="
           kubectl get pods --all-namespaces || true
+          echo "=== DaemonSets ==="
+          kubectl get daemonsets --all-namespaces -o wide || true
+          echo "=== DaemonSet chaos-daemon detail ==="
+          kubectl describe daemonset -n chaos-mesh chaos-daemon 2>/dev/null || true
           echo "=== Events (last 50) ==="
           kubectl get events --all-namespaces --sort-by='.lastTimestamp' | tail -50 || true
           echo "=== Flux logs ==="

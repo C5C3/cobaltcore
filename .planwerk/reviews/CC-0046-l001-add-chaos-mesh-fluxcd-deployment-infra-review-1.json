@@ -1,0 +1,67 @@
+{
+  "feature_id": "CC-0046",
+  "title": "L001: Add Chaos Mesh FluxCD deployment infra",
+  "date": "2026-04-07",
+  "verdict": "APPROVED",
+  "summary": "Clean infrastructure feature that adds Chaos Mesh to the FluxCD deployment pipeline. All 8 affected files (2 new, 6 modified) follow mandatory patterns exactly. HelmRepository matches sources/openbao.yaml structure, HelmRelease follows fluxcd-helmrelease-common-installupgrade-settings pattern, namespace follows two-phase-kustomization-for-crd-dependent-resources pattern, kind overlay follows existing strategic merge patch convention, deploy-infra.sh uses existing wait_for_helmreleases helper, Chainsaw E2E test follows JMESPath assertion pattern, and docs are updated with all required sections. No scope creep, no security concerns, no pattern violations.",
+  "tests_checklist": [
+    {"item": "E2E test exists for Chaos Mesh controller-manager Deployment (availableReplicas > 0)", "checked": true},
+    {"item": "E2E test exists for Chaos Mesh chaos-daemon DaemonSet (numberReady >= 1)", "checked": true},
+    {"item": "Test follows existing chainsaw-e2e-test-suite-structure-with-jmespath-condition-assertions pattern", "checked": true},
+    {"item": "Step comment header follows '# ── Step N: Description ──' convention", "checked": true},
+    {"item": "Covers list in file header updated to include Chaos Mesh", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows fluxcd-helmrelease-common-installupgrade-settings pattern exactly", "checked": true},
+    {"item": "Follows spdx-apache-20-header-on-infrastructure-files pattern", "checked": true},
+    {"item": "Follows two-phase-kustomization-for-crd-dependent-resources pattern", "checked": true},
+    {"item": "Follows infrastructure-deployment-script-with-8-step-orchestration pattern", "checked": true},
+    {"item": "HelmRepository matches sources/openbao.yaml format (no comments beyond header, --- separator)", "checked": true},
+    {"item": "HelmRelease comment block matches releases/openbao.yaml format (description, namespace, dependency, architecture ref, feature ID)", "checked": true},
+    {"item": "Kind overlay patch follows existing strategic merge patch structure (openbao, memcached-operator, keystone-operator)", "checked": true},
+    {"item": "No code duplication", "checked": true},
+    {"item": "No dead code or unused resources", "checked": true},
+    {"item": "Clear naming conventions followed", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "No sensitive data in manifests", "checked": true},
+    {"item": "No shell injection vectors in deploy-infra.sh modification", "checked": true},
+    {"item": "HelmRepository URL uses HTTPS", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible — minimal changes to add one operator", "checked": true},
+    {"item": "No scope creep — only chaos-mesh related files changed", "checked": true},
+    {"item": "Follows existing dependency model (dependsOn cert-manager)", "checked": true},
+    {"item": "Kind overlay correctly configures containerd runtime for kind networking", "checked": true},
+    {"item": "Dashboard disabled in kind (unnecessary in CI)", "checked": true},
+    {"item": "Resource requests reduced for single-node clusters", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated configuration", "checked": true},
+    {"item": "No unnecessary abstractions", "checked": true},
+    {"item": "No future-proofing beyond requirements", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "chaos-mesh added to wait_for_helmreleases in deploy-infra.sh — deployment waits for readiness before proceeding", "checked": true},
+    {"item": "E2E test asserts Chaos Mesh health before chaos tests can run", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "install.createNamespace: true as safety net for FluxCD reconciliation", "checked": true},
+    {"item": "Explicit Namespace resource in namespaces.yaml for kubectl apply -k path", "checked": true},
+    {"item": "upgrade.remediation.retries: 3 for resilient upgrades", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "The docs resource counts (12 files / 17 resources, 6 namespaces / 6 HelmRepositories / 5 HelmReleases) are inaccurate when compared to the actual kustomization.yaml which lists 8 namespaces (monitoring-system and openbao-system missing from docs table), 7 HelmRepositories (prometheus-community missing), and 9 HelmReleases (prometheus-operator-crds, mariadb-operator-crds, openbao, keystone-operator missing). This is a pre-existing discrepancy not introduced by this PR — fixing it would be a separate docs maintenance task.",
+    "The docs directory layout tree in the sources/ and releases/ sections omits several files present in the actual kustomization (prometheus-community.yaml, prometheus-operator-crds.yaml, mariadb-operator-crds.yaml, openbao.yaml, keystone-operator.yaml). Pre-existing — not in scope for this feature.",
+    "The cross-reference table note 'The openbao HelmRepository has no corresponding HelmRelease yet' (line 229) is stale — releases/openbao.yaml exists in the kustomization. Pre-existing stale doc entry."
+  ],
+  "next_steps": [
+    "Merge this feature — all requirements are met and no blocking/major issues found.",
+    "Consider a separate docs maintenance PR to correct the pre-existing resource count and directory layout discrepancies in infrastructure-manifests.md."
+  ],
+  "detected_patterns": []
+}

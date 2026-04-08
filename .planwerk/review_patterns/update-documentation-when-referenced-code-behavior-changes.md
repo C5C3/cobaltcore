@@ -3,7 +3,7 @@
 **Review-Area**: documentation
 **Detection-Hint**: When a PR modifies script logic (e.g., file paths, arguments, invocation requirements), search the docs/ directory for references to that script and verify descriptions still match the implementation.
 **Severity**: WARNING
-**Occurrences**: 3
+**Occurrences**: 4
 
 ## What to check
 
@@ -29,3 +29,8 @@ Stale documentation misleads users into invoking tools incorrectly, leading to s
 - **Feedback**: Stale documentation — describes discarded exit-code approach, not the current JSON parsing implementation. The claim that 'Exit code `2` indicates sealed (already initialized)' is exactly the ambiguity that the JSON parsing fix was introduced to resolve.
 - **What was missed**: After any in-PR code revision, grep the PR's documentation files for terms related to the old approach (e.g., 'exit code', old function names, old flags). Verify all behavioral descriptions match the final implementation.
 - **Fix**: Updated Behavior, Idempotency sections, and the idempotency summary table to describe `bao status -format=json` with `jq -e '.initialized == true'` instead of exit-code checking.
+
+### CC-0046 — berendt
+- **Feedback**: the documentation now contradicts itself by saying 'Most HelmReleases' instead of 'All HelmReleases'.
+- **What was missed**: Does the PR weaken existing documentation statements (e.g., 'All' → 'Most', 'Always' → 'Usually') to justify a deviation in the new code? If so, question whether the code should conform to the documented standard rather than the docs being diluted.
+- **Fix**: Documentation reverted from 'Most' back to 'All' and the chaos-mesh exception paragraph removed, after making the code conform to the documented standard.
