@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-08T20:53:46.517805+00:00",
+  "feature_id": "CC-0050",
+  "task_type": "commit",
+  "session_key": "CC-0050",
+  "model": "opus",
+  "prompt": "Generate a detailed git commit body for this commit.\nSubject: fix(CC-0050): address review #2 feedback from berendt\n\nReview feedback is in: /worktrees/CC-0050/.planwerk/reviews/CC-0050-github-review-by-berendt-external-2.json\nUse `git diff --cached -- ':(exclude).planwerk'` to see the full staged diff.\n\nDiff stat:\n.github/workflows/ci.yaml                     |  59 ++---------\n deploy/openbao/bootstrap/setup-policies.sh    |   2 +-\n docs/reference/ci-workflow.md                 |   2 +-\n hack/ci-build-service-image.sh                |   6 +-\n hack/ci-dump-diagnostics.sh                   |   2 +-\n hack/ci-resolve-changes.sh                    |  84 ++++++++++++++++\n hack/ci-run-tempest.sh                        |   9 +-\n tests/ci/verify_ci_scripts.sh                 | 135 ++++++++++++++++++++++++++\n tests/container-images/verify_spdx_headers.sh |   2 +-\n 9 files changed, 241 insertions(+), 60 deletions(-)\n\nWrite ONLY the body text, no subject line, no markdown.\nFor each changed file, write a bullet point: '- path/to/file: what was changed'\nDo NOT mention .planwerk directory changes.\nOutput ONLY plain text — no tool_call tags, no XML, no code blocks.",
+  "prompt_length": 1167,
+  "caller": "run_claude_cli"
+}
