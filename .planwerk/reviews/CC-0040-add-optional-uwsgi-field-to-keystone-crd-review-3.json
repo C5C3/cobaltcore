@@ -1,0 +1,60 @@
+{
+  "feature_id": "CC-0040",
+  "title": "Add optional uWSGI field to Keystone CRD",
+  "date": "2026-04-07",
+  "summary": "Review of changes addressing external reviewer (berendt) feedback #2. Three documentation fixes in docs/reference/keystone-crd.md: (1) E2E test table values updated from processes:8/threads:4 to processes:3/threads:3 matching actual test files (B-001), (2) httpKeepAlive defaulting table corrected to attribute default to CRD schema instead of webhook (W-001), (3) known limitation note added for missing upper-bound validation on processes/threads (I-001). Additionally, keystone_types.go received corresponding 'Known limitation' doc comments on the Processes and Threads fields. All changes are docs-only with no behavioral impact.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "All unit tests pass (webhook defaulting, validation, deployment command)", "checked": true},
+    {"item": "Integration tests pass (envtest admission pipeline)", "checked": true},
+    {"item": "E2E test exists and matches documented values (processes:3, threads:3)", "checked": true},
+    {"item": "Edge cases covered (nil uwsgi, empty uwsgi, partial, explicit false, boundary values)", "checked": true},
+    {"item": "No tests need updating for this docs-only diff", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Changes follow existing code patterns", "checked": true},
+    {"item": "Doc comments are clear and reference CC-0040 feature ID", "checked": true},
+    {"item": "No dead code or unnecessary changes", "checked": true},
+    {"item": "Documentation fixes are accurate and match implementation", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No security-relevant changes in this diff", "checked": true},
+    {"item": "Input validation unchanged (kubebuilder Minimum=1 markers + webhook defense-in-depth)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "No architectural changes in this diff", "checked": true},
+    {"item": "UWSGISpec follows established optional pointer field pattern", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "Changes are minimal and targeted to reviewer feedback", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Defense-in-depth validation present for processes/threads", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs validated via CRD schema + webhook", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "D6",
+      "severity": "MINOR",
+      "description": "CRD YAML descriptions not regenerated after adding 'Known limitation' doc comments to Processes and Threads fields. The Go doc comments now include the limitation note, but the CRD YAML description field at config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml:687 still shows only 'Processes is the number of uWSGI worker processes.' without the limitation text. This is cosmetic — no API shape, validation, or default changes — but best practice is to keep CRD descriptions in sync with Go doc comments via make generate && make manifests.",
+      "location": "operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml:687",
+      "fix": "Run `cd operators/keystone && make generate && make manifests` to propagate the updated doc comments into the CRD YAML descriptions.",
+      "evidence": "keystone_types.go:185 now reads '// Known limitation (CC-0040): no upper-bound validation marker is set.' but CRD YAML:687 still reads 'description: Processes is the number of uWSGI worker processes.' without the limitation note.",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider running make generate && make manifests to sync the 'Known limitation' doc comments into the CRD YAML descriptions, though this is cosmetic and does not affect functionality."
+  ],
+  "next_steps": [],
+  "detected_patterns": [],
+  "reviewer": "planwerk-review",
+  "commit_reference": "1f2fbeb",
+  "review_type": "internal",
+  "sequence_number": 3
+}

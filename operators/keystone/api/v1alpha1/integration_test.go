@@ -413,3 +413,166 @@ func TestIntegration_ResourcesRequestExceedsLimitRejected(t *testing.T) {
 		fmt.Sprintf("expected Invalid or Forbidden status error, got: %v", err))
 	g.Expect(err.Error()).To(ContainSubstring("resources"))
 }
+
+// --- Task CC-0040: UWSGI defaulting and validation integration tests ---
+
+func TestIntegration_UWSGINilPreserved(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-uwsgi-nil-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	k := validIntegrationKeystone("uwsgi-nil", ns.Name)
+	k.Spec.UWSGI = nil
+
+	g.Expect(c.Create(ctx, k)).To(Succeed(), "CR without spec.uwsgi should be accepted")
+
+	got := &Keystone{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "uwsgi-nil", Namespace: ns.Name}, got)).To(Succeed())
+
+	g.Expect(got.Spec.UWSGI).To(BeNil(), "spec.uwsgi should remain nil when not set")
+}
+
+func TestIntegration_UWSGIDefaultsAppliedWhenEmpty(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-uwsgi-empty-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	k := validIntegrationKeystone("uwsgi-empty", ns.Name)
+	k.Spec.UWSGI = &UWSGISpec{}
+
+	g.Expect(c.Create(ctx, k)).To(Succeed(), "CR with empty spec.uwsgi should be accepted after defaults")
+
+	got := &Keystone{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "uwsgi-empty", Namespace: ns.Name}, got)).To(Succeed())
+
+	g.Expect(got.Spec.UWSGI).NotTo(BeNil(), "spec.uwsgi should not be nil")
+	g.Expect(got.Spec.UWSGI.Processes).To(Equal(int32(2)), "processes should be defaulted to 2")
+	g.Expect(got.Spec.UWSGI.Threads).To(Equal(int32(2)), "threads should be defaulted to 2")
+	g.Expect(got.Spec.UWSGI.HTTPKeepAlive).To(BeTrue(), "httpKeepAlive should be defaulted to true")
+}
+
+func TestIntegration_UWSGIExplicitValuesPreserved(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-uwsgi-explicit-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	k := validIntegrationKeystone("uwsgi-explicit", ns.Name)
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes:     8,
+		Threads:       4,
+		HTTPKeepAlive: true,
+	}
+
+	g.Expect(c.Create(ctx, k)).To(Succeed(), "CR with explicit uwsgi values should be accepted")
+
+	got := &Keystone{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "uwsgi-explicit", Namespace: ns.Name}, got)).To(Succeed())
+
+	g.Expect(got.Spec.UWSGI).NotTo(BeNil(), "spec.uwsgi should not be nil")
+	g.Expect(got.Spec.UWSGI.Processes).To(Equal(int32(8)), "explicit processes should be preserved")
+	g.Expect(got.Spec.UWSGI.Threads).To(Equal(int32(4)), "explicit threads should be preserved")
+	g.Expect(got.Spec.UWSGI.HTTPKeepAlive).To(BeTrue(), "explicit httpKeepAlive should be preserved")
+}
+
+func TestIntegration_UWSGIPartialDefaulting(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-uwsgi-partial-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	// Only set processes; threads and httpKeepAlive left at zero values.
+	// The webhook will default threads to 2. httpKeepAlive will NOT be
+	// defaulted by the webhook (processes != 0 means struct is not fully
+	// zero-valued), but the CRD schema default (+kubebuilder:default=true)
+	// will set it to true in the admission pipeline.
+	k := validIntegrationKeystone("uwsgi-partial", ns.Name)
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes: 4,
+	}
+
+	g.Expect(c.Create(ctx, k)).To(Succeed(), "CR with partial uwsgi values should be accepted after defaults")
+
+	got := &Keystone{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "uwsgi-partial", Namespace: ns.Name}, got)).To(Succeed())
+
+	g.Expect(got.Spec.UWSGI).NotTo(BeNil(), "spec.uwsgi should not be nil")
+	g.Expect(got.Spec.UWSGI.Processes).To(Equal(int32(4)), "explicit processes should be preserved")
+	g.Expect(got.Spec.UWSGI.Threads).To(Equal(int32(2)), "threads should be defaulted to 2")
+	// httpKeepAlive is true via the CRD schema +kubebuilder:default=true marker,
+	// which applies during the admission pipeline even though the webhook
+	// defaulter skips it when the struct is not fully zero-valued.
+	g.Expect(got.Spec.UWSGI.HTTPKeepAlive).To(BeTrue(), "httpKeepAlive should be true via CRD schema default")
+}
+
+func TestIntegration_UWSGIProcessesBelowMinimumRejected(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-uwsgi-proc-min-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	// Use -1 to bypass the defaulting webhook (which only defaults 0).
+	// Both the CRD schema (+kubebuilder:validation:Minimum=1) and the
+	// validating webhook reject negative values.
+	k := validIntegrationKeystone("uwsgi-proc-neg", ns.Name)
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes:     -1,
+		Threads:       2,
+		HTTPKeepAlive: true,
+	}
+
+	err := c.Create(ctx, k)
+	g.Expect(err).To(HaveOccurred(), "uwsgi.processes=-1 should be rejected")
+	g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
+		fmt.Sprintf("expected Invalid or Forbidden status error, got: %v", err))
+	g.Expect(err.Error()).To(SatisfyAny(
+		ContainSubstring("uwsgi"),
+		ContainSubstring("processes"),
+	))
+}
+
+func TestIntegration_UWSGIThreadsBelowMinimumRejected(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-uwsgi-thr-min-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	// Use -1 to bypass the defaulting webhook (which only defaults 0).
+	// Both the CRD schema (+kubebuilder:validation:Minimum=1) and the
+	// validating webhook reject negative values.
+	k := validIntegrationKeystone("uwsgi-thr-neg", ns.Name)
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes:     2,
+		Threads:       -1,
+		HTTPKeepAlive: true,
+	}
+
+	err := c.Create(ctx, k)
+	g.Expect(err).To(HaveOccurred(), "uwsgi.threads=-1 should be rejected")
+	g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
+		fmt.Sprintf("expected Invalid or Forbidden status error, got: %v", err))
+	g.Expect(err.Error()).To(SatisfyAny(
+		ContainSubstring("uwsgi"),
+		ContainSubstring("threads"),
+	))
+}

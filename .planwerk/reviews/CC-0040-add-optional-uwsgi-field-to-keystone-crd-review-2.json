@@ -1,0 +1,67 @@
+{
+  "summary": "Addresses sourcery-ai[bot] review #1 feedback: (1) removed the fragile HTTPKeepAlive defaulting from the webhook to avoid overriding explicit false — the webhook now never touches HTTPKeepAlive, relying solely on the CRD schema default for normal admission, (2) added defensive clamping in uwsgiCommand to clamp processes/threads < 1 to 1, (3) refactored uwsgiCommand tests from exact ordered array assertions to resilient flag/value pair assertions using indexOf helper + ContainElement matchers, (4) fixed capitalization typo in docs. All code changes are correct and well-tested.",
+  "verdict": "NEEDS_CHANGES",
+  "metadata": {
+    "feature_id": "CC-0040",
+    "title": "Add optional uWSGI field to Keystone CRD",
+    "date": "2026-04-07",
+    "verdict": "NEEDS_CHANGES"
+  },
+  "tests_checklist": [
+    {"item": "Tests exist and pass (go test ./api/v1alpha1/... ./internal/controller/... — all pass)", "checked": true},
+    {"item": "Edge cases covered: defensive clamping (zero, negative), nil uwsgi, explicit false HTTPKeepAlive with zero processes/threads", "checked": true},
+    {"item": "Assertions are resilient: indexOf + positional pair checks instead of full array equality", "checked": true},
+    {"item": "New test TestDefault_UWSGIZeroProcessesAndThreadsDoNotOverrideExplicitFalse covers the sourcery-ai concern", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (gomega with NewGomegaWithT, defense-in-depth comments)", "checked": true},
+    {"item": "uwsgiCommand defensive clamp is minimal and clearly commented", "checked": true},
+    {"item": "Webhook defaulting change is correct — webhook cannot distinguish unset bool from explicit false", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Defensive clamping prevents invalid uWSGI invocations from bypass paths", "checked": true},
+    {"item": "No hardcoded secrets or sensitive data exposure", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is minimal — three targeted changes addressing specific feedback", "checked": true},
+    {"item": "Defense-in-depth layering preserved (CRD markers → webhook validation → command builder clamp)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code introduced", "checked": true},
+    {"item": "indexOf helper is simple and test-scoped", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Invalid values clamped at point of use before generating CLI command", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "uwsgiCommand clamps processes/threads < 1 to 1 regardless of upstream validation", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "DA3",
+      "severity": "MAJOR",
+      "description": "Documentation 'HTTPKeepAlive Defaulting Caveat' section describes the OLD webhook behavior that was removed in this commit. The text says 'The defaulting webhook handles this by only setting httpKeepAlive=true when the entire struct is zero-valued' — but the webhook no longer defaults HTTPKeepAlive at all. The bullet point 'uwsgi: {} → processes=2, threads=2, httpKeepAlive=true (all defaulted)' is misleading because the webhook only defaults processes and threads; httpKeepAlive=true comes from the CRD schema default in the normal admission path, not the webhook. In bypass paths (kubectl patch, upgrades), httpKeepAlive would remain false.",
+      "location": "docs/reference/keystone-crd.md:237-248",
+      "fix": "Rewrite the HTTPKeepAlive Defaulting Caveat section to reflect the new behavior: the webhook NEVER defaults HTTPKeepAlive. The CRD schema default (+kubebuilder:default=true) handles it in the normal admission path. In bypass paths, httpKeepAlive defaults to false (Go bool zero value), and uwsgiCommand will omit --http-keepalive. Update the bullet examples: 'uwsgi: {} → webhook: processes=2, threads=2; httpKeepAlive=true via CRD schema default in normal admission' and note that bypass paths will see httpKeepAlive=false.",
+      "evidence": "Code (keystone_webhook.go:86-93) now only defaults Processes and Threads:\n```go\nif obj.Spec.UWSGI != nil {\n    if obj.Spec.UWSGI.Processes == 0 {\n        obj.Spec.UWSGI.Processes = 2\n    }\n    if obj.Spec.UWSGI.Threads == 0 {\n        obj.Spec.UWSGI.Threads = 2\n    }\n}\n```\nBut docs (keystone-crd.md:240-243) say:\n> The defaulting webhook handles this by only setting `httpKeepAlive=true` when the **entire** struct is zero-valued (`processes==0 && threads==0 && httpKeepAlive==false`).\n\nTest TestDefault_UWSGIZeroValuedDefaultsProcessesAndThreads confirms: `g.Expect(k.Spec.UWSGI.HTTPKeepAlive).To(BeFalse())` — the webhook does NOT set it to true.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "D6",
+      "severity": "MINOR",
+      "description": "Incomplete capitalization fix: the typo 'uwsgi' was fixed to 'uWSGI' on line 664 but the adjacent line 665 still uses lowercase 'uwsgi' in the description text 'Patch with custom uwsgi values'. This inconsistency is visible in the same code block.",
+      "location": "docs/reference/keystone-crd.md:665",
+      "fix": "Change 'Patch with custom uwsgi values' to 'Patch with custom uWSGI values' on line 665.",
+      "evidence": "Line 664 (fixed): 'Keystone CR without explicit uWSGI'\nLine 665 (unfixed): 'Patch with custom uwsgi values'\nThe directory name 'uwsgi/' on line 662 correctly uses lowercase (it's a path), and its description correctly uses 'uWSGI'. Line 665 should follow the same convention for the description text.",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [],
+  "next_steps": [
+    "Update docs/reference/keystone-crd.md 'HTTPKeepAlive Defaulting Caveat' section (lines 237-248) to describe the new behavior: webhook never touches HTTPKeepAlive, relies on CRD schema default for normal admission",
+    "Fix lowercase 'uwsgi' on line 665 of keystone-crd.md"
+  ],
+  "detected_patterns": []
+}

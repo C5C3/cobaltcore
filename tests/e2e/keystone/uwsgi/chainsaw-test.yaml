@@ -1,0 +1,146 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for spec.uwsgi propagation to Deployment command (CC-0040).
+# Validates that:
+#   - A Keystone CR without explicit spec.uwsgi gets default uWSGI command
+#     (processes=2, threads=2, --http-keepalive) propagated to the Deployment
+#   - Patching spec.uwsgi updates the Deployment container command
+#
+# REQ-007 (CC-0040)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-uwsgi
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR without explicit uwsgi ───────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert Ready and Deployment has default uwsgi command ──────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-uwsgi
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-uwsgi-api
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: keystone-api
+                  command:
+                  - uwsgi
+                  - "--http"
+                  - ":5000"
+                  - "--http-keepalive"
+                  - "--wsgi-file"
+                  - "/var/lib/openstack/bin/keystone-wsgi-public"
+                  - "--master"
+                  - "--lazy-apps"
+                  - "--need-app"
+                  - "--processes"
+                  - "2"
+                  - "--threads"
+                  - "2"
+                  - "--pyargv=--config-dir=/etc/keystone/keystone.conf.d/"
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
+          echo "=== Deployment command ==="
+          kubectl get deployment keystone-uwsgi-api -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].command}' 2>&1 || true
+          echo ""
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Patch spec.uwsgi with custom values ───────────────────────
+  - try:
+    - patch:
+        file: 01-patch-custom-uwsgi.yaml
+  # ── Step 4: Assert Deployment updated with custom uwsgi command ────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-uwsgi-api
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: keystone-api
+                  command:
+                  - uwsgi
+                  - "--http"
+                  - ":5000"
+                  - "--wsgi-file"
+                  - "/var/lib/openstack/bin/keystone-wsgi-public"
+                  - "--master"
+                  - "--lazy-apps"
+                  - "--need-app"
+                  - "--processes"
+                  - "3"
+                  - "--threads"
+                  - "3"
+                  - "--pyargv=--config-dir=/etc/keystone/keystone.conf.d/"
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-uwsgi-api
+            namespace: openstack
+          status:
+            (updatedReplicas): 3
+            (availableReplicas): 3
+    catch:
+    - podLogs:
+        selector: application=keystone
+        namespace: openstack
+        tail: 50
+    - command:
+        entrypoint: kubectl
+        args:
+        - get
+        - deployments
+        - -n
+        - openstack
+        - -o
+        - yaml
+    - events:
+        namespace: openstack

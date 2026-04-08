@@ -669,6 +669,33 @@ spec:
                       More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                     type: object
                 type: object
+              uwsgi:
+                description: |-
+                  UWSGI configures the uWSGI application server parameters (CC-0040).
+                  When set, the operator uses these values for the uWSGI command in the
+                  Deployment. When nil, hardcoded defaults (processes=2, threads=2,
+                  httpKeepAlive=true) are used.
+                properties:
+                  httpKeepAlive:
+                    default: true
+                    description: |-
+                      HTTPKeepAlive enables the --http-keepalive flag on the uWSGI process.
+                      When false, the flag is omitted from the command.
+                    type: boolean
+                  processes:
+                    default: 2
+                    description: Processes is the number of uWSGI worker processes.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  threads:
+                    default: 2
+                    description: Threads is the number of threads per uWSGI worker
+                      process.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                type: object
             required:
             - bootstrap
             - cache

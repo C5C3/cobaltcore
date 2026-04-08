@@ -75,6 +75,22 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 	if obj.Spec.Bootstrap.Region == "" {
 		obj.Spec.Bootstrap.Region = "RegionOne"
 	}
+	// REQ-002 (CC-0040): Default zero-valued sub-fields of spec.uwsgi when non-nil.
+	// When the pointer is nil, do nothing — the reconciler uses hardcoded defaults.
+	// HTTPKeepAlive is NOT defaulted here: its bool zero value (false) is
+	// indistinguishable from an explicit false, so we cannot safely override it
+	// without risking overriding explicit user intent (e.g. `httpKeepAlive: false`
+	// sent via kubectl patch or weaker schema enforcement paths). The CRD schema
+	// default (+kubebuilder:default=true) handles HTTPKeepAlive in the normal
+	// admission path; uwsgiCommand uses the CRD default at runtime.
+	if obj.Spec.UWSGI != nil {
+		if obj.Spec.UWSGI.Processes == 0 {
+			obj.Spec.UWSGI.Processes = 2
+		}
+		if obj.Spec.UWSGI.Threads == 0 {
+			obj.Spec.UWSGI.Threads = 2
+		}
+	}
 	// REQ-004 (CC-0042): Default resource requests and limits for Burstable QoS
 	// and HPA utilization calculations. Also defaults when Resources is non-nil
 	// but empty (e.g. `resources: {}`), which would otherwise produce BestEffort
@@ -227,6 +243,26 @@ func (w *KeystoneWebhook) validate(k *Keystone) error {
 					"policy rule name must not be empty",
 				))
 			}
+		}
+	}
+
+	// REQ-003 (CC-0040): Defense-in-depth uWSGI validation alongside
+	// +kubebuilder:validation:Minimum=1 markers on UWSGISpec fields.
+	if k.Spec.UWSGI != nil {
+		uwsgiPath := specPath.Child("uwsgi")
+		if k.Spec.UWSGI.Processes < 1 {
+			allErrs = append(allErrs, field.Invalid(
+				uwsgiPath.Child("processes"),
+				k.Spec.UWSGI.Processes,
+				"processes must be at least 1",
+			))
+		}
+		if k.Spec.UWSGI.Threads < 1 {
+			allErrs = append(allErrs, field.Invalid(
+				uwsgiPath.Child("threads"),
+				k.Spec.UWSGI.Threads,
+				"threads must be at least 1",
+			))
 		}
 	}
 

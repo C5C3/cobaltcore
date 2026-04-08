@@ -78,6 +78,22 @@ func TestKeystoneSpecFields(t *testing.T) {
 	if spec.ExtraConfig != nil {
 		t.Errorf("expected nil ExtraConfig, got %v", spec.ExtraConfig)
 	}
+	if spec.UWSGI != nil {
+		t.Errorf("expected nil UWSGI, got %v", spec.UWSGI)
+	}
+}
+
+func TestUWSGISpecFields(t *testing.T) {
+	uwsgi := UWSGISpec{}
+	if uwsgi.Processes != 0 {
+		t.Errorf("expected zero value for Processes, got %d", uwsgi.Processes)
+	}
+	if uwsgi.Threads != 0 {
+		t.Errorf("expected zero value for Threads, got %d", uwsgi.Threads)
+	}
+	if uwsgi.HTTPKeepAlive {
+		t.Errorf("expected false for HTTPKeepAlive, got %v", uwsgi.HTTPKeepAlive)
+	}
 }
 
 func TestFernetSpecFields(t *testing.T) {

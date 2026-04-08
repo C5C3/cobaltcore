@@ -103,6 +103,13 @@ type KeystoneSpec struct {
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 
+	// UWSGI configures the uWSGI application server parameters (CC-0040).
+	// When set, the operator uses these values for the uWSGI command in the
+	// Deployment. When nil, hardcoded defaults (processes=2, threads=2,
+	// httpKeepAlive=true) are used.
+	// +optional
+	UWSGI *UWSGISpec `json:"uwsgi,omitempty"`
+
 	// ExtraConfig provides free-form INI sections for configuration
 	// not covered by explicit CRD fields.
 	// +optional
@@ -168,6 +175,26 @@ type NetworkPolicyIngressSource struct {
 	// (AND logic within a single peer).
 	// +optional
 	PodSelector map[string]string `json:"podSelector,omitempty"`
+}
+
+// UWSGISpec defines the uWSGI application server parameters (CC-0040).
+// Exposed as an optional pointer field on KeystoneSpec so that existing CRs
+// without spec.uwsgi continue to work with hardcoded defaults in the reconciler.
+type UWSGISpec struct {
+	// Processes is the number of uWSGI worker processes.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=2
+	Processes int32 `json:"processes,omitempty"`
+
+	// Threads is the number of threads per uWSGI worker process.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=2
+	Threads int32 `json:"threads,omitempty"`
+
+	// HTTPKeepAlive enables the --http-keepalive flag on the uWSGI process.
+	// When false, the flag is omitted from the command.
+	// +kubebuilder:default=true
+	HTTPKeepAlive bool `json:"httpKeepAlive,omitempty"`
 }
 
 // FernetSpec defines Fernet key rotation configuration.

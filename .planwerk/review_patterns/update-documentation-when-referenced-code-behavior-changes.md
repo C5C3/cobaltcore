@@ -1,9 +1,8 @@
 # Review Pattern: Update documentation when referenced code behavior changes
-
 **Review-Area**: documentation
 **Detection-Hint**: When a PR modifies script logic (e.g., file paths, arguments, invocation requirements), search the docs/ directory for references to that script and verify descriptions still match the implementation.
 **Severity**: WARNING
-**Occurrences**: 4
+**Occurrences**: 5
 
 ## What to check
 
@@ -34,3 +33,8 @@ Stale documentation misleads users into invoking tools incorrectly, leading to s
 - **Feedback**: the documentation now contradicts itself by saying 'Most HelmReleases' instead of 'All HelmReleases'.
 - **What was missed**: Does the PR weaken existing documentation statements (e.g., 'All' → 'Most', 'Always' → 'Usually') to justify a deviation in the new code? If so, question whether the code should conform to the documented standard rather than the docs being diluted.
 - **Fix**: Documentation reverted from 'Most' back to 'All' and the chaos-mesh exception paragraph removed, after making the code conform to the documented standard.
+
+### CC-0040 — berendt
+- **Feedback**: The documentation claims the E2E test patches with processes: 8, threads: 4 and asserts --processes 8 --threads 4, but commit 384af29 reduced these to processes: 3, threads: 3 in the actual test files without updating the docs.
+- **What was missed**: Grep docs/ for the old literal values being changed in test files (e.g., grep for 'processes: 8' or 'threads: 4'). Any documentation table or example that references specific test parameters must match the actual test files.
+- **Fix**: Updated the documentation table rows to reflect the actual test values of processes: 3 and threads: 3.

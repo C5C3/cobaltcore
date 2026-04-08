@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -160,18 +161,7 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 						Name:      "keystone-api",
 						Image:     fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag),
 						Resources: containerResources(keystone),
-						Command: []string{
-							"uwsgi",
-							"--http", ":5000",
-							"--http-keepalive",
-							"--wsgi-file", "/var/lib/openstack/bin/keystone-wsgi-public",
-							"--master",
-							"--lazy-apps",
-							"--need-app",
-							"--processes", "2",
-							"--threads", "2",
-							"--pyargv=--config-dir=/etc/keystone/keystone.conf.d/",
-						},
+						Command: uwsgiCommand(keystone.Spec.UWSGI),
 						Ports: []corev1.ContainerPort{{
 							Name:          "keystone-api",
 							ContainerPort: 5000,
@@ -280,6 +270,41 @@ func buildPodDisruptionBudget(keystone *keystonev1alpha1.Keystone) *policyv1.Pod
 	}
 
 	return pdb
+}
+
+// uwsgiCommand constructs the uWSGI container command from the given spec.
+// When uwsgi is nil (existing CRs without spec.uwsgi), hardcoded defaults
+// (processes=2, threads=2, httpKeepAlive=true) are used to preserve backward
+// compatibility. Fixed flags (--http :5000, --wsgi-file, --master, --lazy-apps,
+// --need-app, --pyargv) are always included regardless of configuration (CC-0040, REQ-004).
+func uwsgiCommand(uwsgi *keystonev1alpha1.UWSGISpec) []string {
+	processes := int32(2)
+	threads := int32(2)
+	httpKeepAlive := true
+
+	if uwsgi != nil {
+		processes = uwsgi.Processes
+		threads = uwsgi.Threads
+		httpKeepAlive = uwsgi.HTTPKeepAlive
+	}
+
+	cmd := []string{
+		"uwsgi",
+		"--http", ":5000",
+	}
+	if httpKeepAlive {
+		cmd = append(cmd, "--http-keepalive")
+	}
+	cmd = append(cmd,
+		"--wsgi-file", "/var/lib/openstack/bin/keystone-wsgi-public",
+		"--master",
+		"--lazy-apps",
+		"--need-app",
+		"--processes", strconv.Itoa(int(processes)),
+		"--threads", strconv.Itoa(int(threads)),
+		"--pyargv=--config-dir=/etc/keystone/keystone.conf.d/",
+	)
+	return cmd
 }
 
 // containerResources returns the ResourceRequirements for the keystone-api

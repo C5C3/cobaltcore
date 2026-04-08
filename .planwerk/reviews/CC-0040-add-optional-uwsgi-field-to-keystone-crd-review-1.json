@@ -1,0 +1,97 @@
+{
+  "feature_id": "CC-0040",
+  "title": "Add optional uWSGI field to Keystone CRD",
+  "date": "2026-04-07",
+  "summary": "Adds UWSGISpec struct with Processes, Threads, HTTPKeepAlive fields as an optional pointer on KeystoneSpec. Webhook defaulting handles zero-value edge cases including the bool zero-value ambiguity for HTTPKeepAlive. Defense-in-depth validation mirrors kubebuilder Minimum=1 markers. The reconciler's uwsgiCommand() helper builds the container command dynamically, falling back to hardcoded defaults when spec.uwsgi is nil. Unit tests cover all webhook defaulting/validation paths and command generation. Integration tests verify the admission pipeline. Chainsaw E2E tests verify deployment propagation. Documentation is thorough. However, generated artifacts (deepcopy and CRD YAML) were NOT regenerated after the type change, which is a blocking issue.",
+  "verdict": "BLOCKED",
+  "tests_checklist": [
+    {"item": "Unit tests for webhook defaulting exist and pass (5 tests)", "checked": true},
+    {"item": "Unit tests for webhook validation exist and pass (6 tests)", "checked": true},
+    {"item": "Unit tests for uwsgiCommand exist and pass (5 tests)", "checked": true},
+    {"item": "Integration tests for admission pipeline exist (6 tests)", "checked": true},
+    {"item": "Chainsaw E2E test exists with 4-step flow", "checked": true},
+    {"item": "TestValidateCreate_RunsAllValidations includes UWSGI validation", "checked": false},
+    {"item": "Edge cases covered (nil, empty, partial, boundary)", "checked": true},
+    {"item": "Error accumulation tested (both processes and threads invalid)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing optional pointer field pattern (*FederationSpec, *AutoscalingSpec)", "checked": true},
+    {"item": "Webhook defaulting follows existing pattern (zero-value checks)", "checked": true},
+    {"item": "Defense-in-depth validation follows existing pattern (field.Invalid with specPath.Child)", "checked": true},
+    {"item": "uwsgiCommand is a pure function with clean separation", "checked": true},
+    {"item": "Gomega assertions used consistently (NewGomegaWithT pattern)", "checked": true},
+    {"item": "Feature ID (CC-0040) and requirement IDs referenced in all comments", "checked": true},
+    {"item": "SPDX headers on E2E test files", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "All user inputs validated (Minimum=1 kubebuilder + webhook)", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "No injection risks in command construction", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "UWSGISpec placed between Resources and ExtraConfig as specified", "checked": true},
+    {"item": "Backward compatible (nil uwsgi = same command as before)", "checked": true},
+    {"item": "Solution is minimal — no over-engineering", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unnecessary abstractions", "checked": true},
+    {"item": "Default constants not exported (inline in uwsgiCommand) — appropriate since only used in one place", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Validation rejects invalid values before reconciler", "checked": true},
+    {"item": "Webhook defaults zero values before validation runs", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Defense-in-depth validation alongside kubebuilder markers", "checked": true},
+    {"item": "nil pointer check before accessing uwsgi fields (webhook + reconciler)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "V1",
+      "severity": "BLOCKER",
+      "description": "zz_generated.deepcopy.go does not contain DeepCopy/DeepCopyInto methods for UWSGISpec, and KeystoneSpec.DeepCopyInto does not handle the UWSGI *UWSGISpec pointer field. `make generate` was not run after adding the new type. This means DeepCopy of a Keystone object will silently share the UWSGISpec pointer between copies, causing data races in the controller-runtime cache.",
+      "location": "operators/keystone/api/v1alpha1/zz_generated.deepcopy.go:170-235",
+      "fix": "Run `make generate` in the operators/keystone directory to regenerate zz_generated.deepcopy.go. The generated file must contain: (1) UWSGISpec.DeepCopyInto and UWSGISpec.DeepCopy methods, (2) a nil-check block for in.UWSGI in KeystoneSpec.DeepCopyInto that creates a new UWSGISpec and copies the value.",
+      "evidence": "KeystoneSpec.DeepCopyInto handles Federation, Autoscaling, NetworkPolicy, Resources, but has no block for UWSGI. grep -c 'UWSGISpec' zz_generated.deepcopy.go returns 0.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "V1",
+      "severity": "BLOCKER",
+      "description": "CRD YAML (keystone.openstack.c5c3.io_keystones.yaml) does not contain the uwsgi field, its sub-fields, validation markers, or default values. `make manifests` was not run after adding UWSGISpec. The CRD schema is the first admission gate — without it, the +kubebuilder:validation:Minimum=1 and +kubebuilder:default markers have no effect, and the uwsgi field is silently stripped by the API server as an unknown field.",
+      "location": "operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml",
+      "fix": "Run `make manifests` in the operators/keystone directory to regenerate the CRD YAML. The resulting file must include spec.uwsgi with properties for processes (int32, minimum: 1, default: 2), threads (int32, minimum: 1, default: 2), and httpKeepAlive (bool, default: true).",
+      "evidence": "grep -c 'uwsgi' keystone.openstack.c5c3.io_keystones.yaml returns 0.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "TE1",
+      "severity": "MAJOR",
+      "description": "TestValidateCreate_RunsAllValidations does not include uWSGI validation (processes < 1 and threads < 1). The test name claims to run ALL validations but the new CC-0040 validation paths are not exercised. This matches the external review pattern 'Ensure test names accurately describe their coverage scope'.",
+      "location": "operators/keystone/api/v1alpha1/keystone_webhook_test.go:1078-1132",
+      "fix": "Add to the test setup: `k.Spec.UWSGI = &UWSGISpec{Processes: 0, Threads: 0, HTTPKeepAlive: true}` and add assertions: `g.Expect(errMsg).To(ContainSubstring(\"uwsgi\"))` to verify both processes and threads errors are accumulated.",
+      "evidence": "Lines 1082-1116 set up broken replicas, fernet, cache, database, plugins, policyOverrides, autoscaling, networkPolicy, resources — but no UWSGI. Lines 1121-1131 assert substrings for all those fields but not 'uwsgi'.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "DA3",
+      "severity": "MAJOR",
+      "description": "Documentation references non-existent test TestIntegration_UWSGICustomValuesAccepted. The actual test is TestIntegration_UWSGIExplicitValuesPreserved. The docs list 7 UWSGI integration tests but only 6 exist — UWSGIExplicitValuesPreserved and UWSGICustomValuesAccepted appear to cover the same scenario but the latter doesn't exist.",
+      "location": "docs/reference/keystone-crd.md:560",
+      "fix": "Either (1) rename TestIntegration_UWSGIExplicitValuesPreserved to TestIntegration_UWSGICustomValuesAccepted, or (2) remove the UWSGICustomValuesAccepted row from the docs table and update the UWSGIExplicitValuesPreserved description to match. Option 2 is simpler since the existing test covers this scenario.",
+      "evidence": "grep -r 'UWSGICustomValuesAccepted' finds it in docs/reference/keystone-crd.md:560 and the progress JSON, but NOT in operators/keystone/api/v1alpha1/integration_test.go. The integration test file contains TestIntegration_UWSGIExplicitValuesPreserved at line 462 which creates a CR with processes=8, threads=4 — matching the documented description of UWSGICustomValuesAccepted.",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [],
+  "next_steps": [
+    "Run `make generate && make manifests` in operators/keystone/ to regenerate deepcopy methods and CRD YAML",
+    "Add uWSGI validation to TestValidateCreate_RunsAllValidations",
+    "Fix docs/reference/keystone-crd.md to remove or rename the non-existent TestIntegration_UWSGICustomValuesAccepted reference",
+    "Re-request review after fixes"
+  ],
+  "detected_patterns": []
+}

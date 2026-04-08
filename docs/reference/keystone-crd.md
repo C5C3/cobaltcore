@@ -1,7 +1,7 @@
 ---
 title: Keystone CRD API Reference
 quadrant: operator
-feature: CC-0011, CC-0012, CC-0016, CC-0038, CC-0042
+feature: CC-0011, CC-0012, CC-0016, CC-0038, CC-0040, CC-0042
 ---
 
 # Keystone CRD API Reference
@@ -73,6 +73,10 @@ spec:
     limits:
       memory: 512Mi
       cpu: 500m
+  uwsgi:
+    processes: 4
+    threads: 4
+    httpKeepAlive: true
   bootstrap:
     adminUser: admin
     adminPasswordSecretRef:
@@ -117,6 +121,7 @@ status:
 | `policyOverrides` | [`*PolicySpec`](#policyspec) | No | `nil` | Custom oslo.policy rules. |
 | `autoscaling` | [`*AutoscalingSpec`](#autoscalingspec) | No | `nil` | Horizontal pod autoscaling configuration. When set, an HPA is created targeting the `{name}-api` Deployment. When removed, the HPA is deleted (CC-0038). |
 | `resources` | [`*corev1.ResourceRequirements`](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#resources) | No | See below | CPU and memory requests and limits for the Keystone API container. When unset, the defaulting webhook injects sensible defaults to ensure Burstable QoS class and enable HPA utilization calculations (CC-0042). |
+| `uwsgi` | [`*UWSGISpec`](#uwsgispec) | No | `nil` | uWSGI application server parameters. When set, the operator uses these values for the Deployment container command. When `nil`, hardcoded defaults (processes=2, threads=2, httpKeepAlive=true) are used in the reconciler, preserving backward compatibility for existing CRs (CC-0040). |
 | `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for additional configuration. |
 
 ### CEL Validation Rules
@@ -131,6 +136,14 @@ webhooks are invoked:
 | `spec.autoscaling` | `has(self.targetCPUUtilization) \|\| has(self.targetMemoryUtilization)` | "at least one of targetCPUUtilization or targetMemoryUtilization must be set" |
 | `spec.replicas` | Minimum: 1 | — |
 | `spec.fernet.maxActiveKeys` | Minimum: 3 | — |
+| `spec.uwsgi.processes` | Minimum: 1 | — |
+| `spec.uwsgi.threads` | Minimum: 1 | — |
+
+> **Known limitation (CC-0040):** `spec.uwsgi.processes` and `spec.uwsgi.threads`
+> have no upper-bound validation. A user could set an extremely high value (e.g.,
+> `processes: 10000`), causing the Deployment to request more workers than the node
+> can sustain. A `+kubebuilder:validation:Maximum` marker should be added once the
+> team agrees on a safe ceiling. Track this as a follow-up product decision.
 
 ---
 
@@ -188,6 +201,86 @@ spec:
     maxReplicas: 10
     targetCPUUtilization: 80
     targetMemoryUtilization: 70
+```
+
+---
+
+## UWSGISpec
+
+Configures the uWSGI application server parameters for the Keystone API container
+(CC-0040). This is a pointer field (`*UWSGISpec`) on `KeystoneSpec` — when `nil`,
+the reconciler uses hardcoded defaults (processes=2, threads=2, httpKeepAlive=true)
+and the webhook does **not** inject a default `UWSGISpec`. This preserves backward
+compatibility: existing CRs without `spec.uwsgi` continue to produce an identical
+Deployment command. When set (even as `uwsgi: {}`), the webhook defaults zero-valued
+sub-fields and the reconciler reads from the spec.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `processes` | `int32` | No | `2` | Number of uWSGI worker processes. Minimum: 1. Maps to `--processes` in the container command. |
+| `threads` | `int32` | No | `2` | Number of threads per uWSGI worker process. Minimum: 1. Maps to `--threads` in the container command. |
+| `httpKeepAlive` | `bool` | No | `true` | Enables the `--http-keepalive` flag on the uWSGI process. When `false`, the flag is omitted. See [HTTPKeepAlive defaulting](#httpkeepalive-defaulting-caveat) for the zero-value caveat. |
+
+### Deployment Command Mapping
+
+The reconciler's `uwsgiCommand()` helper constructs the container command from
+`spec.uwsgi` (or defaults when `nil`). Fixed flags are always present regardless
+of configuration:
+
+| Command Flag | Source |
+| --- | --- |
+| `uwsgi` | Binary name (always first) |
+| `--http :5000` | Fixed — Keystone API listen port |
+| `--http-keepalive` | Included when `httpKeepAlive` is `true` (or default); omitted when `false` |
+| `--wsgi-file /var/lib/openstack/bin/keystone-wsgi-public` | Fixed — Keystone WSGI entry point |
+| `--master` | Fixed — enables uWSGI master process |
+| `--lazy-apps` | Fixed — loads apps in each worker after fork |
+| `--need-app` | Fixed — exits if no WSGI app is found |
+| `--processes <N>` | `spec.uwsgi.processes` (default: 2) |
+| `--threads <N>` | `spec.uwsgi.threads` (default: 2) |
+| `--pyargv=--config-dir=/etc/keystone/keystone.conf.d/` | Fixed — passes config directory to Keystone |
+
+### HTTPKeepAlive Defaulting Caveat
+
+Go's `bool` zero value is `false`, making it impossible for the webhook to
+distinguish "not set" from "explicitly set to `false`". Therefore, the defaulting
+webhook **does not** touch `httpKeepAlive` at all — it only defaults `processes`
+and `threads`. The CRD schema default (`+kubebuilder:default=true`) handles
+`httpKeepAlive` in the normal admission path (API server applies the schema
+default before the webhook runs). This means:
+
+- `uwsgi: {}` → processes=2 (webhook), threads=2 (webhook),
+  httpKeepAlive=true (CRD schema default via normal admission)
+- `uwsgi: {processes: 4}` → processes=4, threads=2 (webhook),
+  httpKeepAlive=true (CRD schema default)
+- `uwsgi: {httpKeepAlive: false}` → httpKeepAlive stays `false` (explicit value
+  is preserved by the API server)
+
+**Bypass paths** (e.g., `kubectl patch`, upgrades, or when admission webhooks are
+temporarily unavailable) may not apply the CRD schema default. In those cases,
+`httpKeepAlive` remains at its Go zero value (`false`). The `uwsgiCommand`
+function in the controller applies a defense-in-depth clamp but does not
+override `httpKeepAlive`, so the `--http-keepalive` flag will be omitted from
+the uWSGI invocation in bypass scenarios.
+
+### Example
+
+```yaml
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone
+  namespace: openstack
+spec:
+  replicas: 3
+  image:
+    repository: c5c3/keystone
+    tag: "2025.1"
+  # ... other required fields ...
+  uwsgi:
+    processes: 4
+    threads: 4
+    httpKeepAlive: false
 ```
 
 ---
@@ -336,6 +429,9 @@ Sets spec fields to their documented defaults when they carry zero values. Expli
 | `spec.cache.backend` | `== ""` | `"dogpile.cache.pymemcache"` |
 | `spec.bootstrap.adminUser` | `== ""` | `"admin"` |
 | `spec.bootstrap.region` | `== ""` | `"RegionOne"` |
+| `spec.uwsgi.processes` | `== 0` (when `spec.uwsgi` is non-nil) | `2` — webhook only; when `spec.uwsgi` is `nil`, the reconciler applies this default internally (CC-0040). |
+| `spec.uwsgi.threads` | `== 0` (when `spec.uwsgi` is non-nil) | `2` — same nil-pointer caveat as processes (CC-0040). |
+| `spec.uwsgi.httpKeepAlive` | Field absent from JSON payload | `true` — defaulted by the CRD schema (`+kubebuilder:default=true`), **not** by the webhook. The webhook cannot distinguish "not set" from "explicitly false" for a bool field. See [HTTPKeepAlive defaulting](#httpkeepalive-defaulting-caveat) (CC-0040). |
 | `spec.resources` | `== nil` or empty (`requests` and `limits` both unset) | `{requests: {memory: 256Mi, cpu: 100m}, limits: {memory: 512Mi, cpu: 500m}}` — ensures Burstable QoS class and enables HPA utilization calculations (CC-0042). |
 
 **Design note:** `spec.fernet.rotationSchedule` is NOT defaulted by the webhook — it
@@ -374,6 +470,8 @@ single `apierrors.NewInvalid` error. It does **not** short-circuit on the first 
 | Autoscaling minReplicas minimum | `spec.autoscaling.minReplicas` | `field.Invalid` | `minReplicas < 1` when set. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker (CC-0038). |
 | Autoscaling min exceeds max | `spec.autoscaling.minReplicas` | `field.Invalid` | `minReplicas > maxReplicas` when set (CC-0038). |
 | Autoscaling no metric targets | `spec.autoscaling` | `field.Required` | Neither `targetCPUUtilization` nor `targetMemoryUtilization` is set. Defense-in-depth alongside the CEL XValidation rule (CC-0038). |
+| uWSGI processes minimum | `spec.uwsgi.processes` | `field.Invalid` | `processes < 1` when `spec.uwsgi` is non-nil. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker (CC-0040). |
+| uWSGI threads minimum | `spec.uwsgi.threads` | `field.Invalid` | `threads < 1` when `spec.uwsgi` is non-nil. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker (CC-0040). |
 | Resource request exceeds limit | `spec.resources.requests.<resource>` | `field.Invalid` | A resource request exceeds its corresponding limit (e.g., CPU request 1000m > limit 500m). Checked per resource type when both requests and limits are set (CC-0042). |
 
 **Error format:** All validation errors are returned as a structured
@@ -471,12 +569,18 @@ exercise the CRD schema constraints.
 | `TestIntegration_WebhookDefaultsPreservesExplicit` | Explicit values preserved | Creates a CR with `replicas=5` and `region="EU-West"`; verifies these values are not overwritten by the defaulting webhook. |
 | `TestIntegration_ResourcesDefaultedWhenNil` | Resources defaulted | Creates a CR with `spec.resources` unset (`nil`); verifies the defaulting webhook injects `{requests: {memory: 256Mi, cpu: 100m}, limits: {memory: 512Mi, cpu: 500m}}` (CC-0042). |
 | `TestIntegration_ResourcesPreservedWhenExplicit` | Explicit resources preserved | Creates a CR with explicit `spec.resources` (1Gi/2Gi memory, 200m/1 CPU); verifies the defaulting webhook does not overwrite them (CC-0042). |
+| `TestIntegration_UWSGIDefaultsAppliedWhenEmpty` | uWSGI defaults applied | Creates a CR with `spec.uwsgi: {}` (all zero values); verifies processes=2, threads=2, httpKeepAlive=true after admission (CC-0040). |
+| `TestIntegration_UWSGIExplicitValuesPreserved` | Explicit uWSGI preserved | Creates a CR with `spec.uwsgi.processes=4, threads=4`; verifies these values are not overwritten by the defaulting webhook (CC-0040). |
+| `TestIntegration_UWSGIPartialDefaulting` | Partial uWSGI defaults | Creates a CR with only `spec.uwsgi.processes=4`; verifies threads=2 is defaulted while processes=4 is preserved (CC-0040). |
+| `TestIntegration_UWSGINilPreserved` | uWSGI nil preserved | Creates a CR without `spec.uwsgi`; verifies the field remains `nil` after admission — webhook does not inject a default struct (CC-0040). |
 
 #### Webhook Validation Rejection
 
 | Test | Requirement | Trigger | Expected Error |
 | --- | --- | --- | --- |
 | `TestIntegration_ResourcesRequestExceedsLimitRejected` | Request must not exceed limit | `spec.resources` with CPU request 1000m > limit 500m | Invalid/Forbidden containing "resources" (CC-0042). |
+| `TestIntegration_UWSGIProcessesBelowMinimumRejected` | Processes minimum | `spec.uwsgi.processes` below minimum (bypassing defaulting) | Invalid/Forbidden containing "uwsgi" (CC-0040). |
+| `TestIntegration_UWSGIThreadsBelowMinimumRejected` | Threads minimum | `spec.uwsgi.threads` below minimum (bypassing defaulting) | Invalid/Forbidden containing "uwsgi" (CC-0040). |
 
 ### Chainsaw E2E Tests
 
@@ -487,6 +591,8 @@ suites (basic-deployment, missing-secret, fernet-rotation, scale, deletion-clean
 policy-overrides, middleware-config, brownfield-database, image-upgrade), see
 [Keystone E2E Test Suites](./keystone-e2e-tests.md) (CC-0016).
 
+#### invalid-cr Suite
+
 | Step | Manifest | Requirement | Expected Error |
 | --- | --- | --- | --- |
 | `invalid-cron-expression-rejected` | `00-invalid-cron.yaml` | Invalid cron | Error containing "rotationSchedule" and "invalid cron expression" |
@@ -494,6 +600,19 @@ policy-overrides, middleware-config, brownfield-database, image-upgrade), see
 
 Each step uses `apply` with `expect` to assert that the `$error` variable is non-null
 and contains the expected field-level error message.
+
+#### uwsgi Suite (CC-0040)
+
+The `uwsgi` suite (`tests/e2e/keystone/uwsgi/`) validates that `spec.uwsgi` values
+propagate to the Deployment container command in a real cluster with the operator
+deployed and reconciling.
+
+| Step | Description | Assertion |
+| --- | --- | --- |
+| Step 1 | Apply Keystone CR without explicit `spec.uwsgi` | CR created |
+| Step 2 (`step-2-assert-default-uwsgi-args`) | Assert Deployment command contains default uWSGI args | Container command includes `--processes 2 --threads 2 --http-keepalive` |
+| Step 3 | Patch CR with `spec.uwsgi: {processes: 3, threads: 3, httpKeepAlive: false}` | Patch applied |
+| Step 4 (`step-4-assert-custom-uwsgi-args`) | Assert Deployment command updated with custom values | Container command includes `--processes 3 --threads 3`; `--http-keepalive` is absent |
 
 ---
 
@@ -518,6 +637,7 @@ Both targets are parameterized by operator directory in the Makefile. Generated
 - `KeystoneSpec`
 - `KeystoneStatus`
 - `AutoscalingSpec`
+- `UWSGISpec`
 - `FernetSpec`
 - `FederationSpec`
 - `BootstrapSpec`
@@ -555,6 +675,10 @@ tests/e2e/keystone/
 ├── middleware-config/                Middleware pipeline E2E (CC-0016)
 ├── brownfield-database/              External database mode E2E (CC-0016)
 ├── image-upgrade/                    Rolling image upgrade E2E (CC-0016)
+├── uwsgi/                            uWSGI field propagation E2E (CC-0040)
+│   ├── chainsaw-test.yaml            Chainsaw E2E test definition
+│   ├── 00-keystone-cr.yaml           Keystone CR without explicit uWSGI
+│   └── 01-patch-custom-uwsgi.yaml    Patch with custom uWSGI values
 └── invalid-cr/
     ├── chainsaw-test.yaml            Chainsaw E2E test definition (CC-0012)
     ├── 00-invalid-cron.yaml          Invalid cron expression CR manifest

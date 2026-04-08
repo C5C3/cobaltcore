@@ -140,6 +140,116 @@ func TestDefault_CacheBackendAppliedWhenEmpty(t *testing.T) {
 	g.Expect(k.Spec.Cache.Backend).To(Equal("dogpile.cache.pymemcache"))
 }
 
+// --- UWSGI defaulting tests (CC-0040, REQ-002) ---
+
+func TestDefault_UWSGINilRemainsNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := &Keystone{}
+
+	g.Expect(w.Default(context.Background(), k)).To(Succeed())
+	g.Expect(k.Spec.UWSGI).To(BeNil())
+}
+
+func TestDefault_UWSGIZeroValuedDefaultsProcessesAndThreads(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := &Keystone{
+		Spec: KeystoneSpec{
+			UWSGI: &UWSGISpec{},
+		},
+	}
+
+	g.Expect(w.Default(context.Background(), k)).To(Succeed())
+	g.Expect(k.Spec.UWSGI.Processes).To(Equal(int32(2)))
+	g.Expect(k.Spec.UWSGI.Threads).To(Equal(int32(2)))
+	// HTTPKeepAlive is NOT defaulted in the webhook — the CRD schema
+	// default (+kubebuilder:default=true) handles it in the normal admission
+	// path. The webhook cannot distinguish "not set" from "explicitly false"
+	// for a bool, so it does not attempt to default it (CC-0040, REQ-002).
+	g.Expect(k.Spec.UWSGI.HTTPKeepAlive).To(BeFalse())
+}
+
+func TestDefault_UWSGIDefaultsProcessesAndThreadsOnly(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	// When HTTPKeepAlive is already true but processes/threads are zero,
+	// the struct is NOT fully zero-valued — still default processes and threads.
+	k := &Keystone{
+		Spec: KeystoneSpec{
+			UWSGI: &UWSGISpec{
+				HTTPKeepAlive: true,
+			},
+		},
+	}
+
+	g.Expect(w.Default(context.Background(), k)).To(Succeed())
+	g.Expect(k.Spec.UWSGI.Processes).To(Equal(int32(2)))
+	g.Expect(k.Spec.UWSGI.Threads).To(Equal(int32(2)))
+	g.Expect(k.Spec.UWSGI.HTTPKeepAlive).To(BeTrue())
+}
+
+func TestDefault_UWSGIDoesNotOverwriteHTTPKeepAlive(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	// httpKeepAlive=false must never be overwritten by the webhook — the user
+	// may have explicitly set it. The CRD schema default (+kubebuilder:default=true)
+	// handles the normal admission case; the webhook never touches HTTPKeepAlive
+	// because bool's zero value is indistinguishable from explicit false (CC-0040).
+	k := &Keystone{
+		Spec: KeystoneSpec{
+			UWSGI: &UWSGISpec{
+				Processes:     4,
+				HTTPKeepAlive: false,
+			},
+		},
+	}
+
+	g.Expect(w.Default(context.Background(), k)).To(Succeed())
+	g.Expect(k.Spec.UWSGI.Processes).To(Equal(int32(4)))
+	g.Expect(k.Spec.UWSGI.Threads).To(Equal(int32(2)))
+	g.Expect(k.Spec.UWSGI.HTTPKeepAlive).To(BeFalse())
+}
+
+func TestDefault_UWSGIZeroProcessesAndThreadsDoNotOverrideExplicitFalse(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	// Edge case: httpKeepAlive=false with zero processes/threads. This simulates
+	// a CR that bypasses CRD schema defaults (e.g. kubectl patch, upgrades).
+	// The webhook must NOT flip httpKeepAlive to true (CC-0040, REQ-002).
+	k := &Keystone{
+		Spec: KeystoneSpec{
+			UWSGI: &UWSGISpec{
+				HTTPKeepAlive: false,
+			},
+		},
+	}
+
+	g.Expect(w.Default(context.Background(), k)).To(Succeed())
+	g.Expect(k.Spec.UWSGI.Processes).To(Equal(int32(2)))
+	g.Expect(k.Spec.UWSGI.Threads).To(Equal(int32(2)))
+	g.Expect(k.Spec.UWSGI.HTTPKeepAlive).To(BeFalse())
+}
+
+func TestDefault_UWSGIPreservesExplicitValues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := &Keystone{
+		Spec: KeystoneSpec{
+			UWSGI: &UWSGISpec{
+				Processes:     8,
+				Threads:       4,
+				HTTPKeepAlive: true,
+			},
+		},
+	}
+
+	g.Expect(w.Default(context.Background(), k)).To(Succeed())
+	g.Expect(k.Spec.UWSGI.Processes).To(Equal(int32(8)))
+	g.Expect(k.Spec.UWSGI.Threads).To(Equal(int32(4)))
+	g.Expect(k.Spec.UWSGI.HTTPKeepAlive).To(BeTrue())
+}
+
 // --- Replicas validation tests (CC-0011, REQ-007) ---
 
 func TestValidate_ReplicasZeroRejected(t *testing.T) {
@@ -611,6 +721,116 @@ func TestValidate_NonEmptyPolicyRuleNamesAccepted(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
+// --- UWSGI validation tests (CC-0040, REQ-003) ---
+
+func TestValidate_UWSGIValidAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes:     4,
+		Threads:       2,
+		HTTPKeepAlive: true,
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_UWSGINilSkipsValidation(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	// uwsgi is nil by default in validKeystone()
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_UWSGIProcessesBelowMinimumRejected(t *testing.T) {
+	w := &KeystoneWebhook{}
+	cases := []struct {
+		name string
+		val  int32
+	}{
+		{"zero", 0},
+		{"negative", -1},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			k := validKeystone()
+			k.Spec.UWSGI = &UWSGISpec{
+				Processes:     tc.val,
+				Threads:       2,
+				HTTPKeepAlive: true,
+			}
+			_, err := w.ValidateCreate(context.Background(), k)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("uwsgi"))
+			g.Expect(err.Error()).To(ContainSubstring("processes"))
+		})
+	}
+}
+
+func TestValidate_UWSGIThreadsBelowMinimumRejected(t *testing.T) {
+	w := &KeystoneWebhook{}
+	cases := []struct {
+		name string
+		val  int32
+	}{
+		{"zero", 0},
+		{"negative", -1},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			k := validKeystone()
+			k.Spec.UWSGI = &UWSGISpec{
+				Processes:     2,
+				Threads:       tc.val,
+				HTTPKeepAlive: true,
+			}
+			_, err := w.ValidateCreate(context.Background(), k)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("uwsgi"))
+			g.Expect(err.Error()).To(ContainSubstring("threads"))
+		})
+	}
+}
+
+func TestValidate_UWSGIBothInvalidReportsBothErrors(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes:     0,
+		Threads:       0,
+		HTTPKeepAlive: true,
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("processes"))
+	g.Expect(err.Error()).To(ContainSubstring("threads"))
+}
+
+func TestValidate_UWSGIBoundaryValueOneAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes:     1,
+		Threads:       1,
+		HTTPKeepAlive: false,
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
 // --- Autoscaling validation tests (CC-0038, REQ-001) ---
 
 func TestValidate_Autoscaling_Valid_CPUOnly(t *testing.T) {
@@ -918,6 +1138,11 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 			corev1.ResourceCPU: resource.MustParse("500m"),
 		},
 	}
+	// REQ-001 (CC-0040): Break uWSGI — processes and threads below minimum.
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes: 0,
+		Threads:   0,
+	}
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
@@ -933,6 +1158,7 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g.Expect(errMsg).To(ContainSubstring("targetCPUUtilization"))
 	g.Expect(errMsg).To(ContainSubstring("networkPolicy"))
 	g.Expect(errMsg).To(ContainSubstring("resources"))
+	g.Expect(errMsg).To(ContainSubstring("uwsgi"))
 }
 
 func TestValidateUpdate_RunsSameValidation(t *testing.T) {

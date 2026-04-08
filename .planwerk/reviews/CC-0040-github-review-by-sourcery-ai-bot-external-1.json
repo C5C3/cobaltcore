@@ -1,0 +1,45 @@
+{
+  "feature_id": "CC-0040",
+  "title": "GitHub Review by sourcery-ai[bot]",
+  "summary": "The reviewer raises two high-level concerns: (1) add a defensive floor clamp in `uwsgiCommand` so `processes < 1` or `threads < 1` are treated as `1`, guarding against invalid uWSGI invocations if validation is bypassed; (2) make `uwsgiCommand` unit tests less brittle by asserting on required flag/value pairs instead of the exact ordered command array. They also flag a potential bug where the webhook defaulting logic could override an explicit `httpKeepAlive: false` when `processes`/`threads` are zero (e.g., via `kubectl patch` bypassing CRD defaults), and note a minor \"uWSGI\" capitalization inconsistency in the docs.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "sourcery-ai[bot]",
+  "date": "2026-04-07T16:38:28Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "Hey - I've found 2 issues, and left some high level feedback:\n\n- Consider adding a defensive minimum clamp in `uwsgiCommand` (e.g., treating `processes < 1` / `threads < 1` as `1`) so that even if a CR slips past webhooks/CRD validation (e.g., during upgrades or misconfiguration), the generated command still produces a valid uWSGI invocation.\n- The `uwsgiCommand` unit tests assert the full ordered command array, which makes them brittle to unrelated flag ordering changes; you could make them more resilient by asserting on required flag/value pairs and presence/absence of `--http-keepalive` rather than the complete sequence.\n\n<details>\n<summary>Prompt for AI Agents</summary>\n\n~~~markdown\nPlease address the comments from this code review:\n\n## Overall Comments\n- Consider adding a defensive minimum clamp in `uwsgiCommand` (e.g., treating `processes < 1` / `threads < 1` as `1`) so that even if a CR slips past webhooks/CRD validation (e.g., during upgrades or misconfiguration), the generated command still produces a valid uWSGI invocation.\n- The `uwsgiCommand` unit tests assert the full ordered command array, which makes them brittle to unrelated flag ordering changes; you could make them more resilient by asserting on required flag/value pairs and presence/absence of `--http-keepalive` rather than the complete sequence.\n\n## Individual Comments\n\n### Comment 1\n<location path=\"operators/keystone/api/v1alpha1/keystone_webhook.go\" line_range=\"84-91\" />\n<code_context>\n+\t// because bool's zero value (false) is indistinguishable from an explicit false.\n+\t// When other fields are set, the CRD schema default (+kubebuilder:default=true)\n+\t// handles HTTPKeepAlive in the normal admission path.\n+\tif obj.Spec.UWSGI != nil {\n+\t\tif obj.Spec.UWSGI.Processes == 0 && obj.Spec.UWSGI.Threads == 0 && !obj.Spec.UWSGI.HTTPKeepAlive {\n+\t\t\tobj.Spec.UWSGI.HTTPKeepAlive = true\n+\t\t}\n+\t\tif obj.Spec.UWSGI.Processes == 0 {\n+\t\t\tobj.Spec.UWSGI.Processes = 2\n+\t\t}\n+\t\tif obj.Spec.UWSGI.Threads == 0 {\n+\t\t\tobj.Spec.UWSGI.Threads = 2\n+\t\t}\n</code_context>\n<issue_to_address>\n**question:** Clarify handling of partial uWSGI specs where only HTTPKeepAlive is explicitly set and others are left to defaults.\n\nGiven how `HTTPKeepAlive` is defaulted, this logic might incorrectly flip an explicitly set `httpKeepAlive: false` to `true` when `processes`/`threads` are left at zero in scenarios where CRD defaults aren’t applied (e.g. some `kubectl patch` paths or weaker schema enforcement). Please confirm the ordering of CRD defaulting vs. this webhook and whether a partially specified `uwsgi` can reach this code with zero-valued `processes`/`threads`. If so, you may need to special-case “only HTTPKeepAlive set” or adjust the defaulting strategy to avoid overriding explicit user intent.\n</issue_to_address>\n\n### Comment 2\n<location path=\"docs/reference/keystone-crd.md\" line_range=\"664\" />\n<code_context>\n ├── image-upgrade/                    Rolling image upgrade E2E (CC-0016)\n+├── uwsgi/                            uWSGI field propagation E2E (CC-0040)\n+│   ├── chainsaw-test.yaml            Chainsaw E2E test definition\n+│   ├── 00-keystone-cr.yaml           Keystone CR without explicit uwsgi\n+│   └── 01-patch-custom-uwsgi.yaml    Patch with custom uwsgi values\n └── invalid-cr/\n</code_context>\n<issue_to_address>\n**nitpick (typo):** Align the capitalization of “uWSGI” in this description with the rest of the document.\n\nOther references use the capitalized form “uWSGI”. Please update this entry to “without explicit uWSGI” to match the existing convention.\n\n```suggestion\n│   ├── 00-keystone-cr.yaml           Keystone CR without explicit uWSGI\n```\n</issue_to_address>\n~~~\n\n</details>\n\n***\n\n<details>\n<summary>Sourcery is free for open source - if you like our reviews please consider sharing them ✨</summary>\n\n- [X](https://twitter.com/intent/tweet?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [Mastodon](https://mastodon.social/share?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [LinkedIn](https://www.linkedin.com/sharing/share-offsite/?url=https://sourcery.ai)\n- [Facebook](https://www.facebook.com/sharer/sharer.php?u=https://sourcery.ai)\n\n</details>\n\n<sub>\nHelp me be more useful! Please click 👍 or 👎 on each comment and I'll use the feedback to improve your reviews.\n</sub>",
+  "code_comments": [
+    {
+      "body": "**question:** Clarify handling of partial uWSGI specs where only HTTPKeepAlive is explicitly set and others are left to defaults.\n\nGiven how `HTTPKeepAlive` is defaulted, this logic might incorrectly flip an explicitly set `httpKeepAlive: false` to `true` when `processes`/`threads` are left at zero in scenarios where CRD defaults aren’t applied (e.g. some `kubectl patch` paths or weaker schema enforcement). Please confirm the ordering of CRD defaulting vs. this webhook and whether a partially specified `uwsgi` can reach this code with zero-valued `processes`/`threads`. If so, you may need to special-case “only HTTPKeepAlive set” or adjust the defaulting strategy to avoid overriding explicit user intent.",
+      "path": "operators/keystone/api/v1alpha1/keystone_webhook.go",
+      "line": 91,
+      "author": "sourcery-ai[bot]",
+      "created_at": "2026-04-07T16:38:28Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "**nitpick (typo):** Align the capitalization of “uWSGI” in this description with the rest of the document.\n\nOther references use the capitalized form “uWSGI”. Please update this entry to “without explicit uWSGI” to match the existing convention.\n\n```suggestion\n│   ├── 00-keystone-cr.yaml           Keystone CR without explicit uWSGI\n```",
+      "path": "docs/reference/keystone-crd.md",
+      "line": 664,
+      "author": "sourcery-ai[bot]",
+      "created_at": "2026-04-07T16:38:28Z",
+      "id": null,
+      "resolution": ""
+    }
+  ],
+  "github_review_id": 4069781264
+}

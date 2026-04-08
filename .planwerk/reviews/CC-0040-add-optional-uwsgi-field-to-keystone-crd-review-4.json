@@ -1,0 +1,55 @@
+{
+  "feature_id": "CC-0040",
+  "title": "Add optional uWSGI field to Keystone CRD",
+  "date": "2026-04-08",
+  "summary": "Changes correctly address gndrmnn's review #3 feedback: removed 'backward compatibility' comment from keystone_types.go, removed defensive clamping logic from uwsgiCommand(), removed corresponding unit tests, and deleted the review pattern file. All remaining tests pass and go vet is clean. One issue: CRD YAML description not regenerated after types.go comment change.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "All unit tests pass (go test ./... clean)", "checked": true},
+    {"item": "Removed tests correspond exactly to removed clamping behavior", "checked": true},
+    {"item": "Remaining uwsgi tests cover nil defaults, custom values, keepalive on/off, fixed flags", "checked": true},
+    {"item": "No regression in existing test suite", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Changes are minimal and focused on reviewer feedback", "checked": true},
+    {"item": "No dead code left behind", "checked": true},
+    {"item": "Follows existing code patterns", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No security-relevant changes in this diff", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "uwsgiCommand still provides nil-safe defaults for existing CRs", "checked": true},
+    {"item": "Validation still enforced at CRD schema and webhook layers", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "Removed unnecessary clamping per reviewer request", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Invalid uwsgi values rejected at CRD schema and webhook validation layers", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Webhook defense-in-depth validation for processes < 1 and threads < 1 still present", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "DA3",
+      "severity": "MAJOR",
+      "description": "CRD YAML description for spec.uwsgi still contains 'preserving backward compatibility' which was removed from keystone_types.go in this diff. The generated CRD manifest is stale — `make manifests` must be re-run to sync the CRD description with the updated Go comment.",
+      "location": "operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml:677",
+      "fix": "Run `make manifests` in the operators/keystone directory to regenerate the CRD YAML from the updated types.go comments.",
+      "evidence": "CRD YAML line 677: 'httpKeepAlive=true) are used, preserving backward compatibility.' but keystone_types.go:109 now reads: '// httpKeepAlive=true) are used.'",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "keystone_webhook.go:85 contains 'uwsgiCommand applies a defense-in-depth clamp' which references the clamping logic removed in this diff — consider updating this comment to remove the stale reference"
+  ],
+  "next_steps": [
+    "Run `make manifests` to regenerate CRD YAML with updated description"
+  ],
+  "detected_patterns": []
+}

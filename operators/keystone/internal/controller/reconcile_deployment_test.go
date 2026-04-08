@@ -861,3 +861,114 @@ func TestReconcileDeployment_PDBEnsureError(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("ensuring PodDisruptionBudget"))
 	g.Expect(err.Error()).To(ContainSubstring("simulated PDB creation error"))
 }
+
+// Feature: CC-0040
+
+// TestUWSGICommand_NilUWSGI verifies that uwsgiCommand(nil) returns the command
+// with hardcoded defaults: --processes 2 --threads 2 --http-keepalive (CC-0040, REQ-004).
+func TestUWSGICommand_NilUWSGI(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cmd := uwsgiCommand(nil)
+
+	g.Expect(cmd).To(ContainElement("--processes"))
+	g.Expect(cmd).To(ContainElement("2"))
+	g.Expect(cmd).To(ContainElement("--threads"))
+	g.Expect(cmd).To(ContainElement("--http-keepalive"))
+
+	// Verify processes=2, threads=2 by checking positional pairs.
+	processesIdx := indexOf(cmd, "--processes")
+	g.Expect(processesIdx).NotTo(Equal(-1))
+	g.Expect(cmd[processesIdx+1]).To(Equal("2"))
+
+	threadsIdx := indexOf(cmd, "--threads")
+	g.Expect(threadsIdx).NotTo(Equal(-1))
+	g.Expect(cmd[threadsIdx+1]).To(Equal("2"))
+}
+
+// TestUWSGICommand_CustomValues verifies that uwsgiCommand with processes=4,
+// threads=8 returns --processes 4 --threads 8 in the command (CC-0040, REQ-004).
+func TestUWSGICommand_CustomValues(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cmd := uwsgiCommand(&keystonev1alpha1.UWSGISpec{
+		Processes:     4,
+		Threads:       8,
+		HTTPKeepAlive: true,
+	})
+
+	processesIdx := indexOf(cmd, "--processes")
+	g.Expect(processesIdx).NotTo(Equal(-1))
+	g.Expect(cmd[processesIdx+1]).To(Equal("4"))
+
+	threadsIdx := indexOf(cmd, "--threads")
+	g.Expect(threadsIdx).NotTo(Equal(-1))
+	g.Expect(cmd[threadsIdx+1]).To(Equal("8"))
+
+	g.Expect(cmd).To(ContainElement("--http-keepalive"))
+}
+
+// TestUWSGICommand_KeepAliveDisabled verifies that uwsgiCommand with
+// httpKeepAlive=false omits --http-keepalive from the command (CC-0040, REQ-004).
+func TestUWSGICommand_KeepAliveDisabled(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cmd := uwsgiCommand(&keystonev1alpha1.UWSGISpec{
+		Processes:     2,
+		Threads:       2,
+		HTTPKeepAlive: false,
+	})
+
+	g.Expect(cmd).NotTo(ContainElement("--http-keepalive"))
+}
+
+// TestUWSGICommand_KeepAliveEnabled verifies that uwsgiCommand with
+// httpKeepAlive=true includes --http-keepalive in the command (CC-0040, REQ-004).
+func TestUWSGICommand_KeepAliveEnabled(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cmd := uwsgiCommand(&keystonev1alpha1.UWSGISpec{
+		Processes:     2,
+		Threads:       2,
+		HTTPKeepAlive: true,
+	})
+
+	g.Expect(cmd).To(ContainElement("--http-keepalive"))
+}
+
+// TestUWSGICommand_FixedFlagsAlwaysPresent verifies that regardless of uwsgi
+// config, the command always includes --http :5000, --wsgi-file, --master,
+// --lazy-apps, --need-app, and --pyargv (CC-0040, REQ-004).
+func TestUWSGICommand_FixedFlagsAlwaysPresent(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	configs := []*keystonev1alpha1.UWSGISpec{
+		nil,
+		{Processes: 4, Threads: 8, HTTPKeepAlive: true},
+		{Processes: 1, Threads: 1, HTTPKeepAlive: false},
+	}
+
+	for _, cfg := range configs {
+		cmd := uwsgiCommand(cfg)
+
+		g.Expect(cmd[0]).To(Equal("uwsgi"), "first element must be 'uwsgi'")
+		g.Expect(cmd).To(ContainElement("--http"))
+		g.Expect(cmd).To(ContainElement(":5000"))
+		g.Expect(cmd).To(ContainElement("--wsgi-file"))
+		g.Expect(cmd).To(ContainElement("/var/lib/openstack/bin/keystone-wsgi-public"))
+		g.Expect(cmd).To(ContainElement("--master"))
+		g.Expect(cmd).To(ContainElement("--lazy-apps"))
+		g.Expect(cmd).To(ContainElement("--need-app"))
+		g.Expect(cmd).To(ContainElement("--pyargv=--config-dir=/etc/keystone/keystone.conf.d/"))
+	}
+}
+
+// indexOf returns the index of the first occurrence of s in slice, or -1.
+func indexOf(slice []string, s string) int {
+	for i, v := range slice {
+		if v == s {
+			return i
+		}
+	}
+	return -1
+}

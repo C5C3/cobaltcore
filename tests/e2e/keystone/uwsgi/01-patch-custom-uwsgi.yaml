@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch to set custom spec.uwsgi values (CC-0040).
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-uwsgi
+  namespace: openstack
+spec:
+  uwsgi:
+    processes: 3
+    threads: 3
+    httpKeepAlive: false

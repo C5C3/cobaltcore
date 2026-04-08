@@ -1,0 +1,45 @@
+{
+  "feature_id": "CC-0040",
+  "title": "GitHub Review by gndrmnn",
+  "summary": "The reviewer wants two things removed: (1) the \"backwards compatibility\" comment in `keystone_types.go` since the project isn't production-ready yet and the comment would confuse future readers, and (2) the defensive clamping/validation logic in `reconcile_deployment.go` for `processes`/`threads`, since CRD validation and webhooks already handle this — silently sanitizing bad values would hide misconfigurations from users instead of failing loudly.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "gndrmnn",
+  "date": "2026-04-08T10:14:07Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 3,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "This comment includes a reference to \"backwards compatibility\".\r\nThis project is not used in a productive environment yet and is still subject to massive breaking changes. Adding a comment about \"backwards compatibility\" now will massively confuse future readers. It is safe to remove the remarks to \"backwards compatibility\" here.\r\n\r\nDo not add this to review_patterns because once the project is in a more usable state, we actually **want** to add these kinds of comments. Just not now.",
+      "path": "operators/keystone/api/v1alpha1/keystone_types.go",
+      "line": 111,
+      "author": "gndrmnn",
+      "created_at": "2026-04-08T09:41:07Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "We are validating the CRD in multiple places especially using `+kubebuilder:validation`\nWe even validate the input to the webhook. We already have unit and integration tests for the case that `processes` or `threads` are negative.\n\nThis additional validation in `uwsgi` creates more confusion than it helps. And the reasoning is BS, too. \"If a CR slips past webhooks/CRD validation\"? Well I think in that case this should error out hard and not just sanitize the values and continue. How would the user know that the configuration is messed up?\n\nJust remove the \"defensive clamping\" added in this commit and it should be good to go. You can also remove the review_pattern for this as this is not something we should repeat in the future.",
+      "path": "operators/keystone/internal/controller/reconcile_deployment.go",
+      "line": 300,
+      "author": "gndrmnn",
+      "created_at": "2026-04-08T10:06:21Z",
+      "id": null,
+      "resolution": ""
+    }
+  ],
+  "github_review_id": 4074205629
+}
