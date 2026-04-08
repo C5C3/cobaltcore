@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos CR to kill an OpenBao pod (CC-0047).
+# One-shot pod-kill action — the StatefulSet controller will restart the pod.
+#
+# NOTE: OpenBao runs in openbao-system, NOT openstack. The selector
+# targets the openbao-system namespace explicitly. Chaos Mesh has
+# cluster-wide RBAC permissions enabling cross-namespace targeting.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: kill-openbao
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces:
+    - openbao-system
+    labelSelectors:
+      app.kubernetes.io/name: openbao
+  gracePeriod: 0

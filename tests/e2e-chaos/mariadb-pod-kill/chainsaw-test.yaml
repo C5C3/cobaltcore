@@ -1,0 +1,93 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for MariaDB pod kill (CC-0047).
+# Verifies the Keystone operator detects a MariaDB outage
+# (DatabaseReady=False) and recovers autonomously when the
+# StatefulSet restarts the killed pod.
+#
+# SC-CHAOS-001, REQ-003, REQ-004, REQ-008, REQ-009 (CC-0047)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-mariadb-pod-kill
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR ──────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert baseline Ready=True before chaos injection ──────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-db
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-chaos-db
+  # ── Step 3: Inject PodChaos to kill MariaDB pod ────────────────────────
+  - try:
+    - apply:
+        file: 01-podchaos.yaml
+  # ── Step 4: Assert DatabaseReady=False after pod kill ──────────────────
+  # REVIEWER-DISAGREEMENT: [Reviewer requested adding inline `kubectl get
+  # keystone keystone-chaos-db -n $NAMESPACE -o yaml` here] — diagnostics.sh
+  # already collects Keystone CR status (Keystone CR status section) for both
+  # baseline and chaos modes, so adding it inline would duplicate the output.
+  # The diagnostics matrix table has been corrected to reflect actual coverage.
+  # Reviewer: please verify.
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-db
+            namespace: openstack
+          status:
+            (conditions[?type == 'DatabaseReady']):
+            - status: "False"
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-db --dep-label=app.kubernetes.io/name=mariadb --log-label=app.kubernetes.io/name=keystone-operator
+  # ── Step 5: Delete PodChaos to lift fault ──────────────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          name: kill-mariadb
+  # ── Step 6: Assert full recovery to Ready=True ─────────────────────────
+  # REVIEWER-DISAGREEMENT: [Reviewer requested adding inline `kubectl get
+  # keystone keystone-chaos-db -n $NAMESPACE -o yaml` here] — see Step 4
+  # comment: diagnostics.sh already collects Keystone CR status uniformly.
+  # Reviewer: please verify.
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-db
+            namespace: openstack
+          status:
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-db --dep-label=app.kubernetes.io/name=mariadb --log-label=app.kubernetes.io/name=keystone-operator

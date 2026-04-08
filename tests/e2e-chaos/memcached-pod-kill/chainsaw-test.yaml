@@ -1,0 +1,119 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for Memcached pod kill (CC-0047).
+# Verifies the Keystone operator maintains Ready=True (no condition
+# regression) when a Memcached pod is killed, confirming that cache
+# failures are treated as performance degradation only.
+#
+# SC-CHAOS-002, REQ-005, REQ-008, REQ-009 (CC-0047)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-memcached-pod-kill
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR ──────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert baseline Ready=True before chaos injection ──────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-mc
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-chaos-mc
+  # ── Step 3: Inject PodChaos to kill Memcached pod ──────────────────────
+  - try:
+    - apply:
+        file: 01-podchaos.yaml
+  # ── Step 4: Wait for Memcached pod recovery and assert Ready=True maintained ─
+  # Uses condition-based waits instead of fixed sleep to avoid flakiness on
+  # slower clusters (CC-0047). The two-phase wait confirms both that chaos
+  # took effect (pod becomes NotReady) and that recovery completed (pod
+  # returns to Ready) before asserting operator conditions.
+  # NOTE: Theoretical race — if pod kill + restart completes faster than
+  # Chainsaw's poll interval, the Ready=false wait may timeout. In practice,
+  # pod-kill with gracePeriod:0 plus controller restart takes multiple
+  # seconds, so this is unlikely. If CI flakiness occurs, add a small
+  # initial sleep before the first wait as mitigation.
+  - try:
+    - wait:
+        apiVersion: v1
+        kind: Pod
+        selector: app.kubernetes.io/name=memcached
+        timeout: 2m
+        for:
+          condition:
+            name: Ready
+            value: 'false'
+    - wait:
+        apiVersion: v1
+        kind: Pod
+        selector: app.kubernetes.io/name=memcached
+        timeout: 2m
+        for:
+          condition:
+            name: Ready
+            value: 'true'
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-mc
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+            (conditions[?type == 'FernetKeysReady']):
+            - status: "True"
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+            (conditions[?type == 'BootstrapReady']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-mc --dep-label=app.kubernetes.io/name=memcached
+  # ── Step 5: Delete PodChaos to allow Memcached recovery ────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          name: kill-memcached
+  # ── Step 6: Assert Ready=True after Memcached recovery ─────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-mc
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-mc --dep-label=app.kubernetes.io/name=memcached

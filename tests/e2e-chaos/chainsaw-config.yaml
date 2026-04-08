@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test configuration (CC-0047).
+# Separate from the happy-path config at tests/e2e/chainsaw-config.yaml.
+#
+# Key differences from happy-path:
+#   - Assert timeout: 300s (5m) vs 120s — chaos recovery requires multiple
+#     reconciliation cycles and pod restart time.
+#   - Cleanup timeout: 120s (2m) vs 60s — Chaos Mesh CRs may take longer
+#     to finalize and release injected faults.
+#   - Parallelism: 1 vs 4 — chaos tests mutate shared infrastructure
+#     pod availability (MariaDB, Memcached, OpenBao), so serial execution
+#     prevents cross-test interference.
+#
+# apiVersion: v1alpha2 Configuration is the correct pairing with v1alpha1
+# Test manifests. Chainsaw uses v1alpha2 for Configuration (global settings)
+# and v1alpha1 for Test (test definitions) — they are complementary resources.
+# This matches the happy-path config at tests/e2e/chainsaw-config.yaml.
+apiVersion: chainsaw.kyverno.io/v1alpha2
+kind: Configuration
+metadata:
+  name: cloud-operator-e2e-chaos
+spec:
+  # ── Timeouts ────────────────────────────────────────────────────────────
+  # DECISION: delete, error, and exec timeouts are 30s (not 60s as in the plan).
+  # Chose 30s to match the happy-path config (tests/e2e/chainsaw-config.yaml).
+  # Only assert (300s) and cleanup (120s) are elevated for chaos recovery.
+  timeouts:
+    apply: 30s
+    assert: 300s
+    cleanup: 120s
+    delete: 30s
+    error: 30s
+    exec: 30s
+
+  # ── Cleanup ─────────────────────────────────────────────────────────────
+  cleanup:
+    skipDelete: false
+
+  # ── Execution ───────────────────────────────────────────────────────────
+  execution:
+    failFast: true
+    parallel: 1
+
+  # ── Report ──────────────────────────────────────────────────────────────
+  report:
+    format: JUNIT-TEST
+    name: chainsaw-chaos-report
+    path: _output/reports

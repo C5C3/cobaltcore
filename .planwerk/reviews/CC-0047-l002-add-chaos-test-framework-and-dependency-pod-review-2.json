@@ -1,0 +1,51 @@
+{
+  "feature_id": "CC-0047",
+  "title": "L002: Add chaos test framework and dependency pod kill",
+  "date": "2026-04-08",
+  "verdict": "APPROVED",
+  "summary": "All three sourcery-ai[bot] review items addressed correctly: (1) apiVersion ambiguity in chainsaw-config.yaml resolved with clear rationale confirming v1alpha2 Configuration pairs with v1alpha1 Test manifests, (2) duplicated catch-block kubectl diagnostics extracted into shared diagnostics.sh with two modes (baseline/chaos) and per-scenario options, (3) fixed sleep:30s in memcached-pod-kill replaced with Chainsaw native wait operations for Pod Ready=false then Ready=true. Code is clean, follows existing patterns, and introduces no regressions.",
+  "tests_checklist": [
+    {"item": "E2E chaos test scenarios exist for all 3 dependency pod-kill cases", "checked": true},
+    {"item": "Each test has baseline assertion, fault injection, degradation/stability check, fault removal, recovery assertion", "checked": true},
+    {"item": "All assert steps have catch blocks with diagnostic output", "checked": true},
+    {"item": "Memcached no-regression test uses condition-based wait instead of fixed sleep", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing Chainsaw E2E test patterns (SPDX headers, step comments, JMESPath assertions)", "checked": true},
+    {"item": "diagnostics.sh is well-structured with clear modes, options, and error handling", "checked": true},
+    {"item": "No dead code or commented-out code", "checked": true},
+    {"item": "Catch blocks use shared helper consistently across all 3 tests", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No secrets or credentials in test files", "checked": true},
+    {"item": "No command injection vectors in diagnostics.sh (all args parsed safely)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Shared diagnostics.sh avoids duplication across 3 test suites", "checked": true},
+    {"item": "apiVersion v1alpha2 Config + v1alpha1 Test pairing matches happy-path config", "checked": true},
+    {"item": "Condition-based wait is more robust than fixed sleep", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "diagnostics.sh modes/options match actual usage — no unused features", "checked": true},
+    {"item": "No over-engineering in the shared helper", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "diagnostics.sh validates mode and exits 1 on unknown mode", "checked": true},
+    {"item": "Required arguments use ${:?} for immediate error on missing values", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All kubectl calls in diagnostics.sh have || true for error tolerance", "checked": true},
+    {"item": "Unknown options in diagnostics.sh cause exit 1", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "diagnostics.sh: The `for` loop command substitutions (lines 61, 88, 98) use `$(kubectl ... 2>/dev/null)` without `|| true`. Under `set -euo pipefail`, if kubectl fails (e.g., API unreachable), the script exits before collecting remaining diagnostics. Adding `|| true` after the command substitution (e.g., `for pod in $(kubectl get pods ... 2>/dev/null || true)`) would make the script more resilient. Low priority since catch blocks are best-effort and the existing happy-path test uses the same pattern.",
+    "memcached-pod-kill wait approach: The two-phase wait (Ready=false then Ready=true) has a theoretical race condition — if the pod kill + restart completes faster than Chainsaw's poll interval, the Ready=false wait may timeout. In practice, pod-kill with gracePeriod:0 plus StatefulSet/Deployment restart takes multiple seconds, so this is unlikely. If flakiness occurs in CI, consider adding a small initial delay or using a more granular condition."
+  ],
+  "next_steps": [
+    "Update docs/reference/chaos-e2e-tests.md to reflect the memcached-pod-kill wait-based approach: line 158 still describes 'sleep (30s) + assert (5m)' and lines 232-240 describe the old sleep pattern. The README.md already reflects the new approach correctly."
+  ],
+  "detected_patterns": []
+}

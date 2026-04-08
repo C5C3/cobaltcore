@@ -215,6 +215,11 @@ helm-package:
 e2e:
 	chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/
 
+.PHONY: e2e-chaos
+# e2e-chaos runs Chaos Mesh pod-kill E2E tests against a deployed kind cluster (CC-0047).
+e2e-chaos:
+	chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml tests/e2e-chaos/
+
 .PHONY: tempest-test
 # tempest-test runs Tempest API tests against a deployed OpenStack service (CC-0035 REQ-007).
 # Requires a running kind cluster with the service deployed.

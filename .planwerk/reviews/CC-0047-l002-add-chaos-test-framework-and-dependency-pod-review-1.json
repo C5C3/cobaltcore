@@ -1,0 +1,122 @@
+{
+  "feature_id": "CC-0047",
+  "title": "L002: Add chaos test framework and dependency pod kill",
+  "date": "2026-04-08",
+  "verdict": "APPROVED",
+  "summary": "Well-structured chaos E2E test framework with 3 pod-kill scenarios (MariaDB, Memcached, OpenBao). All YAML files have correct SPDX headers and CC-0047 references. Chainsaw config correctly separates chaos settings from happy-path. PodChaos CRDs use correct label selectors and namespace targeting (including cross-namespace for OpenBao). JMESPath condition assertions follow the established pattern. Catch blocks provide comprehensive diagnostics. Memcached no-regression test correctly asserts all 6 conditions remain True. Documentation is thorough with accurate diagnostics matrix. Minor deviations from plan (CR name keystone-chaos-mc vs keystone-chaos-cache, timeout values matching happy-path instead of plan) are reasonable and internally consistent.",
+  "tests_checklist": [
+    {"item": "E2E test definitions exist for all 3 planned scenarios (SC-CHAOS-001, SC-CHAOS-002, SC-CHAOS-003)", "checked": true},
+    {"item": "Each scenario has unique CR name and database name preventing parallel execution conflicts", "checked": true},
+    {"item": "Baseline assertion (Ready=True) before chaos injection in all 3 tests", "checked": true},
+    {"item": "Degradation assertions verify correct sub-condition transitions (DatabaseReady=False, SecretsReady=False)", "checked": true},
+    {"item": "Recovery assertions verify return to healthy state (sub-condition=True, Ready=True/AllReady)", "checked": true},
+    {"item": "Memcached no-regression test asserts all 6 conditions remain True during outage", "checked": true},
+    {"item": "Catch blocks present on all assert steps with diagnostic output", "checked": true},
+    {"item": "PodChaos CRD explicitly deleted before recovery assertion to ensure fault is lifted", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing chainsaw-e2e-test-suite-structure-with-jmespath-condition-assertions pattern", "checked": true},
+    {"item": "SPDX Apache-2.0 headers on all YAML files", "checked": true},
+    {"item": "CC-0047 feature ID referenced in all test files and config", "checked": true},
+    {"item": "Step comments follow '# ── Step N: Description ──' format", "checked": true},
+    {"item": "Fixture files use 00-/01- numeric prefix ordering", "checked": true},
+    {"item": "apiVersion v1alpha2 for Configuration matches happy-path (with DECISION comment)", "checked": true},
+    {"item": "apiVersion v1alpha1 for Test kind matches existing pattern", "checked": true},
+    {"item": "Consistent naming convention across scenarios (db, mc, bao)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets in test fixtures", "checked": true},
+    {"item": "PodChaos CRDs use label selectors not pod names (no targeting by UID)", "checked": true},
+    {"item": "Cross-namespace targeting for OpenBao documented with rationale", "checked": true},
+    {"item": "Catch block scripts use '|| true' to prevent diagnostic failures from masking test results", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Separate chainsaw-config.yaml with chaos-specific settings (higher timeouts, lower parallelism)", "checked": true},
+    {"item": "Makefile target correctly placed after e2e target", "checked": true},
+    {"item": "Test directory structure mirrors happy-path convention (tests/e2e-chaos/<scenario>/)", "checked": true},
+    {"item": "CR fixtures reuse pattern from tests/e2e/keystone/basic-deployment/00-keystone-cr.yaml", "checked": true},
+    {"item": "Documentation covers framework, scenarios, patterns, and adding new scenarios", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated logic across scenarios (each test validates distinct behavior)", "checked": true},
+    {"item": "No unnecessary abstractions — tests are self-contained YAML definitions", "checked": true},
+    {"item": "README.md is minor scope addition but follows existing tests/e2e/ convention and adds value", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "failFast: true in chainsaw config stops on first failure", "checked": true},
+    {"item": "Baseline assertion (Step 2) catches unhealthy initial state before chaos injection", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Catch blocks collect diagnostics from multiple sources (pods, events, chaos status)", "checked": true},
+    {"item": "OpenBao catch blocks check pods in openbao-system namespace (correct cross-namespace)", "checked": true},
+    {"item": "Scripts in catch blocks use 2>&1 || true to prevent diagnostic command failures from cascading", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "C1",
+      "severity": "MINOR",
+      "description": "Makefile e2e-chaos target missing CC-0047 reference comment. Plan task 1.1 explicitly specifies 'with comment referencing CC-0047'. The existing e2e target also lacks a comment (so this is pattern-consistent), but the plan was explicit. The tempest-test target shows the comment pattern.",
+      "location": "Makefile:218-220",
+      "fix": "Add comment line above the target: '# e2e-chaos runs Chaos Mesh E2E tests against a deployed cluster (CC-0047).'",
+      "evidence": ".PHONY: e2e-chaos\ne2e-chaos:\n\tchainsaw test --config tests/e2e-chaos/chainsaw-config.yaml tests/e2e-chaos/",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "C2",
+      "severity": "MINOR",
+      "description": "Chainsaw config timeouts for delete, error, and exec are 30s instead of the 60s specified in plan task 1.1. However, these match the happy-path config (tests/e2e/chainsaw-config.yaml) which also uses 30s for all three. The implementer chose pattern consistency over plan compliance — a reasonable decision, but it should be documented.",
+      "location": "tests/e2e-chaos/chainsaw-config.yaml:32-34",
+      "fix": "No change needed — matching happy-path is the right call. Optionally add a brief comment noting the deviation: '# delete/error/exec match happy-path (30s); plan specified 60s but no chaos-specific reason to differ.'",
+      "evidence": "    delete: 30s\n    error: 30s\n    exec: 30s",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "C1",
+      "severity": "MINOR",
+      "description": "Memcached CR name is keystone-chaos-mc instead of keystone-chaos-cache specified in plan task 3.1 and review criteria. The 'mc' abbreviation is consistent with the db/bao naming pattern and all references (test files, docs, README) are internally consistent. This is a deliberate and sensible deviation.",
+      "location": "tests/e2e-chaos/memcached-pod-kill/00-keystone-cr.yaml:11",
+      "fix": "No change needed — keystone-chaos-mc is more consistent with the db/bao naming convention. The plan's keystone-chaos-cache would be the outlier.",
+      "evidence": "  name: keystone-chaos-mc",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "D2",
+      "severity": "MINOR",
+      "description": "Test file header comments reference only 'REQ-001 (CC-0047)' for all 3 scenarios instead of the scenario-specific requirements from the plan (e.g., SC-CHAOS-001 should reference REQ-003, REQ-004, REQ-008, REQ-009). The docs/reference/chaos-e2e-tests.md correctly lists per-scenario requirements in the inventory table.",
+      "location": "tests/e2e-chaos/mariadb-pod-kill/chainsaw-test.yaml:10",
+      "fix": "Update requirement IDs: mariadb → 'SC-CHAOS-001, REQ-003, REQ-004, REQ-008, REQ-009 (CC-0047)', memcached → 'SC-CHAOS-002, REQ-005, REQ-008, REQ-009 (CC-0047)', openbao → 'SC-CHAOS-003, REQ-006, REQ-007, REQ-008, REQ-009 (CC-0047)'",
+      "evidence": "# SC-CHAOS-001, REQ-001 (CC-0047)",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a DECISION comment in chainsaw-config.yaml noting why delete/error/exec timeouts remain at 30s (matching happy-path) instead of the 60s specified in the plan",
+    "The Memcached test Step 4 sleep of 30s is a pragmatic choice documented in the reference docs; consider parameterizing this as an env var for CI tuning if reconciliation cycle times vary across environments",
+    "Future scenarios could extract the shared catch block diagnostic scripts into a helper ConfigMap or script step to reduce duplication across test files, though the current self-contained approach is acceptable for 3 scenarios"
+  ],
+  "next_steps": [
+    "Apply the 4 minor fixes (Makefile comment, config timeout comment, requirement IDs in test headers) to complete plan compliance",
+    "Proceed to the next layer (L003) once minor feedback is addressed"
+  ],
+  "detected_patterns": [
+    {
+      "name": "Chaos E2E test suite structure with degradation/recovery and no-regression patterns",
+      "component": "tests/e2e-chaos/*/",
+      "category": "testing",
+      "applies_when": "Adding a new Chaos Mesh-based E2E test suite for pod-kill, network partition, or other fault injection scenarios",
+      "description": "Each chaos E2E test follows a 6-step structure: (1) Apply Keystone CR, (2) Assert baseline Ready=True (pre-chaos health gate), (3) Apply PodChaos/NetworkChaos CR, (4) Assert expected degradation (sub-condition=False) OR no-regression (all conditions=True after sleep), (5) Delete Chaos CR (explicit fault removal), (6) Assert full recovery (sub-condition=True, Ready=True/AllReady). Two test patterns exist: 'degradation and recovery' for critical dependencies (MariaDB, OpenBao) where a sub-condition must transition to False then back to True, and 'no-regression' for non-critical dependencies (Memcached) where all conditions must remain True during the outage with a 30s sleep before assertion to ensure at least one reconciliation cycle. Each test has a unique CR name (keystone-chaos-{suffix}) and database name (keystone_chaos_{suffix}). Catch blocks on assert steps collect target pod status, Chaos Mesh experiment status, operator/pod logs with --previous, and namespace events.",
+      "examples": [
+        {
+          "location": "tests/e2e-chaos/mariadb-pod-kill/chainsaw-test.yaml:53-64",
+          "code": "  # ── Step 4: Assert DatabaseReady=False after pod kill ──────────────────\n  - try:\n    - assert:\n        resource:\n          apiVersion: keystone.openstack.c5c3.io/v1alpha1\n          kind: Keystone\n          metadata:\n            name: keystone-chaos-db\n            namespace: openstack\n          status:\n            (conditions[?type == 'DatabaseReady']):\n            - status: \"False\""
+        },
+        {
+          "location": "tests/e2e-chaos/memcached-pod-kill/chainsaw-test.yaml:53-77",
+          "code": "  # ── Step 4: Wait for reconciliation and assert Ready=True maintained ───\n  - try:\n    - sleep:\n        duration: 30s\n    - assert:\n        resource:\n          apiVersion: keystone.openstack.c5c3.io/v1alpha1\n          kind: Keystone\n          metadata:\n            name: keystone-chaos-mc\n            namespace: openstack\n          status:\n            (conditions[?type == 'SecretsReady']):\n            - status: \"True\"\n            (conditions[?type == 'FernetKeysReady']):\n            - status: \"True\"\n            (conditions[?type == 'DatabaseReady']):\n            - status: \"True\"\n            (conditions[?type == 'DeploymentReady']):\n            - status: \"True\"\n            (conditions[?type == 'BootstrapReady']):\n            - status: \"True\"\n            (conditions[?type == 'Ready']):\n            - status: \"True\"\n              reason: AllReady"
+        }
+      ]
+    }
+  ]
+}

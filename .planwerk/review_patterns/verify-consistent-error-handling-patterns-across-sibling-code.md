@@ -3,7 +3,7 @@
 **Review-Area**: error-handling
 **Detection-Hint**: When a file or group of related files uses a specific error-handling idiom (e.g., '|| exit_code=$?') in some functions but not others, flag the inconsistency. Search for command substitution assignments under 'set -e' that lack the guard pattern already used elsewhere in the same file.
 **Severity**: BLOCKING
-**Occurrences**: 2
+**Occurrences**: 3
 
 ## What to check
 
@@ -24,3 +24,8 @@ Under 'set -e', an unguarded failing command substitution silently aborts the sc
 - **Feedback**: In OpenBao (and Vault), `bao status` returns exit code `2` for **both** `initialized=true, sealed=true` and `initialized=false, sealed=true` (a brand-new, uninitialized pod). The current logic treats both as "already initialized" and skips the `initialize()` call.
 - **What was missed**: Look for patterns like `cmd; rc=$?; if [[ $rc -eq X ]]` and ask: does exit code X always mean what the comment says? For Vault/OpenBao, `bao status` returns exit code 2 for both initialized+sealed and uninitialized+sealed. The script must parse JSON output (`-format=json`) and inspect the `initialized` field to distinguish these states.
 - **Fix**: Rewrote `check_initialized` to parse `bao status -format=json` and inspect the `.initialized` field with jq instead of relying on ambiguous exit codes.
+
+### CC-0047 — berendt
+- **Feedback**: The memcached test correctly includes this in its Step 4 catch block, but the MariaDB and OpenBao tests omit it from their Steps 4 and 6.
+- **What was missed**: Compare catch blocks across all test files in the same suite. Every failure-handling block should collect the same categories of diagnostic data (CR status, pod state, logs). If one test's catch block is more thorough than another's, the others are missing diagnostics that will be needed during failure triage.
+- **Fix**: Created a shared diagnostics.sh script that always outputs Keystone CR status as its first diagnostic, and refactored all catch blocks across all three test suites to call this script consistently.

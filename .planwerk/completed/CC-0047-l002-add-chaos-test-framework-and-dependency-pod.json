@@ -2,8 +2,8 @@
   "feature_id": "CC-0047",
   "title": "L002: Add chaos test framework and dependency pod kill",
   "slug": "l002-add-chaos-test-framework-and-dependency-pod",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 🏗️ large\n**Category:** testing\n**Priority:** high\n**Source:** Proposed for '# GitHub Issue #132: Add negative and chaos E2E te'\n\nEstablish the chaos E2E test framework and implement the 3 dependency pod kill scenarios that validate condition degradation and recovery.\n\n**Framework:**\n1. **`tests/e2e-chaos/chainsaw-config.yaml`** — Dedicated Chainsaw config: `timeouts.assert: 5m`, `timeouts.cleanup: 2m`, `parallel: 2` (lower than happy-path due to resource contention), `failFast: true`, JUnit XML output to `_output/reports`\n2. **`Makefile` target `e2e-chaos`** — `chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml tests/e2e-chaos/`\n3. Shared Keystone CR fixture pattern reused from `tests/e2e/keystone/basic-deployment/00-keystone-cr.yaml`\n\n**Scenarios (PodChaos CRDs with pod-kill action + label selectors):**\n4. **SC-CHAOS-001: `tests/e2e-chaos/mariadb-pod-kill/`** — Kill MariaDB pod → assert `DatabaseReady=False` → wait for StatefulSet restart → assert `DatabaseReady=True` and `Ready=True, reason=AllReady`\n5. **SC-CHAOS-002: `tests/e2e-chaos/memcached-pod-kill/`** — Kill Memcached pod → verify no condition regression (degraded performance only) → assert `Ready=True` maintained\n6. **SC-CHAOS-003: `tests/e2e-chaos/openbao-pod-kill/`** — Kill OpenBao pod → assert `SecretsReady=False` on next secret sync → recovery to `SecretsReady=True`\n\nEach test directory contains: `chainsaw-test.yaml` (SPDX header, CC-0047 reference, `apiVersion: chainsaw.kyverno.io/v1alpha1`, numbered steps with `# ── Step N:` headers), numbered resource files (`00-keystone-cr.yaml`, `01-podchaos.yaml`), diagnostic `catch` blocks (pod logs with `--previous`, events, describe). Follows `chainsaw-e2e-test-suite-structure-with-jmespath-condition-assertions` pattern.\n\n**Rationale:** These 3 scenarios validate the most critical failure mode: infrastructure dependency pods dying. MariaDB and OpenBao kills directly affect operator condition transitions (DatabaseReady, SecretsReady), which are the primary signals operators use to report health. The framework established here is reused by all subsequent scenarios.\n\n**Affected Areas:**\n- tests/e2e-chaos/chainsaw-config.yaml\n- tests/e2e-chaos/mariadb-pod-kill/chainsaw-test.yaml\n- tests/e2e-chaos/mariadb-pod-kill/00-keystone-cr.yaml\n- tests/e2e-chaos/mariadb-pod-kill/01-podchaos.yaml\n- tests/e2e-chaos/memcached-pod-kill/chainsaw-test.yaml\n- tests/e2e-chaos/memcached-pod-kill/00-keystone-cr.yaml\n- tests/e2e-chaos/memcached-pod-kill/01-podchaos.yaml\n- tests/e2e-chaos/openbao-pod-kill/chainsaw-test.yaml\n- tests/e2e-chaos/openbao-pod-kill/00-keystone-cr.yaml\n- tests/e2e-chaos/openbao-pod-kill/01-podchaos.yaml\n- Makefile",
   "stories": [
@@ -377,6 +377,7 @@
       "description": "Create tests/e2e-chaos/chainsaw-config.yaml with apiVersion chainsaw.kyverno.io/v1alpha1, kind Configuration, name chaos-e2e, spec.timeouts (apply: 30s, assert: 300s, cleanup: 120s, delete: 60s, error: 60s, exec: 60s), spec.cleanup.skipDelete: false, spec.execution (failFast: true, parallel: 2), spec.report (format: JUNIT-TEST, path: _output/reports). Include SPDX Apache-2.0 header and CC-0047 reference comment. Add .PHONY: e2e-chaos target to Makefile after the existing e2e target (line 216), with comment referencing CC-0047: chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml tests/e2e-chaos/. Follow existing e2e target pattern.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002"
@@ -388,6 +389,7 @@
       "description": "Create tests/e2e-chaos/mariadb-pod-kill/ directory with 3 files: (1) 00-keystone-cr.yaml — Keystone CR fixture based on tests/e2e/keystone/basic-deployment/00-keystone-cr.yaml pattern, name keystone-chaos-db, database keystone_chaos_db, CC-0047 SC-CHAOS-001 reference. (2) 01-podchaos.yaml — PodChaos CRD with action: pod-kill, mode: one, selector targeting app.kubernetes.io/name=mariadb in openstack namespace, gracePeriod: 0. (3) chainsaw-test.yaml — apiVersion v1alpha1 Test, name keystone-mariadb-pod-kill, namespace openstack, timeouts.assert: 5m, with steps: Step 1 apply CR and assert Ready=True/AllReady, Step 2 apply PodChaos, Step 3 assert DatabaseReady=False, Step 4 delete PodChaos CR (ensure fault lifted), Step 5 assert DatabaseReady=True and Ready=True/AllReady. Steps 3 and 5 include catch blocks with: pod logs (--all-containers --tail=60 --previous), Chaos Mesh experiment status (kubectl get podchaos), MariaDB pod status (kubectl get pods -l app.kubernetes.io/name=mariadb -o wide), events sorted by timestamp. All files have SPDX headers and use # ── Step N: comment format.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-004",
@@ -401,6 +403,7 @@
       "description": "Create tests/e2e-chaos/memcached-pod-kill/ directory with 3 files: (1) 00-keystone-cr.yaml — Keystone CR fixture with name keystone-chaos-cache, database keystone_chaos_cache, CC-0047 SC-CHAOS-002 reference. (2) 01-podchaos.yaml — PodChaos CRD with action: pod-kill targeting app.kubernetes.io/name=memcached in openstack namespace. (3) chainsaw-test.yaml — name keystone-memcached-pod-kill, namespace openstack, timeouts.assert: 5m, with steps: Step 1 apply CR and assert Ready=True/AllReady (baseline), Step 2 apply PodChaos, Step 3 use script step to sleep 30s (ensure at least one reconciliation cycle), then assert Ready=True/AllReady is maintained (no regression), Step 4 delete PodChaos and assert Ready=True/AllReady (steady state). Key difference: this test asserts POSITIVE state (Ready stays True) not degradation. Catch blocks on assertion steps with pod logs, Chaos Mesh status, Memcached pod status.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-008",
@@ -413,6 +416,7 @@
       "description": "Create tests/e2e-chaos/openbao-pod-kill/ directory with 3 files: (1) 00-keystone-cr.yaml — Keystone CR fixture with name keystone-chaos-bao, database keystone_chaos_bao, CC-0047 SC-CHAOS-003 reference. (2) 01-podchaos.yaml — PodChaos CRD with action: pod-kill, mode: one, selector targeting app.kubernetes.io/name=openbao in openbao-system namespace (NOT openstack — OpenBao runs in a separate namespace), gracePeriod: 0. The PodChaos CR metadata.namespace should be openstack (same as test namespace). (3) chainsaw-test.yaml — name keystone-openbao-pod-kill, namespace openstack, timeouts.assert: 5m, with steps: Step 1 apply CR and assert Ready=True/AllReady, Step 2 apply PodChaos, Step 3 assert SecretsReady=False, Step 4 delete PodChaos, Step 5 assert SecretsReady=True and Ready=True/AllReady. Catch blocks include OpenBao pod status in openbao-system namespace (kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao -o wide), ESO ExternalSecret status, operator logs, and events.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-007",
@@ -426,6 +430,7 @@
       "description": "Create docs/reference/chaos-e2e-tests.md following the pattern of docs/reference/keystone-e2e-tests.md. Include: frontmatter (title, quadrant: operator, feature: CC-0047), overview section explaining the chaos test framework purpose and relationship to happy-path tests, framework section documenting chainsaw-config.yaml settings (timeouts, parallelism) with rationale, Makefile target usage (make e2e-chaos), scenario matrix table (SC-CHAOS-001/002/003 with target, expected behavior, condition assertions), directory structure diagram showing file layout, PodChaos CRD pattern with label selector examples, catch block pattern with Chaos Mesh diagnostics, reference to architecture doc at architecture/docs/09-implementation/10-chaos-e2e-testing.md for the full scenario matrix and tool selection rationale. Include SPDX header.",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -592,8 +597,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-08T12:21:30.058287"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-08T14:32:50.659881"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-08T20:45:41.902797"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/142",
+  "pr_number": 142,
   "execution_history": [
     {
       "run_id": "4ef00a10-8096-4c5c-a186-a9b243711a50",
@@ -605,6 +620,78 @@
           "name": "prepare",
           "duration": 813.4265487194061,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "5d3e221e-ce11-4464-8bbe-0a9e7a898887",
+      "timestamp": "2026-04-08T15:04:12.970505",
+      "total_duration": 1633.3526270389557,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (1 tasks)",
+          "duration": 655.6733434200287,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (3 tasks)",
+          "duration": 404.72691082954407,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (1 tasks)",
+          "duration": 142.99135327339172,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0047] Code Review",
+          "duration": 304.8627665042877,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0047] Improvements",
+          "duration": 91.17021346092224,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0047] Simplify",
+          "duration": 33.92803955078125,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "2cd22903-eebd-41d2-a70c-c696d1148532",
+      "timestamp": "2026-04-08T17:08:22.436017",
+      "total_duration": 1618.899405002594,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 1618.899405002594,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "6acdc0b3-e2e1-4e09-a4cc-332276aa6a53",
+      "timestamp": "2026-04-08T18:54:27.840920",
+      "total_duration": 625.9268264770508,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 625.9268264770508,
+          "type": "review_address",
           "status": "done"
         }
       ]

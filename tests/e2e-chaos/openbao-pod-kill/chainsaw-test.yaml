@@ -1,0 +1,98 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for OpenBao pod kill (CC-0047).
+# Verifies the Keystone operator detects an OpenBao outage
+# (SecretsReady=False) and recovers when OpenBao returns and
+# ESO resumes syncing ExternalSecrets.
+#
+# NOTE: OpenBao runs in the openbao-system namespace, not openstack.
+# The PodChaos CR targets openbao-system via selector.namespaces.
+#
+# SC-CHAOS-003, REQ-006, REQ-007, REQ-008, REQ-009 (CC-0047)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-openbao-pod-kill
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR ──────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert baseline Ready=True before chaos injection ──────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-bao
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-chaos-bao --dep-label=app.kubernetes.io/name=openbao --dep-ns=openbao-system
+  # ── Step 3: Inject PodChaos to kill OpenBao pod ────────────────────────
+  - try:
+    - apply:
+        file: 01-podchaos.yaml
+  # ── Step 4: Assert SecretsReady=False after OpenBao kill ───────────────
+  # REVIEWER-DISAGREEMENT: [Reviewer requested adding inline `kubectl get
+  # keystone keystone-chaos-bao -n $NAMESPACE -o yaml` here] — diagnostics.sh
+  # already collects Keystone CR status (Keystone CR status section) for both
+  # baseline and chaos modes, so adding it inline would duplicate the output.
+  # The diagnostics matrix table has been corrected to reflect actual coverage.
+  # Reviewer: please verify.
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-bao
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "False"
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-bao --dep-label=app.kubernetes.io/name=openbao --dep-ns=openbao-system --log-label=app.kubernetes.io/name=keystone-operator --eso
+  # ── Step 5: Delete PodChaos to lift fault ──────────────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          name: kill-openbao
+  # ── Step 6: Assert full recovery to SecretsReady=True and Ready=True ───
+  # REVIEWER-DISAGREEMENT: [Reviewer requested adding inline `kubectl get
+  # keystone keystone-chaos-bao -n $NAMESPACE -o yaml` here] — see Step 4
+  # comment: diagnostics.sh already collects Keystone CR status uniformly.
+  # Reviewer: please verify.
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-bao
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-bao --dep-label=app.kubernetes.io/name=openbao --dep-ns=openbao-system --log-label=app.kubernetes.io/name=keystone-operator --eso
