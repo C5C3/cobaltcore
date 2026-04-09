@@ -20,8 +20,8 @@ import (
 // proceeding. It verifies the DB credentials and admin credentials
 // ExternalSecrets are ready (CC-0013).
 func (r *KeystoneReconciler) reconcileSecrets(ctx context.Context,
-	keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
-
+	keystone *keystonev1alpha1.Keystone,
+) (ctrl.Result, error) {
 	dbSecretKey := client.ObjectKey{Namespace: keystone.Namespace, Name: keystone.Spec.Database.SecretRef.Name}
 	adminSecretKey := client.ObjectKey{Namespace: keystone.Namespace, Name: keystone.Spec.Bootstrap.AdminPasswordSecretRef.Name}
 

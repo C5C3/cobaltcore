@@ -60,9 +60,9 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 			"default_domain_id": "default",
 		},
 		"database": {
-			"max_retries":            "-1",
+			"max_retries":             "-1",
 			"connection_recycle_time": "600",
-			"connection":             "{{DB_CONNECTION}}",
+			"connection":              "{{DB_CONNECTION}}",
 		},
 	}
 
@@ -159,7 +159,7 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 			"cors": {"oslo_config_project": "keystone"},
 		},
 		CompositeRoutes: map[string]string{"/v3": "public_api"},
-		Middleware:       keystone.Spec.Middleware,
+		Middleware:      keystone.Spec.Middleware,
 	})
 	if err != nil {
 		return "", fmt.Errorf("rendering api-paste.ini: %w", err)

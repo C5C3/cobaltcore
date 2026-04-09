@@ -160,7 +160,7 @@ func TestMergePolicies(t *testing.T) {
 			},
 			want: types.PolicySpec{
 				Rules: map[string]string{
-					"compute:create":    "role:admin",
+					"compute:create":      "role:admin",
 					"identity:list_users": "role:reader",
 				},
 			},

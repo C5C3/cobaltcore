@@ -10,9 +10,9 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -27,8 +27,8 @@ import (
 
 // Condition type and reason constants for NetworkPolicy readiness (CC-0039).
 const (
-	conditionTypeNetworkPolicyReady        = "NetworkPolicyReady"
-	conditionReasonNetworkPolicyReady      = "NetworkPolicyReady"
+	conditionTypeNetworkPolicyReady         = "NetworkPolicyReady"
+	conditionReasonNetworkPolicyReady       = "NetworkPolicyReady"
 	conditionReasonNetworkPolicyNotRequired = "NetworkPolicyNotRequired"
 )
 

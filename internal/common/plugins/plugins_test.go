@@ -26,7 +26,7 @@ func TestRenderPastePipeline(t *testing.T) {
 				PipelineName: "api_v3",
 				AppName:      "service_v3",
 				BaseFilters:  []string{"cors", "sizelimit"},
-				Middleware:    nil,
+				Middleware:   nil,
 			},
 			want: map[string]map[string]string{
 				"pipeline:api_v3": {"pipeline": "cors sizelimit service_v3"},
@@ -38,7 +38,7 @@ func TestRenderPastePipeline(t *testing.T) {
 				PipelineName: "main",
 				AppName:      "app",
 				BaseFilters:  nil,
-				Middleware:    nil,
+				Middleware:   nil,
 			},
 			want: map[string]map[string]string{
 				"pipeline:main": {"pipeline": "app"},
@@ -147,7 +147,7 @@ func TestRenderPastePipeline(t *testing.T) {
 				PipelineName: "api_v3",
 				AppName:      "",
 				BaseFilters:  []string{"cors", "sizelimit"},
-				Middleware:    nil,
+				Middleware:   nil,
 			},
 			want: map[string]map[string]string{
 				"pipeline:api_v3": {"pipeline": "cors sizelimit"},
@@ -212,7 +212,7 @@ func TestRenderPastePipeline_emptyPipelineNameReturnsError(t *testing.T) {
 		PipelineName: "",
 		AppName:      "app",
 		BaseFilters:  []string{"cors"},
-		Middleware:    nil,
+		Middleware:   nil,
 	}
 
 	result, err := RenderPastePipeline(spec)
@@ -228,7 +228,7 @@ func TestRenderPastePipeline_emptyPipelineReturnsError(t *testing.T) {
 		PipelineName: "empty",
 		AppName:      "",
 		BaseFilters:  nil,
-		Middleware:    nil,
+		Middleware:   nil,
 	}
 
 	result, err := RenderPastePipeline(spec)
@@ -345,7 +345,7 @@ func TestRenderPastePipeline_emptyBaseFiltersEntryReturnsError(t *testing.T) {
 				PipelineName: "api_v3",
 				AppName:      "service_v3",
 				BaseFilters:  tt.baseFilters,
-				Middleware:    nil,
+				Middleware:   nil,
 			}
 
 			result, err := RenderPastePipeline(spec)
@@ -688,7 +688,7 @@ func TestRenderPastePipeline_BaseFilterFactories(t *testing.T) {
 		AppName:      "app",
 		BaseFilters:  []string{"cors", "sizelimit"},
 		BaseFilterFactories: map[string]string{
-			"cors":     "egg:oslo.middleware#cors",
+			"cors":      "egg:oslo.middleware#cors",
 			"sizelimit": "egg:oslo.middleware#sizelimit",
 		},
 		BaseFilterConfigs: map[string]map[string]string{
@@ -699,8 +699,8 @@ func TestRenderPastePipeline_BaseFilterFactories(t *testing.T) {
 	result, err := RenderPastePipeline(spec)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result["filter:cors"]).To(Equal(map[string]string{
-		"use":                  "egg:oslo.middleware#cors",
-		"oslo_config_project":  "keystone",
+		"use":                 "egg:oslo.middleware#cors",
+		"oslo_config_project": "keystone",
 	}))
 	g.Expect(result["filter:sizelimit"]).To(Equal(map[string]string{
 		"use": "egg:oslo.middleware#sizelimit",

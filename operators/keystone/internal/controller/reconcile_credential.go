@@ -66,8 +66,8 @@ func normalizedCredentialMaxActiveKeys(keystone *keystonev1alpha1.Keystone) int 
 // reconcileCredentialKeys ensures that a credential keys Secret exists, a rotation
 // CronJob is configured, and a PushSecret backs up the keys to OpenBao (CC-0036).
 func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
-	keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
-
+	keystone *keystonev1alpha1.Keystone, configMapName string,
+) (ctrl.Result, error) {
 	// 1. Ensure the credential keys Secret exists.
 	secretName := fmt.Sprintf("%s-credential-keys", keystone.Name)
 
@@ -175,8 +175,8 @@ func (r *KeystoneReconciler) ensureCredentialRotationRBAC(ctx context.Context, k
 // createCredentialKeysSecret generates credential keys and creates a Secret to store them.
 // Credential keys use the same format as Fernet keys (32 bytes, base64url-encoded) (CC-0036).
 func (r *KeystoneReconciler) createCredentialKeysSecret(ctx context.Context,
-	keystone *keystonev1alpha1.Keystone, secretName string) error {
-
+	keystone *keystonev1alpha1.Keystone, secretName string,
+) error {
 	numKeys := normalizedCredentialMaxActiveKeys(keystone)
 
 	data := make(map[string][]byte, numKeys)
@@ -265,8 +265,10 @@ func credentialRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapNam
 									// takes precedence over the compiled-in default (3) without needing
 									// to mount the ConfigMap. Uses the normalized value to stay
 									// consistent with the Secret's minimum floor of 3 (CC-0036).
-									{Name: "OS_credential__max_active_keys",
-										Value: strconv.Itoa(normalizedCredentialMaxActiveKeys(keystone))},
+									{
+										Name:  "OS_credential__max_active_keys",
+										Value: strconv.Itoa(normalizedCredentialMaxActiveKeys(keystone)),
+									},
 								},
 								VolumeMounts: []corev1.VolumeMount{
 									{Name: "credential-keys", MountPath: "/etc/keystone/credential-keys"},

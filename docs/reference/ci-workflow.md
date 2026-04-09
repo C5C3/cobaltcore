@@ -1,14 +1,14 @@
 ---
 title: CI Workflow
 quadrant: infrastructure
-feature: CC-0003, CC-0018, CC-0041, CC-0050, CC-0051, CC-0052
+feature: CC-0003, CC-0018, CC-0041, CC-0050, CC-0051, CC-0052, CC-0053
 ---
 
 ::: v-pre
 
 # CI Workflow
 
-Reference documentation for the GitHub Actions CI workflow (CC-0003, CC-0018, CC-0041, CC-0050, CC-0052).
+Reference documentation for the GitHub Actions CI workflow (CC-0003, CC-0018, CC-0041, CC-0050, CC-0052, CC-0053).
 
 CC-0050 refactored repeated E2E logic into reusable shell scripts (`hack/ci-*.sh`) and a
 composite GitHub Action (`.github/actions/setup-e2e-infra/`), reducing duplication across
@@ -45,12 +45,16 @@ env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/c5c3
   CONTROLLER_GEN_VERSION: v0.20.1
+  GOFUMPT_VERSION: v0.9.2  # CC-0053
 ```
 
 `REGISTRY` and `IMAGE_PREFIX` are referenced by the `build-and-push`, `helm-push`,
 `e2e-operator`, and `tempest` jobs to construct image names and registry URLs.
 `CONTROLLER_GEN_VERSION` is used by `verify-codegen` to pin controller-gen to a specific
-version. `setup-envtest` is installed via `@release-0.23` because the sub-module does not
+version. `GOFUMPT_VERSION` is used by `format-check` to pin gofumpt to a specific version
+(CC-0053); the same version is mirrored in the Makefile (`GOFUMPT_VERSION ?= v0.9.2`) so
+that `make fmt` and `make format-check` use a consistent version locally.
+`setup-envtest` is installed via `@release-0.23` because the sub-module does not
 publish its own release tags.
 
 ## Permissions
@@ -74,11 +78,12 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 ## Job Dependency DAG
 
 The workflow defines 15 jobs organised in a directed acyclic graph (CC-0018, CC-0041,
-CC-0050, CC-0052):
+CC-0050, CC-0052, CC-0053):
 
 ```
 Gate Jobs (always run):
   lint ─────────────┐
+  format-check ─────┤
   shellcheck ───────┤
   verify-codegen ───┤
   test (matrix) ────┼──> E2E Jobs + Publish Jobs
@@ -126,6 +131,39 @@ delegated to `make lint`, which `cd`s into each module directory and runs
 `golangci-lint run ./...` — a necessary pattern for Go multi-module workspaces. The
 `actions/setup-go@v6` step is required because `install-only` mode does not set up Go
 internally.
+
+### format-check
+
+Verifies all Go files conform to gofumpt formatting (CC-0053). gofumpt is a strict superset
+of gofmt — it applies all standard gofmt rules plus additional formatting conventions for
+consistency. Detects non-conforming files and prints a unified diff showing the required
+changes, so developers can identify and fix formatting issues without guessing.
+
+Only git-tracked Go files are checked (`git ls-files '*.go'`) to avoid unexpected failures
+on generated, vendored, or tooling code that may not follow gofumpt conventions.
+
+The same version and check logic are available locally via the Makefile: `make install-gofumpt`
+installs the pinned version, `make format-check` mirrors the CI check, and `make fmt` applies
+formatting to all tracked Go files. The Makefile targets use `xargs` without the `-r` flag
+(unlike CI) for macOS portability — BSD `xargs` does not support `-r`. This is safe because
+the repository always contains tracked `.go` files.
+
+**Dependencies:** `needs: [changes]`
+**Condition:** `if: needs.changes.outputs.go == 'true'`
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
+| 3 | `go install mvdan.cc/gofumpt@${{ env.GOFUMPT_VERSION }}` | Installs gofumpt at the pinned version (`v0.9.2`) |
+| 4 | `git ls-files '*.go' \| xargs -r gofumpt -l` | Lists non-conforming tracked Go files; on failure, prints unified diff and exits 1 |
+
+The check uses `git ls-files '*.go' | xargs -r gofumpt -l` to collect non-conforming files
+from tracked sources only. If any are found, their paths are printed along with a unified
+diff (`gofumpt -d`), and the job exits 1. The `-r` flag prevents `xargs` from running
+`gofumpt` when no Go files are piped (GNU coreutils, available on `ubuntu-latest`).
+
+Timeout: 5 minutes.
 
 ### shellcheck
 

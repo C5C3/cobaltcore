@@ -1,0 +1,50 @@
+{
+  "feature_id": "CC-0053",
+  "title": "Add Go formatting check with gofumpt to CI",
+  "date": "2026-04-09",
+  "summary": "Review #1 feedback from sourcery-ai[bot] fully addressed: (1) format-check CI job scoped to git-tracked Go files via `git ls-files '*.go' | xargs -r gofumpt -l` instead of `gofumpt -l .`, (2) GOFUMPT_VERSION wired into local dev via new Makefile targets (`make fmt`, `make format-check`, `make install-gofumpt`) with matching `GOFUMPT_VERSION ?= v0.9.2`. Documentation updated to reflect both changes. No existing CI jobs modified.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "CI format-check job logic is correct (exits 1 on violations, prints diff)", "checked": true},
+    {"item": "Makefile format-check mirrors CI check logic", "checked": true},
+    {"item": "Makefile fmt applies formatting to tracked files only", "checked": true},
+    {"item": "install-gofumpt installs at pinned version", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing Makefile section structure (section headers, .PHONY, comments)", "checked": true},
+    {"item": "Feature ID (CC-0053) included in all new comments", "checked": true},
+    {"item": "GOFUMPT_VERSION consistent between CI (v0.9.2) and Makefile (v0.9.2)", "checked": true},
+    {"item": "No dead code or unused variables", "checked": true},
+    {"item": "git ls-files scoping consistent between CI and Makefile targets", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No secrets or credentials in changes", "checked": true},
+    {"item": "No command injection vectors (inputs are static glob patterns)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "No existing CI jobs modified (diff shows only format-check changes)", "checked": true},
+    {"item": "Version pinning follows established CI pattern (env vars in ci.yaml)", "checked": true},
+    {"item": "Makefile targets follow existing structure conventions", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated logic (CI and Makefile share approach but serve different contexts)", "checked": true},
+    {"item": "No unnecessary abstractions", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "format-check exits 1 on first violation batch", "checked": true},
+    {"item": "Makefile format-check provides actionable fix instruction ('make fmt')", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "xargs -r prevents execution when no Go files found (GNU coreutils)", "checked": true},
+    {"item": "Empty file list handled correctly", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Makefile targets `fmt` and `format-check` use `xargs -r` which is GNU-specific. BSD xargs (macOS default) does not support `-r` and would fail with 'illegal option'. This is acceptable for CI (ubuntu-latest) and unlikely to cause issues in practice (the repo always has .go files), but macOS contributors would see an error. Consider documenting `brew install findutils` as a prerequisite or replacing `xargs -r` with a portable alternative like `xargs` without `-r` (safe here since the repo always has tracked .go files)."
+  ],
+  "next_steps": [],
+  "detected_patterns": []
+}

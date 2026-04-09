@@ -22,6 +22,11 @@ CONTROLLER_GEN ?= controller-gen
 # Default resolves via GOPATH so local runs work without manually exporting GOBIN.
 SETUP_ENVTEST ?= $(shell go env GOPATH)/bin/setup-envtest
 
+# CC-0053: Pin gofumpt version to match CI (single source of truth for local dev).
+# Must be kept in sync with GOFUMPT_VERSION in .github/workflows/ci.yaml.
+GOFUMPT_VERSION ?= v0.9.2
+GOFUMPT ?= gofumpt
+
 # Kubernetes version for envtest binary downloads (CC-0018).
 # Pin to a specific version for reproducible integration tests across runs.
 ENVTEST_K8S_VERSION ?= 1.35
@@ -108,6 +113,36 @@ lint:
 		echo "Linting operators/$$op module..."; \
 		(cd operators/$$op && golangci-lint run ./...); \
 	done
+
+# ============================================================================
+# Format Targets (CC-0053)
+# ============================================================================
+
+.PHONY: fmt
+# fmt formats all tracked Go files with gofumpt (CC-0053).
+# Only formats git-tracked files to skip generated, vendored, or tooling code.
+fmt:
+	@echo "Formatting Go files with gofumpt..."
+	@git ls-files '*.go' | xargs $(GOFUMPT) -w
+
+.PHONY: format-check
+# format-check verifies all tracked Go files conform to gofumpt formatting (CC-0053).
+# Mirrors the CI format-check job for local pre-commit validation.
+format-check:
+	@unformatted=$$(git ls-files '*.go' | xargs $(GOFUMPT) -l); \
+	if [ -n "$$unformatted" ]; then \
+		echo "The following files are not formatted with gofumpt:"; \
+		echo "$$unformatted"; \
+		echo "Run 'make fmt' to fix."; \
+		exit 1; \
+	fi; \
+	echo "Format check passed."
+
+.PHONY: install-gofumpt
+# install-gofumpt installs gofumpt at the pinned version (CC-0053).
+# Ensures local development uses the same version as CI.
+install-gofumpt:
+	go install mvdan.cc/gofumpt@$(GOFUMPT_VERSION)
 
 # ============================================================================
 # Code Generation Targets

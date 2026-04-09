@@ -58,8 +58,8 @@ PYTHON`
 // reconcileFernetKeys ensures that a Fernet keys Secret exists, a rotation
 // CronJob is configured, and a PushSecret backs up the keys to OpenBao.
 func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
-	keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
-
+	keystone *keystonev1alpha1.Keystone, configMapName string,
+) (ctrl.Result, error) {
 	// 1. Ensure the Fernet keys Secret exists.
 	secretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
 	secretKey := client.ObjectKey{Namespace: keystone.Namespace, Name: secretName}
@@ -174,8 +174,8 @@ func normalizedFernetMaxActiveKeys(keystone *keystonev1alpha1.Keystone) int {
 
 // createFernetKeysSecret generates Fernet keys and creates a Secret to store them.
 func (r *KeystoneReconciler) createFernetKeysSecret(ctx context.Context,
-	keystone *keystonev1alpha1.Keystone, secretName string) error {
-
+	keystone *keystonev1alpha1.Keystone, secretName string,
+) error {
 	numKeys := normalizedFernetMaxActiveKeys(keystone)
 
 	data := make(map[string][]byte, numKeys)
@@ -273,8 +273,10 @@ func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName st
 									// takes precedence over the compiled-in default (3) without needing
 									// to mount the ConfigMap. Uses the normalized value to stay
 									// consistent with the Secret's minimum floor of 3 (CC-0013).
-									{Name: "OS_fernet_tokens__max_active_keys",
-										Value: strconv.Itoa(normalizedFernetMaxActiveKeys(keystone))},
+									{
+										Name:  "OS_fernet_tokens__max_active_keys",
+										Value: strconv.Itoa(normalizedFernetMaxActiveKeys(keystone)),
+									},
 								},
 								VolumeMounts: []corev1.VolumeMount{
 									{Name: "fernet-keys", MountPath: "/etc/keystone/fernet-keys"},

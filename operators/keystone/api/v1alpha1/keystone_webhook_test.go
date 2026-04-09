@@ -447,11 +447,11 @@ func TestValidate_CredentialKeysEmptyRotationScheduleReturnsRequiredError(t *tes
 func TestValidate_ValidCronExpressions(t *testing.T) {
 	w := &KeystoneWebhook{}
 	expressions := []string{
-		"0 0 * * 0",    // weekly at midnight Sunday
-		"*/5 * * * *",  // every 5 minutes
-		"0 */6 * * *",  // every 6 hours
-		"30 2 1 * *",   // 2:30 AM on the 1st of each month
-		"0 0 * * 1-5",  // midnight weekdays
+		"0 0 * * 0",   // weekly at midnight Sunday
+		"*/5 * * * *", // every 5 minutes
+		"0 */6 * * *", // every 6 hours
+		"30 2 1 * *",  // 2:30 AM on the 1st of each month
+		"0 0 * * 1-5", // midnight weekdays
 	}
 
 	for _, expr := range expressions {
@@ -469,9 +469,9 @@ func TestValidate_InvalidCronExpressions(t *testing.T) {
 	w := &KeystoneWebhook{}
 	expressions := []string{
 		"not-a-cron",
-		"* * *",       // too few fields
-		"60 * * * *",  // minute out of range
-		"* 25 * * *",  // hour out of range
+		"* * *",      // too few fields
+		"60 * * * *", // minute out of range
+		"* 25 * * *", // hour out of range
 	}
 
 	for _, expr := range expressions {

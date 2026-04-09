@@ -1,0 +1,2163 @@
+{
+  "feature_id": "CC-0053",
+  "title": "Add Go formatting check with gofumpt to CI",
+  "slug": "add-go-formatting-check-with-gofumpt-to-ci",
+  "status": "completed",
+  "phase": "awaiting_external_review",
+  "summary": "",
+  "description": "# GitHub Issue #147: Add Go formatting check with gofumpt to CI pipeline\n\n**Category**: code quality | **Scope**: Small\n\n**Description**: There is no Go formatting check in the CI pipeline. `gofumpt` is a strict superset of `gofmt` that enforces additional formatting rules widely adopted in the Go community. A dedicated CI job should verify that all Go source files conform to `gofumpt` formatting and fail the pipeline if unformatted code is detected.\n\nProposed CI job:\n\n```yaml\nformat-check:\n  needs: [changes]\n  if: needs.changes.outputs.go == 'true'\n  runs-on: ubuntu-latest\n  timeout-minutes: 5\n  steps:\n    - uses: actions/checkout@v6\n    - uses: actions/setup-go@v6\n      with:\n        go-version-file: go.work\n    - run: |\n        go install mvdan.cc/gofumpt@latest\n        test -z \"$(gofumpt -l .)\" || { gofumpt -d .; exit 1; }\n```\n\n**Motivation**: Without an enforced formatting standard in CI, formatting inconsistencies accumulate over time and pollute diffs with whitespace-only changes, making code review harder. `gofumpt` goes beyond `gofmt` by enforcing stricter rules (e.g. removing unnecessary blank lines, grouping imports consistently) that reduce stylistic debates in reviews. Catching formatting issues in CI prevents them from reaching the main branch and ensures all contributors produce consistently formatted code regardless of their local editor setup.\n\n**Affected Areas**:\n- `.github/workflows/ci.yaml`\n- Go source files that do not yet conform to `gofumpt` formatting (to be reformatted as part of this issue)\n\n**Acceptance Criteria**:\n- [ ] New `format-check` CI job in `ci.yaml` gated on `needs.changes.outputs.go == 'true'`\n- [ ] Job installs `gofumpt` and checks all Go files in the repository\n- [ ] Job prints a diff of unformatted files and fails the pipeline when formatting violations are found\n- [ ] All existing Go source files are reformatted with `gofumpt` (one-time commit)\n- [ ] Existing CI jobs are not affected\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/147",
+  "stories": [
+    {
+      "title": "CI catches Go formatting violations automatically",
+      "role": "CI reviewer",
+      "want": "a dedicated CI job that detects Go files not conforming to gofumpt formatting",
+      "so_that": "unformatted code is caught before reaching the main branch and code reviews are not polluted with formatting-only changes",
+      "criteria": [
+        "format-check job runs on every PR and push to main when Go files change",
+        "Job exits with non-zero status when any Go file violates gofumpt formatting",
+        "Job succeeds silently (exit 0) when all Go files are correctly formatted",
+        "Job appears in GitHub PR status checks alongside lint, test, and verify-codegen"
+      ]
+    },
+    {
+      "title": "Developer sees clear diff output when format check fails",
+      "role": "developer",
+      "want": "the CI job to print a unified diff showing exactly what formatting changes are needed",
+      "so_that": "I can identify and fix formatting issues without guessing what gofumpt expects",
+      "criteria": [
+        "Job lists all non-conforming file paths when formatting violations exist",
+        "Job prints a unified diff (gofumpt -d) showing required changes for each file",
+        "Diff output uses standard unified diff format readable in CI logs",
+        "Job completes within 5 minutes timeout"
+      ]
+    },
+    {
+      "title": "All existing Go files pass format check from day one",
+      "role": "maintainer",
+      "want": "all existing Go source files reformatted with gofumpt in a one-time commit",
+      "so_that": "the format-check CI job passes immediately after being introduced and does not create a backlog of formatting fixes",
+      "criteria": [
+        "All 22 currently non-conforming Go files are reformatted with gofumpt",
+        "Reformatted files span internal/common/ (9 files) and operators/keystone/ (13 files)",
+        "Generated files (zz_generated.deepcopy.go) are not modified",
+        "All existing unit and integration tests pass after reformatting"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "description": "The format-check CI job SHALL be gated on needs.changes.outputs.go == 'true' so it only runs when Go source files change",
+      "priority": "SHALL",
+      "rationale": "Avoids wasting CI minutes on documentation-only or Helm-only changes, matching the gating pattern used by lint, test, test-integration, and verify-codegen jobs",
+      "scenarios": [
+        {
+          "name": "Go code changes trigger format-check",
+          "when": "a PR modifies files matching the go_common or operator path filters",
+          "then": "the format-check job runs",
+          "and_then": [
+            "the job appears in the PR status checks"
+          ]
+        },
+        {
+          "name": "Non-Go changes skip format-check",
+          "when": "a PR only modifies docs/ or helm/ files",
+          "then": "the format-check job is skipped",
+          "and_then": [
+            "the job shows as 'skipped' in the workflow run"
+          ]
+        },
+        {
+          "name": "Tag pushes always run format-check",
+          "when": "a v* tag is pushed",
+          "then": "the format-check job runs regardless of which files changed",
+          "and_then": [
+            "all gate jobs execute for release validation"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "description": "The format-check job SHALL install gofumpt at a pinned version and verify all Go source files in the repository conform to gofumpt formatting",
+      "priority": "SHALL",
+      "rationale": "Pinning the version ensures CI reproducibility — matching the CONTROLLER_GEN_VERSION pattern — and prevents unexpected failures from new gofumpt releases changing formatting rules",
+      "scenarios": [
+        {
+          "name": "gofumpt installed at pinned version",
+          "when": "the format-check job runs",
+          "then": "gofumpt is installed via go install mvdan.cc/gofumpt@${{ env.GOFUMPT_VERSION }}",
+          "and_then": [
+            "the version is defined in the workflow env section as GOFUMPT_VERSION: v0.9.2"
+          ]
+        },
+        {
+          "name": "All Go files checked",
+          "when": "gofumpt runs with -l flag on the repository root",
+          "then": "it checks every .go file in the workspace (internal/common/, operators/keystone/, operators/c5c3/)",
+          "and_then": [
+            "generated files (zz_generated.deepcopy.go) are also checked but already comply"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "description": "The format-check job SHALL print a unified diff of unformatted files and exit with a non-zero status when formatting violations are detected",
+      "priority": "SHALL",
+      "rationale": "Developers need actionable output to fix formatting issues; a silent failure or exit-code-only output does not help identify what to change",
+      "scenarios": [
+        {
+          "name": "Formatting violations produce diff and failure",
+          "when": "gofumpt -l . produces non-empty output (unformatted files exist)",
+          "then": "gofumpt -d . is run to print the unified diff, followed by exit 1",
+          "and_then": [
+            "the CI job fails and the diff is visible in the job logs"
+          ]
+        },
+        {
+          "name": "Clean formatting produces success",
+          "when": "gofumpt -l . produces empty output (all files formatted)",
+          "then": "the test -z check passes and the job exits with status 0",
+          "and_then": [
+            "no diff output is printed"
+          ]
+        },
+        {
+          "name": "Error running gofumpt fails the job",
+          "when": "gofumpt encounters an error (e.g., syntax error in a Go file)",
+          "then": "the job fails with the gofumpt error output",
+          "and_then": [
+            "the CI job status is 'failure'"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "description": "All existing Go source files SHALL be reformatted with gofumpt so the format-check job passes from its initial introduction",
+      "priority": "SHALL",
+      "rationale": "Introducing a formatting check without first reformatting existing code would cause the new job to fail immediately, blocking all PRs until the backlog is cleared",
+      "scenarios": [
+        {
+          "name": "All files pass after reformatting",
+          "when": "gofumpt -l . is run after the one-time reformatting commit",
+          "then": "the output is empty (no files listed)",
+          "and_then": [
+            "the format-check CI job passes"
+          ]
+        },
+        {
+          "name": "Reformatting does not break tests",
+          "when": "all 22 Go files are reformatted with gofumpt -w",
+          "then": "all existing unit tests (make test) pass",
+          "and_then": [
+            "all integration tests (make test-integration) pass"
+          ]
+        },
+        {
+          "name": "Generated files are not modified",
+          "when": "gofumpt -w . is run on the repository",
+          "then": "zz_generated.deepcopy.go files remain unchanged",
+          "and_then": [
+            "verify-codegen CI job continues to pass"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "description": "Existing CI jobs SHALL NOT be affected by the addition of the format-check job — no changes to their needs, if conditions, or step configurations",
+      "priority": "SHALL",
+      "rationale": "The format-check job is a new standalone gate job running in parallel with existing jobs; modifying downstream job dependencies could introduce unexpected CI behavior or failures",
+      "scenarios": [
+        {
+          "name": "Existing job needs lists unchanged",
+          "when": "the format-check job is added to ci.yaml",
+          "then": "no existing job's needs array is modified",
+          "and_then": [
+            "e2e-operator, tempest, and other downstream jobs retain their current dependency chains"
+          ]
+        },
+        {
+          "name": "Existing job if conditions unchanged",
+          "when": "the format-check job is added to ci.yaml",
+          "then": "no existing job's if condition is modified",
+          "and_then": [
+            "all existing gating logic remains identical"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "description": "The format-check job SHALL use SHA-pinned GitHub Action versions and a pinned gofumpt version, matching the existing ci.yaml conventions for supply chain security and CI reproducibility",
+      "priority": "SHALL",
+      "rationale": "All actions in the existing workflow use SHA-pinned references with version comments (e.g., actions/checkout@<sha> # v6) and tool versions are centralized in the env section; the format-check job must follow the same pattern",
+      "scenarios": [
+        {
+          "name": "Actions use SHA pins matching existing jobs",
+          "when": "the format-check job references actions/checkout and actions/setup-go",
+          "then": "both use the same SHA pins as other jobs in ci.yaml (checkout@de0fac2e..., setup-go@4b73464b...)",
+          "and_then": [
+            "SHA pins have version comments (# v6) for readability"
+          ]
+        },
+        {
+          "name": "gofumpt version pinned in env section",
+          "when": "the CI workflow env section is inspected",
+          "then": "GOFUMPT_VERSION is defined alongside CONTROLLER_GEN_VERSION",
+          "and_then": [
+            "the format-check job references ${{ env.GOFUMPT_VERSION }} in the go install command"
+          ]
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1.1",
+      "title": "Reformat all existing Go source files with gofumpt (CC-0053 REQ-004)",
+      "description": "Run gofumpt -w . from the repository root to reformat all 22 non-conforming Go files. Files span internal/common/ (9 files: job/job_test.go, plugins/plugins_test.go, policy/policy_test.go, secrets/integration_test.go, secrets/secrets.go, secrets/secrets_test.go, testutil/envtest/setup.go, testutil/simulators/simulators.go, testutil/simulators/simulators_test.go) and operators/keystone/ (13 files: api/v1alpha1/keystone_webhook_test.go, internal/controller/integration_test.go, internal/controller/keystone_controller_test.go, internal/controller/reconcile_config.go, internal/controller/reconcile_credential.go, internal/controller/reconcile_credential_test.go, internal/controller/reconcile_fernet.go, internal/controller/reconcile_fernet_test.go, internal/controller/reconcile_hpa_test.go, internal/controller/reconcile_networkpolicy.go, internal/controller/reconcile_secrets.go, internal/testutil/envtest_setup.go, main.go). Verify with gofumpt -l . returning empty output. Run make build to confirm compilation succeeds.",
+      "level": 1,
+      "estimate_minutes": 10,
+      "status": "done",
+      "requirements": [
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "2.1",
+      "title": "Add format-check CI job to .github/workflows/ci.yaml (CC-0053 REQ-001, REQ-002, REQ-003, REQ-005, REQ-006)",
+      "description": "Add GOFUMPT_VERSION: v0.9.2 to the workflow env section (after CONTROLLER_GEN_VERSION). Add a new format-check job after the lint job block with: needs: [changes], if: needs.changes.outputs.go == 'true', runs-on: ubuntu-latest, timeout-minutes: 5. Steps: (1) actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6, (2) actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6 with go-version-file: go.work, (3) run block with CC-0053 comment: go install mvdan.cc/gofumpt@${{ env.GOFUMPT_VERSION }} then test -z \"$(gofumpt -l .)\" || { gofumpt -d .; exit 1; }. Do NOT modify any existing job's needs, if, or steps.",
+      "level": 2,
+      "estimate_minutes": 15,
+      "status": "done",
+      "requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-005",
+        "REQ-006"
+      ]
+    },
+    {
+      "id": "3.1",
+      "title": "Update docs/reference/ci-workflow.md with format-check job documentation (CC-0053 REQ-001, REQ-002, REQ-003)",
+      "description": "Update docs/reference/ci-workflow.md: (1) Add CC-0053 to the frontmatter feature list. (2) Add GOFUMPT_VERSION to the Environment Variables section table with description. (3) Add format-check as a gate job in the Job Dependency DAG ASCII art (alongside lint, shellcheck, verify-codegen, test, test-integration). (4) Add a new ### format-check section after ### lint, following the same documentation pattern: opening paragraph with CC-0053 reference, step table (Step, Action, Details) documenting checkout, setup-go, and the gofumpt install+check run step, and explanation of the two-phase check command (gofumpt -l for listing, gofumpt -d for diff). Include note that gofumpt is a strict superset of gofmt.",
+      "level": 3,
+      "estimate_minutes": 15,
+      "status": "done",
+      "requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003"
+      ]
+    }
+  ],
+  "test_specifications": [
+    {
+      "test_file": ".github/workflows/ci.yaml",
+      "test_function": "verify format-check job has needs: [changes] and go gate condition [ci-config]",
+      "story": "CI catches Go formatting violations automatically",
+      "expected": "format-check job has needs: [changes] and if: needs.changes.outputs.go == 'true', matching the lint job pattern",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": ".github/workflows/ci.yaml",
+      "test_function": "verify format-check skipped when changes.outputs.go is false [ci-config]",
+      "story": "CI catches Go formatting violations automatically",
+      "expected": "When only docs/ or helm/ files change, the changes job outputs go=false and format-check is skipped",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": ".github/workflows/ci.yaml",
+      "test_function": "verify gofumpt installed at pinned version from env.GOFUMPT_VERSION [ci-config]",
+      "story": "CI catches Go formatting violations automatically",
+      "expected": "Job runs go install mvdan.cc/gofumpt@${{ env.GOFUMPT_VERSION }} where GOFUMPT_VERSION: v0.9.2 is defined in the workflow env section",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": ".github/workflows/ci.yaml",
+      "test_function": "verify gofumpt checks all Go files from repository root [ci-config]",
+      "story": "CI catches Go formatting violations automatically",
+      "expected": "Job runs gofumpt -l . from the repository root, checking all Go files across internal/common/, operators/keystone/, operators/c5c3/",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": ".github/workflows/ci.yaml",
+      "test_function": "verify diff output printed and exit 1 on formatting violations [ci-config]",
+      "story": "Developer sees clear diff output when format check fails",
+      "expected": "Command structure is: test -z \"$(gofumpt -l .)\" || { gofumpt -d .; exit 1; } — prints unified diff then fails",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": ".github/workflows/ci.yaml",
+      "test_function": "verify clean exit 0 when all files pass gofumpt [ci-config]",
+      "story": "Developer sees clear diff output when format check fails",
+      "expected": "When all files pass gofumpt, test -z succeeds and the job exits 0 without printing any diff output",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "n/a (local verification: gofumpt -l .)",
+      "test_function": "verify gofumpt -l . returns empty output after reformatting all 22 files [local]",
+      "story": "All existing Go files pass format check from day one",
+      "expected": "After running gofumpt -w ., running gofumpt -l . produces zero output lines — all 22 files reformatted",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "n/a (local verification: make build && make test)",
+      "test_function": "verify make build and make test pass after reformatting [local]",
+      "story": "All existing Go files pass format check from day one",
+      "expected": "make build && make test succeed — gofumpt reformatting is whitespace-only and does not change program semantics",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": ".github/workflows/ci.yaml",
+      "test_function": "verify no existing job needs arrays are modified [ci-config]",
+      "story": "CI catches Go formatting violations automatically",
+      "expected": "git diff of ci.yaml shows only additions (new format-check job block + GOFUMPT_VERSION env), no changes to existing job needs/if/steps",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": ".github/workflows/ci.yaml",
+      "test_function": "verify e2e-operator and tempest needs lists are unchanged [ci-config]",
+      "story": "CI catches Go formatting violations automatically",
+      "expected": "e2e-operator needs: [changes, lint, shellcheck, test, test-integration, verify-codegen] — format-check NOT added",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": ".github/workflows/ci.yaml",
+      "test_function": "verify SHA-pinned checkout and setup-go actions match existing jobs [ci-config]",
+      "story": "CI catches Go formatting violations automatically",
+      "expected": "format-check uses actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6 and actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": ".github/workflows/ci.yaml",
+      "test_function": "verify GOFUMPT_VERSION defined in workflow env section alongside CONTROLLER_GEN_VERSION [ci-config]",
+      "story": "CI catches Go formatting violations automatically",
+      "expected": "Workflow env section contains GOFUMPT_VERSION: v0.9.2 on the line after CONTROLLER_GEN_VERSION: v0.20.1",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestRunJob_creates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestRunJob_existingIncomplete",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestRunJob_existingComplete",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestRunJob_existingFailed",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestRunJob_existingComplete_specChanged",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestRunJob_existingComplete_specUnchanged",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestRunJob_existingComplete_noHashAnnotation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestRunJob_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestRunJob_existingComplete_specChanged_alreadyExists",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestEnsureCronJob_creates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestEnsureCronJob_updates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestEnsureCronJob_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestIsJobComplete_true",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestIsJobComplete_false_noConditions",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestIsJobComplete_false_failed",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestIsJobComplete_false_completeNotTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestIsJobFailed_true",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestIsJobFailed_false_noConditions",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/job/job_test.go",
+      "test_function": "TestIsJobFailed_false_failedNotTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline_emptyPipelineNameReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline_emptyPipelineReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline_duplicateMiddlewareNameReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline_emptyMiddlewareNameReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline_emptyFilterFactoryReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline_emptyBaseFiltersEntryReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline_unknownPositionReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline_zeroValuePositionReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPluginConfig",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPluginConfig_duplicateConfigSectionReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPluginConfig_emptyNameReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPluginConfig_emptyConfigSectionReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPluginConfig_doesNotMutateInput",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline_doesNotMutateInputs",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipelineINI",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline_AppFactory",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline_BaseFilterFactories",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline_CompositeRoutes",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipelineINI_FullKeystoneSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipelineINI_duplicateMiddlewareNameReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestRenderPolicyYAML",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestRenderPolicyYAML_sortedOutput",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestMergePolicies",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestMergePolicies_doesNotMutateInputs",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestValidatePolicyRules",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestValidatePolicyRules_nilFldPathDefaultsToRules",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestLoadPolicyFromConfigMap_success",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestLoadPolicyFromConfigMap_missingKey",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestLoadPolicyFromConfigMap_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestLoadPolicyFromConfigMap_emptyValue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestLoadPolicyFromConfigMap_nullYAML",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/policy/policy_test.go",
+      "test_function": "TestLoadPolicyFromConfigMap_invalidYAML",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/integration_test.go",
+      "test_function": "TestIntegration_WaitForExternalSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/integration_test.go",
+      "test_function": "TestIntegration_IsSecretReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/integration_test.go",
+      "test_function": "TestIntegration_GetSecretValue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/integration_test.go",
+      "test_function": "TestIntegration_EnsurePushSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/integration_test.go",
+      "test_function": "TestIntegration_EnsurePushSecret_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestWaitForExternalSecret_ready",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestWaitForExternalSecret_notReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestWaitForExternalSecret_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestIsSecretReady_exists",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestIsSecretReady_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestIsSecretReady_allExpectedKeysPresent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestIsSecretReady_missingExpectedKey",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestIsSecretReady_noExpectedKeysChecksExistenceOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestGetSecretValue_found",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestGetSecretValue_secretNotFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestGetSecretValue_keyNotPresent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestEnsurePushSecret_creates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestEnsurePushSecret_updates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/secrets/secrets_test.go",
+      "test_function": "TestEnsurePushSecret_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMariaDBReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMariaDBReady_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMariaDBReady_zeroReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMariaDBReady_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMemcachedReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMemcachedReady_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMemcachedReady_emptyServerList",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateMemcachedReady_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateExternalSecretSync",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateExternalSecretSync_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateExternalSecretSync_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateJobComplete",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateJobComplete_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateJobComplete_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateDeploymentReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateDeploymentReady_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateDeploymentReady_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateDeploymentReady_IsDeploymentReadyReturnsTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/simulators/simulators_test.go",
+      "test_function": "TestSimulateDeploymentReady_zeroReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_SetsZeroValueDefaults",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_DoesNotSetFernetRotationSchedule",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_ZeroValueObjectRemainsInvalid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_PreservesExplicitValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_CacheBackendAppliedWhenEmpty",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_UWSGINilRemainsNil",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_UWSGIZeroValuedDefaultsProcessesAndThreads",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_UWSGIDefaultsProcessesAndThreadsOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_UWSGIDoesNotOverwriteHTTPKeepAlive",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_UWSGIZeroProcessesAndThreadsDoNotOverrideExplicitFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_UWSGIPreservesExplicitValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_ReplicasZeroRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_ReplicasNegativeRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_ReplicasOneAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_MaxActiveKeysBelowMinimumRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_MaxActiveKeysZeroAllowed",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_MaxActiveKeysThreeAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_MaxActiveKeysAboveMinimumAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CredentialKeysMaxActiveKeysBelowMinimumRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CredentialKeysMaxActiveKeysZeroAllowed",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CredentialKeysMaxActiveKeysThreeAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CredentialKeysValidCronExpressions",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CredentialKeysInvalidCronExpressions",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CredentialKeysEmptyRotationScheduleReturnsRequiredError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_ValidCronExpressions",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_InvalidCronExpressions",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_EmptyRotationScheduleReturnsRequiredError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CacheWithServersOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CacheWithClusterRefOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CacheBothClusterRefAndServersRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_CacheNeitherClusterRefNorServersRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_DatabaseWithHostOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_DatabaseWithClusterRefOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_DatabaseBothClusterRefAndHostRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_DatabaseNeitherClusterRefNorHostRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_UniquePlugins",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_DuplicatePluginConfigSection",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_NoPlugins",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_PolicyOverridesNil",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_PolicyOverridesWithRulesOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_PolicyOverridesWithConfigMapRefOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_PolicyOverridesWithBothSources",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_PolicyOverridesWithNoSources",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_EmptyPolicyRuleNameRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_NonEmptyPolicyRuleNamesAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_UWSGIValidAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_UWSGINilSkipsValidation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_UWSGIProcessesBelowMinimumRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_UWSGIThreadsBelowMinimumRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_UWSGIBothInvalidReportsBothErrors",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_UWSGIBoundaryValueOneAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Valid_CPUOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Valid_MemoryOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Valid_Both",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Invalid_NoTargets",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Invalid_MaxReplicasZero",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Invalid_MinExceedsMax",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Invalid_ImplicitMinExceedsMax",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Valid_ImplicitMinEqualsMax",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Invalid_CPUUtilizationOutOfRange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Invalid_MemoryUtilizationOutOfRange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Valid_BoundaryValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_Autoscaling_Nil_IsValid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_NetworkPolicy_Nil_IsValid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_NetworkPolicy_WithIngress_IsValid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_NetworkPolicy_EmptyIngress_Rejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidateCreate_RunsAllValidations",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidateUpdate_RunsSameValidation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidateUpdate_ResourcesRequestExceedsLimit",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidateDelete_AlwaysAllows",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_ResourcesSetWhenNil",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_ResourcesSetWhenEmpty",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_ResourcesPreservedWhenExplicit",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestDefault_ResourcesPreservedWhenPartial",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_ResourcesValidAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_ResourcesCPURequestExceedsLimitRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_ResourcesMemoryRequestExceedsLimitRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_ResourcesBothExceedReportsBothErrors",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_ResourcesNilAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_ResourcesRequestsOnlyAccepted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestKeystoneWebhook_ImplementsInterfaces",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FullReconcile_Brownfield",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_ConditionProgression",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_ResourceCreation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_StatusEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_ObservedGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FullReconcile_Managed",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_CronJobDetailedSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_BootstrapJobDetailedSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PDBSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PDBUpdatedOnReplicaChange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HPASpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HPAUpdatedOnAutoscalingChange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HPADeletedWhenAutoscalingRemoved",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_NotFound_ReturnsEmptyResult",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_SetsAllSubConditionsTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_AggregatesReadyCondition",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_StatusUpdatePersisted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_Idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSetupWithManager_RegistersWithoutError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_AllTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_OneFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_MissingCondition",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_Empty",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_EarlyReturnOnSecretsNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_EarlyReturnOnDatabaseNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_SequentialProgression",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_ReadyFalseWhenDeploymentNotAvailable",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_ObservedGenerationTracked",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSecretToKeystoneMapper_ReferencedSecrets",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestCommonLabels_ExactKeyValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSelectorLabels_ExactKeyValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSelectorLabels_SubsetOfCommonLabels",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSecretToKeystoneMapper_OwnedSecrets",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_NoSecret_CreatesSecretAndRequeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_SecretAlreadyExists",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_CronJobScheduleUpdated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_GeneratedKeysAreValid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_CronJobScheduleMatchesSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_PushSecretReferencesCorrectSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestCredentialKeyGeneration_Valid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestCredentialKeyGeneration_Unique",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_MinActiveKeysFloor",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_ConditionMessages",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestCredentialRotationCronJob_SecurityContext",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_CronJobSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_NoSecret_CreatesSecretAndRequeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_SecretAlreadyExists",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_CronJobScheduleUpdated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_GeneratedKeysAreValid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_CronJobScheduleMatchesSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_PushSecretReferencesCorrectSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestGenerateFernetKey_Valid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestGenerateFernetKey_Unique",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_MinActiveKeysFloor",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_ConditionMessages",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestFernetRotationCronJob_SecurityContext",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_CronJobSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestReconcileHPA_AutoscalingSet_CreatesHPA",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestReconcileHPA_ConditionObservedGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestReconcileHPA_AutoscalingEnabled_HPAUpdated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestReconcileHPA_AutoscalingNil_NoExistingHPA_SetsHPANotRequired",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestReconcileHPA_AutoscalingNil_ExistingHPA_DeletesHPA",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestReconcileHPA_EnsureError_Propagated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestReconcileHPA_DeleteError_Propagated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestBuildKeystoneHPA_ScaleTargetRef",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestBuildKeystoneHPA_Labels",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestBuildKeystoneHPA_MinReplicasDefaultsToSpecReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestBuildKeystoneHPA_ExplicitMinReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestBuildKeystoneHPA_MaxReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestBuildKeystoneHPA_CPUMetricOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestBuildKeystoneHPA_MemoryMetricOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestBuildKeystoneHPA_BothCPUAndMemoryMetrics",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestBuildKeystoneHPA_MinReplicasDefaultIndependentOfPointer",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    }
+  ],
+  "affected_files": [],
+  "similar_patterns": [],
+  "review_criteria": [
+    "gofumpt -l . returns empty output after reformatting (all 22 files pass, 0 in internal/common and operators/keystone)",
+    "make build succeeds after reformatting — no compilation errors from whitespace-only changes",
+    "format-check job uses needs: [changes] and if: needs.changes.outputs.go == 'true' (matching lint job pattern)",
+    "GOFUMPT_VERSION: v0.9.2 pinned in workflow env section and referenced via ${{ env.GOFUMPT_VERSION }} in go install command",
+    "Actions use identical SHA pins as existing ci.yaml jobs: checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd, setup-go@4b73464bb391d4059bd26b0524d20df3927bd417",
+    "No existing CI jobs modified — diff of ci.yaml shows only additions (new job block + env variable line), zero modifications to existing lines",
+    "docs/reference/ci-workflow.md updated: format-check section with step table, Job Dependency DAG updated, Environment Variables table updated, frontmatter includes CC-0053",
+    "Job timeout-minutes: 5 matching lightweight check job convention (changes, shellcheck)"
+  ],
+  "implementation_notes": "Architecture: The format-check job follows the same pattern as the existing lint job — a lightweight gate job that runs in parallel with test jobs and blocks merge via branch protection rules. It is positioned in ci.yaml after the lint job block for logical grouping of code quality checks.\n\ngofumpt v0.9.2 is a strict superset of gofmt; all gofmt-valid code is gofumpt-valid, but gofumpt enforces additional rules (unnecessary blank line removal, consistent import grouping, redundant type declarations). Reformatting is whitespace-only and does not change program semantics.\n\nVersion pinning: GOFUMPT_VERSION is added to the workflow env section alongside CONTROLLER_GEN_VERSION (CC-0018 pattern), ensuring CI reproducibility. The job uses the exact same SHA-pinned checkout (de0fac2e...) and setup-go (4b73464b...) actions as all other Go jobs.\n\nCommand: 'test -z \"$(gofumpt -l .)\" || { gofumpt -d .; exit 1; }' — first checks if any files are non-conforming (gofumpt -l lists them), then prints the diff (gofumpt -d) and fails. This two-step approach avoids printing diffs on clean runs.\n\nPotential pitfall: gofumpt version upgrades may change formatting rules — always update the version pin explicitly and reformat in the same PR. Never use @latest in CI.\n\nThe feature adds a CC-0053 comment to the format-check job and GOFUMPT_VERSION env var for traceability.",
+  "status_history": {
+    "draft": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-09T20:12:18.668701"
+    },
+    "preparing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-09T20:12:18.921810"
+    },
+    "prepared": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-09T20:18:52.359463"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-09T20:19:46.033425"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-09T20:50:45.029034"
+    }
+  },
+  "github_pr": "https://github.com/C5C3/forge/pull/158",
+  "pr_number": 158,
+  "execution_history": [
+    {
+      "run_id": "e57dc0c1-1b9f-41ec-8812-18345f207d8d",
+      "timestamp": "2026-04-09T20:18:52.359499",
+      "total_duration": 390.51331400871277,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "prepare",
+          "duration": 390.51331400871277,
+          "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "4032659e-16e7-4343-83fe-cd1de7a6a571",
+      "timestamp": "2026-04-09T20:33:16.796520",
+      "total_duration": 689.3769204616547,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (1 tasks)",
+          "duration": 122.2207236289978,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (1 tasks)",
+          "duration": 210.00649404525757,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (1 tasks)",
+          "duration": 86.92320656776428,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0053] Code Review",
+          "duration": 185.1557366847992,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0053] Improvements",
+          "duration": 33.99738073348999,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0053] Simplify",
+          "duration": 51.073378801345825,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "8ccd6279-f209-4911-8a30-4d129bec0729",
+      "timestamp": "2026-04-09T20:47:01.736093",
+      "total_duration": 604.7343561649323,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 604.7343561649323,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    }
+  ]
+}

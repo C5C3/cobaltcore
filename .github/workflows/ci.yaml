@@ -19,6 +19,7 @@ env:
   IMAGE_PREFIX: ghcr.io/c5c3
   # CC-0018: Pin tool versions for CI reproducibility (single source of truth).
   CONTROLLER_GEN_VERSION: v0.20.1
+  GOFUMPT_VERSION: v0.9.2  # CC-0053
 
 concurrency:
   group: ${{ github.ref }}-${{ github.workflow }}
@@ -124,6 +125,33 @@ jobs:
           install-only: true
       - name: Run lint
         run: make lint
+
+  # CC-0053: Verify all Go files conform to gofumpt formatting.
+  # Runs gofumpt -l to detect non-conforming files, then prints a unified
+  # diff (gofumpt -d) on failure so developers can see exactly what to fix.
+  format-check:
+    needs: [changes]
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+        with:
+          go-version-file: go.work
+      - name: Install gofumpt
+        run: go install mvdan.cc/gofumpt@${{ env.GOFUMPT_VERSION }}
+      # CC-0053: Only check git-tracked Go files to skip generated, vendored,
+      # or tooling code that may not follow gofumpt conventions (review #1).
+      - name: Check formatting
+        run: |
+          unformatted=$(git ls-files '*.go' | xargs -r gofumpt -l)
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not formatted with gofumpt:"
+            echo "$unformatted"
+            git ls-files '*.go' | xargs -r gofumpt -d
+            exit 1
+          fi
 
   # CC-0010: Validate shell scripts with shellcheck to catch scripting issues
   # early.  shellcheck is pre-installed on ubuntu-latest runners.

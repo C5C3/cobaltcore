@@ -13,8 +13,8 @@ import (
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -83,7 +83,7 @@ func TestReconcileHPA_AutoscalingSet_CreatesHPA(t *testing.T) {
 	s := hpaTestScheme()
 	ks := hpaTestKeystone()
 	ks.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{
-		MaxReplicas:         10,
+		MaxReplicas:          10,
 		TargetCPUUtilization: int32Ptr(80),
 	}
 	r := newHPATestReconciler(s, ks)
@@ -115,7 +115,7 @@ func TestReconcileHPA_ConditionObservedGeneration(t *testing.T) {
 	ks := hpaTestKeystone()
 	ks.Generation = 7
 	ks.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{
-		MaxReplicas:         10,
+		MaxReplicas:          10,
 		TargetCPUUtilization: int32Ptr(80),
 	}
 	r := newHPATestReconciler(s, ks)
@@ -145,7 +145,7 @@ func TestReconcileHPA_AutoscalingEnabled_HPAUpdated(t *testing.T) {
 	s := hpaTestScheme()
 	ks := hpaTestKeystone()
 	ks.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{
-		MaxReplicas:         10,
+		MaxReplicas:          10,
 		TargetCPUUtilization: int32Ptr(80),
 	}
 	r := newHPATestReconciler(s, ks)
@@ -242,7 +242,7 @@ func TestReconcileHPA_EnsureError_Propagated(t *testing.T) {
 	s := hpaTestScheme()
 	ks := hpaTestKeystone()
 	ks.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{
-		MaxReplicas:         10,
+		MaxReplicas:          10,
 		TargetCPUUtilization: int32Ptr(80),
 	}
 
@@ -325,7 +325,7 @@ func TestBuildKeystoneHPA_ScaleTargetRef(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := hpaTestKeystone()
 	ks.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{
-		MaxReplicas:         10,
+		MaxReplicas:          10,
 		TargetCPUUtilization: int32Ptr(80),
 	}
 
@@ -342,7 +342,7 @@ func TestBuildKeystoneHPA_Labels(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := hpaTestKeystone()
 	ks.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{
-		MaxReplicas:         10,
+		MaxReplicas:          10,
 		TargetCPUUtilization: int32Ptr(80),
 	}
 
@@ -358,7 +358,7 @@ func TestBuildKeystoneHPA_MinReplicasDefaultsToSpecReplicas(t *testing.T) {
 	ks := hpaTestKeystone()
 	ks.Spec.Replicas = 3
 	ks.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{
-		MaxReplicas:         10,
+		MaxReplicas:          10,
 		TargetCPUUtilization: int32Ptr(80),
 		// MinReplicas is nil — should default to spec.replicas.
 	}
@@ -374,8 +374,8 @@ func TestBuildKeystoneHPA_ExplicitMinReplicas(t *testing.T) {
 	ks := hpaTestKeystone()
 	ks.Spec.Replicas = 3
 	ks.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{
-		MinReplicas:         int32Ptr(2),
-		MaxReplicas:         10,
+		MinReplicas:          int32Ptr(2),
+		MaxReplicas:          10,
 		TargetCPUUtilization: int32Ptr(80),
 	}
 
@@ -389,7 +389,7 @@ func TestBuildKeystoneHPA_MaxReplicas(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := hpaTestKeystone()
 	ks.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{
-		MaxReplicas:         15,
+		MaxReplicas:          15,
 		TargetCPUUtilization: int32Ptr(80),
 	}
 
@@ -402,7 +402,7 @@ func TestBuildKeystoneHPA_CPUMetricOnly(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := hpaTestKeystone()
 	ks.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{
-		MaxReplicas:         10,
+		MaxReplicas:          10,
 		TargetCPUUtilization: int32Ptr(80),
 	}
 
@@ -421,7 +421,7 @@ func TestBuildKeystoneHPA_MemoryMetricOnly(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := hpaTestKeystone()
 	ks.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{
-		MaxReplicas:            10,
+		MaxReplicas:             10,
 		TargetMemoryUtilization: int32Ptr(70),
 	}
 
@@ -440,7 +440,7 @@ func TestBuildKeystoneHPA_BothCPUAndMemoryMetrics(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := hpaTestKeystone()
 	ks.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{
-		MaxReplicas:            10,
+		MaxReplicas:             10,
 		TargetCPUUtilization:    int32Ptr(80),
 		TargetMemoryUtilization: int32Ptr(70),
 	}
@@ -463,7 +463,7 @@ func TestBuildKeystoneHPA_MinReplicasDefaultIndependentOfPointer(t *testing.T) {
 	ks := hpaTestKeystone()
 	ks.Spec.Replicas = 5
 	ks.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{
-		MaxReplicas:         10,
+		MaxReplicas:          10,
 		TargetCPUUtilization: int32Ptr(80),
 	}
 
