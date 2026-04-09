@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Git refs for OpenStack components (tags, branches, or commit SHAs).
+# This file is the single source of truth for what version is built per release.
+# Adding a new component is a single-line addition.
+keystone: "29.0.0"

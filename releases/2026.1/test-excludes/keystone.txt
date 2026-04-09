@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# stestr exclude-list for Keystone 2026.1 (CC-0051 REQ-010)
+#
+# One regex pattern per line. Lines starting with # are comments.
+# Blank lines are ignored. Patterns are matched against test IDs.
+#
+# Exclude tests that depend on LDAP backend (requires external LDAP server)
+keystone\.tests\.unit\.identity\.test_backends_ldap\.
+keystone\.tests\.unit\.identity\.test_ldap_pool_livetest\.
+
+# Exclude federation/mapping tests that require a live external IdP (SAML2/OAuth2 not available in CI)
+keystone\.tests\.unit\.auth\.test_plugins\.TestMappedAuth\.
+
+# Exclude tests sensitive to filesystem timing (tmpdir race conditions in CI)
+keystone\.tests\.unit\.token\.test_fernet_provider\.TestFernetKeyRotation\.test_rotation_with_max_active_keys

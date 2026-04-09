@@ -1,0 +1,97 @@
+{
+  "summary": "CC-0051 adds OpenStack 2026.1 release configuration (5 files under releases/2026.1/) and extends CI infrastructure to build/test Keystone 2026.1 alongside 2025.2. Changes span releases/, tests/e2e/, tests/tempest/, hack/, .github/workflows/, and docs/. No operator Go code changes — all changes are infrastructure/config/test/docs only. The implementation follows established patterns (Chainsaw E2E, Tempest config, CI script extraction, SPDX headers). verify_release_config.sh was correctly refactored from hardcoded 2025.2 paths to dynamic releases/*/ iteration. CI workflows are properly parameterized with release matrices. Two documentation gaps remain in the merge-tempest-image tags table and the 'Adding a New Release' file listing.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "E2E Chainsaw test for basic-deployment-2026-1 follows established pattern with 6 steps, JMESPath assertions, unique CR name", "checked": true},
+    {"item": "Tempest config directory for keystone-2026-1 follows per-service pattern with tempest.conf, include/exclude lists", "checked": true},
+    {"item": "verify_release_config.sh tests 1,2,4 iterate all releases/*/ directories dynamically", "checked": true},
+    {"item": "No hardcoded releases/2025.2/ paths remain in verify_release_config.sh", "checked": true},
+    {"item": "E2E CR uses unique name (keystone-basic-2026-1) and unique database (keystone_basic_2026_1) for parallel execution", "checked": true},
+    {"item": "Tempest CR uses unique name (keystone-tempest-2026-1) and unique database (keystone_tempest_2026_1)", "checked": true},
+    {"item": "tempest.conf endpoint (keystone-tempest-2026-1-api) matches CR name + operator naming convention", "checked": true},
+    {"item": "CI workflow tempest matrix entries have unique artifact names (tempest-<release>-results)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing SPDX Apache-2.0 header pattern on all new files", "checked": true},
+    {"item": "verify_release_config.sh refactoring preserves all assertions and adds found_any guards", "checked": true},
+    {"item": "CI scripts use env-var parameterization pattern (RELEASE, CONFIG_DIR, TEMPEST_IMAGE, SERVICE_K8S_NAME)", "checked": true},
+    {"item": "generate-matrix correctly produces tempest-matrix (release×platform) and tempest-release-matrix (release-only)", "checked": true},
+    {"item": "No hardcoded releases/2025.2/ references remain in build-images.yaml", "checked": true},
+    {"item": "No hardcoded releases/2025.2/ references remain in ci.yaml", "checked": true},
+    {"item": "Cache scope and artifact names include matrix.release to prevent cross-release collisions", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No secrets or credentials in config files (admin_password uses ${KEYSTONE_ADMIN_PASSWORD} placeholder)", "checked": true},
+    {"item": "No new shell injection vectors (SERVICE_K8S_NAME uses ${VAR:-default} pattern)", "checked": true},
+    {"item": "GitHub Actions SHA-pinned action references maintained", "checked": true},
+    {"item": "No operator code changes that could introduce security issues", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "No operator Go code changes required (all config/test/CI/docs)", "checked": true},
+    {"item": "Multi-release approach uses matrix strategy (not job duplication)", "checked": true},
+    {"item": "generate-matrix dynamic discovery avoids manual workflow edits for future releases", "checked": true},
+    {"item": "Tempest image tags changed from :latest to :<release> preventing cross-release clobbering", "checked": true},
+    {"item": "E2E tests coexist in same kind cluster with unique CR names and database names", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated workflow jobs — uses matrix strategy", "checked": true},
+    {"item": "ci-run-tempest.sh SERVICE_K8S_NAME parameterized with sensible default", "checked": true},
+    {"item": "No over-engineering — straightforward release config mirroring", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "verify_release_config.sh found_any guard catches missing release directories", "checked": true},
+    {"item": "generate-matrix empty-dirs guard produces empty matrices", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "ci-run-tempest.sh sed handles both FQDN and short DNS forms for service URL replacement", "checked": true},
+    {"item": "tempest matrix fail-fast: false ensures both releases are tested independently", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "D6",
+      "severity": "MAJOR",
+      "description": "Stale image tags table in tempest-test-infrastructure.md merge-tempest-image section. The implementation changed tempest image tagging from ':latest' to ':<release>' (e.g., ':2025.2', ':2026.1') and from ':<sha>' to ':<release>-<sha>', but the documentation tags table was not updated. The SBOM filename and SARIF category also became release-scoped but the supply chain table still shows the old names.",
+      "location": "docs/reference/tempest-test-infrastructure.md:427-442",
+      "fix": "Update the 'Image tags applied' table: replace 'latest' row with '<release>' (e.g., tempest:2025.2); update '<commit-sha>' to '<release>-<sha>'; update SBOM file from 'sbom-tempest.cyclonedx.json' to 'sbom-tempest-<release>.cyclonedx.json'; update SARIF category from 'grype-tempest' to 'grype-tempest-<release>'.",
+      "evidence": "build-images.yaml line 640: `-t \"${IMAGE}:${{ matrix.release }}\"` (was `:latest`); line 642: `-t \"${IMAGE}:${{ matrix.release }}-${{ github.sha }}\"` (was `:<sha>`); line 655: `sbom-tempest-${{ matrix.release }}.cyclonedx.json` (was `sbom-tempest.cyclonedx.json`); line 670: `grype-tempest-${{ matrix.release }}` (was `grype-tempest`). Doc line 431 still says `latest`, line 433 says `<sha>`, line 439 says `sbom-tempest.cyclonedx.json`, line 440 says `grype-tempest`.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "DA3",
+      "severity": "MAJOR",
+      "description": "Newly written 'Adding a New Release' step 2 in build-images-workflow.md claims 'Creating the release directory in step 1 is sufficient — no manual workflow changes are needed' for Tempest pipeline jobs. However, the file tree in step 1 (lines 1084-1091) omits test-refs.yaml, which IS required for the build-tempest job (it reads releases/${{ matrix.release }}/test-refs.yaml). Without test-refs.yaml, the auto-discovered release will cause build-tempest to fail with a missing file error.",
+      "location": "docs/reference/build-images-workflow.md:1084-1106",
+      "fix": "Add 'test-refs.yaml' to the required files tree in step 1: '├── test-refs.yaml            # Tempest/plugin version pins for test image builds'. Also add a note after the extra-packages.yaml paragraph: 'test-refs.yaml is required for Tempest image builds — the build-tempest job resolves tempest and keystone-tempest-plugin versions from this file.'",
+      "evidence": "Step 1 file tree (line 1084-1091): lists extra-packages.yaml, source-refs.yaml, test-excludes/, upper-constraints.txt — no test-refs.yaml. Step 2 (line 1100-1101): 'Creating the release directory in step 1 is sufficient — no manual workflow changes are needed.' build-images.yaml line 477-478: 'TEMPEST_VERSION=$(hack/resolve-test-ref.sh releases/${{ matrix.release }}/test-refs.yaml tempest)' — will fail if test-refs.yaml is missing.",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a 'Local Build' example for 2026.1 (or parameterized) in tempest-test-infrastructure.md lines 149-162 — currently only shows 2025.2 values (versions 45.0.0/0.19.0, path releases/2025.2/)",
+    "The SARIF category on line 396 of tempest-test-infrastructure.md still says 'grype-tempest-<platform>' but the implementation uses 'grype-tempest-<release>-<platform>' — consider updating for consistency"
+  ],
+  "next_steps": [
+    "Fix the two MAJOR findings: update the tags/SBOM table in tempest-test-infrastructure.md and add test-refs.yaml to the file tree in build-images-workflow.md",
+    "Re-request review after fixes"
+  ],
+  "detected_patterns": [],
+  "metadata": {
+    "feature_id": "CC-0051",
+    "title": "Add OpenStack 2026.1 release config and Keystone tests",
+    "date": "2026-04-09",
+    "verdict": "NEEDS_CHANGES",
+    "review_scope": {
+      "files_reviewed": 19,
+      "go_code_changes": 0,
+      "new_files": 10,
+      "modified_files": 9
+    },
+    "checks_summary": {
+      "blocking_passed": true,
+      "major_issues": 2,
+      "minor_suggestions": 2
+    }
+  }
+}

@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: Look for test assertions wrapped in `if err != nil` or similar conditionals. If the happy path means the condition is false, the assertion body is never executed and the test passes without proving anything.
 **Severity**: BLOCKING
-**Occurrences**: 3
+**Occurrences**: 4
 
 ## What to check
 
@@ -29,3 +29,8 @@ A vacuous test gives false confidence — it always passes regardless of whether
 - **Feedback**: Add a corresponding assertion to expectRestrictedSecurityContext in security_context_test.go for Capabilities.Drop.
 - **What was missed**: The test helper (expectRestrictedSecurityContext) must assert every field that the specification requires. If the Capabilities.Drop field was missing from both the implementation AND the test, the test would still pass — making it useless for catching omissions.
 - **Fix**: Added `assert.NotNil(t, sc.Capabilities)` and `assert.Equal(t, []corev1.Capability{"ALL"}, sc.Capabilities.Drop)` to the test helper.
+
+### CC-0051 — berendt
+- **Feedback**: The test assertion was changed from verifying that [test] extra is included in the install spec to only verifying that extra-package... but no assert_not_contains for the old '[test]' pattern was added.
+- **What was missed**: When a PR replaces an old test assertion with a new one reflecting changed behavior, verify that the test also explicitly asserts the OLD value is absent. Positive-only assertions can pass even if the old behavior silently persists alongside the new one.
+- **Fix**: The old assert_contains for '[test]' was replaced with two new positive assertions (checking 'extra-packages.yaml' and 'install_spec='), though the suggested assert_not_contains for '[test]' was not added.

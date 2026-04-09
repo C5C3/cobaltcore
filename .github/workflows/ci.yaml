@@ -46,6 +46,7 @@ jobs:
       e2e-infra: ${{ steps.result.outputs.e2e-infra }}
       has-e2e-operators: ${{ steps.result.outputs.has-e2e-operators }}
       e2e-operators: ${{ steps.result.outputs.e2e-operators }}
+      tempest-releases: ${{ steps.tempest-matrix.outputs.tempest-releases }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
@@ -100,6 +101,12 @@ jobs:
           FILTER_e2e_infra: ${{ steps.filter.outputs.e2e_infra }}
           FILTER_go_common: ${{ steps.filter.outputs.go_common }}
         run: hack/ci-resolve-changes.sh
+      # CC-0051: Derive Tempest release matrix from releases/ directories (review #1).
+      # Avoids hardcoding releases in the workflow — adding or removing a release
+      # only requires updating releases/ and tests/tempest/, not this file.
+      - name: Generate Tempest release matrix
+        id: tempest-matrix
+        run: hack/ci-generate-tempest-matrix.sh
 
   lint:
     needs: [changes]
@@ -342,6 +349,13 @@ jobs:
         env:
           OPERATOR: ${{ matrix.operator }}
           IMAGE_PREFIX: ${{ env.IMAGE_PREFIX }}
+      # CC-0051: Build 2026.1 service image for basic-deployment-2026-1 E2E test (REQ-005).
+      - name: Build service image (2026.1)
+        run: hack/ci-build-service-image.sh
+        env:
+          OPERATOR: ${{ matrix.operator }}
+          IMAGE_PREFIX: ${{ env.IMAGE_PREFIX }}
+          RELEASE: "2026.1"
       - name: Load images into kind
         run: |
           # Tag the service image with the upgrade tag used by the image-upgrade E2E test.
@@ -350,6 +364,7 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator:dev --name forge-e2e
           kind load docker-image ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2025.2 --name forge-e2e
           kind load docker-image ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2025.2-upgraded --name forge-e2e
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2026.1 --name forge-e2e
       # CC-0050: Use composite action for shared Flux CLI + test deps + deploy-infra sequence (REQ-005).
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
@@ -381,6 +396,7 @@ jobs:
   # Deploys services into a kind cluster and runs the OpenStack Tempest test
   # suite against them.  Currently tests Keystone; designed so additional
   # services can be added to this single job without needing separate runs.
+  # CC-0051: Matrix over OpenStack releases to validate each release independently.
   tempest:
     needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]
     if: |
@@ -389,6 +405,9 @@ jobs:
       !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.changes.outputs.tempest-releases) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
@@ -408,13 +427,17 @@ jobs:
         env:
           OPERATOR: keystone
           IMAGE_PREFIX: ${{ env.IMAGE_PREFIX }}
+          RELEASE: ${{ matrix.release }}
       # CC-0050: Use shared Tempest image build script (REQ-002).
       - name: Build Tempest image
         run: hack/ci-build-tempest-image.sh
+        env:
+          RELEASE: ${{ matrix.release }}
+          TEMPEST_IMAGE: c5c3/tempest:${{ matrix.release }}
       - name: Load images into kind
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name forge-e2e
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name forge-e2e
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }} --name forge-e2e
       # CC-0050: Use composite action for shared Flux CLI + test deps + deploy-infra sequence (REQ-005).
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
@@ -426,17 +449,21 @@ jobs:
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
       - name: Deploy Keystone CR for Tempest
         run: |
-          kubectl apply -f tests/tempest/keystone/00-keystone-cr.yaml
-          kubectl wait keystone/keystone-tempest -n openstack \
+          kubectl apply -f ${{ matrix.config-dir }}/00-keystone-cr.yaml
+          kubectl wait keystone/${{ matrix.cr-name }} -n openstack \
             --for=condition=Ready --timeout=300s
       # CC-0050: Use shared Tempest wrapper script (REQ-004).
       - name: Run Tempest API tests
         run: hack/ci-run-tempest.sh
+        env:
+          CONFIG_DIR: ${{ matrix.config-dir }}
+          TEMPEST_IMAGE: c5c3/tempest:${{ matrix.release }}
+          SERVICE_K8S_NAME: ${{ matrix.service-k8s-name }}
       - name: Upload Tempest results
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: tempest-results
+          name: tempest-${{ matrix.release }}-results
           path: _output/tempest/
           retention-days: 14
       # CC-0050: Use shared diagnostic dump script (REQ-001).

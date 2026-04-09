@@ -1,0 +1,52 @@
+{
+  "feature_id": "CC-0051",
+  "title": "Add OpenStack 2026.1 release config and Keystone tests",
+  "date": "2026-04-09",
+  "summary": "Review of commit 0327afc addressing berendt's external review #2 feedback. Three changes: (1) added CC-0051 inline comment in build-images.yaml explaining [test] extra removal (W-001), (2) added install_spec= assertion in verify_build_images_workflow.sh (W-002), (3) updated tempest-test-infrastructure.md data flow diagram from 'tempest run' to 'stestr run' (I-001), (4) added GITHUB_OUTPUT fallback guard in ci-generate-tempest-matrix.sh (I-002), (5) updated review pattern files with new occurrences. All three external review findings were addressed, though the docs fix for I-001 is incomplete — two additional references to 'tempest run' on lines 315 and 324 were not updated.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Tests exist and pass", "checked": true},
+    {"item": "Edge cases are covered", "checked": true},
+    {"item": "Test assertion strengthened per W-002", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns", "checked": true},
+    {"item": "Inline comment matches suggested fix exactly", "checked": true},
+    {"item": "Review pattern files updated with correct occurrence counts", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "All user inputs validated", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "GITHUB_OUTPUT guard consistent with ci- prefix convention", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs validated", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "D6",
+      "severity": "MAJOR",
+      "description": "Incomplete fix for I-001: docs/reference/tempest-test-infrastructure.md still references 'tempest run' in two places that were not updated. Line 315 says 'runs `tempest run --subunit`' and line 324 says 'The script exits with the same exit code as `tempest run`'. Only the data flow diagram at line 494 was updated to 'stestr run'. The actual scripts (hack/ci-run-tempest.sh:109, hack/run-tempest.sh:248) use 'stestr run'.",
+      "location": "docs/reference/tempest-test-infrastructure.md:315",
+      "fix": "Replace 'tempest run --subunit' with 'stestr run --subunit' on line 315, and 'tempest run' with 'stestr run' on line 324.",
+      "evidence": "Line 315: `| Run Tempest | Mounts `tempest.conf`, `include-tests.txt`, `exclude-tests.txt` into container; initializes Tempest workspace; runs `tempest run --subunit`; converts to JUnit XML via `subunit2junitxml` | Returns Tempest exit code |`\nLine 324: `The script exits with the same exit code as `tempest run` — non-zero if any test fails.`\nActual script (hack/ci-run-tempest.sh:109): `TEMPEST_CMD=\"stestr run\"`",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [],
+  "next_steps": [
+    "Fix the two remaining 'tempest run' references in docs/reference/tempest-test-infrastructure.md lines 315 and 324"
+  ],
+  "detected_patterns": []
+}

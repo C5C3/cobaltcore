@@ -2,7 +2,7 @@
 **Review-Area**: documentation
 **Detection-Hint**: When a PR modifies script logic (e.g., file paths, arguments, invocation requirements), search the docs/ directory for references to that script and verify descriptions still match the implementation.
 **Severity**: WARNING
-**Occurrences**: 5
+**Occurrences**: 6
 
 ## What to check
 
@@ -38,3 +38,8 @@ Stale documentation misleads users into invoking tools incorrectly, leading to s
 - **Feedback**: The documentation claims the E2E test patches with processes: 8, threads: 4 and asserts --processes 8 --threads 4, but commit 384af29 reduced these to processes: 3, threads: 3 in the actual test files without updating the docs.
 - **What was missed**: Grep docs/ for the old literal values being changed in test files (e.g., grep for 'processes: 8' or 'threads: 4'). Any documentation table or example that references specific test parameters must match the actual test files.
 - **Fix**: Updated the documentation table rows to reflect the actual test values of processes: 3 and threads: 3.
+
+### CC-0051 — berendt
+- **Feedback**: The [test] extra was removed from pip extras resolution and replaced with test-requirements.txt detection, but there is no inline comment explaining why [test] was removed. The commit message documents the rationale but the code itself lacks context for future readers.
+- **What was missed**: When a PR removes a previously supported behavior (e.g., stripping an option, dropping a branch), verify that an inline comment near the remaining code explains why the old path was removed and where the replacement lives.
+- **Fix**: Added an inline comment above the 'Resolve pip extras' step: '# CC-0051: [test] extra removed — upstream projects list test deps in test-requirements.txt, not as a setuptools extra.'

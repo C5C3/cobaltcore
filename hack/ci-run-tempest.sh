@@ -17,11 +17,12 @@
 # Optional env vars:
 #   SERVICE       — Service under test (default: keystone)
 #   CONFIG_DIR    — Directory containing tempest.conf template, include/exclude
-#                   lists (default: tests/tempest/${SERVICE})
+#                   lists (default: tests/tempest/${SERVICE}-2025-2)
 #   NAMESPACE     — Kubernetes namespace (default: openstack)
 #   ADMIN_SECRET  — Secret name holding admin password (default: keystone-admin)
 #   OUTPUT_DIR    — Test output directory (default: _output/tempest)
-#   TEMPEST_IMAGE — Tempest container image (default: c5c3/tempest:local)
+#   TEMPEST_IMAGE    — Tempest container image (default: c5c3/tempest:local)
+#   SERVICE_K8S_NAME — K8s Service name for port-forward (default: ${SERVICE}-tempest-2025-2-api)
 #
 # REQ-004: CI-specific Tempest wrapper script.
 # REQ-007: set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
@@ -36,14 +37,15 @@ cd "${REPO_ROOT}"
 # Configuration
 # ---------------------------------------------------------------------------
 SERVICE="${SERVICE:-keystone}"
-CONFIG_DIR="${CONFIG_DIR:-tests/tempest/${SERVICE}}"
+CONFIG_DIR="${CONFIG_DIR:-tests/tempest/${SERVICE}-2025-2}"
 NAMESPACE="${NAMESPACE:-openstack}"
 ADMIN_SECRET="${ADMIN_SECRET:-keystone-admin}"
 OUTPUT_DIR="${OUTPUT_DIR:-_output/tempest}"
 TEMPEST_IMAGE="${TEMPEST_IMAGE:-c5c3/tempest:local}"
 
-# Derive the service name used in k8s (e.g. keystone-tempest-api).
-SERVICE_K8S_NAME="${SERVICE}-tempest-api"
+# Derive the service name used in k8s (e.g. keystone-tempest-2025-2-api).
+# CC-0051: Allow override for release-specific CR names (e.g. keystone-tempest-2026-1-api).
+SERVICE_K8S_NAME="${SERVICE_K8S_NAME:-${SERVICE}-tempest-2025-2-api}"
 CATALOG_SVC="${SERVICE_K8S_NAME}.${NAMESPACE}.svc.cluster.local"
 
 # ---------------------------------------------------------------------------
@@ -104,7 +106,7 @@ sed -e "s|${SERVICE_K8S_NAME}\\.${NAMESPACE}\\.svc\\.cluster\\.local:5000|localh
 # ---------------------------------------------------------------------------
 # 5. Build tempest run command
 # ---------------------------------------------------------------------------
-TEMPEST_CMD="tempest run"
+TEMPEST_CMD="stestr run"
 [[ -f "${OUTPUT_DIR}/config/include-tests.txt" ]] && TEMPEST_CMD+=" --include-list /etc/tempest/include-tests.txt"
 [[ -f "${OUTPUT_DIR}/config/exclude-tests.txt" ]] && TEMPEST_CMD+=" --exclude-list /etc/tempest/exclude-tests.txt"
 TEMPEST_CMD+=" --concurrency 1 --subunit"
@@ -137,7 +139,7 @@ docker run --rm \
     if [[ -f /output/tempest.subunit ]]; then
       subunit2junitxml < /output/tempest.subunit > /output/tempest-results.xml 2>/dev/null || true
     fi
-    # Guard against tempest run --subunit exiting 0 on test failures:
+    # Guard against stestr run --subunit exiting 0 on test failures:
     # check the JUnit XML for reported failures or errors.
     if [[ \${rc} -eq 0 && -f /output/tempest-results.xml ]]; then
       if grep -qE 'failures=\"[1-9]|errors=\"[1-9]' /output/tempest-results.xml; then

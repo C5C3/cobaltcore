@@ -94,9 +94,10 @@ preflight_checks() {
   fi
 
   # Verify service-specific Tempest configuration exists.
-  local config_dir="${REPO_ROOT}/tests/tempest/${SERVICE}"
+  local release_slug="${RELEASE//./-}"
+  local config_dir="${REPO_ROOT}/tests/tempest/${SERVICE}-${release_slug}"
   if [[ ! -d "${config_dir}" ]]; then
-    log "ERROR: Tempest configuration directory not found: tests/tempest/${SERVICE}/"
+    log "ERROR: Tempest configuration directory not found: tests/tempest/${SERVICE}-${release_slug}/"
     log "Available services:"
     # shellcheck disable=SC2012
     ls -1 "${REPO_ROOT}/tests/tempest/" 2>/dev/null | sed 's/^/  /' || log "  (none)"
@@ -104,7 +105,7 @@ preflight_checks() {
   fi
 
   if [[ ! -f "${config_dir}/tempest.conf" ]]; then
-    log "ERROR: tempest.conf not found in tests/tempest/${SERVICE}/"
+    log "ERROR: tempest.conf not found in tests/tempest/${SERVICE}-${release_slug}/"
     exit 1
   fi
 
@@ -174,7 +175,8 @@ extract_admin_password() {
 # ---------------------------------------------------------------------------
 run_tempest() {
   local admin_password="$1"
-  local config_dir="${REPO_ROOT}/tests/tempest/${SERVICE}"
+  local release_slug="${RELEASE//./-}"
+  local config_dir="${REPO_ROOT}/tests/tempest/${SERVICE}-${release_slug}"
   local svc_name="${SERVICE_NAME:-${SERVICE}-api}"
 
   # Ensure output directory is writable by the container user (UID 42424 / openstack).
@@ -243,7 +245,7 @@ run_tempest() {
   log "  Output:   ${OUTPUT_DIR}"
   log "  Timeout:  ${TEMPEST_TIMEOUT}s"
 
-  local tempest_cmd="tempest run"
+  local tempest_cmd="stestr run"
   [[ -f "${etc_dir}/include-tests.txt" ]] && tempest_cmd+=" --include-list /etc/tempest/include-tests.txt"
   [[ -f "${etc_dir}/exclude-tests.txt" ]] && tempest_cmd+=" --exclude-list /etc/tempest/exclude-tests.txt"
   tempest_cmd+=" --concurrency 1 --subunit"

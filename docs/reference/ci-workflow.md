@@ -1,7 +1,7 @@
 ---
 title: CI Workflow
 quadrant: infrastructure
-feature: CC-0003, CC-0018, CC-0041, CC-0050
+feature: CC-0003, CC-0018, CC-0041, CC-0050, CC-0051
 ---
 
 ::: v-pre
@@ -318,13 +318,14 @@ infrastructure stack and operator via Helm, and runs Chainsaw E2E test suites.
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
 | 3 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge-e2e`) |
 | 4 | `make docker-build` | Builds operator image with tag `<IMAGE_PREFIX>/<operator>-operator:dev` |
-| 5 | `hack/ci-build-service-image.sh` | Builds the OpenStack service image chain (CC-0050 REQ-002) |
-| 6 | `kind load docker-image` | Loads operator, service, and upgrade-tagged images into kind |
-| 7 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack (CC-0050 REQ-005) |
-| 8 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm (CC-0050 REQ-003) |
-| 9 | `chainsaw test` | Runs E2E tests from `tests/e2e/<operator>/` |
-| 10 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs (CC-0050 REQ-001) |
-| 11 | Upload JUnit report | Uploads test results as artifact (14-day retention) |
+| 5 | `hack/ci-build-service-image.sh` | Builds the OpenStack 2025.2 service image (CC-0050 REQ-002) |
+| 6 | `hack/ci-build-service-image.sh` (2026.1) | Builds the OpenStack 2026.1 service image with `RELEASE=2026.1` (CC-0051 REQ-005) |
+| 7 | `kind load docker-image` | Loads operator, 2025.2 service, 2025.2-upgraded, and 2026.1 service images into kind |
+| 8 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack (CC-0050 REQ-005) |
+| 9 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm (CC-0050 REQ-003) |
+| 10 | `chainsaw test` | Runs E2E tests from `tests/e2e/<operator>/` |
+| 11 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs (CC-0050 REQ-001) |
+| 12 | Upload JUnit report | Uploads test results as artifact (14-day retention) |
 
 **Matrix strategy:**
 
@@ -340,12 +341,35 @@ kind-loaded image is used instead of attempting a registry pull. Timeout: 45 min
 
 ### tempest
 
-Tempest API integration tests (CC-0035, CC-0050). Deploys services into a kind cluster and
-runs the OpenStack Tempest test suite against them. Currently tests Keystone; designed so
-additional services can be added to this single job.
+Tempest API integration tests (CC-0035, CC-0050, CC-0051). Deploys services into a kind
+cluster and runs the OpenStack Tempest test suite against them. Uses a release matrix
+(CC-0051) to validate each OpenStack release independently, with per-release Tempest
+configuration, Keystone CRs, and K8s service names.
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]`
 **Condition:** Runs only when `has-e2e-operators == 'true'` and all gate jobs succeeded.
+
+**Matrix strategy (CC-0051):**
+
+```yaml
+strategy:
+  fail-fast: false
+  matrix:
+    include:
+      - release: "2025.2"
+        config-dir: tests/tempest/keystone
+        cr-name: keystone-tempest
+        service-k8s-name: keystone-tempest-api
+      - release: "2026.1"
+        config-dir: tests/tempest/keystone-2026-1
+        cr-name: keystone-tempest-2026-1
+        service-k8s-name: keystone-tempest-2026-1-api
+```
+
+Each matrix entry specifies: the release version, the Tempest configuration directory,
+the Keystone CR name, and the K8s service name used for port-forwarding. Steps reference
+these via `matrix.release`, `matrix.config-dir`, `matrix.cr-name`, and
+`matrix.service-k8s-name`.
 
 | Step | Action | Details |
 | --- | --- | --- |
@@ -353,14 +377,14 @@ additional services can be added to this single job.
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
 | 3 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge-e2e`) |
 | 4 | `make docker-build` | Builds operator image (keystone) |
-| 5 | `hack/ci-build-service-image.sh` | Builds the OpenStack service image (CC-0050 REQ-002) |
-| 6 | `hack/ci-build-tempest-image.sh` | Builds Tempest Docker image with pinned versions from `releases/` config (CC-0050 REQ-002) |
+| 5 | `hack/ci-build-service-image.sh` | Builds the OpenStack service image for `matrix.release` (CC-0050 REQ-002) |
+| 6 | `hack/ci-build-tempest-image.sh` | Builds Tempest Docker image for `matrix.release` with pinned versions from `releases/` config (CC-0050 REQ-002) |
 | 7 | `kind load docker-image` | Loads operator and service images into kind |
 | 8 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack (CC-0050 REQ-005) |
 | 9 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm (CC-0050 REQ-003) |
-| 10 | Deploy Keystone CR | Applies `tests/tempest/keystone/00-keystone-cr.yaml` and waits for Ready |
-| 11 | `hack/ci-run-tempest.sh` | Runs Tempest API tests via Docker with port-forwarding (CC-0050 REQ-004) |
-| 12 | Upload Tempest results | Uploads subunit and JUnit results as artifact (14-day retention) |
+| 10 | Deploy Keystone CR | Applies `matrix.config-dir/00-keystone-cr.yaml` and waits for `matrix.cr-name` Ready |
+| 11 | `hack/ci-run-tempest.sh` | Runs Tempest API tests with `CONFIG_DIR=matrix.config-dir`, `SERVICE_K8S_NAME=matrix.service-k8s-name` (CC-0050 REQ-004) |
+| 12 | Upload Tempest results | Uploads `_output/tempest/` as `tempest-<release>-results` artifact (14-day retention) |
 | 13 | `hack/ci-dump-diagnostics.sh` (always) | Dumps diagnostic info with `OPERATOR=keystone` (CC-0050 REQ-001) |
 
 Timeout: 45 minutes.
@@ -598,6 +622,7 @@ handles local execution including image building).
 | `ADMIN_SECRET` | No | `keystone-admin` | Secret name holding admin password |
 | `OUTPUT_DIR` | No | `_output/tempest` | Test output directory |
 | `TEMPEST_IMAGE` | No | `c5c3/tempest:local` | Tempest container image |
+| `SERVICE_K8S_NAME` | No | `<SERVICE>-tempest-api` | K8s Service name for port-forwarding (CC-0051: allows override for release-specific CR names, e.g. `keystone-tempest-2026-1-api`) |
 
 The script:
 1. Extracts the admin password from the Kubernetes secret

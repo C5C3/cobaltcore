@@ -1,7 +1,7 @@
 ---
 title: Build Images Workflow
 quadrant: infrastructure
-feature: CC-0007, CC-0029, CC-0030, CC-0031, CC-0032, CC-0034
+feature: CC-0007, CC-0029, CC-0030, CC-0031, CC-0032, CC-0034, CC-0051
 ---
 
 ::: v-pre
@@ -1037,30 +1037,13 @@ nova:
     - libvirt0
 ```
 
-### 4. Extend the matrices
+### 4. Verify matrix discovery
 
-Add the service to the `build-service-images`, `test-service-images`, and
-`verify-service-images` matrices in `.github/workflows/build-images.yaml`:
-
-```yaml
-# build-service-images job:
-strategy:
-  matrix:
-    service: [keystone, nova]    # ← add here
-    release: ["2025.2"]
-
-# test-service-images job (must mirror build-service-images):
-strategy:
-  matrix:
-    service: [keystone, nova]    # ← add here too
-    release: ["2025.2"]
-
-# verify-service-images job (must mirror build-service-images):
-strategy:
-  matrix:
-    service: [keystone, nova]    # ← add here too
-    release: ["2025.2"]
-```
+The `generate-matrix` job automatically discovers all services from `source-refs.yaml`
+in each `releases/*/` directory. Adding the service to `source-refs.yaml` (step 2) is
+sufficient — no manual workflow matrix changes are needed. The job produces
+`service × release` matrices consumed by `build-service-images`, `test-service-images`,
+`merge-service-images`, and `verify-service-images`.
 
 ### 5. (Optional) Add patches
 
@@ -1102,37 +1085,47 @@ Create the release directory with required files:
 releases/2026.1/
 ├── extra-packages.yaml       # Extra pip/apt packages per service (CC-0027)
 ├── source-refs.yaml          # Service versions for this release
+├── test-refs.yaml            # PyPI version pins for test tooling (CC-0035)
 ├── test-excludes/            # (Optional) Per-service stestr exclude-lists (CC-0034)
 │   └── <service>.txt
 └── upper-constraints.txt     # From openstack/requirements stable/2026.1
 ```
 
 `extra-packages.yaml` is required — the workflow reads it to resolve `PIP_EXTRAS`,
-`PIP_PACKAGES`, and `EXTRA_APT_PACKAGES` build arguments. See
+`PIP_PACKAGES`, and `EXTRA_APT_PACKAGES` build arguments. `test-refs.yaml` is required —
+the `build-tempest` job reads it to resolve `TEMPEST_VERSION` and
+`KEYSTONE_TEMPEST_PLUGIN_VERSION` build arguments (CC-0035). See
 [Container Images — extra-packages.yaml](container-images.md#extra-packagesyaml) for the
 YAML schema and `releases/2025.2/extra-packages.yaml` for a working example.
 
-### 2. Extend the matrix
+### 2. Verify matrix discovery
 
-Add the release to the `build-service-images` matrix:
-
-```yaml
-strategy:
-  matrix:
-    service: [keystone]
-    release: ["2025.2", "2026.1"]    # ← add here
-```
+The `generate-matrix` job automatically discovers all releases from `releases/*/`
+directories. Creating the release directory in step 1 is sufficient — no manual workflow
+changes are needed. The job produces `service × release` matrices for all downstream jobs
+(`build-service-images`, `merge-service-images`, `test-service-images`,
+`verify-service-images`) and `release`-only matrices for Tempest pipeline jobs
+(`build-tempest`, `merge-tempest-image`). Verify discovery by checking the
+`generate-matrix` job output in a CI run.
 
 ### 3. (Optional) Add patches and overrides
 
-Create `patches/<service>/2026.1/` and `overrides/2026.1/constraints.txt` as needed.
+Create `patches/<service>/<release>/` and `overrides/<release>/constraints.txt` as needed.
 
 ### 4. (Optional) Add test exclusions
 
 If any services have upstream tests that fail in the new release's CI environment, create
-`releases/2026.1/test-excludes/<service>.txt` with stestr exclude-list patterns. Copy
+`releases/<release>/test-excludes/<service>.txt` with stestr exclude-list patterns. Copy
 patterns from the previous release's exclusion file as a starting point and adjust as
 needed.
+
+### 5. (Optional) Add Tempest test configuration
+
+If multi-release Tempest testing is needed, create a release-specific Tempest configuration
+directory under `tests/tempest/` (e.g., `tests/tempest/keystone-<release>/`) containing
+`tempest.conf`, `include-tests.txt`, `exclude-tests.txt`, and `00-keystone-cr.yaml`. Then
+add a corresponding matrix entry to the `tempest` job in `ci.yaml` (see
+[CI Workflow — tempest](ci-workflow.md#tempest)).
 
 ## Verify Container Images Workflow
 

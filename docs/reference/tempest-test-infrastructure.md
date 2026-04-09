@@ -1,49 +1,53 @@
 ---
 title: Tempest Test Infrastructure
 quadrant: infrastructure
-feature: CC-0035
+feature: CC-0035, CC-0051
 ---
 
 ::: v-pre
 
 # Tempest Test Infrastructure
 
-Reference documentation for the Tempest API test infrastructure (CC-0035). This covers
-the Tempest container image, version management, per-service test configuration, the
-image verification script, local execution via `hack/run-tempest.sh`, the `make
+Reference documentation for the Tempest API test infrastructure (CC-0035, CC-0051). This
+covers the Tempest container image, version management, per-service test configuration,
+the image verification script, local execution via `hack/run-tempest.sh`, the `make
 tempest-test` target, and CI integration in both `ci.yaml` and `build-images.yaml`.
+CC-0051 extended the infrastructure with multi-release support: the `tempest` job in
+`ci.yaml` now uses a release matrix to validate each OpenStack release independently,
+and `build-images.yaml` dynamically discovers releases for the Tempest image pipeline.
 
 ## File Locations
 
 | File | Purpose |
 | --- | --- |
 | `images/tempest/Dockerfile` | Two-stage Tempest container image (venv-builder → python-base) |
-| `releases/2025.2/test-refs.yaml` | PyPI version pins for test tooling (single source of truth) |
-| `tests/tempest/keystone/tempest.conf` | Keystone-specific Tempest configuration |
-| `tests/tempest/keystone/include-tests.txt` | Regex patterns for tests to run |
-| `tests/tempest/keystone/exclude-tests.txt` | Regex patterns for tests to skip |
+| `releases/<release>/test-refs.yaml` | PyPI version pins for test tooling (single source of truth), per release |
+| `tests/tempest/keystone-2025-2/` | Keystone 2025.2 Tempest configuration (`tempest.conf`, `include-tests.txt`, `exclude-tests.txt`) |
+| `tests/tempest/keystone-2026-1/` | Keystone 2026.1 Tempest configuration (CC-0051) |
 | `tests/container-images/verify_tempest.sh` | Image verification script (PASS/FAIL counters) |
 | `hack/run-tempest.sh` | Local orchestration script for running Tempest against a kind cluster |
+| `hack/ci-run-tempest.sh` | CI-specific Tempest wrapper with port-forwarding and config generation (CC-0050) |
 | `Makefile` | `tempest-test` target delegates to `hack/run-tempest.sh` |
-| `.github/workflows/ci.yaml` | Tempest steps appended to `e2e-keystone` job |
-| `.github/workflows/build-images.yaml` | `build-tempest` and `merge-tempest-image` jobs |
+| `.github/workflows/ci.yaml` | `tempest` job with release matrix (CC-0051) |
+| `.github/workflows/build-images.yaml` | `build-tempest` and `merge-tempest-image` jobs (release-parameterized via `generate-matrix`) |
 
 ## Architecture
 
 ```text
-releases/2025.2/test-refs.yaml          Version pins (tempest, keystone-tempest-plugin)
+releases/<release>/test-refs.yaml       Version pins (tempest, keystone-tempest-plugin)
         │
         ▼ (yq resolution)
 images/tempest/Dockerfile               2-stage build: venv-builder → python-base
         │
         ├──▶ build-images.yaml          Build, scan, sign, push to GHCR
-        │       build-tempest job        Per-platform builds (amd64, arm64)
-        │       merge-tempest-image job  Multi-arch manifest + SBOM + Grype + cosign
+        │       generate-matrix job      Discovers releases from releases/*/
+        │       build-tempest job        Per-release × per-platform builds (amd64, arm64)
+        │       merge-tempest-image job  Per-release multi-arch manifest + SBOM + Grype + cosign
         │
-        └──▶ ci.yaml                    Build locally, run tests in e2e-keystone
-                e2e-keystone job          After Chainsaw: build image → run Tempest → upload JUnit
+        └──▶ ci.yaml                    Build locally, run tests per release
+                tempest job (matrix)      Per-release: build image → run Tempest → upload JUnit
                                          │
-tests/tempest/keystone/                  │ mounted into container
+tests/tempest/<config-dir>/              │ mounted into container (per-release config)
   tempest.conf                    ──────▶│
   include-tests.txt               ──────▶│
   exclude-tests.txt               ──────▶│
@@ -73,8 +77,8 @@ Each key is a PyPI package name. Values are quoted strings representing exact ve
 pins. CI workflows resolve versions from this file via `yq`:
 
 ```bash
-TEMPEST_VERSION=$(yq -r '.tempest' releases/2025.2/test-refs.yaml)
-KTP_VERSION=$(yq -r '.["keystone-tempest-plugin"]' releases/2025.2/test-refs.yaml)
+TEMPEST_VERSION=$(yq -r '.tempest' releases/<release>/test-refs.yaml)
+KTP_VERSION=$(yq -r '.["keystone-tempest-plugin"]' releases/<release>/test-refs.yaml)
 ```
 
 Both `ci.yaml` and `build-images.yaml` use the same resolution pattern. A null or empty
@@ -147,14 +151,19 @@ Build the Tempest image locally (requires `python-base` and `venv-builder` image
 docker build images/python-base -t python-base
 docker build images/venv-builder -t venv-builder
 
-# Build Tempest image
+# Build Tempest image for a specific release (e.g., 2025.2 or 2026.1).
+# Resolve versions from the release's test-refs.yaml:
+RELEASE=2025.2   # or 2026.1
+TEMPEST_VERSION=$(yq -r '.tempest' releases/${RELEASE}/test-refs.yaml)
+KTP_VERSION=$(yq -r '.["keystone-tempest-plugin"]' releases/${RELEASE}/test-refs.yaml)
+
 docker build images/tempest \
-  -t c5c3/tempest:45.0.0 \
-  --build-arg TEMPEST_VERSION=45.0.0 \
-  --build-arg KEYSTONE_TEMPEST_PLUGIN_VERSION=0.19.0 \
+  -t c5c3/tempest:${RELEASE} \
+  --build-arg TEMPEST_VERSION=${TEMPEST_VERSION} \
+  --build-arg KEYSTONE_TEMPEST_PLUGIN_VERSION=${KTP_VERSION} \
   --build-context python-base=docker-image://python-base \
   --build-context venv-builder=docker-image://venv-builder \
-  --build-context upper-constraints=releases/2025.2/
+  --build-context upper-constraints=releases/${RELEASE}/
 ```
 
 ## Test Configuration
@@ -230,17 +239,12 @@ To add Tempest tests for a new service (e.g., `glance`):
 3. Update `[identity]` URI to point to the service endpoint
 4. Run `make tempest-test SERVICE=glance` to test locally
 
-No changes to the Dockerfile are needed. However, both `hack/run-tempest.sh` and
-`ci.yaml` currently hardcode Keystone-specific values that require updates for new
-services:
-
-- **`hack/run-tempest.sh`**: The `extract_admin_password()` function hardcodes the
-  `keystone-admin` secret name. A new service requires a different secret name.
-- **`ci.yaml`** (`e2e-keystone` job): Hardcodes the `keystone-admin` secret name,
-  the `keystone-tempest-api` service name, and port `5000` for port-forwarding.
-
-The `e2e-keystone` job dynamically checks for `tests/tempest/<operator>/` directories
-to decide whether to run Tempest tests.
+No changes to the Dockerfile are needed. The `tempest` job in `ci.yaml` and
+`hack/ci-run-tempest.sh` accept environment variables for service-specific values
+(`SERVICE`, `CONFIG_DIR`, `ADMIN_SECRET`, `SERVICE_K8S_NAME`), so adding a new service
+requires adding a matrix entry to the `tempest` job with the appropriate values.
+`hack/run-tempest.sh` (local execution) also accepts `SERVICE` and `ADMIN_SECRET`
+overrides.
 
 ## Image Verification
 
@@ -308,7 +312,7 @@ SERVICE=keystone hack/run-tempest.sh
 | Pre-flight checks | Validates `SERVICE` is set, required tools (`docker`, `kubectl`, `yq`) are installed, Docker is running, service config directory exists, `test-refs.yaml` exists | Exits 1 with descriptive error |
 | Build Tempest image | Resolves versions from `test-refs.yaml`, builds with `docker build` using named build contexts pointing to GHCR base images | Exits on build failure (set -e) |
 | Extract admin password | Reads `keystone-admin` secret from the K8s cluster via `kubectl get secret` | Exits 1 if secret is not found or empty |
-| Run Tempest | Mounts `tempest.conf`, `include-tests.txt`, `exclude-tests.txt` into container; initializes Tempest workspace; runs `tempest run --subunit`; converts to JUnit XML via `subunit2junitxml` | Returns Tempest exit code |
+| Run Tempest | Mounts `tempest.conf`, `include-tests.txt`, `exclude-tests.txt` into container; initializes Tempest workspace; runs `stestr run --subunit`; converts to JUnit XML via `subunit2junitxml` | Returns Tempest exit code |
 
 **Output files:**
 
@@ -317,7 +321,7 @@ SERVICE=keystone hack/run-tempest.sh
 | `_output/tempest/tempest-results.xml` | JUnit XML | Test results for CI artifact upload |
 | `_output/tempest/tempest.subunit` | Subunit v2 | Raw test result stream |
 
-The script exits with the same exit code as `tempest run` — non-zero if any test fails.
+The script exits with the same exit code as `stestr run` — non-zero if any test fails.
 
 ### make tempest-test
 
@@ -337,58 +341,64 @@ Omitting `SERVICE` produces an error message:
 
 ## CI Integration
 
-### ci.yaml — e2e-keystone Job
+### ci.yaml — tempest Job
 
-Tempest steps are appended to the `e2e-keystone` job after the Chainsaw E2E test steps.
-They execute conditionally — only when a `tests/tempest/<operator>/` configuration
-directory exists for the matrix operator.
+The `tempest` job (CC-0050, CC-0051) is a dedicated job that deploys services into a kind
+cluster and runs the OpenStack Tempest test suite. CC-0051 added a release matrix so each
+OpenStack release is validated independently with its own Tempest configuration, Keystone
+CR, and K8s service name.
+
+**Release matrix (CC-0051):**
+
+| Release | Config directory | CR name | K8s service name |
+| --- | --- | --- | --- |
+| `2025.2` | `tests/tempest/keystone-2025-2` | `keystone-tempest-2025-2` | `keystone-tempest-2025-2-api` |
+| `2026.1` | `tests/tempest/keystone-2026-1` | `keystone-tempest-2026-1` | `keystone-tempest-2026-1-api` |
 
 **Step sequence:**
 
-| Step | Condition | Description |
-| --- | --- | --- |
-| Check for Tempest config | Always | Sets `enabled=true/false` output based on directory existence |
-| Build Tempest image | `enabled == 'true'` | Resolves versions from `test-refs.yaml`, builds image locally |
-| Run Tempest API tests | `enabled == 'true'` | Port-forwards service, generates CI config with resolved credentials, runs Tempest in container |
-| Upload Tempest results | `always() && enabled == 'true'` | Uploads `_output/tempest/` as artifact with 14-day retention |
+| Step | Description |
+| --- | --- |
+| Build service image | `hack/ci-build-service-image.sh` with `RELEASE=matrix.release` |
+| Build Tempest image | `hack/ci-build-tempest-image.sh` with `RELEASE=matrix.release`, image tagged `c5c3/tempest:<release>` |
+| Load images into kind | Loads operator and release-specific service images |
+| Deploy Keystone CR | Applies `matrix.config-dir/00-keystone-cr.yaml`, waits for `matrix.cr-name` Ready |
+| Run Tempest API tests | `hack/ci-run-tempest.sh` with `CONFIG_DIR`, `TEMPEST_IMAGE`, and `SERVICE_K8S_NAME` from matrix |
+| Upload Tempest results | Uploads `_output/tempest/` as artifact with 14-day retention |
 
 **CI-specific adaptations** (compared to local execution):
 
-| Aspect | Local (`hack/run-tempest.sh`) | CI (`ci.yaml`) |
+| Aspect | Local (`hack/run-tempest.sh`) | CI (`hack/ci-run-tempest.sh`) |
 | --- | --- | --- |
-| Service endpoint | In-cluster DNS (`keystone-tempest-api.openstack.svc:5000`) | Port-forwarded to `localhost:5000` |
+| Service endpoint | In-cluster DNS (`<service-k8s-name>.openstack.svc:5000`) | Port-forwarded to `localhost:5000` |
 | Credential injection | Environment variable passed to container | `sed` substitution into generated config copy |
 | Base images | Pulled from GHCR (`docker-image://ghcr.io/...`) | Built locally in prior CI steps (no `--build-context` for bases) |
-| Artifact upload | Manual inspection of `_output/` | `actions/upload-artifact` with `tempest-<operator>-results` name |
+| Artifact upload | Manual inspection of `_output/` | `actions/upload-artifact` with `tempest-<release>-results` name |
 
-**Artifact name:** `tempest-<operator>-results` (e.g., `tempest-keystone-results`)
+**Artifact name:** `tempest-<release>-results` (e.g., `tempest-2025.2-results`, `tempest-2026.1-results`)
 **Retention:** 14 days
 
 ### build-images.yaml — build-tempest Job
 
-Builds the Tempest container image per platform, runs verification on PRs, and pushes
-by digest on push events.
+Builds the Tempest container image per release and per platform, runs verification on PRs,
+and pushes by digest on push events. CC-0051 parameterized this job by release via the
+`generate-matrix` job, which discovers all releases from `releases/*/` directories.
 
-**Dependencies:** `needs: [lint-dockerfiles, merge-base-images, verify-base-images]`
+**Dependencies:** `needs: [lint-dockerfiles, merge-base-images, verify-base-images, generate-matrix]`
 
-**Matrix strategy:**
-
-| Platform | Runner |
-| --- | --- |
-| `linux/amd64` | `ubuntu-latest` |
-| `linux/arm64` | `ubuntu-24.04-arm` |
+**Matrix strategy:** `release × platform × runner` (from `generate-matrix.tempest-matrix`; ARM64 excluded on PRs)
 
 **Step sequence:**
 
 | Step | Condition | Description |
 | --- | --- | --- |
-| Resolve Tempest versions | Always | Reads `test-refs.yaml` via `yq` |
+| Resolve Tempest versions | Always | Reads `releases/<release>/test-refs.yaml` via `yq` |
 | Generate metadata | Always | OCI labels via `docker/metadata-action` (CC-0031) |
-| Build Tempest image | PR: amd64 only; push: both platforms | `docker/build-push-action` with named build contexts |
+| Build Tempest image | PR: amd64 only; push: both platforms | `docker/build-push-action` with named build contexts, `upper-constraints` from `releases/<release>/` |
 | Export digest | Push only | Writes digest to `/tmp/digests/` for merge job |
-| Upload digest artifact | Push only | `digests-tempest-<platform-pair>`, 1-day retention |
+| Upload digest artifact | Push only | `digests-tempest-<release>-<platform-pair>`, 1-day retention |
 | Scan for vulnerabilities | PR, amd64 only | Grype scan against loaded image (CC-0032) |
-| Upload SARIF | PR, if scan produced output | GitHub Security tab under `grype-tempest-<platform>` |
+| Upload SARIF | PR, if scan produced output | GitHub Security tab under `grype-tempest-<release>-<platform>` |
 | Verify Tempest image | PR, amd64 only | Runs `verify_tempest.sh` against the built image |
 
 **PR vs push behavior:**
@@ -403,10 +413,11 @@ by digest on push events.
 ### build-images.yaml — merge-tempest-image Job
 
 Assembles per-platform digests into a multi-arch manifest list with full supply chain
-security.
+security. CC-0051 parameterized this job by release via the `generate-matrix` job.
 
-**Dependencies:** `needs: [build-tempest]`
+**Dependencies:** `needs: [build-tempest, generate-matrix]`
 **Condition:** `if: github.event_name != 'pull_request'`
+**Matrix strategy:** `release` (from `generate-matrix.tempest-release-matrix`)
 
 **Permissions:**
 
@@ -422,16 +433,16 @@ security.
 
 | Tag | Example | Description |
 | --- | --- | --- |
-| `latest` | `ghcr.io/<owner>/tempest:latest` | Most recent build |
-| `<tempest-version>` | `ghcr.io/<owner>/tempest:45.0.0` | Tempest PyPI version |
-| `<commit-sha>` | `ghcr.io/<owner>/tempest:<sha>` | Git commit for traceability |
+| `<release>` | `ghcr.io/<owner>/tempest:2025.2` | Release series tag |
+| `<tempest-version>` | `ghcr.io/<owner>/tempest:45.0.0` | Tempest PyPI version (main branch only) |
+| `<release>-<commit-sha>` | `ghcr.io/<owner>/tempest:2025.2-<sha>` | Release + git commit for traceability |
 
 **Supply chain security steps:**
 
 | Step | Tool | Output |
 | --- | --- | --- |
-| SBOM generation | `anchore/sbom-action` | `sbom-tempest.cyclonedx.json` (CycloneDX format) |
-| Vulnerability scan | `anchore/scan-action` (Grype) | SARIF uploaded to GitHub Security tab (`grype-tempest`) |
+| SBOM generation | `anchore/sbom-action` | `sbom-tempest-<release>.cyclonedx.json` (CycloneDX format) |
+| Vulnerability scan | `anchore/scan-action` (Grype) | SARIF uploaded to GitHub Security tab (`grype-tempest-<release>`) |
 | SBOM attestation | `actions/attest` | Signed attestation pushed to GHCR registry |
 | Image signing | `sigstore/cosign` | Keyless signature via Sigstore OIDC |
 
@@ -459,32 +470,32 @@ the base image at build time.
 ## Data Flow (CI End-to-End)
 
 ```text
-test-refs.yaml ──yq──▶ TEMPEST_VERSION + KEYSTONE_TEMPEST_PLUGIN_VERSION
+releases/<release>/test-refs.yaml ──yq──▶ TEMPEST_VERSION + KEYSTONE_TEMPEST_PLUGIN_VERSION
                          │
                          ▼
          docker build --build-arg TEMPEST_VERSION=... \
                       --build-arg KEYSTONE_TEMPEST_PLUGIN_VERSION=... \
-                      --build-context upper-constraints=releases/2025.2 \
+                      --build-context upper-constraints=releases/<release>/ \
                       images/tempest/
                          │
-                         ▼ (e2e-keystone job)
-         kubectl port-forward svc/keystone-tempest-api 5000:5000
+                         ▼ (tempest job, per matrix.release)
+         kubectl port-forward svc/<service-k8s-name> 5000:5000
                          │
                          ▼
-         sed tempest.conf (resolve localhost URI + admin password)
+         hack/ci-run-tempest.sh (resolve localhost URI + admin password)
                          │
                          ▼
          docker run --network host \
            -v tempest.conf:/etc/tempest/tempest.conf \
            -v include-tests.txt:/etc/tempest/include-tests.txt \
            -v exclude-tests.txt:/etc/tempest/exclude-tests.txt \
-           c5c3/tempest:local bash -c "
+           c5c3/tempest:<release> bash -c "
              tempest init . && cp tempest.conf etc/ &&
-             tempest run --subunit | tee tempest.subunit &&
+             stestr run --subunit | tee tempest.subunit &&
              subunit2junitxml < tempest.subunit > tempest-results.xml"
                          │
                          ▼
-         actions/upload-artifact ──▶ tempest-<operator>-results (14-day retention)
+         actions/upload-artifact ──▶ tempest-<release>-results (14-day retention)
 ```
 
 ## Dependencies on Prior Features
@@ -492,7 +503,7 @@ test-refs.yaml ──yq──▶ TEMPEST_VERSION + KEYSTONE_TEMPEST_PLUGIN_VERSI
 | Feature | Artifact | Used by Tempest infrastructure |
 | --- | --- | --- |
 | CC-0006 | `images/python-base/Dockerfile`, `images/venv-builder/Dockerfile` | Base images for the Tempest Dockerfile build chain |
-| CC-0006 | `releases/2025.2/upper-constraints.txt` | Dependency constraints for PyPI installs |
+| CC-0006 | `releases/<release>/upper-constraints.txt` | Dependency constraints for PyPI installs |
 | CC-0028 | `tests/lib/assertions.sh` | Assertion helpers sourced by `verify_tempest.sh` |
 | CC-0029 | SBOM attestation pattern in `build-images.yaml` | Reused by `merge-tempest-image` for Tempest SBOM |
 | CC-0030 | Cosign signing pattern in `build-images.yaml` | Reused by `merge-tempest-image` for Tempest signing |

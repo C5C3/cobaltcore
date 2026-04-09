@@ -796,10 +796,11 @@ test_test_service_images_env_vars() {
   install_spec_env=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .env["INSTALL_SPEC"]' "$WORKFLOW" || true)
   assert_contains "Run tests step has INSTALL_SPEC referencing pip-extras output" "$install_spec_env" "steps.pip-extras.outputs.install_spec"
 
-  # Resolve pip extras step includes [test] extra (CC-0034)
+  # Resolve pip extras step reads from extra-packages.yaml and outputs install_spec (CC-0034)
   local pip_extras_run
   pip_extras_run=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.id == "pip-extras") | .run' "$WORKFLOW" || true)
-  assert_contains "Resolve pip extras includes [test] extra" "$pip_extras_run" "[test]"
+  assert_contains "Resolve pip extras reads extra-packages.yaml" "$pip_extras_run" "extra-packages.yaml"
+  assert_contains "Resolve pip extras outputs install_spec" "$pip_extras_run" "install_spec="
 }
 
 # --- CC-0034 REQ-011: test-service-images uses docker run with venv-builder image ---

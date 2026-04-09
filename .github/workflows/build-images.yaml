@@ -455,7 +455,7 @@ jobs:
   # Follows the same pattern as build-base-images: per-platform build with
   # digest upload, then merge-tempest-image assembles the manifest list.
   build-tempest:
-    needs: [lint-dockerfiles, merge-base-images, verify-base-images]
+    needs: [lint-dockerfiles, merge-base-images, verify-base-images, generate-matrix]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     permissions:
@@ -464,12 +464,7 @@ jobs:
       security-events: write   # CC-0032: SARIF upload for Grype scan on PR
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - platform: linux/amd64
-            runner: ubuntu-latest
-          - platform: linux/arm64
-            runner: ubuntu-24.04-arm
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.tempest-matrix) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -482,8 +477,8 @@ jobs:
       - name: Resolve Tempest versions
         id: versions
         run: |
-          TEMPEST_VERSION=$(hack/resolve-test-ref.sh releases/2025.2/test-refs.yaml tempest)
-          KTP_VERSION=$(hack/resolve-test-ref.sh releases/2025.2/test-refs.yaml keystone-tempest-plugin)
+          TEMPEST_VERSION=$(hack/resolve-test-ref.sh releases/${{ matrix.release }}/test-refs.yaml tempest)
+          KTP_VERSION=$(hack/resolve-test-ref.sh releases/${{ matrix.release }}/test-refs.yaml keystone-tempest-plugin)
           echo "tempest=${TEMPEST_VERSION}" >> "$GITHUB_OUTPUT"
           echo "keystone-tempest-plugin=${KTP_VERSION}" >> "$GITHUB_OUTPUT"
           echo "Tempest ${TEMPEST_VERSION}, keystone-tempest-plugin ${KTP_VERSION}"
@@ -529,14 +524,14 @@ jobs:
           build-contexts: |
             python-base=docker-image://ghcr.io/${{ steps.meta.outputs.owner }}/python-base@${{ needs.merge-base-images.outputs.python-base-digest }}
             venv-builder=docker-image://${{ needs.merge-base-images.outputs.venv-builder-image }}
-            upper-constraints=releases/2025.2/
+            upper-constraints=releases/${{ matrix.release }}/
           platforms: ${{ matrix.platform }}
           load: ${{ github.event_name == 'pull_request' }}
           outputs: ${{ github.event_name != 'pull_request' && 'type=image,push-by-digest=true,name-canonical=true,push=true' || '' }}
-          tags: ${{ github.event_name == 'pull_request' && format('ghcr.io/{0}/tempest:{1}', steps.meta.outputs.owner, steps.versions.outputs.tempest) || format('ghcr.io/{0}/tempest', steps.meta.outputs.owner) }}
+          tags: ${{ github.event_name == 'pull_request' && format('ghcr.io/{0}/tempest:{1}', steps.meta.outputs.owner, matrix.release) || format('ghcr.io/{0}/tempest', steps.meta.outputs.owner) }}
           labels: ${{ steps.meta-tempest.outputs.labels }}
-          cache-from: type=gha,scope=tempest-${{ steps.platform-pair.outputs.value }}
-          cache-to: type=gha,mode=max,scope=tempest-${{ steps.platform-pair.outputs.value }}
+          cache-from: type=gha,scope=tempest-${{ matrix.release }}-${{ steps.platform-pair.outputs.value }}
+          cache-to: type=gha,mode=max,scope=tempest-${{ matrix.release }}-${{ steps.platform-pair.outputs.value }}
 
       - name: Export Tempest image digest
         if: github.event_name != 'pull_request' && steps.build-tempest.outcome == 'success'
@@ -548,7 +543,7 @@ jobs:
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: github.event_name != 'pull_request' && steps.build-tempest.outcome == 'success'
         with:
-          name: digests-tempest-${{ steps.platform-pair.outputs.value }}
+          name: digests-tempest-${{ matrix.release }}-${{ steps.platform-pair.outputs.value }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
@@ -559,7 +554,7 @@ jobs:
         id: grype-tempest-image
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
         with:
-          image: ghcr.io/${{ steps.meta.outputs.owner }}/tempest:${{ steps.versions.outputs.tempest }}
+          image: ghcr.io/${{ steps.meta.outputs.owner }}/tempest:${{ matrix.release }}
           severity-cutoff: high
           fail-build: false
           output-format: sarif
@@ -569,12 +564,12 @@ jobs:
         uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
         with:
           sarif_file: ${{ steps.grype-tempest-image.outputs.sarif }}
-          category: grype-tempest-${{ steps.platform-pair.outputs.value }}
+          category: grype-tempest-${{ matrix.release }}-${{ steps.platform-pair.outputs.value }}
 
       - name: Verify Tempest image (PR)
         if: github.event_name == 'pull_request' && matrix.platform == 'linux/amd64'
         env:
-          IMAGE_REF: ghcr.io/${{ steps.meta.outputs.owner }}/tempest:${{ steps.versions.outputs.tempest }}
+          IMAGE_REF: ghcr.io/${{ steps.meta.outputs.owner }}/tempest:${{ matrix.release }}
         run: bash tests/container-images/verify_tempest.sh "$IMAGE_REF"
 
   # CC-0035 REQ-009: Merge Tempest image manifests with supply chain security.
@@ -582,7 +577,7 @@ jobs:
   # SBOM generation, vulnerability scanning, attestation, and cosign signing.
   merge-tempest-image:
     if: github.event_name != 'pull_request'
-    needs: build-tempest
+    needs: [build-tempest, generate-matrix]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -591,6 +586,9 @@ jobs:
       id-token: write          # CC-0030, CC-0035: Sigstore OIDC signing for cosign and build provenance
       attestations: write      # CC-0029, CC-0035: GitHub Attestations API
       security-events: write   # CC-0032: GitHub Security tab SARIF upload
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.tempest-release-matrix) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -603,7 +601,7 @@ jobs:
       - name: Resolve Tempest version
         id: versions
         run: |
-          TEMPEST_VERSION=$(hack/resolve-test-ref.sh releases/2025.2/test-refs.yaml tempest)
+          TEMPEST_VERSION=$(hack/resolve-test-ref.sh releases/${{ matrix.release }}/test-refs.yaml tempest)
           echo "tempest=${TEMPEST_VERSION}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
@@ -620,7 +618,7 @@ jobs:
       - name: Download Tempest digests
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: digests-tempest-*
+          pattern: digests-tempest-${{ matrix.release }}-*
           path: /tmp/digests
           merge-multiple: true
 
@@ -639,14 +637,14 @@ jobs:
             version_tag="-t ${IMAGE}:${{ steps.versions.outputs.tempest }}"
           fi
           docker buildx imagetools create \
-            -t "${IMAGE}:latest" \
+            -t "${IMAGE}:${{ matrix.release }}" \
             ${version_tag} \
-            -t "${IMAGE}:${{ github.sha }}" \
+            -t "${IMAGE}:${{ matrix.release }}-${{ github.sha }}" \
             $(printf "${IMAGE}@sha256:%s " *)
-          digest=$(docker buildx imagetools inspect "${IMAGE}:${{ github.sha }}" \
+          digest=$(docker buildx imagetools inspect "${IMAGE}:${{ matrix.release }}-${{ github.sha }}" \
             --format '{{json .Manifest.Digest}}' | tr -d '"')
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
-          echo "Created tempest manifest: ${digest}"
+          echo "Created tempest manifest (${{ matrix.release }}): ${digest}"
 
       # CC-0029: Generate and attest SBOM for Tempest image
       - name: Generate SBOM for Tempest
@@ -654,7 +652,7 @@ jobs:
         with:
           image: ghcr.io/${{ steps.meta.outputs.owner }}/tempest@${{ steps.merge-tempest.outputs.digest }}
           format: cyclonedx-json
-          output-file: sbom-tempest.cyclonedx.json
+          output-file: sbom-tempest-${{ matrix.release }}.cyclonedx.json
           upload-artifact: false
 
       # CC-0032: Scan Tempest image for vulnerabilities
@@ -662,7 +660,7 @@ jobs:
         id: grype-tempest-sbom
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
         with:
-          sbom: sbom-tempest.cyclonedx.json
+          sbom: sbom-tempest-${{ matrix.release }}.cyclonedx.json
           severity-cutoff: high
           fail-build: false
           output-format: sarif
@@ -672,14 +670,14 @@ jobs:
         uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
         with:
           sarif_file: ${{ steps.grype-tempest-sbom.outputs.sarif }}
-          category: grype-tempest
+          category: grype-tempest-${{ matrix.release }}
 
       - name: Attest SBOM for Tempest
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4
         with:
           subject-name: ghcr.io/${{ steps.meta.outputs.owner }}/tempest
           subject-digest: ${{ steps.merge-tempest.outputs.digest }}
-          sbom-path: sbom-tempest.cyclonedx.json
+          sbom-path: sbom-tempest-${{ matrix.release }}.cyclonedx.json
           push-to-registry: true
 
       # CC-0035: Attest build provenance for Tempest (SLSA Level 2+)
@@ -703,6 +701,8 @@ jobs:
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       build-matrix: ${{ steps.matrix.outputs.build-matrix }}
+      tempest-matrix: ${{ steps.matrix.outputs.tempest-matrix }}
+      tempest-release-matrix: ${{ steps.matrix.outputs.tempest-release-matrix }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -719,6 +719,8 @@ jobs:
           if [[ ${#dirs[@]} -eq 0 ]]; then
             echo "matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
             echo "build-matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
+            echo "tempest-matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
+            echo "tempest-release-matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -748,6 +750,22 @@ jobs:
             --argjson p "$platforms" \
             '[.[] as $sr | $p[] | {service: $sr.service, release: $sr.release, platform: .platform, runner: .runner}] | {"include": .}')
           echo "build-matrix=${build_matrix}" >> "$GITHUB_OUTPUT"
+
+          # Tempest matrix: one image per release (not per service)
+          releases=$(
+            for release_dir in "${dirs[@]}"; do
+              release="${release_dir%/}"
+              release="${release#releases/}"
+              echo "{\"release\":\"${release}\"}"
+            done | jq -sc '.'
+          )
+
+          echo "tempest-release-matrix=$(echo "$releases" | jq -c '{"include": .}')" >> "$GITHUB_OUTPUT"
+
+          tempest_matrix=$(echo "$releases" | jq -c \
+            --argjson p "$platforms" \
+            '[.[] as $r | $p[] | {release: $r.release, platform: .platform, runner: .runner}] | {"include": .}')
+          echo "tempest-matrix=${tempest_matrix}" >> "$GITHUB_OUTPUT"
 
   # Each platform is built on a native runner and pushed by digest (non-PR) or
   # loaded locally for verification (PR, amd64 only via build-matrix filtering).
@@ -1144,6 +1162,9 @@ jobs:
           MATRIX_RELEASE: ${{ matrix.release }}
         run: scripts/apply-constraint-overrides.sh "$MATRIX_RELEASE"
 
+      # CC-0051: [test] extra removed — upstream projects list test deps in
+      # test-requirements.txt, not as a setuptools extra.  Test deps are
+      # installed separately via -r test-requirements.txt below.
       - name: Resolve pip extras
         id: pip-extras
         env:
@@ -1154,11 +1175,11 @@ jobs:
           extras=$(yq -r ".\"${MATRIX_SERVICE}\".pip_extras // [] | join(\",\")" \
             "releases/${MATRIX_RELEASE}/extra-packages.yaml")
           if [ -n "$extras" ]; then
-            echo "install_spec=.[test,${extras}]" >> "$GITHUB_OUTPUT"
+            echo "install_spec=.[${extras}]" >> "$GITHUB_OUTPUT"
           else
-            echo "install_spec=.[test]" >> "$GITHUB_OUTPUT"
+            echo "install_spec=." >> "$GITHUB_OUTPUT"
           fi
-          echo "Resolved install spec: .[test${extras:+,${extras}}]"
+          echo "Resolved install spec: .${extras:+[${extras}]}"
 
       - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
         with:
@@ -1213,9 +1234,15 @@ jobs:
               # PKG-INFO is copied along with the source and is the primary
               # PBR fallback when .git is absent (the sdist tarball path).
               printf "Metadata-Version: 2.1\nName: %s\nVersion: %s\n" "$SERVICE_NAME" "$SERVICE_VERSION" > PKG-INFO
+              # Install test-requirements.txt if present (upstream projects
+              # list test deps there, not as a [test] extra).
+              TEST_REQ_ARG=""
+              if [ -f test-requirements.txt ]; then
+                TEST_REQ_ARG="-r test-requirements.txt"
+              fi
               uv pip install --prefix /var/lib/openstack \
                 --constraint /workspace/upper-constraints.txt \
-                "${INSTALL_SPEC}" stestr testtools
+                $TEST_REQ_ARG "${INSTALL_SPEC}" stestr testtools
               stestr init
               set +e
               stestr run $EXCLUDE_LIST_ARG; TEST_EXIT=$?

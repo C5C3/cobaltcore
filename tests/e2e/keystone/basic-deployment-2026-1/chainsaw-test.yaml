@@ -2,20 +2,20 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for happy-path Keystone deployment (CC-0016).
+# Chainsaw E2E test for happy-path Keystone deployment (CC-0051).
 # Validates the full reconciliation cycle in managed mode:
 #   - All 5 sub-conditions progress to True with expected reasons
 #   - Aggregate Ready=True with reason AllReady
 #   - All owned resources exist (Deployment, Service, CronJob, Secret,
 #     RBAC, PushSecret)
-#   - ConfigMap with keystone-basic-config- prefix exists
+#   - ConfigMap with keystone-basic-2026-1-config- prefix exists
 #   - Keystone API at /v3 is accessible via curl
 #
-# REQ-001, REQ-002, REQ-003, REQ-012, REQ-013 (CC-0016)
+# REQ-001, REQ-002, REQ-003, REQ-012, REQ-013 (CC-0051)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
-  name: keystone-basic-deployment
+  name: keystone-basic-deployment-2026-1
 spec:
   namespace: openstack
   timeouts:
@@ -32,7 +32,7 @@ spec:
           apiVersion: keystone.openstack.c5c3.io/v1alpha1
           kind: Keystone
           metadata:
-            name: keystone-basic
+            name: keystone-basic-2026-1
             namespace: openstack
           status:
             (conditions[?type == 'SecretsReady']):
@@ -90,7 +90,7 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-basic-api
+            name: keystone-basic-2026-1-api
             namespace: openstack
           status:
             (availableReplicas > `0`): true
@@ -99,7 +99,7 @@ spec:
           apiVersion: v1
           kind: Service
           metadata:
-            name: keystone-basic-api
+            name: keystone-basic-2026-1-api
             namespace: openstack
           spec:
             ports:
@@ -109,18 +109,18 @@ spec:
           apiVersion: policy/v1
           kind: PodDisruptionBudget
           metadata:
-            name: keystone-basic-api
+            name: keystone-basic-2026-1-api
             namespace: openstack
             labels:
               app.kubernetes.io/name: keystone
-              app.kubernetes.io/instance: keystone-basic
+              app.kubernetes.io/instance: keystone-basic-2026-1
               app.kubernetes.io/managed-by: keystone-operator
           spec:
             minAvailable: 1
             selector:
               matchLabels:
                 app.kubernetes.io/name: keystone
-                app.kubernetes.io/instance: keystone-basic
+                app.kubernetes.io/instance: keystone-basic-2026-1
   # ── Step 4: Assert Fernet resources ────────────────────────────────────
   - try:
     - assert:
@@ -128,52 +128,52 @@ spec:
           apiVersion: batch/v1
           kind: CronJob
           metadata:
-            name: keystone-basic-fernet-rotate
+            name: keystone-basic-2026-1-fernet-rotate
             namespace: openstack
     - assert:
         resource:
           apiVersion: v1
           kind: Secret
           metadata:
-            name: keystone-basic-fernet-keys
+            name: keystone-basic-2026-1-fernet-keys
             namespace: openstack
     - assert:
         resource:
           apiVersion: v1
           kind: ServiceAccount
           metadata:
-            name: keystone-basic-fernet-rotate
+            name: keystone-basic-2026-1-fernet-rotate
             namespace: openstack
     - assert:
         resource:
           apiVersion: rbac.authorization.k8s.io/v1
           kind: Role
           metadata:
-            name: keystone-basic-fernet-rotate
+            name: keystone-basic-2026-1-fernet-rotate
             namespace: openstack
     - assert:
         resource:
           apiVersion: rbac.authorization.k8s.io/v1
           kind: RoleBinding
           metadata:
-            name: keystone-basic-fernet-rotate
+            name: keystone-basic-2026-1-fernet-rotate
             namespace: openstack
     - assert:
         resource:
           apiVersion: external-secrets.io/v1alpha1
           kind: PushSecret
           metadata:
-            name: keystone-basic-fernet-keys-backup
+            name: keystone-basic-2026-1-fernet-keys-backup
             namespace: openstack
   # ── Step 5: Assert ConfigMap exists ────────────────────────────────────
   - try:
     - script:
         content: |
-          kubectl get cm -n openstack -o name | grep keystone-basic-config-
+          kubectl get cm -n openstack -o name | grep keystone-basic-2026-1-config-
   # ── Step 6: Assert API accessibility ───────────────────────────────────
   - try:
     - script:
         timeout: 30s
         content: |
-          kubectl run curl-test-basic --image=ghcr.io/c5c3/keystone:2025.2 --rm -i --restart=Never \
-            --command -- python3 -c "import urllib.request; print(urllib.request.urlopen('http://keystone-basic-api.openstack.svc:5000/v3').read().decode())"
+          kubectl run curl-test-basic-2026-1 --image=ghcr.io/c5c3/keystone:2026.1 --rm -i --restart=Never \
+            --command -- python3 -c "import urllib.request; print(urllib.request.urlopen('http://keystone-basic-2026-1-api.openstack.svc:5000/v3').read().decode())"

@@ -2,19 +2,19 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Dedicated Keystone CR for Tempest API tests (CC-0035).
-# Uses a separate database (keystone_tempest) to avoid stale state
+# Dedicated Keystone CR for Tempest API tests (CC-0051).
+# Uses a separate database (keystone_tempest_2026_1) to avoid stale state
 # from prior Chainsaw E2E tests that reuse the same kind cluster.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:
-  name: keystone-tempest
+  name: keystone-tempest-2026-1
   namespace: openstack
 spec:
   replicas: 3
   image:
     repository: ghcr.io/c5c3/keystone
-    tag: "2025.2"
+    tag: "2026.1"
   # Override the operator's default resource limits (100m/500m CPU,
   # 256Mi/512Mi memory). The default CPU limit of 500m throttles the
   # keystone-API pod to half a core, which more than doubled the Tempest
@@ -30,7 +30,7 @@ spec:
   database:
     clusterRef:
       name: openstack-db
-    database: keystone_tempest
+    database: keystone_tempest_2026_1
     secretRef:
       name: keystone-db
   cache:

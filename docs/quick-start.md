@@ -478,7 +478,7 @@ The script handles everything automatically:
 
 1. Builds the Tempest container image from the pinned versions in `releases/2025.2/test-refs.yaml`
 2. Establishes a port-forward to the Keystone API (skipped if one is already running)
-3. Runs the identity tests defined in `tests/tempest/keystone/`
+3. Runs the identity tests defined in `tests/tempest/keystone-2025-2/`
 
 Results land in `_output/tempest/`:
 
