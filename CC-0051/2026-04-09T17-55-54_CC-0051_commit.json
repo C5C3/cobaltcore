@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-09T17:55:54.830300+00:00",
+  "feature_id": "CC-0051",
+  "task_type": "commit",
+  "session_key": "CC-0051",
+  "model": "opus",
+  "prompt": "Generate a detailed git commit body for this commit.\nSubject: fix(CC-0051): address review #2 feedback from berendt\n\nReview feedback is in: /worktrees/CC-0051/.planwerk/reviews/CC-0051-github-review-by-berendt-external-2.json\nUse `git diff --cached -- ':(exclude).planwerk'` to see the full staged diff.\n\nDiff stat:\n.github/workflows/build-images.yaml                    | 3 +++\n docs/reference/tempest-test-infrastructure.md          | 2 +-\n hack/ci-generate-tempest-matrix.sh                     | 3 +++\n tests/container-images/verify_build_images_workflow.sh | 1 +\n 4 files changed, 8 insertions(+), 1 deletion(-)\n\nWrite ONLY the body text, no subject line, no markdown.\nFor each changed file, write a bullet point: '- path/to/file: what was changed'\nDo NOT mention .planwerk directory changes.\nOutput ONLY plain text — no tool_call tags, no XML, no code blocks.",
+  "prompt_length": 865,
+  "caller": "run_claude_cli"
+}
