@@ -269,6 +269,9 @@ func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
 	g.Expect(credentialMount.MountPath).To(Equal("/etc/keystone/credential-keys/"))
 	g.Expect(credentialMount.ReadOnly).To(BeTrue())
 
+	// Verify SecurityContext satisfies PSS Restricted profile (CC-0045).
+	expectRestrictedSecurityContext(g, &container)
+
 	// Verify volumes.
 	g.Expect(deploy.Spec.Template.Spec.Volumes).To(HaveLen(3))
 	var configVol, fernetVol, credentialVol corev1.Volume

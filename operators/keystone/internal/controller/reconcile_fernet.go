@@ -247,9 +247,10 @@ func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName st
 							ServiceAccountName: saName,
 							RestartPolicy:      corev1.RestartPolicyOnFailure,
 							InitContainers: []corev1.Container{{
-								Name:    "copy-keys",
-								Image:   image,
-								Command: []string{"sh", "-c", "cp /fernet-keys-src/* /etc/keystone/fernet-keys/"},
+								Name:            "copy-keys",
+								Image:           image,
+								Command:         []string{"sh", "-c", "cp /fernet-keys-src/* /etc/keystone/fernet-keys/"},
+								SecurityContext: restrictedSecurityContext(),
 								VolumeMounts: []corev1.VolumeMount{
 									{Name: "fernet-keys-src", MountPath: "/fernet-keys-src", ReadOnly: true},
 									{Name: "fernet-keys", MountPath: "/etc/keystone/fernet-keys"},
@@ -261,7 +262,8 @@ func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName st
 								// TODO(CC-0042): Wire spec.Resources (or a smaller Job-specific default) to
 								// this container. Currently runs as BestEffort QoS. See reconcile_deployment.go
 								// containerResources() for the pattern used by the keystone-api container.
-								Command: []string{"sh", "-c", fernetRotateScript},
+								Command:         []string{"sh", "-c", fernetRotateScript},
+								SecurityContext: restrictedSecurityContext(),
 								Env: []corev1.EnvVar{
 									{Name: "SECRET_NAME", Value: secretName},
 									{Name: "SECRET_NAMESPACE", ValueFrom: &corev1.EnvVarSource{

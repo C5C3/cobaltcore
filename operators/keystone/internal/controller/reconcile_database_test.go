@@ -351,6 +351,19 @@ func TestReconcileDatabase_Brownfield_SkipsMariaDBCRs_CreatesDBSyncJob(t *testin
 	g.Expect(cond.Message).To(Equal("db_sync job is running"))
 }
 
+// TestBuildDBSyncJob_SecurityContext verifies that the db-sync container in the
+// Job returned by buildDBSyncJob has the correct SecurityContext with all four
+// PSS Restricted profile fields (CC-0045, REQ-001 through REQ-004).
+func TestBuildDBSyncJob_SecurityContext(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := brownfieldKeystone()
+
+	job := buildDBSyncJob(ks, "keystone-config-abc123")
+
+	container := findContainerByName(job.Spec.Template.Spec.Containers, "db-sync")
+	expectRestrictedSecurityContext(g, container)
+}
+
 func TestReconcileDatabase_StaleDBSyncJob_Recreated(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()

@@ -303,6 +303,19 @@ func TestReconcileBootstrap_JobComplete_ConditionMessageAndGeneration(t *testing
 	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
 }
 
+// TestBuildBootstrapJob_SecurityContext verifies that the bootstrap container in the Job
+// returned by buildBootstrapJob() has a restricted SecurityContext with all four PSS
+// Restricted profile fields set correctly (CC-0045: REQ-001, REQ-002, REQ-003, REQ-004).
+func TestBuildBootstrapJob_SecurityContext(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := bootstrapKeystone()
+
+	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
+
+	container := findContainerByName(job.Spec.Template.Spec.Containers, "bootstrap")
+	expectRestrictedSecurityContext(g, container)
+}
+
 func TestReconcileBootstrap_PublicEndpoint(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := bootstrapTestScheme()

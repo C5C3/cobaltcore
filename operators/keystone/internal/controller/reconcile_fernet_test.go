@@ -441,6 +441,23 @@ func TestReconcileFernetKeys_ConditionMessages(t *testing.T) {
 	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
 }
 
+// TestFernetRotationCronJob_SecurityContext verifies that both containers in the
+// Fernet rotation CronJob have a restricted SecurityContext (CC-0045).
+func TestFernetRotationCronJob_SecurityContext(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := fernetTestKeystone()
+
+	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123")
+
+	podSpec := cronJob.Spec.JobTemplate.Spec.Template.Spec
+
+	// Verify init container "copy-keys" SecurityContext (REQ-001 through REQ-004).
+	expectRestrictedSecurityContext(g, findContainerByName(podSpec.InitContainers, "copy-keys"))
+
+	// Verify main container "fernet-rotate" SecurityContext (REQ-001 through REQ-004).
+	expectRestrictedSecurityContext(g, findContainerByName(podSpec.Containers, "fernet-rotate"))
+}
+
 func TestReconcileFernetKeys_CronJobSpec(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := fernetTestScheme()

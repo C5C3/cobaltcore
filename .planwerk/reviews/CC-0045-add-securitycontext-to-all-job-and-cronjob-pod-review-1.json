@@ -1,0 +1,83 @@
+{
+  "feature_id": "CC-0045",
+  "title": "Add SecurityContext to all Job and CronJob pod specs",
+  "date": "2026-04-07",
+  "summary": "Adds a shared restrictedSecurityContext() helper in reconcile_deployment.go that returns a container-level SecurityContext satisfying the Pod Security Standards Restricted profile (AllowPrivilegeEscalation=false, RunAsNonRoot=true, ReadOnlyRootFilesystem=true, SeccompProfile=RuntimeDefault). The helper is applied to all 6 containers across 4 builder functions: buildDBSyncJob (1 container), buildBootstrapJob (1 container), fernetRotationCronJob (2 containers), and credentialRotationCronJob (2 containers). Five new unit tests verify the SecurityContext on all containers. All existing tests pass without modification.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist for restrictedSecurityContext() helper (TestRestrictedSecurityContext)", "checked": true},
+    {"item": "Tests exist for db-sync Job SecurityContext (TestBuildDBSyncJob_SecurityContext)", "checked": true},
+    {"item": "Tests exist for bootstrap Job SecurityContext (TestBuildBootstrapJob_SecurityContext)", "checked": true},
+    {"item": "Tests exist for fernet CronJob SecurityContext on both containers (TestFernetRotationCronJob_SecurityContext)", "checked": true},
+    {"item": "Tests exist for credential CronJob SecurityContext on both containers (TestCredentialRotationCronJob_SecurityContext)", "checked": true},
+    {"item": "All existing controller tests pass without modification", "checked": true},
+    {"item": "All 4 SecurityContext fields verified per container", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Shared helper prevents drift across builders", "checked": true},
+    {"item": "Helper placed alongside existing helpers in reconcile_deployment.go", "checked": true},
+    {"item": "Uses ptr.To() consistent with existing codebase usage", "checked": true},
+    {"item": "No code duplication in production code", "checked": true},
+    {"item": "Godoc comment includes CC-0045 feature ID", "checked": true},
+    {"item": "No unrelated changes included", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "AllowPrivilegeEscalation=false set on all 6 containers", "checked": true},
+    {"item": "RunAsNonRoot=true set on all 6 containers", "checked": true},
+    {"item": "ReadOnlyRootFilesystem=true set on all 6 containers", "checked": true},
+    {"item": "SeccompProfile=RuntimeDefault set on all 6 containers", "checked": true},
+    {"item": "No hardcoded secrets introduced", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is minimal — one helper, one call per container", "checked": true},
+    {"item": "Helper is unexported (package-private), appropriate scope", "checked": true},
+    {"item": "No API type changes, no CRD regeneration needed", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated production code — single helper used everywhere", "checked": true},
+    {"item": "No over-engineering — returns static struct, no configuration", "checked": true},
+    {"item": "No future-proofing — exactly what was requested", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "N/A — pure constructor function with no error paths", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "N/A — no external inputs to validate", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "TE7",
+      "severity": "MINOR",
+      "description": "TestBuildDBSyncJob_SecurityContext accesses Containers[0] without a prior NotTo(BeEmpty()) guard, while the sibling TestBuildBootstrapJob_SecurityContext does include this guard. On an empty slice, the test would panic with an index-out-of-range instead of producing a clear gomega failure message.",
+      "location": "operators/keystone/internal/controller/reconcile_database_test.go:367",
+      "fix": "Add g.Expect(job.Spec.Template.Spec.Containers).NotTo(BeEmpty()) before accessing Containers[0], matching the bootstrap test's pattern.",
+      "evidence": "container := job.Spec.Template.Spec.Containers[0]  // no guard, cf. bootstrap test line 318: g.Expect(job.Spec.Template.Spec.Containers).NotTo(BeEmpty())",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider applying restrictedSecurityContext() to the Deployment's keystone-api container as well (separate ticket — the Deployment currently has no container-level SecurityContext, which means it relies solely on the PodSecurityPolicy/PodSecurityStandards admission controller for enforcement rather than being explicitly hardened)."
+  ],
+  "next_steps": [],
+  "detected_patterns": [
+    {
+      "name": "Shared restrictedSecurityContext helper for PSS Restricted compliance",
+      "component": "operators/keystone/internal/controller",
+      "category": "configuration",
+      "applies_when": "Adding a new Job or CronJob builder function that creates pod specs for the Keystone operator (or future operators following the same pattern)",
+      "description": "All Job and CronJob container specs must include SecurityContext: restrictedSecurityContext() on every container (including init containers). The restrictedSecurityContext() helper in reconcile_deployment.go returns a *corev1.SecurityContext with AllowPrivilegeEscalation=ptr.To(false), RunAsNonRoot=ptr.To(true), ReadOnlyRootFilesystem=ptr.To(true), and SeccompProfile={Type: RuntimeDefault}. This ensures Pod Security Standards Restricted profile compliance. The helper is used by 4 builder functions across 6 containers.",
+      "examples": [
+        {
+          "location": "operators/keystone/internal/controller/reconcile_deployment.go:290",
+          "code": "func restrictedSecurityContext() *corev1.SecurityContext {\n\treturn &corev1.SecurityContext{\n\t\tAllowPrivilegeEscalation: ptr.To(false),\n\t\tRunAsNonRoot:             ptr.To(true),\n\t\tReadOnlyRootFilesystem:   ptr.To(true),\n\t\tSeccompProfile: &corev1.SeccompProfile{\n\t\t\tType: corev1.SeccompProfileTypeRuntimeDefault,\n\t\t},\n\t}\n}"
+        },
+        {
+          "location": "operators/keystone/internal/controller/reconcile_fernet.go:253",
+          "code": "InitContainers: []corev1.Container{{\n\tName:            \"copy-keys\",\n\tImage:           image,\n\tCommand:         []string{\"sh\", \"-c\", \"cp /fernet-keys-src/* /etc/keystone/fernet-keys/\"},\n\tSecurityContext: restrictedSecurityContext(),\n\tVolumeMounts: []corev1.VolumeMount{...},\n}}"
+        }
+      ]
+    }
+  ]
+}

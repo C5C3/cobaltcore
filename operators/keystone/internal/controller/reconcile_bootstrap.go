@@ -130,6 +130,7 @@ exec keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap \
 								},
 							},
 						}},
+						SecurityContext: restrictedSecurityContext(),
 						VolumeMounts: []corev1.VolumeMount{
 							{
 								Name:      "config",

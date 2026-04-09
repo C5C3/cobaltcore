@@ -239,9 +239,10 @@ func credentialRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapNam
 							ServiceAccountName: saName,
 							RestartPolicy:      corev1.RestartPolicyOnFailure,
 							InitContainers: []corev1.Container{{
-								Name:    "copy-keys",
-								Image:   image,
-								Command: []string{"sh", "-c", "cp /credential-keys-src/* /etc/keystone/credential-keys/"},
+								Name:            "copy-keys",
+								Image:           image,
+								Command:         []string{"sh", "-c", "cp /credential-keys-src/* /etc/keystone/credential-keys/"},
+								SecurityContext: restrictedSecurityContext(),
 								VolumeMounts: []corev1.VolumeMount{
 									{Name: "credential-keys-src", MountPath: "/credential-keys-src", ReadOnly: true},
 									{Name: "credential-keys", MountPath: "/etc/keystone/credential-keys"},
@@ -253,7 +254,8 @@ func credentialRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapNam
 								// TODO(CC-0042): Wire spec.Resources (or a smaller Job-specific default) to
 								// this container. Currently runs as BestEffort QoS. See reconcile_deployment.go
 								// containerResources() for the pattern used by the keystone-api container.
-								Command: []string{"sh", "-c", credentialRotateScript},
+								Command:         []string{"sh", "-c", credentialRotateScript},
+								SecurityContext: restrictedSecurityContext(),
 								Env: []corev1.EnvVar{
 									{Name: "SECRET_NAME", Value: secretName},
 									{Name: "SECRET_NAMESPACE", ValueFrom: &corev1.EnvVarSource{

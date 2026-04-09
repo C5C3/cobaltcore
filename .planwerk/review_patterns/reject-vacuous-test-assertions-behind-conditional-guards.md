@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: Look for test assertions wrapped in `if err != nil` or similar conditionals. If the happy path means the condition is false, the assertion body is never executed and the test passes without proving anything.
 **Severity**: BLOCKING
-**Occurrences**: 2
+**Occurrences**: 3
 
 ## What to check
 
@@ -24,3 +24,8 @@ A vacuous test gives false confidence — it always passes regardless of whether
 - **Feedback**: `mgr.GetClient()` returns the manager's caching (informer-backed) client. In controller-runtime v0.23.x the cache does not fall back to the API server on a cache miss — if the informer has not yet processed a freshly created object, the immediately following `c.Get()` in the tests will return `not found`, making tests intermittently flaky.
 - **What was missed**: Test code that performs synchronous Create-then-Get assertions must use a direct API server client (`client.New(cfg, ...)`), not the manager's caching client (`mgr.GetClient()`). Also check for divergence from established test utility patterns already present in the codebase (e.g., a shared `SetupEnvTestEnvironment` helper).
 - **Fix**: Replaced `c := mgr.GetClient()` with `c, err := client.New(cfg, client.Options{Scheme: s})` to use a direct API server client, matching the project's existing pattern in `internal/common/testutil/envtest/setup.go`.
+
+### CC-0045 — berendt
+- **Feedback**: Add a corresponding assertion to expectRestrictedSecurityContext in security_context_test.go for Capabilities.Drop.
+- **What was missed**: The test helper (expectRestrictedSecurityContext) must assert every field that the specification requires. If the Capabilities.Drop field was missing from both the implementation AND the test, the test would still pass — making it useless for catching omissions.
+- **Fix**: Added `assert.NotNil(t, sc.Capabilities)` and `assert.Equal(t, []corev1.Capability{"ALL"}, sc.Capabilities.Drop)` to the test helper.

@@ -1,0 +1,68 @@
+{
+  "summary": "Review #2 after sourcery-ai[bot] feedback. Three improvements were made: (1) restrictedSecurityContext() helper moved from reconcile_deployment.go to a dedicated security_context.go file, (2) tests now use findContainerByName() instead of index-based access, (3) duplicated assertion logic extracted into expectRestrictedSecurityContext() helper in security_context_test.go. All four builder functions (buildDBSyncJob, buildBootstrapJob, fernetRotationCronJob, credentialRotationCronJob) continue to set SecurityContext on every container via the shared helper. All tests pass. go vet clean.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist for all four builder functions (db-sync, bootstrap, fernet, credential)", "checked": true},
+    {"item": "Tests cover both init containers and main containers (fernet, credential CronJobs)", "checked": true},
+    {"item": "Tests use name-based container lookup instead of brittle index access", "checked": true},
+    {"item": "Shared expectRestrictedSecurityContext helper validates all four PSS fields", "checked": true},
+    {"item": "TestRestrictedSecurityContext unit test exists for the helper function itself", "checked": true},
+    {"item": "All existing tests continue to pass without modification", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "restrictedSecurityContext() is in a dedicated neutral file (security_context.go)", "checked": true},
+    {"item": "No duplicated assertion logic across test files", "checked": true},
+    {"item": "Follows existing Gomega/NewGomegaWithT test patterns", "checked": true},
+    {"item": "SPDX headers present on new files", "checked": true},
+    {"item": "Feature ID (CC-0045) referenced in comments", "checked": true},
+    {"item": "Unused ptr import cleanly removed from reconcile_deployment.go", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "AllowPrivilegeEscalation=false set on all containers", "checked": true},
+    {"item": "RunAsNonRoot=true set on all containers", "checked": true},
+    {"item": "ReadOnlyRootFilesystem=true set on all containers", "checked": true},
+    {"item": "SeccompProfile RuntimeDefault set on all containers", "checked": true},
+    {"item": "No hardcoded secrets introduced", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Cross-cutting helper in dedicated file, not domain-specific file", "checked": true},
+    {"item": "Single source of truth for restricted SecurityContext definition", "checked": true},
+    {"item": "Test helpers co-located with production helper in security_context_test.go", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated SecurityContext assertion blocks across test files", "checked": true},
+    {"item": "No unnecessary abstractions added", "checked": true},
+    {"item": "No scope creep beyond requested changes", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "findContainerByName returns nil for missing container, caught by expectRestrictedSecurityContext nil check", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "expectRestrictedSecurityContext checks container is not nil before accessing fields", "checked": true},
+    {"item": "expectRestrictedSecurityContext checks SecurityContext is not nil before dereferencing pointers", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": [
+    {
+      "name": "Cross-cutting security helpers in dedicated files with shared test assertions",
+      "component": "operators/keystone/internal/controller",
+      "category": "testing",
+      "applies_when": "Adding a new cross-cutting security or configuration helper that is used by multiple reconciler files, with corresponding test assertions that would otherwise be duplicated",
+      "description": "Cross-cutting helpers (e.g., restrictedSecurityContext) are placed in a dedicated file named after their concern (security_context.go), not in a domain-specific reconciler file. The corresponding test file (security_context_test.go) co-locates the unit test for the helper alongside shared test assertion functions (expectRestrictedSecurityContext) and utility functions (findContainerByName) that consumer tests import. This prevents assertion drift across test files and keeps the helper's location neutral.",
+      "examples": [
+        {
+          "location": "operators/keystone/internal/controller/security_context.go:17",
+          "code": "func restrictedSecurityContext() *corev1.SecurityContext {\n\treturn &corev1.SecurityContext{\n\t\tAllowPrivilegeEscalation: ptr.To(false),\n\t\tRunAsNonRoot:             ptr.To(true),\n\t\tReadOnlyRootFilesystem:   ptr.To(true),\n\t\tSeccompProfile: &corev1.SeccompProfile{\n\t\t\tType: corev1.SeccompProfileTypeRuntimeDefault,\n\t\t},\n\t}\n}"
+        },
+        {
+          "location": "operators/keystone/internal/controller/security_context_test.go:33",
+          "code": "func expectRestrictedSecurityContext(g Gomega, container *corev1.Container) {\n\tg.Expect(container).NotTo(BeNil(), \"container must exist\")\n\tsc := container.SecurityContext\n\tg.Expect(sc).NotTo(BeNil(), \"SecurityContext must be set on container %q\", container.Name)\n\tg.Expect(sc.AllowPrivilegeEscalation).NotTo(BeNil())\n\tg.Expect(*sc.AllowPrivilegeEscalation).To(BeFalse())\n\tg.Expect(sc.RunAsNonRoot).NotTo(BeNil())\n\tg.Expect(*sc.RunAsNonRoot).To(BeTrue())\n\tg.Expect(sc.ReadOnlyRootFilesystem).NotTo(BeNil())\n\tg.Expect(*sc.ReadOnlyRootFilesystem).To(BeTrue())\n\tg.Expect(sc.SeccompProfile).NotTo(BeNil())\n\tg.Expect(sc.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))\n}"
+        }
+      ]
+    }
+  ]
+}

@@ -447,6 +447,23 @@ func TestReconcileCredentialKeys_ConditionMessages(t *testing.T) {
 	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
 }
 
+// TestCredentialRotationCronJob_SecurityContext verifies that both containers in the
+// credential rotation CronJob have a restricted SecurityContext (CC-0045).
+func TestCredentialRotationCronJob_SecurityContext(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := credentialTestKeystone()
+
+	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123")
+
+	podSpec := cronJob.Spec.JobTemplate.Spec.Template.Spec
+
+	// Verify init container "copy-keys" SecurityContext (REQ-001 through REQ-004).
+	expectRestrictedSecurityContext(g, findContainerByName(podSpec.InitContainers, "copy-keys"))
+
+	// Verify main container "credential-rotate" SecurityContext (REQ-001 through REQ-004).
+	expectRestrictedSecurityContext(g, findContainerByName(podSpec.Containers, "credential-rotate"))
+}
+
 func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := credentialTestScheme()

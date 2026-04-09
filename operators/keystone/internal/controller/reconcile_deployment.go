@@ -158,10 +158,11 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 				},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
-						Name:      "keystone-api",
-						Image:     fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag),
-						Resources: containerResources(keystone),
-						Command: uwsgiCommand(keystone.Spec.UWSGI),
+						Name:            "keystone-api",
+						Image:           fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag),
+						Resources:       containerResources(keystone),
+						SecurityContext: restrictedSecurityContext(),
+						Command:         uwsgiCommand(keystone.Spec.UWSGI),
 						Ports: []corev1.ContainerPort{{
 							Name:          "keystone-api",
 							ContainerPort: 5000,
