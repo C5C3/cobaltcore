@@ -1,0 +1,69 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+name: Cleanup GHCR package
+description: >
+  Delete untagged and old images for a single GHCR package.
+  Supports two modes for selecting old tagged images: either a glob
+  pattern (delete-tags) or a keep-list (exclude-tags).
+
+inputs:
+  package:
+    description: GHCR package name
+    required: true
+  delete-tags:
+    description: >
+      Glob pattern for tags to delete (e.g. '*.*.*-p*-*-*').
+      Mutually exclusive with exclude-tags.
+    required: false
+    default: ""
+  exclude-tags:
+    description: >
+      Comma-separated tags to keep (e.g. 'latest').
+      Mutually exclusive with delete-tags.
+    required: false
+    default: ""
+  keep-n-tagged:
+    description: Minimum number of tagged images to keep
+    required: false
+    default: "10"
+  older-than:
+    description: "Minimum age of images to delete (e.g. '7 days')"
+    required: false
+    default: "7 days"
+  token:
+    description: GitHub token with packages:write scope
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Delete untagged images
+      uses: dataaxiom/ghcr-cleanup-action@cd0cdb900b5dbf3a6f2cc869f0dbb0b8211f50c4 # v1
+      with:
+        package: ${{ inputs.package }}
+        delete-untagged: true
+        delete-ghost-images: true
+        delete-partial-images: true
+        token: ${{ inputs.token }}
+
+    - name: Delete old tagged images (by pattern)
+      if: inputs.delete-tags != ''
+      uses: dataaxiom/ghcr-cleanup-action@cd0cdb900b5dbf3a6f2cc869f0dbb0b8211f50c4 # v1
+      with:
+        package: ${{ inputs.package }}
+        delete-tags: ${{ inputs.delete-tags }}
+        keep-n-tagged: ${{ inputs.keep-n-tagged }}
+        older-than: ${{ inputs.older-than }}
+        token: ${{ inputs.token }}
+
+    - name: Delete old tagged images (by exclusion)
+      if: inputs.exclude-tags != ''
+      uses: dataaxiom/ghcr-cleanup-action@cd0cdb900b5dbf3a6f2cc869f0dbb0b8211f50c4 # v1
+      with:
+        package: ${{ inputs.package }}
+        exclude-tags: ${{ inputs.exclude-tags }}
+        keep-n-tagged: ${{ inputs.keep-n-tagged }}
+        older-than: ${{ inputs.older-than }}
+        token: ${{ inputs.token }}
