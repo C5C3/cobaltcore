@@ -79,6 +79,23 @@ test-operator:
 	@echo "Testing operators/$(OPERATOR) module..."
 	@go test -coverprofile=cover-unit-$(OPERATOR).out ./operators/$(OPERATOR)/...
 
+.PHONY: test-race
+# test-race runs all Go tests with the race detector enabled (CC-0052).
+# Operator code is inherently concurrent — reconcilers, watches, and informer
+# caches operate across goroutines — so race detection catches data corruption
+# that normal tests miss. CI passes RACE_FLAGS="-count=1" to disable test
+# caching (race conditions are non-deterministic, so cached results mask races).
+# OPERATOR works via the global override at lines 13–16.
+# Usage: make test-race [OPERATOR=keystone] [RACE_FLAGS="-count=1"]
+RACE_FLAGS ?=
+test-race:
+	@echo "Race-testing internal/common module..."
+	@go test -race $(RACE_FLAGS) ./internal/common/...
+	@for op in $(OPERATORS); do \
+		echo "Race-testing operators/$$op module..."; \
+		go test -race $(RACE_FLAGS) ./operators/$$op/... || exit 1; \
+	done
+
 # ============================================================================
 # Lint Targets
 # ============================================================================

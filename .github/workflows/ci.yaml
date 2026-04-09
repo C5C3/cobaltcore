@@ -200,6 +200,24 @@ jobs:
           flags: integration-${{ matrix.target }}
           fail_ci_if_error: false
 
+  # CC-0052: Race condition detection for Go tests.
+  # Runs all unit tests with -race to catch data races in concurrent operator code
+  # (reconcilers, watches, informer caches). Separate from the main test job because
+  # the race detector adds 2-5x overhead. Uses -count=1 to disable test caching —
+  # race conditions are non-deterministic, so cached results could mask real races.
+  test-race:
+    needs: [changes]
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+        with:
+          go-version-file: go.work
+      - name: Run race-detected tests
+        run: make test-race RACE_FLAGS="-count=1"
+
   # CC-0018, REQ-009: Verify generated code (CRD manifests, deepcopy) is committed
   # and up-to-date. Fails if make manifests or make generate produces uncommitted diffs.
   verify-codegen:

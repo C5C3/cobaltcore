@@ -3,7 +3,7 @@
 **Review-Area**: documentation
 **Detection-Hint**: When docs contain shell commands (especially multi-step build sequences), mentally execute them in order and cross-reference any referenced names (image tags, paths, variables) against the actual source files (Dockerfiles, configs).
 **Severity**: BLOCKING
-**Occurrences**: 3
+**Occurrences**: 4
 
 ## What to check
 
@@ -29,3 +29,8 @@ Users following the docs verbatim get a build failure. The docs become a source 
 - **Feedback**: The `--type` flag in `cosign verify-attestation` expects a predicate type URI or a recognized shorthand (e.g., `slsaprovenance`, `slsaprovenance1`, `link`, `vuln`). `cyclonedx` is not a standard shorthand in cosign.
 - **What was missed**: Confirm that every flag, argument, and value in documented example commands is actually accepted by the tool. For cosign/sigstore/gh tooling, verify that predicate type shorthands exist and that the recommended verification path matches how attestations are actually stored.
 - **Fix**: Replaced the invalid `cosign verify-attestation --type cyclonedx` example with the recommended `gh attestation` tooling using the correct CycloneDX predicate type URI `https://cyclonedx.org/bom`.
+
+### CC-0052 — sourcery-ai[bot]
+- **Feedback**: The usage text suggests `make test-race [OPERATOR=keystone]`, but the target actually iterates over `$(OPERATORS)` and ignores `OPERATOR` passed on the command line. This inconsistency can mislead users who expect to run race tests for a single operator.
+- **What was missed**: Does the code actually reference every parameter mentioned in its usage documentation? If a comment says `make test-race [OPERATOR=keystone]`, does the target body use `$(OPERATOR)` to filter the loop?
+- **Fix**: Either plumbed the `OPERATOR` variable into the target to filter the loop, or updated the usage comment to accurately reflect the current behavior.

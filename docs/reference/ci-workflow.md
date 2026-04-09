@@ -1,14 +1,14 @@
 ---
 title: CI Workflow
 quadrant: infrastructure
-feature: CC-0003, CC-0018, CC-0041, CC-0050, CC-0051
+feature: CC-0003, CC-0018, CC-0041, CC-0050, CC-0051, CC-0052
 ---
 
 ::: v-pre
 
 # CI Workflow
 
-Reference documentation for the GitHub Actions CI workflow (CC-0003, CC-0018, CC-0041, CC-0050).
+Reference documentation for the GitHub Actions CI workflow (CC-0003, CC-0018, CC-0041, CC-0050, CC-0052).
 
 CC-0050 refactored repeated E2E logic into reusable shell scripts (`hack/ci-*.sh`) and a
 composite GitHub Action (`.github/actions/setup-e2e-infra/`), reducing duplication across
@@ -73,8 +73,8 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 
 ## Job Dependency DAG
 
-The workflow defines 14 jobs organised in a directed acyclic graph (CC-0018, CC-0041,
-CC-0050):
+The workflow defines 15 jobs organised in a directed acyclic graph (CC-0018, CC-0041,
+CC-0050, CC-0052):
 
 ```
 Gate Jobs (always run):
@@ -85,11 +85,12 @@ Gate Jobs (always run):
   test-integration ─┘
 
 Conditional Jobs (path-filtered via changes job):
-  helm-validate ──> needs: [changes], if: helm == 'true'
-  docs ──────────> needs: [changes], if: docs == 'true'
+  test-race ────> needs: [changes], if: needs.changes.outputs.go == 'true'
+  helm-validate ──> needs: [changes], if: needs.changes.outputs.helm == 'true'
+  docs ──────────> needs: [changes], if: needs.changes.outputs.docs == 'true'
 
 E2E Jobs (depends on gates):
-  e2e-infra ──────> needs: [changes], if: e2e-infra == 'true'
+  e2e-infra ──────> needs: [changes], if: needs.changes.outputs.e2e-infra == 'true'
   e2e-operator ───> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]
   tempest ────────> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]
 
@@ -205,6 +206,37 @@ The `common` leg runs `make test-integration-common` (producing
 `$(SETUP_ENVTEST) use <pinned-k8s-version> -p path`.
 
 Timeout: 15 minutes (longer than unit tests to account for envtest startup).
+
+### test-race
+
+Runs all Go unit tests with the race detector enabled to catch data races in concurrent
+operator code — reconcilers, watches, informer caches (CC-0052). Separate from the main
+`test` job because the race detector adds 2–5x overhead. Uses `-count=1` to disable test
+caching, since race conditions are non-deterministic and cached results could mask real
+races.
+
+**Dependencies:** `needs: [changes]`
+**Condition:** `if: needs.changes.outputs.go == 'true'`
+**Path filter:** Go source files (same filter as `test` and `test-integration`)
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
+| 3 | `make test-race RACE_FLAGS="-count=1"` | Delegates to the Makefile so the module list stays in sync (CC-0052) |
+
+CI delegates to `make test-race` so the list of modules under race testing is defined in one
+place (the Makefile's `OPERATORS` variable and `internal/common`). `RACE_FLAGS="-count=1"`
+disables test caching — race conditions are non-deterministic, so cached results could mask
+real races. No `continue-on-error` or `if: always()` — a detected data race fails the job
+immediately.
+
+This job runs independently and does **not** appear in any other job's `needs:` array. It is
+not on the critical path for E2E or publish jobs, so race detector overhead does not slow
+down the primary feedback loop. The corresponding local command is `make test-race`
+(which omits `-count=1` via the default empty `RACE_FLAGS` for developer convenience).
+
+Timeout: 20 minutes (accommodates 2–5x race detector overhead).
 
 ### verify-codegen
 

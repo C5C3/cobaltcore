@@ -1,0 +1,37 @@
+{
+  "feature_id": "CC-0052",
+  "title": "GitHub Review by sourcery-ai[bot]",
+  "summary": "The reviewer wants three things fixed:\n\n1. **DRY up the race-test module list** — the Makefile and CI workflow both independently list which modules to race-test; derive the CI paths from the Makefile (e.g., `make test-race`) so they don't drift apart.\n2. **Fix the `OPERATOR` parameter doc** — the Makefile comment says `make test-race [OPERATOR=keystone]` but the target ignores that variable; either wire it up or remove the misleading usage hint.\n3. **Align the CI condition in docs** — the plan/description uses shorthand `if: go == 'true'` but the actual YAML uses `if: needs.changes.outputs.go == 'true'`; make them match.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "sourcery-ai[bot]",
+  "date": "2026-04-09T19:34:02Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "Hey - I've found 1 issue, and left some high level feedback:\n\n- The list of modules under race testing is duplicated between the Makefile (`internal/common`, `$(OPERATORS)`) and the `test-race` CI job (explicit paths), which risks drift over time; consider deriving the CI paths from the same source (e.g., calling `make test-race` or using `OPERATORS`) so they stay in sync.\n- In the CI workflow, the `test-race` job description and DAG snippet use a shorthand `if: go == 'true'`, while the actual job condition is `if: needs.changes.outputs.go == 'true'`; aligning the documented condition with the exact expression used in YAML would avoid confusion for future maintainers.\n\n<details>\n<summary>Prompt for AI Agents</summary>\n\n~~~markdown\nPlease address the comments from this code review:\n\n## Overall Comments\n- The list of modules under race testing is duplicated between the Makefile (`internal/common`, `$(OPERATORS)`) and the `test-race` CI job (explicit paths), which risks drift over time; consider deriving the CI paths from the same source (e.g., calling `make test-race` or using `OPERATORS`) so they stay in sync.\n- In the CI workflow, the `test-race` job description and DAG snippet use a shorthand `if: go == 'true'`, while the actual job condition is `if: needs.changes.outputs.go == 'true'`; aligning the documented condition with the exact expression used in YAML would avoid confusion for future maintainers.\n\n## Individual Comments\n\n### Comment 1\n<location path=\"Makefile\" line_range=\"87\" />\n<code_context>\n+# Operator code is inherently concurrent — reconcilers, watches, and informer\n+# caches operate across goroutines — so race detection catches data corruption\n+# that normal tests miss. Does not include -count=1 (CI adds that separately).\n+# Usage: make test-race [OPERATOR=keystone]\n+test-race:\n+\t@echo \"Race-testing internal/common module...\"\n</code_context>\n<issue_to_address>\n**issue:** The documented `OPERATOR` parameter for `test-race` isn’t actually used by the target.\n\nThe usage text suggests `make test-race [OPERATOR=keystone]`, but the target actually iterates over `$(OPERATORS)` and ignores `OPERATOR` passed on the command line. This inconsistency can mislead users who expect to run race tests for a single operator. Please either plumb `OPERATOR` into the target (e.g., only loop over the requested operator) or update the usage comment to match the current behavior.\n</issue_to_address>\n~~~\n\n</details>\n\n***\n\n<details>\n<summary>Sourcery is free for open source - if you like our reviews please consider sharing them ✨</summary>\n\n- [X](https://twitter.com/intent/tweet?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [Mastodon](https://mastodon.social/share?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [LinkedIn](https://www.linkedin.com/sharing/share-offsite/?url=https://sourcery.ai)\n- [Facebook](https://www.facebook.com/sharer/sharer.php?u=https://sourcery.ai)\n\n</details>\n\n<sub>\nHelp me be more useful! Please click 👍 or 👎 on each comment and I'll use the feedback to improve your reviews.\n</sub>",
+  "code_comments": [
+    {
+      "body": "**issue:** The documented `OPERATOR` parameter for `test-race` isn’t actually used by the target.\n\nThe usage text suggests `make test-race [OPERATOR=keystone]`, but the target actually iterates over `$(OPERATORS)` and ignores `OPERATOR` passed on the command line. This inconsistency can mislead users who expect to run race tests for a single operator. Please either plumb `OPERATOR` into the target (e.g., only loop over the requested operator) or update the usage comment to match the current behavior.",
+      "path": "Makefile",
+      "line": 87,
+      "author": "sourcery-ai[bot]",
+      "created_at": "2026-04-09T19:34:02Z",
+      "id": null,
+      "resolution": "The Makefile comment was updated to clarify that OPERATOR is plumbed through via the existing global override mechanism at lines 13-16 (`ifdef OPERATOR / OPERATORS := $(OPERATOR)`), which already causes the for-loop to iterate over only the requested operator. The usage line was updated to `make test-race [OPERATOR=keystone] [RACE_FLAGS=\"-count=1\"]` to document both parameters accurately, and the comment now explains the CI-specific RACE_FLAGS flow."
+    }
+  ],
+  "resolution_summary": "All three review issues were addressed in staged (not yet committed) changes across three files. The CI test-race job was changed from explicit go test commands to `make test-race RACE_FLAGS=\"-count=1\"`, eliminating the module list duplication by delegating to the Makefile as the single source of truth. A new `RACE_FLAGS` variable was added to the Makefile to support CI passing `-count=1`. The DAG shorthand fix from the reviewer's comment about test-race was also applied to three additional conditional jobs in docs/reference/ci-workflow.md (helm-validate, docs, e2e-infra) that had the same shorthand pattern, aligning all four entries with the exact YAML expressions.",
+  "github_review_id": 4084936188
+}

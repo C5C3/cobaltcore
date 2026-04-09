@@ -1,0 +1,60 @@
+{
+  "feature_id": "CC-0052",
+  "title": "Add race condition detection to Go tests",
+  "date": "2026-04-09",
+  "verdict": "APPROVED",
+  "summary": "Adds a dedicated `test-race` Makefile target and CI job that runs all Go tests with `-race` enabled. The Makefile target follows the existing `test` target's OPERATORS iteration pattern. The CI job is SHA-pinned, gated on `go == 'true'`, uses `-count=1` to prevent caching, has a 20-minute timeout, and does not modify any existing job or appear in any job's `needs:` array. Documentation in `docs/reference/ci-workflow.md` is updated with the new job in the DAG and a complete `### test-race` section.",
+  "tests_checklist": [
+    {"item": "N/A — feature adds testing infrastructure (CI job + Makefile target), not application code requiring tests", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Makefile `test-race` follows OPERATORS iteration pattern of existing `test` target", "checked": true},
+    {"item": "CI job uses SHA-pinned actions matching existing pins (checkout@de0fac2e..., setup-go@4b73464b...)", "checked": true},
+    {"item": "CI job has `-race -count=1` for all 3 modules, no `-coverprofile`", "checked": true},
+    {"item": "CI job placed after `test-integration` block, before `verify-codegen`", "checked": true},
+    {"item": "No dead code, no unnecessary complexity", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No security-sensitive operations — CI job runs `go test` only", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is minimal — one Makefile target, one CI job, one docs section", "checked": true},
+    {"item": "CI job runs independently (not on E2E/publish critical path)", "checked": true},
+    {"item": "No existing jobs modified — diff shows only additions", "checked": true},
+    {"item": "No existing job's `needs:` array references `test-race`", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code — Makefile uses OPERATORS loop, CI uses explicit module list (justified by -count=1 requirement)", "checked": true},
+    {"item": "No unused features or future-proofing", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Makefile for-loop uses `|| exit 1` to fail fast on first race detection", "checked": true},
+    {"item": "CI job has no `continue-on-error` or `if: always()` — race detection fails the job", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "N/A — no external input handling", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": [],
+  "review_steps": {
+    "1_INTENT": "Plan specifies: (1) Makefile `test-race` target with OPERATORS iteration, no `-count=1`; (2) CI `test-race` job gated on go changes, SHA-pinned, `-race -count=1`, timeout 20min; (3) docs update with DAG and section.",
+    "2_SCOPE": "4 files changed: ci.yaml (new job block only), Makefile (new target only), ci-workflow.md (docs update), progress JSON. No scope creep. No existing jobs modified.",
+    "3_VERIFICATION": "No Go code written — V1/V2/V3 not applicable. YAML and Makefile syntax verified by reading.",
+    "4_PATTERNS": "Makefile target mirrors existing `test` target pattern (workspace-relative paths, OPERATORS for-loop, `|| exit 1`). CI job mirrors existing Go-conditional jobs (needs: [changes], if: go == true, SHA-pinned actions, go-version-file: go.work). Docs section mirrors existing ### sections (description, step table, timeout).",
+    "5_TESTS": "N/A — feature IS testing infrastructure. No application code requiring tests.",
+    "6_SECURITY": "No secrets, no external inputs, no command injection surfaces. CI job runs `go test` with fixed flags.",
+    "7_COMPLEXITY": "Minimal implementation. Three files changed for three deliverables (Makefile target, CI job, docs).",
+    "8_COMPLETENESS": "All 3 tasks marked done. All 6 acceptance criteria met: (1) Makefile target covers all modules ✓, (2) CI job gated on go changes ✓, (3) -count=1 in CI ✓, (4) 20-minute timeout ✓, (5) job fails on race detection ✓, (6) existing jobs unchanged ✓. Docs accurately describe implementation.",
+    "9_PROMPT_QUALITY": "No new prompt files — N/A."
+  },
+  "external_pattern_checks": {
+    "cross_reference_docs_against_implementation": "Docs step table matches CI implementation. Module list in docs matches CI run step.",
+    "flag_duplicated_logic_with_sync_refs": "Module list is hardcoded in CI (3 go test commands) and dynamic in Makefile (OPERATORS). Same pattern as existing `test` job (hardcoded matrix vs dynamic Makefile). Not a new coupling.",
+    "enforce_ticket_scope": "All changes reference CC-0052 only. No scope creep.",
+    "update_docs_when_behavior_changes": "Docs created fresh for new feature. No stale references."
+  }
+}
