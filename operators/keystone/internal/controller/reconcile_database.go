@@ -11,8 +11,10 @@ import (
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
@@ -23,6 +25,28 @@ import (
 
 // Feature: CC-0013
 
+// isMariaDBClusterReady returns whether the MariaDB cluster referenced by
+// spec.database.clusterRef currently reports a Ready=True condition. It
+// returns (false, nil) when the cluster CR does not yet exist or is not
+// ready, and surfaces transient errors so the reconciler can retry. Keeping
+// this check in reconcileDatabase ensures the operator reflects upstream
+// database outages in DatabaseReady rather than caching the last sync result
+// forever (CC-0047).
+func isMariaDBClusterReady(ctx context.Context, c client.Client, keystone *keystonev1alpha1.Keystone) (bool, error) {
+	cluster := &mariadbv1alpha1.MariaDB{}
+	key := client.ObjectKey{
+		Namespace: keystone.Namespace,
+		Name:      keystone.Spec.Database.ClusterRef.Name,
+	}
+	if err := c.Get(ctx, key, cluster); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("getting MariaDB %s: %w", key, err)
+	}
+	return conditions.IsReady(cluster.Status.Conditions), nil
+}
+
 // reconcileDatabase ensures the Keystone database schema is provisioned and
 // migrated. In managed mode (ClusterRef set) it creates MariaDB Database, User,
 // and Grant CRs and waits for them to become Ready before running the db_sync
@@ -31,8 +55,27 @@ import (
 func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	// Managed mode: create MariaDB CRs and wait for readiness.
+	// Managed mode: verify MariaDB cluster health, create MariaDB CRs and
+	// wait for readiness.
 	if keystone.Spec.Database.ClusterRef != nil {
+		clusterReady, err := isMariaDBClusterReady(ctx, r.Client, keystone)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("checking MariaDB cluster readiness: %w", err)
+		}
+		if !clusterReady {
+			logger.Info("MariaDB cluster not ready, requeuing",
+				"cluster", keystone.Spec.Database.ClusterRef.Name)
+			conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+				Type:               "DatabaseReady",
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: keystone.Generation,
+				Reason:             "ClusterNotReady",
+				Message: fmt.Sprintf("MariaDB cluster %q is not ready",
+					keystone.Spec.Database.ClusterRef.Name),
+			})
+			return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, nil
+		}
+
 		dbReady, err := database.EnsureDatabase(ctx, r.Client, r.Scheme, keystone, buildDatabase(keystone))
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("ensuring Database: %w", err)

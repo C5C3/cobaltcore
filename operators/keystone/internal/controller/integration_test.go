@@ -609,6 +609,15 @@ func TestIntegration_FullReconcile_Managed(t *testing.T) {
 	// Create prerequisites (same as brownfield — secrets are still needed).
 	createPrerequisites(t, ctx, c, ns.Name)
 
+	// Create a ready MariaDB cluster CR so the reconciler's cluster health
+	// check passes (CC-0047).
+	mdbCluster := &mariadbv1alpha1.MariaDB{
+		ObjectMeta: metav1.ObjectMeta{Name: "mariadb", Namespace: ns.Name},
+	}
+	g.Expect(c.Create(ctx, mdbCluster)).To(Succeed(), "create MariaDB cluster CR")
+	g.Expect(simulators.SimulateMariaDBReady(ctx, c, client.ObjectKey{Namespace: ns.Name, Name: "mariadb"}, 1)).
+		To(Succeed(), "simulate MariaDB cluster ready")
+
 	// Create managed-mode Keystone CR (uses spec.database.clusterRef).
 	ks := integrationManagedKeystone("test-keystone", ns.Name)
 	g.Expect(c.Create(ctx, ks)).To(Succeed())
@@ -636,10 +645,11 @@ func TestIntegration_FullReconcile_Managed(t *testing.T) {
 	// Simulate Database ready — this unblocks User/Grant creation.
 	g.Expect(simulators.SimulateDatabaseReady(ctx, c, dbKey)).To(Succeed(), "simulate Database ready")
 
-	// The controller does not watch MariaDB types, so it relies on
-	// RequeueDatabaseWait to discover readiness changes. The reconciler
-	// creates User only after Database is ready, and Grant only after
-	// User is ready, so we must simulate each sequentially.
+	// The controller watches the MariaDB cluster CR but not the Database,
+	// User, or Grant CRs, so it relies on RequeueDatabaseWait to discover
+	// their readiness changes. The reconciler creates User only after
+	// Database is ready, and Grant only after User is ready, so we must
+	// simulate each sequentially.
 
 	// Wait for User CR to appear, then simulate User ready.
 	userKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name}

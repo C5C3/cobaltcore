@@ -326,6 +326,7 @@ permissions required for the operator to manage Keystone resources and their dep
 | `""` (core) | `events` | create, patch |
 | `batch` | `jobs`, `cronjobs` | get, list, watch, create, update, patch, delete |
 | `k8s.mariadb.com` | `databases`, `users`, `grants` | get, list, watch, create, update, patch, delete |
+| `k8s.mariadb.com` | `mariadbs` | get, list, watch |
 | `external-secrets.io` | `externalsecrets`, `pushsecrets` | get, list, watch, create, update, patch |
 | `rbac.authorization.k8s.io` | `roles`, `rolebindings` | get, list, watch, create, update, patch, delete |
 

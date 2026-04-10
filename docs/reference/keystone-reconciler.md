@@ -107,6 +107,7 @@ RBAC markers on the reconciler generate the required ClusterRole:
 | `core` | `services`, `configmaps`, `secrets` | get, list, watch, create, update, patch, delete |
 | `batch` | `jobs`, `cronjobs` | get, list, watch, create, update, patch, delete |
 | `k8s.mariadb.com` | `databases`, `users`, `grants` | get, list, watch, create, update, patch, delete |
+| `k8s.mariadb.com` | `mariadbs` | get, list, watch |
 | `external-secrets.io` | `externalsecrets`, `pushsecrets` | get, list, watch, create, update, patch |
 | `policy` | `poddisruptionbudgets` | get, list, watch, create, update, patch, delete |
 | `autoscaling` | `horizontalpodautoscalers` | get, list, watch, create, update, patch, delete |
@@ -133,7 +134,8 @@ RBAC markers on the reconciler generate the required ClusterRole:
 │           │                                                                  │
 │           ▼                                                                  │
 │  ┌───────────────────┐                                                       │
-│  │ reconcileDatabase │  Ensure MariaDB CRs + run db_sync Job                │
+│  │ reconcileDatabase │  Managed mode: verify MariaDB cluster health first,   │
+│  │                   │  then ensure Database/User/Grant CRs + run db_sync Job│
 │  │                   │  Sets: DatabaseReady                                  │
 │  └────────┬──────────┘  Requeue: 30s                                         │
 │           │                                                                  │

@@ -7,7 +7,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 14
+          count: 15
 
   - it: should grant full CRUD on keystones
     asserts:
@@ -143,6 +143,20 @@ tests:
               - update
               - patch
               - delete
+
+  - it: should grant read-only on mariadb cluster CRs
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - k8s.mariadb.com
+            resources:
+              - mariadbs
+            verbs:
+              - get
+              - list
+              - watch
 
   - it: should grant read/write without delete on external-secrets resources
     asserts:

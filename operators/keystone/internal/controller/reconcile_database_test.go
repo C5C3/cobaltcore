@@ -138,6 +138,40 @@ func failedDBSyncJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 	return j
 }
 
+// readyMariaDBCluster returns a MariaDB cluster CR with Ready=True matching
+// the name referenced by ks.Spec.Database.ClusterRef (CC-0047).
+func readyMariaDBCluster(ks *keystonev1alpha1.Keystone) *mariadbv1alpha1.MariaDB {
+	mdb := &mariadbv1alpha1.MariaDB{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ks.Spec.Database.ClusterRef.Name,
+			Namespace: ks.Namespace,
+		},
+	}
+	meta.SetStatusCondition(&mdb.Status.Conditions, metav1.Condition{
+		Type:   "Ready",
+		Status: metav1.ConditionTrue,
+		Reason: "StatefulSetReady",
+	})
+	return mdb
+}
+
+// notReadyMariaDBCluster returns a MariaDB cluster CR with Ready=False,
+// simulating an upstream database outage (CC-0047).
+func notReadyMariaDBCluster(ks *keystonev1alpha1.Keystone) *mariadbv1alpha1.MariaDB {
+	mdb := &mariadbv1alpha1.MariaDB{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ks.Spec.Database.ClusterRef.Name,
+			Namespace: ks.Namespace,
+		},
+	}
+	meta.SetStatusCondition(&mdb.Status.Conditions, metav1.Condition{
+		Type:   "Ready",
+		Status: metav1.ConditionFalse,
+		Reason: "StatefulSetNotReady",
+	})
+	return mdb
+}
+
 // readyDatabase returns a MariaDB Database CR with Ready=True.
 func readyDatabase(ks *keystonev1alpha1.Keystone) *mariadbv1alpha1.Database {
 	db := buildDatabase(ks)
@@ -179,6 +213,7 @@ func TestReconcileDatabase_Managed_AllReady_DatabaseSynced(t *testing.T) {
 	ks := managedKeystone()
 
 	r := newDBTestReconciler(s, ks,
+		readyMariaDBCluster(ks),
 		readyDatabase(ks),
 		readyUser(ks),
 		readyGrant(ks),
@@ -202,7 +237,7 @@ func TestReconcileDatabase_Managed_DatabaseNotReady_Requeues(t *testing.T) {
 
 	// Database CR exists but is not ready (no Ready condition).
 	db := buildDatabase(ks)
-	r := newDBTestReconciler(s, ks, db)
+	r := newDBTestReconciler(s, ks, readyMariaDBCluster(ks), db)
 
 	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
@@ -221,6 +256,7 @@ func TestReconcileDatabase_Managed_UserNotReady_Requeues(t *testing.T) {
 
 	// Database is ready, but User is not.
 	r := newDBTestReconciler(s, ks,
+		readyMariaDBCluster(ks),
 		readyDatabase(ks),
 		buildUser(ks), // exists but not ready
 	)
@@ -233,6 +269,63 @@ func TestReconcileDatabase_Managed_UserNotReady_Requeues(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal("WaitingForDatabase"))
+}
+
+func TestReconcileDatabase_Managed_ClusterMissing_Requeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := managedKeystone()
+
+	// No MariaDB cluster CR in the fake client — reconciler should report
+	// DatabaseReady=False rather than proceeding to create the Database CR.
+	r := newDBTestReconciler(s, ks)
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("ClusterNotReady"))
+
+	// No Database CR should be created while the cluster is unavailable.
+	dbList := &mariadbv1alpha1.DatabaseList{}
+	g.Expect(r.Client.List(context.Background(), dbList, client.InNamespace("default"))).To(Succeed())
+	g.Expect(dbList.Items).To(BeEmpty())
+}
+
+func TestReconcileDatabase_Managed_ClusterNotReady_FlipsDatabaseReadyFalse(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := managedKeystone()
+
+	// Simulate a previously successful reconcile: DatabaseReady=True is set
+	// and the db_sync Job has completed. A downstream MariaDB outage must
+	// flip DatabaseReady back to False on the next reconcile (CC-0047).
+	meta.SetStatusCondition(&ks.Status.Conditions, metav1.Condition{
+		Type:   "DatabaseReady",
+		Status: metav1.ConditionTrue,
+		Reason: "DatabaseSynced",
+	})
+
+	r := newDBTestReconciler(s, ks,
+		notReadyMariaDBCluster(ks),
+		readyDatabase(ks),
+		readyUser(ks),
+		readyGrant(ks),
+		completedDBSyncJob(ks),
+	)
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("ClusterNotReady"))
+	g.Expect(cond.Message).To(ContainSubstring("mariadb"))
 }
 
 // --- Brownfield mode tests ---
@@ -744,7 +837,7 @@ func TestReconcileDatabase_Managed_ConditionMessages(t *testing.T) {
 		g := NewGomegaWithT(t)
 		ks := managedKeystone()
 		db := buildDatabase(ks)
-		r := newDBTestReconciler(s, ks, db)
+		r := newDBTestReconciler(s, ks, readyMariaDBCluster(ks), db)
 
 		_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
 		g.Expect(err).NotTo(HaveOccurred())
@@ -759,6 +852,7 @@ func TestReconcileDatabase_Managed_ConditionMessages(t *testing.T) {
 		g := NewGomegaWithT(t)
 		ks := managedKeystone()
 		r := newDBTestReconciler(s, ks,
+			readyMariaDBCluster(ks),
 			readyDatabase(ks),
 			buildUser(ks), // exists but not ready
 		)
@@ -795,6 +889,7 @@ func TestReconcileDatabase_Managed_ConditionMessages(t *testing.T) {
 		g := NewGomegaWithT(t)
 		ks := managedKeystone()
 		r := newDBTestReconciler(s, ks,
+			readyMariaDBCluster(ks),
 			readyDatabase(ks),
 			readyUser(ks),
 			readyGrant(ks),

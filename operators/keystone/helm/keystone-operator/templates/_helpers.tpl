@@ -159,6 +159,17 @@ Extracted into a named template to prevent drift when rules change.
     - update
     - patch
     - delete
+# k8s.mariadb.com - mariadbs (read-only, CC-0047)
+# Required for the operator to observe the referenced MariaDB cluster's
+# Ready condition and reflect outages in DatabaseReady.
+- apiGroups:
+    - k8s.mariadb.com
+  resources:
+    - mariadbs
+  verbs:
+    - get
+    - list
+    - watch
 # external-secrets.io - externalsecrets, pushsecrets (CC-0017)
 - apiGroups:
     - external-secrets.io

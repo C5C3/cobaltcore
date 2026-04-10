@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
@@ -57,6 +58,7 @@ type KeystoneReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=databases;users;grants,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=k8s.mariadb.com,resources=mariadbs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets;pushsecrets,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
@@ -181,6 +183,12 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
 			secretToKeystoneMapper(mgr.GetClient()),
 		)).
+		// Watch the MariaDB cluster CR referenced by spec.database.clusterRef so
+		// that the operator reflects upstream database outages in DatabaseReady
+		// without waiting for the next periodic requeue (CC-0047).
+		Watches(&mariadbv1alpha1.MariaDB{}, handler.EnqueueRequestsFromMapFunc(
+			mariaDBToKeystoneMapper(mgr.GetClient()),
+		)).
 		Complete(r)
 }
 
@@ -201,6 +209,31 @@ func secretToKeystoneMapper(c client.Reader) handler.MapFunc {
 			if ks.Spec.Database.SecretRef.Name == secretName ||
 				ks.Spec.Bootstrap.AdminPasswordSecretRef.Name == secretName ||
 				isOwnedBy(obj, ks) {
+				requests = append(requests, reconcile.Request{
+					NamespacedName: client.ObjectKeyFromObject(ks),
+				})
+			}
+		}
+		return requests
+	}
+}
+
+// mariaDBToKeystoneMapper returns a MapFunc that maps MariaDB cluster events
+// to reconcile requests for Keystone CRs whose spec.database.clusterRef
+// targets the MariaDB by name in the same namespace (CC-0047).
+func mariaDBToKeystoneMapper(c client.Reader) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		var keystones keystonev1alpha1.KeystoneList
+		if err := c.List(ctx, &keystones, client.InNamespace(obj.GetNamespace())); err != nil {
+			log.FromContext(ctx).Error(err, "listing Keystone CRs for MariaDB watch")
+			return nil
+		}
+
+		mariadbName := obj.GetName()
+		var requests []reconcile.Request
+		for i := range keystones.Items {
+			ks := &keystones.Items[i]
+			if ks.Spec.Database.ClusterRef != nil && ks.Spec.Database.ClusterRef.Name == mariadbName {
 				requests = append(requests, reconcile.Request{
 					NamespacedName: client.ObjectKeyFromObject(ks),
 				})
