@@ -3,7 +3,7 @@
 **Review-Area**: architecture
 **Detection-Hint**: When reviewing new test code, check if the codebase already provides shared assertion helpers or utility functions (e.g., in a lib/ directory). If the new code uses raw if/grep/echo instead of existing helpers like assert_contains, flag it.
 **Severity**: WARNING
-**Occurrences**: 2
+**Occurrences**: 3
 
 ## What to check
 
@@ -24,3 +24,8 @@ Inline reimplementations bypass centralized error reporting and formatting, make
 - **Feedback**: The catch blocks across the three chaos tests contain a lot of duplicated kubectl diagnostics; consider extracting a shared helper script
 - **What was missed**: Compare catch/finally/script blocks across test files in the same suite. If the same set of kubectl commands (or any shell logic) appears in more than two places, flag it for extraction into a shared script.
 - **Fix**: Created `tests/e2e-chaos/diagnostics.sh` with two modes (baseline/chaos) and options (--dep-label, --dep-ns, --log-label, --eso). All three test files' catch blocks now call this script instead of inline kubectl commands.
+
+### CC-0054 — sourcery-ai[bot]
+- **Feedback**: Several checks manually repeat the pattern of extracting the e2e-chaos job section and then asserting on it; factoring that extraction and common assertions into small helper functions would simplify the script and make future changes to the job structure easier to accommodate.
+- **What was missed**: Whether multiple test functions duplicate the same non-trivial data extraction or setup logic. Check if a shared helper plus a cached variable would eliminate the repetition and centralize the logic that would need updating when the structure changes.
+- **Fix**: Centralized repeated inline sed-based job section extraction into an extract_yaml_job_section() helper with a single cached E2E_CHAOS_JOB_SECTION variable reused across all tests.

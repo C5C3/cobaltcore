@@ -1,7 +1,7 @@
 ---
 title: Chaos E2E Test Suites
 quadrant: operator
-feature: CC-0047
+feature: CC-0047, CC-0054
 ---
 
 # Chaos E2E Test Suites
@@ -83,16 +83,37 @@ settings tuned for fault injection scenarios:
 
 Individual test suites override the assert timeout to 5 minutes (`5m`) at the spec level.
 
-## CI Trigger Policy (Planned)
+## CI Trigger Policy
 
-> **Note**: CI integration is planned for a follow-up PR. The policy below describes the intended behavior.
+Chaos tests run as a separate `e2e-chaos` GitHub Actions job in the CI workflow (CC-0054).
+The job is path-filtered and non-blocking while stability is being proven. See
+[CI Workflow — e2e-chaos](./ci-workflow.md#e2e-chaos) for full job documentation.
 
-Chaos tests will run as a separate GitHub Actions job gated behind a label:
+**Path filter (`e2e_chaos`):** Changes to `tests/e2e-chaos/**`, `hack/**`, `deploy/**`,
+`.github/workflows/ci.yaml`, or `.github/actions/**` trigger the job. Additionally, any Go code change — whether in
+a specific operator (e.g., `operators/keystone/**/*.go`) or in shared code
+(`internal/common/**/*.go` via `go_common`) — triggers the job, since chaos tests validate
+operator resilience against the current codebase. On `v*` tag pushes, the job is forced
+active regardless of which files were touched.
 
-- **Push to `main`**: will always run
-- **Pull requests**: will run only if the PR has the `run-chaos` label
+**Trigger conditions:**
 
-Chaos tests will **not** block every PR merge (3-5x slower than standard E2E tests).
+| Event | Runs when |
+| --- | --- |
+| Push to `main` | Path filter matches or Go code changed (always on `v*` tags) |
+| Pull request | Path filter matches or Go code changed |
+
+**Dependencies:** The job depends on all gate jobs (`lint`, `shellcheck`, `test`,
+`test-integration`, `verify-codegen`) and `e2e-operator`. It only runs if no dependency
+failed or was cancelled. A skipped `e2e-operator` does not block the job.
+
+**Non-blocking (`continue-on-error: true`):** Chaos test failures are visible in the CI
+status but do not block merges or the publish pipeline (CC-0054 REQ-004). This is
+intentional while chaos test stability is being proven in CI. The setting will be revisited
+after 2–4 weeks of successful CI runs to consider making the job blocking.
+
+**Timeout:** 60 minutes (vs 45 minutes for `e2e-operator`) to accommodate serial test
+execution and longer recovery assertion windows.
 
 ## Test Suite Inventory
 

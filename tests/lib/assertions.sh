@@ -78,6 +78,32 @@ assert_file_contains() {
   fi
 }
 
+assert_gte() {
+  local description="$1" actual="$2" expected_min="$3"
+  if [[ "$actual" -ge "$expected_min" ]]; then
+    echo "  PASS: $description"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: $description"
+    echo "    expected: >= $expected_min"
+    echo "    actual:   $actual"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+assert_not_contains() {
+  local description="$1" haystack="$2" needle="$3"
+  if [[ "$haystack" != *"$needle"* ]]; then
+    echo "  PASS: $description"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: $description"
+    echo "    expected to NOT contain: $needle"
+    echo "    actual: $haystack"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
 assert_file_not_contains() {
   local description="$1" file="$2" pattern="$3"
   if ! grep -q "$pattern" "$file"; then

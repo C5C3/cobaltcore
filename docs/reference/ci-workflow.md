@@ -1,14 +1,14 @@
 ---
 title: CI Workflow
 quadrant: infrastructure
-feature: CC-0003, CC-0018, CC-0041, CC-0050, CC-0051, CC-0052, CC-0053
+feature: CC-0003, CC-0018, CC-0041, CC-0050, CC-0051, CC-0052, CC-0053, CC-0054
 ---
 
 ::: v-pre
 
 # CI Workflow
 
-Reference documentation for the GitHub Actions CI workflow (CC-0003, CC-0018, CC-0041, CC-0050, CC-0052, CC-0053).
+Reference documentation for the GitHub Actions CI workflow (CC-0003, CC-0018, CC-0041, CC-0050, CC-0052, CC-0053, CC-0054).
 
 CC-0050 refactored repeated E2E logic into reusable shell scripts (`hack/ci-*.sh`) and a
 composite GitHub Action (`.github/actions/setup-e2e-infra/`), reducing duplication across
@@ -77,8 +77,8 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 
 ## Job Dependency DAG
 
-The workflow defines 15 jobs organised in a directed acyclic graph (CC-0018, CC-0041,
-CC-0050, CC-0052, CC-0053):
+The workflow defines 16 jobs organised in a directed acyclic graph (CC-0018, CC-0041,
+CC-0050, CC-0052, CC-0053, CC-0054):
 
 ```
 Gate Jobs (always run):
@@ -97,6 +97,7 @@ Conditional Jobs (path-filtered via changes job):
 E2E Jobs (depends on gates):
   e2e-infra ──────> needs: [changes], if: needs.changes.outputs.e2e-infra == 'true'
   e2e-operator ───> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]
+  e2e-chaos ──────> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, e2e-operator]
   tempest ────────> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]
 
 Publish Jobs (main/tags only, depends on E2E):
@@ -108,9 +109,9 @@ Release Job (v* tags only, depends on publish):
   github-release ──> needs: [changes, merge-operator-images, helm-push], if: v* tag
 ```
 
-The three E2E jobs (`e2e-infra`, `e2e-operator`, `tempest`) share infrastructure setup via
-the `setup-e2e-infra` composite action and diagnostic teardown via `hack/ci-dump-diagnostics.sh`
-(CC-0050).
+The four E2E jobs (`e2e-infra`, `e2e-operator`, `e2e-chaos`, `tempest`) share infrastructure
+setup via the `setup-e2e-infra` composite action and diagnostic teardown via
+`hack/ci-dump-diagnostics.sh` (CC-0050).
 
 ## Jobs
 
@@ -408,6 +409,60 @@ strategy:
 The operator matrix is dynamically constructed by the `changes` job, including only operators
 whose code (or shared code) changed. The `imagePullPolicy: Never` Helm value ensures the
 kind-loaded image is used instead of attempting a registry pull. Timeout: 45 minutes.
+
+### e2e-chaos
+
+End-to-end chaos tests using kind cluster, Chaos Mesh, and Chainsaw (CC-0054). Builds the
+keystone operator image, deploys it alongside Chaos Mesh infrastructure, and runs the chaos
+test suites (MariaDB pod kill, Memcached pod kill, OpenBao pod kill). See
+[Chaos E2E Test Suites](./chaos-e2e-tests.md) for test suite details.
+
+**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, e2e-operator]`
+**Condition:** Runs only when `e2e-chaos == 'true'` and no dependency failed or was cancelled. A skipped `e2e-operator` does not block the job.
+
+The `e2e-chaos` job depends on `e2e-operator` in addition to the standard gate jobs. This
+ensures operator E2E tests pass before running the more expensive chaos tests (which require
+Chaos Mesh setup and serial test execution). The job uses `continue-on-error: true` while
+chaos test stability is being proven in CI — failures are visible but do not block merges or
+the publish pipeline (CC-0054 REQ-004). This will be revisited after 2–4 weeks of successful
+CI runs.
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
+| 3 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge-e2e`) |
+| 4 | `make docker-build` | Builds keystone operator image with tag `<IMAGE_PREFIX>/keystone-operator:dev` |
+| 5 | `hack/ci-build-service-image.sh` | Builds the OpenStack 2025.2 keystone service image (CC-0050 REQ-002) |
+| 6 | `kind load docker-image` | Loads operator and service images into kind |
+| 7 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack (CC-0050 REQ-005) |
+| 8 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys keystone operator via Helm (CC-0050 REQ-003) |
+| 9 | `chainsaw test` | Runs chaos E2E tests from `tests/e2e-chaos/` with `tests/e2e-chaos/chainsaw-config.yaml` |
+| 10 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs with `OPERATOR=keystone` (CC-0050 REQ-001) |
+| 11 | Upload JUnit report | Uploads `_output/reports/` as `e2e-chaos-junit-report` artifact (14-day retention) |
+
+**Key differences from `e2e-operator`:**
+
+| Aspect | `e2e-operator` | `e2e-chaos` |
+| --- | --- | --- |
+| Matrix | Dynamic per-operator | Single job (keystone only) |
+| Test config | `tests/e2e/chainsaw-config.yaml` | `tests/e2e-chaos/chainsaw-config.yaml` |
+| Test directory | `tests/e2e/<operator>/` | `tests/e2e-chaos/` |
+| Timeout | 45 minutes | 60 minutes |
+| Blocking | Yes | No (`continue-on-error: true`) |
+| Dependencies | Gate jobs | Gate jobs + `e2e-operator` |
+| Service images | 2025.2 + 2025.2-upgraded + 2026.1 | 2025.2 only |
+
+The chaos test Chainsaw config uses `parallel: 1` (serial execution) because chaos tests
+mutate shared infrastructure pod availability. The assert timeout is 300s (vs 120s for
+happy-path tests) to allow multiple reconciliation cycles and pod restart time during
+fault recovery.
+
+**Path filter:** `tests/e2e-chaos/**`, `hack/**`, `deploy/**`, `.github/workflows/ci.yaml`, `.github/actions/**`
+(separate from `e2e_infra` to allow independent gating). Additionally, any Go code change
+— operator-specific (e.g., `operators/keystone/**/*.go`) or shared (`internal/common/**/*.go`
+via `go_common`) — triggers the job via `go_changed` in `ci-resolve-changes.sh`, since chaos
+tests validate operator resilience against the current codebase.
 
 ### tempest
 
@@ -752,9 +807,11 @@ The E2E jobs follow a common pattern, with shared components extracted by CC-005
 ```
 
 The `e2e-infra` job uses steps 1, 5, 7-9 (no operator or service images needed). The
-`e2e-operator` job uses all steps. The `tempest` job uses all steps plus an additional
-Tempest image build and Keystone CR deployment before running `hack/ci-run-tempest.sh`
-instead of Chainsaw.
+`e2e-operator` job uses all steps. The `e2e-chaos` job (CC-0054) uses all steps with a
+chaos-specific Chainsaw config (`tests/e2e-chaos/chainsaw-config.yaml`) and test directory
+(`tests/e2e-chaos/`). The `tempest` job uses all steps plus an additional Tempest image
+build and Keystone CR deployment before running `hack/ci-run-tempest.sh` instead of
+Chainsaw.
 
 ## Go Setup Convention
 
@@ -945,10 +1002,11 @@ The CI workflow depends on artifacts introduced by CC-0001, CC-0010, and CC-0050
 | `go.work` | All Go-based jobs | Provides the Go version for `actions/setup-go@v6` |
 | `hack/*.sh` | `shellcheck` job | Shell scripts validated by shellcheck |
 | `.codecov.yml` | Codecov integration | Component-level coverage thresholds |
-| `hack/ci-dump-diagnostics.sh` | `e2e-infra`, `e2e-operator`, `tempest` jobs | Shared diagnostic dump (CC-0050) |
-| `hack/ci-build-service-image.sh` | `e2e-operator`, `tempest` jobs | Builds OpenStack service images (CC-0050) |
-| `hack/ci-deploy-operator.sh` | `e2e-operator`, `tempest` jobs | Deploys operator via Helm (CC-0050) |
+| `hack/ci-dump-diagnostics.sh` | `e2e-infra`, `e2e-operator`, `e2e-chaos`, `tempest` jobs | Shared diagnostic dump (CC-0050) |
+| `hack/ci-build-service-image.sh` | `e2e-operator`, `e2e-chaos`, `tempest` jobs | Builds OpenStack service images (CC-0050) |
+| `hack/ci-deploy-operator.sh` | `e2e-operator`, `e2e-chaos`, `tempest` jobs | Deploys operator via Helm (CC-0050) |
 | `hack/ci-run-tempest.sh` | `tempest` job | Runs Tempest API tests (CC-0050) |
-| `.github/actions/setup-e2e-infra/` | `e2e-infra`, `e2e-operator`, `tempest` jobs | Composite action for infra setup (CC-0050) |
+| `.github/actions/setup-e2e-infra/` | `e2e-infra`, `e2e-operator`, `e2e-chaos`, `tempest` jobs | Composite action for infra setup (CC-0050) |
+| `tests/e2e-chaos/chainsaw-config.yaml` | `e2e-chaos` job | Chaos-specific Chainsaw configuration (CC-0054) |
 
 :::

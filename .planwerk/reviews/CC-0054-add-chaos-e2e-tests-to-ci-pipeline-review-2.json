@@ -1,0 +1,48 @@
+{
+  "feature_id": "CC-0054",
+  "title": "Add chaos E2E tests to CI pipeline",
+  "date": "2026-04-10",
+  "verdict": "APPROVED",
+  "summary": "Review #1 feedback from sourcery-ai[bot] has been correctly addressed. Two helpers were introduced (extract_yaml_job_section, assert_needs_entry) and a cached E2E_CHAOS_JOB_SECTION variable eliminates all repeated inline sed-based extraction. The brittle full-line needs assertion was replaced with per-entry matching that tolerates reordering. All 46 tests pass. Review pattern files accurately document the lessons learned.",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (46/46 PASS, 0 FAIL, 0 SKIP)", "checked": true},
+    {"item": "Edge cases covered (tag push, docs-only, go_changed, operator-specific, unset env var)", "checked": true},
+    {"item": "Negative cases covered (publish jobs must NOT depend on e2e-chaos)", "checked": true},
+    {"item": "Tests use shared helpers from tests/lib/assertions.sh", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing shell test script structure (SPDX, set -euo pipefail, PASS/FAIL counters)", "checked": true},
+    {"item": "No duplicated extraction logic (all inline sed removed)", "checked": true},
+    {"item": "Helper functions are focused and well-documented", "checked": true},
+    {"item": "CC-0054 feature ID present in comments", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No secrets or credentials in test script", "checked": true},
+    {"item": "No path traversal risks", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Helpers are script-local (appropriate scope for single-file usage)", "checked": true},
+    {"item": "Cached variable pattern avoids redundant file parsing", "checked": true},
+    {"item": "assert_needs_entry uses comma-wrapping for exact substring matching", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated sed extraction (centralized in extract_yaml_job_section)", "checked": true},
+    {"item": "No unnecessary abstractions beyond what review feedback requested", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "set -euo pipefail is set", "checked": true},
+    {"item": "Failed assertions increment FAIL counter with diagnostic output", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Temp files cleaned up via trap RETURN", "checked": true},
+    {"item": "grep -c uses || true to prevent set -e abort on zero matches", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "The two remaining inline PASS/FAIL blocks (test_e2e_chaos_junit_always line 444, test_e2e_chaos_publish_no_dependency line 483-489) lack matching shared helpers (no assert_gte or assert_not_contains in assertions.sh). This is acceptable today but could be addressed if more tests need these patterns."
+  ],
+  "next_steps": [],
+  "detected_patterns": []
+}

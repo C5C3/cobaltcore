@@ -1,0 +1,105 @@
+{
+  "feature_id": "CC-0054",
+  "title": "Add chaos E2E tests to CI pipeline",
+  "date": "2026-04-10",
+  "summary": "Adds an `e2e-chaos` job to the CI workflow that runs Chaos Mesh-based E2E tests (MariaDB, Memcached, OpenBao pod-kill) after the regular e2e-operator job passes. Includes path-filter change detection wired through ci-resolve-changes.sh, non-blocking execution (continue-on-error: true), JUnit report collection, and documentation updates to ci-workflow.md and chaos-e2e-tests.md. All 39 verification tests pass. YAML is syntactically valid. SHA pins and env patterns match existing e2e-operator job. One documentation gap: Go code changes as a trigger for e2e-chaos are not mentioned in user-facing docs despite being required by task 3.2.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Tests exist (tests/ci/verify_chaos_ci_pipeline.sh)", "checked": true},
+    {"item": "All 39 tests pass", "checked": true},
+    {"item": "Path filter detection tested (e2e_chaos block, deploy/**, tests/e2e-chaos/**)", "checked": true},
+    {"item": "ci-resolve-changes.sh tag push tested", "checked": true},
+    {"item": "ci-resolve-changes.sh non-tag passthrough tested", "checked": true},
+    {"item": "ci-resolve-changes.sh default value tested", "checked": true},
+    {"item": "ci-resolve-changes.sh go_changed trigger tested (via FILTER_go_common)", "checked": true},
+    {"item": "ci-resolve-changes.sh docs-only change tested", "checked": true},
+    {"item": "e2e-chaos job structure validated (needs, if, timeout, continue-on-error)", "checked": true},
+    {"item": "Publish jobs verified not depending on e2e-chaos", "checked": true},
+    {"item": "JUnit report artifact validated (name, path, retention, if: always())", "checked": true},
+    {"item": "Edge case: operator-specific Go change (FILTER_keystone=true) triggering e2e-chaos", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing e2e-operator job structure (SHA pins, env patterns)", "checked": true},
+    {"item": "ci-resolve-changes.sh follows env-var interface pattern", "checked": true},
+    {"item": "Test script follows tests/ci/verify_*.sh pattern (PASS/FAIL/SKIP, shared assertions)", "checked": true},
+    {"item": "CC-0054 feature ID in all YAML comments", "checked": true},
+    {"item": "SPDX headers present on new files", "checked": true},
+    {"item": "No dead code or unused variables", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "All action references SHA-pinned with version comments", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "No expression injection in run: blocks (env: indirection used)", "checked": true},
+    {"item": "Workflow permissions remain contents: read", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "e2e-chaos job placed between e2e-operator and tempest", "checked": true},
+    {"item": "Non-blocking (continue-on-error: true) per REQ-004", "checked": true},
+    {"item": "Not in publish/release job dependency chains", "checked": true},
+    {"item": "Change detection correctly OR-gates go_changed and FILTER_e2e_chaos", "checked": true},
+    {"item": "Chaos Mesh available via deploy-infra (HelmRelease in hack/deploy-infra.sh:544)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "Reuses setup-e2e-infra composite action", "checked": true},
+    {"item": "Reuses hack/ci-build-service-image.sh, hack/ci-deploy-operator.sh, hack/ci-dump-diagnostics.sh", "checked": true},
+    {"item": "No unnecessary abstractions or new scripts", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "ci-resolve-changes.sh validates ALL_OPERATORS with ::error:: and exit 1", "checked": true},
+    {"item": "FILTER_e2e_chaos uses safe default (${FILTER_e2e_chaos:-false})", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Diagnostics and JUnit upload use if: always()", "checked": true},
+    {"item": "e2e-chaos blocks on upstream failure/cancellation via needs.*.result checks", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "DA3",
+      "severity": "MAJOR",
+      "description": "Documentation in chaos-e2e-tests.md and ci-workflow.md omits Go code changes as a trigger for e2e-chaos. Task 3.2 explicitly required documenting 'change detection triggers (chaos test files, Go code, tag pushes)'. The path filter description covers chaos test files and tag pushes, but Go operator/shared code changes (via go_changed in ci-resolve-changes.sh) are not mentioned. A developer reading the docs would reasonably conclude that a change to operators/keystone/internal/controller/*.go does NOT trigger chaos tests, when it actually does.",
+      "location": "docs/reference/chaos-e2e-tests.md:92-94",
+      "fix": "Add a sentence after the path filter description: 'Additionally, any Go code changes (operator-specific or shared internal/) trigger the job via the go_changed flag in hack/ci-resolve-changes.sh, since chaos tests validate operator resilience against the current codebase.' Apply the same clarification to the ci-workflow.md e2e-chaos Path filter section (line ~338).",
+      "evidence": "docs/reference/chaos-e2e-tests.md:92-94: 'Path filter (e2e_chaos): Changes to tests/e2e-chaos/**, hack/**, deploy/**, or .github/workflows/ci.yaml trigger the job.' — no mention of Go code. hack/ci-resolve-changes.sh:79: 'if [[ \"$go_changed\" == \"true\" || \"${FILTER_e2e_chaos:-false}\" == \"true\" ]]; then' — Go code changes DO trigger the job. Task 3.2: 'change detection triggers (chaos test files, Go code, tag pushes)' — Go code explicitly required.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "D2",
+      "severity": "MINOR",
+      "description": "YAML comment on line 452 incorrectly lists test suites as 'pod kill, network partition, memcached pod kill'. The actual suites are MariaDB pod kill, Memcached pod kill, OpenBao pod kill. 'network partition' does not exist as a test suite.",
+      "location": ".github/workflows/ci.yaml:452",
+      "fix": "Change 'runs chaos test suites (pod kill, network\\n# partition, memcached pod kill)' to 'runs chaos test suites (MariaDB pod kill,\\n# Memcached pod kill, OpenBao pod kill)'.",
+      "evidence": ".github/workflows/ci.yaml:451-453: '# Mesh infrastructure, and runs chaos test suites (pod kill, network\\n# partition, memcached pod kill).' — 'network partition' does not match any test suite. Actual suites: tests/e2e-chaos/mariadb-pod-kill/, tests/e2e-chaos/memcached-pod-kill/, tests/e2e-chaos/openbao-pod-kill/.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "Q7",
+      "severity": "MINOR",
+      "description": "Temp file leak in test_resolve_script_non_tag_passthrough(). The function creates two mktemp files (line 112, line 134) but the trap on line 114 only cleans up the last value of $output, leaking the first temp file.",
+      "location": "tests/ci/verify_chaos_ci_pipeline.sh:112-134",
+      "fix": "Either (a) save the first temp file in a separate variable and add it to the trap, or (b) explicitly rm -f the first output before reassigning: 'rm -f \"$output\"; output=$(mktemp)' before Case 2.",
+      "evidence": "tests/ci/verify_chaos_ci_pipeline.sh:112: 'output=$(mktemp)' — creates temp file 1. Line 114: 'trap \"rm -f \\\"$output\\\"\" RETURN' — trap set. Line 134: 'output=$(mktemp)' — creates temp file 2, $output now points here. On function return, trap only cleans temp file 2.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "TE2",
+      "severity": "MINOR",
+      "description": "Missing test case for operator-specific Go change (FILTER_keystone=true, FILTER_go_common=false, FILTER_e2e_chaos=false) triggering e2e-chaos=true via go_changed. This exercises a different code path in ci-resolve-changes.sh than the existing FILTER_go_common test.",
+      "location": "tests/ci/verify_chaos_ci_pipeline.sh:181-235",
+      "fix": "Add test_resolve_script_operator_change() that sets FILTER_keystone=true with all other filters false (non-tag) and asserts e2e-chaos=true.",
+      "evidence": "hack/ci-resolve-changes.sh:64-70: 'for op in $ALL_OPERATORS; do filter_var=\"FILTER_${op}\"; if [[ \"${!filter_var}\" == \"true\" ]]; then go_changed=true; ...' — this code path sets go_changed=true when FILTER_keystone=true, but no test exercises this path for e2e-chaos output.",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "After 2-4 weeks of CI stability, revisit continue-on-error: true per the documented plan in the YAML comment and docs"
+  ],
+  "next_steps": [
+    "Fix DA3: Add Go code change trigger documentation to chaos-e2e-tests.md and ci-workflow.md",
+    "Fix D2: Correct YAML comment test suite names on ci.yaml line 452",
+    "Fix Q7: Clean up first temp file in test_resolve_script_non_tag_passthrough()",
+    "Fix TE2: Add operator-specific Go change test case"
+  ],
+  "detected_patterns": []
+}

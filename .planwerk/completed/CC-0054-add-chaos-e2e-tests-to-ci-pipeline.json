@@ -2,8 +2,8 @@
   "feature_id": "CC-0054",
   "title": "Add chaos E2E tests to CI pipeline",
   "slug": "add-chaos-e2e-tests-to-ci-pipeline",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #165: Add chaos E2E tests to CI pipeline\n\n## Summary\n\nThe chaos test framework introduced in CC-0047 (12a8c92) provides Chainsaw-based chaos E2E tests using Chaos Mesh `PodChaos` CRDs (MariaDB, Memcached, OpenBao pod-kill scenarios). These tests are currently only runnable locally via `make e2e-chaos` but are **not integrated into the CI pipeline**.\n\nAs more chaos test scenarios are planned, CI integration is needed to ensure operator resilience is continuously validated.\n\n## Current state\n\n- Three chaos scenarios exist under `tests/e2e-chaos/`:\n  - `mariadb-pod-kill` (SC-CHAOS-001)\n  - `memcached-pod-kill` (SC-CHAOS-002)\n  - `openbao-pod-kill` (SC-CHAOS-003)\n- A dedicated Chainsaw config exists at `tests/e2e-chaos/chainsaw-config.yaml` with serial execution and extended timeouts (5m assert, 2m cleanup)\n- A `make e2e-chaos` target exists in the Makefile\n- No reference to chaos tests exists in `.github/workflows/ci.yaml`\n\n## Requirements\n\n- [ ] Add a `e2e-chaos` job to the CI workflow (`.github/workflows/ci.yaml`)\n- [ ] The job needs a kind cluster with Chaos Mesh installed (in addition to the standard E2E infrastructure)\n- [ ] Wire up change detection so chaos tests run when `tests/e2e-chaos/**` or operator/shared code changes\n- [ ] Chaos tests must run **after** the regular E2E tests pass (they depend on a working baseline)\n- [ ] Collect JUnit reports and diagnostics artifacts on failure (as done for other E2E jobs)\n- [ ] Consider whether chaos tests should be required to pass for merge or run as informational/non-blocking initially\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/165",
   "stories": [
@@ -337,6 +337,7 @@
       "description": "In `.github/workflows/ci.yaml`, add an `e2e_chaos` filter to the `dorny/paths-filter` step (after the existing `e2e_infra` filter) matching `tests/e2e-chaos/**`. Add `e2e-chaos: ${{ steps.result.outputs.e2e-chaos }}` to the `changes` job outputs. Add `FILTER_e2e_chaos: ${{ steps.filter.outputs.e2e_chaos }}` to the `Resolve effective changes` step env block. Pattern: follow the existing `e2e_infra` filter structure.",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -347,6 +348,7 @@
       "description": "In `hack/ci-resolve-changes.sh`, add logic to emit `e2e-chaos` output after the existing operator detection block (after `echo \"go=${go_changed}\"`). The output should be `true` when `FILTER_e2e_chaos=true` OR `go_changed=true` (covers operator/shared code changes and tag pushes). Add a comment explaining the trigger logic. Verify the script passes `shellcheck --severity=warning`.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -357,6 +359,7 @@
       "description": "Add the `e2e-chaos` job to `.github/workflows/ci.yaml` between `e2e-operator` and `tempest`. Structure: `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, e2e-operator]`, `if: needs.changes.outputs.e2e-chaos == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')`, `runs-on: ubuntu-latest`, `timeout-minutes: 60`, `continue-on-error: true`. Steps: (1) checkout, (2) setup-go, (3) create kind cluster (helm/kind-action with hack/kind-config.yaml, cluster forge-e2e), (4) build operator image (`make docker-build OPERATOR=keystone IMG=...`), (5) build service image (hack/ci-build-service-image.sh with OPERATOR=keystone), (6) load images into kind, (7) setup E2E infra (composite action), (8) deploy operator (hack/ci-deploy-operator.sh with OPERATOR=keystone), (9) run chaos tests (`mkdir -p _output/reports && chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml tests/e2e-chaos/`), (10) dump diagnostics (`if: always()`, OPERATOR=keystone), (11) upload JUnit report (`if: always()`, name `e2e-chaos-junit-report`, path `_output/reports/`, retention 14 days). Follow the e2e-operator job structure exactly for steps 1-8, simplifying where chaos tests don't need the 2026.1 image or upgrade tag.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-003",
@@ -373,6 +376,7 @@
       "description": "Update `docs/reference/ci-workflow.md`: (1) Add CC-0054 to the frontmatter `feature` field. (2) Update the Job Dependency DAG ASCII diagram to include `e2e-chaos` in the E2E Jobs section with its dependency chain. (3) Add an `### e2e-chaos` subsection (after `e2e-operator`) documenting: trigger condition, dependencies, timeout, continue-on-error rationale, steps table, and change detection filter. (4) Update the job count in the DAG description. Follow the formatting pattern of the existing `### e2e-operator` subsection.",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001"
       ]
@@ -383,6 +387,7 @@
       "description": "Update `docs/reference/chaos-e2e-tests.md`: (1) Add CC-0054 to the frontmatter `feature` field. (2) Replace the placeholder `CI Trigger Policy (Planned)` section (lines 86-96) with the actual implementation details: change detection triggers (chaos test files, Go code, tag pushes), dependency on e2e-operator, non-blocking behavior (continue-on-error), job timeout, and artifact collection. Remove the `> Note: CI integration is planned for a follow-up PR` callout.",
       "level": 3,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002"
@@ -535,8 +540,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-09T21:16:40.128218"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-10T13:38:45.589246"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-10T18:48:28.454510"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/170",
+  "pr_number": 170,
   "execution_history": [
     {
       "run_id": "f0229407-037f-445d-bcb2-5c43cb285923",
@@ -548,6 +563,78 @@
           "name": "prepare",
           "duration": 614.770268201828,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "2887b7bb-48f5-4d8b-aa25-ae0c20ce3bd6",
+      "timestamp": "2026-04-10T14:11:25.862840",
+      "total_duration": 1838.554435491562,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (2 tasks)",
+          "duration": 353.9547538757324,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (1 tasks)",
+          "duration": 577.8202896118164,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (2 tasks)",
+          "duration": 219.69036388397217,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0054] Code Review",
+          "duration": 481.8735682964325,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0054] Improvements",
+          "duration": 154.72976350784302,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0054] Simplify",
+          "duration": 50.48569631576538,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "8bd0691f-782d-4c4e-a193-58e38d955e20",
+      "timestamp": "2026-04-10T14:26:55.740438",
+      "total_duration": 599.2511432170868,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 599.2511432170868,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "7c72901b-068c-4e80-9a8f-cb79e172228c",
+      "timestamp": "2026-04-10T14:59:05.001891",
+      "total_duration": 645.876946926117,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 645.876946926117,
+          "type": "review_address",
           "status": "done"
         }
       ]

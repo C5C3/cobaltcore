@@ -45,6 +45,7 @@ jobs:
       docs: ${{ steps.result.outputs.docs }}
       helm: ${{ steps.result.outputs.helm }}
       e2e-infra: ${{ steps.result.outputs.e2e-infra }}
+      e2e-chaos: ${{ steps.result.outputs.e2e-chaos }}
       has-e2e-operators: ${{ steps.result.outputs.has-e2e-operators }}
       e2e-operators: ${{ steps.result.outputs.e2e-operators }}
       tempest-releases: ${{ steps.tempest-matrix.outputs.tempest-releases }}
@@ -90,6 +91,13 @@ jobs:
               - 'hack/**'
               - 'deploy/**'
               - '.github/workflows/ci.yaml'
+            # CC-0054: Chaos E2E tests — separate from e2e_infra to allow independent gating.
+            e2e_chaos:
+              - 'tests/e2e-chaos/**'
+              - 'hack/**'
+              - 'deploy/**'
+              - '.github/workflows/ci.yaml'
+              - '.github/actions/**'
       # CC-0050: Extracted to hack/ci-resolve-changes.sh (review #2 comment 3).
       - name: Resolve effective changes
         id: result
@@ -100,6 +108,7 @@ jobs:
           FILTER_docs: ${{ steps.filter.outputs.docs }}
           FILTER_helm: ${{ steps.filter.outputs.helm }}
           FILTER_e2e_infra: ${{ steps.filter.outputs.e2e_infra }}
+          FILTER_e2e_chaos: ${{ steps.filter.outputs.e2e_chaos }}
           FILTER_go_common: ${{ steps.filter.outputs.go_common }}
         run: hack/ci-resolve-changes.sh
       # CC-0051: Derive Tempest release matrix from releases/ directories (review #1).
@@ -435,6 +444,75 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: e2e-${{ matrix.operator }}-junit-report
+          path: _output/reports/
+          retention-days: 14
+
+  # CC-0054, REQ-001: End-to-end chaos tests using kind cluster, Chaos Mesh,
+  # and Chainsaw.  Builds the keystone operator image, deploys it with Chaos
+  # Mesh infrastructure, and runs chaos test suites (MariaDB pod kill,
+  # Memcached pod kill, OpenBao pod kill).
+  # Only runs when Go/operator code or chaos test definitions change, and only
+  # after all pre-flight checks and e2e-operator have passed or been skipped.
+  #
+  # CC-0054, REQ-004: Non-blocking (continue-on-error: true) while chaos test
+  # stability is being proven in CI.  Revisit after 2-4 weeks of successful CI
+  # runs to consider making this job blocking and adding it to publish
+  # dependencies.
+  e2e-chaos:
+    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, e2e-operator]
+    if: |
+      needs.changes.outputs.e2e-chaos == 'true' &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+        with:
+          go-version-file: go.work
+      - name: Create kind cluster
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          config: hack/kind-config.yaml
+          cluster_name: forge-e2e
+      - name: Build operator image
+        run: make docker-build OPERATOR=keystone IMG=${{ env.IMAGE_PREFIX }}/keystone-operator:dev
+      # CC-0050: Use shared service image build script (REQ-002).
+      - name: Build service image
+        run: hack/ci-build-service-image.sh
+        env:
+          OPERATOR: keystone
+          IMAGE_PREFIX: ${{ env.IMAGE_PREFIX }}
+      - name: Load images into kind
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name forge-e2e
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name forge-e2e
+      # CC-0050: Use composite action for shared Flux CLI + test deps + deploy-infra sequence (REQ-005).
+      - name: Setup E2E infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+      # CC-0050: Use shared operator deployment script (REQ-003).
+      - name: Deploy operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: keystone
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
+      - name: Run chaos E2E tests
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml tests/e2e-chaos/
+      # CC-0050: Use shared diagnostic dump script (REQ-001).
+      - name: Dump diagnostic info
+        if: always()
+        run: hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: keystone
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: e2e-chaos-junit-report
           path: _output/reports/
           retention-days: 14
 

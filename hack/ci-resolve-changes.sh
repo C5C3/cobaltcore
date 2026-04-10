@@ -22,6 +22,7 @@
 #   FILTER_docs      — paths-filter output for docs paths
 #   FILTER_helm      — paths-filter output for helm paths
 #   FILTER_e2e_infra — paths-filter output for e2e-infra paths
+#   FILTER_e2e_chaos — paths-filter output for e2e-chaos paths (CC-0054)
 #   FILTER_go_common — paths-filter output for go_common paths
 #
 # To add a new operator (e.g. glance):
@@ -71,6 +72,15 @@ else
 fi
 
 echo "go=${go_changed}" >> "$GITHUB_OUTPUT"
+
+# CC-0054: Chaos E2E tests run when chaos test definitions change OR when any
+# Go code changes (operator or shared), since chaos tests validate operator
+# resilience against the current codebase.
+if [[ "$go_changed" == "true" || "${FILTER_e2e_chaos:-false}" == "true" ]]; then
+  echo "e2e-chaos=true" >> "$GITHUB_OUTPUT"
+else
+  echo "e2e-chaos=false" >> "$GITHUB_OUTPUT"
+fi
 
 # Emit operator matrix — single codepath for both tag and non-tag.
 if [[ ${#ops[@]} -eq 0 ]]; then

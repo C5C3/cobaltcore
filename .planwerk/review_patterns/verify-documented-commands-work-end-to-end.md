@@ -3,7 +3,7 @@
 **Review-Area**: documentation
 **Detection-Hint**: When docs contain shell commands (especially multi-step build sequences), mentally execute them in order and cross-reference any referenced names (image tags, paths, variables) against the actual source files (Dockerfiles, configs).
 **Severity**: BLOCKING
-**Occurrences**: 4
+**Occurrences**: 5
 
 ## What to check
 
@@ -34,3 +34,8 @@ Users following the docs verbatim get a build failure. The docs become a source 
 - **Feedback**: The usage text suggests `make test-race [OPERATOR=keystone]`, but the target actually iterates over `$(OPERATORS)` and ignores `OPERATOR` passed on the command line. This inconsistency can mislead users who expect to run race tests for a single operator.
 - **What was missed**: Does the code actually reference every parameter mentioned in its usage documentation? If a comment says `make test-race [OPERATOR=keystone]`, does the target body use `$(OPERATOR)` to filter the loop?
 - **Fix**: Either plumbed the `OPERATOR` variable into the target to filter the loop, or updated the usage comment to accurately reflect the current behavior.
+
+### CC-0054 — berendt
+- **Feedback**: The documentation states the job only runs if all dependencies succeeded and that a skipped `e2e-operator` blocks chaos tests. But the `if:` condition only checks for `failure` and `cancelled`, not `skipped`. When `e2e-operator` is skipped, `e2e-chaos` will still run, contradicting the docs.
+- **What was missed**: Check that `if:` conditions implement exactly what the accompanying documentation claims. In particular, `!contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')` does NOT exclude `skipped` — if docs say a skipped dependency blocks the job, the condition must also check for `skipped`.
+- **Fix**: Add `!contains(needs.*.result, 'skipped')` to the `if:` condition, or update the documentation to reflect that the job intentionally runs when dependencies are skipped.
