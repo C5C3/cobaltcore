@@ -106,7 +106,7 @@ type KeystoneSpec struct {
 
 	// UWSGI configures the uWSGI application server parameters (CC-0040).
 	// When set, the operator uses these values for the uWSGI command in the
-	// Deployment. When nil, hardcoded defaults (processes=2, threads=2,
+	// Deployment. When nil, hardcoded defaults (processes=2, threads=1,
 	// httpKeepAlive=true) are used.
 	// +optional
 	UWSGI *UWSGISpec `json:"uwsgi,omitempty"`
@@ -189,7 +189,7 @@ type UWSGISpec struct {
 
 	// Threads is the number of threads per uWSGI worker process.
 	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:default=2
+	// +kubebuilder:default=1
 	Threads int32 `json:"threads,omitempty"`
 
 	// HTTPKeepAlive enables the --http-keepalive flag on the uWSGI process.

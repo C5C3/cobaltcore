@@ -162,7 +162,7 @@ func TestDefault_UWSGIZeroValuedDefaultsProcessesAndThreads(t *testing.T) {
 
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 	g.Expect(k.Spec.UWSGI.Processes).To(Equal(int32(2)))
-	g.Expect(k.Spec.UWSGI.Threads).To(Equal(int32(2)))
+	g.Expect(k.Spec.UWSGI.Threads).To(Equal(int32(1)))
 	// HTTPKeepAlive is NOT defaulted in the webhook — the CRD schema
 	// default (+kubebuilder:default=true) handles it in the normal admission
 	// path. The webhook cannot distinguish "not set" from "explicitly false"
@@ -185,7 +185,7 @@ func TestDefault_UWSGIDefaultsProcessesAndThreadsOnly(t *testing.T) {
 
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 	g.Expect(k.Spec.UWSGI.Processes).To(Equal(int32(2)))
-	g.Expect(k.Spec.UWSGI.Threads).To(Equal(int32(2)))
+	g.Expect(k.Spec.UWSGI.Threads).To(Equal(int32(1)))
 	g.Expect(k.Spec.UWSGI.HTTPKeepAlive).To(BeTrue())
 }
 
@@ -207,7 +207,7 @@ func TestDefault_UWSGIDoesNotOverwriteHTTPKeepAlive(t *testing.T) {
 
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 	g.Expect(k.Spec.UWSGI.Processes).To(Equal(int32(4)))
-	g.Expect(k.Spec.UWSGI.Threads).To(Equal(int32(2)))
+	g.Expect(k.Spec.UWSGI.Threads).To(Equal(int32(1)))
 	g.Expect(k.Spec.UWSGI.HTTPKeepAlive).To(BeFalse())
 }
 
@@ -227,7 +227,7 @@ func TestDefault_UWSGIZeroProcessesAndThreadsDoNotOverrideExplicitFalse(t *testi
 
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 	g.Expect(k.Spec.UWSGI.Processes).To(Equal(int32(2)))
-	g.Expect(k.Spec.UWSGI.Threads).To(Equal(int32(2)))
+	g.Expect(k.Spec.UWSGI.Threads).To(Equal(int32(1)))
 	g.Expect(k.Spec.UWSGI.HTTPKeepAlive).To(BeFalse())
 }
 

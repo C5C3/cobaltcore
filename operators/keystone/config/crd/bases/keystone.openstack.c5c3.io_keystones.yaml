@@ -676,7 +676,7 @@ spec:
                 description: |-
                   UWSGI configures the uWSGI application server parameters (CC-0040).
                   When set, the operator uses these values for the uWSGI command in the
-                  Deployment. When nil, hardcoded defaults (processes=2, threads=2,
+                  Deployment. When nil, hardcoded defaults (processes=2, threads=1,
                   httpKeepAlive=true) are used.
                 properties:
                   httpKeepAlive:
@@ -692,7 +692,7 @@ spec:
                     minimum: 1
                     type: integer
                   threads:
-                    default: 2
+                    default: 1
                     description: Threads is the number of threads per uWSGI worker
                       process.
                     format: int32

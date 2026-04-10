@@ -289,13 +289,13 @@ func buildPodDisruptionBudget(keystone *keystonev1alpha1.Keystone) *policyv1.Pod
 }
 
 // uwsgiCommand constructs the uWSGI container command from the given spec.
-// When uwsgi is nil (existing CRs without spec.uwsgi), hardcoded defaults
-// (processes=2, threads=2, httpKeepAlive=true) are used to preserve backward
-// compatibility. Fixed flags (--http :5000, --wsgi-file, --master, --lazy-apps,
-// --need-app, --pyargv) are always included regardless of configuration (CC-0040, REQ-004).
+// When uwsgi is nil, hardcoded defaults (processes=2, threads=1,
+// httpKeepAlive=true) are used. Fixed flags (--http :5000, --wsgi-file,
+// --master, --lazy-apps, --need-app, --pyargv) are always included regardless
+// of configuration (CC-0040, REQ-004).
 func uwsgiCommand(uwsgi *keystonev1alpha1.UWSGISpec) []string {
 	processes := int32(2)
-	threads := int32(2)
+	threads := int32(1)
 	httpKeepAlive := true
 
 	if uwsgi != nil {

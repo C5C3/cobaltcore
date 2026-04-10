@@ -5,7 +5,7 @@
 # Chainsaw E2E test for spec.uwsgi propagation to Deployment command (CC-0040).
 # Validates that:
 #   - A Keystone CR without explicit spec.uwsgi gets default uWSGI command
-#     (processes=2, threads=2, --http-keepalive) propagated to the Deployment
+#     (processes=2, threads=1, --http-keepalive) propagated to the Deployment
 #   - Patching spec.uwsgi updates the Deployment container command
 #
 # REQ-007 (CC-0040)
@@ -60,7 +60,7 @@ spec:
                   - "--processes"
                   - "2"
                   - "--threads"
-                  - "2"
+                  - "1"
                   - "--pyargv=--config-dir=/etc/keystone/keystone.conf.d/"
     catch:
     - script:

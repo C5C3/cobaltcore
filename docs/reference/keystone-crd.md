@@ -121,7 +121,7 @@ status:
 | `policyOverrides` | [`*PolicySpec`](#policyspec) | No | `nil` | Custom oslo.policy rules. |
 | `autoscaling` | [`*AutoscalingSpec`](#autoscalingspec) | No | `nil` | Horizontal pod autoscaling configuration. When set, an HPA is created targeting the `{name}-api` Deployment. When removed, the HPA is deleted (CC-0038). |
 | `resources` | [`*corev1.ResourceRequirements`](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#resources) | No | See below | CPU and memory requests and limits for the Keystone API container. When unset, the defaulting webhook injects sensible defaults to ensure Burstable QoS class and enable HPA utilization calculations (CC-0042). |
-| `uwsgi` | [`*UWSGISpec`](#uwsgispec) | No | `nil` | uWSGI application server parameters. When set, the operator uses these values for the Deployment container command. When `nil`, hardcoded defaults (processes=2, threads=2, httpKeepAlive=true) are used in the reconciler, preserving backward compatibility for existing CRs (CC-0040). |
+| `uwsgi` | [`*UWSGISpec`](#uwsgispec) | No | `nil` | uWSGI application server parameters. When set, the operator uses these values for the Deployment container command. When `nil`, hardcoded defaults (processes=2, threads=1, httpKeepAlive=true) are used in the reconciler (CC-0040). |
 | `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for additional configuration. |
 
 ### CEL Validation Rules
@@ -209,16 +209,15 @@ spec:
 
 Configures the uWSGI application server parameters for the Keystone API container
 (CC-0040). This is a pointer field (`*UWSGISpec`) on `KeystoneSpec` — when `nil`,
-the reconciler uses hardcoded defaults (processes=2, threads=2, httpKeepAlive=true)
-and the webhook does **not** inject a default `UWSGISpec`. This preserves backward
-compatibility: existing CRs without `spec.uwsgi` continue to produce an identical
-Deployment command. When set (even as `uwsgi: {}`), the webhook defaults zero-valued
-sub-fields and the reconciler reads from the spec.
+the reconciler uses hardcoded defaults (processes=2, threads=1, httpKeepAlive=true)
+and the webhook does **not** inject a default `UWSGISpec`. When set (even as
+`uwsgi: {}`), the webhook defaults zero-valued sub-fields and the reconciler reads
+from the spec.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `processes` | `int32` | No | `2` | Number of uWSGI worker processes. Minimum: 1. Maps to `--processes` in the container command. |
-| `threads` | `int32` | No | `2` | Number of threads per uWSGI worker process. Minimum: 1. Maps to `--threads` in the container command. |
+| `threads` | `int32` | No | `1` | Number of threads per uWSGI worker process. Minimum: 1. Maps to `--threads` in the container command. |
 | `httpKeepAlive` | `bool` | No | `true` | Enables the `--http-keepalive` flag on the uWSGI process. When `false`, the flag is omitted. See [HTTPKeepAlive defaulting](#httpkeepalive-defaulting-caveat) for the zero-value caveat. |
 
 ### Deployment Command Mapping
@@ -237,7 +236,7 @@ of configuration:
 | `--lazy-apps` | Fixed — loads apps in each worker after fork |
 | `--need-app` | Fixed — exits if no WSGI app is found |
 | `--processes <N>` | `spec.uwsgi.processes` (default: 2) |
-| `--threads <N>` | `spec.uwsgi.threads` (default: 2) |
+| `--threads <N>` | `spec.uwsgi.threads` (default: 1) |
 | `--pyargv=--config-dir=/etc/keystone/keystone.conf.d/` | Fixed — passes config directory to Keystone |
 
 ### HTTPKeepAlive Defaulting Caveat
@@ -249,9 +248,9 @@ and `threads`. The CRD schema default (`+kubebuilder:default=true`) handles
 `httpKeepAlive` in the normal admission path (API server applies the schema
 default before the webhook runs). This means:
 
-- `uwsgi: {}` → processes=2 (webhook), threads=2 (webhook),
+- `uwsgi: {}` → processes=2 (webhook), threads=1 (webhook),
   httpKeepAlive=true (CRD schema default via normal admission)
-- `uwsgi: {processes: 4}` → processes=4, threads=2 (webhook),
+- `uwsgi: {processes: 4}` → processes=4, threads=1 (webhook),
   httpKeepAlive=true (CRD schema default)
 - `uwsgi: {httpKeepAlive: false}` → httpKeepAlive stays `false` (explicit value
   is preserved by the API server)
@@ -430,7 +429,7 @@ Sets spec fields to their documented defaults when they carry zero values. Expli
 | `spec.bootstrap.adminUser` | `== ""` | `"admin"` |
 | `spec.bootstrap.region` | `== ""` | `"RegionOne"` |
 | `spec.uwsgi.processes` | `== 0` (when `spec.uwsgi` is non-nil) | `2` — webhook only; when `spec.uwsgi` is `nil`, the reconciler applies this default internally (CC-0040). |
-| `spec.uwsgi.threads` | `== 0` (when `spec.uwsgi` is non-nil) | `2` — same nil-pointer caveat as processes (CC-0040). |
+| `spec.uwsgi.threads` | `== 0` (when `spec.uwsgi` is non-nil) | `1` — same nil-pointer caveat as processes (CC-0040). |
 | `spec.uwsgi.httpKeepAlive` | Field absent from JSON payload | `true` — defaulted by the CRD schema (`+kubebuilder:default=true`), **not** by the webhook. The webhook cannot distinguish "not set" from "explicitly false" for a bool field. See [HTTPKeepAlive defaulting](#httpkeepalive-defaulting-caveat) (CC-0040). |
 | `spec.resources` | `== nil` or empty (`requests` and `limits` both unset) | `{requests: {memory: 256Mi, cpu: 100m}, limits: {memory: 512Mi, cpu: 500m}}` — ensures Burstable QoS class and enables HPA utilization calculations (CC-0042). |
 
@@ -569,9 +568,9 @@ exercise the CRD schema constraints.
 | `TestIntegration_WebhookDefaultsPreservesExplicit` | Explicit values preserved | Creates a CR with `replicas=5` and `region="EU-West"`; verifies these values are not overwritten by the defaulting webhook. |
 | `TestIntegration_ResourcesDefaultedWhenNil` | Resources defaulted | Creates a CR with `spec.resources` unset (`nil`); verifies the defaulting webhook injects `{requests: {memory: 256Mi, cpu: 100m}, limits: {memory: 512Mi, cpu: 500m}}` (CC-0042). |
 | `TestIntegration_ResourcesPreservedWhenExplicit` | Explicit resources preserved | Creates a CR with explicit `spec.resources` (1Gi/2Gi memory, 200m/1 CPU); verifies the defaulting webhook does not overwrite them (CC-0042). |
-| `TestIntegration_UWSGIDefaultsAppliedWhenEmpty` | uWSGI defaults applied | Creates a CR with `spec.uwsgi: {}` (all zero values); verifies processes=2, threads=2, httpKeepAlive=true after admission (CC-0040). |
+| `TestIntegration_UWSGIDefaultsAppliedWhenEmpty` | uWSGI defaults applied | Creates a CR with `spec.uwsgi: {}` (all zero values); verifies processes=2, threads=1, httpKeepAlive=true after admission (CC-0040). |
 | `TestIntegration_UWSGIExplicitValuesPreserved` | Explicit uWSGI preserved | Creates a CR with `spec.uwsgi.processes=4, threads=4`; verifies these values are not overwritten by the defaulting webhook (CC-0040). |
-| `TestIntegration_UWSGIPartialDefaulting` | Partial uWSGI defaults | Creates a CR with only `spec.uwsgi.processes=4`; verifies threads=2 is defaulted while processes=4 is preserved (CC-0040). |
+| `TestIntegration_UWSGIPartialDefaulting` | Partial uWSGI defaults | Creates a CR with only `spec.uwsgi.processes=4`; verifies threads=1 is defaulted while processes=4 is preserved (CC-0040). |
 | `TestIntegration_UWSGINilPreserved` | uWSGI nil preserved | Creates a CR without `spec.uwsgi`; verifies the field remains `nil` after admission — webhook does not inject a default struct (CC-0040). |
 
 #### Webhook Validation Rejection
@@ -610,7 +609,7 @@ deployed and reconciling.
 | Step | Description | Assertion |
 | --- | --- | --- |
 | Step 1 | Apply Keystone CR without explicit `spec.uwsgi` | CR created |
-| Step 2 (`step-2-assert-default-uwsgi-args`) | Assert Deployment command contains default uWSGI args | Container command includes `--processes 2 --threads 2 --http-keepalive` |
+| Step 2 (`step-2-assert-default-uwsgi-args`) | Assert Deployment command contains default uWSGI args | Container command includes `--processes 2 --threads 1 --http-keepalive` |
 | Step 3 | Patch CR with `spec.uwsgi: {processes: 3, threads: 3, httpKeepAlive: false}` | Patch applied |
 | Step 4 (`step-4-assert-custom-uwsgi-args`) | Assert Deployment command updated with custom values | Container command includes `--processes 3 --threads 3`; `--http-keepalive` is absent |
 

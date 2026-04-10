@@ -88,7 +88,7 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 			obj.Spec.UWSGI.Processes = 2
 		}
 		if obj.Spec.UWSGI.Threads == 0 {
-			obj.Spec.UWSGI.Threads = 2
+			obj.Spec.UWSGI.Threads = 1
 		}
 	}
 	// REQ-004 (CC-0042): Default resource requests and limits for Burstable QoS

@@ -869,7 +869,7 @@ func TestReconcileDeployment_PDBEnsureError(t *testing.T) {
 // Feature: CC-0040
 
 // TestUWSGICommand_NilUWSGI verifies that uwsgiCommand(nil) returns the command
-// with hardcoded defaults: --processes 2 --threads 2 --http-keepalive (CC-0040, REQ-004).
+// with hardcoded defaults: --processes 2 --threads 1 --http-keepalive (CC-0040, REQ-004).
 func TestUWSGICommand_NilUWSGI(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -880,14 +880,14 @@ func TestUWSGICommand_NilUWSGI(t *testing.T) {
 	g.Expect(cmd).To(ContainElement("--threads"))
 	g.Expect(cmd).To(ContainElement("--http-keepalive"))
 
-	// Verify processes=2, threads=2 by checking positional pairs.
+	// Verify processes=2, threads=1 by checking positional pairs.
 	processesIdx := indexOf(cmd, "--processes")
 	g.Expect(processesIdx).NotTo(Equal(-1))
 	g.Expect(cmd[processesIdx+1]).To(Equal("2"))
 
 	threadsIdx := indexOf(cmd, "--threads")
 	g.Expect(threadsIdx).NotTo(Equal(-1))
-	g.Expect(cmd[threadsIdx+1]).To(Equal("2"))
+	g.Expect(cmd[threadsIdx+1]).To(Equal("1"))
 }
 
 // TestUWSGICommand_CustomValues verifies that uwsgiCommand with processes=4,
