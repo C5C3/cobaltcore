@@ -122,6 +122,14 @@ Extracted into a named template to prevent drift when rules change.
     - update
     - patch
     - delete
+# core - pods (CC-0058, REQ-006: error extraction from validation Job pods)
+- apiGroups:
+    - ""
+  resources:
+    - pods
+  verbs:
+    - get
+    - list
 # core - events (CC-0017)
 - apiGroups:
     - ""

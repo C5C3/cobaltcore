@@ -3,7 +3,7 @@
 **Review-Area**: documentation
 **Detection-Hint**: When a PR modifies a Dockerfile, script, or configuration file, search the docs/ directory for code examples that reference or illustrate the same file. Compare the documented pattern against the actual changed code.
 **Severity**: WARNING
-**Occurrences**: 3
+**Occurrences**: 4
 
 ## What to check
 
@@ -29,3 +29,8 @@ Stale documentation examples mislead developers who follow the docs instead of r
 - **Feedback**: The install example uses --set image.tag=latest which contradicts Helm and Kubernetes best practices. latest is a mutable tag that destroys deployment reproducibility and makes rollback ambiguous.
 - **What was missed**: All install/upgrade examples in documentation must use pinned, immutable image tags (e.g., v0.1.0) rather than 'latest'. Users copy-paste examples directly; mutable tags destroy reproducibility and make rollback ambiguous.
 - **Fix**: Replaced image.tag=latest with image.tag=v0.1.0 in the multi-tenant deployment documentation example.
+
+### CC-0058 — berendt
+- **Feedback**: The documentation states 'Requeue: 30s' in the ASCII diagram (line 156) and in the requeue behavior table (line 840), but the actual code uses RequeueValidationWait = 15 * time.Second in requeue_intervals.go:33.
+- **What was missed**: If a constant like a requeue interval is modified in code, verify that all documentation referencing that value (diagrams, tables, prose) is updated in the same PR.
+- **Fix**: Change both '30s' occurrences to '15s' in docs/reference/keystone-reconciler.md at lines 156 and 840.

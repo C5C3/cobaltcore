@@ -1,0 +1,142 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for policy validation gating (CC-0058).
+# Verifies:
+#   - oslopolicy-validator Job is created when policyOverrides is set
+#   - PolicyValidReady=False with reason PolicyValidationFailed when
+#     the policy file is malformed (failure path)
+#   - PolicyValidReady=True with reason PolicyValidationPassed after
+#     replacing with a valid policy (success path)
+#   - Deployment rollout proceeds only after PolicyValidReady=True
+#     (gating behavior)
+#
+# REQ-001, REQ-003, REQ-004, REQ-006 (CC-0058)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-policy-validation-gating
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply invalid policy source ConfigMap ──────────────────────
+  - try:
+    - apply:
+        file: 00-invalid-policy-cm.yaml
+  # ── Step 2: Apply Keystone CR with policyOverrides ─────────────────────
+  - try:
+    - apply:
+        file: 01-keystone-cr.yaml
+  # ── Step 3: Assert PolicyValidReady=False (failure path) ───────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-pv-gate
+            namespace: openstack
+          status:
+            (conditions[?type == 'PolicyValidReady']):
+            - status: "False"
+              reason: PolicyValidationFailed
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone status ==="
+          kubectl get keystone -n $NAMESPACE keystone-pv-gate -o yaml 2>&1 | tail -40 || true
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== Pod logs for validation Job ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name=keystone-pv-gate-policy-validation -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --tail=30 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -20 || true
+  # ── Step 4: Apply valid policy source ConfigMap ────────────────────────
+  - try:
+    - apply:
+        file: 02-valid-policy-cm.yaml
+  # ── Step 5: Assert PolicyValidReady=True (success path) ────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-pv-gate
+            namespace: openstack
+          status:
+            (conditions[?type == 'PolicyValidReady']):
+            - status: "True"
+              reason: PolicyValidationPassed
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone status ==="
+          kubectl get keystone -n $NAMESPACE keystone-pv-gate -o yaml 2>&1 | tail -40 || true
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== Pod logs for validation Job ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name=keystone-pv-gate-policy-validation -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --tail=30 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -20 || true
+  # ── Step 6: Assert Ready=True (full reconciliation) ────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-pv-gate
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== ConfigMap content ==="
+          for cm in $(kubectl get cm -n $NAMESPACE -o name 2>/dev/null | grep config-); do
+            echo "--- $cm ---"
+            kubectl get -n $NAMESPACE "$cm" -o jsonpath='{.data}' 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 7: Assert Deployment running (gating unblocked) ───────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-pv-gate-api
+            namespace: openstack
+          status:
+            (availableReplicas > `0`): true

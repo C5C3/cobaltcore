@@ -389,6 +389,7 @@ func TestAggregateReady_AllTrue(t *testing.T) {
 		{Type: "FernetKeysReady", Status: metav1.ConditionTrue},
 		{Type: "CredentialKeysReady", Status: metav1.ConditionTrue},
 		{Type: "DatabaseReady", Status: metav1.ConditionTrue},
+		{Type: conditionTypePolicyValidReady, Status: metav1.ConditionTrue},
 		{Type: "DeploymentReady", Status: metav1.ConditionTrue},
 		{Type: "HPAReady", Status: metav1.ConditionTrue},
 		{Type: "NetworkPolicyReady", Status: metav1.ConditionTrue},
@@ -404,6 +405,7 @@ func TestAggregateReady_OneFalse(t *testing.T) {
 		{Type: "FernetKeysReady", Status: metav1.ConditionTrue},
 		{Type: "CredentialKeysReady", Status: metav1.ConditionTrue},
 		{Type: "DatabaseReady", Status: metav1.ConditionFalse},
+		{Type: conditionTypePolicyValidReady, Status: metav1.ConditionTrue},
 		{Type: "DeploymentReady", Status: metav1.ConditionTrue},
 		{Type: "HPAReady", Status: metav1.ConditionTrue},
 		{Type: "NetworkPolicyReady", Status: metav1.ConditionTrue},
@@ -422,6 +424,31 @@ func TestAggregateReady_MissingCondition(t *testing.T) {
 		{Type: "DeploymentReady", Status: metav1.ConditionTrue},
 	}
 	g.Expect(aggregateReady(conditions)).To(BeFalse())
+}
+
+func TestAggregateReady_MissingPolicyValidReady(t *testing.T) {
+	g := NewGomegaWithT(t)
+	// All other sub-conditions are True, but PolicyValidReady is missing.
+	// aggregateReady must return false because PolicyValidReady is a required
+	// sub-condition (CC-0058).
+	conditions := []metav1.Condition{
+		{Type: "SecretsReady", Status: metav1.ConditionTrue},
+		{Type: "FernetKeysReady", Status: metav1.ConditionTrue},
+		{Type: "CredentialKeysReady", Status: metav1.ConditionTrue},
+		{Type: "DatabaseReady", Status: metav1.ConditionTrue},
+		{Type: "DeploymentReady", Status: metav1.ConditionTrue},
+		{Type: "HPAReady", Status: metav1.ConditionTrue},
+		{Type: "NetworkPolicyReady", Status: metav1.ConditionTrue},
+		{Type: "BootstrapReady", Status: metav1.ConditionTrue},
+	}
+	g.Expect(aggregateReady(conditions)).To(BeFalse())
+}
+
+func TestRequeueValidationWait_Value(t *testing.T) {
+	g := NewGomegaWithT(t)
+	// RequeueValidationWait should be a moderate interval for polling
+	// policy validation Job completion (CC-0058).
+	g.Expect(RequeueValidationWait).To(BeNumerically(">", 0))
 }
 
 func TestAggregateReady_Empty(t *testing.T) {

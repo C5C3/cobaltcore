@@ -138,7 +138,10 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 			return "", fmt.Errorf("building policy: %w", err)
 		}
 		if policyYAML != "" {
-			merged = config.InjectOsloPolicyConfig(merged, "/etc/keystone/policy.yaml")
+			// The ConfigMap is mounted at /etc/keystone/keystone.conf.d/ in both the
+			// Deployment and the policy validation Job (CC-0058), so policy_file must
+			// point at that mount path for oslo.policy to actually load the rules.
+			merged = config.InjectOsloPolicyConfig(merged, "/etc/keystone/keystone.conf.d/policy.yaml")
 		}
 	}
 

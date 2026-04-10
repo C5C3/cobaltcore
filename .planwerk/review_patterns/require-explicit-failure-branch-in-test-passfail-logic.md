@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: Look for if-blocks that increment PASS but have no corresponding else/elif that increments FAIL. Search for patterns like `if <condition>; then ... PASS=$((PASS + 1)) ... fi` without an else clause.
 **Severity**: BLOCKING
-**Occurrences**: 3
+**Occurrences**: 4
 
 ## What to check
 
@@ -24,3 +24,8 @@ A test that silently returns without incrementing PASS or FAIL gives a false sen
 - **Feedback**: The project has Chainsaw E2E tests for every existing feature under tests/e2e/keystone/ (autoscaling, basic-deployment, brownfield-database, credential-rotation, deletion-cleanup, fernet-rotation, image-upgrade, invalid-cr, middleware-config, missing-secret, policy-overrid...
 - **What was missed**: Verify the PR includes a Chainsaw (or equivalent) E2E test suite that covers at minimum the create, update, and delete lifecycle of the new resource. The test directory name should match the feature name for discoverability.
 - **Fix**: Created tests/e2e/keystone/network-policy/ with four files (chainsaw-test.yaml, 00-keystone-cr.yaml, 01-patch-update-ingress.yaml, 02-patch-disable-networkpolicy.yaml) covering create, update, and delete flows.
+
+### CC-0058 — berendt
+- **Feedback**: The project has Chainsaw E2E tests for every existing feature (17 directories under tests/e2e/keystone/). No Chainsaw E2E test validates the actual oslopolicy-checker execution and gating in a real cluster.
+- **What was missed**: If the project already has E2E tests for every existing feature, a new feature that introduces gating or blocking behavior must include its own E2E test exercising both the success and failure paths.
+- **Fix**: Create a new Chainsaw E2E test directory (e.g. tests/e2e/keystone/policy-validation-gating/) that exercises the oslopolicy-checker Job creation, success and failure paths.

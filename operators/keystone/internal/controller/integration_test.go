@@ -123,6 +123,16 @@ func integrationBrownfieldKeystone(name, namespace string) *keystonev1alpha1.Key
 	}
 }
 
+// integrationPolicyKeystone returns a valid Keystone CR with policy overrides
+// configured for integration tests (CC-0058, REQ-004, REQ-008).
+func integrationPolicyKeystone(name, namespace string) *keystonev1alpha1.Keystone {
+	ks := integrationBrownfieldKeystone(name, namespace)
+	ks.Spec.PolicyOverrides = &commonv1.PolicySpec{
+		Rules: map[string]string{"identity:get_user": "role:admin"},
+	}
+	return ks
+}
+
 // integrationManagedKeystone returns a valid Keystone CR for managed mode integration tests
 // (spec.database.clusterRef set, no host) (CC-0014).
 func integrationManagedKeystone(name, namespace string) *keystonev1alpha1.Keystone {
@@ -1468,4 +1478,194 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 	g.Expect(final.Status.Endpoint).To(Equal(
 		fmt.Sprintf("http://test-keystone-api.%s.svc.cluster.local:5000/v3", ns.Name)),
 		"endpoint should still be set after upgrade")
+}
+
+// --- Task 3.1: Policy validation gating tests (CC-0058, REQ-004, REQ-008) ---
+
+func TestIntegration_PolicyValidation_GatesDeployment(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	// Create isolated namespace.
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-polgate-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	// Create prerequisites.
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	// Create Keystone CR WITH policyOverrides (CC-0058).
+	ks := integrationPolicyKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+
+	// Drive reconciliation through secrets and database phases.
+	waitForCondition(t, ctx, c, key, "SecretsReady", metav1.ConditionTrue, eventuallyTimeout)
+	waitForCondition(t, ctx, c, key, "FernetKeysReady", metav1.ConditionTrue, eventuallyTimeout)
+
+	dbSyncKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-db-sync", ks.Name)}
+	g.Eventually(func() error {
+		return c.Get(ctx, dbSyncKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "db-sync Job should appear")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, dbSyncKey)).To(Succeed(), "simulate db-sync Job completion")
+
+	waitForCondition(t, ctx, c, key, "DatabaseReady", metav1.ConditionTrue, eventuallyTimeout)
+
+	// Verify that PolicyValidReady appears as False with reason PolicyValidationInProgress (CC-0058).
+	polCond := waitForCondition(t, ctx, c, key, conditionTypePolicyValidReady, metav1.ConditionFalse, eventuallyTimeout)
+	g.Expect(polCond.Reason).To(Equal("PolicyValidationInProgress"),
+		"PolicyValidReady reason should be PolicyValidationInProgress")
+
+	// Verify the Deployment does NOT appear while PolicyValidReady=False (CC-0058).
+	deployKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-api", ks.Name)}
+	g.Consistently(func(ig Gomega) {
+		deploy := &appsv1.Deployment{}
+		err := c.Get(ctx, deployKey, deploy)
+		ig.Expect(err).NotTo(BeNil(), "Deployment should not exist while PolicyValidReady is False")
+	}, 2*time.Second, pollInterval).Should(Succeed())
+
+	// Simulate the policy validation Job completion (CC-0058).
+	policyJobKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-policy-validation", ks.Name)}
+	g.Eventually(func() error {
+		return c.Get(ctx, policyJobKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "policy-validation Job should appear")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, policyJobKey)).To(Succeed(), "simulate policy-validation Job completion")
+
+	// Verify PolicyValidReady transitions to True with reason PolicyValidationPassed (CC-0058).
+	polPassedCond := waitForCondition(t, ctx, c, key, conditionTypePolicyValidReady, metav1.ConditionTrue, eventuallyTimeout)
+	g.Expect(polPassedCond.Reason).To(Equal("PolicyValidationPassed"),
+		"PolicyValidReady reason should be PolicyValidationPassed")
+
+	// Continue driving the rest of reconciliation to Ready=True (CC-0058).
+	deploy := &appsv1.Deployment{}
+	g.Eventually(func() error {
+		return c.Get(ctx, deployKey, deploy)
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "Deployment should appear after PolicyValidReady=True")
+	g.Expect(simulators.SimulateDeploymentReady(ctx, c, deployKey, ptr.Deref(deploy.Spec.Replicas, 1))).To(Succeed(), "simulate Deployment ready")
+
+	waitForCondition(t, ctx, c, key, "DeploymentReady", metav1.ConditionTrue, eventuallyTimeout)
+
+	bootstrapKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-bootstrap", ks.Name)}
+	g.Eventually(func() error {
+		return c.Get(ctx, bootstrapKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "bootstrap Job should appear")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, bootstrapKey)).To(Succeed(), "simulate bootstrap Job completion")
+
+	waitForCondition(t, ctx, c, key, "BootstrapReady", metav1.ConditionTrue, eventuallyTimeout)
+	waitForCondition(t, ctx, c, key, "Ready", metav1.ConditionTrue, eventuallyTimeout)
+}
+
+func TestIntegration_PolicyValidation_NoPolicyDoesNotBlock(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	// Create isolated namespace.
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-polnone-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	// Create prerequisites.
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	// Create Keystone CR WITHOUT policyOverrides (same as brownfield fixture) (CC-0058).
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+
+	// Drive full reconciliation to Ready=True (CC-0058).
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	// Verify PolicyValidReady=True with reason NotRequired (CC-0058).
+	updated := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
+
+	polCond := meta.FindStatusCondition(updated.Status.Conditions, conditionTypePolicyValidReady)
+	g.Expect(polCond).NotTo(BeNil(), "PolicyValidReady condition should exist")
+	g.Expect(polCond.Status).To(Equal(metav1.ConditionTrue), "PolicyValidReady should be True")
+	g.Expect(polCond.Reason).To(Equal("NotRequired"),
+		"PolicyValidReady reason should be NotRequired when no policyOverrides are set")
+
+	// Verify Deployment was created (not blocked) (CC-0058).
+	deployKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-api", ks.Name)}
+	g.Expect(c.Get(ctx, deployKey, &appsv1.Deployment{})).To(Succeed(),
+		"Deployment should exist when no policyOverrides are set")
+}
+
+func TestIntegration_PolicyValidation_ReadyAggregation(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	// Create isolated namespace.
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-polagg-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	// Create prerequisites.
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	// Create Keystone CR WITH policyOverrides (CC-0058).
+	ks := integrationPolicyKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+
+	// Drive reconciliation up to the policy validation phase (CC-0058).
+	waitForCondition(t, ctx, c, key, "SecretsReady", metav1.ConditionTrue, eventuallyTimeout)
+	waitForCondition(t, ctx, c, key, "FernetKeysReady", metav1.ConditionTrue, eventuallyTimeout)
+
+	dbSyncKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-db-sync", ks.Name)}
+	g.Eventually(func() error {
+		return c.Get(ctx, dbSyncKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "db-sync Job should appear")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, dbSyncKey)).To(Succeed(), "simulate db-sync Job completion")
+
+	waitForCondition(t, ctx, c, key, "DatabaseReady", metav1.ConditionTrue, eventuallyTimeout)
+
+	// Wait for PolicyValidReady=False (validation in progress) (CC-0058).
+	waitForCondition(t, ctx, c, key, conditionTypePolicyValidReady, metav1.ConditionFalse, eventuallyTimeout)
+
+	// Do NOT simulate the policy validation Job completion.
+	// Verify Ready condition is NOT True while PolicyValidReady=False (CC-0058).
+	g.Consistently(func(ig Gomega) {
+		ksState := &keystonev1alpha1.Keystone{}
+		ig.Expect(c.Get(ctx, key, ksState)).To(Succeed())
+		ig.Expect(meta.IsStatusConditionTrue(ksState.Status.Conditions, "Ready")).To(BeFalse(),
+			"Ready condition should not be True while PolicyValidReady is False")
+	}, 2*time.Second, pollInterval).Should(Succeed())
+
+	// Simulate policy validation Job completion and drive to Ready=True (CC-0058).
+	policyJobKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-policy-validation", ks.Name)}
+	g.Eventually(func() error {
+		return c.Get(ctx, policyJobKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "policy-validation Job should appear")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, policyJobKey)).To(Succeed(), "simulate policy-validation Job completion")
+
+	waitForCondition(t, ctx, c, key, conditionTypePolicyValidReady, metav1.ConditionTrue, eventuallyTimeout)
+
+	// Continue driving remaining phases to Ready=True (CC-0058).
+	deployKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-api", ks.Name)}
+	deploy := &appsv1.Deployment{}
+	g.Eventually(func() error {
+		return c.Get(ctx, deployKey, deploy)
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "Deployment should appear")
+	g.Expect(simulators.SimulateDeploymentReady(ctx, c, deployKey, ptr.Deref(deploy.Spec.Replicas, 1))).To(Succeed(), "simulate Deployment ready")
+
+	waitForCondition(t, ctx, c, key, "DeploymentReady", metav1.ConditionTrue, eventuallyTimeout)
+
+	bootstrapKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-bootstrap", ks.Name)}
+	g.Eventually(func() error {
+		return c.Get(ctx, bootstrapKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "bootstrap Job should appear")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, bootstrapKey)).To(Succeed(), "simulate bootstrap Job completion")
+
+	waitForCondition(t, ctx, c, key, "BootstrapReady", metav1.ConditionTrue, eventuallyTimeout)
+
+	// Verify Ready eventually becomes True (CC-0058).
+	readyCond := waitForCondition(t, ctx, c, key, "Ready", metav1.ConditionTrue, eventuallyTimeout)
+	g.Expect(readyCond.Reason).To(Equal("AllReady"))
 }

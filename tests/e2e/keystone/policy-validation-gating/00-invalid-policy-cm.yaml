@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Invalid policy source ConfigMap for the policy-validation-gating E2E test (CC-0058).
+# The rule key is YAML-valid (so reconcileConfig can parse and render it into
+# policy.yaml) but references an oslo.policy action that does not exist in the
+# keystone namespace, so oslopolicy-validator exits non-zero and the validation
+# Job fails. This triggers PolicyValidReady=False with reason
+# PolicyValidationFailed.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keystone-pv-gate-policy-source
+  namespace: openstack
+data:
+  policy.yaml: |
+    "identity:this_rule_does_not_exist_in_keystone_namespace": "role:admin"

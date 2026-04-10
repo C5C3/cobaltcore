@@ -36,6 +36,7 @@ var subConditionTypes = []string{
 	"FernetKeysReady",
 	"CredentialKeysReady",
 	"DatabaseReady",
+	conditionTypePolicyValidReady,
 	"DeploymentReady",
 	"HPAReady",
 	"NetworkPolicyReady",
@@ -54,6 +55,7 @@ type KeystoneReconciler struct {
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services;configmaps;secrets;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=databases;users;grants,verbs=get;list;watch;create;update;patch;delete
@@ -105,6 +107,12 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// applied. The NetworkPolicy has no data dependency on the Deployment — it
 	// uses selectorLabels derived from the CR (CC-0039).
 	if result, err := r.reconcileNetworkPolicy(ctx, &keystone); !result.IsZero() || err != nil {
+		return r.updateStatus(ctx, &keystone, result, err)
+	}
+
+	// Policy validation gates Deployment rollout — the Deployment only
+	// proceeds when PolicyValidReady=True (CC-0058).
+	if result, err := r.reconcilePolicyValidation(ctx, &keystone, configMapName); !result.IsZero() || err != nil {
 		return r.updateStatus(ctx, &keystone, result, err)
 	}
 

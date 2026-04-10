@@ -26,6 +26,12 @@ const (
 	// longer interval avoids unnecessary API churn.
 	RequeueDatabaseWait = 30 * time.Second
 
+	// RequeueValidationWait is the interval for waiting on the policy
+	// validation Job to complete. Policy validation runs oslopolicy-validator,
+	// a lightweight syntax check that completes in seconds; a shorter interval
+	// improves operator UX during policy iteration cycles (CC-0058).
+	RequeueValidationWait = 15 * time.Second
+
 	// RequeueBootstrapWait is the interval for waiting on the bootstrap Job.
 	// Bootstrap is a one-time heavyweight operation; gentle polling is
 	// sufficient.

@@ -7,7 +7,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 14
+          count: 15
 
   - it: should grant full CRUD on keystones
     asserts:
@@ -91,6 +91,19 @@ tests:
               - update
               - patch
               - delete
+
+  - it: should grant get/list on pods for validation Job error extraction
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - pods
+            verbs:
+              - get
+              - list
 
   - it: should restrict events to create and patch only
     asserts:

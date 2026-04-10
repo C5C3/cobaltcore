@@ -1,0 +1,93 @@
+{
+  "summary": "Clean implementation of the reconcilePolicyValidation sub-reconciler that gates Deployment rollout on oslopolicy-checker validation. Three lifecycle paths (skip/validate/cleanup) follow established patterns from reconcile_hpa.go and reconcile_bootstrap.go. Job builder uses restrictedSecurityContext(), correct backoff/TTL, and TerminationMessageFallbackToLogsOnError. Error extraction from Pod termination messages is well-designed with truncation and fallback. All 15 unit tests and 3 integration tests pass. Documentation is thorough. One correctness gap: extractJobFailureMessage() lists Pods but the operator lacks core/pods RBAC, so error extraction will always fall back to the generic message in production.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Unit tests exist and pass (15 tests: 6 build, 8 lifecycle, 1 observed generation)", "checked": true},
+    {"item": "Integration tests exist and pass (3 tests: gating, no-policy, Ready aggregation)", "checked": true},
+    {"item": "Edge cases covered (no policy, policy removed with/without existing Job, stale Job, truncated message, missing Pod)", "checked": true},
+    {"item": "Error paths tested (Job failed with/without termination message, fallback message)", "checked": true},
+    {"item": "Aggregation tests updated (AllTrue, OneFalse, MissingPolicyValidReady)", "checked": true},
+    {"item": "ObservedGeneration verified on condition updates", "checked": true},
+    {"item": "SecurityContext verified via expectRestrictedSecurityContext helper", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows sub-reconciler condition contract pattern (ObservedGeneration on all conditions)", "checked": true},
+    {"item": "Follows optional-field lifecycle pattern (nil -> delete + NotRequired)", "checked": true},
+    {"item": "Uses job.RunJob for Job lifecycle (owner refs, pod-spec hash handled internally)", "checked": true},
+    {"item": "Uses shared restrictedSecurityContext() from security_context.go", "checked": true},
+    {"item": "Job name derived from CR name (no hardcoded names)", "checked": true},
+    {"item": "Error wrapping includes context (namespace/name)", "checked": true},
+    {"item": "Functions are focused and small (reconcilePolicyValidation: 59 lines, extractJobFailureMessage: 23 lines)", "checked": true},
+    {"item": "Test helpers follow bootstrap test pattern (completedXJob, failedXJob, runningXJob)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "restrictedSecurityContext() applied to validator container (PSS Restricted compliant)", "checked": true},
+    {"item": "ConfigMap mounted read-only", "checked": true},
+    {"item": "No secrets in command arguments or environment", "checked": true},
+    {"item": "RBAC sufficient for all API operations used by reconciler", "checked": false}
+  ],
+  "architecture_checklist": [
+    {"item": "PolicyValidReady inserted in subConditionTypes between DatabaseReady and DeploymentReady", "checked": true},
+    {"item": "reconcilePolicyValidation called between reconcileNetworkPolicy and reconcileDeployment", "checked": true},
+    {"item": "Early-exit pattern gates reconcileDeployment on PolicyValidReady=True", "checked": true},
+    {"item": "Stale Job detection delegated to job.RunJob (pod-spec hash comparison)", "checked": true},
+    {"item": "Helm ClusterRole already includes batch apiGroup (no update needed)", "checked": true},
+    {"item": "Controller already Owns(&batchv1.Job{}) for reactive reconciliation", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code (uses shared job.RunJob, conditions.SetCondition, restrictedSecurityContext)", "checked": true},
+    {"item": "No unnecessary abstractions (inline deletion vs dedicated helper is appropriate for single use)", "checked": true},
+    {"item": "No future-proofing or speculative features", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early (condition set before error returned on failure)", "checked": true},
+    {"item": "Fallback message when Pod listing fails (graceful degradation)", "checked": true},
+    {"item": "client.IgnoreNotFound for idempotent cleanup", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Nil PolicyOverrides check before Job operations", "checked": true},
+    {"item": "Termination message truncation (max 1024 chars)", "checked": true},
+    {"item": "Fallback message when termination message unavailable", "checked": true},
+    {"item": "IgnoreNotFound on cleanup deletion (handles race conditions)", "checked": true}
+  ],
+  "security_findings": [
+    {
+      "severity": "MEDIUM",
+      "description": "Missing RBAC for core/pods (get, list). extractJobFailureMessage() at reconcile_policyvalidation.go:106 calls c.List on PodList, but the operator has no +kubebuilder:rbac marker for core/pods and no corresponding entry in the Helm ClusterRole. In production, the Pod listing will return 403 Forbidden, and error extraction will always fall back to the generic 'check logs' message, partially defeating REQ-006. The code degrades gracefully (no crash), but the descriptive error feature won't work as designed.",
+      "location": "operators/keystone/internal/controller/keystone_controller.go:57-58",
+      "fix": "Add +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list to the controller RBAC markers (after the existing core resources marker). Add corresponding rule to operators/keystone/helm/keystone-operator/templates/_helpers.tpl (and role.yaml if applicable). Run make generate to regenerate RBAC manifests.",
+      "fix_classification": "ASK"
+    }
+  ],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "C2",
+      "severity": "BLOCKING",
+      "description": "Missing RBAC for core/pods prevents REQ-006 descriptive error extraction in production. The operator has no permission to list Pods (required by extractJobFailureMessage). Unit tests pass because the fake client has no RBAC enforcement. In a real cluster, the Pod listing at line 106 will receive 403 Forbidden, and the condition message will always be the fallback 'check logs: kubectl logs -l job-name=...' instead of the actual oslopolicy-checker output. This partially fails acceptance criterion: 'Invalid policy rules produce a clear error message in the condition (not just Job failed)'.",
+      "location": "operators/keystone/internal/controller/reconcile_policyvalidation.go:106",
+      "fix": "Add +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list marker to keystone_controller.go. Add corresponding RBAC rule to Helm ClusterRole template (_helpers.tpl) and Role template (role.yaml). Per mandatory pattern 'sync-rbac-markers-with-helm-clusterrole-templates', both must be updated together.",
+      "evidence": "// +kubebuilder:rbac:groups=core,resources=services;configmaps;secrets;serviceaccounts,verbs=get;list;watch;create;update;patch;delete\n// Note: 'pods' is NOT listed. But extractJobFailureMessage calls:\n// c.List(ctx, &podList, client.InNamespace(namespace), client.MatchingLabels{\"job-name\": jobName})",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "Q4",
+      "severity": "MINOR",
+      "description": "golangci-lint QF1008: embedded field 'Client' can be removed from selector. r.Client.Delete should be r.Delete (production code), r.Client.Get should be r.Get (test code). This is a pre-existing codebase pattern (40+ instances of r.Client.X in test files, 1 pre-existing instance flagged in reconcile_networkpolicy_test.go), so it is not a blocking lint violation but a cleanup opportunity in the new files.",
+      "location": "operators/keystone/internal/controller/reconcile_policyvalidation.go:40",
+      "fix": "Change r.Client.Delete(ctx, existing) to r.Delete(ctx, existing) on line 40. Optionally change r.Client.Get calls in reconcile_policyvalidation_test.go to r.Get for consistency.",
+      "evidence": "if err := client.IgnoreNotFound(r.Client.Delete(ctx, existing)); err != nil {",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a log line in extractJobFailureMessage when the Pod listing fails, so operators can diagnose RBAC issues: logger.V(1).Info('failed to list pods for error extraction', 'error', err)",
+    "RequeueValidationWait is 30s but the task spec suggested 15s. The 30s value is reasonable for production but consider if faster feedback (15s) would improve operator UX for policy iteration cycles."
+  ],
+  "next_steps": [
+    "Add +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list to keystone_controller.go RBAC markers",
+    "Add corresponding pods RBAC rule to Helm ClusterRole template and Role template",
+    "Fix QF1008: change r.Client.Delete to r.Delete in reconcile_policyvalidation.go:40"
+  ],
+  "detected_patterns": []
+}
