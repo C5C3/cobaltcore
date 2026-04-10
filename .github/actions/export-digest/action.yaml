@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# CC-0055: Composite action encapsulating the digest export + artifact upload
+# pattern shared across base image, tempest, and service image build jobs.
+
+name: Export digest
+description: >
+  Write a digest file to a staging directory and upload it as a GitHub Actions
+  artifact. Used to pass per-platform digests to the merge job that assembles
+  multi-arch manifest lists.
+
+inputs:
+  digest:
+    description: Image digest (sha256:...)
+    required: true
+  artifact-name:
+    description: Name for the uploaded artifact
+    required: true
+  digest-dir:
+    description: Directory for digest files
+    required: false
+    default: /tmp/digests
+
+runs:
+  using: composite
+  steps:
+    - name: Validate digest
+      shell: bash
+      env:
+        DIGEST: ${{ inputs.digest }}
+      run: |
+        if [[ -z "${DIGEST}" ]]; then
+          echo "::error::Digest input must not be empty"
+          exit 1
+        fi
+
+    - name: Write digest file
+      shell: bash
+      env:
+        DIGEST: ${{ inputs.digest }}
+        DIGEST_DIR: ${{ inputs.digest-dir }}
+      run: |
+        mkdir -p "${DIGEST_DIR}"
+        touch "${DIGEST_DIR}/${DIGEST#sha256:}"
+
+    - name: Upload digest artifact
+      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ inputs.digest-dir }}/*
+        if-no-files-found: error
+        retention-days: 1

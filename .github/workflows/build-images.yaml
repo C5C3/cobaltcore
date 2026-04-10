@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 ---
 name: Build Images
-
 "on":
   workflow_dispatch:
   push:
@@ -16,6 +15,8 @@ name: Build Images
       - releases/**
       - patches/**
       - scripts/**
+      - hack/ci-*
+      - .github/actions/**
       - tests/container-images/**
       - .github/workflows/build-images.yaml
       - .hadolint.yaml
@@ -26,6 +27,8 @@ name: Build Images
       - releases/**
       - patches/**
       - scripts/**
+      - hack/ci-*
+      - .github/actions/**
       - tests/container-images/**
       - .github/workflows/build-images.yaml
       - .hadolint.yaml
@@ -61,10 +64,20 @@ jobs:
           failure-threshold: warning
           config: .hadolint.yaml
 
-  # Each platform (amd64, arm64) is built on a native runner and pushed by digest.
-  # The merge-base-images job then assembles the multi-arch manifest list.
+  # CC-0055: Single source for lowercase image owner (REQ-006).
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    outputs:
+      image-owner: ${{ steps.owner.outputs.owner }}
+    steps:
+      - name: Normalize image owner
+        id: owner
+        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+  # Per-platform builds pushed by digest; merge-base-images assembles manifests.
   build-base-images:
-    needs: lint-dockerfiles
+    needs: [lint-dockerfiles, prepare]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
@@ -79,21 +92,11 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
     steps:
-      # CC-0007: Fork PRs receive a read-only GITHUB_TOKEN that cannot push
-      # to GHCR. Since base images must be pushed (docker-image:// URIs require
-      # registry availability), fork PRs are unsupported. Fail fast with a
-      # clear message rather than failing mid-build with a cryptic 403.
-      - name: Reject fork PRs
+      - name: Reject fork PRs (CC-0007)
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
-        run: |
-          echo "::error::Fork PRs are not supported. Base images must be pushed to GHCR, which requires packages:write. Fork PRs receive a read-only GITHUB_TOKEN. Please open your PR from a branch in the upstream repository."
-          exit 1
+        run: echo "::error::Fork PRs cannot push to GHCR. Open your PR from a branch in the upstream repository." && exit 1
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Normalize image owner
-        id: meta
-        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
       - name: Prepare platform pair
         id: platform-pair
@@ -101,321 +104,104 @@ jobs:
         with:
           platform: ${{ matrix.platform }}
 
-      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
-
-      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
+      - name: Setup Docker registry
+        uses: ./.github/actions/setup-docker-registry
         with:
-          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+          install-cosign: 'false'
 
       - name: Resolve ubuntu:noble digest
         id: ubuntu-base
-        run: |
-          set -euo pipefail
-          digest=$(docker buildx imagetools inspect ubuntu:noble --format '{{json .Manifest.Digest}}' | tr -d '"')
-          if [[ -z "${digest}" ]]; then
-            echo "ERROR: failed to resolve ubuntu:noble digest" >&2
-            exit 1
-          fi
-          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
-          echo "Resolved ubuntu:noble digest: ${digest}"
-
-      # CC-0031: Generate OCI annotations for python-base
-      - name: Generate metadata for python-base
-        id: meta-python-base
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
-        with:
-          images: ghcr.io/${{ steps.meta.outputs.owner }}/python-base
-          labels: |
-            org.opencontainers.image.title=python-base
-            org.opencontainers.image.description=Python runtime base image for OpenStack services
-            org.opencontainers.image.licenses=Apache-2.0
-            org.opencontainers.image.vendor=SAP SE
+        run: hack/ci-resolve-ubuntu-digest.sh
 
       - name: Build and push python-base
         id: build-python-base
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
+        uses: ./.github/actions/build-push-image
         with:
+          image-name: ghcr.io/${{ needs.prepare.outputs.image-owner }}/python-base
           context: images/python-base
-          platforms: ${{ matrix.platform }}
-          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
-          tags: ghcr.io/${{ steps.meta.outputs.owner }}/python-base
-          labels: |
-            ${{ steps.meta-python-base.outputs.labels }}
+          platform: ${{ matrix.platform }}
+          platform-pair: ${{ steps.platform-pair.outputs.value }}
+          labels-title: python-base
+          labels-description: Python runtime base image for OpenStack services
+          extra-labels: |
             org.opencontainers.image.base.name=ubuntu:noble
             org.opencontainers.image.base.digest=${{ steps.ubuntu-base.outputs.digest }}
-          cache-from: type=gha,scope=python-base-${{ steps.platform-pair.outputs.value }}
-          cache-to: type=gha,mode=max,scope=python-base-${{ steps.platform-pair.outputs.value }}
-
-      - name: Export python-base digest
-        run: |
-          mkdir -p /tmp/digests/python-base
-          digest="${{ steps.build-python-base.outputs.digest }}"
-          touch "/tmp/digests/python-base/${digest#sha256:}"
-
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: digests-python-base-${{ steps.platform-pair.outputs.value }}
-          path: /tmp/digests/python-base/*
-          if-no-files-found: error
-          retention-days: 1
-
-      # CC-0031: Generate OCI annotations for venv-builder
-      - name: Generate metadata for venv-builder
-        id: meta-venv-builder
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
-        with:
-          images: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder
-          labels: |
-            org.opencontainers.image.title=venv-builder
-            org.opencontainers.image.description=Python virtualenv builder image for OpenStack services
-            org.opencontainers.image.licenses=Apache-2.0
-            org.opencontainers.image.vendor=SAP SE
+          cache-scope: python-base
+          tags: ghcr.io/${{ needs.prepare.outputs.image-owner }}/python-base
+          artifact-name: digests-python-base-${{ steps.platform-pair.outputs.value }}
+          digest-dir: /tmp/digests/python-base
 
       - name: Build and push venv-builder
         id: build-venv-builder
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
+        uses: ./.github/actions/build-push-image
         with:
+          image-name: ghcr.io/${{ needs.prepare.outputs.image-owner }}/venv-builder
           context: images/venv-builder
           build-contexts: |
-            python-base=docker-image://ghcr.io/${{ steps.meta.outputs.owner }}/python-base@${{ steps.build-python-base.outputs.digest }}
-          platforms: ${{ matrix.platform }}
-          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
-          tags: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder
-          labels: |
-            ${{ steps.meta-venv-builder.outputs.labels }}
-            org.opencontainers.image.base.name=ghcr.io/${{ steps.meta.outputs.owner }}/python-base
+            python-base=docker-image://ghcr.io/${{ needs.prepare.outputs.image-owner }}/python-base@${{ steps.build-python-base.outputs.digest }}
+          platform: ${{ matrix.platform }}
+          platform-pair: ${{ steps.platform-pair.outputs.value }}
+          labels-title: venv-builder
+          labels-description: Python virtualenv builder image for OpenStack services
+          extra-labels: |
+            org.opencontainers.image.base.name=ghcr.io/${{ needs.prepare.outputs.image-owner }}/python-base
             org.opencontainers.image.base.digest=${{ steps.build-python-base.outputs.digest }}
-          cache-from: type=gha,scope=venv-builder-${{ steps.platform-pair.outputs.value }}
-          cache-to: type=gha,mode=max,scope=venv-builder-${{ steps.platform-pair.outputs.value }}
+          cache-scope: venv-builder
+          tags: ghcr.io/${{ needs.prepare.outputs.image-owner }}/venv-builder
+          artifact-name: digests-venv-builder-${{ steps.platform-pair.outputs.value }}
+          digest-dir: /tmp/digests/venv-builder
 
-      - name: Export venv-builder digest
-        run: |
-          mkdir -p /tmp/digests/venv-builder
-          digest="${{ steps.build-venv-builder.outputs.digest }}"
-          touch "/tmp/digests/venv-builder/${digest#sha256:}"
-
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: digests-venv-builder-${{ steps.platform-pair.outputs.value }}
-          path: /tmp/digests/venv-builder/*
-          if-no-files-found: error
-          retention-days: 1
-
-  # Assembles per-platform digests into multi-arch manifest lists, then
-  # runs SBOM generation, vulnerability scanning, attestation, and signing.
+  # Assembles per-platform digests into multi-arch manifests with attestation.
   merge-base-images:
-    needs: build-base-images
+    needs: [build-base-images, prepare]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
       packages: write
-      id-token: write       # CC-0029, CC-0030, CC-0035: Sigstore OIDC signing for SBOM attestation, cosign signing, and build provenance
+      id-token: write       # CC-0029, CC-0030, CC-0035: Sigstore OIDC signing
       attestations: write   # CC-0029, CC-0035: GitHub Attestations API
       security-events: write  # CC-0032: GitHub Security tab SARIF upload
     outputs:
-      python-base-image: ghcr.io/${{ steps.meta.outputs.owner }}/python-base@${{ steps.merge-python-base.outputs.digest }}
-      python-base-name: ghcr.io/${{ steps.meta.outputs.owner }}/python-base
+      python-base-image: ghcr.io/${{ needs.prepare.outputs.image-owner }}/python-base@${{ steps.merge-python-base.outputs.digest }}
+      python-base-name: ghcr.io/${{ needs.prepare.outputs.image-owner }}/python-base
       python-base-digest: ${{ steps.merge-python-base.outputs.digest }}
-      venv-builder-image: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder@${{ steps.merge-venv-builder.outputs.digest }}
+      venv-builder-image: ghcr.io/${{ needs.prepare.outputs.image-owner }}/venv-builder@${{ steps.merge-venv-builder.outputs.digest }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Normalize image owner
-        id: meta
-        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
-
-      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
-
-      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
+      - name: Setup Docker registry
+        uses: ./.github/actions/setup-docker-registry
         with:
-          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # CC-0030: Install cosign for image signing
-      - uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4
-
-      - name: Download python-base digests
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: digests-python-base-*
-          path: /tmp/digests/python-base
-          merge-multiple: true
-
-      - name: Create and push python-base manifest
+      - name: Merge and attest python-base
         id: merge-python-base
-        env:
-          IMAGE: ghcr.io/${{ steps.meta.outputs.owner }}/python-base
-        run: |
-          cd /tmp/digests/python-base
-          [[ $(ls | wc -l) -ge 1 ]] || { echo "::error::No digests found for python-base"; exit 1; }
-          docker buildx imagetools create \
-            -t "${IMAGE}:latest" \
-            -t "${IMAGE}:${{ github.sha }}" \
-            $(printf "${IMAGE}@sha256:%s " *)
-          digest=$(docker buildx imagetools inspect "${IMAGE}:${{ github.sha }}" \
-            --format '{{json .Manifest.Digest}}' | tr -d '"')
-          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
-          echo "Created python-base manifest: ${digest}"
-
-      # CC-0029: Generate and attest SBOM for python-base
-      - name: Generate SBOM for python-base
-        if: github.event_name != 'pull_request'
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        uses: ./.github/actions/merge-manifest-and-attest
         with:
-          image: ghcr.io/${{ steps.meta.outputs.owner }}/python-base@${{ steps.merge-python-base.outputs.digest }}
-          format: cyclonedx-json
-          output-file: sbom-python-base.cyclonedx.json
-          upload-artifact: false
+          image: ghcr.io/${{ needs.prepare.outputs.image-owner }}/python-base
+          artifact-pattern: digests-python-base-*
+          digest-dir: /tmp/digests/python-base
+          tags: ghcr.io/${{ needs.prepare.outputs.image-owner }}/python-base:latest ghcr.io/${{ needs.prepare.outputs.image-owner }}/python-base:${{ github.sha }}
+          inspect-tag: ghcr.io/${{ needs.prepare.outputs.image-owner }}/python-base:${{ github.sha }}
+          sbom-output-file: sbom-python-base.cyclonedx.json
+          grype-category: grype-python-base
+          scan-mode: ${{ github.event_name == 'pull_request' && 'image' || 'sbom' }}
 
-      # CC-0032: Scan python-base for vulnerabilities
-      # DECISION: anchore/grype-action does not exist — using anchore/scan-action (the real Grype GitHub Action).
-      # Input "fail-on" from spec maps to "severity-cutoff". Reviewer: please verify.
-      # Split into two steps to avoid passing both sbom and image inputs simultaneously.
-      # anchore/scan-action documents sbom and image as mutually exclusive inputs.
-      - name: Scan python-base for vulnerabilities (SBOM)
-        if: github.event_name != 'pull_request'
-        id: grype-python-base-sbom
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
-        with:
-          sbom: sbom-python-base.cyclonedx.json
-          severity-cutoff: high
-          fail-build: false
-          output-format: sarif
-
-      - name: Scan python-base for vulnerabilities (image)
-        if: github.event_name == 'pull_request'
-        id: grype-python-base-image
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
-        with:
-          image: ghcr.io/${{ steps.meta.outputs.owner }}/python-base@${{ steps.merge-python-base.outputs.digest }}
-          severity-cutoff: high
-          fail-build: false
-          output-format: sarif
-
-      - name: Upload SARIF for python-base
-        if: >-
-          always() &&
-          (steps.grype-python-base-sbom.outputs.sarif != '' ||
-           steps.grype-python-base-image.outputs.sarif != '')
-        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
-        with:
-          sarif_file: ${{ steps.grype-python-base-sbom.outputs.sarif || steps.grype-python-base-image.outputs.sarif }}
-          category: grype-python-base
-
-      - name: Attest SBOM for python-base
-        if: github.event_name != 'pull_request'
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4
-        with:
-          subject-name: ghcr.io/${{ steps.meta.outputs.owner }}/python-base
-          subject-digest: ${{ steps.merge-python-base.outputs.digest }}
-          sbom-path: sbom-python-base.cyclonedx.json
-          push-to-registry: true
-
-      # CC-0035: Attest build provenance for python-base (SLSA Level 2+)
-      - name: Attest build provenance for python-base
-        if: github.event_name != 'pull_request'
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4
-        with:
-          subject-name: ghcr.io/${{ steps.meta.outputs.owner }}/python-base
-          subject-digest: ${{ steps.merge-python-base.outputs.digest }}
-          push-to-registry: true
-
-      # CC-0030: Sign python-base with cosign keyless signing
-      - name: Sign python-base
-        if: github.event_name != 'pull_request'
-        run: cosign sign --yes ghcr.io/${{ steps.meta.outputs.owner }}/python-base@${{ steps.merge-python-base.outputs.digest }}
-
-      - name: Download venv-builder digests
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: digests-venv-builder-*
-          path: /tmp/digests/venv-builder
-          merge-multiple: true
-
-      - name: Create and push venv-builder manifest
+      - name: Merge and attest venv-builder
         id: merge-venv-builder
-        env:
-          IMAGE: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder
-        run: |
-          cd /tmp/digests/venv-builder
-          [[ $(ls | wc -l) -ge 1 ]] || { echo "::error::No digests found for venv-builder"; exit 1; }
-          docker buildx imagetools create \
-            -t "${IMAGE}:latest" \
-            -t "${IMAGE}:${{ github.sha }}" \
-            $(printf "${IMAGE}@sha256:%s " *)
-          digest=$(docker buildx imagetools inspect "${IMAGE}:${{ github.sha }}" \
-            --format '{{json .Manifest.Digest}}' | tr -d '"')
-          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
-          echo "Created venv-builder manifest: ${digest}"
-
-      # CC-0029: Generate and attest SBOM for venv-builder
-      - name: Generate SBOM for venv-builder
-        if: github.event_name != 'pull_request'
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        uses: ./.github/actions/merge-manifest-and-attest
         with:
-          image: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder@${{ steps.merge-venv-builder.outputs.digest }}
-          format: cyclonedx-json
-          output-file: sbom-venv-builder.cyclonedx.json
-          upload-artifact: false
-
-      # CC-0032: Scan venv-builder for vulnerabilities
-      # See DECISION comment on Scan python-base step above
-      - name: Scan venv-builder for vulnerabilities (SBOM)
-        if: github.event_name != 'pull_request'
-        id: grype-venv-builder-sbom
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
-        with:
-          sbom: sbom-venv-builder.cyclonedx.json
-          severity-cutoff: high
-          fail-build: false
-          output-format: sarif
-
-      - name: Scan venv-builder for vulnerabilities (image)
-        if: github.event_name == 'pull_request'
-        id: grype-venv-builder-image
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
-        with:
-          image: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder@${{ steps.merge-venv-builder.outputs.digest }}
-          severity-cutoff: high
-          fail-build: false
-          output-format: sarif
-
-      - name: Upload SARIF for venv-builder
-        if: >-
-          always() &&
-          (steps.grype-venv-builder-sbom.outputs.sarif != '' ||
-           steps.grype-venv-builder-image.outputs.sarif != '')
-        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
-        with:
-          sarif_file: ${{ steps.grype-venv-builder-sbom.outputs.sarif || steps.grype-venv-builder-image.outputs.sarif }}
-          category: grype-venv-builder
-
-      - name: Attest SBOM for venv-builder
-        if: github.event_name != 'pull_request'
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4
-        with:
-          subject-name: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder
-          subject-digest: ${{ steps.merge-venv-builder.outputs.digest }}
-          sbom-path: sbom-venv-builder.cyclonedx.json
-          push-to-registry: true
-
-      # CC-0035: Attest build provenance for venv-builder (SLSA Level 2+)
-      - name: Attest build provenance for venv-builder
-        if: github.event_name != 'pull_request'
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4
-        with:
-          subject-name: ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder
-          subject-digest: ${{ steps.merge-venv-builder.outputs.digest }}
-          push-to-registry: true
-
-      # CC-0030: Sign venv-builder with cosign keyless signing
-      - name: Sign venv-builder
-        if: github.event_name != 'pull_request'
-        run: cosign sign --yes ghcr.io/${{ steps.meta.outputs.owner }}/venv-builder@${{ steps.merge-venv-builder.outputs.digest }}
+          image: ghcr.io/${{ needs.prepare.outputs.image-owner }}/venv-builder
+          artifact-pattern: digests-venv-builder-*
+          digest-dir: /tmp/digests/venv-builder
+          tags: ghcr.io/${{ needs.prepare.outputs.image-owner }}/venv-builder:latest ghcr.io/${{ needs.prepare.outputs.image-owner }}/venv-builder:${{ github.sha }}
+          inspect-tag: ghcr.io/${{ needs.prepare.outputs.image-owner }}/venv-builder:${{ github.sha }}
+          sbom-output-file: sbom-venv-builder.cyclonedx.json
+          grype-category: grype-venv-builder
+          scan-mode: ${{ github.event_name == 'pull_request' && 'image' || 'sbom' }}
 
   verify-base-images:
     needs: [merge-base-images]
@@ -426,271 +212,22 @@ jobs:
       packages: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
+      - name: Setup Docker registry
+        uses: ./.github/actions/setup-docker-registry
         with:
-          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+          install-cosign: 'false'
 
-      - name: Pull base images
+      - name: Pull and verify base images
         env:
           PYTHON_BASE_IMAGE: ${{ needs.merge-base-images.outputs.python-base-image }}
           VENV_BUILDER_IMAGE: ${{ needs.merge-base-images.outputs.venv-builder-image }}
         run: |
           docker pull "$PYTHON_BASE_IMAGE"
           docker pull "$VENV_BUILDER_IMAGE"
-
-      - name: Verify python-base image
-        env:
-          PYTHON_BASE_IMAGE: ${{ needs.merge-base-images.outputs.python-base-image }}
-        run: bash tests/container-images/verify_python_base.sh "$PYTHON_BASE_IMAGE"
-
-      - name: Verify venv-builder image
-        env:
-          VENV_BUILDER_IMAGE: ${{ needs.merge-base-images.outputs.venv-builder-image }}
-        run: bash tests/container-images/verify_venv_builder.sh "$VENV_BUILDER_IMAGE"
-
-  # CC-0035 REQ-009: Build Tempest API testing image per platform.
-  # Follows the same pattern as build-base-images: per-platform build with
-  # digest upload, then merge-tempest-image assembles the manifest list.
-  build-tempest:
-    needs: [lint-dockerfiles, merge-base-images, verify-base-images, generate-matrix]
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      packages: write          # Push by digest on non-PR
-      security-events: write   # CC-0032: SARIF upload for Grype scan on PR
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJson(needs.generate-matrix.outputs.tempest-matrix) }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - uses: mikefarah/yq@b534aa9ee5d38001fba3cd8fe254a037e4847b37 # v4.45.4
-
-      - name: Normalize image owner
-        id: meta
-        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
-
-      - name: Resolve Tempest versions
-        id: versions
-        run: |
-          TEMPEST_VERSION=$(hack/resolve-test-ref.sh releases/${{ matrix.release }}/test-refs.yaml tempest)
-          KTP_VERSION=$(hack/resolve-test-ref.sh releases/${{ matrix.release }}/test-refs.yaml keystone-tempest-plugin)
-          echo "tempest=${TEMPEST_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "keystone-tempest-plugin=${KTP_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Tempest ${TEMPEST_VERSION}, keystone-tempest-plugin ${KTP_VERSION}"
-
-      - name: Prepare platform pair
-        id: platform-pair
-        uses: ./.github/actions/platform-pair
-        with:
-          platform: ${{ matrix.platform }}
-
-      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
-
-      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # CC-0031: Generate OCI annotations for Tempest image.
-      - name: Generate metadata for Tempest image
-        id: meta-tempest
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
-        with:
-          images: ghcr.io/${{ steps.meta.outputs.owner }}/tempest
-          labels: |
-            org.opencontainers.image.title=tempest
-            org.opencontainers.image.description=OpenStack Tempest API testing framework
-            org.opencontainers.image.licenses=Apache-2.0
-            org.opencontainers.image.vendor=SAP SE
-
-      # On PR: build amd64 only (load locally for verification).
-      # On push: build both platforms and push by digest.
-      - name: Build Tempest image
-        id: build-tempest
-        if: github.event_name != 'pull_request' || matrix.platform == 'linux/amd64'
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
-        with:
-          context: images/tempest
-          file: images/tempest/Dockerfile
-          build-args: |
-            TEMPEST_VERSION=${{ steps.versions.outputs.tempest }}
-            KEYSTONE_TEMPEST_PLUGIN_VERSION=${{ steps.versions.outputs.keystone-tempest-plugin }}
-          build-contexts: |
-            python-base=docker-image://ghcr.io/${{ steps.meta.outputs.owner }}/python-base@${{ needs.merge-base-images.outputs.python-base-digest }}
-            venv-builder=docker-image://${{ needs.merge-base-images.outputs.venv-builder-image }}
-            upper-constraints=releases/${{ matrix.release }}/
-          platforms: ${{ matrix.platform }}
-          load: ${{ github.event_name == 'pull_request' }}
-          outputs: ${{ github.event_name != 'pull_request' && 'type=image,push-by-digest=true,name-canonical=true,push=true' || '' }}
-          tags: ${{ github.event_name == 'pull_request' && format('ghcr.io/{0}/tempest:{1}', steps.meta.outputs.owner, matrix.release) || format('ghcr.io/{0}/tempest', steps.meta.outputs.owner) }}
-          labels: ${{ steps.meta-tempest.outputs.labels }}
-          cache-from: type=gha,scope=tempest-${{ matrix.release }}-${{ steps.platform-pair.outputs.value }}
-          cache-to: type=gha,mode=max,scope=tempest-${{ matrix.release }}-${{ steps.platform-pair.outputs.value }}
-
-      - name: Export Tempest image digest
-        if: github.event_name != 'pull_request' && steps.build-tempest.outcome == 'success'
-        run: |
-          mkdir -p /tmp/digests
-          digest="${{ steps.build-tempest.outputs.digest }}"
-          touch "/tmp/digests/${digest#sha256:}"
-
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        if: github.event_name != 'pull_request' && steps.build-tempest.outcome == 'success'
-        with:
-          name: digests-tempest-${{ matrix.release }}-${{ steps.platform-pair.outputs.value }}
-          path: /tmp/digests/*
-          if-no-files-found: error
-          retention-days: 1
-
-      # CC-0032: Scan Tempest image for vulnerabilities on PRs.
-      - name: Scan Tempest image for vulnerabilities (image)
-        if: github.event_name == 'pull_request' && matrix.platform == 'linux/amd64'
-        id: grype-tempest-image
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
-        with:
-          image: ghcr.io/${{ steps.meta.outputs.owner }}/tempest:${{ matrix.release }}
-          severity-cutoff: high
-          fail-build: false
-          output-format: sarif
-
-      - name: Upload SARIF for Tempest
-        if: always() && steps.grype-tempest-image.outputs.sarif != ''
-        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
-        with:
-          sarif_file: ${{ steps.grype-tempest-image.outputs.sarif }}
-          category: grype-tempest-${{ matrix.release }}-${{ steps.platform-pair.outputs.value }}
-
-      - name: Verify Tempest image (PR)
-        if: github.event_name == 'pull_request' && matrix.platform == 'linux/amd64'
-        env:
-          IMAGE_REF: ghcr.io/${{ steps.meta.outputs.owner }}/tempest:${{ matrix.release }}
-        run: bash tests/container-images/verify_tempest.sh "$IMAGE_REF"
-
-  # CC-0035 REQ-009: Merge Tempest image manifests with supply chain security.
-  # Assembles per-platform digests into a multi-arch manifest list, then runs
-  # SBOM generation, vulnerability scanning, attestation, and cosign signing.
-  merge-tempest-image:
-    if: github.event_name != 'pull_request'
-    needs: [build-tempest, generate-matrix]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      packages: write
-      id-token: write          # CC-0030, CC-0035: Sigstore OIDC signing for cosign and build provenance
-      attestations: write      # CC-0029, CC-0035: GitHub Attestations API
-      security-events: write   # CC-0032: GitHub Security tab SARIF upload
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJson(needs.generate-matrix.outputs.tempest-release-matrix) }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - uses: mikefarah/yq@b534aa9ee5d38001fba3cd8fe254a037e4847b37 # v4.45.4
-
-      - name: Normalize image owner
-        id: meta
-        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
-
-      - name: Resolve Tempest version
-        id: versions
-        run: |
-          TEMPEST_VERSION=$(hack/resolve-test-ref.sh releases/${{ matrix.release }}/test-refs.yaml tempest)
-          echo "tempest=${TEMPEST_VERSION}" >> "$GITHUB_OUTPUT"
-
-      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
-
-      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # CC-0030: Install cosign for image signing
-      - uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4
-
-      - name: Download Tempest digests
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: digests-tempest-${{ matrix.release }}-*
-          path: /tmp/digests
-          merge-multiple: true
-
-      - name: Create and push Tempest manifest
-        id: merge-tempest
-        env:
-          IMAGE: ghcr.io/${{ steps.meta.outputs.owner }}/tempest
-        run: |
-          cd /tmp/digests
-          [[ $(ls | wc -l) -ge 1 ]] || { echo "::error::No digests found for tempest"; exit 1; }
-          # CC-0035: The version-only tag (e.g. tempest:45.0.0) is restricted
-          # to main to prevent silent overwrites across branches, matching the
-          # merge-service-images gating pattern (CC-0007).
-          version_tag=""
-          if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
-            version_tag="-t ${IMAGE}:${{ steps.versions.outputs.tempest }}"
-          fi
-          docker buildx imagetools create \
-            -t "${IMAGE}:${{ matrix.release }}" \
-            ${version_tag} \
-            -t "${IMAGE}:${{ matrix.release }}-${{ github.sha }}" \
-            $(printf "${IMAGE}@sha256:%s " *)
-          digest=$(docker buildx imagetools inspect "${IMAGE}:${{ matrix.release }}-${{ github.sha }}" \
-            --format '{{json .Manifest.Digest}}' | tr -d '"')
-          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
-          echo "Created tempest manifest (${{ matrix.release }}): ${digest}"
-
-      # CC-0029: Generate and attest SBOM for Tempest image
-      - name: Generate SBOM for Tempest
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
-        with:
-          image: ghcr.io/${{ steps.meta.outputs.owner }}/tempest@${{ steps.merge-tempest.outputs.digest }}
-          format: cyclonedx-json
-          output-file: sbom-tempest-${{ matrix.release }}.cyclonedx.json
-          upload-artifact: false
-
-      # CC-0032: Scan Tempest image for vulnerabilities
-      - name: Scan Tempest for vulnerabilities (SBOM)
-        id: grype-tempest-sbom
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
-        with:
-          sbom: sbom-tempest-${{ matrix.release }}.cyclonedx.json
-          severity-cutoff: high
-          fail-build: false
-          output-format: sarif
-
-      - name: Upload SARIF for Tempest
-        if: always() && steps.grype-tempest-sbom.outputs.sarif != ''
-        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
-        with:
-          sarif_file: ${{ steps.grype-tempest-sbom.outputs.sarif }}
-          category: grype-tempest-${{ matrix.release }}
-
-      - name: Attest SBOM for Tempest
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4
-        with:
-          subject-name: ghcr.io/${{ steps.meta.outputs.owner }}/tempest
-          subject-digest: ${{ steps.merge-tempest.outputs.digest }}
-          sbom-path: sbom-tempest-${{ matrix.release }}.cyclonedx.json
-          push-to-registry: true
-
-      # CC-0035: Attest build provenance for Tempest (SLSA Level 2+)
-      - name: Attest build provenance for Tempest
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4
-        with:
-          subject-name: ghcr.io/${{ steps.meta.outputs.owner }}/tempest
-          subject-digest: ${{ steps.merge-tempest.outputs.digest }}
-          push-to-registry: true
-
-      # CC-0030: Sign Tempest image with cosign keyless signing
-      - name: Sign Tempest image
-        run: cosign sign --yes ghcr.io/${{ steps.meta.outputs.owner }}/tempest@${{ steps.merge-tempest.outputs.digest }}
+          bash tests/container-images/verify_python_base.sh "$PYTHON_BASE_IMAGE"
+          bash tests/container-images/verify_venv_builder.sh "$VENV_BUILDER_IMAGE"
 
   generate-matrix:
     needs: [merge-base-images, verify-base-images]
@@ -712,71 +249,127 @@ jobs:
         id: matrix
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
+        run: hack/ci-generate-build-matrix.sh
+
+  build-tempest:
+    needs: [lint-dockerfiles, merge-base-images, verify-base-images, generate-matrix, prepare]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      security-events: write   # CC-0032: SARIF upload for Grype scan on PR
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.tempest-matrix) }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: mikefarah/yq@b534aa9ee5d38001fba3cd8fe254a037e4847b37 # v4.45.4
+
+      - name: Resolve Tempest versions
+        id: versions
+        env:
+          MATRIX_RELEASE: ${{ matrix.release }}
         run: |
-          shopt -s nullglob
-          dirs=(releases/*/)
+          echo "tempest=$(hack/resolve-test-ref.sh "releases/${MATRIX_RELEASE}/test-refs.yaml" tempest)" >> "$GITHUB_OUTPUT"
+          echo "keystone-tempest-plugin=$(hack/resolve-test-ref.sh "releases/${MATRIX_RELEASE}/test-refs.yaml" keystone-tempest-plugin)" >> "$GITHUB_OUTPUT"
 
-          if [[ ${#dirs[@]} -eq 0 ]]; then
-            echo "matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
-            echo "build-matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
-            echo "tempest-matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
-            echo "tempest-release-matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+      - name: Prepare platform pair
+        id: platform-pair
+        uses: ./.github/actions/platform-pair
+        with:
+          platform: ${{ matrix.platform }}
 
-          # Collect {service, release} pairs
-          pairs=$(
-            for release_dir in "${dirs[@]}"; do
-              release="${release_dir%/}"
-              release="${release#releases/}"
-              while IFS= read -r service; do
-                echo "{\"service\":\"${service}\",\"release\":\"${release}\"}"
-              done < <(yq 'keys | .[]' "releases/${release}/source-refs.yaml")
-            done | jq -sc '.'
-          )
+      - name: Setup Docker registry
+        uses: ./.github/actions/setup-docker-registry
+        with:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          install-cosign: 'false'
 
-          # Simple matrix for test/verify jobs: {service, release}
-          echo "matrix=$(echo "$pairs" | jq -c '{"include": .}')" >> "$GITHUB_OUTPUT"
+      - name: Build Tempest image
+        id: build-tempest
+        if: github.event_name != 'pull_request' || matrix.platform == 'linux/amd64'  # defense-in-depth: matrix already excludes ARM64 on PRs
+        uses: ./.github/actions/build-push-image
+        with:
+          image-name: ghcr.io/${{ needs.prepare.outputs.image-owner }}/tempest
+          context: images/tempest
+          platform: ${{ matrix.platform }}
+          platform-pair: ${{ steps.platform-pair.outputs.value }}
+          build-args: |
+            TEMPEST_VERSION=${{ steps.versions.outputs.tempest }}
+            KEYSTONE_TEMPEST_PLUGIN_VERSION=${{ steps.versions.outputs.keystone-tempest-plugin }}
+          build-contexts: |
+            python-base=docker-image://ghcr.io/${{ needs.prepare.outputs.image-owner }}/python-base@${{ needs.merge-base-images.outputs.python-base-digest }}
+            venv-builder=docker-image://${{ needs.merge-base-images.outputs.venv-builder-image }}
+            upper-constraints=releases/${{ matrix.release }}/
+          labels-title: tempest
+          labels-description: OpenStack Tempest API testing framework
+          cache-scope: tempest-${{ matrix.release }}
+          push-by-digest: ${{ github.event_name != 'pull_request' && 'true' || 'false' }}
+          tags: ${{ github.event_name == 'pull_request' && format('ghcr.io/{0}/tempest:{1}', needs.prepare.outputs.image-owner, matrix.release) || format('ghcr.io/{0}/tempest', needs.prepare.outputs.image-owner) }}
+          artifact-name: digests-tempest-${{ matrix.release }}-${{ steps.platform-pair.outputs.value }}
+          grype-category: grype-tempest-${{ matrix.release }}-${{ steps.platform-pair.outputs.value }}
+          image-ref-for-scan: ghcr.io/${{ needs.prepare.outputs.image-owner }}/tempest:${{ matrix.release }}
+          verify-script: tests/container-images/verify_tempest.sh
+          verify-image-ref: ghcr.io/${{ needs.prepare.outputs.image-owner }}/tempest:${{ matrix.release }}
 
-          # Build matrix for build jobs: {service, release, platform, runner}
-          # ARM64 is excluded on pull_request to avoid unnecessary cross-platform builds
-          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
-            platforms='[{"platform":"linux/amd64","runner":"ubuntu-latest"}]'
-          else
-            platforms='[{"platform":"linux/amd64","runner":"ubuntu-latest"},{"platform":"linux/arm64","runner":"ubuntu-24.04-arm"}]'
-          fi
+  merge-tempest-image:
+    if: github.event_name != 'pull_request'
+    needs: [build-tempest, generate-matrix, prepare]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write          # CC-0030, CC-0035: Sigstore OIDC signing
+      attestations: write      # CC-0029, CC-0035: GitHub Attestations API
+      security-events: write   # CC-0032: GitHub Security tab SARIF upload
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.tempest-release-matrix) }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: mikefarah/yq@b534aa9ee5d38001fba3cd8fe254a037e4847b37 # v4.45.4
 
-          build_matrix=$(echo "$pairs" | jq -c \
-            --argjson p "$platforms" \
-            '[.[] as $sr | $p[] | {service: $sr.service, release: $sr.release, platform: .platform, runner: .runner}] | {"include": .}')
-          echo "build-matrix=${build_matrix}" >> "$GITHUB_OUTPUT"
+      - name: Setup Docker registry
+        uses: ./.github/actions/setup-docker-registry
+        with:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-          # Tempest matrix: one image per release (not per service)
-          releases=$(
-            for release_dir in "${dirs[@]}"; do
-              release="${release_dir%/}"
-              release="${release#releases/}"
-              echo "{\"release\":\"${release}\"}"
-            done | jq -sc '.'
-          )
+      - name: Build Tempest tags
+        id: tempest-tags
+        env:
+          IMAGE: ghcr.io/${{ needs.prepare.outputs.image-owner }}/tempest
+          MATRIX_RELEASE: ${{ matrix.release }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          TEMPEST_VERSION=$(hack/resolve-test-ref.sh "releases/${MATRIX_RELEASE}/test-refs.yaml" tempest)
+          TAGS="${IMAGE}:${MATRIX_RELEASE} ${IMAGE}:${MATRIX_RELEASE}-${COMMIT_SHA}"
+          [[ "${GITHUB_REF_NAME}" == "main" ]] && TAGS="${TAGS} ${IMAGE}:${TEMPEST_VERSION}"
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
 
-          echo "tempest-release-matrix=$(echo "$releases" | jq -c '{"include": .}')" >> "$GITHUB_OUTPUT"
+      - name: Merge and attest Tempest
+        id: merge-tempest
+        uses: ./.github/actions/merge-manifest-and-attest
+        with:
+          image: ghcr.io/${{ needs.prepare.outputs.image-owner }}/tempest
+          artifact-pattern: digests-tempest-${{ matrix.release }}-*
+          tags: ${{ steps.tempest-tags.outputs.tags }}
+          inspect-tag: ghcr.io/${{ needs.prepare.outputs.image-owner }}/tempest:${{ matrix.release }}-${{ github.sha }}
+          sbom-output-file: sbom-tempest-${{ matrix.release }}.cyclonedx.json
+          grype-category: grype-tempest-${{ matrix.release }}
 
-          tempest_matrix=$(echo "$releases" | jq -c \
-            --argjson p "$platforms" \
-            '[.[] as $r | $p[] | {release: $r.release, platform: .platform, runner: .runner}] | {"include": .}')
-          echo "tempest-matrix=${tempest_matrix}" >> "$GITHUB_OUTPUT"
-
-  # Each platform is built on a native runner and pushed by digest (non-PR) or
-  # loaded locally for verification (PR, amd64 only via build-matrix filtering).
+  # Per-platform service builds pushed by digest or loaded locally for PR verification.
   build-service-images:
-    needs: [merge-base-images, verify-base-images, generate-matrix]
+    needs: [merge-base-images, verify-base-images, generate-matrix, prepare]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
       contents: read
       packages: write
-      id-token: write       # CC-0029, CC-0030, CC-0035: Sigstore OIDC signing for SBOM attestation, cosign signing, and build provenance
+      id-token: write       # CC-0029, CC-0030, CC-0035: Sigstore OIDC signing
       attestations: write   # CC-0029, CC-0035: GitHub Attestations API
       security-events: write  # CC-0032: GitHub Security tab SARIF upload
     strategy:
@@ -784,64 +377,19 @@ jobs:
       matrix: ${{ fromJson(needs.generate-matrix.outputs.build-matrix) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Resolve source ref
-        id: source-ref
-        env:
-          MATRIX_SERVICE: ${{ matrix.service }}
-          MATRIX_RELEASE: ${{ matrix.release }}
-        run: |
-          ref=$(yq ".\"${MATRIX_SERVICE}\"" "releases/${MATRIX_RELEASE}/source-refs.yaml")
-          if [ -z "$ref" ] || [ "$ref" = "null" ]; then
-            echo "::error::No source-ref found for '${MATRIX_SERVICE}' in releases/${MATRIX_RELEASE}/source-refs.yaml"
-            exit 1
-          fi
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "Resolved ${MATRIX_SERVICE} source ref: $ref"
-
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Checkout service source
+        id: checkout-source
+        uses: ./.github/actions/checkout-service-source
         with:
-          repository: openstack/${{ matrix.service }}
-          ref: ${{ steps.source-ref.outputs.ref }}
-          path: src/${{ matrix.service }}
-          fetch-depth: 1
-
-      - name: Apply patches
-        if: hashFiles(format('patches/{0}/{1}/*.patch', matrix.service, matrix.release)) != ''
-        env:
-          MATRIX_SERVICE: ${{ matrix.service }}
-          MATRIX_RELEASE: ${{ matrix.release }}
-        run: git -C "src/${MATRIX_SERVICE}" apply "${GITHUB_WORKSPACE}/patches/${MATRIX_SERVICE}/${MATRIX_RELEASE}"/*.patch
-
-      - name: Apply constraint overrides
-        env:
-          MATRIX_RELEASE: ${{ matrix.release }}
-        run: scripts/apply-constraint-overrides.sh "$MATRIX_RELEASE"
+          service: ${{ matrix.service }}
+          release: ${{ matrix.release }}
 
       - name: Resolve extra packages
         id: extra-pkgs
         env:
           MATRIX_SERVICE: ${{ matrix.service }}
           MATRIX_RELEASE: ${{ matrix.release }}
-        run: |
-          EXTRAS_FILE="releases/${MATRIX_RELEASE}/extra-packages.yaml"
-          if [ ! -f "$EXTRAS_FILE" ]; then
-            echo "::error::Missing ${EXTRAS_FILE}. Each release directory must contain an extra-packages.yaml file (see docs/reference/build-images-workflow.md#adding-a-new-release)."
-            exit 1
-          fi
-
-          pip_extras=$(yq -r ".\"${MATRIX_SERVICE}\".pip_extras // [] | join(\",\")" "$EXTRAS_FILE")
-          echo "pip-extras=${pip_extras}" >> "$GITHUB_OUTPUT"
-
-          pip_packages=$(yq -r ".\"${MATRIX_SERVICE}\".pip_packages // [] | join(\" \")" "$EXTRAS_FILE")
-          echo "pip-packages=${pip_packages}" >> "$GITHUB_OUTPUT"
-
-          apt_packages=$(yq -r ".\"${MATRIX_SERVICE}\".apt_packages // [] | join(\" \")" "$EXTRAS_FILE")
-          echo "apt-packages=${apt_packages}" >> "$GITHUB_OUTPUT"
-
-          echo "Resolved pip extras: ${pip_extras}"
-          echo "Resolved pip packages: ${pip_packages}"
-          echo "Resolved apt packages: ${apt_packages}"
+        run: hack/ci-resolve-extra-packages.sh
 
       - name: Derive tags
         id: tags
@@ -857,39 +405,21 @@ jobs:
         with:
           platform: ${{ matrix.platform }}
 
-      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
-
-      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
+      - name: Setup Docker registry
+        uses: ./.github/actions/setup-docker-registry
         with:
-          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      # CC-0030: Install cosign for image signing
-      - uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4
-
-      # CC-0031: Generate OCI annotations for service image.
-      # Uses raw version strategy to override org.opencontainers.image.version
-      # with the upstream OpenStack release version from source-refs.yaml.
-      - name: Generate metadata for service image
-        id: meta-service
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
-        with:
-          images: ${{ steps.tags.outputs.image }}
-          tags: |
-            type=raw,value=${{ steps.source-ref.outputs.ref }}
-          labels: |
-            org.opencontainers.image.title=${{ matrix.service }}
-            org.opencontainers.image.description=OpenStack ${{ matrix.service }} service
-            org.opencontainers.image.licenses=Apache-2.0
-            org.opencontainers.image.vendor=SAP SE
+          install-cosign: 'false'
 
       - name: Build service image
         id: build-service
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
+        uses: ./.github/actions/build-push-image
         with:
+          image-name: ${{ steps.tags.outputs.image }}
           context: images/${{ matrix.service }}
-          file: images/${{ matrix.service }}/Dockerfile
+          platform: ${{ matrix.platform }}
+          platform-pair: ${{ steps.platform-pair.outputs.value }}
           build-args: |
             PIP_EXTRAS=${{ steps.extra-pkgs.outputs.pip-extras }}
             PIP_PACKAGES=${{ steps.extra-pkgs.outputs.pip-packages }}
@@ -899,69 +429,32 @@ jobs:
             venv-builder=docker-image://${{ needs.merge-base-images.outputs.venv-builder-image }}
             ${{ matrix.service }}=src/${{ matrix.service }}
             upper-constraints=releases/${{ matrix.release }}/
-          platforms: ${{ matrix.platform }}
-          # PR: load locally with composite tag for verification.
-          # Non-PR: push by digest; merge-service-images creates the tagged manifest list.
-          load: ${{ github.event_name == 'pull_request' }}
-          outputs: ${{ github.event_name != 'pull_request' && 'type=image,push-by-digest=true,name-canonical=true,push=true' || '' }}
-          tags: ${{ github.event_name == 'pull_request' && steps.tags.outputs.composite || steps.tags.outputs.image }}
-          labels: |
-            ${{ steps.meta-service.outputs.labels }}
+          labels-title: ${{ matrix.service }}
+          labels-description: OpenStack ${{ matrix.service }} service
+          metadata-tags: |
+            type=raw,value=${{ steps.checkout-source.outputs.source-ref }}
+          extra-labels: |
             org.opencontainers.image.base.name=${{ needs.merge-base-images.outputs.python-base-name }}
             org.opencontainers.image.base.digest=${{ needs.merge-base-images.outputs.python-base-digest }}
-          cache-from: type=gha,scope=${{ matrix.service }}-${{ matrix.release }}-${{ steps.platform-pair.outputs.value }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.service }}-${{ matrix.release }}-${{ steps.platform-pair.outputs.value }}
+          cache-scope: ${{ matrix.service }}-${{ matrix.release }}
+          push-by-digest: ${{ github.event_name != 'pull_request' && 'true' || 'false' }}
+          tags: ${{ github.event_name == 'pull_request' && steps.tags.outputs.composite || steps.tags.outputs.image }}
+          artifact-name: ${{ github.event_name != 'pull_request' && format('digests-service-{0}-{1}-{2}', matrix.service, matrix.release, steps.platform-pair.outputs.value) || '' }}
+          grype-category: ${{ github.event_name == 'pull_request' && format('grype-{0}-{1}', matrix.service, steps.platform-pair.outputs.value) || '' }}
+          image-ref-for-scan: ${{ steps.tags.outputs.composite }}
+          verify-script: ${{ github.event_name == 'pull_request' && format('tests/container-images/verify_{0}.sh', matrix.service) || '' }}
+          verify-image-ref: ${{ steps.tags.outputs.composite }}
 
-      - name: Export service image digest
-        if: github.event_name != 'pull_request'
-        run: |
-          mkdir -p /tmp/digests
-          digest="${{ steps.build-service.outputs.digest }}"
-          touch "/tmp/digests/${digest#sha256:}"
-
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        if: github.event_name != 'pull_request'
-        with:
-          name: digests-service-${{ matrix.service }}-${{ matrix.release }}-${{ steps.platform-pair.outputs.value }}
-          path: /tmp/digests/*
-          if-no-files-found: error
-          retention-days: 1
-
-      # CC-0032: Scan service image for vulnerabilities on PRs (image scan against locally-loaded image)
-      - name: Scan service image for vulnerabilities (image)
-        if: github.event_name == 'pull_request'
-        id: grype-service-image
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
-        with:
-          image: ${{ steps.tags.outputs.composite }}
-          severity-cutoff: high
-          fail-build: false
-          output-format: sarif
-
-      - name: Upload SARIF for service image
-        if: always() && steps.grype-service-image.outputs.sarif != ''
-        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
-        with:
-          sarif_file: ${{ steps.grype-service-image.outputs.sarif }}
-          category: grype-${{ matrix.service }}-${{ steps.platform-pair.outputs.value }}
-
-      - name: Verify service image (PR)
-        if: github.event_name == 'pull_request'
-        env:
-          IMAGE_REF: ${{ steps.tags.outputs.composite }}
-        run: bash tests/container-images/verify_${{ matrix.service }}.sh "$IMAGE_REF"
-
-  # Assembles per-platform digests into multi-arch manifest lists, then
-  # runs SBOM generation, vulnerability scanning, attestation, and signing.
+  # Assembles per-platform service digests into multi-arch manifests with attestation.
   merge-service-images:
     if: github.event_name != 'pull_request'
-    needs: [merge-base-images, build-service-images, generate-matrix]
+    needs: [merge-base-images, build-service-images, generate-matrix, prepare]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
       packages: write
-      id-token: write       # CC-0029, CC-0030, CC-0035: Sigstore OIDC signing for SBOM attestation, cosign signing, and build provenance
+      id-token: write       # CC-0029, CC-0030, CC-0035: Sigstore OIDC signing
       attestations: write   # CC-0029, CC-0035: GitHub Attestations API
       security-events: write  # CC-0032: GitHub Security tab SARIF upload
     strategy:
@@ -969,23 +462,11 @@ jobs:
       matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - uses: mikefarah/yq@b534aa9ee5d38001fba3cd8fe254a037e4847b37 # v4.45.4
-
-      - name: Normalize image owner
-        id: meta
-        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
-
-      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
-
-      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
+      - name: Setup Docker registry
+        uses: ./.github/actions/setup-docker-registry
         with:
-          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      # CC-0030: Install cosign for image signing
-      - uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4
 
       - name: Derive tags
         id: tags
@@ -995,88 +476,29 @@ jobs:
           release: ${{ matrix.release }}
           repository-owner: ${{ github.repository_owner }}
 
-      - name: Download service image digests
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: digests-service-${{ matrix.service }}-${{ matrix.release }}-*
-          path: /tmp/digests
-          merge-multiple: true
-
-      - name: Create and push service image manifest
-        id: merge-service
+      - name: Build service image tags
+        id: service-tags
         env:
-          IMAGE: ${{ steps.tags.outputs.image }}
+          COMPOSITE_TAG: ${{ steps.tags.outputs.composite }}
+          SHA_TAG: ${{ steps.tags.outputs.sha }}
+          VERSION_TAG: ${{ steps.tags.outputs.version }}
+          RELEASE_TAG: ${{ steps.tags.outputs.release }}
         run: |
-          cd /tmp/digests
-          [[ $(ls | wc -l) -ge 1 ]] || { echo "::error::No digests found for ${{ matrix.service }}-${{ matrix.release }}"; exit 1; }
-          # CC-0007: The version-only and release tags (e.g. keystone:28.0.0,
-          # keystone:2025.2) are restricted to main to prevent silent overwrites
-          # across branches.
-          version_tag=""
-          release_tag=""
-          if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
-            version_tag="-t ${{ steps.tags.outputs.version }}"
-            release_tag="-t ${{ steps.tags.outputs.release }}"
-          fi
-          docker buildx imagetools create \
-            -t "${{ steps.tags.outputs.composite }}" \
-            ${version_tag} \
-            ${release_tag} \
-            -t "${{ steps.tags.outputs.sha }}" \
-            $(printf "${IMAGE}@sha256:%s " *)
-          digest=$(docker buildx imagetools inspect "${{ steps.tags.outputs.composite }}" \
-            --format '{{json .Manifest.Digest}}' | tr -d '"')
-          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
-          echo "Created service image manifest: ${digest}"
+          TAGS="${COMPOSITE_TAG} ${SHA_TAG}"
+          [[ "${GITHUB_REF_NAME}" == "main" ]] && TAGS="${TAGS} ${VERSION_TAG} ${RELEASE_TAG}"
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
 
-      # CC-0029: Generate and attest SBOM for service image
-      - name: Generate SBOM for service image
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+      - name: Merge and attest service image
+        id: merge-service
+        uses: ./.github/actions/merge-manifest-and-attest
         with:
-          image: ${{ steps.tags.outputs.image }}@${{ steps.merge-service.outputs.digest }}
-          format: cyclonedx-json
-          output-file: sbom-${{ matrix.service }}.cyclonedx.json
-          upload-artifact: false
+          image: ${{ steps.tags.outputs.image }}
+          artifact-pattern: digests-service-${{ matrix.service }}-${{ matrix.release }}-*
+          tags: ${{ steps.service-tags.outputs.tags }}
+          inspect-tag: ${{ steps.tags.outputs.composite }}
+          sbom-output-file: sbom-${{ matrix.service }}.cyclonedx.json
+          grype-category: grype-${{ matrix.service }}
 
-      # CC-0032: Scan service image for vulnerabilities
-      # See DECISION comment in merge-base-images
-      - name: Scan service image for vulnerabilities (SBOM)
-        id: grype-service-sbom
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
-        with:
-          sbom: sbom-${{ matrix.service }}.cyclonedx.json
-          severity-cutoff: high
-          fail-build: false
-          output-format: sarif
-
-      - name: Upload SARIF for service image
-        if: always() && steps.grype-service-sbom.outputs.sarif != ''
-        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
-        with:
-          sarif_file: ${{ steps.grype-service-sbom.outputs.sarif }}
-          category: grype-${{ matrix.service }}
-
-      - name: Attest SBOM for service image
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4
-        with:
-          subject-name: ${{ steps.tags.outputs.image }}
-          subject-digest: ${{ steps.merge-service.outputs.digest }}
-          sbom-path: sbom-${{ matrix.service }}.cyclonedx.json
-          push-to-registry: true
-
-      # CC-0035: Attest build provenance for service image (SLSA Level 2+)
-      - name: Attest build provenance for service image
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4
-        with:
-          subject-name: ${{ steps.tags.outputs.image }}
-          subject-digest: ${{ steps.merge-service.outputs.digest }}
-          push-to-registry: true
-
-      # CC-0030: Sign service image with cosign keyless signing
-      - name: Sign service image
-        run: cosign sign --yes ${{ steps.tags.outputs.image }}@${{ steps.merge-service.outputs.digest }}
-
-  # CC-0034: Run upstream unit tests for each service inside the venv-builder container
   test-service-images:
     needs: [merge-base-images, verify-base-images, generate-matrix]
     runs-on: ubuntu-latest
@@ -1084,172 +506,54 @@ jobs:
     permissions:
       contents: read
       packages: read
-    # oslo.db opportunistic tests need real MySQL and PostgreSQL backends.
-    # The test container reaches these via --network host on 127.0.0.1.
     services:
       mysql:
         image: mysql:9.6
-        env:
-          MYSQL_ROOT_PASSWORD: openstack
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd="mysqladmin ping -h 127.0.0.1 -u root -popenstack"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=5
+        env: {MYSQL_ROOT_PASSWORD: openstack}
+        ports: ['3306:3306']
+        options: --health-cmd="mysqladmin ping -h 127.0.0.1 -u root -popenstack" --health-interval=10s --health-timeout=5s --health-retries=5
       postgres:
         image: postgres:18
-        env:
-          POSTGRES_USER: openstack
-          POSTGRES_PASSWORD: openstack
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd="pg_isready -U openstack"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=5
+        env: {POSTGRES_USER: openstack, POSTGRES_PASSWORD: openstack}
+        ports: ['5432:5432']
+        options: --health-cmd="pg_isready -U openstack" --health-interval=10s --health-timeout=5s --health-retries=5
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Install yq
-        env:
-          YQ_VERSION: v4.45.1
-          YQ_SHA256: 654d2943ca1d3be2024089eb4f270f4070f491a0610481d128509b2834870049
-        run: |
-          sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
-          echo "${YQ_SHA256}  /usr/local/bin/yq" | sha256sum --check --strict
-          sudo chmod +x /usr/local/bin/yq
-          yq --version
-
-      # NOTE: This step MUST stay in sync with the equivalent step in build-service-images.
-      - name: Resolve source ref
-        id: source-ref
-        env:
-          MATRIX_SERVICE: ${{ matrix.service }}
-          MATRIX_RELEASE: ${{ matrix.release }}
-        run: |
-          ref=$(yq ".\"${MATRIX_SERVICE}\"" "releases/${MATRIX_RELEASE}/source-refs.yaml")
-          if [ -z "$ref" ] || [ "$ref" = "null" ]; then
-            echo "::error::No source-ref found for '${MATRIX_SERVICE}' in releases/${MATRIX_RELEASE}/source-refs.yaml"
-            exit 1
-          fi
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "Resolved ${MATRIX_SERVICE} source ref: $ref"
-
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Checkout service source
+        id: checkout-source
+        uses: ./.github/actions/checkout-service-source
         with:
-          repository: openstack/${{ matrix.service }}
-          ref: ${{ steps.source-ref.outputs.ref }}
-          path: src/${{ matrix.service }}
-          fetch-depth: 1
+          service: ${{ matrix.service }}
+          release: ${{ matrix.release }}
 
-      # NOTE: This step MUST stay in sync with the equivalent step in build-service-images.
-      - name: Apply patches
-        if: hashFiles(format('patches/{0}/{1}/*.patch', matrix.service, matrix.release)) != ''
-        env:
-          MATRIX_SERVICE: ${{ matrix.service }}
-          MATRIX_RELEASE: ${{ matrix.release }}
-        run: git -C "src/${MATRIX_SERVICE}" apply "${GITHUB_WORKSPACE}/patches/${MATRIX_SERVICE}/${MATRIX_RELEASE}"/*.patch
-
-      # NOTE: This step MUST stay in sync with the equivalent step in build-service-images.
-      - name: Apply constraint overrides
-        env:
-          MATRIX_RELEASE: ${{ matrix.release }}
-        run: scripts/apply-constraint-overrides.sh "$MATRIX_RELEASE"
-
-      # CC-0051: [test] extra removed — upstream projects list test deps in
-      # test-requirements.txt, not as a setuptools extra.  Test deps are
-      # installed separately via -r test-requirements.txt below.
       - name: Resolve pip extras
         id: pip-extras
         env:
           MATRIX_SERVICE: ${{ matrix.service }}
           MATRIX_RELEASE: ${{ matrix.release }}
         run: |
-          # Read pip_extras from extra-packages.yaml (e.g. ["ldap"] → "ldap")
-          extras=$(yq -r ".\"${MATRIX_SERVICE}\".pip_extras // [] | join(\",\")" \
-            "releases/${MATRIX_RELEASE}/extra-packages.yaml")
-          if [ -n "$extras" ]; then
-            echo "install_spec=.[${extras}]" >> "$GITHUB_OUTPUT"
-          else
-            echo "install_spec=." >> "$GITHUB_OUTPUT"
-          fi
-          echo "Resolved install spec: .${extras:+[${extras}]}"
+          extras=$(yq -r ".\"${MATRIX_SERVICE}\".pip_extras // [] | join(\",\")" "releases/${MATRIX_RELEASE}/extra-packages.yaml")
+          echo "install_spec=.${extras:+[$extras]}" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
+      - name: Setup Docker registry
+        uses: ./.github/actions/setup-docker-registry
         with:
-          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+          install-cosign: 'false'
 
       - name: Run tests
         env:
-          MATRIX_SERVICE: ${{ matrix.service }}
-          MATRIX_RELEASE: ${{ matrix.release }}
-          VENV_BUILDER_IMAGE: ${{ needs.merge-base-images.outputs.venv-builder-image }}
-          # CC-0034: PBR requires version metadata, but uv's build isolation
-          # copies source without .git.  Passed into the container to write
-          # a PKG-INFO file that PBR reads as a fallback (see script below).
-          SERVICE_VERSION: ${{ steps.source-ref.outputs.ref }}
+          SERVICE_NAME: ${{ matrix.service }}
+          SERVICE_VERSION: ${{ steps.checkout-source.outputs.source-ref }}
           INSTALL_SPEC: ${{ steps.pip-extras.outputs.install_spec }}
-          # oslo.db opportunistic test provisioning URL (semicolon-separated).
-          # MySQL uses root (needs CREATE DATABASE); PostgreSQL uses the
-          # superuser created by the postgres service container.
+          VENV_BUILDER_IMAGE: ${{ needs.merge-base-images.outputs.venv-builder-image }}
+          RELEASE: ${{ matrix.release }}
           OS_TEST_DBAPI_ADMIN_CONNECTION: "sqlite://;mysql+pymysql://root:openstack@127.0.0.1/;postgresql+psycopg2://openstack:openstack@127.0.0.1/openstack"
-        run: |
-          mkdir -p results
-
-          # Ensure test-excludes directory exists for volume mount
-          mkdir -p "releases/${MATRIX_RELEASE}/test-excludes"
-
-          # Build exclude-list argument if service-specific file exists
-          EXCLUDE_LIST_ARG=""
-          if [ -f "releases/${MATRIX_RELEASE}/test-excludes/${MATRIX_SERVICE}.txt" ]; then
-            EXCLUDE_LIST_ARG="--exclude-list /workspace/test-excludes/${MATRIX_SERVICE}.txt"
-          fi
-
-          docker run --rm --network host \
-            -v "${GITHUB_WORKSPACE}/src/${MATRIX_SERVICE}:/workspace/src:rw" \
-            -v "${GITHUB_WORKSPACE}/releases/${MATRIX_RELEASE}/upper-constraints.txt:/workspace/upper-constraints.txt:ro" \
-            -v "${GITHUB_WORKSPACE}/releases/${MATRIX_RELEASE}/test-excludes:/workspace/test-excludes:ro" \
-            -v "${GITHUB_WORKSPACE}/results:/workspace/results" \
-            -w /workspace/src \
-            -e EXCLUDE_LIST_ARG="${EXCLUDE_LIST_ARG}" \
-            -e SERVICE_NAME="${MATRIX_SERVICE}" \
-            -e SERVICE_VERSION="${SERVICE_VERSION}" \
-            -e INSTALL_SPEC="${INSTALL_SPEC}" \
-            -e OS_TEST_DBAPI_ADMIN_CONNECTION \
-            "${VENV_BUILDER_IMAGE}" \
-            bash -c '
-              set -e
-              source /var/lib/openstack/bin/activate
-              # Write a minimal PKG-INFO so PBR can derive the version
-              # inside the uv build-isolation sandbox, which copies the
-              # source tree to a temp dir without .git (git tags are lost).
-              # PKG-INFO is copied along with the source and is the primary
-              # PBR fallback when .git is absent (the sdist tarball path).
-              printf "Metadata-Version: 2.1\nName: %s\nVersion: %s\n" "$SERVICE_NAME" "$SERVICE_VERSION" > PKG-INFO
-              # Install test-requirements.txt if present (upstream projects
-              # list test deps there, not as a [test] extra).
-              TEST_REQ_ARG=""
-              if [ -f test-requirements.txt ]; then
-                TEST_REQ_ARG="-r test-requirements.txt"
-              fi
-              uv pip install --prefix /var/lib/openstack \
-                --constraint /workspace/upper-constraints.txt \
-                $TEST_REQ_ARG "${INSTALL_SPEC}" stestr testtools
-              stestr init
-              set +e
-              stestr run $EXCLUDE_LIST_ARG; TEST_EXIT=$?
-              set -e
-              stestr last --subunit > /workspace/results/testresults.subunit || true
-              exit $TEST_EXIT
-            '
+        run: hack/ci-run-unit-tests.sh
 
       - name: Upload test results
         if: always()
@@ -1272,13 +576,12 @@ jobs:
       matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
+      - name: Setup Docker registry
+        uses: ./.github/actions/setup-docker-registry
         with:
-          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
+          install-cosign: 'false'
       - name: Derive tags
         id: tags
         uses: ./.github/actions/derive-service-tags
@@ -1290,6 +593,7 @@ jobs:
       - name: Pull and verify service image
         env:
           IMAGE_REF: ${{ steps.tags.outputs.composite }}
+          SERVICE_NAME: ${{ matrix.service }}
         run: |
           docker pull "$IMAGE_REF"
-          bash tests/container-images/verify_${{ matrix.service }}.sh "$IMAGE_REF"
+          bash "tests/container-images/verify_${SERVICE_NAME}.sh" "$IMAGE_REF"

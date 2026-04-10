@@ -1,0 +1,71 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# CC-0055: Composite action encapsulating the duplicated source checkout
+# sequence shared by build-service-images and test-service-images jobs.
+
+name: Checkout service source
+description: >
+  Resolve the upstream source ref for an OpenStack service, check out the
+  repository, apply any patches, and apply constraint overrides.
+
+inputs:
+  service:
+    description: OpenStack service name (e.g. keystone)
+    required: true
+  release:
+    description: Release directory name (e.g. 2025.2)
+    required: true
+
+outputs:
+  source-ref:
+    description: The resolved version string from source-refs.yaml
+    value: ${{ steps.source-ref.outputs.source-ref }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install yq
+      uses: mikefarah/yq@b534aa9ee5d38001fba3cd8fe254a037e4847b37 # v4.45.4
+
+    - name: Resolve source ref
+      id: source-ref
+      shell: bash
+      env:
+        MATRIX_SERVICE: ${{ inputs.service }}
+        MATRIX_RELEASE: ${{ inputs.release }}
+      run: |
+        ref=$(yq ".\"${MATRIX_SERVICE}\"" "releases/${MATRIX_RELEASE}/source-refs.yaml")
+        if [ -z "$ref" ] || [ "$ref" = "null" ]; then
+          echo "::error::No source-ref found for '${MATRIX_SERVICE}' in releases/${MATRIX_RELEASE}/source-refs.yaml"
+          exit 1
+        fi
+        echo "source-ref=$ref" >> "$GITHUB_OUTPUT"
+        echo "Resolved ${MATRIX_SERVICE} source ref: $ref"
+
+    - name: Checkout upstream source
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      with:
+        repository: openstack/${{ inputs.service }}
+        ref: ${{ steps.source-ref.outputs.source-ref }}
+        path: src/${{ inputs.service }}
+        fetch-depth: 1
+
+    - name: Apply patches
+      shell: bash
+      env:
+        MATRIX_SERVICE: ${{ inputs.service }}
+        MATRIX_RELEASE: ${{ inputs.release }}
+      run: |
+        PATCH_DIR="patches/${MATRIX_SERVICE}/${MATRIX_RELEASE}"
+        if [ -d "$PATCH_DIR" ] && compgen -G "${PATCH_DIR}/*.patch" > /dev/null; then
+          echo "Applying patches from ${PATCH_DIR}"
+          git -C "src/${MATRIX_SERVICE}" apply "${GITHUB_WORKSPACE}/${PATCH_DIR}"/*.patch
+        fi
+
+    - name: Apply constraint overrides
+      shell: bash
+      env:
+        MATRIX_RELEASE: ${{ inputs.release }}
+      run: scripts/apply-constraint-overrides.sh "$MATRIX_RELEASE"

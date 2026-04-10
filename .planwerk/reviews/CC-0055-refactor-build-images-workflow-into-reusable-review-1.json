@@ -1,0 +1,201 @@
+{
+  "summary": "CC-0055 refactors build-images.yaml from ~1295 lines to 934 lines by extracting 4 composite actions (setup-docker-registry, export-digest, checkout-service-source, supply-chain-attest) and 2 CI scripts (ci-merge-manifest.sh, ci-run-unit-tests.sh). The 'MUST stay in sync' duplication between build-service-images and test-service-images is eliminated via checkout-service-source. All composite actions have SPDX headers, CC-0055 comments, SHA-pinned external actions, and shell: bash on run steps. Both scripts pass verify_ci_scripts.sh. All test suites pass (10/10 refactor, 25/25 composite, 23/23 CI scripts). However, two acceptance criteria are not met: workflow line count is 934 (target: <600), and normalize-image-owner appears 5 times (target: at most once). The test thresholds were relaxed to match the implementation rather than the acceptance criteria. Additionally, the documentation claims the workflow was reduced to 'under 600 lines' which is inaccurate. Expression injection defense (env-var indirection) is applied inconsistently — checkout-service-source uses it correctly but export-digest and supply-chain-attest interpolate inputs directly into shell commands. A CC-0056 feature file was deleted, which is scope creep.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Tests exist for composite actions (verify_composite_actions.sh)", "checked": true},
+    {"item": "Tests exist for workflow refactoring (verify_build_images_refactor.sh)", "checked": true},
+    {"item": "CI scripts validated by verify_ci_scripts.sh", "checked": true},
+    {"item": "All test suites pass", "checked": true},
+    {"item": "Test thresholds match acceptance criteria", "checked": false},
+    {"item": "Edge cases and error paths covered", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "SPDX headers on all new files", "checked": true},
+    {"item": "Feature ID (CC-0055) referenced in all new files", "checked": true},
+    {"item": "SHA-pinned external actions with version comments", "checked": true},
+    {"item": "set -euo pipefail in all scripts", "checked": true},
+    {"item": "Env var validation with ::error:: annotations", "checked": true},
+    {"item": "Scripts executable (chmod +x)", "checked": true},
+    {"item": "Follows existing code patterns (CC-0050)", "checked": true},
+    {"item": "No dead code or unused variables", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "All external action references SHA-pinned", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "Secrets passed through GitHub Actions secrets mechanism", "checked": true},
+    {"item": "Expression injection defense (env-var indirection) applied consistently", "checked": false}
+  ],
+  "architecture_checklist": [
+    {"item": "Composite actions encapsulate duplicated patterns", "checked": true},
+    {"item": "Scripts follow env-var interface pattern", "checked": true},
+    {"item": "Job outputs preserved unchanged", "checked": true},
+    {"item": "PR vs push conditional behavior preserved", "checked": true},
+    {"item": "No functional regression in workflow behavior", "checked": true},
+    {"item": "Workflow reduced to <600 lines (acceptance criteria)", "checked": false},
+    {"item": "Normalize-image-owner consolidated to single occurrence", "checked": false}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "Supply chain sequence deduplicated across 4 image types", "checked": true},
+    {"item": "Docker registry setup deduplicated across 9 jobs", "checked": true},
+    {"item": "Digest export pattern consolidated", "checked": true},
+    {"item": "Service source checkout deduplicated", "checked": true},
+    {"item": "Manifest merge logic extracted to script", "checked": true},
+    {"item": "Unit test execution extracted to script", "checked": true},
+    {"item": "Normalize-image-owner still duplicated 5 times", "checked": false}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Digest validation in export-digest action", "checked": true},
+    {"item": "Source ref validation in checkout-service-source", "checked": true},
+    {"item": "Required env var validation in CI scripts", "checked": true},
+    {"item": "Empty digest directory check in ci-merge-manifest.sh", "checked": true},
+    {"item": "Source directory existence check in ci-run-unit-tests.sh", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Fork PR detection preserved", "checked": true},
+    {"item": "Missing file/directory guards present", "checked": true},
+    {"item": "scan-mode conditional gates SBOM/attest/sign steps correctly", "checked": true}
+  ],
+  "security_findings": [
+    {
+      "severity": "MEDIUM",
+      "description": "Expression injection via unsanitized ${{ inputs.* }} in run: blocks of export-digest and supply-chain-attest composite actions. While inputs originate from repository-controlled workflow steps (docker build digests, image names derived from GITHUB_REPOSITORY_OWNER), the pattern violates defense-in-depth. checkout-service-source correctly uses env: block indirection for the same class of inputs.",
+      "location": ".github/actions/export-digest/action.yaml:32,40-42 and .github/actions/supply-chain-attest/action.yaml:100",
+      "fix": "Use env: blocks to pass inputs as environment variables in run: steps, matching the pattern already used in checkout-service-source/action.yaml. For export-digest: add env: DIGEST: ${{ inputs.digest }} / DIGEST_DIR: ${{ inputs.digest-dir }} and reference as ${DIGEST}/${DIGEST_DIR}. For supply-chain-attest: add env: IMAGE_NAME: ${{ inputs.image-name }} / IMAGE_DIGEST: ${{ inputs.image-digest }} and reference as ${IMAGE_NAME}@${IMAGE_DIGEST}.",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "architecture_findings": [
+    {
+      "severity": "MAJOR",
+      "description": "Workflow is 934 lines, exceeding the 600-line acceptance criterion by 56%. The generate-matrix inline block alone is 54 lines. The normalize-image-owner one-liner is duplicated across 5 jobs instead of being consolidated. The acceptance criteria explicitly state '<600 lines' and 'at most once' for normalize owner.",
+      "location": ".github/workflows/build-images.yaml",
+      "fix": "Extract generate-matrix inline script (~54 lines) to hack/ci-generate-build-matrix.sh. Consolidate normalize-image-owner into a dedicated job or workflow-level env. Consider extracting the remaining >5-line inline blocks (resolve tempest versions, build service/tempest tags, resolve extra packages, resolve pip extras). This should bring the workflow under 600 lines.",
+      "fix_classification": "ASK"
+    }
+  ],
+  "issues_found": [
+    {
+      "check_id": "C2",
+      "severity": "BLOCKING",
+      "description": "Acceptance criterion 'build-images.yaml is reduced to <600 lines' is not met. Workflow is 934 lines.",
+      "location": ".github/workflows/build-images.yaml:1-934",
+      "fix": "Extract the 54-line generate-matrix inline script, the 5 normalize-image-owner blocks, and remaining large inline blocks (resolve tempest versions, build tags, resolve extra packages) into composite actions or hack/ci-*.sh scripts to reduce the file to <600 lines.",
+      "evidence": "$ wc -l .github/workflows/build-images.yaml\n934 .github/workflows/build-images.yaml",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "C2",
+      "severity": "BLOCKING",
+      "description": "Acceptance criterion 'Normalize-image-owner one-liner appears at most once in build-images.yaml' is not met. It appears 5 times (build-base-images:94, merge-base-images:216, build-tempest:338, merge-tempest-image:449, merge-service-images:744).",
+      "location": ".github/workflows/build-images.yaml:94,216,338,449,744",
+      "fix": "Create a dedicated normalize-owner job that outputs the lowercased owner, or use a workflow-level env variable with a github.repository_owner expression. All downstream jobs reference the single output/env instead of repeating the one-liner.",
+      "evidence": "$ grep -n 'Normalize image owner' .github/workflows/build-images.yaml\n94:      - name: Normalize image owner\n216:      - name: Normalize image owner\n338:      - name: Normalize image owner\n449:      - name: Normalize image owner\n744:      - name: Normalize image owner",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "C2",
+      "severity": "BLOCKING",
+      "description": "Acceptance criterion 'no inline run: blocks exceeding ~5 lines' is not met. There are 7 inline blocks exceeding 5 lines, including a 54-line generate-matrix block, a 19-line resolve-extra-packages block, and several 6-10 line blocks.",
+      "location": ".github/workflows/build-images.yaml (lines 525-578 generate-matrix, 606-630 extra-pkgs, 112-122 ubuntu-digest, etc.)",
+      "fix": "Extract the generate-matrix block to hack/ci-generate-build-matrix.sh. Extract resolve-extra-packages to a composite action or script. The remaining smaller blocks (ubuntu digest, tempest tags, service tags, pip extras) should be reduced to <=5 lines where possible.",
+      "evidence": "$ awk analysis:\nBlock ending at line 124: 9 lines (ubuntu digest resolve)\nBlock ending at line 351: 6 lines (tempest version resolve)\nBlock ending at line 487: 6 lines (tempest tags)\nBlock ending at line 580: 54 lines (generate-matrix)\nBlock ending at line 631: 19 lines (resolve extra packages)\nBlock ending at line 783: 6 lines (service tags)\nBlock ending at line 869: 10 lines (resolve pip extras)",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "PC3",
+      "severity": "BLOCKING",
+      "description": "Inconsistent expression injection defense across composite actions. checkout-service-source correctly uses env: blocks to pass inputs to shell (lines 36-37, 58-59, 70), but export-digest and supply-chain-attest interpolate ${{ inputs.* }} directly into run: shell commands. The same class of inputs (user-provided strings) is handled differently across sibling composite actions.",
+      "location": ".github/actions/export-digest/action.yaml:32,40-42 vs .github/actions/checkout-service-source/action.yaml:36-37",
+      "fix": "Apply env: block indirection in export-digest (lines 31-35 and 38-42) and supply-chain-attest (line 99-100) matching the checkout-service-source pattern.",
+      "evidence": "checkout-service-source (correct pattern):\n  env:\n    MATRIX_SERVICE: ${{ inputs.service }}\n    MATRIX_RELEASE: ${{ inputs.release }}\n  run: |\n    ref=$(yq \".\\\"${MATRIX_SERVICE}\\\"\" ...)\n\nexport-digest (inconsistent):\n  run: |\n    if [[ -z \"${{ inputs.digest }}\" ]]; then\n    ...\n    digest=\"${{ inputs.digest }}\"\n\nsupply-chain-attest (inconsistent):\n  run: cosign sign --yes ${{ inputs.image-name }}@${{ inputs.image-digest }}",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "DA3",
+      "severity": "MAJOR",
+      "description": "Documentation claims workflow was reduced to 'under 600 lines' but actual line count is 934.",
+      "location": "docs/reference/build-images-workflow.md:124",
+      "fix": "Change 'reducing the workflow from ~1300 lines to under 600 lines' to the actual achieved reduction (e.g., 'reducing the workflow from ~1300 lines to ~940 lines'), or fix the workflow to actually reach <600 lines first.",
+      "evidence": "docs/reference/build-images-workflow.md line 124:\n'~1300 lines to under 600 lines. All components follow the existing CC-0050 conventions'\n\nActual: $ wc -l .github/workflows/build-images.yaml\n934 .github/workflows/build-images.yaml",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "TE7",
+      "severity": "MAJOR",
+      "description": "Test thresholds do not match acceptance criteria. verify_build_images_refactor.sh tests for <1000 lines (should be <600), <=5 GITHUB_REPOSITORY_OWNER occurrences (should be <=1), and <=7 inline blocks over 5 lines (should be 0). These relaxed thresholds mean the tests pass while acceptance criteria are violated.",
+      "location": "tests/ci/verify_build_images_refactor.sh:39,65,204",
+      "fix": "After fixing the workflow to meet the actual acceptance criteria, update thresholds: line 39 change 1000 to 600, line 65 change 5 to 1, line 204 change max_allowed to 0 (or enumerate specific known exceptions).",
+      "evidence": "Line 39: if [[ \"$line_count\" -lt 1000 ]]; then  # should be 600\nLine 65: if [[ \"$count\" -le 5 ]]; then  # should be 1\nLine 204: local max_allowed=7  # should be 0",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "Q7",
+      "severity": "MAJOR",
+      "description": "Scope creep: .planwerk/features/CC-0056-implement-expand-migrate-contract-db-migration.json was deleted. This file existed on main and is unrelated to CC-0055.",
+      "location": ".planwerk/features/CC-0056-implement-expand-migrate-contract-db-migration.json",
+      "fix": "Restore the deleted file: git checkout main -- .planwerk/features/CC-0056-implement-expand-migrate-contract-db-migration.json",
+      "evidence": "$ git diff main -- .planwerk/features/CC-0056-implement-expand-migrate-contract-db-migration.json\n--- a/.planwerk/features/CC-0056-implement-expand-migrate-contract-db-migration.json\n+++ /dev/null\n(786 lines deleted)",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "PC3",
+      "severity": "MAJOR",
+      "description": "Inconsistent env-var indirection in build-images.yaml workflow run: blocks. Some blocks correctly use env: to pass GitHub Actions expressions to shell (lines 608-610 MATRIX_SERVICE/MATRIX_RELEASE, lines 855-857), while others interpolate ${{ matrix.release }}, ${{ steps.*.outputs.* }}, and ${{ github.sha }} directly into shell code (lines 345-346, 481, 777, 721, 934).",
+      "location": ".github/workflows/build-images.yaml:345,481,721,777,934",
+      "fix": "Add env: blocks to all remaining run: steps that use ${{ }} interpolation in shell code. Example for line 345: env: MATRIX_RELEASE: ${{ matrix.release }}; then use ${MATRIX_RELEASE} in the script.",
+      "evidence": "Correct (line 608-610):\n  env:\n    MATRIX_SERVICE: ${{ matrix.service }}\n    MATRIX_RELEASE: ${{ matrix.release }}\n  run: |\n    EXTRAS_FILE=\"releases/${MATRIX_RELEASE}/...\"\n\nInconsistent (line 345):\n  run: |\n    TEMPEST_VERSION=$(hack/resolve-test-ref.sh releases/${{ matrix.release }}/test-refs.yaml tempest)\n\nInconsistent (line 721):\n  run: bash tests/container-images/verify_${{ matrix.service }}.sh \"$IMAGE_REF\"",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Extract the 54-line generate-matrix inline script to hack/ci-generate-build-matrix.sh to make the biggest single-step reduction toward the <600 line target",
+    "Add SPDX headers to pre-existing composite actions (derive-service-tags, platform-pair) — done in this PR, which is nice but should be noted as out-of-scope cleanup",
+    "Consider adding a workflow_call trigger to composite actions for reusability by other workflows",
+    "The ci-merge-manifest.sh uses printf with ${IMAGE} as format string (SC2059 suppressed). While IMAGE is repository-controlled, consider using printf '%s' explicitly for safety"
+  ],
+  "next_steps": [
+    "Fix BLOCKING: Reduce workflow to <600 lines by extracting generate-matrix, normalize-owner, and remaining large inline blocks",
+    "Fix BLOCKING: Consolidate normalize-image-owner to appear at most once (dedicated job or workflow env)",
+    "Fix BLOCKING: Apply env-var indirection consistently in export-digest and supply-chain-attest composite actions",
+    "Fix MAJOR: Update docs to reflect actual line count or fix workflow first",
+    "Fix MAJOR: Update test thresholds to match acceptance criteria",
+    "Fix MAJOR: Restore deleted CC-0056 feature file",
+    "Fix MAJOR: Apply env-var indirection to remaining workflow run: blocks"
+  ],
+  "detected_patterns": [
+    {
+      "name": "Composite action with SPDX header, feature ID, and SHA-pinned external actions",
+      "component": ".github/actions/*/action.yaml",
+      "category": "configuration",
+      "applies_when": "Adding a new reusable composite GitHub Action to the repository that encapsulates a sequence of CI steps",
+      "description": "All composite actions follow a consistent structure: (1) SPDX Apache-2.0 header, (2) # CC-NNNN comment with feature ID, (3) name and description fields, (4) inputs with required/default specification, (5) optional outputs, (6) runs: using: composite with steps. All external uses: references are SHA-pinned with version comments (@sha # vN). All run: steps have explicit shell: bash. Inputs passed to shell commands use env: block indirection to prevent expression injection.",
+      "examples": [
+        {
+          "location": ".github/actions/checkout-service-source/action.yaml:1-44",
+          "code": "# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company\n#\n# SPDX-License-Identifier: Apache-2.0\n\n# CC-0055: Composite action encapsulating the duplicated source checkout\n# sequence shared by build-service-images and test-service-images jobs.\n\nname: Checkout service source\ndescription: >\n  Resolve the upstream source ref for an OpenStack service, check out the\n  repository, apply any patches, and apply constraint overrides.\n\ninputs:\n  service:\n    description: OpenStack service name (e.g. keystone)\n    required: true\n  release:\n    description: Release directory name (e.g. 2025.2)\n    required: true\n\noutputs:\n  source-ref:\n    description: The resolved version string from source-refs.yaml\n    value: ${{ steps.source-ref.outputs.source-ref }}\n\nruns:\n  using: composite\n  steps:\n    - name: Install yq\n      uses: mikefarah/yq@b534aa9ee5d38001fba3cd8fe254a037e4847b37 # v4.45.4\n\n    - name: Resolve source ref\n      id: source-ref\n      shell: bash\n      env:\n        MATRIX_SERVICE: ${{ inputs.service }}\n        MATRIX_RELEASE: ${{ inputs.release }}\n      run: |\n        ref=$(yq \".\\\"${MATRIX_SERVICE}\\\"\" \"releases/${MATRIX_RELEASE}/source-refs.yaml\")\n        if [ -z \"$ref\" ] || [ \"$ref\" = \"null\" ]; then\n          echo \"::error::No source-ref found for '${MATRIX_SERVICE}' in releases/${MATRIX_RELEASE}/source-refs.yaml\"\n          exit 1\n        fi\n        echo \"source-ref=$ref\" >> \"$GITHUB_OUTPUT\""
+        },
+        {
+          "location": ".github/actions/setup-docker-registry/action.yaml:1-44",
+          "code": "# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company\n#\n# SPDX-License-Identifier: Apache-2.0\n\n# CC-0055: Composite action encapsulating the Docker buildx + registry login +\n# cosign installation sequence shared across build-images workflow jobs.\n\nname: Setup Docker registry\ndescription: >\n  Configure Docker Buildx, authenticate to a container registry, and\n  optionally install cosign for image signing.\n\ninputs:\n  registry:\n    description: Container registry URL\n    required: false\n    default: ghcr.io\n  username:\n    description: Registry username\n    required: true\n  password:\n    description: Registry password/token\n    required: true\n  install-cosign:\n    description: Whether to install cosign\n    required: false\n    default: 'true'\n\nruns:\n  using: composite\n  steps:\n    - name: Set up Docker Buildx\n      uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4\n\n    - name: Log in to container registry\n      uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4\n      with:\n        registry: ${{ inputs.registry }}\n        username: ${{ inputs.username }}\n        password: ${{ inputs.password }}\n\n    - name: Install cosign\n      if: inputs.install-cosign != 'false'\n      uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4"
+        }
+      ]
+    },
+    {
+      "name": "Workflow-to-script env-var bridge for CI script invocation",
+      "component": ".github/workflows/build-images.yaml, hack/ci-*.sh",
+      "category": "service-structure",
+      "applies_when": "Invoking a hack/ci-*.sh script from a GitHub Actions workflow step where the script needs GitHub Actions context values",
+      "description": "When a workflow step invokes a hack/ci-*.sh script, all GitHub Actions context values (${{ }}) are passed via the step's env: block, never interpolated into the run: command. The script reads these via ${VAR:?message} for required vars and ${VAR:-default} for optional vars. This extends the existing 'CI script extraction with env-var interface' pattern to the build-images workflow specifically, covering IMAGE, DIGEST_DIR, TAGS, INSPECT_TAG for ci-merge-manifest.sh and SERVICE_NAME, SERVICE_VERSION, INSTALL_SPEC, VENV_BUILDER_IMAGE, RELEASE for ci-run-unit-tests.sh.",
+      "examples": [
+        {
+          "location": ".github/workflows/build-images.yaml:237-242",
+          "code": "      - name: Create and push python-base manifest\n        id: merge-python-base\n        env:\n          IMAGE: ghcr.io/${{ steps.meta.outputs.owner }}/python-base\n          DIGEST_DIR: /tmp/digests/python-base\n          TAGS: ghcr.io/${{ steps.meta.outputs.owner }}/python-base:latest ghcr.io/${{ steps.meta.outputs.owner }}/python-base:${{ github.sha }}\n          INSPECT_TAG: ghcr.io/${{ steps.meta.outputs.owner }}/python-base:${{ github.sha }}\n        run: hack/ci-merge-manifest.sh"
+        },
+        {
+          "location": ".github/workflows/build-images.yaml:878-889",
+          "code": "      - name: Run tests\n        env:\n          SERVICE_NAME: ${{ matrix.service }}\n          SERVICE_VERSION: ${{ steps.checkout-source.outputs.source-ref }}\n          INSTALL_SPEC: ${{ steps.pip-extras.outputs.install_spec }}\n          VENV_BUILDER_IMAGE: ${{ needs.merge-base-images.outputs.venv-builder-image }}\n          RELEASE: ${{ matrix.release }}\n          OS_TEST_DBAPI_ADMIN_CONNECTION: \"sqlite://;mysql+pymysql://root:openstack@127.0.0.1/;postgresql+psycopg2://openstack:openstack@127.0.0.1/openstack\"\n        run: hack/ci-run-unit-tests.sh"
+        }
+      ]
+    }
+  ]
+}

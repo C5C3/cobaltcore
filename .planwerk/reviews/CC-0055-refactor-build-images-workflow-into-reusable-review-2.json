@@ -1,0 +1,101 @@
+{
+  "summary": "All 8 findings from external review #1 (berendt) have been correctly addressed: B-001 (path triggers), W-001 (digest guard), W-002 (printf fix), W-003 (prepare job in diagram), W-004 (ls|wc -l replacement), W-005/W-006 (documentation of intentional patterns), I-001 (required:false for optional inputs), I-002 (defense-in-depth comment). No new bugs introduced. Tests 13/13 pass (verify_build_images_refactor.sh), 33/33 pass (verify_composite_actions.sh). Workflow is 599 lines. Two new review pattern files correctly capture lessons learned.",
+  "verdict": "APPROVED",
+  "feature_id": "CC-0055",
+  "title": "Refactor build-images workflow into reusable components",
+  "date": "2026-04-10",
+  "tests_checklist": [
+    {"item": "verify_build_images_refactor.sh passes (13/13)", "checked": true},
+    {"item": "verify_composite_actions.sh passes (33/33)", "checked": true},
+    {"item": "New Test 13 covers B-001 path trigger fix", "checked": true},
+    {"item": "Edge cases covered (empty digest, empty digest dir, missing source dir)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing CI script patterns (SPDX, set -euo pipefail, env var interface)", "checked": true},
+    {"item": "No code duplication introduced", "checked": true},
+    {"item": "Clear naming and comments", "checked": true},
+    {"item": "Functions do ONE thing", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No shell injection vectors in printf/sh -c (W-002 fixed)", "checked": true},
+    {"item": "No secrets exposed in logs or process listings", "checked": true},
+    {"item": "All external actions SHA-pinned", "checked": true},
+    {"item": "Command outputs validated before downstream use (W-001 fixed)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible — mechanical fixes only", "checked": true},
+    {"item": "Path triggers cover all file dependencies (B-001 fixed)", "checked": true},
+    {"item": "Documentation matches implementation (W-003 fixed)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No speculative additions beyond review fixes", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Empty digest fails with ::error:: before GITHUB_OUTPUT (W-001)", "checked": true},
+    {"item": "Empty digest dir fails with ::error:: before imagetools create", "checked": true},
+    {"item": "Required env vars validated with :? guards", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs validated at script entry", "checked": true},
+    {"item": "Word-splitting behavior documented for controlled inputs (W-005)", "checked": true},
+    {"item": "INSTALL_SPEC guard documented as sufficient (W-006)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Consider adding a validation step to supply-chain-attest that fails fast when scan-mode=sbom but image-digest or sbom-output-file are empty — currently GitHub Actions does not enforce required:false inputs at runtime, so a misconfigured caller would get cryptic downstream errors from anchore/sbom-action rather than a clear input validation message. Low priority since all current callers pass correct values."
+  ],
+  "next_steps": [
+    "Merge PR — all blocking, warning, and info findings from external review #1 are resolved"
+  ],
+  "detected_patterns": [],
+  "review_pattern_checks": {
+    "ci-workflow-path-triggers-must-cover-all-file-dependencies": "PASS — hack/ci-* and .github/actions/** added to both push and pull_request paths blocks (lines 18-19, 30-31). New test (Test 13) enforces this going forward.",
+    "guard-command-outputs-before-downstream-use": "PASS — digest validated non-empty before writing to GITHUB_OUTPUT (ci-merge-manifest.sh:66-69). Pattern file updated with CC-0055 occurrence.",
+    "unsanitized-shell-command-output-used-in-structured-strings": "PASS — ls|wc -l replaced with bash array glob (ci-merge-manifest.sh:33-37), eliminating platform-dependent whitespace issues.",
+    "prevent-shell-injection-in-sh-c-command-strings": "PASS — printf format-string injection fixed by using for-loop with %s specifier (ci-merge-manifest.sh:54). Variables in bash -c passed via -e env flags in ci-run-unit-tests.sh.",
+    "cross-reference-documentation-examples-against-implementation": "PASS — docs/reference/build-images-workflow.md diagram updated to include prepare job (W-003).",
+    "enforce-consistent-error-handling-pattern-across-all-test-cases": "PASS — new Test 13 follows the same PASS/FAIL counter pattern as Tests 1-12."
+  },
+  "external_review_fix_verification": {
+    "B-001_path_triggers": {
+      "status": "FIXED",
+      "evidence": "build-images.yaml lines 18-19 and 30-31 add hack/ci-* and .github/actions/** to both push and pull_request paths blocks",
+      "test_coverage": "Test 13 (test_path_triggers_include_extracted_components) verifies both patterns appear >= 2 times"
+    },
+    "W-001_empty_digest_guard": {
+      "status": "FIXED",
+      "evidence": "ci-merge-manifest.sh lines 66-69: if [[ -z \"${digest}\" ]]; then echo '::error::...'; exit 1; fi"
+    },
+    "W-002_printf_format_string": {
+      "status": "FIXED",
+      "evidence": "ci-merge-manifest.sh line 54: replaced printf \"${IMAGE}@sha256:%s\" with for-loop using printf '%s' \"${IMAGE}@sha256:${d}\""
+    },
+    "W-003_prepare_job_in_diagram": {
+      "status": "FIXED",
+      "evidence": "docs/reference/build-images-workflow.md lines 268-270: diagram shows lint-dockerfiles and prepare as parallel root nodes"
+    },
+    "W-004_ls_wc_l_replacement": {
+      "status": "FIXED",
+      "evidence": "ci-merge-manifest.sh lines 33-37: shopt -s nullglob; files=(*); if [[ ${#files[@]} -eq 0 ]]"
+    },
+    "W-005_unquoted_variables_doc": {
+      "status": "ADDRESSED",
+      "evidence": "ci-run-unit-tests.sh lines 59-62: comment documents intentional word splitting and safety justification"
+    },
+    "W-006_install_spec_guard_doc": {
+      "status": "ADDRESSED",
+      "evidence": "ci-run-unit-tests.sh lines 30-32: comment documents :? guard sufficiency and upstream behavior"
+    },
+    "I-001_required_false": {
+      "status": "FIXED",
+      "evidence": "supply-chain-attest/action.yaml lines 20-27: image-digest and sbom-output-file changed to required:false with default:''"
+    },
+    "I-002_defense_in_depth_comment": {
+      "status": "FIXED",
+      "evidence": "build-images.yaml line 292: inline comment '# defense-in-depth: matrix already excludes ARM64 on PRs'"
+    }
+  }
+}

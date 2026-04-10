@@ -1,0 +1,158 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# CC-0055: Composite action encapsulating the OCI metadata generation, Docker
+# build-push, digest export, and optional PR supply chain scan shared across
+# all image build jobs in the build-images workflow.
+
+name: Build push image
+description: >
+  Generate OCI metadata labels, build and push a container image (by digest
+  or load locally), export the digest as an artifact, and optionally run a
+  PR-mode supply chain scan and image verification.
+
+inputs:
+  image-name:
+    description: Full image name without tag (e.g. ghcr.io/c5c3/python-base)
+    required: true
+  context:
+    description: Build context path (e.g. images/python-base)
+    required: true
+  file:
+    description: Dockerfile path (empty = <context>/Dockerfile)
+    required: false
+    default: ''
+  platform:
+    description: Target platform (e.g. linux/amd64)
+    required: true
+  platform-pair:
+    description: Platform pair value for cache scope (e.g. linux-amd64)
+    required: true
+  build-args:
+    description: Build arguments (multiline)
+    required: false
+    default: ''
+  build-contexts:
+    description: Additional build contexts (multiline)
+    required: false
+    default: ''
+  labels-title:
+    description: OCI image title annotation
+    required: true
+  labels-description:
+    description: OCI image description annotation
+    required: true
+  extra-labels:
+    description: Additional labels appended after standard OCI labels (multiline)
+    required: false
+    default: ''
+  metadata-tags:
+    description: Tags configuration for docker/metadata-action (multiline)
+    required: false
+    default: ''
+  cache-scope:
+    description: Cache scope prefix
+    required: true
+  push-by-digest:
+    description: "'true' to push by digest (non-PR), 'false' to load locally (PR)"
+    required: false
+    default: 'true'
+  tags:
+    description: Image tags for docker/build-push-action
+    required: true
+  artifact-name:
+    description: Artifact name for digest export (empty = skip)
+    required: false
+    default: ''
+  digest-dir:
+    description: Directory for digest files
+    required: false
+    default: /tmp/digests
+  grype-category:
+    description: SARIF category for PR scan (empty = skip)
+    required: false
+    default: ''
+  image-ref-for-scan:
+    description: Full image ref for PR supply chain scan
+    required: false
+    default: ''
+  verify-script:
+    description: Path to verification script (empty = skip)
+    required: false
+    default: ''
+  verify-image-ref:
+    description: Image ref for verification
+    required: false
+    default: ''
+
+outputs:
+  digest:
+    description: Build output digest
+    value: ${{ steps.build.outputs.digest }}
+  labels:
+    description: Generated metadata labels
+    value: ${{ steps.meta.outputs.labels }}
+
+runs:
+  using: composite
+  steps:
+    # CC-0031: Generate OCI annotations
+    - name: Generate OCI metadata
+      id: meta
+      uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
+      with:
+        images: ${{ inputs.image-name }}
+        tags: ${{ inputs.metadata-tags }}
+        labels: |
+          org.opencontainers.image.title=${{ inputs.labels-title }}
+          org.opencontainers.image.description=${{ inputs.labels-description }}
+          org.opencontainers.image.licenses=Apache-2.0
+          org.opencontainers.image.vendor=SAP SE
+
+    - name: Build and push
+      id: build
+      uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.file || format('{0}/Dockerfile', inputs.context) }}
+        build-args: ${{ inputs.build-args }}
+        build-contexts: ${{ inputs.build-contexts }}
+        platforms: ${{ inputs.platform }}
+        load: ${{ inputs.push-by-digest == 'false' }}
+        outputs: ${{ inputs.push-by-digest == 'true' && 'type=image,push-by-digest=true,name-canonical=true,push=true' || '' }}
+        tags: ${{ inputs.tags }}
+        labels: |
+          ${{ steps.meta.outputs.labels }}
+          ${{ inputs.extra-labels }}
+        cache-from: type=gha,scope=${{ inputs.cache-scope }}-${{ inputs.platform-pair }}
+        cache-to: type=gha,mode=max,scope=${{ inputs.cache-scope }}-${{ inputs.platform-pair }}
+
+    # CC-0055: Export digest for non-PR builds (REQ-007)
+    - name: Export digest
+      if: inputs.push-by-digest == 'true' && inputs.artifact-name != ''
+      uses: ./.github/actions/export-digest
+      with:
+        digest: ${{ steps.build.outputs.digest }}
+        artifact-name: ${{ inputs.artifact-name }}
+        digest-dir: ${{ inputs.digest-dir }}
+
+    # CC-0055: Supply chain scan for PR builds (REQ-001)
+    - name: Supply chain scan (PR)
+      if: inputs.push-by-digest == 'false' && inputs.grype-category != ''
+      uses: ./.github/actions/supply-chain-attest
+      with:
+        image-name: ${{ inputs.image-name }}
+        image-digest: ''
+        sbom-output-file: ''
+        grype-category: ${{ inputs.grype-category }}
+        scan-mode: image
+        image-ref-for-scan: ${{ inputs.image-ref-for-scan }}
+
+    - name: Verify image (PR)
+      if: inputs.push-by-digest == 'false' && inputs.verify-script != ''
+      shell: bash
+      env:
+        VERIFY_SCRIPT: ${{ inputs.verify-script }}
+        IMAGE_REF: ${{ inputs.verify-image-ref }}
+      run: bash "${VERIFY_SCRIPT}" "${IMAGE_REF}"

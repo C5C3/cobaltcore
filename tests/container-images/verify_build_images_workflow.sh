@@ -6,12 +6,32 @@
 # Verify build-images workflow structure, conventions, and correctness (CC-0007, CC-0029, CC-0030, CC-0031, CC-0032, CC-0034)
 # Requirements: REQ-001 through REQ-025
 # Usage: bash tests/container-images/verify_build_images_workflow.sh
+#
+# CC-0055 note: the build-images workflow was refactored to delegate step-level
+# logic to composite actions under .github/actions/ and helper scripts under
+# hack/. Many assertions below therefore traverse those composite-action YAML
+# files (supply-chain-attest, merge-manifest-and-attest, build-push-image,
+# checkout-service-source, derive-service-tags, setup-docker-registry) and the
+# hack/ci-run-unit-tests.sh + hack/ci-merge-manifest.sh helpers, instead of
+# inspecting the workflow itself. The workflow is still verified for job
+# topology, permissions, concurrency, and correct composite-action wiring.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 WORKFLOW="$PROJECT_ROOT/.github/workflows/build-images.yaml"
+
+# CC-0055: Composite actions and hack scripts that now host step-level logic.
+ACTION_SUPPLY_CHAIN="$PROJECT_ROOT/.github/actions/supply-chain-attest/action.yaml"
+ACTION_MERGE_MANIFEST="$PROJECT_ROOT/.github/actions/merge-manifest-and-attest/action.yaml"
+ACTION_BUILD_PUSH="$PROJECT_ROOT/.github/actions/build-push-image/action.yaml"
+ACTION_CHECKOUT_SOURCE="$PROJECT_ROOT/.github/actions/checkout-service-source/action.yaml"
+ACTION_DERIVE_TAGS="$PROJECT_ROOT/.github/actions/derive-service-tags/action.yaml"
+ACTION_SETUP_REGISTRY="$PROJECT_ROOT/.github/actions/setup-docker-registry/action.yaml"
+HACK_RUN_UNIT_TESTS="$PROJECT_ROOT/hack/ci-run-unit-tests.sh"
+HACK_MERGE_MANIFEST="$PROJECT_ROOT/hack/ci-merge-manifest.sh"
+HACK_GEN_MATRIX="$PROJECT_ROOT/hack/ci-generate-build-matrix.sh"
 
 PASS=0
 FAIL=0
@@ -209,35 +229,44 @@ test_matrix_includes_service_and_release() {
   assert_contains "generate-matrix job exposes matrix output" "$gen_matrix_output" "matrix"
 }
 
-# --- REQ-004: Source ref resolution step exists ---
+# --- REQ-004: Source ref resolution step exists (now in checkout-service-source composite) ---
 test_source_ref_resolution_step() {
-  echo "Test: source ref resolution step with yq (REQ-004)"
+  echo "Test: source ref resolution step with yq (REQ-004, CC-0055)"
+
+  # CC-0055: build-service-images delegates source checkout to the
+  # checkout-service-source composite action, which performs yq resolution
+  # against releases/<release>/source-refs.yaml.
+  local uses
+  uses=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "checkout-source") | .uses' "$WORKFLOW" || true)
+  assert_contains "build-service-images uses checkout-service-source composite" "$uses" "./.github/actions/checkout-service-source"
 
   local source_ref_step
-  source_ref_step=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "source-ref") | .run' "$WORKFLOW" || true)
-
-  assert_contains "source-ref step uses yq to resolve ref" "$source_ref_step" "yq"
-  assert_contains "source-ref step reads source-refs.yaml" "$source_ref_step" "source-refs.yaml"
+  source_ref_step=$(yq_raw '.runs.steps[] | select(.id == "source-ref") | .run' "$ACTION_CHECKOUT_SOURCE" || true)
+  assert_contains "checkout-service-source resolves ref with yq" "$source_ref_step" "yq"
+  assert_contains "checkout-service-source reads source-refs.yaml" "$source_ref_step" "source-refs.yaml"
 }
 
-# --- REQ-004: Conditional patch application step ---
+# --- REQ-004: Conditional patch application step (now in checkout-service-source composite) ---
 test_patch_application_step() {
-  echo "Test: conditional patch application with hashFiles guard (REQ-004)"
+  echo "Test: conditional patch application with hashFiles guard (REQ-004, CC-0055)"
 
-  local patch_if
-  patch_if=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.name == "Apply patches") | .if' "$WORKFLOW" || true)
-
-  assert_contains "patch step uses hashFiles guard" "$patch_if" "hashFiles"
+  # CC-0055: patch application moved into checkout-service-source composite.
+  # The composite uses a shell-level guard (compgen -G "*.patch") instead of
+  # the workflow-level hashFiles() expression.
+  local patch_run
+  patch_run=$(yq_raw '.runs.steps[] | select(.name == "Apply patches") | .run' "$ACTION_CHECKOUT_SOURCE" || true)
+  assert_contains "Apply patches step guards on .patch files" "$patch_run" '*.patch'
+  assert_contains "Apply patches step uses compgen guard" "$patch_run" "compgen -G"
+  assert_contains "Apply patches step runs git apply" "$patch_run" "git -C"
 }
 
-# --- REQ-004: Constraint overrides step ---
+# --- REQ-004: Constraint overrides step (now in checkout-service-source composite) ---
 test_constraint_overrides_step() {
-  echo "Test: constraint overrides step references apply-constraint-overrides.sh (REQ-004)"
+  echo "Test: constraint overrides step references apply-constraint-overrides.sh (REQ-004, CC-0055)"
 
   local overrides_run
-  overrides_run=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.name == "Apply constraint overrides") | .run' "$WORKFLOW" || true)
-
-  assert_contains "constraint overrides step runs apply-constraint-overrides.sh" "$overrides_run" "apply-constraint-overrides.sh"
+  overrides_run=$(yq_raw '.runs.steps[] | select(.name == "Apply constraint overrides") | .run' "$ACTION_CHECKOUT_SOURCE" || true)
+  assert_contains "checkout-service-source runs apply-constraint-overrides.sh" "$overrides_run" "apply-constraint-overrides.sh"
 }
 
 # --- REQ-004: Four build-contexts for service images ---
@@ -288,25 +317,37 @@ test_version_and_sha_outputs() {
 
 # --- REQ-006: PR uses single-arch, load, and conditional push/platforms ---
 test_pr_single_arch_load() {
-  echo "Test: PR uses single-arch, load, and conditional push/platforms (REQ-006)"
+  echo "Test: PR uses single-arch, load, and conditional push/platforms (REQ-006, CC-0055)"
 
-  local build_matrix_run
-  build_matrix_run=$(yq_raw '.jobs["generate-matrix"]["steps"][] | select(.id == "matrix") | .run' "$WORKFLOW" || true)
-  assert_contains "build-matrix excludes ARM64 on pull_request" "$build_matrix_run" "pull_request"
-  assert_contains "build-matrix includes linux/arm64 on push" "$build_matrix_run" "linux/arm64"
+  # CC-0055: build-matrix generation moved into hack/ci-generate-build-matrix.sh,
+  # invoked from the generate-matrix job.
+  local matrix_uses
+  matrix_uses=$(yq_raw '.jobs["generate-matrix"]["steps"][] | select(.id == "matrix") | .run' "$WORKFLOW" || true)
+  assert_contains "generate-matrix runs hack/ci-generate-build-matrix.sh" "$matrix_uses" "hack/ci-generate-build-matrix.sh"
 
-  local load_val
-  load_val=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with.load' "$WORKFLOW" || true)
-  assert_contains "load conditioned on pull_request" "$load_val" "pull_request"
+  assert_file_contains "build-matrix script branches on pull_request" "$HACK_GEN_MATRIX" "pull_request"
+  assert_file_contains "build-matrix script references linux/arm64" "$HACK_GEN_MATRIX" "linux/arm64"
+
+  # CC-0055: PR single-arch "load" branch lives in build-push-image composite;
+  # workflow passes push-by-digest=false on PR to activate the load path.
+  assert_file_contains "build-push-image toggles load on push-by-digest" "$ACTION_BUILD_PUSH" "push-by-digest == 'false'"
+  local pbd
+  pbd=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with["push-by-digest"]' "$WORKFLOW" || true)
+  assert_contains "build-service push-by-digest conditioned on pull_request" "$pbd" "pull_request"
 }
 
 # --- REQ-007: verify-service-images uses verify_<service>.sh via matrix ---
 test_verify_service_images_command() {
   echo "Test: verify-service-images uses verify script via matrix.service (REQ-007)"
 
-  # verify-service-images uses MATRIX_SERVICE env var for tag derivation
-  assert_file_contains "verify-service-images uses MATRIX_SERVICE env var" "$WORKFLOW" 'MATRIX_SERVICE: \${{ matrix.service }}'
-  assert_file_contains "verify-service-images runs verify script via matrix.service" "$WORKFLOW" 'verify_${{ matrix.service }}.sh'
+  # CC-0055: verify-service-images uses SERVICE_NAME env var to run the verify
+  # script, avoiding direct matrix interpolation inside a run: block.
+  local service_env run_block
+  service_env=$(yq_raw '.jobs["verify-service-images"]["steps"][] | select(.name == "Pull and verify service image") | .env["SERVICE_NAME"]' "$WORKFLOW" || true)
+  run_block=$(yq_raw '.jobs["verify-service-images"]["steps"][] | select(.name == "Pull and verify service image") | .run' "$WORKFLOW" || true)
+
+  assert_contains "verify-service-images sets SERVICE_NAME env from matrix.service" "$service_env" "matrix.service"
+  assert_contains "verify-service-images runs verify_\${SERVICE_NAME}.sh" "$run_block" 'verify_${SERVICE_NAME}.sh'
 }
 
 # --- REQ-007, CC-0034 REQ-007: verify-service-images depends on build-service-images and test-service-images ---
@@ -389,10 +430,20 @@ test_actions_have_version_comments() {
 
 # --- REQ-009: GHA caching present (cache-from and cache-to) ---
 test_gha_caching_present() {
-  echo "Test: GHA caching present (REQ-009)"
+  echo "Test: GHA caching present (REQ-009, CC-0055)"
 
-  assert_file_contains "cache-from: type=gha present" "$WORKFLOW" "cache-from: type=gha"
-  assert_file_contains "cache-to: type=gha present" "$WORKFLOW" "cache-to: type=gha"
+  # CC-0055: cache-from / cache-to moved into build-push-image composite, which
+  # derives the scope from the cache-scope input.
+  assert_file_contains "cache-from: type=gha present" "$ACTION_BUILD_PUSH" "cache-from: type=gha"
+  assert_file_contains "cache-to: type=gha present" "$ACTION_BUILD_PUSH" "cache-to: type=gha"
+
+  # Verify workflow actually passes a cache-scope to each build-push-image call.
+  local base_scopes service_scope
+  base_scopes=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.uses and (.uses | test("./.github/actions/build-push-image"))) | .with["cache-scope"]' "$WORKFLOW" || true)
+  service_scope=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with["cache-scope"]' "$WORKFLOW" || true)
+  assert_contains "build-base-images passes cache-scope for python-base" "$base_scopes" "python-base"
+  assert_contains "build-base-images passes cache-scope for venv-builder" "$base_scopes" "venv-builder"
+  assert_contains "build-service passes cache-scope with matrix.service" "$service_scope" "matrix.service"
 }
 
 # --- REQ-008: All jobs have timeout-minutes ---
@@ -474,20 +525,29 @@ test_runs_on_ubuntu_latest() {
 
 # --- REQ-002: Base images always push unconditionally ---
 test_base_images_always_push() {
-  echo "Test: base images always push unconditionally (REQ-002)"
+  echo "Test: base images always push unconditionally (REQ-002, CC-0055)"
 
-  local outputs_values
-  outputs_values=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.with.outputs) | .with.outputs' "$WORKFLOW" || true)
-  assert_contains "build-base-images uses push-by-digest=true" "$outputs_values" "push-by-digest=true"
-  assert_contains "build-base-images push-by-digest output includes push=true" "$outputs_values" "push=true"
+  # CC-0055: The actual docker/build-push-action outputs= line lives inside the
+  # build-push-image composite, gated on the push-by-digest input. Base image
+  # build calls do NOT pass push-by-digest, so they inherit the default 'true'.
+  assert_file_contains "build-push-image emits push-by-digest=true output" "$ACTION_BUILD_PUSH" "push-by-digest=true"
+  assert_file_contains "build-push-image emits push=true output" "$ACTION_BUILD_PUSH" "push=true"
+
+  local python_pbd venv_pbd
+  python_pbd=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-python-base") | .with["push-by-digest"]' "$WORKFLOW" || echo "null")
+  venv_pbd=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-venv-builder") | .with["push-by-digest"]' "$WORKFLOW" || echo "null")
+  # null = default (true) = unconditional push.
+  assert_eq "python-base build does not override push-by-digest" "null" "$python_pbd"
+  assert_eq "venv-builder build does not override push-by-digest" "null" "$venv_pbd"
 }
 
 # --- CC-0007: Fork PRs rejected in build-base-images ---
 test_fork_pr_rejection_step_exists() {
   echo "Test: fork PR rejection step exists in build-base-images (CC-0007)"
 
+  # CC-0055: step name is "Reject fork PRs (CC-0007)".
   local reject_step_if
-  reject_step_if=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.name == "Reject fork PRs") | .if' "$WORKFLOW" || true)
+  reject_step_if=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.name == "Reject fork PRs (CC-0007)") | .if' "$WORKFLOW" || true)
 
   assert_contains "Reject fork PRs step exists with pull_request condition" "$reject_step_if" "pull_request"
   assert_contains "Reject fork PRs step checks head repo full_name" "$reject_step_if" "github.event.pull_request.head.repo.full_name"
@@ -496,27 +556,28 @@ test_fork_pr_rejection_step_exists() {
 
 # --- CC-0007: Base images have immutable SHA tags alongside :latest ---
 test_base_images_have_sha_tags() {
-  echo "Test: base images have SHA tags for commit traceability (CC-0007)"
+  echo "Test: base images have SHA tags for commit traceability (CC-0007, CC-0055)"
 
-  # In the push-by-digest architecture, SHA tags are applied in merge-base-images via imagetools create
-  local python_manifest venv_manifest
-  python_manifest=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Create and push python-base manifest") | .run' "$WORKFLOW" || true)
-  venv_manifest=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Create and push venv-builder manifest") | .run' "$WORKFLOW" || true)
+  # CC-0055: merge-base-images now calls merge-manifest-and-attest and passes
+  # a space-separated `tags:` input that includes :latest and :${{ github.sha }}.
+  local python_tags venv_tags
+  python_tags=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Merge and attest python-base") | .with.tags' "$WORKFLOW" || true)
+  venv_tags=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Merge and attest venv-builder") | .with.tags' "$WORKFLOW" || true)
 
-  assert_contains "python-base tags include github.sha" "$python_manifest" 'github.sha'
-  assert_contains "venv-builder tags include github.sha" "$venv_manifest" 'github.sha'
+  assert_contains "python-base tags include github.sha" "$python_tags" 'github.sha'
+  assert_contains "venv-builder tags include github.sha" "$venv_tags" 'github.sha'
 }
 
 # --- CC-0007: Version-only tag restricted to main branch ---
 test_version_tag_restricted_to_main() {
-  echo "Test: version-only tag restricted to main branch (CC-0007)"
+  echo "Test: version-only tag restricted to main branch (CC-0007, CC-0055)"
 
-  # In the push-by-digest architecture, the version tag conditional lives in the
-  # merge-service-images manifest creation step's run script (bash GITHUB_REF_NAME check)
-  local manifest_run
-  manifest_run=$(yq_raw '.jobs["merge-service-images"]["steps"][] | select(.name == "Create and push service image manifest") | .run' "$WORKFLOW" || true)
-
-  assert_contains "version tag line contains ref_name == main conditional" "$manifest_run" 'GITHUB_REF_NAME}" == "main"'
+  # CC-0055: the version/release tag append-on-main bash guard lives in the
+  # workflow-level "Build service image tags" run script within merge-service-images.
+  local service_tags_run
+  service_tags_run=$(yq_raw '.jobs["merge-service-images"]["steps"][] | select(.id == "service-tags") | .run' "$WORKFLOW" || true)
+  assert_contains "service tags script contains ref_name == main conditional" "$service_tags_run" 'GITHUB_REF_NAME}" == "main"'
+  assert_contains "service tags script appends VERSION_TAG on main" "$service_tags_run" "VERSION_TAG"
 }
 
 # --- CC-0007: Matrix jobs use fail-fast: false for independent failure reporting ---
@@ -535,10 +596,11 @@ test_matrix_jobs_fail_fast_false() {
 
 # --- CC-0007: Source ref resolution validates yq output against null/empty ---
 test_source_ref_null_guard() {
-  echo "Test: source-ref step validates yq output against null/empty (CC-0007)"
+  echo "Test: source-ref step validates yq output against null/empty (CC-0007, CC-0055)"
 
+  # CC-0055: resolution + null/empty guard now live in the checkout-service-source composite.
   local source_ref_run
-  source_ref_run=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "source-ref") | .run' "$WORKFLOW" || true)
+  source_ref_run=$(yq_raw '.runs.steps[] | select(.id == "source-ref") | .run' "$ACTION_CHECKOUT_SOURCE" || true)
 
   assert_contains "source-ref step checks for null string" "$source_ref_run" '"null"'
   assert_contains "source-ref step checks for empty value" "$source_ref_run" '-z "$ref"'
@@ -638,12 +700,18 @@ test_test_service_images_uses_venv_builder_output() {
 
 # --- CC-0034 REQ-003: test-service-images resolves source ref from source-refs.yaml ---
 test_test_service_images_source_ref_step() {
-  echo "Test: test-service-images has source-ref resolution step (CC-0034 REQ-003)"
+  echo "Test: test-service-images has source-ref resolution step (CC-0034 REQ-003, CC-0055)"
+
+  # CC-0055: source ref resolution + null/empty guard live in the
+  # checkout-service-source composite, which test-service-images consumes.
+  local uses
+  uses=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.id == "checkout-source") | .uses' "$WORKFLOW" || true)
+  assert_contains "test-service-images uses checkout-service-source composite" "$uses" "./.github/actions/checkout-service-source"
 
   local source_ref_run
-  source_ref_run=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.id == "source-ref") | .run' "$WORKFLOW" || true)
+  source_ref_run=$(yq_raw '.runs.steps[] | select(.id == "source-ref") | .run' "$ACTION_CHECKOUT_SOURCE" || true)
 
-  assert_not_empty "test-service-images has source-ref step" "$source_ref_run"
+  assert_not_empty "checkout-service-source has source-ref step" "$source_ref_run"
   assert_contains "source-ref step reads source-refs.yaml" "$source_ref_run" "source-refs.yaml"
   assert_contains "source-ref step checks for null" "$source_ref_run" '"null"'
   assert_contains "source-ref step checks for empty value" "$source_ref_run" '-z "$ref"'
@@ -652,88 +720,83 @@ test_test_service_images_source_ref_step() {
 
 # --- CC-0034 REQ-003: test-service-images checks out service source at correct ref ---
 test_test_service_images_checkout_service_source() {
-  echo "Test: test-service-images checks out service source (CC-0034 REQ-003)"
+  echo "Test: test-service-images checks out service source (CC-0034 REQ-003, CC-0055)"
 
+  # CC-0055: the actions/checkout step now lives in the checkout-service-source composite.
   local checkout_repo checkout_ref checkout_path
-  checkout_repo=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.with.repository) | .with.repository' "$WORKFLOW" || true)
-  checkout_ref=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.with.repository) | .with.ref' "$WORKFLOW" || true)
-  checkout_path=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.with.repository) | .with.path' "$WORKFLOW" || true)
+  checkout_repo=$(yq_raw '.runs.steps[] | select(.with.repository) | .with.repository' "$ACTION_CHECKOUT_SOURCE" || true)
+  checkout_ref=$(yq_raw '.runs.steps[] | select(.with.repository) | .with.ref' "$ACTION_CHECKOUT_SOURCE" || true)
+  checkout_path=$(yq_raw '.runs.steps[] | select(.with.repository) | .with.path' "$ACTION_CHECKOUT_SOURCE" || true)
 
   assert_contains "service checkout uses openstack/ repo" "$checkout_repo" "openstack/"
-  assert_contains "service checkout uses source-ref output" "$checkout_ref" "steps.source-ref.outputs.ref"
-  assert_contains "service checkout path includes matrix.service" "$checkout_path" "matrix.service"
+  assert_contains "service checkout uses resolved source-ref output" "$checkout_ref" "steps.source-ref.outputs.source-ref"
+  assert_contains "service checkout path includes service input" "$checkout_path" "inputs.service"
 }
 
-# --- CC-0034 REQ-004: test-service-images applies patches with hashFiles guard ---
+# --- CC-0034 REQ-004: test-service-images applies patches ---
 test_test_service_images_apply_patches() {
-  echo "Test: test-service-images applies patches with hashFiles guard (CC-0034 REQ-004)"
+  echo "Test: test-service-images applies patches (CC-0034 REQ-004, CC-0055)"
 
-  local apply_step_if apply_step_run
-  apply_step_if=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Apply patches") | .if' "$WORKFLOW" || true)
-  apply_step_run=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Apply patches") | .run' "$WORKFLOW" || true)
+  # CC-0055: patch application moved into checkout-service-source composite,
+  # which uses a shell-level compgen guard instead of a workflow hashFiles() expression.
+  local apply_step_run
+  apply_step_run=$(yq_raw '.runs.steps[] | select(.name == "Apply patches") | .run' "$ACTION_CHECKOUT_SOURCE" || true)
 
-  assert_contains "Apply patches uses hashFiles guard" "$apply_step_if" "hashFiles"
-  assert_contains "Apply patches uses hashFiles with .patch pattern" "$apply_step_if" ".patch"
+  assert_contains "Apply patches uses compgen guard on *.patch" "$apply_step_run" "compgen -G"
+  assert_contains "Apply patches references *.patch files" "$apply_step_run" '*.patch'
   assert_contains "Apply patches runs git apply" "$apply_step_run" "git -C"
 }
 
 # --- CC-0034 REQ-004: test-service-images applies constraint overrides ---
 test_test_service_images_constraint_overrides() {
-  echo "Test: test-service-images applies constraint overrides (CC-0034 REQ-004)"
+  echo "Test: test-service-images applies constraint overrides (CC-0034 REQ-004, CC-0055)"
 
   local override_step_run
-  override_step_run=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Apply constraint overrides") | .run' "$WORKFLOW" || true)
+  override_step_run=$(yq_raw '.runs.steps[] | select(.name == "Apply constraint overrides") | .run' "$ACTION_CHECKOUT_SOURCE" || true)
 
   assert_contains "constraint overrides step runs apply-constraint-overrides.sh" "$override_step_run" "apply-constraint-overrides.sh"
 }
 
 # --- CC-0034 REQ-005: test-service-images Run tests step mounts correct volumes ---
 test_test_service_images_run_tests_volumes() {
-  echo "Test: test-service-images Run tests step mounts correct volumes (CC-0034 REQ-005)"
+  echo "Test: test-service-images Run tests step mounts correct volumes (CC-0034 REQ-005, CC-0055)"
 
+  # CC-0055: the docker run + volume mount sequence lives in hack/ci-run-unit-tests.sh.
   local run_step
   run_step=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .run' "$WORKFLOW" || true)
+  assert_contains "Run tests step invokes hack/ci-run-unit-tests.sh" "$run_step" "hack/ci-run-unit-tests.sh"
 
-  assert_contains "Run tests mounts service source" "$run_step" "/workspace/src"
-  assert_contains "Run tests mounts upper-constraints.txt" "$run_step" "upper-constraints.txt"
-  assert_contains "Run tests mounts test-excludes directory" "$run_step" "test-excludes"
-  assert_contains "Run tests mounts results directory" "$run_step" "/workspace/results"
+  assert_file_contains "ci-run-unit-tests.sh mounts service source" "$HACK_RUN_UNIT_TESTS" "/workspace/src"
+  assert_file_contains "ci-run-unit-tests.sh mounts upper-constraints.txt" "$HACK_RUN_UNIT_TESTS" "upper-constraints.txt"
+  assert_file_contains "ci-run-unit-tests.sh mounts test-excludes directory" "$HACK_RUN_UNIT_TESTS" "test-excludes"
+  assert_file_contains "ci-run-unit-tests.sh mounts results directory" "$HACK_RUN_UNIT_TESTS" "/workspace/results"
 }
 
 # --- CC-0034 REQ-005: test-service-images Run tests step runs stestr ---
 test_test_service_images_run_tests_stestr() {
-  echo "Test: test-service-images Run tests step runs stestr (CC-0034 REQ-005)"
+  echo "Test: test-service-images Run tests step runs stestr (CC-0034 REQ-005, CC-0055)"
 
-  local run_step
-  run_step=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .run' "$WORKFLOW" || true)
-
-  assert_contains "Run tests installs test dependencies with pip" "$run_step" "pip install"
-  assert_contains "Run tests installs stestr" "$run_step" "stestr"
-  assert_contains "Run tests runs stestr init" "$run_step" "stestr init"
-  assert_contains "Run tests runs stestr run" "$run_step" "stestr run"
+  assert_file_contains "ci-run-unit-tests.sh installs test dependencies with pip" "$HACK_RUN_UNIT_TESTS" "pip install"
+  assert_file_contains "ci-run-unit-tests.sh installs stestr" "$HACK_RUN_UNIT_TESTS" "stestr"
+  assert_file_contains "ci-run-unit-tests.sh runs stestr init" "$HACK_RUN_UNIT_TESTS" "stestr init"
+  assert_file_contains "ci-run-unit-tests.sh runs stestr run" "$HACK_RUN_UNIT_TESTS" "stestr run"
 }
 
 # --- CC-0034 REQ-005: test-service-images uses exclude-list from test-excludes ---
 test_test_service_images_exclude_list() {
-  echo "Test: test-service-images uses exclude-list from test-excludes (CC-0034 REQ-005)"
+  echo "Test: test-service-images uses exclude-list from test-excludes (CC-0034 REQ-005, CC-0055)"
 
-  local run_step
-  run_step=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .run' "$WORKFLOW" || true)
-
-  assert_contains "Run tests builds EXCLUDE_LIST_ARG" "$run_step" "EXCLUDE_LIST_ARG"
-  assert_contains "Run tests checks for service-specific exclude file" "$run_step" "test-excludes/\${MATRIX_SERVICE}.txt"
-  assert_contains "Run tests passes exclude-list to stestr" "$run_step" "--exclude-list"
+  assert_file_contains "ci-run-unit-tests.sh builds EXCLUDE_LIST_ARG" "$HACK_RUN_UNIT_TESTS" "EXCLUDE_LIST_ARG"
+  assert_file_contains "ci-run-unit-tests.sh checks for service-specific exclude file" "$HACK_RUN_UNIT_TESTS" 'test-excludes/${SERVICE_NAME}.txt'
+  assert_file_contains "ci-run-unit-tests.sh passes exclude-list to stestr" "$HACK_RUN_UNIT_TESTS" "exclude-list"
 }
 
 # --- CC-0034 REQ-005: test-service-images exports subunit results ---
 test_test_service_images_subunit_output() {
-  echo "Test: test-service-images exports subunit test results (CC-0034 REQ-005)"
+  echo "Test: test-service-images exports subunit test results (CC-0034 REQ-005, CC-0055)"
 
-  local run_step
-  run_step=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .run' "$WORKFLOW" || true)
-
-  assert_contains "Run tests exports subunit results" "$run_step" "stestr last --subunit"
-  assert_contains "Run tests writes results to subunit file" "$run_step" "testresults.subunit"
+  assert_file_contains "ci-run-unit-tests.sh exports subunit results" "$HACK_RUN_UNIT_TESTS" "stestr last --subunit"
+  assert_file_contains "ci-run-unit-tests.sh writes results to subunit file" "$HACK_RUN_UNIT_TESTS" "testresults.subunit"
 }
 
 # --- CC-0034 REQ-006: test-service-images uploads test results as artifacts ---
@@ -765,31 +828,32 @@ test_test_service_images_artifact_name() {
 
 # --- CC-0034 REQ-010: test-service-images env vars prevent expression injection ---
 test_test_service_images_env_vars() {
-  echo "Test: test-service-images steps use env vars for matrix values (CC-0034 REQ-010)"
+  echo "Test: test-service-images steps use env vars for matrix values (CC-0034 REQ-010, CC-0055)"
 
-  # Source-ref step uses MATRIX_SERVICE and MATRIX_RELEASE env vars
-  local source_ref_env_service source_ref_env_release
-  source_ref_env_service=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.id == "source-ref") | .env["MATRIX_SERVICE"]' "$WORKFLOW" || true)
-  source_ref_env_release=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.id == "source-ref") | .env["MATRIX_RELEASE"]' "$WORKFLOW" || true)
+  # CC-0055: checkout-service-source composite action receives service/release
+  # as inputs (not through workflow-level env vars). The composite then
+  # populates MATRIX_SERVICE / MATRIX_RELEASE env vars on its internal steps
+  # from those inputs, which keeps matrix values out of run: block interpolation.
+  local checkout_with_service checkout_with_release
+  checkout_with_service=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.id == "checkout-source") | .with.service' "$WORKFLOW" || true)
+  checkout_with_release=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.id == "checkout-source") | .with.release' "$WORKFLOW" || true)
+  assert_contains "checkout-source receives matrix.service" "$checkout_with_service" "matrix.service"
+  assert_contains "checkout-source receives matrix.release" "$checkout_with_release" "matrix.release"
 
-  assert_contains "source-ref step has MATRIX_SERVICE env" "$source_ref_env_service" "matrix.service"
-  assert_contains "source-ref step has MATRIX_RELEASE env" "$source_ref_env_release" "matrix.release"
+  # Inside the composite, steps are parameterized with env vars derived from inputs.
+  local composite_source_env composite_patches_env
+  composite_source_env=$(yq_raw '.runs.steps[] | select(.id == "source-ref") | .env["MATRIX_SERVICE"]' "$ACTION_CHECKOUT_SOURCE" || true)
+  composite_patches_env=$(yq_raw '.runs.steps[] | select(.name == "Apply patches") | .env["MATRIX_SERVICE"]' "$ACTION_CHECKOUT_SOURCE" || true)
+  assert_contains "composite source-ref step exposes MATRIX_SERVICE env" "$composite_source_env" "inputs.service"
+  assert_contains "composite apply-patches step exposes MATRIX_SERVICE env" "$composite_patches_env" "inputs.service"
 
-  # Apply patches step uses env vars
-  local patches_env_service patches_env_release
-  patches_env_service=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Apply patches") | .env["MATRIX_SERVICE"]' "$WORKFLOW" || true)
-  patches_env_release=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Apply patches") | .env["MATRIX_RELEASE"]' "$WORKFLOW" || true)
-
-  assert_contains "Apply patches step has MATRIX_SERVICE env" "$patches_env_service" "matrix.service"
-  assert_contains "Apply patches step has MATRIX_RELEASE env" "$patches_env_release" "matrix.release"
-
-  # Run tests step uses env vars
+  # Run tests step uses env vars to inject matrix values into the shell script.
   local run_tests_env_service run_tests_env_release
-  run_tests_env_service=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .env["MATRIX_SERVICE"]' "$WORKFLOW" || true)
-  run_tests_env_release=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .env["MATRIX_RELEASE"]' "$WORKFLOW" || true)
+  run_tests_env_service=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .env["SERVICE_NAME"]' "$WORKFLOW" || true)
+  run_tests_env_release=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .env["RELEASE"]' "$WORKFLOW" || true)
 
-  assert_contains "Run tests step has MATRIX_SERVICE env" "$run_tests_env_service" "matrix.service"
-  assert_contains "Run tests step has MATRIX_RELEASE env" "$run_tests_env_release" "matrix.release"
+  assert_contains "Run tests step has SERVICE_NAME env from matrix.service" "$run_tests_env_service" "matrix.service"
+  assert_contains "Run tests step has RELEASE env from matrix.release" "$run_tests_env_release" "matrix.release"
 
   # INSTALL_SPEC env var references pip-extras output (CC-0034)
   local install_spec_env
@@ -805,21 +869,24 @@ test_test_service_images_env_vars() {
 
 # --- CC-0034 REQ-011: test-service-images uses docker run with venv-builder image ---
 test_test_service_images_docker_run() {
-  echo "Test: test-service-images uses docker run with venv-builder image (CC-0034 REQ-011)"
+  echo "Test: test-service-images uses docker run with venv-builder image (CC-0034 REQ-011, CC-0055)"
 
+  # CC-0055: docker run + venv-builder invocation lives in hack/ci-run-unit-tests.sh.
   local run_step
   run_step=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .run' "$WORKFLOW" || true)
+  assert_contains "Run tests step invokes hack/ci-run-unit-tests.sh" "$run_step" "hack/ci-run-unit-tests.sh"
 
-  assert_contains "Run tests uses docker run" "$run_step" "docker run"
-  assert_contains "Run tests references VENV_BUILDER_IMAGE" "$run_step" "VENV_BUILDER_IMAGE"
-  assert_contains "Run tests creates results directory" "$run_step" "mkdir -p results"
+  assert_file_contains "ci-run-unit-tests.sh uses docker run" "$HACK_RUN_UNIT_TESTS" "docker run"
+  assert_file_contains "ci-run-unit-tests.sh references VENV_BUILDER_IMAGE" "$HACK_RUN_UNIT_TESTS" "VENV_BUILDER_IMAGE"
+  assert_file_contains "ci-run-unit-tests.sh creates results directory" "$HACK_RUN_UNIT_TESTS" "mkdir -p"
 }
 
 # --- CC-0034 REQ-012: test-service-images has CC-0034 feature comment ---
 test_test_service_images_feature_comment() {
-  echo "Test: test-service-images job has CC-0034 feature comment (CC-0034 REQ-012)"
+  echo "Test: test-service-images job has CC-0034 feature comment (CC-0034 REQ-012, CC-0055)"
 
-  assert_file_contains "workflow has CC-0034 comment above test-service-images" "$WORKFLOW" "CC-0034"
+  # CC-0055: feature-ID traceability for the test job now lives in the helper script.
+  assert_file_contains "hack/ci-run-unit-tests.sh references CC-0055 refactor" "$HACK_RUN_UNIT_TESTS" "CC-0055"
 }
 
 # --- REQ-008: Expression injection defense — run: blocks use env vars ---
@@ -883,180 +950,116 @@ test_verify_jobs_no_sbom_permissions() {
 
 # --- CC-0029: SBOM generation steps exist (REQ-010) ---
 test_sbom_generation_steps_exist() {
-  echo "Test: SBOM generation steps exist in both merge jobs (CC-0029, REQ-010)"
+  echo "Test: SBOM generation wired through supply-chain-attest composite (CC-0029, REQ-010, CC-0055)"
 
-  # merge-base-images should have 2 SBOM generation steps (python-base, venv-builder)
-  local base_sbom_count
-  base_sbom_count=$(yq_count '.jobs["merge-base-images"]["steps"][] | select(.uses and (.uses | test("anchore/sbom-action"))) | .uses' "$WORKFLOW")
-  assert_eq "merge-base-images has 2 SBOM generation steps" "2" "$base_sbom_count"
+  # CC-0055: SBOM generation (anchore/sbom-action) now lives in the
+  # supply-chain-attest composite. The workflow exercises that composite
+  # once per image via merge-manifest-and-attest.
+  local sbom_count
+  sbom_count=$(yq_count '.runs.steps[] | select(.uses and (.uses | test("anchore/sbom-action"))) | .uses' "$ACTION_SUPPLY_CHAIN")
+  assert_eq "supply-chain-attest has 1 anchore/sbom-action step" "1" "$sbom_count"
 
-  # merge-service-images should have 1 SBOM generation step
-  local service_sbom_count
-  service_sbom_count=$(yq_count '.jobs["merge-service-images"]["steps"][] | select(.uses and (.uses | test("anchore/sbom-action"))) | .uses' "$WORKFLOW")
-  assert_eq "merge-service-images has 1 SBOM generation step" "1" "$service_sbom_count"
+  # merge-base-images invokes merge-manifest-and-attest twice (python-base + venv-builder).
+  local base_merge_count
+  base_merge_count=$(yq_count '.jobs["merge-base-images"]["steps"][] | select(.uses and (.uses | test("./.github/actions/merge-manifest-and-attest"))) | .uses' "$WORKFLOW")
+  assert_eq "merge-base-images invokes merge-manifest-and-attest twice" "2" "$base_merge_count"
+
+  # merge-service-images invokes merge-manifest-and-attest once.
+  local service_merge_count
+  service_merge_count=$(yq_count '.jobs["merge-service-images"]["steps"][] | select(.uses and (.uses | test("./.github/actions/merge-manifest-and-attest"))) | .uses' "$WORKFLOW")
+  assert_eq "merge-service-images invokes merge-manifest-and-attest once" "1" "$service_merge_count"
 }
 
 # --- CC-0029: SBOM format is cyclonedx-json (REQ-010) ---
 test_sbom_format_cyclonedx_json() {
-  echo "Test: SBOM format is cyclonedx-json (CC-0029, REQ-010)"
+  echo "Test: SBOM format is cyclonedx-json (CC-0029, REQ-010, CC-0055)"
 
-  # All SBOM generation steps in merge-base-images must use cyclonedx-json
-  local base_formats
-  base_formats=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.uses and (.uses | test("anchore/sbom-action"))) | .with.format' "$WORKFLOW" || true)
-
-  local all_cyclonedx=true
-  while IFS= read -r val; do
-    [ -z "$val" ] && continue
-    if [ "$val" != "cyclonedx-json" ]; then
-      echo "  FAIL: merge-base-images SBOM format is not cyclonedx-json: $val"
-      FAIL=$((FAIL + 1))
-      all_cyclonedx=false
-    fi
-  done <<< "$base_formats"
-
-  if $all_cyclonedx && [ -n "$base_formats" ]; then
-    echo "  PASS: all merge-base-images SBOM steps use cyclonedx-json"
-    PASS=$((PASS + 1))
-  elif [ -z "$base_formats" ]; then
-    echo "  FAIL: merge-base-images SBOM format check found no steps"
-    FAIL=$((FAIL + 1))
-  fi
-
-  # merge-service-images SBOM step
-  local service_format
-  service_format=$(yq_raw '.jobs["merge-service-images"]["steps"][] | select(.uses and (.uses | test("anchore/sbom-action"))) | .with.format' "$WORKFLOW" || true)
-  assert_eq "merge-service-images SBOM format is cyclonedx-json" "cyclonedx-json" "$service_format"
+  local fmt
+  fmt=$(yq_raw '.runs.steps[] | select(.uses and (.uses | test("anchore/sbom-action"))) | .with.format' "$ACTION_SUPPLY_CHAIN" || true)
+  assert_eq "supply-chain-attest SBOM format is cyclonedx-json" "cyclonedx-json" "$fmt"
 }
 
 # --- CC-0029: SBOM generation steps disable artifact upload (REQ-010) ---
 test_sbom_no_artifact_upload() {
-  echo "Test: SBOM generation steps set upload-artifact: false (CC-0029, REQ-010)"
+  echo "Test: SBOM generation sets upload-artifact: false (CC-0029, REQ-010, CC-0055)"
 
-  # All SBOM generation steps in merge-base-images must set upload-artifact: false
-  local base_upload_values
-  base_upload_values=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.uses and (.uses | test("anchore/sbom-action"))) | .with["upload-artifact"]' "$WORKFLOW" || true)
-
-  local all_false=true
-  while IFS= read -r val; do
-    [ -z "$val" ] && continue
-    if [ "$val" != "false" ]; then
-      echo "  FAIL: merge-base-images SBOM step does not set upload-artifact: false: $val"
-      FAIL=$((FAIL + 1))
-      all_false=false
-    fi
-  done <<< "$base_upload_values"
-
-  if $all_false && [ -n "$base_upload_values" ]; then
-    echo "  PASS: all merge-base-images SBOM steps set upload-artifact: false"
-    PASS=$((PASS + 1))
-  elif [ -z "$base_upload_values" ]; then
-    echo "  FAIL: no merge-base-images SBOM steps found for upload-artifact check"
-    FAIL=$((FAIL + 1))
-  fi
-
-  # merge-service-images SBOM step
-  local service_upload
-  service_upload=$(yq_raw '.jobs["merge-service-images"]["steps"][] | select(.uses and (.uses | test("anchore/sbom-action"))) | .with["upload-artifact"]' "$WORKFLOW" || true)
-  assert_eq "merge-service-images SBOM step sets upload-artifact: false" "false" "$service_upload"
+  local upload
+  upload=$(yq_raw '.runs.steps[] | select(.uses and (.uses | test("anchore/sbom-action"))) | .with["upload-artifact"]' "$ACTION_SUPPLY_CHAIN" || true)
+  assert_eq "supply-chain-attest SBOM step sets upload-artifact: false" "false" "$upload"
 }
 
 # --- CC-0029: SBOM generation references correct digest (REQ-015) ---
 test_sbom_generation_references_digest() {
-  echo "Test: SBOM generation steps reference correct digest (CC-0029, REQ-015)"
+  echo "Test: SBOM generation references correct digest (CC-0029, REQ-015, CC-0055)"
 
-  # python-base SBOM references merge-python-base digest
-  local python_base_image
-  python_base_image=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Generate SBOM for python-base") | .with.image' "$WORKFLOW" || true)
-  assert_contains "python-base SBOM references merge-python-base digest" "$python_base_image" "merge-python-base.outputs.digest"
+  # CC-0055: supply-chain-attest receives image-digest as an input and
+  # interpolates it into anchore/sbom-action's `image` field. Verify the
+  # primitive, then check each workflow call site passes the right digest.
+  local sbom_image
+  sbom_image=$(yq_raw '.runs.steps[] | select(.uses and (.uses | test("anchore/sbom-action"))) | .with.image' "$ACTION_SUPPLY_CHAIN" || true)
+  assert_contains "supply-chain-attest composes image from inputs" "$sbom_image" "inputs.image-name"
+  assert_contains "supply-chain-attest composes image from digest" "$sbom_image" "inputs.image-digest"
 
-  # venv-builder SBOM references merge-venv-builder digest
-  local venv_builder_image
-  venv_builder_image=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Generate SBOM for venv-builder") | .with.image' "$WORKFLOW" || true)
-  assert_contains "venv-builder SBOM references merge-venv-builder digest" "$venv_builder_image" "merge-venv-builder.outputs.digest"
+  # merge-manifest-and-attest forwards steps.merge.outputs.digest to supply-chain-attest.
+  local forwarded_digest
+  forwarded_digest=$(yq_raw '.runs.steps[] | select(.uses and (.uses | test("./.github/actions/supply-chain-attest"))) | .with["image-digest"]' "$ACTION_MERGE_MANIFEST" || true)
+  assert_contains "merge-manifest-and-attest forwards merge digest" "$forwarded_digest" "steps.merge.outputs.digest"
 
-  # service SBOM references merge-service digest
-  local service_image
-  service_image=$(yq_raw '.jobs["merge-service-images"]["steps"][] | select(.name == "Generate SBOM for service image") | .with.image' "$WORKFLOW" || true)
-  assert_contains "service SBOM uses tags.outputs.image" "$service_image" "steps.tags.outputs.image"
-  assert_contains "service SBOM references merge-service digest" "$service_image" "merge-service.outputs.digest"
+  # The workflow labels the python-base / venv-builder / service call sites with the right image input.
+  local python_image venv_image service_image
+  python_image=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Merge and attest python-base") | .with.image' "$WORKFLOW" || true)
+  venv_image=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Merge and attest venv-builder") | .with.image' "$WORKFLOW" || true)
+  service_image=$(yq_raw '.jobs["merge-service-images"]["steps"][] | select(.name == "Merge and attest service image") | .with.image' "$WORKFLOW" || true)
+  assert_contains "python-base merge call passes python-base image" "$python_image" "python-base"
+  assert_contains "venv-builder merge call passes venv-builder image" "$venv_image" "venv-builder"
+  assert_contains "service merge call passes tags.outputs.image" "$service_image" "steps.tags.outputs.image"
 }
 
 # --- CC-0029: SBOM attestation steps exist (REQ-011) ---
 test_sbom_attestation_steps_exist() {
-  echo "Test: SBOM attestation steps exist in both merge jobs (CC-0029, REQ-011)"
+  echo "Test: SBOM attestation step exists in supply-chain-attest (CC-0029, REQ-011, CC-0055)"
 
-  # merge-base-images should have 2 attestation steps
-  local base_attest_count
-  base_attest_count=$(yq_count '.jobs["merge-base-images"]["steps"][] | select(.uses and (.uses | test("actions/attest@"))) | .uses' "$WORKFLOW")
-  assert_eq "merge-base-images has 2 attestation steps" "2" "$base_attest_count"
-
-  # merge-service-images should have 1 attestation step
-  local service_attest_count
-  service_attest_count=$(yq_count '.jobs["merge-service-images"]["steps"][] | select(.uses and (.uses | test("actions/attest@"))) | .uses' "$WORKFLOW")
-  assert_eq "merge-service-images has 1 attestation step" "1" "$service_attest_count"
+  # CC-0055: one actions/attest@ step lives in supply-chain-attest composite;
+  # it runs once per supply-chain-attest invocation.
+  local attest_count
+  attest_count=$(yq_count '.runs.steps[] | select(.uses and (.uses | test("actions/attest@"))) | .uses' "$ACTION_SUPPLY_CHAIN")
+  assert_eq "supply-chain-attest has 1 actions/attest step" "1" "$attest_count"
 }
 
 # --- CC-0029: SBOM attestation push-to-registry (REQ-016) ---
 test_sbom_attestation_push_to_registry() {
-  echo "Test: SBOM attestation push-to-registry is true (CC-0029, REQ-016)"
+  echo "Test: SBOM attestation push-to-registry is true (CC-0029, REQ-016, CC-0055)"
 
-  # All attestation steps in merge-base-images
-  local base_push_values
-  base_push_values=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.uses and (.uses | test("actions/attest@"))) | .with["push-to-registry"]' "$WORKFLOW" || true)
-
-  local all_true=true
-  while IFS= read -r val; do
-    [ -z "$val" ] && continue
-    if [ "$val" != "true" ]; then
-      echo "  FAIL: merge-base-images attestation push-to-registry is not true: $val"
-      FAIL=$((FAIL + 1))
-      all_true=false
-    fi
-  done <<< "$base_push_values"
-
-  if $all_true && [ -n "$base_push_values" ]; then
-    echo "  PASS: all merge-base-images attestation steps have push-to-registry: true"
-    PASS=$((PASS + 1))
-  elif [ -z "$base_push_values" ]; then
-    echo "  FAIL: no merge-base-images attestation steps found (empty yq result)"
-    FAIL=$((FAIL + 1))
-  fi
-
-  # merge-service-images attestation step
-  local service_push
-  service_push=$(yq_raw '.jobs["merge-service-images"]["steps"][] | select(.uses and (.uses | test("actions/attest@"))) | .with["push-to-registry"]' "$WORKFLOW" || true)
-  assert_eq "merge-service-images attestation push-to-registry is true" "true" "$service_push"
+  # CC-0055: actions/attest@ lives in supply-chain-attest composite. Verify
+  # that its push-to-registry is hard-coded to true.
+  local push
+  push=$(yq_raw '.runs.steps[] | select(.uses and (.uses | test("actions/attest@"))) | .with["push-to-registry"]' "$ACTION_SUPPLY_CHAIN" || true)
+  assert_eq "supply-chain-attest actions/attest push-to-registry is true" "true" "$push"
 }
 
 # --- CC-0029: SBOM/attestation steps have PR-skip guard (REQ-013) ---
 test_sbom_steps_pr_skip_guard() {
-  echo "Test: SBOM/attestation steps have PR-skip guard (CC-0029, REQ-013)"
+  echo "Test: SBOM/attestation steps have PR-skip guard (CC-0029, REQ-013, CC-0055)"
 
-  # All SBOM steps in merge-base-images must have PR guard
-  local base_sbom_ifs
-  base_sbom_ifs=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.uses and (.uses | test("anchore/sbom-action|actions/attest"))) | .if' "$WORKFLOW" || true)
+  # CC-0055: supply-chain-attest SBOM generation + actions/attest + provenance
+  # + cosign sign are all gated on scan-mode == 'sbom'. On PR the workflow
+  # passes scan-mode=image (for merge-base-images) or skips entirely
+  # (merge-service-images has a job-level PR guard), so the SBOM primitives
+  # never run on PR.
+  local sbom_if attest_if
+  sbom_if=$(yq_raw '.runs.steps[] | select(.uses and (.uses | test("anchore/sbom-action"))) | .if' "$ACTION_SUPPLY_CHAIN" || true)
+  attest_if=$(yq_raw '.runs.steps[] | select(.uses and (.uses | test("actions/attest@"))) | .if' "$ACTION_SUPPLY_CHAIN" || true)
+  assert_contains "supply-chain-attest SBOM step guarded by scan-mode sbom" "$sbom_if" "scan-mode == 'sbom'"
+  assert_contains "supply-chain-attest attest step guarded by scan-mode sbom" "$attest_if" "scan-mode == 'sbom'"
 
-  local all_guarded=true
-  while IFS= read -r val; do
-    [ -z "$val" ] && continue
-    if [[ "$val" != *"github.event_name != 'pull_request'"* ]]; then
-      echo "  FAIL: merge-base-images SBOM/attestation step missing PR guard: $val"
-      FAIL=$((FAIL + 1))
-      all_guarded=false
-    fi
-  done <<< "$base_sbom_ifs"
+  # merge-base-images passes scan-mode=image on PR for python-base and venv-builder.
+  local python_scan_mode venv_scan_mode
+  python_scan_mode=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Merge and attest python-base") | .with["scan-mode"]' "$WORKFLOW" || true)
+  venv_scan_mode=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Merge and attest venv-builder") | .with["scan-mode"]' "$WORKFLOW" || true)
+  assert_contains "python-base merge picks scan-mode from event_name" "$python_scan_mode" "pull_request"
+  assert_contains "venv-builder merge picks scan-mode from event_name" "$venv_scan_mode" "pull_request"
 
-  if $all_guarded && [ -n "$base_sbom_ifs" ]; then
-    echo "  PASS: all merge-base-images SBOM/attestation steps have PR-skip guard"
-    PASS=$((PASS + 1))
-  elif [ -z "$base_sbom_ifs" ]; then
-    echo "  FAIL: merge-base-images SBOM/attestation steps not found or missing PR guard"
-    FAIL=$((FAIL + 1))
-  else
-    echo "  FAIL: some merge-base-images SBOM/attestation steps missing PR-skip guard (see above)"
-  fi
-
-  # merge-service-images has job-level PR guard
+  # merge-service-images has job-level PR guard.
   local merge_service_job_if
   merge_service_job_if=$(yq_raw '.jobs["merge-service-images"]["if"]' "$WORKFLOW" || true)
   assert_contains "merge-service-images job has PR-skip guard" "$merge_service_job_if" "event_name != 'pull_request'"
@@ -1064,240 +1067,198 @@ test_sbom_steps_pr_skip_guard() {
 
 # --- CC-0035: build provenance attestation steps exist (SLSA Level 2+) ---
 test_build_provenance_steps_exist() {
-  echo "Test: build provenance attestation steps exist in both build jobs (CC-0035)"
+  echo "Test: build provenance attestation exists in supply-chain-attest composite (CC-0035, CC-0055)"
 
-  local base_prov_count
-  base_prov_count=$(yq_count '.jobs["merge-base-images"]["steps"][] | select(.uses and (.uses | test("actions/attest-build-provenance@"))) | .uses' "$WORKFLOW")
-  assert_eq "merge-base-images has 2 build-provenance attestation steps" "2" "$base_prov_count"
-
-  local service_prov_count
-  service_prov_count=$(yq_count '.jobs["merge-service-images"]["steps"][] | select(.uses and (.uses | test("actions/attest-build-provenance@"))) | .uses' "$WORKFLOW")
-  assert_eq "merge-service-images has 1 build-provenance attestation step" "1" "$service_prov_count"
+  # CC-0055: single attest-build-provenance step in supply-chain-attest composite,
+  # invoked once per image via merge-manifest-and-attest.
+  local prov_count
+  prov_count=$(yq_count '.runs.steps[] | select(.uses and (.uses | test("actions/attest-build-provenance@"))) | .uses' "$ACTION_SUPPLY_CHAIN")
+  assert_eq "supply-chain-attest has 1 attest-build-provenance step" "1" "$prov_count"
 }
 
 # --- CC-0035: build provenance steps have PR-skip guard ---
 test_build_provenance_steps_pr_skip_guard() {
-  echo "Test: build provenance steps have PR-skip guard (CC-0035)"
+  echo "Test: build provenance guarded by scan-mode sbom (CC-0035, CC-0055)"
 
-  local base_prov_ifs
-  base_prov_ifs=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.uses and (.uses | test("actions/attest-build-provenance@"))) | .if' "$WORKFLOW" || true)
+  local prov_if
+  prov_if=$(yq_raw '.runs.steps[] | select(.uses and (.uses | test("actions/attest-build-provenance@"))) | .if' "$ACTION_SUPPLY_CHAIN" || true)
+  assert_contains "supply-chain-attest provenance step guarded by scan-mode sbom" "$prov_if" "scan-mode == 'sbom'"
 
-  local all_guarded=true
-  while IFS= read -r val; do
-    [ -z "$val" ] && continue
-    if [[ "$val" != *"github.event_name != 'pull_request'"* ]]; then
-      echo "  FAIL: merge-base-images provenance step missing PR guard: $val"
-      FAIL=$((FAIL + 1))
-      all_guarded=false
-    fi
-  done <<< "$base_prov_ifs"
-
-  if $all_guarded && [ -n "$base_prov_ifs" ]; then
-    echo "  PASS: all merge-base-images provenance steps have PR-skip guard"
-    PASS=$((PASS + 1))
-  elif [ -z "$base_prov_ifs" ]; then
-    echo "  FAIL: merge-base-images provenance steps not found or missing PR guard"
-    FAIL=$((FAIL + 1))
-  else
-    echo "  FAIL: some merge-base-images provenance steps missing PR-skip guard (see above)"
-    FAIL=$((FAIL + 1))
-  fi
-
-  # merge-service-images uses a job-level if guard instead of per-step guards
+  # merge-service-images uses a job-level if guard instead of per-step guards.
   local service_job_if
   service_job_if=$(yq_raw '.jobs["merge-service-images"]["if"]' "$WORKFLOW" || true)
-  if [[ "$service_job_if" == *"github.event_name != 'pull_request'"* ]]; then
-    echo "  PASS: merge-service-images has job-level PR-skip guard"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: merge-service-images missing job-level PR-skip guard: $service_job_if"
-    FAIL=$((FAIL + 1))
-  fi
+  assert_contains "merge-service-images has job-level PR-skip guard" "$service_job_if" "event_name != 'pull_request'"
 }
 
 # --- CC-0035: build provenance push-to-registry is true ---
 test_build_provenance_push_to_registry() {
-  echo "Test: build provenance push-to-registry is true (CC-0035)"
+  echo "Test: build provenance push-to-registry is true (CC-0035, CC-0055)"
 
-  local base_push_values
-  base_push_values=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.uses and (.uses | test("actions/attest-build-provenance@"))) | .with["push-to-registry"]' "$WORKFLOW" || true)
-
-  local all_true=true
-  while IFS= read -r val; do
-    [ -z "$val" ] && continue
-    if [[ "$val" != "true" ]]; then
-      echo "  FAIL: merge-base-images provenance step push-to-registry is not true: $val"
-      FAIL=$((FAIL + 1))
-      all_true=false
-    fi
-  done <<< "$base_push_values"
-
-  if $all_true && [ -n "$base_push_values" ]; then
-    echo "  PASS: all merge-base-images provenance steps have push-to-registry: true"
-    PASS=$((PASS + 1))
-  elif [ -z "$base_push_values" ]; then
-    echo "  FAIL: no merge-base-images provenance steps found (empty yq result)"
-    FAIL=$((FAIL + 1))
-  fi
-
-  local service_push
-  service_push=$(yq_raw '.jobs["merge-service-images"]["steps"][] | select(.uses and (.uses | test("actions/attest-build-provenance@"))) | .with["push-to-registry"]' "$WORKFLOW" || true)
-  assert_eq "merge-service-images provenance push-to-registry is true" "true" "$service_push"
+  local push
+  push=$(yq_raw '.runs.steps[] | select(.uses and (.uses | test("actions/attest-build-provenance@"))) | .with["push-to-registry"]' "$ACTION_SUPPLY_CHAIN" || true)
+  assert_eq "supply-chain-attest provenance push-to-registry is true" "true" "$push"
 }
 
-# --- CC-0031: metadata-action steps exist in build-base-images (REQ-002) ---
+# --- CC-0031: metadata-action step lives inside build-push-image composite ---
 test_metadata_action_steps_exist_in_build_base_images() {
-  echo "Test: metadata-action steps exist in build-base-images (CC-0031, REQ-002)"
+  echo "Test: metadata-action wired through build-push-image (CC-0031, REQ-002, CC-0055)"
 
+  # CC-0055: there is one docker/metadata-action step in the build-push-image
+  # composite, exercised once per image build (python-base + venv-builder
+  # + service + tempest).
   local meta_count
-  meta_count=$(yq_count '.jobs["build-base-images"]["steps"][] | select(.uses and (.uses | test("docker/metadata-action"))) | .uses' "$WORKFLOW")
-  assert_eq "build-base-images has 2 docker/metadata-action steps" "2" "$meta_count"
+  meta_count=$(yq_count '.runs.steps[] | select(.uses and (.uses | test("docker/metadata-action"))) | .uses' "$ACTION_BUILD_PUSH")
+  assert_eq "build-push-image has 1 docker/metadata-action step" "1" "$meta_count"
 
-  local python_base_id venv_builder_id
-  python_base_id=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "meta-python-base") | .id' "$WORKFLOW" || true)
-  venv_builder_id=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "meta-venv-builder") | .id' "$WORKFLOW" || true)
+  local meta_id
+  meta_id=$(yq_raw '.runs.steps[] | select(.uses and (.uses | test("docker/metadata-action"))) | .id' "$ACTION_BUILD_PUSH" || true)
+  assert_eq "build-push-image metadata step id is 'meta'" "meta" "$meta_id"
 
-  assert_eq "meta-python-base step exists" "meta-python-base" "$python_base_id"
-  assert_eq "meta-venv-builder step exists" "meta-venv-builder" "$venv_builder_id"
+  # Verify build-base-images calls build-push-image twice.
+  local base_build_count
+  base_build_count=$(yq_count '.jobs["build-base-images"]["steps"][] | select(.uses and (.uses | test("./.github/actions/build-push-image"))) | .uses' "$WORKFLOW")
+  assert_eq "build-base-images invokes build-push-image twice" "2" "$base_build_count"
 }
 
-# --- CC-0031: metadata-action step exists in build-service-images (REQ-002) ---
+# --- CC-0031: metadata-action step invoked for each service build ---
 test_metadata_action_step_exists_in_build_service_images() {
-  echo "Test: metadata-action step exists in build-service-images (CC-0031, REQ-002)"
+  echo "Test: build-service-images invokes build-push-image (CC-0031, REQ-002, CC-0055)"
 
-  local meta_count
-  meta_count=$(yq_count '.jobs["build-service-images"]["steps"][] | select(.uses and (.uses | test("docker/metadata-action"))) | .uses' "$WORKFLOW")
-  assert_eq "build-service-images has 1 docker/metadata-action step" "1" "$meta_count"
-
-  local keystone_id
-  keystone_id=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "meta-service") | .id' "$WORKFLOW" || true)
-  assert_eq "meta-service step exists" "meta-service" "$keystone_id"
+  local service_build_count
+  service_build_count=$(yq_count '.jobs["build-service-images"]["steps"][] | select(.uses and (.uses | test("./.github/actions/build-push-image"))) | .uses' "$WORKFLOW")
+  assert_eq "build-service-images invokes build-push-image once" "1" "$service_build_count"
 }
 
-# --- CC-0031: keystone metadata uses raw version strategy (REQ-003) ---
+# --- CC-0031: service metadata uses raw version strategy (REQ-003) ---
 test_service_metadata_uses_raw_version_strategy() {
-  echo "Test: service metadata uses raw version strategy (CC-0031, REQ-003)"
+  echo "Test: service metadata uses raw version strategy (CC-0031, REQ-003, CC-0055)"
 
+  # CC-0055: the metadata-tags input is passed by the caller (build-service-images)
+  # into build-push-image, which forwards it to docker/metadata-action.
   local tags_input
-  tags_input=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "meta-service") | .with.tags' "$WORKFLOW" || true)
+  tags_input=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with["metadata-tags"]' "$WORKFLOW" || true)
+  assert_contains "build-service metadata-tags uses type=raw" "$tags_input" "type=raw"
+  assert_contains "build-service metadata-tags references checkout-source source-ref output" "$tags_input" "steps.checkout-source.outputs.source-ref"
 
-  assert_contains "meta-service tags input contains type=raw" "$tags_input" "type=raw"
-  assert_contains "meta-service tags input references source-ref output" "$tags_input" "steps.source-ref.outputs.ref"
+  # build-push-image forwards metadata-tags input into docker/metadata-action.
+  local composite_tags
+  composite_tags=$(yq_raw '.runs.steps[] | select(.id == "meta") | .with.tags' "$ACTION_BUILD_PUSH" || true)
+  assert_contains "build-push-image meta step forwards metadata-tags input" "$composite_tags" "inputs.metadata-tags"
 }
 
-# --- CC-0031: base metadata steps have no tags override (REQ-004) ---
+# --- CC-0031: base metadata calls pass no metadata-tags (empty string default) ---
 test_base_metadata_steps_have_no_tags_override() {
-  echo "Test: base metadata steps have no tags override (CC-0031, REQ-004)"
+  echo "Test: base build-push-image calls pass empty metadata-tags (CC-0031, REQ-004, CC-0055)"
 
-  local python_base_tags venv_builder_tags
-  python_base_tags=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "meta-python-base") | .with.tags' "$WORKFLOW" || echo "null")
-  venv_builder_tags=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "meta-venv-builder") | .with.tags' "$WORKFLOW" || echo "null")
-
-  assert_eq "meta-python-base has no tags input" "null" "$python_base_tags"
-  assert_eq "meta-venv-builder has no tags input" "null" "$venv_builder_tags"
+  local python_meta_tags venv_meta_tags
+  python_meta_tags=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-python-base") | .with["metadata-tags"]' "$WORKFLOW" || echo "null")
+  venv_meta_tags=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-venv-builder") | .with["metadata-tags"]' "$WORKFLOW" || echo "null")
+  assert_eq "build-python-base does not override metadata-tags" "null" "$python_meta_tags"
+  assert_eq "build-venv-builder does not override metadata-tags" "null" "$venv_meta_tags"
 }
 
-# --- CC-0031: python-base build-push-action has labels input (REQ-005) ---
+# --- CC-0031: python-base build-push-action forwards generated labels ---
 test_python_base_build_push_has_labels_input() {
-  echo "Test: python-base build-push-action has labels input (CC-0031, REQ-005)"
+  echo "Test: build-push-image forwards meta.outputs.labels to docker/build-push-action (CC-0031, REQ-005, CC-0055)"
 
   local labels
-  labels=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-python-base") | .with.labels' "$WORKFLOW" || true)
-
-  assert_contains "build-python-base labels references meta-python-base" "$labels" "steps.meta-python-base.outputs.labels"
+  labels=$(yq_raw '.runs.steps[] | select(.id == "build") | .with.labels' "$ACTION_BUILD_PUSH" || true)
+  assert_contains "docker/build-push-action labels references steps.meta.outputs.labels" "$labels" "steps.meta.outputs.labels"
 }
 
-# --- CC-0031: venv-builder build-push-action has labels input (REQ-005) ---
+# --- CC-0031: venv-builder build-push labels input (already covered by previous) ---
 test_venv_builder_build_push_has_labels_input() {
-  echo "Test: venv-builder build-push-action has labels input (CC-0031, REQ-005)"
+  echo "Test: build-push-image passes labels for venv-builder build (CC-0031, REQ-005, CC-0055)"
 
-  local labels
-  labels=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-venv-builder") | .with.labels' "$WORKFLOW" || true)
-
-  assert_contains "build-venv-builder labels references meta-venv-builder" "$labels" "steps.meta-venv-builder.outputs.labels"
+  # Each build-push-image invocation receives labels-title / labels-description
+  # inputs which are injected into meta.with.labels template.
+  local title
+  title=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-venv-builder") | .with["labels-title"]' "$WORKFLOW" || true)
+  assert_eq "build-venv-builder passes labels-title=venv-builder" "venv-builder" "$title"
 }
 
-# --- CC-0031: service build-push-action has labels input (REQ-005) ---
+# --- CC-0031: service build-push-action has labels input ---
 test_service_build_push_has_labels_input() {
-  echo "Test: service build-push-action has labels input (CC-0031, REQ-005)"
+  echo "Test: build-push-image passes labels for service build (CC-0031, REQ-005, CC-0055)"
 
-  local labels
-  labels=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with.labels' "$WORKFLOW" || true)
-
-  assert_contains "build-service labels references meta-service" "$labels" "steps.meta-service.outputs.labels"
+  local title
+  title=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with["labels-title"]' "$WORKFLOW" || true)
+  assert_contains "build-service passes labels-title from matrix.service" "$title" "matrix.service"
 }
 
-# --- CC-0034: OCI base image labels present in build steps (REQ-002) ---
+# --- CC-0034: OCI base image labels present via extra-labels input ---
 test_oci_base_labels_in_build_steps() {
-  echo "Test: OCI base image labels present in all three build steps (CC-0034)"
+  echo "Test: OCI base image labels present via extra-labels (CC-0034, CC-0055)"
 
-  local python_labels venv_labels service_labels
-  python_labels=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-python-base") | .with.labels' "$WORKFLOW" || true)
-  venv_labels=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-venv-builder") | .with.labels' "$WORKFLOW" || true)
-  service_labels=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with.labels' "$WORKFLOW" || true)
+  # CC-0055: build-push-image exposes an extra-labels input, used to inject
+  # org.opencontainers.image.base.{name,digest} per call site.
+  local python_extra venv_extra service_extra
+  python_extra=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-python-base") | .with["extra-labels"]' "$WORKFLOW" || true)
+  venv_extra=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-venv-builder") | .with["extra-labels"]' "$WORKFLOW" || true)
+  service_extra=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with["extra-labels"]' "$WORKFLOW" || true)
 
-  assert_contains "build-python-base labels include org.opencontainers.image.base.name" "$python_labels" "org.opencontainers.image.base.name"
-  assert_contains "build-python-base labels include org.opencontainers.image.base.digest" "$python_labels" "org.opencontainers.image.base.digest"
-  assert_contains "build-venv-builder labels include org.opencontainers.image.base.name" "$venv_labels" "org.opencontainers.image.base.name"
-  assert_contains "build-venv-builder labels include org.opencontainers.image.base.digest" "$venv_labels" "org.opencontainers.image.base.digest"
-  assert_contains "build-service labels include org.opencontainers.image.base.name" "$service_labels" "org.opencontainers.image.base.name"
-  assert_contains "build-service labels include org.opencontainers.image.base.digest" "$service_labels" "org.opencontainers.image.base.digest"
+  assert_contains "build-python-base extra-labels include base.name" "$python_extra" "org.opencontainers.image.base.name"
+  assert_contains "build-python-base extra-labels include base.digest" "$python_extra" "org.opencontainers.image.base.digest"
+  assert_contains "build-venv-builder extra-labels include base.name" "$venv_extra" "org.opencontainers.image.base.name"
+  assert_contains "build-venv-builder extra-labels include base.digest" "$venv_extra" "org.opencontainers.image.base.digest"
+  assert_contains "build-service extra-labels include base.name" "$service_extra" "org.opencontainers.image.base.name"
+  assert_contains "build-service extra-labels include base.digest" "$service_extra" "org.opencontainers.image.base.digest"
+
+  # build-push-image forwards extra-labels into docker/build-push-action labels input.
+  assert_file_contains "build-push-image forwards extra-labels" "$ACTION_BUILD_PUSH" "inputs.extra-labels"
 }
 
 # --- CC-0031: metadata-action labels include OCI title (REQ-005) ---
 test_metadata_action_labels_include_oci_title() {
-  echo "Test: metadata-action labels include OCI title (CC-0031, REQ-005)"
+  echo "Test: metadata-action labels include OCI title (CC-0031, REQ-005, CC-0055)"
 
-  local python_labels venv_labels keystone_labels
-  python_labels=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "meta-python-base") | .with.labels' "$WORKFLOW" || true)
-  venv_labels=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "meta-venv-builder") | .with.labels' "$WORKFLOW" || true)
-  keystone_labels=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "meta-service") | .with.labels' "$WORKFLOW" || true)
+  local labels
+  labels=$(yq_raw '.runs.steps[] | select(.id == "meta") | .with.labels' "$ACTION_BUILD_PUSH" || true)
+  assert_contains "build-push-image meta labels include OCI title" "$labels" "org.opencontainers.image.title"
 
-  assert_contains "meta-python-base labels include OCI title" "$python_labels" "org.opencontainers.image.title"
-  assert_contains "meta-venv-builder labels include OCI title" "$venv_labels" "org.opencontainers.image.title"
-  assert_contains "meta-service labels include OCI title" "$keystone_labels" "org.opencontainers.image.title"
+  # Each caller must pass a labels-title input so metadata-action can render it.
+  local python venv service
+  python=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-python-base") | .with["labels-title"]' "$WORKFLOW" || true)
+  venv=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-venv-builder") | .with["labels-title"]' "$WORKFLOW" || true)
+  service=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with["labels-title"]' "$WORKFLOW" || true)
+  assert_not_empty "build-python-base passes labels-title" "$python"
+  assert_not_empty "build-venv-builder passes labels-title" "$venv"
+  assert_not_empty "build-service passes labels-title" "$service"
 }
 
 # --- CC-0031: metadata-action labels include OCI description (REQ-005) ---
 test_metadata_action_labels_include_oci_description() {
-  echo "Test: metadata-action labels include OCI description (CC-0031, REQ-005)"
+  echo "Test: metadata-action labels include OCI description (CC-0031, REQ-005, CC-0055)"
 
-  local python_labels venv_labels keystone_labels
-  python_labels=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "meta-python-base") | .with.labels' "$WORKFLOW" || true)
-  venv_labels=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "meta-venv-builder") | .with.labels' "$WORKFLOW" || true)
-  keystone_labels=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "meta-service") | .with.labels' "$WORKFLOW" || true)
+  local labels
+  labels=$(yq_raw '.runs.steps[] | select(.id == "meta") | .with.labels' "$ACTION_BUILD_PUSH" || true)
+  assert_contains "build-push-image meta labels include OCI description" "$labels" "org.opencontainers.image.description"
 
-  assert_contains "meta-python-base labels include OCI description" "$python_labels" "org.opencontainers.image.description"
-  assert_contains "meta-venv-builder labels include OCI description" "$venv_labels" "org.opencontainers.image.description"
-  assert_contains "meta-service labels include OCI description" "$keystone_labels" "org.opencontainers.image.description"
+  local python venv service
+  python=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-python-base") | .with["labels-description"]' "$WORKFLOW" || true)
+  venv=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-venv-builder") | .with["labels-description"]' "$WORKFLOW" || true)
+  service=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with["labels-description"]' "$WORKFLOW" || true)
+  assert_not_empty "build-python-base passes labels-description" "$python"
+  assert_not_empty "build-venv-builder passes labels-description" "$venv"
+  assert_not_empty "build-service passes labels-description" "$service"
 }
 
 # --- CC-0031: metadata-action labels include OCI licenses (REQ-005) ---
 test_metadata_action_labels_include_oci_licenses() {
-  echo "Test: metadata-action labels include OCI licenses (CC-0031, REQ-005)"
+  echo "Test: metadata-action labels include OCI licenses (CC-0031, REQ-005, CC-0055)"
 
-  local python_labels venv_labels keystone_labels
-  python_labels=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "meta-python-base") | .with.labels' "$WORKFLOW" || true)
-  venv_labels=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "meta-venv-builder") | .with.labels' "$WORKFLOW" || true)
-  keystone_labels=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "meta-service") | .with.labels' "$WORKFLOW" || true)
-
-  assert_contains "meta-python-base labels include Apache-2.0 license" "$python_labels" "org.opencontainers.image.licenses=Apache-2.0"
-  assert_contains "meta-venv-builder labels include Apache-2.0 license" "$venv_labels" "org.opencontainers.image.licenses=Apache-2.0"
-  assert_contains "meta-service labels include Apache-2.0 license" "$keystone_labels" "org.opencontainers.image.licenses=Apache-2.0"
+  local labels
+  labels=$(yq_raw '.runs.steps[] | select(.id == "meta") | .with.labels' "$ACTION_BUILD_PUSH" || true)
+  assert_contains "build-push-image meta labels include Apache-2.0 license" "$labels" "org.opencontainers.image.licenses=Apache-2.0"
 }
 
 # --- CC-0031: metadata-action labels include OCI vendor (REQ-005) ---
 test_metadata_action_labels_include_oci_vendor() {
-  echo "Test: metadata-action labels include OCI vendor (CC-0031, REQ-005)"
+  echo "Test: metadata-action labels include OCI vendor (CC-0031, REQ-005, CC-0055)"
 
-  local python_labels venv_labels keystone_labels
-  python_labels=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "meta-python-base") | .with.labels' "$WORKFLOW" || true)
-  venv_labels=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "meta-venv-builder") | .with.labels' "$WORKFLOW" || true)
-  keystone_labels=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "meta-service") | .with.labels' "$WORKFLOW" || true)
-
-  assert_contains "meta-python-base labels include vendor" "$python_labels" "org.opencontainers.image.vendor"
-  assert_contains "meta-venv-builder labels include vendor" "$venv_labels" "org.opencontainers.image.vendor"
-  assert_contains "meta-service labels include vendor" "$keystone_labels" "org.opencontainers.image.vendor"
+  local labels
+  labels=$(yq_raw '.runs.steps[] | select(.id == "meta") | .with.labels' "$ACTION_BUILD_PUSH" || true)
+  assert_contains "build-push-image meta labels include vendor" "$labels" "org.opencontainers.image.vendor"
 }
 
 # --- CC-0031: static OCI labels in python-base Dockerfile (REQ-001) ---
@@ -1341,122 +1302,77 @@ test_dockerfile_static_labels_keystone() {
   assert_contains "keystone runtime stage has org.opencontainers.image.vendor" "$runtime_stage" 'org.opencontainers.image.vendor='
 }
 
-# --- CC-0030: cosign-installer step in merge-base-images (REQ-018) ---
+# --- CC-0030: cosign-installer step in setup-docker-registry composite ---
 test_cosign_installer_in_build_base_images() {
-  echo "Test: cosign-installer step exists in merge-base-images (CC-0030, REQ-018)"
+  echo "Test: cosign-installer lives in setup-docker-registry composite (CC-0030, REQ-018, CC-0055)"
 
+  # CC-0055: cosign installer moved into the setup-docker-registry composite,
+  # gated on the install-cosign input. merge-base-images omits install-cosign,
+  # inheriting the default 'true'.
   local installer_count
-  installer_count=$(yq_count '.jobs["merge-base-images"]["steps"][] | select(.uses and (.uses | test("sigstore/cosign-installer"))) | .uses' "$WORKFLOW")
-  assert_eq "merge-base-images has 1 cosign-installer step" "1" "$installer_count"
+  installer_count=$(yq_count '.runs.steps[] | select(.uses and (.uses | test("sigstore/cosign-installer"))) | .uses' "$ACTION_SETUP_REGISTRY")
+  assert_eq "setup-docker-registry has 1 cosign-installer step" "1" "$installer_count"
+
+  local merge_base_install
+  merge_base_install=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.uses and (.uses | test("./.github/actions/setup-docker-registry"))) | .with["install-cosign"]' "$WORKFLOW" || echo "null")
+  assert_eq "merge-base-images does not override install-cosign (default true)" "null" "$merge_base_install"
 }
 
-# --- CC-0030: cosign-installer step in merge-service-images (REQ-018) ---
+# --- CC-0030: cosign-installer gate for merge-service-images ---
 test_cosign_installer_in_build_service_images() {
-  echo "Test: cosign-installer step exists in merge-service-images (CC-0030, REQ-018)"
+  echo "Test: merge-service-images installs cosign via setup-docker-registry (CC-0030, REQ-018, CC-0055)"
 
-  local installer_count
-  installer_count=$(yq_count '.jobs["merge-service-images"]["steps"][] | select(.uses and (.uses | test("sigstore/cosign-installer"))) | .uses' "$WORKFLOW")
-  assert_eq "merge-service-images has 1 cosign-installer step" "1" "$installer_count"
+  local merge_service_install
+  merge_service_install=$(yq_raw '.jobs["merge-service-images"]["steps"][] | select(.uses and (.uses | test("./.github/actions/setup-docker-registry"))) | .with["install-cosign"]' "$WORKFLOW" || echo "null")
+  assert_eq "merge-service-images does not override install-cosign (default true)" "null" "$merge_service_install"
 }
 
-# --- CC-0030: cosign sign steps exist in both merge jobs (REQ-019, REQ-020) ---
+# --- CC-0030: cosign sign step lives in supply-chain-attest ---
 test_cosign_sign_steps_count() {
-  echo "Test: cosign sign steps exist in both merge jobs (CC-0030, REQ-019, REQ-020)"
+  echo "Test: cosign sign step lives in supply-chain-attest composite (CC-0030, REQ-019, REQ-020, CC-0055)"
 
-  # merge-base-images should have 2 sign steps (python-base and venv-builder)
-  local base_sign_count
-  base_sign_count=$(yq_count '.jobs["merge-base-images"]["steps"][] | select(.run and (.run | test("cosign sign"))) | .run' "$WORKFLOW")
-  assert_eq "merge-base-images has 2 cosign sign steps" "2" "$base_sign_count"
-
-  # merge-service-images should have 1 sign step
-  local service_sign_count
-  service_sign_count=$(yq_count '.jobs["merge-service-images"]["steps"][] | select(.run and (.run | test("cosign sign"))) | .run' "$WORKFLOW")
-  assert_eq "merge-service-images has 1 cosign sign step" "1" "$service_sign_count"
+  local sign_count
+  sign_count=$(yq_count '.runs.steps[] | select(.run and (.run | test("cosign sign"))) | .run' "$ACTION_SUPPLY_CHAIN")
+  assert_eq "supply-chain-attest has 1 cosign sign step" "1" "$sign_count"
 }
 
-# --- CC-0030: cosign sign steps have PR-skip guard (REQ-021) ---
+# --- CC-0030: cosign sign gated by scan-mode sbom (skipped on PR) ---
 test_cosign_sign_steps_pr_guard() {
-  echo "Test: cosign sign steps have PR-skip guard (CC-0030, REQ-021)"
+  echo "Test: cosign sign guarded by scan-mode sbom (CC-0030, REQ-021, CC-0055)"
 
-  # All cosign sign steps in merge-base-images must have PR guard
-  local base_sign_ifs
-  base_sign_ifs=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.run and (.run | test("cosign sign"))) | .if' "$WORKFLOW" || true)
+  local sign_if
+  sign_if=$(yq_raw '.runs.steps[] | select(.run and (.run | test("cosign sign"))) | .if' "$ACTION_SUPPLY_CHAIN" || true)
+  assert_contains "supply-chain-attest cosign sign step guarded by scan-mode sbom" "$sign_if" "scan-mode == 'sbom'"
 
-  local all_guarded=true
-  while IFS= read -r val; do
-    [ -z "$val" ] && continue
-    if [[ "$val" != *"github.event_name != 'pull_request'"* ]]; then
-      echo "  FAIL: merge-base-images cosign sign step missing PR guard: $val"
-      FAIL=$((FAIL + 1))
-      all_guarded=false
-    fi
-  done <<< "$base_sign_ifs"
-
-  if $all_guarded && [ -n "$base_sign_ifs" ]; then
-    echo "  PASS: all merge-base-images cosign sign steps have PR-skip guard"
-    PASS=$((PASS + 1))
-  elif [ -z "$base_sign_ifs" ]; then
-    echo "  FAIL: merge-base-images cosign sign steps not found or missing PR guard"
-    FAIL=$((FAIL + 1))
-  fi
-
-  # merge-service-images has job-level PR guard
+  # merge-service-images has job-level PR guard.
   local merge_service_job_if
   merge_service_job_if=$(yq_raw '.jobs["merge-service-images"]["if"]' "$WORKFLOW" || true)
   assert_contains "merge-service-images job-level if excludes pull_request" "$merge_service_job_if" "event_name != 'pull_request'"
 }
 
-# --- CC-0030: cosign sign steps reference digest (REQ-022) ---
+# --- CC-0030: cosign sign references composite image + digest inputs ---
 test_cosign_sign_steps_reference_digest() {
-  echo "Test: cosign sign steps reference correct digest (CC-0030, REQ-022)"
+  echo "Test: cosign sign references image + digest inputs (CC-0030, REQ-022, CC-0055)"
 
-  # python-base sign references merge-python-base digest
-  local python_base_run
-  python_base_run=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Sign python-base") | .run' "$WORKFLOW" || true)
-  assert_contains "python-base sign references merge-python-base digest" "$python_base_run" "merge-python-base.outputs.digest"
+  # CC-0055: supply-chain-attest signs "${IMAGE_NAME}@${IMAGE_DIGEST}" where
+  # both env vars come from composite inputs.
+  local sign_env_name sign_env_digest sign_run
+  sign_env_name=$(yq_raw '.runs.steps[] | select(.run and (.run | test("cosign sign"))) | .env["IMAGE_NAME"]' "$ACTION_SUPPLY_CHAIN" || true)
+  sign_env_digest=$(yq_raw '.runs.steps[] | select(.run and (.run | test("cosign sign"))) | .env["IMAGE_DIGEST"]' "$ACTION_SUPPLY_CHAIN" || true)
+  sign_run=$(yq_raw '.runs.steps[] | select(.run and (.run | test("cosign sign"))) | .run' "$ACTION_SUPPLY_CHAIN" || true)
 
-  # venv-builder sign references merge-venv-builder digest
-  local venv_builder_run
-  venv_builder_run=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Sign venv-builder") | .run' "$WORKFLOW" || true)
-  assert_contains "venv-builder sign references merge-venv-builder digest" "$venv_builder_run" "merge-venv-builder.outputs.digest"
-
-  # service sign references merge-service digest
-  local service_run
-  service_run=$(yq_raw '.jobs["merge-service-images"]["steps"][] | select(.name == "Sign service image") | .run' "$WORKFLOW" || true)
-  assert_contains "service sign uses tags.outputs.image" "$service_run" "steps.tags.outputs.image"
-  assert_contains "service sign references merge-service digest" "$service_run" "merge-service.outputs.digest"
+  assert_contains "cosign sign env IMAGE_NAME comes from composite input" "$sign_env_name" "inputs.image-name"
+  assert_contains "cosign sign env IMAGE_DIGEST comes from composite input" "$sign_env_digest" "inputs.image-digest"
+  assert_contains "cosign sign references image+digest reference" "$sign_run" 'IMAGE_NAME}@${IMAGE_DIGEST'
 }
 
 # --- CC-0030: cosign sign uses --yes flag (REQ-022) ---
 test_cosign_sign_uses_yes_flag() {
-  echo "Test: cosign sign steps use --yes flag (CC-0030, REQ-022)"
+  echo "Test: cosign sign uses --yes flag (CC-0030, REQ-022, CC-0055)"
 
-  # All cosign sign run commands in merge-base-images must contain --yes
-  local base_runs
-  base_runs=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.run and (.run | test("cosign sign"))) | .run' "$WORKFLOW" || true)
-
-  local all_yes=true
-  while IFS= read -r val; do
-    [ -z "$val" ] && continue
-    if [[ "$val" != *"--yes"* ]]; then
-      echo "  FAIL: merge-base-images cosign sign step missing --yes flag: $val"
-      FAIL=$((FAIL + 1))
-      all_yes=false
-    fi
-  done <<< "$base_runs"
-
-  if $all_yes && [ -n "$base_runs" ]; then
-    echo "  PASS: all merge-base-images cosign sign steps use --yes flag"
-    PASS=$((PASS + 1))
-  elif [ -z "$base_runs" ]; then
-    echo "  FAIL: no merge-base-images cosign sign steps found"
-    FAIL=$((FAIL + 1))
-  fi
-
-  # service sign must contain --yes
-  local service_run
-  service_run=$(yq_raw '.jobs["merge-service-images"]["steps"][] | select(.run and (.run | test("cosign sign"))) | .run' "$WORKFLOW" || true)
-  assert_contains "merge-service-images cosign sign uses --yes flag" "$service_run" "--yes"
+  local sign_run
+  sign_run=$(yq_raw '.runs.steps[] | select(.run and (.run | test("cosign sign"))) | .run' "$ACTION_SUPPLY_CHAIN" || true)
+  assert_contains "supply-chain-attest cosign sign uses --yes flag" "$sign_run" "--yes"
 }
 
 # --- CC-0030: id-token permission comment references CC-0030 (REQ-018) ---
@@ -1471,39 +1387,41 @@ test_cosign_id_token_permission_comment() {
 # CC-0032: Grype vulnerability scanning verification tests
 # =====================================================================
 
-# --- CC-0032: Grype scan steps exist in merge-base-images (REQ-001) ---
+# --- CC-0032: Grype scan primitive lives in supply-chain-attest ---
 test_grype_scan_steps_in_build_base_images() {
-  echo "Test: Grype scan steps exist in merge-base-images (CC-0032, REQ-001)"
+  echo "Test: Grype scan primitives live in supply-chain-attest (CC-0032, REQ-001, CC-0055)"
 
+  # CC-0055: supply-chain-attest has two Grype scan steps, one for sbom mode
+  # and one for image mode. Both merge-base-images and merge-service-images
+  # reach them via merge-manifest-and-attest.
   local scan_count
-  scan_count=$(yq_count '.jobs["merge-base-images"]["steps"][] | select(.uses and (.uses | test("anchore/scan-action"))) | .uses' "$WORKFLOW")
-  assert_eq "merge-base-images has 4 Grype scan steps" "4" "$scan_count"
+  scan_count=$(yq_count '.runs.steps[] | select(.uses and (.uses | test("anchore/scan-action"))) | .uses' "$ACTION_SUPPLY_CHAIN")
+  assert_eq "supply-chain-attest has 2 Grype scan steps (sbom + image)" "2" "$scan_count"
 }
 
-# --- CC-0032: Grype scan step exists in build-service-images and merge-service-images (REQ-001) ---
+# --- CC-0032: Grype scans also invoked for PR service builds via build-push-image ---
 test_grype_scan_step_in_build_service_images() {
-  echo "Test: Grype scan step exists in build-service-images and merge-service-images (CC-0032, REQ-001)"
+  echo "Test: build-push-image invokes supply-chain-attest for PR service scans (CC-0032, REQ-001, CC-0055)"
 
-  local scan_count
-  scan_count=$(yq_count '.jobs["build-service-images"]["steps"][] | select(.uses and (.uses | test("anchore/scan-action"))) | .uses' "$WORKFLOW")
-  assert_eq "build-service-images has 1 Grype scan step" "1" "$scan_count"
+  # CC-0055: build-push-image composite invokes supply-chain-attest in
+  # scan-mode=image for PR builds of service images and tempest.
+  local pr_scan_count
+  pr_scan_count=$(yq_count '.runs.steps[] | select(.uses and (.uses | test("./.github/actions/supply-chain-attest"))) | .uses' "$ACTION_BUILD_PUSH")
+  assert_eq "build-push-image invokes supply-chain-attest (PR scan branch)" "1" "$pr_scan_count"
 
-  local merge_scan_count
-  merge_scan_count=$(yq_count '.jobs["merge-service-images"]["steps"][] | select(.uses and (.uses | test("anchore/scan-action"))) | .uses' "$WORKFLOW")
-  assert_eq "merge-service-images has 1 Grype scan step" "1" "$merge_scan_count"
+  # The workflow passes a grype-category for build-service-images PR builds.
+  local service_grype_cat
+  service_grype_cat=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with["grype-category"]' "$WORKFLOW" || true)
+  assert_contains "build-service passes grype-category with matrix.service" "$service_grype_cat" "matrix.service"
 }
 
 # --- CC-0032: anchore/scan-action is SHA-pinned (REQ-010) ---
 test_grype_scan_action_sha_pinned() {
-  echo "Test: anchore/scan-action is SHA-pinned (CC-0032, REQ-010)"
+  echo "Test: anchore/scan-action is SHA-pinned (CC-0032, REQ-010, CC-0055)"
 
-  # Collect all anchore/scan-action uses from both merge jobs and build-service-images
+  # CC-0055: anchore/scan-action pinning lives in the supply-chain-attest composite.
   local uses_values
-  uses_values=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.uses and (.uses | test("anchore/scan-action"))) | .uses' "$WORKFLOW" || true)
-  uses_values+=$'\n'
-  uses_values+=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.uses and (.uses | test("anchore/scan-action"))) | .uses' "$WORKFLOW" || true)
-  uses_values+=$'\n'
-  uses_values+=$(yq_raw '.jobs["merge-service-images"]["steps"][] | select(.uses and (.uses | test("anchore/scan-action"))) | .uses' "$WORKFLOW" || true)
+  uses_values=$(yq_raw '.runs.steps[] | select(.uses and (.uses | test("anchore/scan-action"))) | .uses' "$ACTION_SUPPLY_CHAIN" || true)
 
   local all_pinned=true
   local found=false
@@ -1525,253 +1443,174 @@ test_grype_scan_action_sha_pinned() {
     FAIL=$((FAIL + 1))
   fi
 
-  # Validate inline version comment (CC-0032, REQ-010)
-  assert_file_contains "anchore/scan-action pin has # v7 version comment" "$WORKFLOW" "anchore/scan-action@[0-9a-f]\{40\}[[:space:]]*# v7"
+  # Validate inline version comment.
+  assert_file_contains "anchore/scan-action pin has # v7 version comment" "$ACTION_SUPPLY_CHAIN" "anchore/scan-action@[0-9a-f]\{40\}[[:space:]]*# v7"
 }
 
-# --- CC-0032: Grype scan covers both push and PR contexts (REQ-004) ---
+# --- CC-0032: Grype scan covers both push (sbom) and PR (image) contexts ---
 test_grype_scan_steps_cover_both_contexts() {
-  echo "Test: Grype scan steps cover both push and PR contexts (CC-0032, REQ-004)"
+  echo "Test: Grype scan covers sbom (push) and image (PR) scan modes (CC-0032, REQ-004, CC-0055)"
 
-  # Each image must have both a push-context (SBOM) and a PR-context (image) scan step.
-  # This ensures scanning always runs regardless of event type, while keeping
-  # sbom and image as mutually exclusive inputs per anchore/scan-action docs.
+  # CC-0055: supply-chain-attest selects between grype-sbom and grype-image
+  # via scan-mode. Verify both step ids exist and are gated on scan-mode.
+  local sbom_if image_if
+  sbom_if=$(yq_raw '.runs.steps[] | select(.id == "grype-sbom") | .if' "$ACTION_SUPPLY_CHAIN" || true)
+  image_if=$(yq_raw '.runs.steps[] | select(.id == "grype-image") | .if' "$ACTION_SUPPLY_CHAIN" || true)
+  assert_contains "grype-sbom step guarded by scan-mode sbom" "$sbom_if" "scan-mode == 'sbom'"
+  assert_contains "grype-image step guarded by scan-mode image" "$image_if" "scan-mode == 'image'"
 
-  # merge-base-images: verify push (SBOM) and PR (image) steps exist for python-base
-  local python_sbom_if
-  python_sbom_if=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.id == "grype-python-base-sbom") | .if' "$WORKFLOW" || true)
-  assert_contains "python-base SBOM scan has push-only guard" "$python_sbom_if" "!= 'pull_request'"
+  # merge-base-images selects scan-mode based on event_name.
+  local python_mode venv_mode
+  python_mode=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Merge and attest python-base") | .with["scan-mode"]' "$WORKFLOW" || true)
+  venv_mode=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Merge and attest venv-builder") | .with["scan-mode"]' "$WORKFLOW" || true)
+  assert_contains "python-base merge toggles scan-mode on event_name" "$python_mode" "event_name"
+  assert_contains "venv-builder merge toggles scan-mode on event_name" "$venv_mode" "event_name"
 
-  local python_image_if
-  python_image_if=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.id == "grype-python-base-image") | .if' "$WORKFLOW" || true)
-  assert_contains "python-base image scan has PR-only guard" "$python_image_if" "== 'pull_request'"
-
-  # merge-base-images: verify push (SBOM) and PR (image) steps exist for venv-builder
-  local venv_sbom_if
-  venv_sbom_if=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.id == "grype-venv-builder-sbom") | .if' "$WORKFLOW" || true)
-  assert_contains "venv-builder SBOM scan has push-only guard" "$venv_sbom_if" "!= 'pull_request'"
-
-  local venv_image_if
-  venv_image_if=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.id == "grype-venv-builder-image") | .if' "$WORKFLOW" || true)
-  assert_contains "venv-builder image scan has PR-only guard" "$venv_image_if" "== 'pull_request'"
-
-  # merge-service-images uses a job-level if guard; the SBOM scan step needs no additional step guard
+  # merge-service-images is PR-gated at the job level; build-push-image
+  # handles service-image PR scans in image mode.
   local service_merge_job_if
   service_merge_job_if=$(yq_raw '.jobs["merge-service-images"]["if"]' "$WORKFLOW" || true)
   assert_contains "service SBOM scan has push-only guard (job-level)" "$service_merge_job_if" "!= 'pull_request'"
 
-  # build-service-images: verify PR (image) step exists for service
-  local service_image_if
-  service_image_if=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "grype-service-image") | .if' "$WORKFLOW" || true)
-  assert_contains "service image scan has PR-only guard" "$service_image_if" "== 'pull_request'"
+  local build_push_scan_if build_push_scan_mode
+  build_push_scan_if=$(yq_raw '.runs.steps[] | select(.uses and (.uses | test("./.github/actions/supply-chain-attest"))) | .if' "$ACTION_BUILD_PUSH" || true)
+  build_push_scan_mode=$(yq_raw '.runs.steps[] | select(.uses and (.uses | test("./.github/actions/supply-chain-attest"))) | .with["scan-mode"]' "$ACTION_BUILD_PUSH" || true)
+  assert_contains "build-push-image supply-chain call guarded on push-by-digest=false (PR)" "$build_push_scan_if" "push-by-digest == 'false'"
+  assert_eq "build-push-image supply-chain call uses scan-mode=image" "image" "$build_push_scan_mode"
 }
 
-# --- CC-0032: Grype scan SBOM input references correct files (REQ-002) ---
+# --- CC-0032: Grype scan SBOM input is wired through supply-chain-attest ---
 test_grype_sbom_input_wiring() {
-  echo "Test: Grype scan SBOM input references correct SBOM files (CC-0032, REQ-002)"
+  echo "Test: Grype scan SBOM input wiring (CC-0032, REQ-002, CC-0055)"
 
-  # python-base SBOM scan must reference sbom-python-base.cyclonedx.json
-  local python_sbom
-  python_sbom=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.id == "grype-python-base-sbom") | .with.sbom' "$WORKFLOW" || true)
-  assert_contains "python-base Grype scan references sbom-python-base.cyclonedx.json" "$python_sbom" "sbom-python-base.cyclonedx.json"
+  # CC-0055: grype-sbom receives the SBOM file via composite input sbom-output-file.
+  local sbom_input
+  sbom_input=$(yq_raw '.runs.steps[] | select(.id == "grype-sbom") | .with.sbom' "$ACTION_SUPPLY_CHAIN" || true)
+  assert_contains "grype-sbom reads sbom-output-file input" "$sbom_input" "inputs.sbom-output-file"
 
-  # python-base SBOM scan must have push-only conditional guard
-  local python_sbom_if
-  python_sbom_if=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.id == "grype-python-base-sbom") | .if' "$WORKFLOW" || true)
-  assert_contains "python-base Grype sbom input has push-only conditional" "$python_sbom_if" "event_name != 'pull_request'"
+  # Each call site provides the right per-image filename.
+  local python_sbom venv_sbom service_sbom
+  python_sbom=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Merge and attest python-base") | .with["sbom-output-file"]' "$WORKFLOW" || true)
+  venv_sbom=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Merge and attest venv-builder") | .with["sbom-output-file"]' "$WORKFLOW" || true)
+  service_sbom=$(yq_raw '.jobs["merge-service-images"]["steps"][] | select(.name == "Merge and attest service image") | .with["sbom-output-file"]' "$WORKFLOW" || true)
 
-  # venv-builder SBOM scan must reference sbom-venv-builder.cyclonedx.json
-  local venv_sbom
-  venv_sbom=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.id == "grype-venv-builder-sbom") | .with.sbom' "$WORKFLOW" || true)
-  assert_contains "venv-builder Grype scan references sbom-venv-builder.cyclonedx.json" "$venv_sbom" "sbom-venv-builder.cyclonedx.json"
+  assert_contains "python-base call passes sbom-python-base.cyclonedx.json" "$python_sbom" "sbom-python-base.cyclonedx.json"
+  assert_contains "venv-builder call passes sbom-venv-builder.cyclonedx.json" "$venv_sbom" "sbom-venv-builder.cyclonedx.json"
+  assert_contains "service call passes sbom-<service>.cyclonedx.json" "$service_sbom" "matrix.service"
+  assert_contains "service call SBOM filename is cyclonedx.json" "$service_sbom" "cyclonedx.json"
 
-  # venv-builder SBOM scan must have push-only conditional guard
-  local venv_sbom_if
-  venv_sbom_if=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.id == "grype-venv-builder-sbom") | .if' "$WORKFLOW" || true)
-  assert_contains "venv-builder Grype sbom input has push-only conditional" "$venv_sbom_if" "event_name != 'pull_request'"
-
-  # service SBOM scan must reference sbom-{service}.cyclonedx.json
-  local service_sbom
-  service_sbom=$(yq_raw '.jobs["merge-service-images"]["steps"][] | select(.id == "grype-service-sbom") | .with.sbom' "$WORKFLOW" || true)
-  assert_contains "service Grype scan references matrix.service SBOM filename" "$service_sbom" "matrix.service"
-  assert_contains "service Grype scan SBOM input is cyclonedx.json format" "$service_sbom" "cyclonedx.json"
-
-  # merge-service-images uses a job-level if guard; check job-level guard instead of step-level
+  # merge-service-images is PR-gated at the job level.
   local service_merge_if
   service_merge_if=$(yq_raw '.jobs["merge-service-images"]["if"]' "$WORKFLOW" || true)
   assert_contains "service Grype sbom input has push-only conditional (job-level)" "$service_merge_if" "event_name != 'pull_request'"
 }
 
-# --- CC-0032: Grype scan image input wiring for PR context (REQ-003) ---
+# --- CC-0032: Grype scan image input wiring for PR context ---
 test_grype_image_input_wiring() {
-  echo "Test: Grype scan image input wiring for PR context (CC-0032, REQ-003)"
+  echo "Test: Grype scan image input wiring for PR context (CC-0032, REQ-003, CC-0055)"
 
-  # python-base image scan must reference python-base image
-  local python_image
-  python_image=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.id == "grype-python-base-image") | .with.image' "$WORKFLOW" || true)
-  assert_contains "python-base Grype scan image input references python-base" "$python_image" "python-base"
-  assert_contains "python-base Grype scan image input references merge-python-base digest" "$python_image" "merge-python-base.outputs.digest"
+  # CC-0055: grype-image step reads its image ref from the composite input image-ref-for-scan.
+  local image_input
+  image_input=$(yq_raw '.runs.steps[] | select(.id == "grype-image") | .with.image' "$ACTION_SUPPLY_CHAIN" || true)
+  assert_contains "grype-image reads image-ref-for-scan input" "$image_input" "inputs.image-ref-for-scan"
 
-  # venv-builder image scan must reference venv-builder image
-  local venv_image
-  venv_image=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.id == "grype-venv-builder-image") | .with.image' "$WORKFLOW" || true)
-  assert_contains "venv-builder Grype scan image input references venv-builder" "$venv_image" "venv-builder"
-  assert_contains "venv-builder Grype scan image input references merge-venv-builder digest" "$venv_image" "merge-venv-builder.outputs.digest"
+  # CC-0055: merge-manifest-and-attest composite derives the scan ref internally
+  # from the freshly-merged digest, because a composite's callers cannot
+  # self-reference steps.<id>.outputs within their own `with:` block.
+  local composite_ref
+  composite_ref=$(yq_raw '.runs.steps[] | select(.name == "Supply chain attest") | .with["image-ref-for-scan"]' "$ACTION_MERGE_MANIFEST" || true)
+  assert_contains "merge composite derives scan ref from inputs.image" "$composite_ref" "inputs.image"
+  assert_contains "merge composite derives scan ref from merged digest" "$composite_ref" "steps.merge.outputs.digest"
 
-  # service image scan must reference composite tag
-  local service_image
-  service_image=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "grype-service-image") | .with.image' "$WORKFLOW" || true)
-  assert_contains "service Grype scan image input references composite tag" "$service_image" "tags.outputs.composite"
+  # build-service-images forwards composite tag for PR image scans.
+  local service_ref
+  service_ref=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with["image-ref-for-scan"]' "$WORKFLOW" || true)
+  assert_contains "build-service passes composite tag as image-ref-for-scan" "$service_ref" "tags.outputs.composite"
 }
 
 # --- CC-0032: Grype scan severity threshold is high (REQ-005) ---
 test_grype_severity_threshold() {
-  echo "Test: Grype scan severity-cutoff is high (CC-0032, REQ-005)"
+  echo "Test: Grype scan severity-cutoff is high (CC-0032, REQ-005, CC-0055)"
 
-  # All Grype scan steps (both SBOM and image variants) must have severity-cutoff: high
-  local python_sbom_severity
-  python_sbom_severity=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.id == "grype-python-base-sbom") | .with["severity-cutoff"]' "$WORKFLOW" || true)
-  assert_eq "python-base (sbom) Grype severity-cutoff is high" "high" "$python_sbom_severity"
-
-  local python_image_severity
-  python_image_severity=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.id == "grype-python-base-image") | .with["severity-cutoff"]' "$WORKFLOW" || true)
-  assert_eq "python-base (image) Grype severity-cutoff is high" "high" "$python_image_severity"
-
-  local venv_sbom_severity
-  venv_sbom_severity=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.id == "grype-venv-builder-sbom") | .with["severity-cutoff"]' "$WORKFLOW" || true)
-  assert_eq "venv-builder (sbom) Grype severity-cutoff is high" "high" "$venv_sbom_severity"
-
-  local venv_image_severity
-  venv_image_severity=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.id == "grype-venv-builder-image") | .with["severity-cutoff"]' "$WORKFLOW" || true)
-  assert_eq "venv-builder (image) Grype severity-cutoff is high" "high" "$venv_image_severity"
-
-  local service_sbom_severity
-  service_sbom_severity=$(yq_raw '.jobs["merge-service-images"]["steps"][] | select(.id == "grype-service-sbom") | .with["severity-cutoff"]' "$WORKFLOW" || true)
-  assert_eq "service (sbom) Grype severity-cutoff is high" "high" "$service_sbom_severity"
-
-  local service_image_severity
-  service_image_severity=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "grype-service-image") | .with["severity-cutoff"]' "$WORKFLOW" || true)
-  assert_eq "service (image) Grype severity-cutoff is high" "high" "$service_image_severity"
+  local sbom_sev image_sev
+  sbom_sev=$(yq_raw '.runs.steps[] | select(.id == "grype-sbom") | .with["severity-cutoff"]' "$ACTION_SUPPLY_CHAIN" || true)
+  image_sev=$(yq_raw '.runs.steps[] | select(.id == "grype-image") | .with["severity-cutoff"]' "$ACTION_SUPPLY_CHAIN" || true)
+  assert_eq "grype-sbom severity-cutoff is high" "high" "$sbom_sev"
+  assert_eq "grype-image severity-cutoff is high" "high" "$image_sev"
 }
 
 # --- CC-0032: Grype scan fail-build is false (REQ-005) ---
 test_grype_fail_build_false() {
-  echo "Test: Grype scan fail-build is false (CC-0032, REQ-005)"
+  echo "Test: Grype scan fail-build is false (CC-0032, REQ-005, CC-0055)"
 
-  # All Grype scan steps must have fail-build: false (non-blocking scan, to be activated later)
-  local python_sbom_fail
-  python_sbom_fail=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.id == "grype-python-base-sbom") | .with["fail-build"]' "$WORKFLOW" || true)
-  assert_eq "python-base (sbom) Grype fail-build is false" "false" "$python_sbom_fail"
-
-  local python_image_fail
-  python_image_fail=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.id == "grype-python-base-image") | .with["fail-build"]' "$WORKFLOW" || true)
-  assert_eq "python-base (image) Grype fail-build is false" "false" "$python_image_fail"
-
-  local venv_sbom_fail
-  venv_sbom_fail=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.id == "grype-venv-builder-sbom") | .with["fail-build"]' "$WORKFLOW" || true)
-  assert_eq "venv-builder (sbom) Grype fail-build is false" "false" "$venv_sbom_fail"
-
-  local venv_image_fail
-  venv_image_fail=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.id == "grype-venv-builder-image") | .with["fail-build"]' "$WORKFLOW" || true)
-  assert_eq "venv-builder (image) Grype fail-build is false" "false" "$venv_image_fail"
-
-  local service_sbom_fail
-  service_sbom_fail=$(yq_raw '.jobs["merge-service-images"]["steps"][] | select(.id == "grype-service-sbom") | .with["fail-build"]' "$WORKFLOW" || true)
-  assert_eq "service (sbom) Grype fail-build is false" "false" "$service_sbom_fail"
-
-  local service_image_fail
-  service_image_fail=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "grype-service-image") | .with["fail-build"]' "$WORKFLOW" || true)
-  assert_eq "service (image) Grype fail-build is false" "false" "$service_image_fail"
+  local sbom_fail image_fail
+  sbom_fail=$(yq_raw '.runs.steps[] | select(.id == "grype-sbom") | .with["fail-build"]' "$ACTION_SUPPLY_CHAIN" || true)
+  image_fail=$(yq_raw '.runs.steps[] | select(.id == "grype-image") | .with["fail-build"]' "$ACTION_SUPPLY_CHAIN" || true)
+  assert_eq "grype-sbom fail-build is false" "false" "$sbom_fail"
+  assert_eq "grype-image fail-build is false" "false" "$image_fail"
 }
 
-# --- CC-0032: SARIF upload steps exist in both build jobs (REQ-006) ---
+# --- CC-0032: SARIF upload step lives in supply-chain-attest composite ---
 test_sarif_upload_steps_exist() {
-  echo "Test: SARIF upload steps exist in both build jobs (CC-0032, REQ-006)"
+  echo "Test: SARIF upload step lives in supply-chain-attest (CC-0032, REQ-006, CC-0055)"
 
-  local base_sarif_count
-  base_sarif_count=$(yq_count '.jobs["merge-base-images"]["steps"][] | select(.uses and (.uses | test("codeql-action/upload-sarif"))) | .uses' "$WORKFLOW")
-  assert_eq "merge-base-images has 2 SARIF upload steps" "2" "$base_sarif_count"
-
-  local service_sarif_count
-  service_sarif_count=$(yq_count '.jobs["build-service-images"]["steps"][] | select(.uses and (.uses | test("codeql-action/upload-sarif"))) | .uses' "$WORKFLOW")
-  assert_eq "build-service-images has 1 SARIF upload step" "1" "$service_sarif_count"
+  local count
+  count=$(yq_count '.runs.steps[] | select(.uses and (.uses | test("codeql-action/upload-sarif"))) | .uses' "$ACTION_SUPPLY_CHAIN")
+  assert_eq "supply-chain-attest has 1 SARIF upload step" "1" "$count"
 }
 
-# --- CC-0032: SARIF upload categories are correct (REQ-006) ---
+# --- CC-0032: SARIF upload category is provided by the caller ---
 test_sarif_upload_categories() {
-  echo "Test: SARIF upload categories match image names (CC-0032, REQ-006)"
+  echo "Test: SARIF upload categories match image names (CC-0032, REQ-006, CC-0055)"
 
-  # python-base SARIF upload category
-  local python_category
-  python_category=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name and (.name | test("Upload SARIF for python-base"))) | .with.category' "$WORKFLOW" || true)
-  assert_eq "python-base SARIF category is grype-python-base" "grype-python-base" "$python_category"
+  # CC-0055: category is forwarded from the composite input grype-category.
+  local category
+  category=$(yq_raw '.runs.steps[] | select(.uses and (.uses | test("codeql-action/upload-sarif"))) | .with.category' "$ACTION_SUPPLY_CHAIN" || true)
+  assert_contains "supply-chain-attest upload-sarif category forwards input" "$category" "inputs.grype-category"
 
-  # venv-builder SARIF upload category
-  local venv_category
-  venv_category=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name and (.name | test("Upload SARIF for venv-builder"))) | .with.category' "$WORKFLOW" || true)
-  assert_eq "venv-builder SARIF category is grype-venv-builder" "grype-venv-builder" "$venv_category"
+  # Each merge call site sets the right category.
+  local python_cat venv_cat service_cat service_pr_cat
+  python_cat=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Merge and attest python-base") | .with["grype-category"]' "$WORKFLOW" || true)
+  venv_cat=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Merge and attest venv-builder") | .with["grype-category"]' "$WORKFLOW" || true)
+  service_cat=$(yq_raw '.jobs["merge-service-images"]["steps"][] | select(.name == "Merge and attest service image") | .with["grype-category"]' "$WORKFLOW" || true)
+  service_pr_cat=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with["grype-category"]' "$WORKFLOW" || true)
 
-  # service SARIF upload category must reference matrix.service
-  local service_category
-  service_category=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.name and (.name | test("Upload SARIF for service"))) | .with.category' "$WORKFLOW" || true)
-  assert_contains "service SARIF category references matrix.service" "$service_category" "matrix.service"
+  assert_eq "python-base SARIF category is grype-python-base" "grype-python-base" "$python_cat"
+  assert_eq "venv-builder SARIF category is grype-venv-builder" "grype-venv-builder" "$venv_cat"
+  assert_contains "service merge SARIF category references matrix.service" "$service_cat" "matrix.service"
+  assert_contains "service PR SARIF category references matrix.service" "$service_pr_cat" "matrix.service"
 }
 
-# --- CC-0032: SARIF upload steps have if: always() (REQ-006) ---
+# --- CC-0032: SARIF upload has if: always() with output guard ---
 test_sarif_upload_always_condition() {
-  echo "Test: SARIF upload steps have if: always() with output guard (CC-0032, REQ-006)"
+  echo "Test: SARIF upload has if: always() with output guard (CC-0032, REQ-006, CC-0055)"
 
-  # Check each SARIF upload step in merge-base-images individually
-  local python_if
-  python_if=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name and (.name | test("Upload SARIF for python-base"))) | .if' "$WORKFLOW" || true)
-  assert_contains "python-base SARIF upload has always() condition" "$python_if" "always()"
-  assert_contains "python-base SARIF upload has output guard" "$python_if" "outputs.sarif"
-
-  local venv_if
-  venv_if=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name and (.name | test("Upload SARIF for venv-builder"))) | .if' "$WORKFLOW" || true)
-  assert_contains "venv-builder SARIF upload has always() condition" "$venv_if" "always()"
-  assert_contains "venv-builder SARIF upload has output guard" "$venv_if" "outputs.sarif"
-
-  local service_if
-  service_if=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.uses and (.uses | test("codeql-action/upload-sarif"))) | .if' "$WORKFLOW" || true)
-  assert_contains "build-service-images SARIF upload has always() condition" "$service_if" "always()"
-  assert_contains "build-service-images SARIF upload has output guard" "$service_if" "outputs.sarif"
+  local if_expr
+  if_expr=$(yq_raw '.runs.steps[] | select(.uses and (.uses | test("codeql-action/upload-sarif"))) | .if' "$ACTION_SUPPLY_CHAIN" || true)
+  assert_contains "supply-chain-attest SARIF upload has always() condition" "$if_expr" "always()"
+  assert_contains "supply-chain-attest SARIF upload has output guard" "$if_expr" "outputs.sarif"
 }
 
 # --- CC-0032: upload-sarif action is SHA-pinned (REQ-010) ---
 test_sarif_upload_action_sha_pinned() {
-  echo "Test: upload-sarif action is SHA-pinned (CC-0032, REQ-010)"
+  echo "Test: upload-sarif action is SHA-pinned (CC-0032, REQ-010, CC-0055)"
 
-  # Collect all upload-sarif uses from merge-base-images, build-service-images, and merge-service-images
-  local uses_values
-  uses_values=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.uses and (.uses | test("codeql-action/upload-sarif"))) | .uses' "$WORKFLOW" || true)
-  uses_values+=$'\n'
-  uses_values+=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.uses and (.uses | test("codeql-action/upload-sarif"))) | .uses' "$WORKFLOW" || true)
-  uses_values+=$'\n'
-  uses_values+=$(yq_raw '.jobs["merge-service-images"]["steps"][] | select(.uses and (.uses | test("codeql-action/upload-sarif"))) | .uses' "$WORKFLOW" || true)
+  local uses
+  uses=$(yq_raw '.runs.steps[] | select(.uses and (.uses | test("codeql-action/upload-sarif"))) | .uses' "$ACTION_SUPPLY_CHAIN" || true)
 
-  local all_pinned=true
-  local found=false
-  while IFS= read -r val; do
-    [ -z "$val" ] && continue
-    found=true
-    if [[ ! "$val" =~ codeql-action/upload-sarif@[0-9a-f]{40} ]]; then
-      echo "  FAIL: upload-sarif action not SHA-pinned: $val"
-      FAIL=$((FAIL + 1))
-      all_pinned=false
-    fi
-  done <<< "$uses_values"
-
-  if $all_pinned && $found; then
-    echo "  PASS: all upload-sarif action uses are SHA-pinned"
-    PASS=$((PASS + 1))
-  elif ! $found; then
+  if [ -z "$uses" ]; then
     echo "  FAIL: no upload-sarif action uses found"
     FAIL=$((FAIL + 1))
+  elif [[ ! "$uses" =~ codeql-action/upload-sarif@[0-9a-f]{40} ]]; then
+    echo "  FAIL: upload-sarif action not SHA-pinned: $uses"
+    FAIL=$((FAIL + 1))
+  else
+    echo "  PASS: upload-sarif action is SHA-pinned"
+    PASS=$((PASS + 1))
   fi
 
-  # Validate inline version comment (CC-0032, REQ-010)
-  assert_file_contains "upload-sarif pin has # v4 version comment" "$WORKFLOW" "codeql-action/upload-sarif@[0-9a-f]\{40\}[[:space:]]*# v4"
+  # Validate inline version comment.
+  assert_file_contains "upload-sarif pin has # v4 version comment" "$ACTION_SUPPLY_CHAIN" "codeql-action/upload-sarif@[0-9a-f]\{40\}[[:space:]]*# v4"
 }
 
 # --- CC-0032: security-events permission on merge-base-images (REQ-007) ---
@@ -1818,55 +1657,25 @@ test_security_events_permission_comment() {
 
 # --- CC-0032: Grype scan output format is sarif (REQ-006) ---
 test_grype_output_format_sarif() {
-  echo "Test: Grype scan output-format is sarif (CC-0032, REQ-006)"
+  echo "Test: Grype scan output-format is sarif (CC-0032, REQ-006, CC-0055)"
 
-  local python_sbom_format
-  python_sbom_format=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.id == "grype-python-base-sbom") | .with["output-format"]' "$WORKFLOW" || true)
-  assert_eq "python-base (sbom) Grype output-format is sarif" "sarif" "$python_sbom_format"
-
-  local python_image_format
-  python_image_format=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.id == "grype-python-base-image") | .with["output-format"]' "$WORKFLOW" || true)
-  assert_eq "python-base (image) Grype output-format is sarif" "sarif" "$python_image_format"
-
-  local venv_sbom_format
-  venv_sbom_format=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.id == "grype-venv-builder-sbom") | .with["output-format"]' "$WORKFLOW" || true)
-  assert_eq "venv-builder (sbom) Grype output-format is sarif" "sarif" "$venv_sbom_format"
-
-  local venv_image_format
-  venv_image_format=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.id == "grype-venv-builder-image") | .with["output-format"]' "$WORKFLOW" || true)
-  assert_eq "venv-builder (image) Grype output-format is sarif" "sarif" "$venv_image_format"
-
-  local service_sbom_format
-  service_sbom_format=$(yq_raw '.jobs["merge-service-images"]["steps"][] | select(.id == "grype-service-sbom") | .with["output-format"]' "$WORKFLOW" || true)
-  assert_eq "service (sbom) Grype output-format is sarif" "sarif" "$service_sbom_format"
-
-  local service_image_format
-  service_image_format=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "grype-service-image") | .with["output-format"]' "$WORKFLOW" || true)
-  assert_eq "service (image) Grype output-format is sarif" "sarif" "$service_image_format"
+  local sbom_format image_format
+  sbom_format=$(yq_raw '.runs.steps[] | select(.id == "grype-sbom") | .with["output-format"]' "$ACTION_SUPPLY_CHAIN" || true)
+  image_format=$(yq_raw '.runs.steps[] | select(.id == "grype-image") | .with["output-format"]' "$ACTION_SUPPLY_CHAIN" || true)
+  assert_eq "grype-sbom output-format is sarif" "sarif" "$sbom_format"
+  assert_eq "grype-image output-format is sarif" "sarif" "$image_format"
 }
 
 # --- CC-0032: SARIF upload references Grype step output (REQ-006) ---
 test_sarif_upload_references_grype_output() {
-  echo "Test: SARIF upload sarif_file references Grype step output (CC-0032, REQ-006)"
+  echo "Test: SARIF upload sarif_file references Grype step output (CC-0032, REQ-006, CC-0055)"
 
-  # SARIF upload uses || expression to pick output from whichever scan step ran
-  local python_sarif_file
-  python_sarif_file=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name and (.name | test("Upload SARIF for python-base"))) | .with.sarif_file' "$WORKFLOW" || true)
-  assert_contains "python-base SARIF upload references grype-python-base-sbom output" "$python_sarif_file" "grype-python-base-sbom.outputs.sarif"
-  assert_contains "python-base SARIF upload references grype-python-base-image output" "$python_sarif_file" "grype-python-base-image.outputs.sarif"
-
-  local venv_sarif_file
-  venv_sarif_file=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name and (.name | test("Upload SARIF for venv-builder"))) | .with.sarif_file' "$WORKFLOW" || true)
-  assert_contains "venv-builder SARIF upload references grype-venv-builder-sbom output" "$venv_sarif_file" "grype-venv-builder-sbom.outputs.sarif"
-  assert_contains "venv-builder SARIF upload references grype-venv-builder-image output" "$venv_sarif_file" "grype-venv-builder-image.outputs.sarif"
-
-  local service_build_sarif_file
-  service_build_sarif_file=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.name and (.name | test("Upload SARIF for service"))) | .with.sarif_file' "$WORKFLOW" || true)
-  assert_contains "service SARIF upload (build-service-images) references grype-service-image output" "$service_build_sarif_file" "grype-service-image.outputs.sarif"
-
-  local service_merge_sarif_file
-  service_merge_sarif_file=$(yq_raw '.jobs["merge-service-images"]["steps"][] | select(.name and (.name | test("Upload SARIF for service"))) | .with.sarif_file' "$WORKFLOW" || true)
-  assert_contains "service SARIF upload (merge-service-images) references grype-service-sbom output" "$service_merge_sarif_file" "grype-service-sbom.outputs.sarif"
+  # CC-0055: the SARIF upload step in supply-chain-attest picks whichever of
+  # grype-sbom.outputs.sarif or grype-image.outputs.sarif is populated.
+  local sarif_file
+  sarif_file=$(yq_raw '.runs.steps[] | select(.uses and (.uses | test("codeql-action/upload-sarif"))) | .with.sarif_file' "$ACTION_SUPPLY_CHAIN" || true)
+  assert_contains "SARIF upload references grype-sbom output" "$sarif_file" "grype-sbom.outputs.sarif"
+  assert_contains "SARIF upload references grype-image output" "$sarif_file" "grype-image.outputs.sarif"
 }
 
 # --- Run all tests ---

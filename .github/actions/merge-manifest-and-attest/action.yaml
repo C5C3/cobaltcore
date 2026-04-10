@@ -1,0 +1,81 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# CC-0055: Composite action encapsulating the download-artifacts, manifest
+# merge via ci-merge-manifest.sh, and supply chain attestation sequence
+# shared across all merge jobs in the build-images workflow.
+
+name: Merge manifest and attest
+description: >
+  Download per-platform digest artifacts, merge into a multi-arch manifest
+  list via ci-merge-manifest.sh, and run supply chain attestation (SBOM,
+  scanning, signing).
+
+inputs:
+  image:
+    description: Full image name without tag (e.g. ghcr.io/c5c3/python-base)
+    required: true
+  artifact-pattern:
+    description: Glob pattern for digest artifact download
+    required: true
+  digest-dir:
+    description: Directory for downloaded digest files
+    required: false
+    default: /tmp/digests
+  tags:
+    description: Space-separated full tag references
+    required: true
+  inspect-tag:
+    description: Tag for post-merge digest inspection
+    required: true
+  sbom-output-file:
+    description: SBOM output filename
+    required: true
+  grype-category:
+    description: SARIF category for GitHub Security tab
+    required: true
+  scan-mode:
+    description: "'sbom' for full supply chain or 'image' for scan-only"
+    required: false
+    default: 'sbom'
+
+outputs:
+  digest:
+    description: Merged manifest digest
+    value: ${{ steps.merge.outputs.digest }}
+
+runs:
+  using: composite
+  steps:
+    - name: Download digests
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        pattern: ${{ inputs.artifact-pattern }}
+        path: ${{ inputs.digest-dir }}
+        merge-multiple: true
+
+    # CC-0055: Create and push manifest (REQ-004)
+    - name: Create and push manifest
+      id: merge
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        DIGEST_DIR: ${{ inputs.digest-dir }}
+        TAGS: ${{ inputs.tags }}
+        INSPECT_TAG: ${{ inputs.inspect-tag }}
+      run: hack/ci-merge-manifest.sh
+
+    # CC-0055: Supply chain attestation (REQ-001)
+    - name: Supply chain attest
+      uses: ./.github/actions/supply-chain-attest
+      with:
+        image-name: ${{ inputs.image }}
+        image-digest: ${{ steps.merge.outputs.digest }}
+        sbom-output-file: ${{ inputs.sbom-output-file }}
+        grype-category: ${{ inputs.grype-category }}
+        scan-mode: ${{ inputs.scan-mode }}
+        # CC-0055: Derive scan ref from the freshly-merged digest. Callers cannot
+        # self-reference steps.<id>.outputs within their own `with:` block, so the
+        # composite must construct this from inputs it already has.
+        image-ref-for-scan: ${{ inputs.image }}@${{ steps.merge.outputs.digest }}
