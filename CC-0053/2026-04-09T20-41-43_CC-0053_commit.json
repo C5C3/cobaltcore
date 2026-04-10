@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-09T20:41:43.187641+00:00",
+  "feature_id": "CC-0053",
+  "task_type": "commit",
+  "session_key": "CC-0053",
+  "model": "opus",
+  "prompt": "Generate a detailed git commit body for this commit.\nSubject: fix(CC-0053): address review #1 feedback from sourcery-ai[bot]\n\nReview feedback is in: /worktrees/CC-0053/.planwerk/reviews/CC-0053-github-review-by-sourcery-ai-bot-external-1.json\nUse `git diff --cached -- ':(exclude).planwerk'` to see the full staged diff.\n\nDiff stat:\n.github/workflows/ci.yaml     | 11 ++++++++++-\n Makefile                      | 35 +++++++++++++++++++++++++++++++++++\n docs/reference/ci-workflow.md | 21 +++++++++++++++------\n 3 files changed, 60 insertions(+), 7 deletions(-)\n\nWrite ONLY the body text, no subject line, no markdown.\nFor each changed file, write a bullet point: '- path/to/file: what was changed'\nDo NOT mention .planwerk directory changes.\nOutput ONLY plain text — no tool_call tags, no XML, no code blocks.",
+  "prompt_length": 809,
+  "caller": "run_claude_cli"
+}
