@@ -33,6 +33,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-${REPO_ROOT}/_output/tempest}"
 TEMPEST_TIMEOUT="${TEMPEST_TIMEOUT:-1800}"
 NAMESPACE="${NAMESPACE:-openstack}"
 ADMIN_SECRET="${ADMIN_SECRET:-keystone-admin}"  # K8s secret holding admin password
+TEMPEST_CONCURRENCY="${TEMPEST_CONCURRENCY:-4}" # stestr worker count; cap at replicas × uwsgi.processes
 
 # ---------------------------------------------------------------------------
 # log — Print a timestamped log message (ISO 8601 UTC).
@@ -62,6 +63,7 @@ Optional:
   TEMPEST_TIMEOUT      Timeout for Tempest run in seconds (default: 1800)
   NAMESPACE            Kubernetes namespace for the service (default: openstack)
   ADMIN_SECRET         Kubernetes secret name holding admin password (default: keystone-admin)
+  TEMPEST_CONCURRENCY  stestr worker count (default: 4); must not exceed replicas × uwsgi.processes
 
 Examples:
   SERVICE=keystone hack/run-tempest.sh
@@ -248,7 +250,7 @@ run_tempest() {
   local tempest_cmd="stestr run"
   [[ -f "${etc_dir}/include-tests.txt" ]] && tempest_cmd+=" --include-list /etc/tempest/include-tests.txt"
   [[ -f "${etc_dir}/exclude-tests.txt" ]] && tempest_cmd+=" --exclude-list /etc/tempest/exclude-tests.txt"
-  tempest_cmd+=" --concurrency 1 --subunit"
+  tempest_cmd+=" --concurrency ${TEMPEST_CONCURRENCY} --subunit"
 
   local rc=0
   timeout "${TEMPEST_TIMEOUT}" \

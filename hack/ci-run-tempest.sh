@@ -23,6 +23,8 @@
 #   OUTPUT_DIR    — Test output directory (default: _output/tempest)
 #   TEMPEST_IMAGE    — Tempest container image (default: c5c3/tempest:local)
 #   SERVICE_K8S_NAME — K8s Service name for port-forward (default: ${SERVICE}-tempest-2025-2-api)
+#   TEMPEST_CONCURRENCY — stestr worker count (default: 4). Must not exceed the
+#                   request capacity of the Keystone target (replicas × uwsgi.processes).
 #
 # REQ-004: CI-specific Tempest wrapper script.
 # REQ-007: set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
@@ -42,6 +44,7 @@ NAMESPACE="${NAMESPACE:-openstack}"
 ADMIN_SECRET="${ADMIN_SECRET:-keystone-admin}"
 OUTPUT_DIR="${OUTPUT_DIR:-_output/tempest}"
 TEMPEST_IMAGE="${TEMPEST_IMAGE:-c5c3/tempest:local}"
+TEMPEST_CONCURRENCY="${TEMPEST_CONCURRENCY:-4}"
 
 # Derive the service name used in k8s (e.g. keystone-tempest-2025-2-api).
 # CC-0051: Allow override for release-specific CR names (e.g. keystone-tempest-2026-1-api).
@@ -109,7 +112,7 @@ sed -e "s|${SERVICE_K8S_NAME}\\.${NAMESPACE}\\.svc\\.cluster\\.local:5000|localh
 TEMPEST_CMD="stestr run"
 [[ -f "${OUTPUT_DIR}/config/include-tests.txt" ]] && TEMPEST_CMD+=" --include-list /etc/tempest/include-tests.txt"
 [[ -f "${OUTPUT_DIR}/config/exclude-tests.txt" ]] && TEMPEST_CMD+=" --exclude-list /etc/tempest/exclude-tests.txt"
-TEMPEST_CMD+=" --concurrency 1 --subunit"
+TEMPEST_CMD+=" --concurrency ${TEMPEST_CONCURRENCY} --subunit"
 
 # ---------------------------------------------------------------------------
 # 6. Run Tempest in container
