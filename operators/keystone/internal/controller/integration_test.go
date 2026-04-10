@@ -1200,3 +1200,272 @@ func TestIntegration_HPADeletedWhenAutoscalingRemoved(t *testing.T) {
 		return cond.Reason
 	}, eventuallyTimeout, pollInterval).Should(Equal("HPANotRequired"), "HPAReady reason should be HPANotRequired")
 }
+
+// --- Task CC-0056/4.1: Fresh deployment — InstalledRelease tracking (REQ-008) ---
+
+func TestIntegration_FreshDeployment_InstalledReleaseTracking(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-fresh-deploy-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	// Create brownfield Keystone CR with tag "2025.2" (CC-0056, REQ-008).
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+
+	// Drive the full reconciliation to Ready=True.
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	// Fetch the final state.
+	updated := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
+
+	// Verify status.installedRelease is set to spec.image.tag (CC-0056, REQ-008).
+	g.Expect(updated.Status.InstalledRelease).To(Equal("2025.2"),
+		"installedRelease should equal spec.image.tag after fresh deployment")
+
+	// Verify no upgrade was triggered (CC-0056).
+	g.Expect(string(updated.Status.UpgradePhase)).To(Equal(""),
+		"upgradePhase should be empty for fresh deployment")
+	g.Expect(updated.Status.TargetRelease).To(Equal(""),
+		"targetRelease should be empty for fresh deployment")
+
+	// Verify the db-sync Job used standard db_sync command without upgrade flags (CC-0056).
+	dbSyncJob := &batchv1.Job{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-db-sync"}, dbSyncJob)).
+		To(Succeed(), "standard db-sync Job should exist")
+	container := dbSyncJob.Spec.Template.Spec.Containers[0]
+	g.Expect(container.Command).To(Equal([]string{
+		"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync",
+	}), "db-sync command should be standard db_sync without --expand/--migrate/--contract")
+	g.Expect(container.Image).To(Equal(
+		fmt.Sprintf("%s:%s", ks.Spec.Image.Repository, ks.Spec.Image.Tag)),
+		"db-sync Job image should match spec.image.tag")
+
+	// Verify no upgrade Jobs were created (CC-0056).
+	for _, phase := range []string{"expand", "migrate", "contract"} {
+		j := &batchv1.Job{}
+		err := c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("test-keystone-db-%s", phase)}, j)
+		g.Expect(err).To(HaveOccurred(),
+			fmt.Sprintf("upgrade Job %s should not exist for fresh deployment", phase))
+	}
+
+	// Verify no regression: Ready=True with AllReady reason (CC-0056, REQ-008).
+	readyCond := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
+	g.Expect(readyCond).NotTo(BeNil(), "Ready condition should exist")
+	g.Expect(readyCond.Status).To(Equal(metav1.ConditionTrue), "Ready should be True")
+	g.Expect(readyCond.Reason).To(Equal("AllReady"))
+}
+
+// --- Task CC-0056/4.2: Full expand-migrate-contract upgrade cycle (REQ-001 through REQ-006) ---
+
+func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-upgrade-cycle-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	// Create brownfield Keystone with initial release "2025.1" (CC-0056).
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	ks.Spec.Image.Tag = "2025.1"
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+
+	// Drive initial deployment to Ready=True.
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	// Verify initial installedRelease (CC-0056, REQ-008).
+	initial := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, key, initial)).To(Succeed())
+	g.Expect(initial.Status.InstalledRelease).To(Equal("2025.1"),
+		"installedRelease should be 2025.1 after initial deployment")
+
+	expectedNewImage := fmt.Sprintf("%s:2025.2", ks.Spec.Image.Repository)
+
+	// --- Trigger upgrade: update image tag to 2025.2 (CC-0056, REQ-001) ---
+	current := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, key, current)).To(Succeed())
+	current.Spec.Image.Tag = "2025.2"
+	g.Expect(c.Update(ctx, current)).To(Succeed())
+
+	// Phase 1: Expanding — expand Job with NEW image (CC-0056, REQ-002).
+	g.Eventually(func() keystonev1alpha1.UpgradePhase {
+		ks := &keystonev1alpha1.Keystone{}
+		if err := c.Get(ctx, key, ks); err != nil {
+			return ""
+		}
+		return ks.Status.UpgradePhase
+	}, eventuallyTimeout, pollInterval).Should(Equal(keystonev1alpha1.UpgradePhaseExpanding),
+		"upgradePhase should transition to Expanding")
+
+	// Verify targetRelease is set (CC-0056, REQ-001).
+	ksState := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, key, ksState)).To(Succeed())
+	g.Expect(ksState.Status.TargetRelease).To(Equal("2025.2"))
+
+	expandKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-db-expand"}
+	g.Eventually(func() error {
+		return c.Get(ctx, expandKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "expand Job should appear")
+
+	expandJob := &batchv1.Job{}
+	g.Expect(c.Get(ctx, expandKey, expandJob)).To(Succeed())
+	g.Expect(expandJob.Spec.Template.Spec.Containers[0].Image).To(Equal(expectedNewImage),
+		"expand Job should use NEW image (target release)")
+	g.Expect(expandJob.Spec.Template.Spec.Containers[0].Command).To(Equal([]string{
+		"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync", "--expand",
+	}), "expand Job should use --expand flag")
+
+	g.Expect(simulators.SimulateJobComplete(ctx, c, expandKey)).To(Succeed(), "simulate expand Job completion")
+
+	// Phase 2: Migrating — migrate Job with NEW image (CC-0056, REQ-003).
+	g.Eventually(func() keystonev1alpha1.UpgradePhase {
+		ks := &keystonev1alpha1.Keystone{}
+		if err := c.Get(ctx, key, ks); err != nil {
+			return ""
+		}
+		return ks.Status.UpgradePhase
+	}, eventuallyTimeout, pollInterval).Should(Equal(keystonev1alpha1.UpgradePhaseMigrating),
+		"upgradePhase should transition to Migrating")
+
+	migrateKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-db-migrate"}
+	g.Eventually(func() error {
+		return c.Get(ctx, migrateKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "migrate Job should appear")
+
+	migrateJob := &batchv1.Job{}
+	g.Expect(c.Get(ctx, migrateKey, migrateJob)).To(Succeed())
+	g.Expect(migrateJob.Spec.Template.Spec.Containers[0].Image).To(Equal(expectedNewImage),
+		"migrate Job should use NEW image (target release)")
+	g.Expect(migrateJob.Spec.Template.Spec.Containers[0].Command).To(Equal([]string{
+		"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync", "--migrate",
+	}), "migrate Job should use --migrate flag")
+
+	g.Expect(simulators.SimulateJobComplete(ctx, c, migrateKey)).To(Succeed(), "simulate migrate Job completion")
+
+	// Phase 3: RollingUpdate — Deployment updated with NEW image (CC-0056, REQ-004).
+	g.Eventually(func() keystonev1alpha1.UpgradePhase {
+		ks := &keystonev1alpha1.Keystone{}
+		if err := c.Get(ctx, key, ks); err != nil {
+			return ""
+		}
+		return ks.Status.UpgradePhase
+	}, eventuallyTimeout, pollInterval).Should(Equal(keystonev1alpha1.UpgradePhaseRollingUpdate),
+		"upgradePhase should transition to RollingUpdate")
+
+	// Wait for Deployment to be updated with new image (CC-0056, REQ-004).
+	deployKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-api", ks.Name)}
+	g.Eventually(func() string {
+		d := &appsv1.Deployment{}
+		if err := c.Get(ctx, deployKey, d); err != nil {
+			return ""
+		}
+		if len(d.Spec.Template.Spec.Containers) == 0 {
+			return ""
+		}
+		return d.Spec.Template.Spec.Containers[0].Image
+	}, eventuallyTimeout, pollInterval).Should(Equal(expectedNewImage),
+		"Deployment should be updated with new image during RollingUpdate")
+
+	// Simulate Deployment rollout completion (CC-0056, REQ-004).
+	deploy := &appsv1.Deployment{}
+	g.Expect(c.Get(ctx, deployKey, deploy)).To(Succeed())
+	g.Expect(simulators.SimulateDeploymentReady(ctx, c, deployKey, ptr.Deref(deploy.Spec.Replicas, 1))).
+		To(Succeed(), "simulate Deployment rollout with new image")
+
+	// Phase 4: Contracting — contract Job with NEW image (CC-0056, REQ-005).
+	g.Eventually(func() keystonev1alpha1.UpgradePhase {
+		ks := &keystonev1alpha1.Keystone{}
+		if err := c.Get(ctx, key, ks); err != nil {
+			return ""
+		}
+		return ks.Status.UpgradePhase
+	}, eventuallyTimeout, pollInterval).Should(Equal(keystonev1alpha1.UpgradePhaseContracting),
+		"upgradePhase should transition to Contracting")
+
+	contractKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-db-contract"}
+	g.Eventually(func() error {
+		return c.Get(ctx, contractKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "contract Job should appear")
+
+	contractJob := &batchv1.Job{}
+	g.Expect(c.Get(ctx, contractKey, contractJob)).To(Succeed())
+	g.Expect(contractJob.Spec.Template.Spec.Containers[0].Image).To(Equal(expectedNewImage),
+		"contract Job should use NEW image")
+	g.Expect(contractJob.Spec.Template.Spec.Containers[0].Command).To(Equal([]string{
+		"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync", "--contract",
+	}), "contract Job should use --contract flag")
+
+	g.Expect(simulators.SimulateJobComplete(ctx, c, contractKey)).To(Succeed(), "simulate contract Job completion")
+
+	// Verify upgrade completion: installedRelease updated, phase/target cleared (CC-0056, REQ-006).
+	g.Eventually(func() string {
+		ks := &keystonev1alpha1.Keystone{}
+		if err := c.Get(ctx, key, ks); err != nil {
+			return ""
+		}
+		return ks.Status.InstalledRelease
+	}, eventuallyTimeout, pollInterval).Should(Equal("2025.2"),
+		"installedRelease should be updated to 2025.2 after upgrade")
+
+	postUpgrade := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, key, postUpgrade)).To(Succeed())
+	g.Expect(postUpgrade.Status.TargetRelease).To(Equal(""),
+		"targetRelease should be cleared after upgrade completes")
+	g.Expect(string(postUpgrade.Status.UpgradePhase)).To(Equal(""),
+		"upgradePhase should be cleared after upgrade completes")
+
+	// Post-upgrade: the operator re-runs db_sync and bootstrap with the new image
+	// because the PodSpec hash changed (CC-0005). Drive the remaining reconciliation.
+	dbSyncKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-db-sync", ks.Name)}
+	g.Eventually(func() bool {
+		j := &batchv1.Job{}
+		if err := c.Get(ctx, dbSyncKey, j); err != nil {
+			return false
+		}
+		if len(j.Spec.Template.Spec.Containers) == 0 {
+			return false
+		}
+		return j.Spec.Template.Spec.Containers[0].Image == expectedNewImage
+	}, eventuallyTimeout, pollInterval).Should(BeTrue(), "db-sync Job should be re-created with new image")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, dbSyncKey)).To(Succeed(), "simulate post-upgrade db-sync completion")
+
+	waitForCondition(t, ctx, c, key, "DatabaseReady", metav1.ConditionTrue, eventuallyTimeout)
+
+	// Bootstrap Job is also re-created with new image (CC-0005).
+	bootstrapKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-bootstrap", ks.Name)}
+	g.Eventually(func() bool {
+		j := &batchv1.Job{}
+		if err := c.Get(ctx, bootstrapKey, j); err != nil {
+			return false
+		}
+		if len(j.Spec.Template.Spec.Containers) == 0 {
+			return false
+		}
+		return j.Spec.Template.Spec.Containers[0].Image == expectedNewImage
+	}, eventuallyTimeout, pollInterval).Should(BeTrue(), "bootstrap Job should be re-created with new image")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, bootstrapKey)).To(Succeed(), "simulate post-upgrade bootstrap completion")
+
+	// Verify the system returns to Ready=True after the full upgrade cycle (CC-0056).
+	waitForCondition(t, ctx, c, key, "Ready", metav1.ConditionTrue, eventuallyTimeout)
+
+	final := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, key, final)).To(Succeed())
+	g.Expect(final.Status.InstalledRelease).To(Equal("2025.2"))
+	g.Expect(final.Status.Endpoint).To(Equal(
+		fmt.Sprintf("http://test-keystone-api.%s.svc.cluster.local:5000/v3", ns.Name)),
+		"endpoint should still be set after upgrade")
+}

@@ -95,10 +95,13 @@ func EnsureDeployment(ctx context.Context, c client.Client, scheme *runtime.Sche
 	if err := c.Update(ctx, existing); err != nil {
 		return false, fmt.Errorf("updating Deployment %s/%s: %w", deploy.Namespace, deploy.Name, err)
 	}
-	// Re-fetch to get the server-assigned Generation after the update (CC-0005).
-	if err := c.Get(ctx, client.ObjectKeyFromObject(deploy), existing); err != nil {
-		return false, fmt.Errorf("re-fetching Deployment %s/%s after update: %w", deploy.Namespace, deploy.Name, err)
-	}
+	// c.Update updates `existing` in-place with the server response, so its
+	// .metadata.generation reflects the post-update value. Do NOT re-fetch via
+	// the reconciler's cached client: during an upgrade where Generation has
+	// just been bumped, the cache may still return the pre-update object (with
+	// matching Generation and Status.ObservedGeneration), causing
+	// IsDeploymentReady to incorrectly report Ready=true and the upgrade state
+	// machine to skip the RollingUpdate phase (CC-0056).
 
 	return IsDeploymentReady(existing), nil
 }

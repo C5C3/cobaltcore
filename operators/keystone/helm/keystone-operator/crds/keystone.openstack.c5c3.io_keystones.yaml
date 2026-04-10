@@ -24,6 +24,9 @@ spec:
     - jsonPath: .status.endpoint
       name: Endpoint
       type: string
+    - jsonPath: .status.installedRelease
+      name: Release
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -768,6 +771,23 @@ spec:
                 type: array
               endpoint:
                 description: Endpoint is the Keystone API endpoint URL.
+                type: string
+              installedRelease:
+                description: InstalledRelease is the OpenStack release version currently
+                  deployed (CC-0056).
+                type: string
+              targetRelease:
+                description: TargetRelease is the upgrade target release during an
+                  active upgrade (CC-0056).
+                type: string
+              upgradePhase:
+                description: UpgradePhase is the current phase of a database upgrade
+                  (CC-0056).
+                enum:
+                - Expanding
+                - Migrating
+                - RollingUpdate
+                - Contracting
                 type: string
             type: object
         type: object

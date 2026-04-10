@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -18,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -391,6 +393,350 @@ func TestReconcileDatabase_StaleDBSyncJob_Recreated(t *testing.T) {
 	g.Expect(newJob.Annotations[job.PodSpecHashAnnotation]).To(Equal(expectedHash))
 }
 
+// Feature: CC-0056
+
+// TestBuildUpgradeJobs verifies all three upgrade-phase Job builders
+// (buildExpandJob, buildMigrateJob, buildContractJob) produce the correct Job
+// metadata, image, command, security context, and config volume (CC-0056).
+func TestBuildUpgradeJobs(t *testing.T) {
+	cases := []struct {
+		name          string
+		buildFunc     func(*keystonev1alpha1.Keystone, string, string) *batchv1.Job
+		expectedName  string
+		containerName string
+		expectedFlag  string
+	}{
+		{"Expand", buildExpandJob, "test-keystone-db-expand", "db-expand", "--expand"},
+		{"Migrate", buildMigrateJob, "test-keystone-db-migrate", "db-migrate", "--migrate"},
+		{"Contract", buildContractJob, "test-keystone-db-contract", "db-contract", "--contract"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name+"/JobName", func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ks := brownfieldKeystone()
+			job := tc.buildFunc(ks, "keystone-config-abc123", "2024.1")
+
+			g.Expect(job.Name).To(Equal(tc.expectedName))
+			g.Expect(job.Namespace).To(Equal(ks.Namespace))
+		})
+
+		t.Run(tc.name+"/Image", func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ks := brownfieldKeystone()
+			imageTag := "2024.1"
+			job := tc.buildFunc(ks, "keystone-config-abc123", imageTag)
+
+			container := findContainerByName(job.Spec.Template.Spec.Containers, tc.containerName)
+			g.Expect(container).NotTo(BeNil())
+			g.Expect(container.Image).To(Equal(fmt.Sprintf("%s:%s", ks.Spec.Image.Repository, imageTag)))
+			// Ensure the imageTag parameter is used, not spec.Image.Tag.
+			g.Expect(container.Image).NotTo(ContainSubstring(ks.Spec.Image.Tag))
+		})
+
+		t.Run(tc.name+"/Command", func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ks := brownfieldKeystone()
+			job := tc.buildFunc(ks, "keystone-config-abc123", "2024.1")
+
+			container := findContainerByName(job.Spec.Template.Spec.Containers, tc.containerName)
+			g.Expect(container).NotTo(BeNil())
+			g.Expect(container.Command).To(Equal([]string{
+				"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync", tc.expectedFlag,
+			}))
+		})
+
+		t.Run(tc.name+"/SecurityContext", func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ks := brownfieldKeystone()
+			job := tc.buildFunc(ks, "keystone-config-abc123", "2024.1")
+
+			container := findContainerByName(job.Spec.Template.Spec.Containers, tc.containerName)
+			expectRestrictedSecurityContext(g, container)
+		})
+
+		t.Run(tc.name+"/ConfigVolume", func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ks := brownfieldKeystone()
+			configMap := "keystone-config-abc123"
+			job := tc.buildFunc(ks, configMap, "2024.1")
+
+			container := findContainerByName(job.Spec.Template.Spec.Containers, tc.containerName)
+			g.Expect(container).NotTo(BeNil())
+			g.Expect(container.VolumeMounts).To(HaveLen(1))
+			g.Expect(container.VolumeMounts[0].Name).To(Equal("config"))
+			g.Expect(container.VolumeMounts[0].MountPath).To(Equal("/etc/keystone/keystone.conf.d/"))
+			g.Expect(container.VolumeMounts[0].ReadOnly).To(BeTrue())
+
+			g.Expect(job.Spec.Template.Spec.Volumes).To(HaveLen(1))
+			g.Expect(job.Spec.Template.Spec.Volumes[0].Name).To(Equal("config"))
+			g.Expect(job.Spec.Template.Spec.Volumes[0].ConfigMap.Name).To(Equal(configMap))
+		})
+
+		t.Run(tc.name+"/BackoffLimit", func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ks := brownfieldKeystone()
+			job := tc.buildFunc(ks, "keystone-config-abc123", "2024.1")
+
+			g.Expect(job.Spec.BackoffLimit).NotTo(BeNil())
+			g.Expect(*job.Spec.BackoffLimit).To(Equal(int32(4)))
+		})
+
+		t.Run(tc.name+"/RestartPolicy", func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ks := brownfieldKeystone()
+			job := tc.buildFunc(ks, "keystone-config-abc123", "2024.1")
+
+			g.Expect(job.Spec.Template.Spec.RestartPolicy).To(Equal(corev1.RestartPolicyNever))
+		})
+	}
+}
+
+// --- Upgrade detection tests (CC-0056) ---
+
+func TestIsUpgrade(t *testing.T) {
+	cases := []struct {
+		name             string
+		installedRelease string
+		tag              string
+		want             bool
+	}{
+		{
+			name:             "FreshDeployment_EmptyInstalledRelease",
+			installedRelease: "",
+			tag:              "2025.2",
+			want:             false,
+		},
+		{
+			name:             "SameVersion",
+			installedRelease: "2025.2",
+			tag:              "2025.2",
+			want:             false,
+		},
+		{
+			name:             "PatchOnlyChange",
+			installedRelease: "2025.2",
+			tag:              "2025.2-p1",
+			want:             false,
+		},
+		{
+			name:             "SequentialUpgrade",
+			installedRelease: "2025.2",
+			tag:              "2026.1",
+			want:             true,
+		},
+		{
+			name:             "SkipLevelUpgrade",
+			installedRelease: "2024.2",
+			tag:              "2026.1",
+			want:             true,
+		},
+		{
+			name:             "UnparseableInstalledRelease",
+			installedRelease: "latest",
+			tag:              "2025.2",
+			want:             true,
+		},
+		{
+			name:             "UnparseableTargetTag",
+			installedRelease: "2025.2",
+			tag:              "latest",
+			want:             true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ks := brownfieldKeystone()
+			ks.Spec.Image.Tag = tc.tag
+			ks.Status.InstalledRelease = tc.installedRelease
+			g.Expect(isUpgrade(ks)).To(Equal(tc.want))
+		})
+	}
+}
+
+func TestInitiateUpgrade_SequentialUpgrade(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := brownfieldKeystone()
+	ks.Spec.Image.Tag = "2026.1"
+	ks.Status.InstalledRelease = "2025.2"
+
+	r := newDBTestReconciler(s, ks)
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
+
+	// Verify status fields.
+	g.Expect(ks.Status.TargetRelease).To(Equal("2026.1"))
+	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseExpanding))
+
+	// Verify condition.
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("ExpandInProgress"))
+	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
+	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+}
+
+func TestInitiateUpgrade_SkipLevelRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := brownfieldKeystone()
+	ks.Spec.Image.Tag = "2026.1"
+	ks.Status.InstalledRelease = "2024.2"
+
+	r := newDBTestReconciler(s, ks)
+
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("sequential"))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("UpgradePathInvalid"))
+}
+
+func TestInitiateUpgrade_DowngradeRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := brownfieldKeystone()
+	ks.Spec.Image.Tag = "2025.2"
+	ks.Status.InstalledRelease = "2026.1"
+
+	r := newDBTestReconciler(s, ks)
+
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("downgrade"))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("DowngradeNotSupported"))
+}
+
+func TestInitiateUpgrade_InvalidVersionFormat(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := brownfieldKeystone()
+	ks.Spec.Image.Tag = "latest"
+	ks.Status.InstalledRelease = "2025.2"
+
+	r := newDBTestReconciler(s, ks)
+
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("parse"))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("VersionParseError"))
+}
+
+// --- Upgrade detection in reconcileDatabase flow ---
+
+func TestReconcileDatabase_FreshDeploy_SetsInstalledRelease(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := brownfieldKeystone()
+	// No installedRelease set — fresh deployment.
+
+	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks))
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(BeZero())
+
+	// After successful db_sync, installedRelease should be set.
+	g.Expect(ks.Status.InstalledRelease).To(Equal("2025.2"))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("DatabaseSynced"))
+}
+
+func TestReconcileDatabase_PatchOnly_UsesSimpleDBSync(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := brownfieldKeystone()
+	ks.Spec.Image.Tag = "2025.2-p1"
+	ks.Status.InstalledRelease = "2025.2"
+
+	// Build a completed db_sync job matching the patched image tag.
+	desired := buildDBSyncJob(ks, "keystone-config-abc123")
+	now := metav1.Now()
+	completedJob := desired.DeepCopy()
+	completedJob.Annotations = map[string]string{
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+	}
+	completedJob.Status.Succeeded = 1
+	completedJob.Status.CompletionTime = &now
+	completedJob.Status.Conditions = []batchv1.JobCondition{
+		{Type: batchv1.JobComplete, Status: corev1.ConditionTrue},
+	}
+
+	r := newDBTestReconciler(s, ks, completedJob)
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(BeZero())
+
+	// Verify it used the simple db_sync path and updated installedRelease.
+	g.Expect(ks.Status.InstalledRelease).To(Equal("2025.2-p1"))
+	g.Expect(ks.Status.UpgradePhase).To(BeEmpty())
+}
+
+func TestReconcileDatabase_ActiveUpgrade_DelegatesToReconcileUpgrade(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := brownfieldKeystone()
+	ks.Spec.Image.Tag = "2026.1"
+	ks.Status.InstalledRelease = "2025.2"
+	ks.Status.TargetRelease = "2026.1"
+	ks.Status.UpgradePhase = keystonev1alpha1.UpgradePhaseExpanding
+
+	r := newDBTestReconciler(s, ks)
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueUpgradeWait))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("ExpandInProgress"))
+	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
+	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+}
+
+func TestReconcileDatabase_SameVersionWithInstalledRelease_UsesSimpleDBSync(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := brownfieldKeystone()
+	ks.Status.InstalledRelease = "2025.2"
+
+	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks))
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(BeZero())
+
+	// Still on the simple db_sync path.
+	g.Expect(ks.Status.InstalledRelease).To(Equal("2025.2"))
+	g.Expect(ks.Status.UpgradePhase).To(BeEmpty())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+}
+
 func TestReconcileDatabase_Managed_ConditionMessages(t *testing.T) {
 	s := dbTestScheme()
 
@@ -463,4 +809,434 @@ func TestReconcileDatabase_Managed_ConditionMessages(t *testing.T) {
 		g.Expect(cond.Message).To(Equal("Database schema is up to date"))
 		g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
 	})
+}
+
+// --- Upgrade phase test helpers (CC-0056) ---
+
+func upgradingKeystone(phase keystonev1alpha1.UpgradePhase) *keystonev1alpha1.Keystone {
+	ks := brownfieldKeystone()
+	ks.Spec.Image.Tag = "2026.1"
+	ks.Status.InstalledRelease = "2025.2"
+	ks.Status.TargetRelease = "2026.1"
+	ks.Status.UpgradePhase = phase
+	return ks
+}
+
+func completedUpgradeJob(ks *keystonev1alpha1.Keystone, configMapName, imageTag, phase, flag string) *batchv1.Job {
+	desired := buildUpgradeJob(ks, configMapName, imageTag, phase, flag)
+	now := metav1.Now()
+	j := desired.DeepCopy()
+	j.Annotations = map[string]string{
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+	}
+	j.Status.Succeeded = 1
+	j.Status.CompletionTime = &now
+	j.Status.Conditions = []batchv1.JobCondition{
+		{Type: batchv1.JobComplete, Status: corev1.ConditionTrue},
+	}
+	return j
+}
+
+func failedUpgradeJob(ks *keystonev1alpha1.Keystone, configMapName, imageTag, phase, flag string) *batchv1.Job {
+	desired := buildUpgradeJob(ks, configMapName, imageTag, phase, flag)
+	j := desired.DeepCopy()
+	j.Annotations = map[string]string{
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+	}
+	j.Status.Failed = 5
+	j.Status.Conditions = []batchv1.JobCondition{
+		{Type: batchv1.JobFailed, Status: corev1.ConditionTrue},
+	}
+	return j
+}
+
+// --- Expand phase tests (CC-0056) ---
+
+func TestReconcileExpand_NoExistingJob_CreatesJob(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseExpanding)
+
+	r := newDBTestReconciler(s, ks)
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueUpgradeWait))
+
+	// Verify the expand Job was created.
+	var expandJob batchv1.Job
+	g.Expect(r.Client.Get(context.Background(), client.ObjectKey{
+		Name:      "test-keystone-db-expand",
+		Namespace: "default",
+	}, &expandJob)).To(Succeed())
+	g.Expect(expandJob.Annotations).To(HaveKey(job.PodSpecHashAnnotation))
+
+	// Verify condition.
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("ExpandInProgress"))
+}
+
+func TestReconcileExpand_JobRunning_Requeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseExpanding)
+
+	// Create a running expand Job (exists but not complete).
+	expandJob := buildExpandJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag)
+	expandJob.Annotations = map[string]string{
+		job.PodSpecHashAnnotation: job.PodSpecHash(&expandJob.Spec.Template.Spec),
+	}
+
+	r := newDBTestReconciler(s, ks, expandJob)
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueUpgradeWait))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("ExpandInProgress"))
+	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
+	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+}
+
+func TestReconcileExpand_JobCompleted_TransitionsToMigrating(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseExpanding)
+
+	completed := completedUpgradeJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag, "expand", "--expand")
+
+	r := newDBTestReconciler(s, ks, completed)
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
+
+	// Verify phase transition.
+	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseMigrating))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("MigrateInProgress"))
+}
+
+func TestReconcileExpand_JobFailed_ReturnsError(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseExpanding)
+
+	failed := failedUpgradeJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag, "expand", "--expand")
+
+	r := newDBTestReconciler(s, ks, failed)
+
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).To(HaveOccurred())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("ExpandFailed"))
+}
+
+// --- Migrate phase tests (CC-0056) ---
+
+func TestReconcileMigrate_JobRunning_Requeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseMigrating)
+
+	// Create a running migrate Job (exists but not complete).
+	migrateJob := buildMigrateJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag)
+	migrateJob.Annotations = map[string]string{
+		job.PodSpecHashAnnotation: job.PodSpecHash(&migrateJob.Spec.Template.Spec),
+	}
+
+	r := newDBTestReconciler(s, ks, migrateJob)
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueUpgradeWait))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("MigrateInProgress"))
+	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
+	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+}
+
+func TestReconcileMigrate_JobCompleted_TransitionsToRollingUpdate(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseMigrating)
+
+	completed := completedUpgradeJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag, "migrate", "--migrate")
+
+	r := newDBTestReconciler(s, ks, completed)
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
+
+	// Verify phase transition.
+	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseRollingUpdate))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("UpgradeRollingUpdate"))
+	g.Expect(cond.Message).To(ContainSubstring("Migrate complete"))
+	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
+	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+}
+
+func TestReconcileMigrate_JobFailed_ReturnsError(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseMigrating)
+
+	failed := failedUpgradeJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag, "migrate", "--migrate")
+
+	r := newDBTestReconciler(s, ks, failed)
+
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).To(HaveOccurred())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("MigrateFailed"))
+}
+
+// --- RollingUpdate phase tests (CC-0056) ---
+
+func TestReconcileRollingUpdate_PassesThrough(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseRollingUpdate)
+
+	r := newDBTestReconciler(s, ks)
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	// Pass-through: no requeue, empty result allows reconcileDeployment to proceed.
+	g.Expect(result).To(Equal(ctrl.Result{}))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("UpgradeRollingUpdate"))
+	g.Expect(cond.Message).To(ContainSubstring("Waiting for Deployment rollout"))
+	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
+	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+}
+
+// --- Contract phase tests (CC-0056) ---
+
+func TestReconcileContract_NoExistingJob_CreatesJobAndRequeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseContracting)
+
+	r := newDBTestReconciler(s, ks)
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueUpgradeWait))
+
+	// Verify the contract Job was created.
+	var createdJob batchv1.Job
+	g.Expect(r.Client.Get(context.Background(), client.ObjectKey{
+		Name:      "test-keystone-db-contract",
+		Namespace: "default",
+	}, &createdJob)).To(Succeed())
+	g.Expect(createdJob.Annotations).To(HaveKey(job.PodSpecHashAnnotation))
+
+	// Verify the Job uses the NEW image tag ("2026.1"), not the old one ("2025.2").
+	g.Expect(createdJob.Spec.Template.Spec.Containers[0].Image).To(ContainSubstring("2026.1"))
+
+	// Verify condition.
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("ContractInProgress"))
+}
+
+func TestReconcileContract_JobRunning_Requeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseContracting)
+
+	// Create a running contract Job (exists but not complete).
+	contractJob := buildContractJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag)
+	contractJob.Annotations = map[string]string{
+		job.PodSpecHashAnnotation: job.PodSpecHash(&contractJob.Spec.Template.Spec),
+	}
+
+	r := newDBTestReconciler(s, ks, contractJob)
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueUpgradeWait))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("ContractInProgress"))
+	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
+	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+}
+
+func TestReconcileContract_JobCompleted_CompletesUpgrade(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseContracting)
+
+	completed := completedUpgradeJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag, "contract", "--contract")
+
+	r := newDBTestReconciler(s, ks, completed)
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Upgrade complete: no requeue.
+	g.Expect(result).To(Equal(ctrl.Result{}))
+
+	// Verify status fields updated for upgrade completion.
+	g.Expect(ks.Status.InstalledRelease).To(Equal("2026.1"))
+	g.Expect(ks.Status.TargetRelease).To(BeEmpty())
+	g.Expect(ks.Status.UpgradePhase).To(BeEmpty())
+
+	// Verify condition.
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("DatabaseSynced"))
+	g.Expect(cond.Message).To(ContainSubstring("upgraded"))
+	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
+	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+}
+
+func TestReconcileContract_JobFailed_ReturnsError(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseContracting)
+
+	failed := failedUpgradeJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag, "contract", "--contract")
+
+	r := newDBTestReconciler(s, ks, failed)
+
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).To(HaveOccurred())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("ContractFailed"))
+
+	// Verify upgrade phase remains Contracting (not cleared on failure).
+	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseContracting))
+}
+
+func TestReconcileContract_UsesNewImage(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseContracting)
+
+	r := newDBTestReconciler(s, ks)
+
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Fetch the created Job and verify it uses the NEW image tag.
+	var createdJob batchv1.Job
+	g.Expect(r.Client.Get(context.Background(), client.ObjectKey{
+		Name:      "test-keystone-db-contract",
+		Namespace: "default",
+	}, &createdJob)).To(Succeed())
+
+	// Contract uses the NEW image (spec.image.tag = "2026.1"), NOT the old one (installedRelease = "2025.2").
+	g.Expect(createdJob.Spec.Template.Spec.Containers[0].Image).To(ContainSubstring("2026.1"))
+	g.Expect(createdJob.Spec.Template.Spec.Containers[0].Image).NotTo(ContainSubstring("2025.2"))
+}
+
+// --- Upgrade edge case tests (CC-0056, REQ-009) ---
+
+// TestReconcileDatabase_InterruptedExpand_Resumes verifies that after an operator
+// restart during the Expanding phase, reconcileDatabase resumes from the persisted
+// phase and transitions to Migrating when the expand Job is already complete,
+// without re-creating the expand Job (CC-0056, REQ-009).
+func TestReconcileDatabase_InterruptedExpand_Resumes(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseExpanding)
+
+	// Simulate: expand Job completed before the operator restarted.
+	completed := completedUpgradeJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag, "expand", "--expand")
+
+	r := newDBTestReconciler(s, ks, completed)
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
+
+	// Verify phase transitioned to Migrating without re-creating the expand Job.
+	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseMigrating))
+
+	// Verify no duplicate expand Job was created (only the original exists).
+	jobList := &batchv1.JobList{}
+	g.Expect(r.Client.List(context.Background(), jobList)).To(Succeed())
+	expandJobs := 0
+	for _, j := range jobList.Items {
+		if j.Name == "test-keystone-db-expand" {
+			expandJobs++
+		}
+	}
+	g.Expect(expandJobs).To(Equal(1), "expand Job should not be re-created after restart")
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("MigrateInProgress"))
+}
+
+// TestReconcileDatabase_TagChangedDuringUpgrade_Blocks verifies that when the
+// image tag is changed during an active upgrade to a value different from
+// targetRelease, the operator blocks with DatabaseReady=False and reason
+// UpgradeTargetChanged (CC-0056, REQ-009).
+func TestReconcileDatabase_TagChangedDuringUpgrade_Blocks(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseExpanding)
+
+	// Simulate: operator is upgrading 2025.2 → 2026.1, but someone changes the
+	// tag to 2026.2 mid-upgrade.
+	ks.Spec.Image.Tag = "2026.2"
+
+	r := newDBTestReconciler(s, ks)
+
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("image tag changed during active upgrade"))
+	g.Expect(err.Error()).To(ContainSubstring("2026.1"))
+	g.Expect(err.Error()).To(ContainSubstring("2026.2"))
+
+	// Verify condition.
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("UpgradeTargetChanged"))
+	g.Expect(cond.Message).To(ContainSubstring("2026.2"))
+	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
+	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+
+	// Verify upgrade state was NOT modified.
+	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseExpanding))
+	g.Expect(ks.Status.TargetRelease).To(Equal("2026.1"))
+	g.Expect(ks.Status.InstalledRelease).To(Equal("2025.2"))
 }

@@ -30,4 +30,9 @@ const (
 	// Bootstrap is a one-time heavyweight operation; gentle polling is
 	// sufficient.
 	RequeueBootstrapWait = 60 * time.Second
+
+	// RequeueUpgradeWait is the interval for polling upgrade Job completion.
+	// Upgrade Jobs (expand, migrate, contract) may take several minutes depending
+	// on database size. A moderate interval balances responsiveness with API load (CC-0056).
+	RequeueUpgradeWait = 30 * time.Second
 )

@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: When a file already uses a defensive pattern (e.g., capturing exit codes with `|| exit_code=$?`) in some test cases, scan ALL other test cases in the same file for the same invocation pattern without the guard.
 **Severity**: BLOCKING
-**Occurrences**: 3
+**Occurrences**: 4
 
 ## What to check
 
@@ -29,3 +29,8 @@ Silent test abortion means CI reports a failure with zero diagnostic output. Dev
 - **Feedback**: `test_sbom_format_cyclonedx_json` has asymmetric handling of empty results: the base-images branch uses a silent non-count pattern, while the service branch correctly uses `assert_eq`.
 - **What was missed**: Parallel code paths within the same test function should use the same assertion strategy. If one branch uses assert_eq (which handles empty/mismatch as FAIL), all equivalent branches must do the same or provide equivalent explicit failure handling.
 - **Fix**: Added an elif branch to the base-images block to explicitly fail when base_formats is empty, making it consistent with the service branch that already used assert_eq.
+
+### CC-0056 — berendt
+- **Feedback**: The project has 18 Chainsaw E2E test directories under tests/e2e/keystone/ covering every existing feature. This PR adds a significant new feature (upgrade flow) but includes no Chainsaw E2E test.
+- **What was missed**: List the existing test directories (e.g. tests/e2e/keystone/*). If the PR introduces a new feature or flow, verify a corresponding test directory and chainsaw-test.yaml (or equivalent) is included.
+- **Fix**: Created tests/e2e/keystone/upgrade-flow/ with chainsaw-test.yaml covering fresh deployment, sequential upgrade, and skip-level rejection scenarios.

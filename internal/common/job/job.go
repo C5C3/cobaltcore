@@ -15,6 +15,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -71,7 +72,15 @@ func RunJob(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner 
 		desiredHash := PodSpecHash(&job.Spec.Template.Spec)
 		existingHash := existing.Annotations[PodSpecHashAnnotation]
 		if desiredHash != existingHash {
-			if err := c.Delete(ctx, existing); err != nil {
+			// Intentional behavioral alignment: explicitly set Background propagation
+			// policy for both envtest and production consistency. The default on most
+			// API servers is already Background, so this is a no-op in production but
+			// prevents envtest from adding an `orphan` finalizer that would block the
+			// subsequent Create with AlreadyExists. Verified: only the keystone
+			// operator uses RunJob; no other operator in the monorepo is affected
+			// (CC-0056).
+			propagation := metav1.DeletePropagationBackground
+			if err := c.Delete(ctx, existing, &client.DeleteOptions{PropagationPolicy: &propagation}); err != nil {
 				return false, fmt.Errorf("deleting stale Job %s/%s: %w", existing.Namespace, existing.Name, err)
 			}
 			if err := createJobWithHash(ctx, c, scheme, owner, job); err != nil {

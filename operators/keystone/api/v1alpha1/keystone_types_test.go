@@ -124,4 +124,30 @@ func TestKeystoneStatusFields(t *testing.T) {
 	if status.Endpoint != "" {
 		t.Errorf("expected empty Endpoint, got %q", status.Endpoint)
 	}
+	if status.InstalledRelease != "" {
+		t.Errorf("expected empty InstalledRelease, got %q", status.InstalledRelease)
+	}
+	if status.TargetRelease != "" {
+		t.Errorf("expected empty TargetRelease, got %q", status.TargetRelease)
+	}
+	if status.UpgradePhase != "" {
+		t.Errorf("expected empty UpgradePhase, got %q", status.UpgradePhase)
+	}
+}
+
+func TestUpgradePhaseConstants(t *testing.T) {
+	tests := []struct {
+		phase UpgradePhase
+		want  string
+	}{
+		{UpgradePhaseExpanding, "Expanding"},
+		{UpgradePhaseMigrating, "Migrating"},
+		{UpgradePhaseRollingUpdate, "RollingUpdate"},
+		{UpgradePhaseContracting, "Contracting"},
+	}
+	for _, tt := range tests {
+		if string(tt.phase) != tt.want {
+			t.Errorf("expected %q, got %q", tt.want, tt.phase)
+		}
+	}
 }

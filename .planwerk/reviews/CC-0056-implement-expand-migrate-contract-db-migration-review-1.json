@@ -1,0 +1,85 @@
+{
+  "feature_id": "CC-0056",
+  "title": "Implement expand-migrate-contract DB migration strategy",
+  "date": "2026-04-10",
+  "verdict": "NEEDS_CHANGES",
+  "summary": "Implements the expand-migrate-contract database migration strategy for Keystone upgrades. Adds UpgradePhase type with 4 phases (Expanding, Migrating, RollingUpdate, Contracting), status fields (installedRelease, targetRelease, upgradePhase), version parsing with sequential upgrade validation, and phased Job execution coordinated with Deployment rollout. Fresh deployments continue using simple db_sync. Comprehensive unit tests cover all phase transitions, edge cases, and error paths. Integration tests verify both fresh deployment tracking and full upgrade cycle. The implementation is clean, well-structured, and follows existing codebase patterns. One lint issue needs fixing: test code accesses the deprecated result.Requeue field directly instead of using the existing test pattern.",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (go test ./operators/keystone/... clean)", "checked": true},
+    {"item": "Edge cases covered (interrupted upgrade resume, tag change during upgrade, unparseable versions, patch-only changes)", "checked": true},
+    {"item": "Version parsing covers valid formats, invalid formats, boundary values (12 test cases)", "checked": true},
+    {"item": "Sequential upgrade validation covers valid/invalid paths including downgrades, skip-levels (9 test cases)", "checked": true},
+    {"item": "All 4 phases tested for Job creation, running/requeue, completion/transition, failure", "checked": true},
+    {"item": "Contract phase explicitly verified to use NEW image tag", "checked": true},
+    {"item": "Integration test verifies fresh deployment InstalledRelease tracking with no upgrade Jobs", "checked": true},
+    {"item": "Integration test verifies full expand-migrate-contract cycle with correct image tags per phase", "checked": true},
+    {"item": "Deployment tests verify RollingUpdate→Contracting transition and regression guards", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing sub-reconciler condition contract with ObservedGeneration", "checked": true},
+    {"item": "Uses shared buildUpgradeJob to avoid duplication across 3 phase builders", "checked": true},
+    {"item": "Functions are focused and small (each phase handler ~30 lines)", "checked": true},
+    {"item": "Clear naming (isUpgrade, initiateUpgrade, reconcileExpand, etc.)", "checked": true},
+    {"item": "Job names incorporate CR name for multi-instance safety", "checked": true},
+    {"item": "Uses existing job.RunJob for idempotent Job execution", "checked": true},
+    {"item": "golangci-lint clean (no new issues in production code)", "checked": true},
+    {"item": "go vet clean", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "PSS Restricted security context on all expand/migrate/contract Job containers", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "No injection vulnerabilities", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is minimal — upgrade logic added to existing reconcileDatabase, coordinated via reconcileDeployment", "checked": true},
+    {"item": "Phase state machine persisted in status for crash resilience", "checked": true},
+    {"item": "RollingUpdate pass-through leverages existing sequential sub-reconciler chain pattern", "checked": true},
+    {"item": "CRD manifests regenerated and include new status fields, printcolumn, and enum validation", "checked": true},
+    {"item": "No unnecessary abstractions — buildUpgradeJob shared builder is justified by 3 callers", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code (shared buildUpgradeJob, shared test helpers upgradingKeystone/completedUpgradeJob)", "checked": true},
+    {"item": "No unused code or dead paths", "checked": true},
+    {"item": "No future-proofing beyond requirements (e.g., no SLURP multi-release upgrade support)", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Upgrade path validated before any mutation (parse errors and non-sequential caught in initiateUpgrade)", "checked": true},
+    {"item": "Tag change during active upgrade detected and blocked before phase dispatch", "checked": true},
+    {"item": "Unknown upgrade phase returns error immediately", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs validated (version strings parsed with clear error messages)", "checked": true},
+    {"item": "Unparseable versions in isUpgrade delegate to initiateUpgrade for proper condition setting", "checked": true},
+    {"item": "Phase transitions are idempotent (RunJob handles existing/completed Jobs)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "V3",
+      "severity": "MAJOR",
+      "description": "Test code accesses deprecated result.Requeue field directly, triggering SA1019 staticcheck warnings. The existing test pattern uses Equal(ctrl.Result{Requeue: true}) which avoids the deprecation warning. Three instances in reconcile_database_test.go and four instances in reconcile_deployment_test.go access the field directly.",
+      "location": "operators/keystone/internal/controller/reconcile_database_test.go:569",
+      "fix": "Replace g.Expect(result.Requeue).To(BeTrue()) with g.Expect(result).To(Equal(ctrl.Result{Requeue: true})) to match existing pattern in reconcile_fernet_test.go:95 and reconcile_credential_test.go:99. Replace g.Expect(result.Requeue).To(BeFalse()) with g.Expect(result.Requeue).To(BeFalse()) — or better, assert the full result value. Affected lines: reconcile_database_test.go:569,897,964,1009 and reconcile_deployment_test.go:989,1051,1086.",
+      "evidence": "golangci-lint output:\noperators/keystone/internal/controller/reconcile_database_test.go:569:11: SA1019: result.Requeue is deprecated: Use `RequeueAfter` instead. (staticcheck)\noperators/keystone/internal/controller/reconcile_database_test.go:897:11: SA1019: result.Requeue is deprecated\noperators/keystone/internal/controller/reconcile_database_test.go:964:11: SA1019: result.Requeue is deprecated\n\nExisting pattern that avoids the warning (reconcile_fernet_test.go:95):\ng.Expect(result).To(Equal(ctrl.Result{Requeue: true}))",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "Q7",
+      "severity": "MINOR",
+      "description": "TestKeystoneStatusUpgradeFields (lines 155-166) duplicates the InstalledRelease, TargetRelease, and UpgradePhase zero-value checks already present in the modified TestKeystoneStatusFields (lines 127-135). Both verify the same conditions on a zero-value KeystoneStatus.",
+      "location": "operators/keystone/api/v1alpha1/keystone_types_test.go:155",
+      "fix": "Remove TestKeystoneStatusUpgradeFields entirely — its assertions are already covered by TestKeystoneStatusFields.",
+      "evidence": "TestKeystoneStatusFields (line 127-135):\nif status.InstalledRelease != \"\" {\n    t.Errorf(\"expected empty InstalledRelease, got %q\", status.InstalledRelease)\n}\nif status.TargetRelease != \"\" { ... }\nif status.UpgradePhase != \"\" { ... }\n\nTestKeystoneStatusUpgradeFields (line 155-166) — identical checks:\nif status.InstalledRelease != \"\" {\n    t.Errorf(\"expected empty InstalledRelease, got %q\", status.InstalledRelease)\n}\nif status.TargetRelease != \"\" { ... }\nif status.UpgradePhase != \"\" { ... }",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider documenting the limitation that resource requests/limits are not set on upgrade Jobs (BestEffort QoS) — tracked as CC-0042 per the reference docs but worth a code comment in buildUpgradeJob."
+  ],
+  "next_steps": [
+    "Fix SA1019 lint warnings in test files by using Equal(ctrl.Result{Requeue: true}) pattern instead of direct field access",
+    "Remove duplicate TestKeystoneStatusUpgradeFields test"
+  ],
+  "detected_patterns": []
+}

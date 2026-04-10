@@ -1,0 +1,54 @@
+{
+  "feature_id": "CC-0056",
+  "title": "Implement expand-migrate-contract DB migration strategy",
+  "date": "2026-04-10",
+  "summary": "Review #2 following external feedback from sourcery-ai[bot]. Changes address two suggestions: (1) extract shared Job construction into buildDBJob to eliminate drift between buildDBSyncJob and buildUpgradeJob, and (2) centralize duplicated condition-setting into setUpgradePhaseRunning and setUpgradeJobFailed helpers replacing 6 inline SetCondition calls. A minor doc typo was also fixed. All changes are behavior-preserving mechanical refactoring verified by passing tests.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "All unit tests pass (go test ./internal/controller/... — 0.74s, all PASS)", "checked": true},
+    {"item": "Upgrade phase tests cover expand/migrate/contract in-progress and failed paths via helpers", "checked": true},
+    {"item": "TestBuildUpgradeJobs verifies name, image, command, security context, config volume for all 3 phases", "checked": true},
+    {"item": "TestBuildDBSyncJob_SecurityContext still passes after buildDBJob extraction", "checked": true},
+    {"item": "Integration test TestIntegration_UpgradeCycle_ExpandMigrateContract exists", "checked": true},
+    {"item": "Edge cases covered (tag change during upgrade, invalid version, skip-level rejection)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing sub-reconciler condition contract pattern", "checked": true},
+    {"item": "Helper functions are small and single-purpose", "checked": true},
+    {"item": "No code duplication — 6 inline calls replaced by 2 helpers", "checked": true},
+    {"item": "buildDBJob consolidates shared Job spec preventing drift", "checked": true},
+    {"item": "Naming follows existing conventions (unexported helpers, verb+noun)", "checked": true},
+    {"item": "No dead code introduced", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "restrictedSecurityContext() still applied to all Job containers via buildDBJob", "checked": true},
+    {"item": "No secrets in condition messages or logs", "checked": true},
+    {"item": "gosec reports no issues", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Refactoring is behavior-preserving — condition Reason/Message values match originals exactly", "checked": true},
+    {"item": "buildDBJob parameters cover all variation points (imageTag, nameSuffix, command)", "checked": true},
+    {"item": "Helper placement is correct — same file, near callers", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated Job construction logic (buildDBJob shared)", "checked": true},
+    {"item": "No duplicated condition strings (helpers centralize)", "checked": true},
+    {"item": "No over-abstraction — helpers accept concrete parameters, no unnecessary interfaces", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Upgrade errors still propagate immediately with wrapped error context", "checked": true},
+    {"item": "Condition set before error return in all paths", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All condition fields (Type, Status, ObservedGeneration, Reason, Message) still populated", "checked": true},
+    {"item": "Error parameter in setUpgradeJobFailed is %v formatted — no panic on nil", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "The TODO(CC-0042) at reconcile_database.go:411 was moved from the old buildDBSyncJob body to the buildDBJob docstring. This consolidation of two duplicate TODOs into one is an improvement. No action needed in this PR — tracked by CC-0042."
+  ],
+  "next_steps": [],
+  "detected_patterns": []
+}

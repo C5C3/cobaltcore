@@ -1,0 +1,54 @@
+{
+  "feature_id": "CC-0056",
+  "title": "Implement expand-migrate-contract DB migration strategy",
+  "date": "2026-04-10",
+  "summary": "Review of changes addressing external review #2 feedback from berendt. Three items addressed: (1) W-001: Added Chainsaw E2E test suite under tests/e2e/keystone/upgrade-flow/ covering fresh deployment installedRelease tracking, sequential upgrade via expand-migrate-contract phases, and skip-level upgrade rejection. (2) W-002: Expanded inline comment in internal/common/job/job.go to explicitly acknowledge blast radius of Background propagation policy change and document that only the keystone operator uses RunJob. (3) I-001: Added IsDowngrade() function in version.go with distinct DowngradeNotSupported condition reason, separating downgrades from skip-level upgrades for clearer operator diagnostics at 3am.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Unit tests exist and pass for all new code (IsDowngrade, TestInitiateUpgrade_DowngradeRejected)", "checked": true},
+    {"item": "IsDowngrade has comprehensive table-driven tests (7 cases: same-year lower minor, earlier year, earlier year same minor, same version, upgrade, year rollover, patch suffix)", "checked": true},
+    {"item": "Downgrade rejection integration test verifies both error message and condition reason", "checked": true},
+    {"item": "Chainsaw E2E test covers fresh deployment, sequential upgrade, and skip-level rejection", "checked": true},
+    {"item": "Existing tests unaffected (all controller and job package tests pass)", "checked": true},
+    {"item": "E2E test verifies expand/migrate/contract Jobs exist as proof of phased execution", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "IsDowngrade follows same structure as IsSequentialUpgrade and IsPatchOnly (sibling consistency)", "checked": true},
+    {"item": "Downgrade check placed before sequential upgrade check in initiateUpgrade (fail-fast ordering)", "checked": true},
+    {"item": "Condition-setting pattern matches existing inline one-off transitions (consistent with I-002 finding)", "checked": true},
+    {"item": "job.go comment accurately documents blast radius scope", "checked": true},
+    {"item": "No dead code, no commented-out code, no magic strings", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No user input handling in changed code (version strings come from CR spec, not external input)", "checked": true},
+    {"item": "No secrets handling affected", "checked": true},
+    {"item": "PSS Restricted security context unaffected by changes", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "IsDowngrade is minimal and correct (year comparison + same-year minor comparison)", "checked": true},
+    {"item": "E2E test follows established Chainsaw pattern (SPDX header, step comments, JMESPath assertions, catch diagnostics, unique CR name, fixture ordering)", "checked": true},
+    {"item": "Blast radius of job.go change verified: only keystone operator calls RunJob (directly and via database.RunDBSyncJob wrapper)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated logic (IsDowngrade is a single-purpose function called from one location)", "checked": true},
+    {"item": "No speculative abstractions added", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Downgrade detected before sequential upgrade validation (more specific error first)", "checked": true},
+    {"item": "Both error return and status condition set on downgrade detection", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "ParseRelease errors handled before IsDowngrade call (nil-safe)", "checked": true},
+    {"item": "ObservedGeneration set on new DowngradeNotSupported condition", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "I-001 [INFO]: internal/common/job/job.go:78-79 — Comment says 'only the keystone operator uses RunJob' but internal/common/database/database.go:166 also calls job.RunJob via RunDBSyncJob wrapper. The blast radius claim is effectively correct (only keystone's reconcile_database.go calls RunDBSyncJob), but a more precise phrasing would be 'only keystone operator reconciliation paths trigger RunJob'. No action required — current wording is adequate for its purpose."
+  ],
+  "next_steps": [
+    "Merge after CI passes — all external review feedback items addressed"
+  ],
+  "detected_patterns": []
+}

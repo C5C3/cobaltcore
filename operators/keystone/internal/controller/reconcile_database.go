@@ -17,6 +17,7 @@ import (
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/database"
+	"github.com/c5c3/forge/internal/common/job"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
@@ -65,7 +66,34 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, keystone *ke
 		}
 	}
 
-	// Run the db_sync Job.
+	// Active upgrade: delegate to phase-specific handling (CC-0056).
+	if keystone.Status.UpgradePhase != "" {
+		// Detect tag change during an active upgrade (CC-0056, REQ-009).
+		if keystone.Spec.Image.Tag != keystone.Status.TargetRelease {
+			logger.Info("Image tag changed during active upgrade",
+				"targetRelease", keystone.Status.TargetRelease,
+				"newTag", keystone.Spec.Image.Tag,
+				"phase", keystone.Status.UpgradePhase)
+			conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+				Type:               "DatabaseReady",
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: keystone.Generation,
+				Reason:             "UpgradeTargetChanged",
+				Message: fmt.Sprintf("Image tag changed to %s during active upgrade %s → %s; complete or roll back the current upgrade first",
+					keystone.Spec.Image.Tag, keystone.Status.InstalledRelease, keystone.Status.TargetRelease),
+			})
+			return ctrl.Result{}, fmt.Errorf("image tag changed during active upgrade: current upgrade targets %s but spec.image.tag is %s",
+				keystone.Status.TargetRelease, keystone.Spec.Image.Tag)
+		}
+		return r.reconcileUpgrade(ctx, keystone, configMapName)
+	}
+
+	// Detect upgrade (CC-0056, REQ-001).
+	if isUpgrade(keystone) {
+		return r.initiateUpgrade(ctx, keystone)
+	}
+
+	// Non-upgrade path: simple db_sync.
 	done, err := database.RunDBSyncJob(ctx, r.Client, r.Scheme, keystone, buildDBSyncJob(keystone, configMapName))
 	if err != nil {
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
@@ -89,6 +117,9 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, keystone *ke
 		return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, nil
 	}
 
+	// Track installed release after successful db_sync (CC-0056, REQ-008).
+	keystone.Status.InstalledRelease = keystone.Spec.Image.Tag
+
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 		Type:               "DatabaseReady",
 		Status:             metav1.ConditionTrue,
@@ -96,6 +127,241 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, keystone *ke
 		Reason:             "DatabaseSynced",
 		Message:            "Database schema is up to date",
 	})
+	return ctrl.Result{}, nil
+}
+
+// isUpgrade returns true when spec.image.tag differs from status.installedRelease
+// and the change requires the expand-migrate-contract upgrade flow.
+// Returns false for fresh deployments (empty installedRelease), same version,
+// and patch-only changes (CC-0056, REQ-001).
+func isUpgrade(keystone *keystonev1alpha1.Keystone) bool {
+	if keystone.Status.InstalledRelease == "" {
+		return false
+	}
+	if keystone.Spec.Image.Tag == keystone.Status.InstalledRelease {
+		return false
+	}
+
+	from, err := ParseRelease(keystone.Status.InstalledRelease)
+	if err != nil {
+		// Let initiateUpgrade handle the error with proper conditions.
+		return true
+	}
+	to, err := ParseRelease(keystone.Spec.Image.Tag)
+	if err != nil {
+		return true
+	}
+
+	return !IsPatchOnly(from, to)
+}
+
+// initiateUpgrade validates the upgrade path and sets the initial upgrade state (CC-0056, REQ-001, REQ-007).
+func (r *KeystoneReconciler) initiateUpgrade(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	from, err := ParseRelease(keystone.Status.InstalledRelease)
+	if err != nil {
+		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+			Type:               "DatabaseReady",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: keystone.Generation,
+			Reason:             "VersionParseError",
+			Message:            fmt.Sprintf("failed to parse installed release %q: %v", keystone.Status.InstalledRelease, err),
+		})
+		return ctrl.Result{}, fmt.Errorf("parse installed release %q: %w", keystone.Status.InstalledRelease, err)
+	}
+
+	to, err := ParseRelease(keystone.Spec.Image.Tag)
+	if err != nil {
+		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+			Type:               "DatabaseReady",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: keystone.Generation,
+			Reason:             "VersionParseError",
+			Message:            fmt.Sprintf("failed to parse target release %q: %v", keystone.Spec.Image.Tag, err),
+		})
+		return ctrl.Result{}, fmt.Errorf("parse target release %q: %w", keystone.Spec.Image.Tag, err)
+	}
+
+	if IsDowngrade(from, to) {
+		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+			Type:               "DatabaseReady",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: keystone.Generation,
+			Reason:             "DowngradeNotSupported",
+			Message:            fmt.Sprintf("downgrade from %s to %s is not supported", from.Raw, to.Raw),
+		})
+		return ctrl.Result{}, fmt.Errorf("downgrade from %s to %s is not supported", from.Raw, to.Raw)
+	}
+
+	if !IsSequentialUpgrade(from, to) {
+		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+			Type:               "DatabaseReady",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: keystone.Generation,
+			Reason:             "UpgradePathInvalid",
+			Message:            fmt.Sprintf("upgrade from %s to %s is not sequential; only sequential upgrades are supported", from.Raw, to.Raw),
+		})
+		return ctrl.Result{}, fmt.Errorf("upgrade from %s to %s is not sequential; only sequential upgrades are supported", from.Raw, to.Raw)
+	}
+
+	keystone.Status.TargetRelease = keystone.Spec.Image.Tag
+	keystone.Status.UpgradePhase = keystonev1alpha1.UpgradePhaseExpanding
+	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+		Type:               "DatabaseReady",
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: keystone.Generation,
+		Reason:             "ExpandInProgress",
+		Message:            fmt.Sprintf("Upgrade detected: %s \u2192 %s (phase: Expanding)", from.Raw, to.Raw),
+	})
+
+	logger.Info("Upgrade detected", "from", from.Raw, "to", to.Raw, "phase", keystonev1alpha1.UpgradePhaseExpanding)
+	return ctrl.Result{Requeue: true}, nil
+}
+
+// setUpgradePhaseRunning sets DatabaseReady=False with reason "{phase}InProgress"
+// for an upgrade phase that is currently executing (CC-0056).
+func setUpgradePhaseRunning(keystone *keystonev1alpha1.Keystone, phase string) {
+	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+		Type:               "DatabaseReady",
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: keystone.Generation,
+		Reason:             phase + "InProgress",
+		Message:            fmt.Sprintf("%s phase running: %s \u2192 %s", phase, keystone.Status.InstalledRelease, keystone.Status.TargetRelease),
+	})
+}
+
+// setUpgradeJobFailed sets DatabaseReady=False with reason "{phase}Failed"
+// when an upgrade job fails (CC-0056).
+func setUpgradeJobFailed(keystone *keystonev1alpha1.Keystone, phase, jobName string, err error) {
+	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+		Type:               "DatabaseReady",
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: keystone.Generation,
+		Reason:             phase + "Failed",
+		Message:            fmt.Sprintf("%s job %s failed: %v", phase, jobName, err),
+	})
+}
+
+// reconcileUpgrade handles phased database migration during an active upgrade (CC-0056).
+// It dispatches to the handler for the current UpgradePhase.
+func (r *KeystoneReconciler) reconcileUpgrade(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
+	switch keystone.Status.UpgradePhase {
+	case keystonev1alpha1.UpgradePhaseExpanding:
+		return r.reconcileExpand(ctx, keystone, configMapName)
+	case keystonev1alpha1.UpgradePhaseMigrating:
+		return r.reconcileMigrate(ctx, keystone, configMapName)
+	case keystonev1alpha1.UpgradePhaseRollingUpdate:
+		return r.reconcileRollingUpdate(ctx, keystone)
+	case keystonev1alpha1.UpgradePhaseContracting:
+		return r.reconcileContract(ctx, keystone, configMapName)
+	default:
+		return ctrl.Result{}, fmt.Errorf("unknown upgrade phase %q", keystone.Status.UpgradePhase)
+	}
+}
+
+// reconcileExpand runs the db_sync --expand Job using the NEW image (spec.image.tag) (CC-0056).
+//
+// Per the OpenStack Keystone rolling upgrade procedure, expand migrations are
+// executed with the N+1 (target) code: the N+1 alembic tree owns the schema
+// deltas for the upgrade, and running expand with the N (old) binary only
+// advances the expand head to the old release's HEAD. A subsequent contract
+// run with the new binary then fails keystone's _validate_upgrade_order check
+// with "upgrade contract ahead of expand".
+func (r *KeystoneReconciler) reconcileExpand(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
+	expandJob := buildExpandJob(keystone, configMapName, keystone.Spec.Image.Tag)
+	done, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, expandJob)
+	if err != nil {
+		setUpgradeJobFailed(keystone, "Expand", expandJob.Name, err)
+		return ctrl.Result{}, fmt.Errorf("running expand job: %w", err)
+	}
+	if !done {
+		setUpgradePhaseRunning(keystone, "Expand")
+		return ctrl.Result{RequeueAfter: RequeueUpgradeWait}, nil
+	}
+
+	// Expand complete \u2014 transition to Migrating.
+	keystone.Status.UpgradePhase = keystonev1alpha1.UpgradePhaseMigrating
+	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+		Type:               "DatabaseReady",
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: keystone.Generation,
+		Reason:             "MigrateInProgress",
+		Message:            fmt.Sprintf("Expand complete, starting migrate: %s \u2192 %s", keystone.Status.InstalledRelease, keystone.Status.TargetRelease),
+	})
+	return ctrl.Result{Requeue: true}, nil
+}
+
+// reconcileMigrate runs the db_sync --migrate Job using the NEW image (spec.image.tag) (CC-0056).
+//
+// Like expand, migrate is executed with the N+1 (target) code so that the
+// alembic data-migration steps defined in the new release are applied (see
+// reconcileExpand for the full rationale).
+func (r *KeystoneReconciler) reconcileMigrate(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
+	migrateJob := buildMigrateJob(keystone, configMapName, keystone.Spec.Image.Tag)
+	done, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, migrateJob)
+	if err != nil {
+		setUpgradeJobFailed(keystone, "Migrate", migrateJob.Name, err)
+		return ctrl.Result{}, fmt.Errorf("running migrate job: %w", err)
+	}
+	if !done {
+		setUpgradePhaseRunning(keystone, "Migrate")
+		return ctrl.Result{RequeueAfter: RequeueUpgradeWait}, nil
+	}
+
+	// Migrate complete \u2014 transition to RollingUpdate.
+	keystone.Status.UpgradePhase = keystonev1alpha1.UpgradePhaseRollingUpdate
+	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+		Type:               "DatabaseReady",
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: keystone.Generation,
+		Reason:             "UpgradeRollingUpdate",
+		Message:            fmt.Sprintf("Migrate complete, waiting for Deployment rollout: %s \u2192 %s", keystone.Status.InstalledRelease, keystone.Status.TargetRelease),
+	})
+	return ctrl.Result{Requeue: true}, nil
+}
+
+// reconcileRollingUpdate is a pass-through that sets a condition and returns an empty
+// result so the main reconcile loop proceeds to reconcileDeployment (CC-0056).
+func (r *KeystoneReconciler) reconcileRollingUpdate(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+		Type:               "DatabaseReady",
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: keystone.Generation,
+		Reason:             "UpgradeRollingUpdate",
+		Message:            fmt.Sprintf("Waiting for Deployment rollout: %s \u2192 %s", keystone.Status.InstalledRelease, keystone.Status.TargetRelease),
+	})
+	return ctrl.Result{}, nil
+}
+
+// reconcileContract runs the db_sync --contract Job using the NEW image (spec.image.tag)
+// and finalizes the upgrade on completion (CC-0056, REQ-005, REQ-006).
+func (r *KeystoneReconciler) reconcileContract(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
+	contractJob := buildContractJob(keystone, configMapName, keystone.Spec.Image.Tag)
+	done, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, contractJob)
+	if err != nil {
+		setUpgradeJobFailed(keystone, "Contract", contractJob.Name, err)
+		return ctrl.Result{}, fmt.Errorf("running contract job: %w", err)
+	}
+	if !done {
+		setUpgradePhaseRunning(keystone, "Contract")
+		return ctrl.Result{RequeueAfter: RequeueUpgradeWait}, nil
+	}
+
+	// Contract complete \u2014 upgrade finished (CC-0056, REQ-005, REQ-006).
+	from := keystone.Status.InstalledRelease
+	to := keystone.Status.TargetRelease
+	keystone.Status.InstalledRelease = to
+	keystone.Status.TargetRelease = ""
+	keystone.Status.UpgradePhase = ""
+	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+		Type:               "DatabaseReady",
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: keystone.Generation,
+		Reason:             "DatabaseSynced",
+		Message:            fmt.Sprintf("Database schema is up to date (upgraded %s \u2192 %s)", from, to),
+	})
+	log.FromContext(ctx).Info("Upgrade complete", "from", from, "to", to)
 	return ctrl.Result{}, nil
 }
 
@@ -160,11 +426,18 @@ func buildGrant(keystone *keystonev1alpha1.Keystone) *mariadbv1alpha1.Grant {
 	}
 }
 
-func buildDBSyncJob(keystone *keystonev1alpha1.Keystone, configMapName string) *batchv1.Job {
+// buildDBJob constructs a keystone-manage db_sync Job with the shared container spec,
+// volume mounts, and security context used by both regular db_sync and upgrade phase
+// jobs. This single builder prevents drift when these need to change in the future.
+//
+// TODO(CC-0042): Wire spec.Resources (or a smaller Job-specific default) to the
+// container. Currently runs as BestEffort QoS. See reconcile_deployment.go
+// containerResources() for the pattern used by the keystone-api container.
+func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, imageTag, nameSuffix string, command []string) *batchv1.Job {
 	backoffLimit := int32(4)
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-db-sync", keystone.Name),
+			Name:      fmt.Sprintf("%s-%s", keystone.Name, nameSuffix),
 			Namespace: keystone.Namespace,
 		},
 		Spec: batchv1.JobSpec{
@@ -173,12 +446,9 @@ func buildDBSyncJob(keystone *keystonev1alpha1.Keystone, configMapName string) *
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyNever,
 					Containers: []corev1.Container{{
-						Name:  "db-sync",
-						Image: fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag),
-						// TODO(CC-0042): Wire spec.Resources (or a smaller Job-specific default) to
-						// this container. Currently runs as BestEffort QoS. See reconcile_deployment.go
-						// containerResources() for the pattern used by the keystone-api container.
-						Command:         []string{"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync"},
+						Name:            nameSuffix,
+						Image:           fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, imageTag),
+						Command:         command,
 						SecurityContext: restrictedSecurityContext(),
 						VolumeMounts: []corev1.VolumeMount{{
 							Name:      "config",
@@ -200,4 +470,33 @@ func buildDBSyncJob(keystone *keystonev1alpha1.Keystone, configMapName string) *
 			},
 		},
 	}
+}
+
+func buildDBSyncJob(keystone *keystonev1alpha1.Keystone, configMapName string) *batchv1.Job {
+	return buildDBJob(keystone, configMapName, keystone.Spec.Image.Tag, "db-sync",
+		[]string{"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync"})
+}
+
+// buildUpgradeJob creates a db_sync Job for one of the expand-migrate-contract
+// upgrade phases (CC-0056). The imageTag parameter allows callers to pin the
+// image independently of spec.Image.Tag (expand/migrate use the old release,
+// contract uses the new release).
+func buildUpgradeJob(keystone *keystonev1alpha1.Keystone, configMapName, imageTag, phase, flag string) *batchv1.Job {
+	return buildDBJob(keystone, configMapName, imageTag, fmt.Sprintf("db-%s", phase),
+		[]string{"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync", flag})
+}
+
+// buildExpandJob creates a db_sync --expand Job using the given imageTag (CC-0056).
+func buildExpandJob(keystone *keystonev1alpha1.Keystone, configMapName, imageTag string) *batchv1.Job {
+	return buildUpgradeJob(keystone, configMapName, imageTag, "expand", "--expand")
+}
+
+// buildMigrateJob creates a db_sync --migrate Job using the given imageTag (CC-0056).
+func buildMigrateJob(keystone *keystonev1alpha1.Keystone, configMapName, imageTag string) *batchv1.Job {
+	return buildUpgradeJob(keystone, configMapName, imageTag, "migrate", "--migrate")
+}
+
+// buildContractJob creates a db_sync --contract Job using the given imageTag (CC-0056).
+func buildContractJob(keystone *keystonev1alpha1.Keystone, configMapName, imageTag string) *batchv1.Job {
+	return buildUpgradeJob(keystone, configMapName, imageTag, "contract", "--contract")
 }

@@ -99,6 +99,21 @@ func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *
 		return ctrl.Result{RequeueAfter: RequeueDeploymentPolling}, nil
 	}
 
+	// Transition from RollingUpdate to Contracting when Deployment is ready (CC-0056, REQ-004).
+	if keystone.Status.UpgradePhase == keystonev1alpha1.UpgradePhaseRollingUpdate {
+		keystone.Status.UpgradePhase = keystonev1alpha1.UpgradePhaseContracting
+		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+			Type:               "DeploymentReady",
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: keystone.Generation,
+			Reason:             "DeploymentReady",
+			Message:            "Keystone API deployment is available",
+		})
+		log.FromContext(ctx).Info("Deployment rollout complete, transitioning to contract phase",
+			"from", keystone.Status.InstalledRelease, "to", keystone.Status.TargetRelease)
+		return ctrl.Result{Requeue: true}, nil
+	}
+
 	keystone.Status.Endpoint = fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", apiResourceName(keystone), keystone.Namespace)
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 		Type:               "DeploymentReady",

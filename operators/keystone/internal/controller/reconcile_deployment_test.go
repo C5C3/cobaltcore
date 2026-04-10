@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -964,6 +965,136 @@ func TestUWSGICommand_FixedFlagsAlwaysPresent(t *testing.T) {
 		g.Expect(cmd).To(ContainElement("--need-app"))
 		g.Expect(cmd).To(ContainElement("--pyargv=--config-dir=/etc/keystone/keystone.conf.d/"))
 	}
+}
+
+// Feature: CC-0056
+
+// TestReconcileDeployment_RollingUpdate_ReadyDeployment_TransitionsToContracting verifies that
+// when the Deployment becomes ready during an active upgrade in the RollingUpdate phase,
+// reconcileDeployment transitions UpgradePhase to Contracting and requeues immediately (CC-0056, REQ-004).
+func TestReconcileDeployment_RollingUpdate_ReadyDeployment_TransitionsToContracting(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+	ks.Status.InstalledRelease = "2025.2"
+	ks.Status.TargetRelease = "2026.1"
+	ks.Status.UpgradePhase = keystonev1alpha1.UpgradePhaseRollingUpdate
+
+	deploy := readyDeployment(ks, "keystone-config-abc123")
+	r := newDeployTestReconciler(s, ks, deploy)
+
+	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Must requeue immediately (not RequeueAfter) so the next reconcile enters reconcileContract.
+	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}), "expected immediate requeue for phase transition")
+
+	// UpgradePhase must transition to Contracting.
+	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseContracting))
+
+	// DeploymentReady condition must be True (the deployment IS ready).
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DeploymentReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("DeploymentReady"))
+
+	// Endpoint should NOT be set during upgrade phase transition (deferred to normal path).
+	g.Expect(ks.Status.Endpoint).To(BeEmpty())
+}
+
+// TestReconcileDeployment_RollingUpdate_NotReady_Requeues verifies that when the Deployment
+// is not ready during an active upgrade in the RollingUpdate phase, the operator requeues
+// with the standard polling interval and does NOT transition phases (CC-0056).
+func TestReconcileDeployment_RollingUpdate_NotReady_Requeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+	ks.Status.InstalledRelease = "2025.2"
+	ks.Status.TargetRelease = "2026.1"
+	ks.Status.UpgradePhase = keystonev1alpha1.UpgradePhaseRollingUpdate
+
+	deploy := notReadyDeployment(ks, "keystone-config-abc123")
+	r := newDeployTestReconciler(s, ks, deploy)
+
+	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Must requeue with the standard polling interval.
+	g.Expect(result.RequeueAfter).To(Equal(RequeueDeploymentPolling))
+
+	// UpgradePhase must remain RollingUpdate — no transition when not ready.
+	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseRollingUpdate))
+
+	// DeploymentReady condition must be False.
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DeploymentReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForDeployment"))
+}
+
+// TestReconcileDeployment_NoUpgrade_Ready_SetsEndpoint verifies that when there is no active
+// upgrade (empty UpgradePhase), the normal ready path sets the endpoint and DeploymentReady=True
+// without any phase transition (CC-0056 regression guard).
+func TestReconcileDeployment_NoUpgrade_Ready_SetsEndpoint(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+	// UpgradePhase is empty — no upgrade in progress.
+
+	deploy := readyDeployment(ks, "keystone-config-abc123")
+	r := newDeployTestReconciler(s, ks, deploy)
+
+	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Normal path: no requeue.
+	g.Expect(result).To(Equal(ctrl.Result{}))
+
+	// Endpoint must be set.
+	g.Expect(ks.Status.Endpoint).To(Equal("http://test-keystone-api.default.svc.cluster.local:5000/v3"))
+
+	// UpgradePhase must remain empty.
+	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhase("")))
+
+	// DeploymentReady condition must be True.
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DeploymentReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("DeploymentReady"))
+}
+
+// TestReconcileDeployment_OtherPhase_Ready_SetsEndpoint verifies that when an upgrade is
+// in a phase OTHER than RollingUpdate (e.g. Expanding), the deployment-ready path follows
+// the normal flow: sets endpoint, DeploymentReady=True, no phase transition. Only
+// RollingUpdate triggers the Contracting transition (CC-0056).
+func TestReconcileDeployment_OtherPhase_Ready_SetsEndpoint(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+	ks.Status.InstalledRelease = "2025.2"
+	ks.Status.TargetRelease = "2026.1"
+	ks.Status.UpgradePhase = keystonev1alpha1.UpgradePhaseExpanding
+
+	deploy := readyDeployment(ks, "keystone-config-abc123")
+	r := newDeployTestReconciler(s, ks, deploy)
+
+	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Normal path: no requeue.
+	g.Expect(result).To(Equal(ctrl.Result{}))
+
+	// Endpoint must be set (normal ready path).
+	g.Expect(ks.Status.Endpoint).To(Equal("http://test-keystone-api.default.svc.cluster.local:5000/v3"))
+
+	// UpgradePhase must remain Expanding — no transition.
+	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseExpanding))
+
+	// DeploymentReady condition must be True.
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DeploymentReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("DeploymentReady"))
 }
 
 // indexOf returns the index of the first occurrence of s in slice, or -1.

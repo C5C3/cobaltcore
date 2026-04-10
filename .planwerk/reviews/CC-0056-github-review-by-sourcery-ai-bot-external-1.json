@@ -1,0 +1,37 @@
+{
+  "feature_id": "CC-0056",
+  "title": "GitHub Review by sourcery-ai[bot]",
+  "summary": "**Summary:** Reviewer asks to (1) extract shared job-construction logic (`buildDBSyncJob`/`buildUpgradeJob`) into a common helper to prevent drift, (2) centralize upgrade-related condition-setting (`DatabaseReady`/`DeploymentReady`) into small helpers to keep reason/message strings consistent, and (3) fix a grammatical typo in `keystone-upgrade-flow.md` (\"ensures the Deployment with\" → \"ensures the Deployment is configured with\").",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "sourcery-ai[bot]",
+  "date": "2026-04-10T07:54:57Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "Hey - I've found 1 issue, and left some high level feedback:\n\n- The job construction logic between `buildDBSyncJob` and `buildUpgradeJob` is very similar; consider refactoring shared pieces (container spec, volume mounts, security context) into a common helper to avoid drift when these need to change in the future.\n- Upgrade-related condition setting for `DatabaseReady` and `DeploymentReady` is currently spread across multiple functions with duplicated reason/message strings; centralizing this into small helpers (e.g., `setUpgradeCondition(phase, status, err)`) would make it easier to keep messages consistent and reduce the chance of inconsistencies when extending the state machine.\n\n<details>\n<summary>Prompt for AI Agents</summary>\n\n~~~markdown\nPlease address the comments from this code review:\n\n## Overall Comments\n- The job construction logic between `buildDBSyncJob` and `buildUpgradeJob` is very similar; consider refactoring shared pieces (container spec, volume mounts, security context) into a common helper to avoid drift when these need to change in the future.\n- Upgrade-related condition setting for `DatabaseReady` and `DeploymentReady` is currently spread across multiple functions with duplicated reason/message strings; centralizing this into small helpers (e.g., `setUpgradeCondition(phase, status, err)`) would make it easier to keep messages consistent and reduce the chance of inconsistencies when extending the state machine.\n\n## Individual Comments\n\n### Comment 1\n<location path=\"docs/reference/keystone-upgrade-flow.md\" line_range=\"177\" />\n<code_context>\n+\n+- **No Job created.** The `reconcileDatabase` sub-reconciler returns `ctrl.Result{}`\n+  (empty result), allowing the reconciler chain to continue to `reconcileDeployment`.\n+- `reconcileDeployment` ensures the Deployment with `spec.image.tag` (the NEW image).\n+  Kubernetes performs a rolling update of the pods.\n+- **On Deployment ready:** `reconcileDeployment` transitions the phase to\n</code_context>\n<issue_to_address>\n**nitpick (typo):** Clarify the sentence so `reconcileDeployment`’s role is grammatically complete.\n\nThe phrase \"ensures the Deployment with `spec.image.tag`\" is grammatically incomplete. Consider rephrasing to something like \"ensures the Deployment uses `spec.image.tag` (the NEW image)\" or \"ensures the Deployment is configured with `spec.image.tag` (the NEW image).\"\n\n```suggestion\n- `reconcileDeployment` ensures the Deployment is configured with `spec.image.tag` (the NEW image).\n```\n</issue_to_address>\n~~~\n\n</details>\n\n***\n\n<details>\n<summary>Sourcery is free for open source - if you like our reviews please consider sharing them ✨</summary>\n\n- [X](https://twitter.com/intent/tweet?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [Mastodon](https://mastodon.social/share?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [LinkedIn](https://www.linkedin.com/sharing/share-offsite/?url=https://sourcery.ai)\n- [Facebook](https://www.facebook.com/sharer/sharer.php?u=https://sourcery.ai)\n\n</details>\n\n<sub>\nHelp me be more useful! Please click 👍 or 👎 on each comment and I'll use the feedback to improve your reviews.\n</sub>",
+  "code_comments": [
+    {
+      "body": "**nitpick (typo):** Clarify the sentence so `reconcileDeployment`’s role is grammatically complete.\n\nThe phrase \"ensures the Deployment with `spec.image.tag`\" is grammatically incomplete. Consider rephrasing to something like \"ensures the Deployment uses `spec.image.tag` (the NEW image)\" or \"ensures the Deployment is configured with `spec.image.tag` (the NEW image).\"\n\n```suggestion\n- `reconcileDeployment` ensures the Deployment is configured with `spec.image.tag` (the NEW image).\n```",
+      "path": "docs/reference/keystone-upgrade-flow.md",
+      "line": 177,
+      "author": "sourcery-ai[bot]",
+      "created_at": "2026-04-10T07:54:57Z",
+      "id": null,
+      "resolution": "docs/reference/keystone-upgrade-flow.md:177 — Fixed the grammatical incompleteness by changing 'ensures the Deployment with `spec.image.tag`' to 'ensures the Deployment is configured with `spec.image.tag`', exactly matching the reviewer's suggestion."
+    }
+  ],
+  "resolution_summary": "All three review comments were addressed in reconcile_database.go and keystone-upgrade-flow.md. Job construction was refactored by extracting a shared buildDBJob helper that both buildDBSyncJob and buildUpgradeJob now delegate to, eliminating the duplicated container spec, volume mounts, and security context. Upgrade condition setting was centralized into two helpers (setUpgradePhaseRunning and setUpgradeJobFailed) that replaced six inline SetCondition calls across reconcileExpand, reconcileMigrate, and reconcileContract. No files beyond those mentioned in the review were modified.",
+  "github_review_id": 4088199385
+}

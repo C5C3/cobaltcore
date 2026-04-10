@@ -16,6 +16,7 @@ import (
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="Endpoint",type="string",JSONPath=".status.endpoint"
+// +kubebuilder:printcolumn:name="Release",type="string",JSONPath=".status.installedRelease"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // Keystone is the Schema for the keystones API.
@@ -248,6 +249,17 @@ type BootstrapSpec struct {
 	PublicEndpoint string `json:"publicEndpoint,omitempty"`
 }
 
+// UpgradePhase represents the current phase of a database upgrade (CC-0056).
+// +kubebuilder:validation:Enum=Expanding;Migrating;RollingUpdate;Contracting
+type UpgradePhase string
+
+const (
+	UpgradePhaseExpanding     UpgradePhase = "Expanding"
+	UpgradePhaseMigrating     UpgradePhase = "Migrating"
+	UpgradePhaseRollingUpdate UpgradePhase = "RollingUpdate"
+	UpgradePhaseContracting   UpgradePhase = "Contracting"
+)
+
 // KeystoneStatus defines the observed state of Keystone.
 type KeystoneStatus struct {
 	// Conditions represent the latest available observations of the Keystone state.
@@ -255,6 +267,15 @@ type KeystoneStatus struct {
 
 	// Endpoint is the Keystone API endpoint URL.
 	Endpoint string `json:"endpoint,omitempty"`
+
+	// InstalledRelease is the OpenStack release version currently deployed (CC-0056).
+	InstalledRelease string `json:"installedRelease,omitempty"`
+
+	// TargetRelease is the upgrade target release during an active upgrade (CC-0056).
+	TargetRelease string `json:"targetRelease,omitempty"`
+
+	// UpgradePhase is the current phase of a database upgrade (CC-0056).
+	UpgradePhase UpgradePhase `json:"upgradePhase,omitempty"`
 }
 
 func init() {
