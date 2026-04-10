@@ -62,6 +62,12 @@ type KeystoneSpec struct {
 	// CredentialKeys configures credential key rotation.
 	CredentialKeys CredentialKeysSpec `json:"credentialKeys,omitempty"`
 
+	// TrustFlush configures periodic purging of expired trust delegations (CC-0057).
+	// When set, the operator creates a CronJob running keystone-manage trust_flush
+	// on the specified schedule. When removed (nil), the CronJob is deleted.
+	// +optional
+	TrustFlush *TrustFlushSpec `json:"trustFlush,omitempty"`
+
 	// Federation configures Keystone federation (optional).
 	// +optional
 	Federation *FederationSpec `json:"federation,omitempty"`
@@ -220,6 +226,24 @@ type CredentialKeysSpec struct {
 	// +kubebuilder:validation:Minimum=3
 	// +kubebuilder:default=3
 	MaxActiveKeys int32 `json:"maxActiveKeys,omitempty"`
+}
+
+// TrustFlushSpec configures periodic purging of expired trust delegations (CC-0057).
+// Exposed as an optional pointer field on KeystoneSpec so that existing CRs
+// without spec.trustFlush continue to work — the reconciler skips CronJob
+// creation when the pointer is nil.
+type TrustFlushSpec struct {
+	// Schedule is a cron expression controlling when keystone-manage trust_flush runs.
+	// +kubebuilder:default="0 * * * *"
+	Schedule string `json:"schedule,omitempty"`
+
+	// Suspend pauses the CronJob without deleting it.
+	// +kubebuilder:default=false
+	Suspend bool `json:"suspend,omitempty"`
+
+	// Args provides additional CLI flags passed to keystone-manage trust_flush.
+	// +optional
+	Args []string `json:"args,omitempty"`
 }
 
 // FederationSpec defines Keystone federation configuration.

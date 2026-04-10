@@ -1407,6 +1407,72 @@ func TestValidate_ResourcesRequestsOnlyAccepted(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
+// --- TrustFlush cron validation tests (CC-0057, REQ-008) ---
+
+func TestValidate_TrustFlush_ValidCronAccepted(t *testing.T) {
+	w := &KeystoneWebhook{}
+	expressions := []string{
+		"0 * * * *",   // hourly (default)
+		"*/5 * * * *", // every 5 minutes
+		"30 2 * * 0",  // 2:30 AM on Sundays
+		"0 0 1 * *",   // midnight on the 1st of each month
+	}
+
+	for _, expr := range expressions {
+		t.Run(expr, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			k := validKeystone()
+			k.Spec.TrustFlush = &TrustFlushSpec{Schedule: expr}
+			_, err := w.ValidateCreate(context.Background(), k)
+			g.Expect(err).NotTo(HaveOccurred())
+		})
+	}
+}
+
+func TestValidate_TrustFlush_InvalidCronRejected(t *testing.T) {
+	w := &KeystoneWebhook{}
+	expressions := []string{
+		"not-a-cron",
+		"* * *",      // too few fields
+		"60 * * * *", // minute out of range
+		"* 25 * * *", // hour out of range
+	}
+
+	for _, expr := range expressions {
+		t.Run(expr, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			k := validKeystone()
+			k.Spec.TrustFlush = &TrustFlushSpec{Schedule: expr}
+			_, err := w.ValidateCreate(context.Background(), k)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("trustFlush"))
+			g.Expect(err.Error()).To(ContainSubstring("schedule"))
+		})
+	}
+}
+
+func TestValidate_TrustFlush_EmptyScheduleRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.TrustFlush = &TrustFlushSpec{Schedule: ""}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("trustFlush"))
+	g.Expect(err.Error()).To(ContainSubstring("schedule"))
+}
+
+func TestValidate_TrustFlush_NilPassesValidation(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.TrustFlush = nil
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
 // --- Interface compliance (CC-0011) ---
 
 func TestKeystoneWebhook_ImplementsInterfaces(t *testing.T) {

@@ -213,6 +213,23 @@ func (w *KeystoneWebhook) validate(k *Keystone) error {
 		))
 	}
 
+	// REQ-008 (CC-0057): Validate cron expression for trust flush schedule.
+	// Only validated when spec.trustFlush is set (optional pointer field).
+	if k.Spec.TrustFlush != nil {
+		if k.Spec.TrustFlush.Schedule == "" {
+			allErrs = append(allErrs, field.Required(
+				specPath.Child("trustFlush", "schedule"),
+				"schedule must be set; default is \"0 * * * *\"",
+			))
+		} else if _, err := cron.ParseStandard(k.Spec.TrustFlush.Schedule); err != nil {
+			allErrs = append(allErrs, field.Invalid(
+				specPath.Child("trustFlush", "schedule"),
+				k.Spec.TrustFlush.Schedule,
+				fmt.Sprintf("invalid cron expression: %v", err),
+			))
+		}
+	}
+
 	// REQ-003 (CC-0011): Detect duplicate plugin config sections.
 	seen := make(map[string]bool, len(k.Spec.Plugins))
 	for i, p := range k.Spec.Plugins {

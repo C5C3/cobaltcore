@@ -672,6 +672,28 @@ spec:
                       More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                     type: object
                 type: object
+              trustFlush:
+                description: |-
+                  TrustFlush configures periodic purging of expired trust delegations (CC-0057).
+                  When set, the operator creates a CronJob running keystone-manage trust_flush
+                  on the specified schedule. When removed (nil), the CronJob is deleted.
+                properties:
+                  args:
+                    description: Args provides additional CLI flags passed to keystone-manage
+                      trust_flush.
+                    items:
+                      type: string
+                    type: array
+                  schedule:
+                    default: 0 * * * *
+                    description: Schedule is a cron expression controlling when keystone-manage
+                      trust_flush runs.
+                    type: string
+                  suspend:
+                    default: false
+                    description: Suspend pauses the CronJob without deleting it.
+                    type: boolean
+                type: object
               uwsgi:
                 description: |-
                   UWSGI configures the uWSGI application server parameters (CC-0040).

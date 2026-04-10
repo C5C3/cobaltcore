@@ -1,7 +1,7 @@
 ---
 title: Keystone CRD API Reference
 quadrant: operator
-feature: CC-0011, CC-0012, CC-0016, CC-0038, CC-0040, CC-0042
+feature: CC-0011, CC-0012, CC-0016, CC-0038, CC-0040, CC-0042, CC-0057
 ---
 
 # Keystone CRD API Reference
@@ -62,6 +62,8 @@ spec:
   fernet:
     rotationSchedule: "0 0 * * 0"
     maxActiveKeys: 3
+  trustFlush:
+    schedule: "0 * * * *"
   autoscaling:
     minReplicas: 2
     maxReplicas: 10
@@ -114,6 +116,7 @@ status:
 | `database` | [`DatabaseSpec`](#databasespec) | Yes | — | MariaDB connection configuration. |
 | `cache` | [`CacheSpec`](#cachespec) | Yes | — | Memcached cache configuration. |
 | `fernet` | [`FernetSpec`](#fernetspec) | No | See below | Fernet key rotation configuration. |
+| `trustFlush` | [`*TrustFlushSpec`](#trustflushspec) | No | `nil` | Trust flush CronJob configuration. When set, the operator creates a CronJob running `keystone-manage trust_flush` on the specified schedule. When removed, the CronJob is deleted (CC-0057). |
 | `federation` | [`*FederationSpec`](#federationspec) | No | `nil` | Federation configuration (optional). |
 | `bootstrap` | [`BootstrapSpec`](#bootstrapspec) | Yes | — | Initial Keystone bootstrap parameters. |
 | `middleware` | `[]MiddlewareSpec` | No | `nil` | WSGI middleware filters for api-paste.ini. |
@@ -296,6 +299,70 @@ Configures Fernet token key rotation.
 
 ---
 
+## TrustFlushSpec
+
+Configures periodic purging of expired trust delegations (CC-0057). This is a
+pointer field (`*TrustFlushSpec`) on `KeystoneSpec` — when `nil`, no trust-flush
+CronJob is created and the `TrustFlushReady` condition is set to `True` with reason
+`TrustFlushNotRequired`. When set, the operator creates a CronJob named
+`{name}-trust-flush` running `keystone-manage trust_flush`. Removing the field
+deletes the existing CronJob.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `schedule` | `string` | No | `"0 * * * *"` | Cron expression (5-field standard format) for trust flush. Validated by `robfig/cron/v3` `ParseStandard`. Default is hourly. |
+| `suspend` | `bool` | No | `false` | Suspends the CronJob without deleting it. Maps to the CronJob `spec.suspend` field. The CronJob resource and `TrustFlushReady=True` condition are preserved while suspended. |
+| `args` | `[]string` | No | `nil` | Additional CLI flags appended after `keystone-manage trust_flush`. Flags such as `--keystone-user`, `--keystone-group`, `--date` are passed through verbatim. |
+
+### CronJob Resource Mapping
+
+The CronJob created from this spec has the following shape:
+
+| CronJob Field | Value |
+| --- | --- |
+| `metadata.name` | `{name}-trust-flush` |
+| `metadata.labels` | `commonLabels` (same as Deployment) |
+| `spec.schedule` | `trustFlush.schedule` |
+| `spec.suspend` | `&trustFlush.suspend` (pointer to bool) |
+| `spec.jobTemplate.spec.template.spec.restartPolicy` | `OnFailure` |
+| Container name | `trust-flush` |
+| Container image | `{spec.image.repository}:{spec.image.tag}` |
+| Container command | `["keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "trust_flush"]` + `args` |
+| Container securityContext | `restrictedSecurityContext()` (PSS Restricted) |
+| `ownerReferences` | Points to the Keystone CR (controller: true) |
+
+### Volume Mounts
+
+The trust-flush container mounts the same configuration and key volumes as the
+Deployment, all read-only:
+
+| Volume Name | Mount Path | Source | ReadOnly |
+| --- | --- | --- | --- |
+| `config` | `/etc/keystone/keystone.conf.d/` | ConfigMap `{configMapName}` | Yes |
+| `fernet-keys` | `/etc/keystone/fernet-keys` | Secret `{name}-fernet-keys` | Yes |
+| `credential-keys` | `/etc/keystone/credential-keys` | Secret `{name}-credential-keys` | Yes |
+
+### Example
+
+```yaml
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone
+  namespace: openstack
+spec:
+  replicas: 3
+  image:
+    repository: c5c3/keystone
+    tag: "2025.1"
+  # ... other required fields ...
+  trustFlush:
+    schedule: "30 2 * * 0"
+    args: ["--date", "2024-01-01"]
+```
+
+---
+
 ## FederationSpec
 
 Configures Keystone federation support. This is a pointer field (`*FederationSpec`)
@@ -473,6 +540,8 @@ single `apierrors.NewInvalid` error. It does **not** short-circuit on the first 
 | uWSGI processes minimum | `spec.uwsgi.processes` | `field.Invalid` | `processes < 1` when `spec.uwsgi` is non-nil. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker (CC-0040). |
 | uWSGI threads minimum | `spec.uwsgi.threads` | `field.Invalid` | `threads < 1` when `spec.uwsgi` is non-nil. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker (CC-0040). |
 | Resource request exceeds limit | `spec.resources.requests.<resource>` | `field.Invalid` | A resource request exceeds its corresponding limit (e.g., CPU request 1000m > limit 500m). Checked per resource type when both requests and limits are set (CC-0042). |
+| Trust flush schedule required | `spec.trustFlush.schedule` | `field.Required` | `trustFlush` is set but `schedule` is empty. Defense-in-depth — the `+kubebuilder:default` marker normally prevents this, but bypass paths (e.g., `kubectl patch`) may produce an empty string (CC-0057). |
+| Trust flush cron expression | `spec.trustFlush.schedule` | `field.Invalid` | `cron.ParseStandard()` fails on `trustFlush.schedule`. Error message includes the parse failure details (CC-0057). |
 
 **Error format:** All validation errors are returned as a structured
 `apierrors.StatusError` with `GroupKind{Group: "keystone.openstack.c5c3.io", Kind: "Keystone"}`,
@@ -638,6 +707,7 @@ Both targets are parameterized by operator directory in the Makefile. Generated
 - `KeystoneStatus`
 - `AutoscalingSpec`
 - `UWSGISpec`
+- `TrustFlushSpec`
 - `FernetSpec`
 - `FederationSpec`
 - `BootstrapSpec`

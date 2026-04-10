@@ -1,0 +1,162 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for trust flush CronJob feature (CC-0057).
+# Verifies:
+#   - CronJob creation when spec.trustFlush is set
+#   - CronJob schedule and suspend match spec.trustFlush
+#   - TrustFlushReady condition set with reason TrustFlushReady
+#   - Manual trigger via kubectl create job --from=cronjob executes successfully
+#   - CronJob deletion when spec.trustFlush is removed
+#   - TrustFlushReady condition updated to reason TrustFlushNotRequired
+#
+# REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-006 (CC-0057)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-trust-flush
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR with trustFlush configured ─────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Wait for Ready=True ────────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-trust-flush
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== ConfigMap content ==="
+          for cm in $(kubectl get cm -n $NAMESPACE -o name 2>/dev/null | grep config-); do
+            echo "--- $cm ---"
+            kubectl get -n $NAMESPACE "$cm" -o jsonpath='{.data}' 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Assert TrustFlushReady=True ────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-trust-flush
+            namespace: openstack
+          status:
+            (conditions[?type == 'TrustFlushReady']):
+            - status: "True"
+              reason: TrustFlushReady
+  # ── Step 4: Assert CronJob created with correct schedule ─────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: keystone-trust-flush-trust-flush
+            namespace: openstack
+          spec:
+            schedule: "0 * * * *"
+            suspend: false
+  # ── Step 5: Trigger manual trust flush and verify job completes ────────
+  - try:
+    - script:
+        timeout: 180s
+        content: |
+          set -eu
+
+          # Trigger manual trust flush
+          kubectl create job keystone-trust-flush-manual-flush \
+            --from=cronjob/keystone-trust-flush-trust-flush -n openstack
+          kubectl wait --for=condition=complete \
+            job/keystone-trust-flush-manual-flush -n openstack --timeout=120s
+
+          echo "OK: Trust flush job completed successfully"
+    catch:
+    - script:
+        content: |
+          echo "=== Trust flush Job pods ==="
+          kubectl get pods -n $NAMESPACE -l job-name=keystone-trust-flush-manual-flush -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name=keystone-trust-flush-manual-flush -o name 2>/dev/null); do
+            echo "--- $pod logs ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 2>&1 || true
+            echo "--- $pod previous logs ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 --previous 2>&1 || true
+            echo "--- $pod describe ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -20 || true
+  # ── Step 6: Assert Ready=True maintained after job ─────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-trust-flush
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+  # ── Step 7: Disable trust flush (set spec.trustFlush to null) ──────────
+  - try:
+    - patch:
+        file: 01-patch-disable-trust-flush.yaml
+  # ── Step 8: Assert TrustFlushReady=True with reason TrustFlushNotRequired
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-trust-flush
+            namespace: openstack
+          status:
+            (conditions[?type == 'TrustFlushReady']):
+            - status: "True"
+              reason: TrustFlushNotRequired
+  # ── Step 9: Assert CronJob deleted ─────────────────────────────────────
+  - try:
+    - script:
+        content: |
+          # Verify CronJob no longer exists (CC-0057, REQ-002).
+          if kubectl get cronjob keystone-trust-flush-trust-flush -n $NAMESPACE 2>/dev/null; then
+            echo "FAIL: CronJob should have been deleted"
+            exit 1
+          fi
+          echo "PASS: CronJob correctly deleted"

@@ -1,0 +1,89 @@
+{
+  "feature_id": "CC-0057",
+  "title": "Add trust-flush CronJob sub-reconciler",
+  "date": "2026-04-10",
+  "verdict": "NEEDS_CHANGES",
+  "summary": "Clean, well-structured implementation of the trust-flush CronJob sub-reconciler that follows established optional sub-reconciler patterns (HPA, NetworkPolicy). All acceptance criteria are met. CRD types, webhook validation, reconciler wiring, deepcopy, CRD YAML, and documentation are complete and consistent. Two major findings: (1) SecurityContext test uses inline assertions instead of the shared expectRestrictedSecurityContext helper, checking only 2 of 4 PSS Restricted fields; (2) TestReconcile_SetsAllSubConditionsTrue does not include TrustFlushReady in its assertion loop despite the condition being added to subConditionTypes.",
+  "tests_checklist": [
+    {"item": "Unit tests exist and pass (18 tests)", "checked": true},
+    {"item": "Integration tests exist with envtest (3 tests)", "checked": true},
+    {"item": "Happy path tested (CronJob creation, update)", "checked": true},
+    {"item": "Edge cases covered (nil spec, empty args, suspend toggle)", "checked": true},
+    {"item": "Error cases covered (create error, delete error propagation)", "checked": true},
+    {"item": "Condition contract tested (ObservedGeneration, Reason, Status)", "checked": true},
+    {"item": "SecurityContext test uses shared helper", "checked": false},
+    {"item": "Webhook validation tests (valid cron, invalid cron, empty, nil)", "checked": true},
+    {"item": "Aggregate Ready condition tests updated (TestAggregateReady_AllTrue/OneFalse)", "checked": true},
+    {"item": "Full reconcile condition assertion includes TrustFlushReady", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing optional sub-reconciler pattern (HPA/NetworkPolicy)", "checked": true},
+    {"item": "Functions have single responsibility", "checked": true},
+    {"item": "No code duplication", "checked": true},
+    {"item": "Clear naming (reconcileTrustFlush, trustFlushCronJob, deleteCronJob)", "checked": true},
+    {"item": "Error wrapping with descriptive context", "checked": true},
+    {"item": "CronJob name derived from CR name (multi-instance safe)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "restrictedSecurityContext() applied to trust-flush container", "checked": true},
+    {"item": "All volume mounts are ReadOnly: true", "checked": true},
+    {"item": "No privilege escalation (AllowPrivilegeEscalation: false)", "checked": true},
+    {"item": "Cron expression validated via webhook (cron.ParseStandard)", "checked": true},
+    {"item": "Empty schedule rejected with field.Required", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "Helm RBAC already includes batch/cronjobs", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "TrustFlushSpec is optional pointer field (*TrustFlushSpec) on KeystoneSpec", "checked": true},
+    {"item": "Three-path lifecycle (nil/set/error) matches HPA/NetworkPolicy", "checked": true},
+    {"item": "Uses job.EnsureCronJob from shared package", "checked": true},
+    {"item": "TrustFlushReady in subConditionTypes for aggregate Ready", "checked": true},
+    {"item": "Reconcile call ordered after reconcileBootstrap, before setReadyCondition", "checked": true},
+    {"item": "No webhook Default() changes (schedule default from CRD marker)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No unnecessary abstractions", "checked": true},
+    {"item": "deleteCronJob is minimal (same pattern as deleteNetworkPolicy)", "checked": true},
+    {"item": "No unused code or dead paths", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors propagated immediately from EnsureCronJob", "checked": true},
+    {"item": "Errors propagated immediately from deleteCronJob", "checked": true},
+    {"item": "Webhook rejects invalid cron before reconciler runs", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Nil guard on spec.TrustFlush before accessing fields", "checked": true},
+    {"item": "Empty schedule guard in webhook validate()", "checked": true},
+    {"item": "client.IgnoreNotFound on delete (idempotent)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "PC3",
+      "severity": "MAJOR",
+      "description": "TestTrustFlushCronJob_SecurityContext uses inline assertions checking only 2 of 4 SecurityContext fields (AllowPrivilegeEscalation, RunAsNonRoot) instead of the shared expectRestrictedSecurityContext helper from security_context_test.go. Every other reconciler test file (reconcile_fernet_test.go, reconcile_bootstrap_test.go, reconcile_deployment_test.go, reconcile_credential_test.go, reconcile_database_test.go) uses this helper, which also validates ReadOnlyRootFilesystem and SeccompProfile. This violates the mandatory 'Cross-cutting security helpers in dedicated files with shared test assertions' pattern.",
+      "location": "operators/keystone/internal/controller/reconcile_trustflush_test.go:478-491",
+      "fix": "Replace the inline assertions with a call to expectRestrictedSecurityContext(g, &cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0]). This ensures all 4 PSS Restricted fields are verified and follows the established pattern.",
+      "evidence": "func TestTrustFlushCronJob_SecurityContext(t *testing.T) {\n\tg := NewGomegaWithT(t)\n\t// ... setup ...\n\tsc := cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext\n\tg.Expect(sc).NotTo(BeNil())\n\tg.Expect(*sc.AllowPrivilegeEscalation).To(BeFalse())\n\tg.Expect(*sc.RunAsNonRoot).To(BeTrue())\n\t// Missing: ReadOnlyRootFilesystem and SeccompProfile checks\n}\n\n// Compare with reconcile_fernet_test.go:455 which uses:\n// expectRestrictedSecurityContext(g, findContainerByName(podSpec.Containers, \"fernet-rotate\"))",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "TE1",
+      "severity": "MAJOR",
+      "description": "TestReconcile_SetsAllSubConditionsTrue exercises a full Reconcile() call and asserts all sub-conditions are True, but the assertion loop at line 294 lists only the original 8 condition types and does not include TrustFlushReady. The production code at keystone_controller.go:43 added TrustFlushReady to subConditionTypes (now 9 entries). A regression that removes the reconcileTrustFlush call from the Reconcile chain would not be caught by this test. This also matches the external review pattern 'Ensure test names accurately describe their coverage scope'.",
+      "location": "operators/keystone/internal/controller/keystone_controller_test.go:294",
+      "fix": "Add \"TrustFlushReady\" to the condition type slice in the assertion loop:\nfor _, condType := range []string{\"SecretsReady\", \"FernetKeysReady\", \"CredentialKeysReady\", \"DatabaseReady\", \"DeploymentReady\", \"HPAReady\", \"NetworkPolicyReady\", \"BootstrapReady\", \"TrustFlushReady\"} {",
+      "evidence": "for _, condType := range []string{\"SecretsReady\", \"FernetKeysReady\", \"CredentialKeysReady\", \"DatabaseReady\", \"DeploymentReady\", \"HPAReady\", \"NetworkPolicyReady\", \"BootstrapReady\"} {\n\tcond := meta.FindStatusCondition(updated.Status.Conditions, condType)\n\tg.Expect(cond).NotTo(BeNil(), \"condition %s should exist\", condType)\n\tg.Expect(cond.Status).To(Equal(metav1.ConditionTrue), \"condition %s should be True\", condType)\n}\n\n// Production code has 9 entries in subConditionTypes but test only checks 8",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a Chainsaw E2E test (tests/e2e/keystone/trust-flush/) for the trust-flush CronJob lifecycle in a future ticket, matching the E2E coverage of fernet-rotation and network-policy features."
+  ],
+  "next_steps": [
+    "Replace inline SecurityContext assertions in TestTrustFlushCronJob_SecurityContext with the shared expectRestrictedSecurityContext helper",
+    "Add TrustFlushReady to the assertion loop in TestReconcile_SetsAllSubConditionsTrue"
+  ],
+  "detected_patterns": []
+}

@@ -291,7 +291,7 @@ func TestReconcile_SetsAllSubConditionsTrue(t *testing.T) {
 	var updated keystonev1alpha1.Keystone
 	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
 
-	for _, condType := range []string{"SecretsReady", "FernetKeysReady", "CredentialKeysReady", "DatabaseReady", "DeploymentReady", "HPAReady", "NetworkPolicyReady", "BootstrapReady"} {
+	for _, condType := range []string{"SecretsReady", "FernetKeysReady", "CredentialKeysReady", "DatabaseReady", "DeploymentReady", "HPAReady", "NetworkPolicyReady", "BootstrapReady", "TrustFlushReady"} {
 		cond := meta.FindStatusCondition(updated.Status.Conditions, condType)
 		g.Expect(cond).NotTo(BeNil(), "condition %s should exist", condType)
 		g.Expect(cond.Status).To(Equal(metav1.ConditionTrue), "condition %s should be True", condType)
@@ -393,6 +393,7 @@ func TestAggregateReady_AllTrue(t *testing.T) {
 		{Type: "HPAReady", Status: metav1.ConditionTrue},
 		{Type: "NetworkPolicyReady", Status: metav1.ConditionTrue},
 		{Type: "BootstrapReady", Status: metav1.ConditionTrue},
+		{Type: "TrustFlushReady", Status: metav1.ConditionTrue},
 	}
 	g.Expect(aggregateReady(conditions)).To(BeTrue())
 }
@@ -408,6 +409,7 @@ func TestAggregateReady_OneFalse(t *testing.T) {
 		{Type: "HPAReady", Status: metav1.ConditionTrue},
 		{Type: "NetworkPolicyReady", Status: metav1.ConditionTrue},
 		{Type: "BootstrapReady", Status: metav1.ConditionTrue},
+		{Type: "TrustFlushReady", Status: metav1.ConditionTrue},
 	}
 	g.Expect(aggregateReady(conditions)).To(BeFalse())
 }

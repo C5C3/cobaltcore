@@ -1,7 +1,7 @@
 ---
 title: Keystone Reconciler Architecture
 quadrant: operator
-feature: CC-0013, CC-0015, CC-0038
+feature: CC-0013, CC-0015, CC-0038, CC-0057
 ---
 
 # Keystone Reconciler Architecture
@@ -168,6 +168,12 @@ RBAC markers on the reconciler generate the required ClusterRole:
 │  └────────┬────────────┘  Requeue: 60s                                       │
 │           │                                                                  │
 │           ▼                                                                  │
+│  ┌────────────────────────┐                                                  │
+│  │ reconcileTrustFlush    │  Create/delete trust_flush CronJob               │
+│  │                        │  Sets: TrustFlushReady                           │
+│  └────────┬───────────────┘  Requeue: none                                   │
+│           │                                                                  │
+│           ▼                                                                  │
 │  setReadyCondition() — aggregate Ready from all sub-conditions               │
 │  updateStatus() — persist to API server                                      │
 │                                                                              │
@@ -238,6 +244,7 @@ sub-reconciler is responsible for:
 | `DeploymentReady` | `reconcileDeployment` | Deployment available and Service created |
 | `HPAReady` | `reconcileHPA` | HPA configured or not required |
 | `BootstrapReady` | `reconcileBootstrap` | Bootstrap Job completed successfully |
+| `TrustFlushReady` | `reconcileTrustFlush` | Trust flush CronJob configured or not required (CC-0057) |
 
 ---
 
@@ -749,6 +756,77 @@ run multiple times without side effects.
 
 ---
 
+### reconcileTrustFlush
+
+**File:** `operators/keystone/internal/controller/reconcile_trustflush.go`
+
+**Signature:**
+
+```go
+func (r *KeystoneReconciler) reconcileTrustFlush(ctx context.Context,
+    keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error)
+```
+
+**Purpose:** Manage the trust flush CronJob that periodically purges expired trust
+delegations from the Keystone database (CC-0057). Three lifecycle paths:
+
+1. **Trust flush disabled** (`spec.trustFlush` is nil): Delete any existing
+   `{name}-trust-flush` CronJob and set `TrustFlushReady=True` with reason
+   `TrustFlushNotRequired`.
+2. **Trust flush enabled** (`spec.trustFlush` is set): Build the desired CronJob via
+   `trustFlushCronJob()` and call `job.EnsureCronJob()` to create or update it.
+   Set `TrustFlushReady=True` with reason `TrustFlushReady`.
+3. **Error**: Propagate errors from ensure/delete operations with descriptive context.
+
+> **Note:** This sub-reconciler accepts the `configMapName` returned by
+> `reconcileConfig` to mount the correct immutable ConfigMap in the CronJob
+> pod spec.
+
+**CronJob Construction (`trustFlushCronJob`):**
+
+| CronJob Field | Value |
+| --- | --- |
+| Name | `{name}-trust-flush` |
+| Labels | `commonLabels(keystone)` |
+| Schedule | `spec.trustFlush.schedule` |
+| Suspend | `&spec.trustFlush.suspend` (pointer to CRD bool) |
+| Container name | `trust-flush` |
+| Image | `{spec.image.repository}:{spec.image.tag}` |
+| Command | `["keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "trust_flush"]` + `spec.trustFlush.args` |
+| SecurityContext | `restrictedSecurityContext()` (PSS Restricted) |
+| RestartPolicy | `OnFailure` |
+
+**Volume Mounts:**
+
+| Volume Name | Mount Path | Source | ReadOnly |
+| --- | --- | --- | --- |
+| `config` | `/etc/keystone/keystone.conf.d/` | ConfigMap `{configMapName}` | Yes |
+| `fernet-keys` | `/etc/keystone/fernet-keys` | Secret `{name}-fernet-keys` | Yes |
+| `credential-keys` | `/etc/keystone/credential-keys` | Secret `{name}-credential-keys` | Yes |
+
+**Deletion Helper (`deleteCronJob`):**
+
+When `spec.trustFlush` is `nil`, `deleteCronJob()` issues a `client.Delete` for the
+CronJob by name. It uses `client.IgnoreNotFound` so the operation is a no-op if the
+CronJob does not exist (e.g., first reconciliation of a CR that never had trust flush
+enabled).
+
+**Condition Contract:**
+
+| Status | Reason | Message | RequeueAfter |
+| --- | --- | --- | --- |
+| `True` | `TrustFlushNotRequired` | "Trust flush is not configured" | — |
+| `True` | `TrustFlushReady` | "Trust flush CronJob is configured" | — |
+
+**Error handling:** Errors from `job.EnsureCronJob()` are wrapped with
+"ensuring trust flush CronJob" context. Errors from `deleteCronJob()` are wrapped
+with "deleting trust flush CronJob" context. Both are returned directly to
+controller-runtime for exponential backoff.
+
+**Shared library calls:** `job.EnsureCronJob()`
+
+---
+
 ## Error Handling Summary
 
 | Sub-Reconciler | Transient State | RequeueAfter | Permanent Failure |
@@ -761,6 +839,7 @@ run multiple times without side effects.
 | `reconcileDeployment` | Deployment not available | 10s | API error → exponential backoff |
 | `reconcileHPA` | — | — | API error → exponential backoff |
 | `reconcileBootstrap` | Job running | 60s | `ErrJobFailed` from bootstrap |
+| `reconcileTrustFlush` | — | — | API error → exponential backoff |
 
 All errors are wrapped with descriptive context via `fmt.Errorf("...: %w", err)`.
 Unrecoverable API errors (e.g., permission denied, schema validation failure) are
@@ -790,6 +869,7 @@ Keystone CR via `controllerutil.SetControllerReference()`. This enables:
 | Service | `keystone-api` | Keystone CR |
 | PodDisruptionBudget | `{name}-api` | Keystone CR |
 | HorizontalPodAutoscaler | `{name}-api` | Keystone CR (only when `spec.autoscaling` is set) |
+| CronJob | `{name}-trust-flush` | Keystone CR (only when `spec.trustFlush` is set) |
 | Database | `keystone` | Keystone CR (managed mode only) |
 | User | `keystone` | Keystone CR (managed mode only) |
 | Grant | `keystone` | Keystone CR (managed mode only) |
@@ -820,6 +900,7 @@ For end-to-end Chainsaw tests that validate the reconciler in a real cluster, se
 | `reconcile_config_test.go` | INI generation, extraConfig merge, plugin config, policy overrides, ConfigMap hashing |
 | `reconcile_deployment_test.go` | Deployment spec, Service creation, readiness, endpoint, owner references, fernet-keys hash annotation (CC-0015) |
 | `reconcile_hpa_test.go` | HPA creation, update, deletion, metrics (CPU/memory), minReplicas defaulting, condition contract, error propagation (CC-0038) |
+| `reconcile_trustflush_test.go` | CronJob creation, deletion, schedule/suspend/args, security context, volume mounts, condition contract, error propagation (CC-0057) |
 | `reconcile_bootstrap_test.go` | Job creation, completion, failure, stale detection, TTL/backoff |
 | `integration_test.go` | Full reconciliation envtest: CronJob spec, bootstrap Job spec, brownfield mode, condition progression (CC-0015) |
 
@@ -843,6 +924,7 @@ operators/keystone/
     │   ├── reconcile_config.go                 reconcileConfig sub-reconciler
     │   ├── reconcile_deployment.go             reconcileDeployment sub-reconciler
     │   ├── reconcile_hpa.go                   reconcileHPA sub-reconciler (CC-0038)
+    │   ├── reconcile_trustflush.go            reconcileTrustFlush sub-reconciler (CC-0057)
     │   ├── reconcile_bootstrap.go              reconcileBootstrap sub-reconciler
     │   ├── keystone_controller_test.go         Orchestration tests
     │   ├── reconcile_secrets_test.go           Secrets tests
@@ -851,6 +933,7 @@ operators/keystone/
     │   ├── reconcile_config_test.go            Config tests
     │   ├── reconcile_deployment_test.go        Deployment tests
     │   ├── reconcile_hpa_test.go              HPA tests (CC-0038)
+    │   ├── reconcile_trustflush_test.go       Trust flush tests (CC-0057)
     │   ├── reconcile_bootstrap_test.go         Bootstrap tests
     │   └── integration_test.go                 Envtest integration tests (CC-0015)
     └── testutil/

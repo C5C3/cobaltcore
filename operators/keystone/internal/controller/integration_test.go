@@ -1469,3 +1469,185 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 		fmt.Sprintf("http://test-keystone-api.%s.svc.cluster.local:5000/v3", ns.Name)),
 		"endpoint should still be set after upgrade")
 }
+
+// --- Task CC-0057/4.1: Trust flush CronJob lifecycle integration tests (REQ-001, REQ-002, REQ-003) ---
+
+// integrationBrownfieldKeystoneWithTrustFlush returns a valid Keystone CR with trustFlush
+// configured for integration tests (CC-0057).
+func integrationBrownfieldKeystoneWithTrustFlush(name, namespace, schedule string) *keystonev1alpha1.Keystone {
+	ks := integrationBrownfieldKeystone(name, namespace)
+	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
+		Schedule: schedule,
+	}
+	return ks
+}
+
+func TestIntegration_TrustFlush_CronJobCreated(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-trustflush-create-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	// Create Keystone CR with trustFlush configured (CC-0057, REQ-001).
+	ks := integrationBrownfieldKeystoneWithTrustFlush("test-keystone", ns.Name, "30 2 * * 0")
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	// Wait for the trust-flush CronJob to appear (CC-0057, REQ-001).
+	cronJobKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-trust-flush"}
+	cronJob := &batchv1.CronJob{}
+	g.Eventually(func() error {
+		return c.Get(ctx, cronJobKey, cronJob)
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "CronJob test-keystone-trust-flush should appear")
+
+	// Verify schedule matches spec.trustFlush.schedule (CC-0057, REQ-001).
+	g.Expect(cronJob.Spec.Schedule).To(Equal("30 2 * * 0"),
+		"CronJob schedule should match spec.trustFlush.schedule")
+
+	// Verify suspend defaults to false (CC-0057, REQ-003).
+	g.Expect(cronJob.Spec.Suspend).NotTo(BeNil())
+	g.Expect(*cronJob.Spec.Suspend).To(BeFalse(), "CronJob should not be suspended by default")
+
+	// Verify container image matches spec.image (CC-0057, REQ-004).
+	podSpec := cronJob.Spec.JobTemplate.Spec.Template.Spec
+	expectedImage := fmt.Sprintf("%s:%s", ks.Spec.Image.Repository, ks.Spec.Image.Tag)
+	g.Expect(podSpec.Containers).To(HaveLen(1))
+	container := podSpec.Containers[0]
+	g.Expect(container.Name).To(Equal("trust-flush"))
+	g.Expect(container.Image).To(Equal(expectedImage))
+
+	// Verify command includes keystone-manage trust_flush with --config-dir (CC-0057, REQ-005).
+	g.Expect(container.Command).To(Equal([]string{
+		"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "trust_flush",
+	}))
+
+	// Verify volume mounts (CC-0057, REQ-006).
+	g.Expect(container.VolumeMounts).To(HaveLen(3))
+	mountMap := map[string]corev1.VolumeMount{}
+	for _, vm := range container.VolumeMounts {
+		mountMap[vm.Name] = vm
+	}
+	g.Expect(mountMap["config"].MountPath).To(Equal("/etc/keystone/keystone.conf.d/"))
+	g.Expect(mountMap["config"].ReadOnly).To(BeTrue())
+	g.Expect(mountMap["fernet-keys"].MountPath).To(Equal("/etc/keystone/fernet-keys"))
+	g.Expect(mountMap["fernet-keys"].ReadOnly).To(BeTrue())
+	g.Expect(mountMap["credential-keys"].MountPath).To(Equal("/etc/keystone/credential-keys"))
+	g.Expect(mountMap["credential-keys"].ReadOnly).To(BeTrue())
+
+	// Verify volumes reference correct ConfigMap and Secrets (CC-0057, REQ-006).
+	volMap := map[string]corev1.Volume{}
+	for _, v := range podSpec.Volumes {
+		volMap[v.Name] = v
+	}
+	g.Expect(volMap).To(HaveLen(3))
+	g.Expect(volMap["config"].ConfigMap).NotTo(BeNil())
+	g.Expect(volMap["fernet-keys"].Secret).NotTo(BeNil())
+	g.Expect(volMap["fernet-keys"].Secret.SecretName).To(Equal("test-keystone-fernet-keys"))
+	g.Expect(volMap["credential-keys"].Secret).NotTo(BeNil())
+	g.Expect(volMap["credential-keys"].Secret.SecretName).To(Equal("test-keystone-credential-keys"))
+
+	// Verify RestartPolicy (CC-0057, REQ-006).
+	g.Expect(podSpec.RestartPolicy).To(Equal(corev1.RestartPolicyOnFailure))
+
+	// Verify commonLabels on CronJob (CC-0057, REQ-009).
+	g.Expect(cronJob.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
+	g.Expect(cronJob.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+
+	// Verify ownerReference points to the Keystone CR (CC-0057, REQ-009).
+	g.Expect(cronJob.OwnerReferences).To(HaveLen(1))
+	g.Expect(cronJob.OwnerReferences[0].Name).To(Equal("test-keystone"))
+
+	// Verify TrustFlushReady=True (CC-0057, REQ-001).
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+	cond := waitForCondition(t, ctx, c, key, "TrustFlushReady", metav1.ConditionTrue, eventuallyTimeout)
+	g.Expect(cond.Reason).To(Equal("TrustFlushReady"))
+	g.Expect(cond.Message).To(Equal("Trust flush CronJob is configured"))
+}
+
+func TestIntegration_TrustFlush_CronJobDeleted(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-trustflush-delete-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	// Create Keystone CR with trustFlush configured (CC-0057, REQ-001).
+	ks := integrationBrownfieldKeystoneWithTrustFlush("test-keystone", ns.Name, "0 * * * *")
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	// Verify CronJob exists before removal (CC-0057, REQ-001).
+	cronJobKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-trust-flush"}
+	g.Eventually(func() error {
+		return c.Get(ctx, cronJobKey, &batchv1.CronJob{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "CronJob should exist before trustFlush removal")
+
+	// Remove spec.trustFlush (CC-0057, REQ-002).
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+	updated := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
+	updated.Spec.TrustFlush = nil
+	g.Expect(c.Update(ctx, updated)).To(Succeed())
+
+	// Wait for the CronJob to be deleted (CC-0057, REQ-002).
+	g.Eventually(func() bool {
+		err := c.Get(ctx, cronJobKey, &batchv1.CronJob{})
+		return err != nil
+	}, eventuallyTimeout, pollInterval).Should(BeTrue(), "CronJob should be deleted when trustFlush is removed")
+
+	// Verify TrustFlushReady=True with reason TrustFlushNotRequired (CC-0057, REQ-002).
+	g.Eventually(func() string {
+		ksState := &keystonev1alpha1.Keystone{}
+		if err := c.Get(ctx, key, ksState); err != nil {
+			return ""
+		}
+		cond := meta.FindStatusCondition(ksState.Status.Conditions, "TrustFlushReady")
+		if cond == nil {
+			return ""
+		}
+		return cond.Reason
+	}, eventuallyTimeout, pollInterval).Should(Equal("TrustFlushNotRequired"),
+		"TrustFlushReady reason should be TrustFlushNotRequired after removal")
+}
+
+func TestIntegration_TrustFlush_OmittedDoesNotCreateCronJob(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-trustflush-omit-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	// Create Keystone CR without trustFlush (nil) (CC-0057, REQ-003).
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	// Verify TrustFlushReady=True with reason TrustFlushNotRequired (CC-0057, REQ-003).
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+	cond := waitForCondition(t, ctx, c, key, "TrustFlushReady", metav1.ConditionTrue, eventuallyTimeout)
+	g.Expect(cond.Reason).To(Equal("TrustFlushNotRequired"))
+
+	// Consistently verify no trust-flush CronJob is created (CC-0057, REQ-003).
+	cronJobKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-trust-flush"}
+	g.Consistently(func() bool {
+		err := c.Get(ctx, cronJobKey, &batchv1.CronJob{})
+		return err != nil
+	}, 2*time.Second, pollInterval).Should(BeTrue(),
+		"trust-flush CronJob should not exist when trustFlush is omitted")
+}
