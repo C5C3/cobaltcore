@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-10T07:23:46.738729+00:00",
+  "feature_id": "CC-0055",
+  "task_type": "commit",
+  "session_key": "CC-0055",
+  "model": "opus",
+  "prompt": "Generate a detailed git commit body for this commit.\nSubject: fix(CC-0055): address review #1 feedback from berendt\n\nReview feedback is in: /worktrees/CC-0055/.planwerk/reviews/CC-0055-github-review-by-berendt-external-1.json\nUse `git diff --cached -- ':(exclude).planwerk'` to see the full staged diff.\n\nDiff stat:\n.github/actions/supply-chain-attest/action.yaml | 10 +++++----\n .github/workflows/build-images.yaml             |  7 ++++--\n docs/reference/build-images-workflow.md         | 29 +++++++++++++------------\n hack/ci-merge-manifest.sh                       | 13 ++++++++---\n hack/ci-run-unit-tests.sh                       |  7 ++++++\n tests/ci/verify_build_images_refactor.sh        | 25 +++++++++++++++++++++\n 6 files changed, 68 insertions(+), 23 deletions(-)\n\nWrite ONLY the body text, no subject line, no markdown.\nFor each changed file, write a bullet point: '- path/to/file: what was changed'\nDo NOT mention .planwerk directory changes.\nOutput ONLY plain text — no tool_call tags, no XML, no code blocks.",
+  "prompt_length": 1023,
+  "caller": "run_claude_cli"
+}
