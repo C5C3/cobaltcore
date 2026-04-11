@@ -183,6 +183,19 @@ Extracted into a named template to prevent drift when rules change.
     - create
     - update
     - patch
+# external-secrets.io - clustersecretstores (read-only, CC-0047)
+# Required so the operator can observe the ClusterSecretStore's Ready
+# condition and reflect upstream secret-backend (OpenBao) outages in
+# SecretsReady. ClusterSecretStore is cluster-scoped; the rule is only
+# effective when rendered into the ClusterRole.
+- apiGroups:
+    - external-secrets.io
+  resources:
+    - clustersecretstores
+  verbs:
+    - get
+    - list
+    - watch
 # rbac.authorization.k8s.io - roles, rolebindings (CC-0017)
 - apiGroups:
     - rbac.authorization.k8s.io

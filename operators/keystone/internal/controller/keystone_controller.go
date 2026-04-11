@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
@@ -61,6 +62,7 @@ type KeystoneReconciler struct {
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=databases;users;grants,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=mariadbs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets;pushsecrets,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores,verbs=get;list;watch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
@@ -194,6 +196,13 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&mariadbv1alpha1.MariaDB{}, handler.EnqueueRequestsFromMapFunc(
 			mariaDBToKeystoneMapper(mgr.GetClient()),
 		)).
+		// Watch the OpenBao-backed ClusterSecretStore so the operator reflects
+		// upstream secret-backend outages in SecretsReady as soon as ESO flips
+		// the store's Ready condition, rather than waiting for the next periodic
+		// requeue (CC-0047).
+		Watches(&esov1.ClusterSecretStore{}, handler.EnqueueRequestsFromMapFunc(
+			clusterSecretStoreToKeystoneMapper(mgr.GetClient()),
+		)).
 		Complete(r)
 }
 
@@ -243,6 +252,33 @@ func mariaDBToKeystoneMapper(c client.Reader) handler.MapFunc {
 					NamespacedName: client.ObjectKeyFromObject(ks),
 				})
 			}
+		}
+		return requests
+	}
+}
+
+// clusterSecretStoreToKeystoneMapper returns a MapFunc that enqueues every
+// Keystone CR in the cluster when the OpenBao-backed ClusterSecretStore
+// changes. The store is cluster-scoped and shared across namespaces, so any
+// status transition (e.g. ESO losing the backend connection) must retrigger
+// reconcile on all Keystones that route secrets through it (CC-0047).
+func clusterSecretStoreToKeystoneMapper(c client.Reader) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		if obj.GetName() != openBaoClusterStoreName {
+			return nil
+		}
+
+		var keystones keystonev1alpha1.KeystoneList
+		if err := c.List(ctx, &keystones); err != nil {
+			log.FromContext(ctx).Error(err, "listing Keystone CRs for ClusterSecretStore watch")
+			return nil
+		}
+
+		requests := make([]reconcile.Request, 0, len(keystones.Items))
+		for i := range keystones.Items {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: client.ObjectKeyFromObject(&keystones.Items[i]),
+			})
 		}
 		return requests
 	}

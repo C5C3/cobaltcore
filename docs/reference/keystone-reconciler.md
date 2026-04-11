@@ -69,10 +69,14 @@ The controller watches the primary Keystone CR and all owned resources:
 | `HorizontalPodAutoscaler` | `Owns()` | Triggers reconciliation when owned HPA changes |
 | `CronJob` | `Owns()` | Triggers reconciliation when owned CronJob changes |
 | `Secret` | `Watches()` | Triggers reconciliation for controller-owned Secrets only |
+| `MariaDB` | `Watches()` | Propagates upstream DB cluster health into `DatabaseReady` (CC-0047) |
+| `ClusterSecretStore` | `Watches()` | Propagates OpenBao-backend health into `SecretsReady` (CC-0047) |
 
 Secrets use `Watches()` with `handler.OnlyControllerOwner()` instead of `Owns()` because
 some Secrets (ESO-provided credentials) are not owned by the Keystone CR but still need
-to trigger reconciliation.
+to trigger reconciliation. The `MariaDB` and `ClusterSecretStore` watches exist so the
+operator reacts immediately to upstream dependency outages without waiting for the next
+periodic requeue (CC-0047).
 
 ---
 
@@ -109,6 +113,7 @@ RBAC markers on the reconciler generate the required ClusterRole:
 | `k8s.mariadb.com` | `databases`, `users`, `grants` | get, list, watch, create, update, patch, delete |
 | `k8s.mariadb.com` | `mariadbs` | get, list, watch |
 | `external-secrets.io` | `externalsecrets`, `pushsecrets` | get, list, watch, create, update, patch |
+| `external-secrets.io` | `clustersecretstores` | get, list, watch |
 | `policy` | `poddisruptionbudgets` | get, list, watch, create, update, patch, delete |
 | `autoscaling` | `horizontalpodautoscalers` | get, list, watch, create, update, patch, delete |
 
@@ -267,23 +272,32 @@ ExternalSecrets managed by the External Secrets Operator.
 
 **Checks (in order):**
 
-| Step | ExternalSecret | Source Field |
+| Step | Resource | Source |
 | --- | --- | --- |
-| 1 | DB credentials | `spec.database.secretRef.name` |
-| 2 | Admin credentials | `spec.bootstrap.adminPasswordSecretRef.name` |
+| 0 | `ClusterSecretStore openbao-cluster-store` | Ready condition (CC-0047) |
+| 1 | DB credentials `ExternalSecret` | `spec.database.secretRef.name` |
+| 2 | Admin credentials `ExternalSecret` | `spec.bootstrap.adminPasswordSecretRef.name` |
+
+The `ClusterSecretStore` check runs first so upstream OpenBao outages surface
+as `SecretsReady=False` immediately. Per-ExternalSecret `Ready` conditions
+alone would mask outages up to the ESO `refreshInterval` (1h) because the
+cached Secret remains valid (CC-0047).
 
 **Condition Contract:**
 
 | Status | Reason | Message | RequeueAfter |
 | --- | --- | --- | --- |
+| `False` | `SecretStoreNotReady` | `"ClusterSecretStore \"openbao-cluster-store\" is not ready; upstream secret backend unreachable"` | 15s |
 | `False` | `WaitingForDBCredentials` | "Waiting for ESO to sync database credentials from OpenBao" | 15s |
 | `False` | `WaitingForAdminCredentials` | "Waiting for ESO to sync admin credentials from OpenBao" | 15s |
 | `True` | `SecretsAvailable` | — | — |
 
-**Error handling:** API errors from `secrets.WaitForExternalSecret()` are returned
-directly (no condition set), causing controller-runtime exponential backoff.
+**Error handling:** API errors from `secrets.IsClusterSecretStoreReady()` and
+`secrets.WaitForExternalSecret()` are returned directly (no condition set),
+causing controller-runtime exponential backoff.
 
-**Shared library calls:** `secrets.WaitForExternalSecret()`
+**Shared library calls:** `secrets.IsClusterSecretStoreReady()`,
+`secrets.WaitForExternalSecret()`
 
 ---
 

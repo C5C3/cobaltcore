@@ -10,6 +10,18 @@
 # NOTE: OpenBao runs in the openbao-system namespace, not openstack.
 # The PodChaos CR targets openbao-system via selector.namespaces.
 #
+# NOTE: The kind/E2E topology runs OpenBao single-replica with file/raft
+# storage and Shamir-key sealing (init keys live in Secret
+# openbao-system/openbao-init-keys, applied at bootstrap by
+# hack/deploy-infra.sh::openbao_init_unseal). After PodChaos pod-kill the
+# new openbao-0 starts sealed and stays 0/1 Running indefinitely — there is
+# no auto-unseal in this topology. Production runs 3-replica HA Raft, where
+# the surviving quorum keeps the cluster unsealed; that recovery path does
+# not exist with one replica. Step 6 below explicitly re-unseals openbao-0
+# via tests/e2e-chaos/unseal-openbao.sh so the test validates the operator-
+# side recovery (SecretsReady False -> True) without depending on automatic
+# OpenBao recovery the kind topology cannot provide.
+#
 # SC-CHAOS-003, REQ-006, REQ-007, REQ-008, REQ-009 (CC-0047)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -74,7 +86,18 @@ spec:
           apiVersion: chaos-mesh.org/v1alpha1
           kind: PodChaos
           name: kill-openbao
-  # ── Step 6: Assert full recovery to SecretsReady=True and Ready=True ───
+  # ── Step 6: Re-unseal openbao-0 (kind single-replica recovery) ─────────
+  # See header comment for why this step exists. The helper is idempotent:
+  # if openbao-0 happens to come back unsealed (it will not, in this
+  # topology, but the script handles the case), it exits 0 without acting.
+  - try:
+    - script:
+        timeout: 180s
+        content: ../unseal-openbao.sh
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-bao --dep-label=app.kubernetes.io/name=openbao --dep-ns=openbao-system --log-label=app.kubernetes.io/name=keystone-operator --eso
+  # ── Step 7: Assert full recovery to SecretsReady=True and Ready=True ───
   # REVIEWER-DISAGREEMENT: [Reviewer requested adding inline `kubectl get
   # keystone keystone-chaos-bao -n $NAMESPACE -o yaml` here] — see Step 4
   # comment: diagnostics.sh already collects Keystone CR status uniformly.

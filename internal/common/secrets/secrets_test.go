@@ -106,6 +106,71 @@ func TestWaitForExternalSecret_notFound(t *testing.T) {
 	g.Expect(ready).To(BeFalse())
 }
 
+// --- IsClusterSecretStoreReady ---
+
+func TestIsClusterSecretStoreReady_ready(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+
+	store := &esov1.ClusterSecretStore{
+		ObjectMeta: metav1.ObjectMeta{Name: "openbao-cluster-store"},
+		Status: esov1.SecretStoreStatus{
+			Conditions: []esov1.SecretStoreStatusCondition{
+				{Type: esov1.SecretStoreReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(store).
+		WithStatusSubresource(store).
+		Build()
+
+	ready, err := IsClusterSecretStoreReady(context.Background(), c, "openbao-cluster-store")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ready).To(BeTrue())
+}
+
+func TestIsClusterSecretStoreReady_notReady(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+
+	store := &esov1.ClusterSecretStore{
+		ObjectMeta: metav1.ObjectMeta{Name: "openbao-cluster-store"},
+		Status: esov1.SecretStoreStatus{
+			Conditions: []esov1.SecretStoreStatusCondition{
+				{Type: esov1.SecretStoreReady, Status: corev1.ConditionFalse},
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(store).
+		WithStatusSubresource(store).
+		Build()
+
+	ready, err := IsClusterSecretStoreReady(context.Background(), c, "openbao-cluster-store")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ready).To(BeFalse())
+}
+
+func TestIsClusterSecretStoreReady_notFound(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		Build()
+
+	// NotFound is treated as not-ready so the caller can reflect upstream
+	// outages without special-casing a missing store (CC-0047).
+	ready, err := IsClusterSecretStoreReady(context.Background(), c, "missing")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ready).To(BeFalse())
+}
+
 // --- IsSecretReady ---
 
 func TestIsSecretReady_exists(t *testing.T) {

@@ -77,7 +77,9 @@ func testKeystone() *keystonev1alpha1.Keystone {
 }
 
 // testReadyExternalSecrets returns ready ExternalSecret objects for the DB and
-// admin credentials referenced by testKeystone.
+// admin credentials referenced by testKeystone, plus the OpenBao-backed
+// ClusterSecretStore with a Ready=True condition that reconcileSecrets now
+// gates on (CC-0047).
 func testReadyExternalSecrets() []runtime.Object {
 	dbES := &esov1.ExternalSecret{
 		ObjectMeta: metav1.ObjectMeta{Name: "keystone-db", Namespace: "default"},
@@ -95,7 +97,15 @@ func testReadyExternalSecrets() []runtime.Object {
 			},
 		},
 	}
-	return []runtime.Object{dbES, adminES}
+	store := &esov1.ClusterSecretStore{
+		ObjectMeta: metav1.ObjectMeta{Name: "openbao-cluster-store"},
+		Status: esov1.SecretStoreStatus{
+			Conditions: []esov1.SecretStoreStatusCondition{
+				{Type: esov1.SecretStoreReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}
+	return []runtime.Object{dbES, adminES, store}
 }
 
 // testDBCredentialsSecret returns a Secret containing the DB credentials

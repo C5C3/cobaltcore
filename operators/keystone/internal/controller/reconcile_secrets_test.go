@@ -92,6 +92,33 @@ func notReadyExternalSecret(name, namespace string) *esov1.ExternalSecret {
 	}
 }
 
+// readyClusterSecretStore returns a ClusterSecretStore with a Ready=True
+// status condition so reconcileSecrets proceeds past the store gate (CC-0047).
+func readyClusterSecretStore(name string) *esov1.ClusterSecretStore {
+	return &esov1.ClusterSecretStore{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Status: esov1.SecretStoreStatus{
+			Conditions: []esov1.SecretStoreStatusCondition{
+				{Type: esov1.SecretStoreReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}
+}
+
+// notReadyClusterSecretStore returns a ClusterSecretStore whose Ready
+// condition is explicitly False so reconcileSecrets flips SecretsReady to
+// False with reason SecretStoreNotReady (CC-0047).
+func notReadyClusterSecretStore(name string) *esov1.ClusterSecretStore {
+	return &esov1.ClusterSecretStore{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Status: esov1.SecretStoreStatus{
+			Conditions: []esov1.SecretStoreStatusCondition{
+				{Type: esov1.SecretStoreReady, Status: corev1.ConditionFalse},
+			},
+		},
+	}
+}
+
 func TestReconcileSecrets_BothReady(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := secretsTestScheme()
@@ -109,10 +136,11 @@ func TestReconcileSecrets_BothReady(t *testing.T) {
 		Data:       map[string][]byte{"password": []byte("admin-password")},
 	}
 
+	store := readyClusterSecretStore("openbao-cluster-store")
 	c := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(dbES, adminES, dbSecret, adminSecret).
-		WithStatusSubresource(dbES, adminES).
+		WithObjects(store, dbES, adminES, dbSecret, adminSecret).
+		WithStatusSubresource(dbES, adminES, store).
 		Build()
 
 	r := &KeystoneReconciler{
@@ -141,10 +169,11 @@ func TestReconcileSecrets_DBCredentialsNotReady(t *testing.T) {
 	dbES := notReadyExternalSecret("keystone-db", "default")
 	adminES := readyExternalSecret("keystone-admin", "default")
 
+	store := readyClusterSecretStore("openbao-cluster-store")
 	c := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(dbES, adminES).
-		WithStatusSubresource(dbES, adminES).
+		WithObjects(store, dbES, adminES).
+		WithStatusSubresource(dbES, adminES, store).
 		Build()
 
 	r := &KeystoneReconciler{
@@ -178,10 +207,11 @@ func TestReconcileSecrets_AdminCredentialsNotReady(t *testing.T) {
 		Data:       map[string][]byte{"username": []byte("keystone"), "password": []byte("secret")},
 	}
 
+	store := readyClusterSecretStore("openbao-cluster-store")
 	c := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(dbES, adminES, dbSecret).
-		WithStatusSubresource(dbES, adminES).
+		WithObjects(store, dbES, adminES, dbSecret).
+		WithStatusSubresource(dbES, adminES, store).
 		Build()
 
 	r := &KeystoneReconciler{
@@ -207,9 +237,14 @@ func TestReconcileSecrets_ErrorFetchingExternalSecret(t *testing.T) {
 	s := secretsTestScheme()
 	ks := secretsTestKeystone()
 
+	// A ready ClusterSecretStore lets reconcileSecrets past the store gate so
+	// the interceptor exercises the ExternalSecret Get path (CC-0047).
+	store := readyClusterSecretStore("openbao-cluster-store")
 	// Use an interceptor to inject an error on Get for ExternalSecrets.
 	c := fake.NewClientBuilder().
 		WithScheme(s).
+		WithObjects(store).
+		WithStatusSubresource(store).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 				if _, ok := obj.(*esov1.ExternalSecret); ok {
@@ -240,10 +275,11 @@ func TestReconcileSecrets_DBNotReady_ConditionMessage(t *testing.T) {
 	dbES := notReadyExternalSecret("keystone-db", "default")
 	adminES := readyExternalSecret("keystone-admin", "default")
 
+	store := readyClusterSecretStore("openbao-cluster-store")
 	c := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(dbES, adminES).
-		WithStatusSubresource(dbES, adminES).
+		WithObjects(store, dbES, adminES).
+		WithStatusSubresource(dbES, adminES, store).
 		Build()
 
 	r := &KeystoneReconciler{
@@ -274,10 +310,11 @@ func TestReconcileSecrets_AdminNotReady_ConditionMessage(t *testing.T) {
 		Data:       map[string][]byte{"username": []byte("keystone"), "password": []byte("secret")},
 	}
 
+	store := readyClusterSecretStore("openbao-cluster-store")
 	c := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(dbES, adminES, dbSecret).
-		WithStatusSubresource(dbES, adminES).
+		WithObjects(store, dbES, adminES, dbSecret).
+		WithStatusSubresource(dbES, adminES, store).
 		Build()
 
 	r := &KeystoneReconciler{
@@ -308,10 +345,11 @@ func TestReconcileSecrets_DBSecretMissingKeys(t *testing.T) {
 		Data:       map[string][]byte{"wrong-key": []byte("val")},
 	}
 
+	store := readyClusterSecretStore("openbao-cluster-store")
 	c := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(dbES, adminES, dbSecret).
-		WithStatusSubresource(dbES, adminES).
+		WithObjects(store, dbES, adminES, dbSecret).
+		WithStatusSubresource(dbES, adminES, store).
 		Build()
 
 	r := &KeystoneReconciler{
@@ -349,10 +387,11 @@ func TestReconcileSecrets_AdminSecretMissingKeys(t *testing.T) {
 		Data:       map[string][]byte{"wrong-key": []byte("val")},
 	}
 
+	store := readyClusterSecretStore("openbao-cluster-store")
 	c := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(dbES, adminES, dbSecret, adminSecret).
-		WithStatusSubresource(dbES, adminES).
+		WithObjects(store, dbES, adminES, dbSecret, adminSecret).
+		WithStatusSubresource(dbES, adminES, store).
 		Build()
 
 	r := &KeystoneReconciler{
@@ -382,10 +421,11 @@ func TestReconcileSecrets_BothNotReady_DBCheckFirst(t *testing.T) {
 	dbES := notReadyExternalSecret("keystone-db", "default")
 	adminES := notReadyExternalSecret("keystone-admin", "default")
 
+	store := readyClusterSecretStore("openbao-cluster-store")
 	c := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(dbES, adminES).
-		WithStatusSubresource(dbES, adminES).
+		WithObjects(store, dbES, adminES).
+		WithStatusSubresource(dbES, adminES, store).
 		Build()
 
 	r := &KeystoneReconciler{
@@ -405,4 +445,137 @@ func TestReconcileSecrets_BothNotReady_DBCheckFirst(t *testing.T) {
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal("WaitingForDBCredentials"))
 	g.Expect(cond.Message).To(Equal("Waiting for ESO to sync database credentials from OpenBao"))
+}
+
+func TestReconcileSecrets_StoreNotReady(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := secretsTestScheme()
+	ks := secretsTestKeystone()
+
+	// ExternalSecrets look healthy — the store condition should still drive
+	// SecretsReady to False so chaos in OpenBao surfaces within the ESO store
+	// reconcile interval rather than the per-ES refreshInterval (CC-0047).
+	dbES := readyExternalSecret("keystone-db", "default")
+	adminES := readyExternalSecret("keystone-admin", "default")
+	store := notReadyClusterSecretStore("openbao-cluster-store")
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(store, dbES, adminES).
+		WithStatusSubresource(dbES, adminES, store).
+		Build()
+
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	result, err := r.reconcileSecrets(context.Background(), ks)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("SecretStoreNotReady"))
+	g.Expect(cond.Message).To(ContainSubstring("openbao-cluster-store"))
+	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
+}
+
+func TestReconcileSecrets_StoreMissing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := secretsTestScheme()
+	ks := secretsTestKeystone()
+
+	// No ClusterSecretStore object exists. IsClusterSecretStoreReady treats
+	// NotFound as not-ready so the operator still reports the upstream
+	// backend as unreachable (CC-0047).
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		Build()
+
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	result, err := r.reconcileSecrets(context.Background(), ks)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("SecretStoreNotReady"))
+}
+
+func TestReconcileSecrets_StoreGetErrorSurfaces(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := secretsTestScheme()
+	ks := secretsTestKeystone()
+
+	// Transient API-server errors on the ClusterSecretStore Get must be
+	// returned to the caller so controller-runtime requeues the reconcile —
+	// silently setting SecretsReady=False on a flaky API would mask real
+	// outages from everything downstream (CC-0047).
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*esov1.ClusterSecretStore); ok {
+					return fmt.Errorf("simulated API server error")
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err := r.reconcileSecrets(context.Background(), ks)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("simulated API server error"))
+}
+
+func TestReconcileSecrets_StoreCheckedBeforeExternalSecret(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := secretsTestScheme()
+	ks := secretsTestKeystone()
+
+	// Store not ready AND DB ExternalSecret not ready. The reason must be
+	// SecretStoreNotReady — store outage is the root cause and must win the
+	// ordering so operators do not chase the wrong symptom (CC-0047).
+	store := notReadyClusterSecretStore("openbao-cluster-store")
+	dbES := notReadyExternalSecret("keystone-db", "default")
+	adminES := notReadyExternalSecret("keystone-admin", "default")
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(store, dbES, adminES).
+		WithStatusSubresource(store, dbES, adminES).
+		Build()
+
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err := r.reconcileSecrets(context.Background(), ks)
+
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("SecretStoreNotReady"))
 }

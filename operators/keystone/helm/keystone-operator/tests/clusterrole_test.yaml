@@ -7,7 +7,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 15
+          count: 16
 
   - it: should grant full CRUD on keystones
     asserts:
@@ -175,6 +175,20 @@ tests:
               - create
               - update
               - patch
+
+  - it: should grant read-only on clustersecretstores
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - external-secrets.io
+            resources:
+              - clustersecretstores
+            verbs:
+              - get
+              - list
+              - watch
 
   - it: should grant full CRUD on rbac resources
     asserts:

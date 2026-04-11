@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -157,6 +158,33 @@ func integrationManagedKeystone(name, namespace string) *keystonev1alpha1.Keysto
 	}
 }
 
+// ensureReadyClusterSecretStore creates or refreshes the OpenBao-backed
+// ClusterSecretStore with a Ready=True condition. reconcileSecrets now gates
+// on this status (CC-0047); without it every integration test would flip to
+// SecretsReady=False with reason SecretStoreNotReady. Safe to call multiple
+// times across namespaces since ClusterSecretStore is cluster-scoped.
+func ensureReadyClusterSecretStore(t testing.TB, ctx context.Context, c client.Client) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	store := &esov1.ClusterSecretStore{
+		ObjectMeta: metav1.ObjectMeta{Name: "openbao-cluster-store"},
+	}
+	err := c.Get(ctx, client.ObjectKeyFromObject(store), store)
+	if apierrors.IsNotFound(err) {
+		g.Expect(c.Create(ctx, store)).To(Succeed(), "create ClusterSecretStore")
+	} else {
+		g.Expect(err).NotTo(HaveOccurred(), "get ClusterSecretStore")
+	}
+
+	store.Status = esov1.SecretStoreStatus{
+		Conditions: []esov1.SecretStoreStatusCondition{
+			{Type: esov1.SecretStoreReady, Status: corev1.ConditionTrue},
+		},
+	}
+	g.Expect(c.Status().Update(ctx, store)).To(Succeed(), "update ClusterSecretStore status")
+}
+
 // createPrerequisites creates the ExternalSecret and Secret resources that the
 // Keystone reconciler expects to find. It creates the DB credentials ExternalSecret
 // and Secret (username+password), the admin credentials ExternalSecret and Secret
@@ -164,6 +192,10 @@ func integrationManagedKeystone(name, namespace string) *keystonev1alpha1.Keysto
 func createPrerequisites(t testing.TB, ctx context.Context, c client.Client, ns string) {
 	t.Helper()
 	g := NewGomegaWithT(t)
+
+	// Ensure the OpenBao-backed ClusterSecretStore reports Ready=True so
+	// reconcileSecrets proceeds past the store gate (CC-0047).
+	ensureReadyClusterSecretStore(t, ctx, c)
 
 	// Create DB credentials ExternalSecret and Secret.
 	dbES := &esov1.ExternalSecret{
@@ -347,6 +379,11 @@ func TestIntegration_ConditionProgression(t *testing.T) {
 
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-progression-"}}
 	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	// Ensure the ClusterSecretStore gate is open so this test still exercises
+	// the per-ExternalSecret Ready progression rather than short-circuiting on
+	// SecretStoreNotReady (CC-0047).
+	ensureReadyClusterSecretStore(t, ctx, c)
 
 	// Phase 0: Create ExternalSecrets and Secrets but do NOT simulate sync yet.
 	// The reconciler should see SecretsReady=False because ESO hasn't set the

@@ -41,7 +41,7 @@ tests:
       - hasDocuments:
           count: 0
 
-  - it: should have 15 rules matching ClusterRole
+  - it: should have 16 rules matching ClusterRole
     set:
       rbac:
         namespaceScoped: true
@@ -50,7 +50,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 15
+          count: 16
 
   - it: should grant full CRUD on keystones
     set:
@@ -268,6 +268,25 @@ tests:
               - create
               - update
               - patch
+
+  - it: should grant read-only on clustersecretstores
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - external-secrets.io
+            resources:
+              - clustersecretstores
+            verbs:
+              - get
+              - list
+              - watch
 
   - it: should grant full CRUD on rbac resources
     set:

@@ -41,6 +41,30 @@ func WaitForExternalSecret(ctx context.Context, c client.Client, key client.Obje
 	return false, nil
 }
 
+// IsClusterSecretStoreReady checks whether the ClusterSecretStore identified
+// by name currently reports a Ready condition with status True. It returns
+// (false, nil) when the store does not exist or is not ready, and (false,
+// error) on unexpected client failures. Consumers use this to flip their own
+// *Ready conditions when the upstream secret backend is unreachable — ESO
+// only re-syncs ExternalSecrets at their refreshInterval (default 1h), so
+// relying on ExternalSecret Ready alone would miss short-lived outages.
+func IsClusterSecretStoreReady(ctx context.Context, c client.Client, name string) (bool, error) {
+	store := &esov1.ClusterSecretStore{}
+	if err := c.Get(ctx, client.ObjectKey{Name: name}, store); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("getting ClusterSecretStore %s: %w", name, err)
+	}
+
+	for _, cond := range store.Status.Conditions {
+		if cond.Type == esov1.SecretStoreReady && cond.Status == corev1.ConditionTrue {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // IsSecretReady checks whether a Kubernetes Secret exists at the given key and
 // contains all expectedKeys in its Data field. When no expectedKeys are
 // provided, it only checks for Secret existence. It returns (true, nil) when
