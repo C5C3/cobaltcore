@@ -1,0 +1,36 @@
+{
+  "feature_id": "CC-0059",
+  "title": "GitHub Review by sourcery-ai[bot]",
+  "summary": "The reviewer suggests configuring gosec to ignore credential heuristics (G101) in `_test.go` files globally instead of sprinkling `//nolint:gosec` annotations across many tests. They also recommend standardizing on either `r.Client.Get` or `r.Get` in test reconcilers for consistency, and changing the `replicas` parameter in the test simulator to `int32` to eliminate the need for the cast and G115 suppression.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "sourcery-ai[bot]",
+  "date": "2026-04-11T20:30:02Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "Hey - I've found 1 issue, and left some high level feedback:\n\n- Now that `gosec` is enabled, you’ve added several repeated `//nolint:gosec` (G101) annotations in test fixtures; consider configuring gosec (e.g., via rules or `nosec` patterns) to de-emphasize credential heuristics in `_test.go` files or shared helpers so you don’t need to sprinkle identical suppressions across many tests.\n- In `reconcile_networkpolicy_test.go`, some calls were switched from `r.Client.Get` to `r.Get` while others in the codebase may still use the embedded client directly; it might be worth standardizing on a single access pattern for the test reconciler to keep usage consistent and easier to reason about.\n\n<details>\n<summary>Prompt for AI Agents</summary>\n\n~~~markdown\nPlease address the comments from this code review:\n\n## Overall Comments\n- Now that `gosec` is enabled, you’ve added several repeated `//nolint:gosec` (G101) annotations in test fixtures; consider configuring gosec (e.g., via rules or `nosec` patterns) to de-emphasize credential heuristics in `_test.go` files or shared helpers so you don’t need to sprinkle identical suppressions across many tests.\n- In `reconcile_networkpolicy_test.go`, some calls were switched from `r.Client.Get` to `r.Get` while others in the codebase may still use the embedded client directly; it might be worth standardizing on a single access pattern for the test reconciler to keep usage consistent and easier to reason about.\n\n## Individual Comments\n\n### Comment 1\n<location path=\"internal/common/testutil/simulators/simulators.go\" line_range=\"86\" />\n<code_context>\n \t}\n\n-\tmariadb.Status.Replicas = int32(replicas)\n+\tmariadb.Status.Replicas = int32(replicas) //nolint:gosec // G115: test simulator, replicas always within int32 range (CC-0059)\n \tprimaryIdx := 0\n \tmariadb.Status.CurrentPrimaryPodIndex = &primaryIdx\n</code_context>\n<issue_to_address>\n**suggestion:** Consider using an int32-typed parameter to avoid the cast and gosec suppression\n\nBecause `Status.Replicas` is `int32`, declaring `replicas` as `int32` too would remove the need for both the cast and the `//nolint:gosec` G115 suppression, and lets the type system enforce the valid range instead of relying on a comment.\n\nSuggested implementation:\n\n```golang\n\tmariadb.Status.Replicas = replicas\n\n```\n\nTo fully implement the suggestion and keep the code compiling, you also need to:\n\n1. Change the type of `replicas` at its declaration to `int32`. For example, if this code is inside a function like:\n   - Before:\n     - `func simulateSomething(..., replicas int, ...) {`\n   - After:\n     - `func simulateSomething(..., replicas int32, ...) {`\n\n2. Update all callers of that function (or all assignments to `replicas`) to pass/assign an `int32` instead of `int`. That might involve:\n   - Changing argument types in test helpers to `int32`.\n   - Explicitly converting integer literals at call sites, e.g. `int32(3)` where needed.\n\nOnce `replicas` is consistently typed as `int32`, the explicit cast and gosec suppression are no longer necessary, and the edited line above will type-check.\n</issue_to_address>\n~~~\n\n</details>\n\n***\n\n<details>\n<summary>Sourcery is free for open source - if you like our reviews please consider sharing them ✨</summary>\n\n- [X](https://twitter.com/intent/tweet?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [Mastodon](https://mastodon.social/share?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [LinkedIn](https://www.linkedin.com/sharing/share-offsite/?url=https://sourcery.ai)\n- [Facebook](https://www.facebook.com/sharer/sharer.php?u=https://sourcery.ai)\n\n</details>\n\n<sub>\nHelp me be more useful! Please click 👍 or 👎 on each comment and I'll use the feedback to improve your reviews.\n</sub>",
+  "code_comments": [
+    {
+      "body": "**suggestion:** Consider using an int32-typed parameter to avoid the cast and gosec suppression\n\nBecause `Status.Replicas` is `int32`, declaring `replicas` as `int32` too would remove the need for both the cast and the `//nolint:gosec` G115 suppression, and lets the type system enforce the valid range instead of relying on a comment.\n\nSuggested implementation:\n\n```golang\n\tmariadb.Status.Replicas = replicas\n\n```\n\nTo fully implement the suggestion and keep the code compiling, you also need to:\n\n1. Change the type of `replicas` at its declaration to `int32`. For example, if this code is inside a function like:\n   - Before:\n     - `func simulateSomething(..., replicas int, ...) {`\n   - After:\n     - `func simulateSomething(..., replicas int32, ...) {`\n\n2. Update all callers of that function (or all assignments to `replicas`) to pass/assign an `int32` instead of `int`. That might involve:\n   - Changing argument types in test helpers to `int32`.\n   - Explicitly converting integer literals at call sites, e.g. `int32(3)` where needed.\n\nOnce `replicas` is consistently typed as `int32`, the explicit cast and gosec suppression are no longer necessary, and the edited line above will type-check.",
+      "path": "internal/common/testutil/simulators/simulators.go",
+      "line": 86,
+      "author": "sourcery-ai[bot]",
+      "created_at": "2026-04-11T20:30:02Z",
+      "id": null,
+      "resolution": ""
+    }
+  ],
+  "github_review_id": 4094212400
+}

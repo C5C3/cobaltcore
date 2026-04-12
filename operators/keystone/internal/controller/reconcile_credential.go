@@ -32,6 +32,8 @@ import (
 // Secret via the API using the pod's ServiceAccount token.
 // The credential_migrate step is critical: without it, credentials encrypted with the
 // old primary key become inaccessible once that key is purged (CC-0036).
+//
+//nolint:gosec // G101: const name contains "credential" but value is a shell script, not credentials (CC-0059)
 const credentialRotateScript = `set -e
 keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ credential_rotate
 keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ credential_migrate

@@ -77,13 +77,13 @@ func setUnstructuredReadyStatus(
 // SimulateMariaDBReady updates a MariaDB resource's status to indicate
 // readiness by setting the Ready condition to True, replicas, and
 // currentPrimaryPodIndex.
-func SimulateMariaDBReady(ctx context.Context, c client.Client, key client.ObjectKey, replicas int) error {
+func SimulateMariaDBReady(ctx context.Context, c client.Client, key client.ObjectKey, replicas int32) error {
 	mariadb := &mariadbv1alpha1.MariaDB{}
 	if err := c.Get(ctx, key, mariadb); err != nil {
 		return fmt.Errorf("getting MariaDB %s: %w", key, err)
 	}
 
-	mariadb.Status.Replicas = int32(replicas)
+	mariadb.Status.Replicas = replicas
 	primaryIdx := 0
 	mariadb.Status.CurrentPrimaryPodIndex = &primaryIdx
 

@@ -1,7 +1,7 @@
 ---
 title: CI Workflow
 quadrant: infrastructure
-feature: CC-0003, CC-0018, CC-0041, CC-0050, CC-0051, CC-0052, CC-0053, CC-0054
+feature: CC-0003, CC-0018, CC-0041, CC-0050, CC-0051, CC-0052, CC-0053, CC-0054, CC-0059
 ---
 
 ::: v-pre
@@ -132,6 +132,26 @@ delegated to `make lint`, which `cd`s into each module directory and runs
 `golangci-lint run ./...` — a necessary pattern for Go multi-module workspaces. The
 `actions/setup-go@v6` step is required because `install-only` mode does not set up Go
 internally.
+
+**Enabled linters** (12 total, configured in `.golangci.yml`):
+
+| Linter | Category | Description |
+| --- | --- | --- |
+| `errcheck` | correctness | Checks for unchecked errors in Go code (CC-0003) |
+| `gocritic` | style | Provides diagnostics for bugs, performance, and style issues (CC-0003) |
+| `govet` | correctness | Reports suspicious constructs, roughly equivalent to `go vet` (CC-0003) |
+| `ineffassign` | correctness | Detects assignments to existing variables that are never used (CC-0003) |
+| `staticcheck` | correctness | Comprehensive static analysis rules from the staticcheck suite (CC-0003) |
+| `unused` | correctness | Checks for unused constants, variables, functions, and types (CC-0003) |
+| `bodyclose` | resource-leak | Checks whether HTTP response bodies are closed successfully (CC-0059) |
+| `errorlint` | correctness | Validates Go 1.13+ error wrapping patterns (`%w`, `errors.Is`, `errors.As`) (CC-0059) |
+| `exhaustive` | correctness | Checks exhaustiveness of enum switch statements (CC-0059) |
+| `gosec` | security | Inspects source code for security problems (hardcoded credentials, weak crypto, unsafe operations) (CC-0059) |
+| `nilerr` | correctness | Finds code that returns nil even after checking that an error is not nil (CC-0059) |
+| `noctx` | correctness | Detects HTTP requests and TLS dials missing `context.Context` propagation (CC-0059) |
+
+Generated code matching `zz_generated.*.go` is excluded from all lint checks via the
+`exclusions.paths` configuration.
 
 ### format-check
 

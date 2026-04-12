@@ -163,7 +163,7 @@ func waitForWebhookServer(host string, port int, timeout time.Duration) error {
 	tlsCfg := &tls.Config{InsecureSkipVerify: true} //nolint:gosec // envtest self-signed cert
 
 	for time.Now().Before(deadline) {
-		conn, err := tls.DialWithDialer(dialer, "tcp", addr, tlsCfg)
+		conn, err := tls.DialWithDialer(dialer, "tcp", addr, tlsCfg) //nolint:noctx // test utility polling loop, context propagation not needed (CC-0059)
 		if err == nil {
 			_ = conn.Close()
 			return nil

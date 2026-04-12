@@ -2,8 +2,8 @@
   "feature_id": "CC-0059",
   "title": "Add security and correctness linters to golangci-lint",
   "slug": "add-security-and-correctness-linters-to-golangci",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #146: Extend golangci-lint configuration with security and correctness linters\n\n**Category**: code quality / security | **Scope**: Medium\n\n**Description**: The current golangci-lint configuration only enables 6 linters (`errcheck`, `gocritic`, `govet`, `ineffassign`, `staticcheck`, `unused`). For a Kubernetes operator project with HTTP clients, error wrapping, and concurrent reconciliation logic, several important linters are missing. The `.golangci.yml` configuration should be extended with the following additional linters:\n\n| Linter | Purpose |\n|---|---|\n| `gosec` | Detects security anti-patterns (hardcoded credentials, weak crypto, unsafe operations) |\n| `bodyclose` | Catches unclosed HTTP response bodies that cause memory leaks |\n| `nilerr` | Flags functions that return `nil` instead of the actual error |\n| `errorlint` | Enforces correct `errors.Is` / `errors.As` usage (Go 1.13+ error wrapping) |\n| `exhaustive` | Ensures switch statements over enum types cover all cases |\n| `noctx` | Catches HTTP requests made without a `context.Context` (missing timeout/cancellation) |\n\nProposed `.golangci.yml` linters section:\n\n```yaml\nlinters:\n  default: none\n  enable:\n    # Existing\n    - errcheck\n    - gocritic\n    - govet\n    - ineffassign\n    - staticcheck\n    - unused\n    # New\n    - gosec\n    - bodyclose\n    - nilerr\n    - errorlint\n    - exhaustive\n    - noctx\n```\n\n**Motivation**: The existing linter set covers general correctness but misses security-relevant patterns (`gosec`), resource leaks (`bodyclose`, `noctx`), and error handling correctness (`nilerr`, `errorlint`, `exhaustive`). These are particularly important in operator code where leaked connections degrade cluster health over time, swallowed errors cause silent reconciliation failures, and incomplete switch statements over condition types lead to unhandled states. Adding these linters catches entire categories of bugs at the lint stage rather than in production.\n\n**Affected Areas**:\n- `.golangci.yml`\n- Go source files that produce new lint findings (to be fixed as part of this issue or tracked separately)\n\n**Acceptance Criteria**:\n- [ ] `.golangci.yml` enables `gosec`, `bodyclose`, `nilerr`, `errorlint`, `exhaustive`, and `noctx`\n- [ ] All existing Go source files pass the extended linter configuration (fix any new findings)\n- [ ] CI lint job continues to pass with the updated configuration\n- [ ] No existing linters are removed or disabled\n- [ ] Any `nolint` directives added to suppress false positives include a justification comment\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/146",
   "stories": [
@@ -291,6 +291,7 @@
       "description": "Add the 6 new linters to the `linters.enable` list in `.golangci.yml`. Group new linters below existing ones with a `# Security & correctness (CC-0059)` comment. Preserve the existing linter order, exclusions section (`zz_generated.*\\.go$`), and run timeout (5m). Verify the config is syntactically valid by running `golangci-lint config verify` or `golangci-lint linters` from any module directory.",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -303,6 +304,7 @@
       "description": "Run `cd internal/common && golangci-lint run ./...` with the updated configuration. Based on codebase research: no HTTP client usage (bodyclose/noctx clean), consistent fmt.Errorf %w wrapping (errorlint clean), no nil-returns-for-errors (nilerr clean), no security anti-patterns (gosec clean), no enum switches (exhaustive clean). If any violations are found, fix the source code. If a fix is not possible (false positive), add a `//nolint:linter-name // reason` directive following the project convention from envtest_setup.go:163.",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-005"
@@ -314,6 +316,7 @@
       "description": "Run `cd operators/keystone && golangci-lint run ./...` with the updated configuration. Based on codebase research: the existing `//nolint:gosec // envtest self-signed cert` on InsecureSkipVerify in envtest_setup.go:163 should handle the known gosec finding. crypto/rand usage in reconcile_fernet.go:9 is correct. No HTTP clients (bodyclose/noctx clean). Consistent error wrapping (errorlint/nilerr clean). No enum switches in operator code (exhaustive clean). If any unexpected violations are found, fix the source code or add justified nolint directives.",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-005"
@@ -325,20 +328,10 @@
       "description": "Run `cd operators/c5c3 && golangci-lint run ./...` with the updated configuration. The c5c3 operator consists of a single main.go (40 lines) that calls bootstrap.Run() - no error handling patterns, no HTTP usage, no switch statements, no security-sensitive code. This should pass cleanly.",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-005"
-      ]
-    },
-    {
-      "id": "3.1",
-      "title": "Verify end-to-end make lint passes across all modules (REQ-006, REQ-007)",
-      "description": "Run `make lint` from the repository root to verify the complete lint pipeline works end-to-end with the updated configuration. This mirrors what CI runs. Confirm output shows all three modules (internal/common, operators/keystone, operators/c5c3) being linted and the command exits with code 0. No changes to the CI workflow (.github/workflows/ci.yaml) or Makefile should be needed.",
-      "level": 3,
-      "estimate_minutes": 10,
-      "requirements": [
-        "REQ-006",
-        "REQ-007"
       ]
     },
     {
@@ -347,6 +340,7 @@
       "description": "Update the lint job section in docs/reference/ci-workflow.md to document the extended linter set. Add a table or list of all 12 enabled linters with their purpose, grouped by category (existing general correctness linters vs new security/correctness linters). Reference CC-0059 as the feature code. Add the feature code to the frontmatter `feature:` field. Keep existing content unchanged.",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -422,6 +416,468 @@
       "story": "CI enforces extended lint configuration on all pull requests",
       "expected": "The lint job section lists all 12 linters (6 existing + 6 new) with descriptions and CC-0059 reference",
       "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestRenderINI",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestMergeDefaults",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestMergeDefaults_doesNotMutateInputs",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestInjectSecrets",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestInjectSecrets_doesNotMutateInput",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestInjectOsloPolicyConfig",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestInjectOsloPolicyConfig_doesNotMutateInput",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestInjectOsloPolicyConfig_emptyPathReturnsOriginalReference",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestCreateImmutableConfigMap_creates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestCreateImmutableConfigMap_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestCreateImmutableConfigMap_deterministic",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestCreateImmutableConfigMap_differentData",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestCreateImmutableConfigMap_newlineInValueIsUnambiguous",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestCreateImmutableConfigMap_rejectsUnownedExisting",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline_emptyPipelineNameReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline_emptyPipelineReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline_duplicateMiddlewareNameReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline_emptyMiddlewareNameReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline_emptyFilterFactoryReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline_emptyBaseFiltersEntryReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline_unknownPositionReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline_zeroValuePositionReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPluginConfig",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPluginConfig_duplicateConfigSectionReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPluginConfig_emptyNameReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPluginConfig_emptyConfigSectionReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPluginConfig_doesNotMutateInput",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline_doesNotMutateInputs",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipelineINI",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline_AppFactory",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline_BaseFilterFactories",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipeline_CompositeRoutes",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipelineINI_FullKeystoneSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/plugins/plugins_test.go",
+      "test_function": "TestRenderPastePipelineINI_duplicateMiddlewareNameReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestEnsureCertificate_creates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestEnsureCertificate_existingNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestEnsureCertificate_existingReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestEnsureCertificate_updates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestEnsureCertificate_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestIsCertificateReady_true",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestIsCertificateReady_false_noConditions",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestIsCertificateReady_false_notTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestGetTLSSecret_found",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestGetTLSSecret_missingTLSKeys",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/tls/tls_test.go",
+      "test_function": "TestGetTLSSecret_notFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildKeystoneNetworkPolicy_NameAndNamespace",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildKeystoneNetworkPolicy_Labels",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildKeystoneNetworkPolicy_PodSelector",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildKeystoneNetworkPolicy_PolicyTypes",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildKeystoneNetworkPolicy_IngressRules_SingleSource",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildKeystoneNetworkPolicy_IngressRules_MultipleSources_WithPodSelector",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_BrownfieldOnly_DNSOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_ManagedDB",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_ManagedCache",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_BothManaged",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildKeystoneNetworkPolicy_AdditionalEgress",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestReconcileNetworkPolicy_NetworkPolicySet_CreatesNetworkPolicy",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestReconcileNetworkPolicy_ConditionObservedGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestReconcileNetworkPolicy_NetworkPolicyEnabled_NetworkPolicyUpdated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestReconcileNetworkPolicy_NetworkPolicyEnabled_NoChange_SkipsUpdate",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestReconcileNetworkPolicy_NetworkPolicyNil_NoExistingNP_SetsNotRequired",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestReconcileNetworkPolicy_NetworkPolicyNil_ExistingNP_DeletesNetworkPolicy",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestReconcileNetworkPolicy_EmptyIngress_ReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestReconcileNetworkPolicy_EnsureError_Propagated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestReconcileNetworkPolicy_DeleteError_Propagated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],
@@ -449,8 +905,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-10T19:04:47.448828"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-11T19:56:41.070373"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-12T07:47:31.820144"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/176",
+  "pr_number": 176,
   "execution_history": [
     {
       "run_id": "0bbc36d1-b394-42a1-beb0-da6a00d2e974",
@@ -462,6 +928,78 @@
           "name": "prepare",
           "duration": 474.30338501930237,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "ed185353-9952-4293-9bc4-9bb8d40036d0",
+      "timestamp": "2026-04-11T20:19:30.388858",
+      "total_duration": 1211.8255951404572,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (1 tasks)",
+          "duration": 572.651284456253,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (3 tasks)",
+          "duration": 95.12110996246338,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (1 tasks)",
+          "duration": 50.19693851470947,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0059] Code Review",
+          "duration": 307.10889625549316,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0059] Improvements",
+          "duration": 122.11894679069519,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0059] Simplify",
+          "duration": 64.6284191608429,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "b94a74af-33b1-4c4f-86e0-b9ceb3e5c32e",
+      "timestamp": "2026-04-11T20:40:55.397392",
+      "total_duration": 577.3936133384705,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 577.3936133384705,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "67d2abc3-8199-4222-b556-e7a3d54154e3",
+      "timestamp": "2026-04-11T20:58:10.133091",
+      "total_duration": 686.0443649291992,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 686.0443649291992,
+          "type": "review_address",
           "status": "done"
         }
       ]

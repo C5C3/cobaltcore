@@ -1,0 +1,79 @@
+{
+  "feature_id": "CC-0059",
+  "title": "Add security and correctness linters to golangci-lint",
+  "date": "2026-04-11",
+  "verdict": "NEEDS_CHANGES",
+  "summary": "Adds 6 new linters (gosec, bodyclose, nilerr, errorlint, exhaustive, noctx) to .golangci.yml, fixes all lint violations across 3 modules, and documents the configuration in docs/reference/ci-workflow.md. All 12 linters pass clean across all modules. Core implementation is correct and well-scoped. Two issues require changes: (1) an unnecessary nolint:staticcheck directive on main.go:47 that suppresses a warning that does not actually fire, and (2) missing CC-0059 in the docs frontmatter feature field. One inconsistency introduced by a partial QF1008 fix is noted as major.",
+  "tests_checklist": [
+    {"item": "golangci-lint run ./... passes on internal/common", "checked": true},
+    {"item": "golangci-lint run ./... passes on operators/keystone", "checked": true},
+    {"item": "golangci-lint run ./... passes on operators/c5c3", "checked": true},
+    {"item": "All 12 linters confirmed enabled via golangci-lint linters", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns", "checked": true},
+    {"item": "nolint directives include justification comments", "checked": true},
+    {"item": "New linters grouped with comment in .golangci.yml", "checked": true},
+    {"item": "No unnecessary nolint directives", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "gosec suppressions are justified false positives", "checked": true},
+    {"item": "No existing linters removed", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "No modifications to CI workflow or Makefile", "checked": true},
+    {"item": "Generated code exclusion preserved", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unnecessary abstractions", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Lint errors caught at development time", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs validated", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "C2",
+      "severity": "MAJOR",
+      "description": "docs/reference/ci-workflow.md frontmatter feature field does not include CC-0059. The review criteria explicitly require 'CC-0059 referenced in frontmatter'. The body content references CC-0059 in the linter table rows, but the frontmatter feature: field on line 4 lists only CC-0003 through CC-0054.",
+      "location": "docs/reference/ci-workflow.md:4",
+      "fix": "Add CC-0059 to the feature field: `feature: CC-0003, CC-0018, CC-0041, CC-0050, CC-0051, CC-0052, CC-0053, CC-0054, CC-0059`",
+      "evidence": "feature: CC-0003, CC-0018, CC-0041, CC-0050, CC-0051, CC-0052, CC-0053, CC-0054",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "Q7",
+      "severity": "MAJOR",
+      "description": "Unnecessary nolint:staticcheck directive. Removing the //nolint:staticcheck suppression on main.go:47 produces zero lint errors — the SA1019 deprecation warning does not actually fire for GetEventRecorderFor with the current staticcheck version. This is dead suppression that misleads readers into thinking there is a deprecation they need to track.",
+      "location": "operators/keystone/main.go:47",
+      "fix": "Remove the nolint directive: change `Recorder: mgr.GetEventRecorderFor(\"keystone-controller\"), //nolint:staticcheck // SA1019: migrating to events.EventRecorder API is out of scope (CC-0059)` to `Recorder: mgr.GetEventRecorderFor(\"keystone-controller\"),`",
+      "evidence": "Verified by removing the nolint directive and running golangci-lint run ./... on operators/keystone — 0 issues reported. The SA1019 rule does not fire for this call.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "PC3",
+      "severity": "MAJOR",
+      "description": "Inconsistent embedded field access in reconcile_networkpolicy_test.go. Line 540 was changed from r.Client.Get to r.Get (QF1008 auto-fix for embedded field selector), but lines 334, 408, and 500 in the same file still use r.Client.Get. This creates an inconsistency within the file. The change is functionally correct but scope-creeping — none of the 6 new linters (gosec, bodyclose, nilerr, errorlint, exhaustive, noctx) required this change; it was a pre-existing staticcheck QF1008 suggestion applied partially.",
+      "location": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go:540",
+      "fix": "Either revert line 540 back to r.Client.Get to match the rest of the file (preferred — keeps this PR scoped to the 6 new linters only), or change all 3 remaining instances on lines 334, 408, 500 to r.Get for consistency.",
+      "evidence": "Line 540: `getErr := r.Get(context.Background(), types.NamespacedName{`\nLine 334: `g.Expect(r.Client.Get(context.Background(), types.NamespacedName{`\nLine 408: `g.Expect(r.Client.Get(ctx, types.NamespacedName{`\nLine 500: `g.Expect(r.Client.Get(ctx, types.NamespacedName{`",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "The nolint:gosec // G703 comment on internal/common/testutil/envtest/setup.go:81 describes the rule as 'assets path from KUBEBUILDER_ASSETS env var, not user input' — while technically the env var IS controlled by the user, the justification is adequate since this is a test skip guard and the path is only used for os.Stat (no file content read). No change needed, but the comment could be more precise: 'G703: path from trusted KUBEBUILDER_ASSETS env var used only for existence check'."
+  ],
+  "next_steps": [
+    "Add CC-0059 to docs/reference/ci-workflow.md frontmatter feature field",
+    "Remove unnecessary //nolint:staticcheck directive from operators/keystone/main.go:47",
+    "Resolve r.Client.Get vs r.Get inconsistency in reconcile_networkpolicy_test.go (revert line 540 or update lines 334, 408, 500)"
+  ],
+  "detected_patterns": []
+}

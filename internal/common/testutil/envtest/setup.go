@@ -78,7 +78,7 @@ func SkipIfEnvTestUnavailable(t testing.TB) {
 	if assets == "" {
 		t.Skip("KUBEBUILDER_ASSETS not set, skipping integration test")
 	}
-	if _, err := os.Stat(filepath.Join(assets, "etcd")); err != nil {
+	if _, err := os.Stat(filepath.Join(assets, "etcd")); err != nil { //nolint:gosec // G703: assets path from KUBEBUILDER_ASSETS env var, not user input (CC-0059)
 		t.Skipf("envtest binaries not found at %s, skipping integration test", assets)
 	}
 }

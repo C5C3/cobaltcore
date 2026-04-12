@@ -1,0 +1,59 @@
+{
+  "feature_id": "CC-0059",
+  "title": "Add security and correctness linters to golangci-lint",
+  "date": "2026-04-11",
+  "summary": "Review of commit b6c4989 addressing berendt's review #2 feedback. W-002 (partial r.Client.Get refactoring) is correctly resolved by reverting all 4 instances back to r.Client.Get, restoring consistency with the ~40 instances across the codebase. W-001 (gosec G703 nolint) was correctly disputed — G703 does fire on os.Stat with tainted input (verified by temporarily removing the directive and running golangci-lint). However, the 5-line REVIEWER-DISAGREEMENT block comment added to source code is review process meta-commentary that does not belong in production code, and contains German text violating the English-only rule.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "make lint passes with exit code 0 across all 3 modules", "checked": true},
+    {"item": "No existing linters removed", "checked": true},
+    {"item": "nolint directives follow //nolint:linter-name // reason convention", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "No review meta-commentary in production source code", "checked": false},
+    {"item": "All comments in English", "checked": false},
+    {"item": "r.Client.Get pattern consistent across codebase", "checked": true},
+    {"item": "No modifications to .github/workflows/ci.yaml or Makefile", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "gosec G703 suppression justified — path from env var, not user input", "checked": true},
+    {"item": "No new security anti-patterns introduced", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Changes scoped to addressing review feedback only", "checked": true},
+    {"item": "Generated code exclusion preserved", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No unnecessary code added", "checked": false}
+  ],
+  "fail_fast_checklist": [
+    {"item": "No error handling regressions", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "No defensive coding regressions", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "Q7",
+      "severity": "MAJOR",
+      "description": "REVIEWER-DISAGREEMENT block comment is review process meta-commentary that does not belong in production source code. The 5-line comment discusses the review back-and-forth, contains German text ('Reviewer: bitte prüfen'), and duplicates information that belongs in the PR conversation. The inline //nolint:gosec // G703: ... comment already provides sufficient justification for the suppression.",
+      "location": "internal/common/testutil/envtest/setup.go:81-85",
+      "fix": "Remove the entire 5-line REVIEWER-DISAGREEMENT block comment (lines 81-85). The existing inline nolint comment on line 86 is correct and self-documenting. Review disagreements should be documented in PR comments, not source code.",
+      "evidence": "// REVIEWER-DISAGREEMENT: [Reviewer said G703 does not exist in gosec's rule catalog] —\n// [G703 (\"Path traversal via taint analysis\") is a valid gosec rule and fires on this line.\n// Verified by removing the nolint and running `golangci-lint run --enable gosec`: output\n// confirms G703, not G304. G304 is a separate rule for file inclusion, not os.Stat.] —\n// [Kept nolint:gosec with G703 as originally written.] Reviewer: bitte prüfen.",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "The review pattern file .planwerk/review_patterns/standardize-access-patterns-when-partially-refactoring.md (created in a prior commit) states the fix was 'Standardized all test reconciler calls to use the promoted method r.Get' — but the actual fix in this commit reverted to r.Client.Get. Consider updating the pattern file's fix description to match reality."
+  ],
+  "next_steps": [
+    "Remove the 5-line REVIEWER-DISAGREEMENT block comment from setup.go:81-85, keeping only the inline nolint:gosec // G703 comment on line 86"
+  ],
+  "detected_patterns": [],
+  "reviewer": "planwerk-review",
+  "commit_reference": "b6c4989",
+  "review_type": "internal",
+  "sequence_number": 3
+}
