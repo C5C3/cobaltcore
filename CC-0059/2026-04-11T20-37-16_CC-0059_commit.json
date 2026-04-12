@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-11T20:37:16.473233+00:00",
+  "feature_id": "CC-0059",
+  "task_type": "commit",
+  "session_key": "CC-0059",
+  "model": "opus",
+  "prompt": "Generate a detailed git commit body for this commit.\nSubject: fix(CC-0059): address review #1 feedback from sourcery-ai[bot]\n\nReview feedback is in: /worktrees/CC-0059/.planwerk/reviews/CC-0059-github-review-by-sourcery-ai-bot-external-1.json\nUse `git diff --cached -- ':(exclude).planwerk'` to see the full staged diff.\n\nDiff stat:\n.golangci.yml                                     |  8 ++++++++\n internal/common/config/config_test.go             | 12 ++++++------\n internal/common/plugins/plugins_test.go           |  4 ++--\n internal/common/testutil/simulators/simulators.go |  4 ++--\n internal/common/tls/tls_test.go                   |  2 +-\n 5 files changed, 19 insertions(+), 11 deletions(-)\n\nWrite ONLY the body text, no subject line, no markdown.\nFor each changed file, write a bullet point: '- path/to/file: what was changed'\nDo NOT mention .planwerk directory changes.\nOutput ONLY plain text — no tool_call tags, no XML, no code blocks.",
+  "prompt_length": 947,
+  "caller": "run_claude_cli"
+}
