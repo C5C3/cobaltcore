@@ -1,0 +1,48 @@
+{
+  "feature_id": "CC-0063",
+  "title": "Add graceful shutdown with preStop hook and startup probe",
+  "date": "2026-04-12",
+  "verdict": "APPROVED",
+  "summary": "Addresses external review W-001 by adding a Chainsaw E2E test directory tests/e2e/keystone/graceful-shutdown/ with chainsaw-test.yaml and 00-keystone-cr.yaml. The test applies a minimal Keystone CR, waits for Ready=True, then asserts the Deployment spec contains terminationGracePeriodSeconds: 30, preStop exec sleep 5, and startupProbe httpGet /v3:5000 with failureThreshold 30 and periodSeconds 10. All files follow established conventions exactly: SPDX headers, unique CR/database names, numbered step comments, 5m assert timeout, catch blocks with diagnostic scripts. Metadata files (.planwerk/progress, reviews, review_patterns) are correctly updated.",
+  "tests_checklist": [
+    {"item": "E2E test exists for graceful-shutdown feature (W-001)", "checked": true},
+    {"item": "Test asserts terminationGracePeriodSeconds: 30", "checked": true},
+    {"item": "Test asserts preStop lifecycle hook with sleep 5", "checked": true},
+    {"item": "Test asserts startupProbe httpGet /v3:5000 failureThreshold 30 periodSeconds 10", "checked": true},
+    {"item": "Test waits for Ready=True before asserting Deployment spec", "checked": true},
+    {"item": "Catch blocks provide diagnostic output on failure", "checked": true},
+    {"item": "Unique CR name (keystone-graceful-shutdown) prevents parallel test collision", "checked": true},
+    {"item": "Unique database name (keystone_graceful_shutdown) prevents cross-test interference", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows Chainsaw E2E test suite structure pattern", "checked": true},
+    {"item": "SPDX Apache-2.0 headers on all new files", "checked": true},
+    {"item": "Descriptive comment block with feature ID and requirement IDs", "checked": true},
+    {"item": "Step comments use established '# -- Step N: Description --' format", "checked": true},
+    {"item": "Fixture file uses 00- numeric prefix", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No secrets or credentials in test fixtures", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Test directory follows 1-feature-to-1-E2E-test convention", "checked": true},
+    {"item": "CR fixture is minimal (only required fields)", "checked": true},
+    {"item": "No scope creep beyond external review feedback", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated test logic", "checked": true},
+    {"item": "No unnecessary assertions beyond the three new fields", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Ready gate (Step 2) prevents spec assertions on unready Deployment", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Catch blocks handle diagnostic commands defensively (2>/dev/null, || true)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": []
+}

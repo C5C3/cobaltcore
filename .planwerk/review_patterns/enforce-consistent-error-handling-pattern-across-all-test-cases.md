@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: When a file already uses a defensive pattern (e.g., capturing exit codes with `|| exit_code=$?`) in some test cases, scan ALL other test cases in the same file for the same invocation pattern without the guard.
 **Severity**: BLOCKING
-**Occurrences**: 4
+**Occurrences**: 5
 
 ## What to check
 
@@ -34,3 +34,8 @@ Silent test abortion means CI reports a failure with zero diagnostic output. Dev
 - **Feedback**: The project has 18 Chainsaw E2E test directories under tests/e2e/keystone/ covering every existing feature. This PR adds a significant new feature (upgrade flow) but includes no Chainsaw E2E test.
 - **What was missed**: List the existing test directories (e.g. tests/e2e/keystone/*). If the PR introduces a new feature or flow, verify a corresponding test directory and chainsaw-test.yaml (or equivalent) is included.
 - **Fix**: Created tests/e2e/keystone/upgrade-flow/ with chainsaw-test.yaml covering fresh deployment, sequential upgrade, and skip-level rejection scenarios.
+
+### CC-0063 — berendt
+- **Feedback**: The project has 19 Chainsaw E2E test directories under tests/e2e/keystone/ covering every existing feature [...]. This PR adds a new operational feature but includes no corresponding E2E test that asserts the Deployment spec fields (terminationGracePeriodSeconds, startupProbe, lifecycle.preStop) on a real cluster.
+- **What was missed**: Check whether the project has a consistent 1-feature-to-1-E2E-test-directory convention. If it does, verify the PR includes a new test directory that asserts the feature's spec fields on a real cluster, not just unit/integration coverage.
+- **Fix**: Added a tests/e2e/keystone/graceful-shutdown/ directory with chainsaw-test.yaml that applies a Keystone CR and asserts the Deployment spec contains the expected terminationGracePeriodSeconds, startupProbe, and lifecycle.preStop fields.

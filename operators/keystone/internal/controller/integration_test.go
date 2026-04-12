@@ -1698,3 +1698,54 @@ func TestIntegration_TrustFlush_OmittedDoesNotCreateCronJob(t *testing.T) {
 	}, 2*time.Second, pollInterval).Should(BeTrue(),
 		"trust-flush CronJob should not exist when trustFlush is omitted")
 }
+
+// TestIntegration_GracefulShutdownSpec verifies that the preStop lifecycle hook,
+// terminationGracePeriodSeconds, and startup probe survive a full reconciliation
+// cycle through the API server (CC-0063, REQ-006).
+func TestIntegration_GracefulShutdownSpec(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-graceful-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	// Fetch the Deployment (CC-0063).
+	deploy := &appsv1.Deployment{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-api"}, deploy)).
+		To(Succeed(), "Deployment test-keystone-api should exist")
+
+	// Verify terminationGracePeriodSeconds (CC-0063, REQ-002): 30s gives 5s for
+	// preStop sleep + 25s for uWSGI to drain in-flight requests.
+	g.Expect(deploy.Spec.Template.Spec.TerminationGracePeriodSeconds).NotTo(BeNil(),
+		"terminationGracePeriodSeconds must be set")
+	g.Expect(*deploy.Spec.Template.Spec.TerminationGracePeriodSeconds).To(Equal(int64(30)))
+
+	// Find the keystone-api container.
+	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone-api")
+	g.Expect(container).NotTo(BeNil(), "keystone-api container must exist")
+
+	// Verify preStop lifecycle hook (CC-0063, REQ-001): 5-second sleep before
+	// SIGTERM gives kube-proxy time to propagate endpoint removal.
+	g.Expect(container.Lifecycle).NotTo(BeNil(), "Lifecycle must be set")
+	g.Expect(container.Lifecycle.PreStop).NotTo(BeNil(), "PreStop hook must be set")
+	g.Expect(container.Lifecycle.PreStop.Exec).NotTo(BeNil(), "PreStop must use exec")
+	g.Expect(container.Lifecycle.PreStop.Exec.Command).To(Equal([]string{"/bin/sh", "-c", "sleep 5"}))
+
+	// Verify startup probe (CC-0063, REQ-003): httpGet /v3 port 5000 with generous
+	// failure threshold to survive slow cold starts.
+	g.Expect(container.StartupProbe).NotTo(BeNil(), "StartupProbe must be set")
+	g.Expect(container.StartupProbe.HTTPGet).NotTo(BeNil(), "StartupProbe must use httpGet")
+	g.Expect(container.StartupProbe.HTTPGet.Path).To(Equal("/v3"))
+	g.Expect(container.StartupProbe.HTTPGet.Port.IntValue()).To(Equal(5000))
+	g.Expect(container.StartupProbe.FailureThreshold).To(Equal(int32(30)))
+	g.Expect(container.StartupProbe.PeriodSeconds).To(Equal(int32(10)))
+}

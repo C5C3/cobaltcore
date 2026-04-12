@@ -1,0 +1,65 @@
+{
+  "feature_id": "CC-0063",
+  "title": "Add graceful shutdown with preStop hook and startup probe",
+  "date": "2026-04-12",
+  "summary": "Adds preStop lifecycle hook (sleep 5), terminationGracePeriodSeconds (30), and startup probe (httpGet /v3:5000, failureThreshold 30, periodSeconds 10) to the keystone-api container in buildKeystoneDeployment. Existing liveness (TCPSocket) and readiness (HTTPGet) probes are unchanged. Unit tests in reconcile_deployment_test.go verify all three new fields plus probe non-regression. Integration test TestIntegration_GracefulShutdownSpec verifies the fields survive a full envtest reconciliation cycle.",
+  "verdict": "APPROVED",
+  "review_steps": {
+    "1_INTENT": "Plan specifies adding preStop hook, terminationGracePeriodSeconds, and startup probe to eliminate two classes of transient errors during rollouts: (a) race between endpoint removal and SIGTERM, (b) liveness-kill loops during slow cold starts.",
+    "2_SCOPE": "Changes limited to reconcile_deployment.go (+19 lines), reconcile_deployment_test.go (+22 lines), integration_test.go (+57 lines), and progress JSON. No scope creep.",
+    "3_VERIFICATION": "go vet: clean. Unit tests: 24/24 PASS. golangci-lint: clean (1 pre-existing staticcheck warning in unrelated reconcile_networkpolicy_test.go).",
+    "4_PATTERNS": "Uses ptr.To(int64(30)) consistent with existing ptr.To usage in security_context.go and reconcile_trustflush.go. Uses intstr.FromInt32(5000) consistent with existing probe definitions. Integration test follows established TestIntegration_PDBSpec pattern (SkipIfEnvTestUnavailable, setupEnvTestWithController, createPrerequisites, integrationBrownfieldKeystone, driveFullReconciliation, fetch+assert). Gomega assertions via NewGomegaWithT(t).",
+    "5_TESTS": "Unit test verifies all three new fields with exact value assertions. Existing liveness (TCPSocket:5000, initialDelay=15, period=20) and readiness (HTTPGet /v3:5000, initialDelay=5, period=10) probe assertions still pass unchanged. Integration test verifies all three fields survive API server round-trip. Comments reference CC-0063 and REQ IDs.",
+    "6_SECURITY": "No security concerns. preStop hook runs 'sleep 5' — no user input, no secrets, no external calls.",
+    "7_COMPLEXITY": "Minimal: three new struct fields in the deployment builder, corresponding test assertions. No abstractions, no helpers, no configuration. Simplest possible implementation.",
+    "8_COMPLETENESS": "All 6 acceptance criteria met. All 3 tasks (1.1, 1.2, 2.1) implemented.",
+    "9_PROMPT_QUALITY": "No new prompt files — N/A."
+  },
+  "tests_checklist": [
+    {"item": "Unit tests exist and pass for all three new fields", "checked": true},
+    {"item": "Existing liveness probe assertions pass unchanged", "checked": true},
+    {"item": "Existing readiness probe assertions pass unchanged", "checked": true},
+    {"item": "Integration test covers preStop hook", "checked": true},
+    {"item": "Integration test covers terminationGracePeriodSeconds", "checked": true},
+    {"item": "Integration test covers startup probe", "checked": true},
+    {"item": "preStop command exactly equals [\"/bin/sh\", \"-c\", \"sleep 5\"]", "checked": true},
+    {"item": "terminationGracePeriodSeconds is pointer to int64(30)", "checked": true},
+    {"item": "startupProbe uses httpGet (not tcpSocket or exec)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (ptr.To, intstr.FromInt32, probe structure)", "checked": true},
+    {"item": "No code duplication", "checked": true},
+    {"item": "Clear naming and comments with CC-0063 and REQ references", "checked": true},
+    {"item": "Functions remain single-responsibility", "checked": true},
+    {"item": "No dead code or unnecessary abstractions", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No user inputs to validate (preStop is a static sleep command)", "checked": true},
+    {"item": "No secrets or credentials involved", "checked": true},
+    {"item": "No external calls or network operations in lifecycle hook", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible — three struct fields added", "checked": true},
+    {"item": "EnsureDeployment uses unconditional spec updates, so no normalization needed for new fields", "checked": true},
+    {"item": "Integration test follows established envtest pattern", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unnecessary abstractions or helpers", "checked": true},
+    {"item": "No future-proofing or configurability beyond what was requested", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Not applicable — no error paths introduced (static configuration only)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Not applicable — no external inputs (static lifecycle configuration)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "D2 [AUTO_FIX]: operators/keystone/internal/controller/integration_test.go:1733-1739 — The manual container-finding loop duplicates the existing findContainerByName helper in security_context_test.go (same package). Consider using: container := findContainerByName(deploy.Spec.Template.Spec.Containers, \"keystone-api\"). This is a minor consistency suggestion only."
+  ],
+  "next_steps": [],
+  "detected_patterns": []
+}

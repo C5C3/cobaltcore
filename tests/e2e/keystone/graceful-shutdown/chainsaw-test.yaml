@@ -1,0 +1,93 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for graceful shutdown (CC-0063).
+# Validates that the reconciler configures the Deployment with:
+#   - terminationGracePeriodSeconds: 30 (REQ-002)
+#   - preStop lifecycle hook: sleep 5 via exec (REQ-001)
+#   - startupProbe: HTTP GET /v3:5000 with failureThreshold 30 (REQ-003)
+#
+# REQ-001, REQ-002, REQ-003 (CC-0063)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-graceful-shutdown
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR ──────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert Ready ───────────────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-graceful-shutdown
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Assert graceful shutdown fields on Deployment ──────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-graceful-shutdown-api
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                terminationGracePeriodSeconds: 30
+                containers:
+                - name: keystone-api
+                  lifecycle:
+                    preStop:
+                      exec:
+                        command:
+                        - /bin/sh
+                        - -c
+                        - sleep 5
+                  startupProbe:
+                    httpGet:
+                      path: /v3
+                      port: 5000
+                    failureThreshold: 30
+                    periodSeconds: 10
+    catch:
+    - script:
+        content: |
+          echo "=== Deployment spec ==="
+          kubectl get deployment keystone-graceful-shutdown-api -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

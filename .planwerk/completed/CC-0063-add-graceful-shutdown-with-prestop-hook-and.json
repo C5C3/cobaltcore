@@ -2,8 +2,8 @@
   "feature_id": "CC-0063",
   "title": "Add graceful shutdown with preStop hook and startup probe",
   "slug": "add-graceful-shutdown-with-prestop-hook-and",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #160: Add graceful shutdown with preStop hook and startup probe\n\n**Category**: improvement | **Scope**: Small\n\n**Description**: The Keystone API Deployment currently has no `preStop` lifecycle hook, no explicit `terminationGracePeriodSeconds`, and no startup probe. This means that during rolling updates or node drains, in-flight requests can be dropped because the pod is removed from the Service endpoints and terminated simultaneously. Additionally, after a cold start (e.g. following a config change or db_sync), the liveness probe with its 15-second initial delay may kill the container before Keystone has finished initializing.\n\nAdd the following to the `keystone-api` container in `buildKeystoneDeployment`:\n\n1. **PreStop hook** with a short sleep to allow kube-proxy/iptables to converge before the process receives SIGTERM:\n   ```yaml\n   lifecycle:\n     preStop:\n       exec:\n         command: [\"/bin/sh\", \"-c\", \"sleep 5\"]\n   ```\n\n2. **`terminationGracePeriodSeconds: 30`** on the PodSpec to give uWSGI enough time to finish in-flight requests after SIGTERM.\n\n3. **Startup probe** with a generous failure threshold so slow first-boot scenarios (large DB, cold caches) do not trigger a liveness-kill loop:\n   ```yaml\n   startupProbe:\n     httpGet:\n       path: /v3\n       port: 5000\n     failureThreshold: 30\n     periodSeconds: 10\n   ```\n   While the startup probe is active, kubelet skips both the liveness and readiness probes, preventing premature restarts.\n\n**Motivation**: Without a preStop hook, there is a race condition between endpoint removal and process termination: kube-proxy may still route traffic to a pod that has already received SIGTERM. The 5-second sleep gives the cluster networking stack time to propagate the endpoint change. Without a startup probe, the liveness probe (15s initial delay, 20s period) can restart the container if Keystone takes longer than ~35 seconds to start — a realistic scenario after a schema migration or with cold Memcached caches. Together, these changes eliminate two classes of transient errors during rollouts.\n\n**Affected Areas**:\n- `operators/keystone/internal/controller/reconcile_deployment.go` (`buildKeystoneDeployment`)\n- `operators/keystone/internal/controller/reconcile_deployment_test.go`\n\n**Acceptance Criteria**:\n- [ ] `keystone-api` container has a `preStop` lifecycle hook executing `sleep 5`\n- [ ] PodSpec sets `terminationGracePeriodSeconds: 30`\n- [ ] `keystone-api` container has a startup probe on `/v3` port 5000 with `failureThreshold: 30` and `periodSeconds: 10`\n- [ ] Existing liveness and readiness probes remain unchanged\n- [ ] Unit tests verify the presence and values of the lifecycle hook, termination grace period, and startup probe\n- [ ] Rolling update with `replicas >= 2` completes without dropping requests (verified manually or via integration test)\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/160",
   "stories": [
@@ -213,6 +213,7 @@
       "description": "In operators/keystone/internal/controller/reconcile_deployment.go, modify buildKeystoneDeployment to: (1) Add Lifecycle field to keystone-api container with PreStop exec handler running [\"/bin/sh\", \"-c\", \"sleep 5\"], (2) Add TerminationGracePeriodSeconds: ptr.To(int64(30)) to PodSpec, (3) Add StartupProbe with httpGet /v3 port 5000, failureThreshold 30, periodSeconds 10. Existing liveness and readiness probes must remain unchanged. Import k8s.io/utils/ptr if not already imported.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -226,6 +227,7 @@
       "description": "In operators/keystone/internal/controller/reconcile_deployment_test.go, extend TestReconcileDeployment_DeploymentSpec to add assertions for: (1) container.Lifecycle.PreStop.Exec.Command equals [\"/bin/sh\", \"-c\", \"sleep 5\"], (2) deploy.Spec.Template.Spec.TerminationGracePeriodSeconds equals ptr.To(int64(30)), (3) container.StartupProbe.HTTPGet.Path equals /v3 and Port equals 5000, (4) container.StartupProbe.FailureThreshold equals 30 and PeriodSeconds equals 10. Follow existing Gomega assertion style with comment blocks (e.g. '// Verify startup probe (CC-0063).'). Existing probe assertions must continue passing.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -240,6 +242,7 @@
       "description": "In operators/keystone/internal/controller/integration_test.go, add TestIntegration_GracefulShutdownSpec that: (1) creates a Keystone CR and drives full reconciliation using existing helpers (setupEnvTestWithController, createPrerequisites, driveFullReconciliation), (2) fetches the resulting Deployment, (3) asserts keystone-api container has preStop lifecycle hook with command [\"/bin/sh\", \"-c\", \"sleep 5\"], (4) asserts PodSpec.TerminationGracePeriodSeconds is 30, (5) asserts startupProbe has correct httpGet, failureThreshold, and periodSeconds. Follow existing integration test patterns (TestIntegration_PDBSpec is a good reference).",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -287,6 +290,405 @@
       "story": "Integration test verifies graceful shutdown config in full reconciliation",
       "expected": "After full reconciliation via envtest, resulting Deployment has preStop hook, terminationGracePeriodSeconds 30, and startup probe with correct values",
       "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_DeploymentAndServiceCreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_NotReady_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_Ready_SetsEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_OwnerReferences",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_DeploymentSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_NotReady_ConditionMessageAndGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_Ready_ConditionMessageAndGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_ServiceCreatedAlongsideDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_FernetKeysHashAnnotation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_FernetKeysHashAnnotation_EmptyHash",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_CredentialKeysHashAnnotation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_CredentialKeysHashAnnotation_EmptyHash",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestCredentialKeysHash_Deterministic",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestCredentialKeysHash_SecretNotFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_CredentialKeysHashFromSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestFernetKeysHash_Deterministic",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestFernetKeysHash_SecretNotFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_FernetKeysHashFromSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBCreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBLabelsAndSelector",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBMinAvailableForMultipleReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBMaxUnavailableForSingleReplica",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBUpdatedOnReplicaChange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBSelectorMatchesDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildPodDisruptionBudget_BoundaryReplicas2",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildPodDisruptionBudget_ZeroReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_ContainerResources",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_CustomResources",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_NilResources",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBEnsureError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestUWSGICommand_NilUWSGI",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestUWSGICommand_CustomValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestUWSGICommand_KeepAliveDisabled",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestUWSGICommand_KeepAliveEnabled",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestUWSGICommand_FixedFlagsAlwaysPresent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_RollingUpdate_ReadyDeployment_TransitionsToContracting",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_RollingUpdate_NotReady_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_NoUpgrade_Ready_SetsEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_OtherPhase_Ready_SetsEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FullReconcile_Brownfield",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_ConditionProgression",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_ResourceCreation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_StatusEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_ObservedGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FullReconcile_Managed",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_CronJobDetailedSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_BootstrapJobDetailedSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PDBSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PDBUpdatedOnReplicaChange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HPASpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HPAUpdatedOnAutoscalingChange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HPADeletedWhenAutoscalingRemoved",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FreshDeployment_InstalledReleaseTracking",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_UpgradeCycle_ExpandMigrateContract",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_TrustFlush_CronJobCreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_TrustFlush_CronJobDeleted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_TrustFlush_OmittedDoesNotCreateCronJob",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],
@@ -314,8 +716,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-12T11:26:59.428395"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-12T12:41:47.915325"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-12T13:51:44.373050"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/179",
+  "pr_number": 179,
   "execution_history": [
     {
       "run_id": "db55d010-e16f-4658-a55f-7116c41d1519",
@@ -327,6 +739,58 @@
           "name": "prepare",
           "duration": 232.4431712627411,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "e568bc29-5c1f-4258-a5dd-5545db14e7f7",
+      "timestamp": "2026-04-12T12:53:17.175873",
+      "total_duration": 578.1875367164612,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (2 tasks)",
+          "duration": 176.95152640342712,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (1 tasks)",
+          "duration": 138.51230812072754,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0063] Code Review",
+          "duration": 189.7075674533844,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0063] Improvements",
+          "duration": 39.01353359222412,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0063] Simplify",
+          "duration": 34.002601146698,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "11772a23-7b58-46d1-b7b0-c9e37efad317",
+      "timestamp": "2026-04-12T13:21:46.111197",
+      "total_duration": 364.82464838027954,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 364.82464838027954,
+          "type": "review_address",
           "status": "done"
         }
       ]

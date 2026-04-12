@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -172,6 +173,7 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 					},
 				},
 				Spec: corev1.PodSpec{
+					TerminationGracePeriodSeconds: ptr.To(int64(30)),
 					Containers: []corev1.Container{{
 						Name:            "keystone-api",
 						Image:           fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag),
@@ -200,6 +202,23 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 							},
 							InitialDelaySeconds: 5,
 							PeriodSeconds:       10,
+						},
+						StartupProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								HTTPGet: &corev1.HTTPGetAction{
+									Path: "/v3",
+									Port: intstr.FromInt32(5000),
+								},
+							},
+							FailureThreshold: 30,
+							PeriodSeconds:    10,
+						},
+						Lifecycle: &corev1.Lifecycle{
+							PreStop: &corev1.LifecycleHandler{
+								Exec: &corev1.ExecAction{
+									Command: []string{"/bin/sh", "-c", "sleep 5"},
+								},
+							},
 						},
 						VolumeMounts: []corev1.VolumeMount{
 							{
