@@ -115,6 +115,22 @@ lint:
 	done
 
 # ============================================================================
+# Security Targets (CC-0061)
+# ============================================================================
+
+.PHONY: govulncheck
+# govulncheck scans all workspace modules for known Go vulnerabilities (CC-0061).
+# Delegates to govulncheck per module, matching go.work use directives.
+# CI calls this target instead of hardcoding module paths.
+govulncheck:
+	@echo "Scanning internal/common module..."
+	@cd internal/common && govulncheck ./...
+	@for op in $(OPERATORS); do \
+		echo "Scanning operators/$$op module..."; \
+		(cd operators/$$op && govulncheck ./...) || exit 1; \
+	done
+
+# ============================================================================
 # Format Targets (CC-0053)
 # ============================================================================
 

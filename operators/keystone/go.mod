@@ -1,6 +1,6 @@
 module github.com/c5c3/forge/operators/keystone
 
-go 1.25.7
+go 1.25.9
 
 require (
 	github.com/c5c3/forge/internal/common v0.0.0

@@ -1,14 +1,14 @@
 ---
 title: CI Workflow
 quadrant: infrastructure
-feature: CC-0003, CC-0018, CC-0041, CC-0050, CC-0051, CC-0052, CC-0053, CC-0054, CC-0059
+feature: CC-0003, CC-0018, CC-0041, CC-0050, CC-0051, CC-0052, CC-0053, CC-0054, CC-0059, CC-0061
 ---
 
 ::: v-pre
 
 # CI Workflow
 
-Reference documentation for the GitHub Actions CI workflow (CC-0003, CC-0018, CC-0041, CC-0050, CC-0052, CC-0053, CC-0054).
+Reference documentation for the GitHub Actions CI workflow (CC-0003, CC-0018, CC-0041, CC-0050, CC-0052, CC-0053, CC-0054, CC-0061).
 
 CC-0050 refactored repeated E2E logic into reusable shell scripts (`hack/ci-*.sh`) and a
 composite GitHub Action (`.github/actions/setup-e2e-infra/`), reducing duplication across
@@ -77,8 +77,8 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 
 ## Job Dependency DAG
 
-The workflow defines 16 jobs organised in a directed acyclic graph (CC-0018, CC-0041,
-CC-0050, CC-0052, CC-0053, CC-0054):
+The workflow defines 18 jobs organised in a directed acyclic graph (CC-0018, CC-0041,
+CC-0050, CC-0052, CC-0053, CC-0054, CC-0061):
 
 ```
 Gate Jobs (always run):
@@ -91,6 +91,7 @@ Gate Jobs (always run):
 
 Conditional Jobs (path-filtered via changes job):
   test-race ────> needs: [changes], if: needs.changes.outputs.go == 'true'
+  govulncheck ─> needs: [changes], if: needs.changes.outputs.go == 'true'
   helm-validate ──> needs: [changes], if: needs.changes.outputs.helm == 'true'
   docs ──────────> needs: [changes], if: needs.changes.outputs.docs == 'true'
 
@@ -296,6 +297,45 @@ down the primary feedback loop. The corresponding local command is `make test-ra
 (which omits `-count=1` via the default empty `RACE_FLAGS` for developer convenience).
 
 Timeout: 20 minutes (accommodates 2–5x race detector overhead).
+
+### govulncheck
+
+Scans all Go modules for reachable vulnerabilities using govulncheck, the official Go
+vulnerability scanner maintained by the Go team (CC-0061). Unlike dependency-list scanners,
+govulncheck analyses call graphs to detect only vulnerabilities in code paths that are
+actually reachable — reducing false positives. Catches supply-chain vulnerabilities at the
+PR stage, before container images are built.
+
+**Dependencies:** `needs: [changes]`
+**Condition:** `if: needs.changes.outputs.go == 'true'`
+**Path filter:** Go source files (same filter as `test`, `test-integration`, and `test-race`)
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
+| 3 | `go install golang.org/x/vuln/cmd/govulncheck@latest` | Installs the latest govulncheck binary |
+| 4 | `make govulncheck` | Delegates to the Makefile target, which iterates over `internal/common` and all `$(OPERATORS)` modules |
+
+govulncheck uses `@latest` intentionally — unlike other pinned tools (controller-gen,
+gofumpt), pinning govulncheck to an old version defeats the purpose of vulnerability
+scanning because the vulnerability database is updated frequently. This is a deliberate
+deviation from the CC-0018 pinning policy, justified by the security tool's nature.
+
+The CI step delegates to `make govulncheck`, which iterates over `internal/common` and
+each operator in the `$(OPERATORS)` Makefile variable. The Makefile target exits on the
+first module with a reachable vulnerability. govulncheck exits non-zero only for reachable
+vulnerabilities — dependencies with known CVEs whose vulnerable functions are not called
+in project code are reported as informational but do not fail the job.
+
+This job runs independently and does **not** appear in any other job's `needs:` array. It
+is not on the critical path for E2E or publish jobs, matching the `test-race` pattern.
+When a new Go module is added to `go.work`, the `OPERATORS` variable in the Makefile must
+be updated with the new module name. The verification test
+(`tests/ci/verify_govulncheck_modules.sh`) catches drift between `go.work` and the
+Makefile automatically.
+
+Timeout: 10 minutes.
 
 ### verify-codegen
 
