@@ -3,7 +3,7 @@
 **Review-Area**: documentation
 **Detection-Hint**: When CI workflow documentation groups jobs under a heading that implies a specific trigger mechanism (e.g., 'path-filtered'), cross-reference each listed job against the actual workflow YAML to confirm it truly uses that mechanism.
 **Severity**: WARNING
-**Occurrences**: 1
+**Occurrences**: 2
 
 ## What to check
 
@@ -19,3 +19,8 @@ Misleading DAG documentation causes engineers to misunderstand which jobs are ga
 - **Feedback**: The docs job is placed under the heading 'Conditional Jobs (path-filtered via changes job)' but it does NOT depend on the changes job and is NOT path-filtered. This is inaccurate and misleading.
 - **What was missed**: For each job listed under a conditional/filtered section in CI docs, verify the job actually has the stated dependency (needs, if-condition, path filter). Any job that doesn't match the heading's description must be moved to its own section.
 - **Fix**: Split the section so path-filtered jobs stay under 'Conditional Jobs' and the docs job gets its own 'Independent Jobs' heading.
+
+### CC-0060 — berendt
+- **Feedback**: The PR updates the count from 9 to 10, but there are actually 20 test suite directories under tests/e2e/keystone/. The same stale count appears on line 59. Avoid hardcoding a count that will go stale with every new test PR.
+- **What was missed**: Search the diff for changes to numeric literals in prose text. For each changed number, verify it matches the actual count of the referenced items (directories, files, endpoints, etc.). Also search for other occurrences of the old number in the same file.
+- **Fix**: Removed the hardcoded '10' from both locations, replacing with generic language: 'The test suites...' and 'All test suites...'.

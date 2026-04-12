@@ -1,0 +1,76 @@
+{
+  "feature_id": "CC-0060",
+  "title": "Add E2E test for Keystone upgrade from 2025.2 to 2026.1",
+  "date": "2026-04-10",
+  "summary": "New Chainsaw E2E test suite (release-upgrade) validates a full Keystone cross-release upgrade from 2025.2 to 2026.1 via the expand-migrate-contract migration path. The implementation consists of 3 YAML test files and 1 documentation update. All 9 SHALL requirements are covered by the 6-step test. Fixtures follow upgrade-flow patterns exactly. Resource names are unique across 21+ existing test suites. Documentation is comprehensive with purpose, steps table, fixtures, and design notes differentiating from image-upgrade and upgrade-flow. No CI workflow changes needed — images already loaded by ci.yaml.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "E2E test deploys Keystone 2025.2 and reaches Ready=True with installedRelease=2025.2 (REQ-001)", "checked": true},
+    {"item": "API accessibility verified before upgrade via kubectl run curl-test-release-pre (REQ-002)", "checked": true},
+    {"item": "Patch spec.image.tag to 2026.1 triggers cross-release upgrade (REQ-003)", "checked": true},
+    {"item": "Expand, migrate, and contract Jobs verified via script step (REQ-004)", "checked": true},
+    {"item": "Deployment image updated to 2026.1 with updatedReplicas==replicas (REQ-005)", "checked": true},
+    {"item": "Ready=True with installedRelease=2026.1 after full upgrade (REQ-006)", "checked": true},
+    {"item": "API accessibility verified after upgrade via kubectl run curl-test-release-post (REQ-007)", "checked": true},
+    {"item": "Follows Chainsaw conventions: namespace openstack, 5m timeout, SPDX headers, CC-0060 refs (REQ-008)", "checked": true},
+    {"item": "Diagnostic catch blocks on assertion steps match sibling test templates (REQ-008)", "checked": false},
+    {"item": "Unique resource names: CR, database, curl pod names verified across all suites (REQ-009)", "checked": true},
+    {"item": "No CI workflow changes required — 2025.2 and 2026.1 images already loaded by ci.yaml", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing Chainsaw E2E test suite structure pattern (mandatory)", "checked": true},
+    {"item": "Fixture files match upgrade-flow/00-keystone-cr.yaml and 01-patch-upgrade.yaml patterns exactly", "checked": true},
+    {"item": "Step comment headers follow '# ── Step N: Description ──' convention", "checked": true},
+    {"item": "JMESPath condition assertions use string status values and CEL backtick numerics", "checked": true},
+    {"item": "Script steps use set -eu consistent with all sibling tests (10/10 files)", "checked": true},
+    {"item": "Job verification script matches upgrade-flow/chainsaw-test.yaml:86-97 pattern", "checked": true},
+    {"item": "Deployment image check uses grep with anchored regex (2026\\.1$) consistent with image-upgrade", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No secrets or credentials in test fixtures", "checked": true},
+    {"item": "secretRef references pre-existing ESO-managed secrets (keystone-admin, keystone-db)", "checked": true},
+    {"item": "No hardcoded passwords or tokens", "checked": true},
+    {"item": "Curl test uses in-cluster DNS, no external network access", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Test differentiates clearly from image-upgrade (same-release) and upgrade-flow (state machine)", "checked": true},
+    {"item": "6-step structure covers complete user-facing upgrade lifecycle", "checked": true},
+    {"item": "No CI workflow changes — test auto-discovered via chainsaw test tests/e2e/keystone/ glob", "checked": true},
+    {"item": "Documentation accurately describes how test complements upgrade-flow and image-upgrade", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated test logic — each step serves a distinct purpose", "checked": true},
+    {"item": "Fixture files minimal — only the fields needed for the test scenario", "checked": true},
+    {"item": "No unnecessary steps or over-engineering in test flow", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Initial deployment assertion (Step 2) gates upgrade steps", "checked": true},
+    {"item": "Pre-upgrade API check (Step 3) confirms baseline before mutation", "checked": true},
+    {"item": "Script steps exit 1 on Job not found (fail-fast on missing phase Jobs)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Catch blocks provide diagnostic output on assertion failures", "checked": true},
+    {"item": "Curl test timeout set to 30s (prevents indefinite hang)", "checked": true},
+    {"item": "All kubectl commands in catch blocks have || true guards", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "PC3",
+      "severity": "MAJOR",
+      "description": "Step 2 catch block missing ConfigMap content diagnostic — inconsistent with sibling tests. All three comparable initial-deployment catch blocks (upgrade-flow Step 2, image-upgrade Step 2, basic-deployment Step 2) include a '=== ConfigMap content ===' section that dumps the generated keystone.conf and api-paste.ini. The release-upgrade Step 2 catch omits this section. This diagnostic is valuable for debugging initial deployment failures caused by configuration issues (wrong database connection string, missing cache backend, etc.).",
+      "location": "tests/e2e/keystone/release-upgrade/chainsaw-test.yaml:68",
+      "fix": "Add the ConfigMap content diagnostic section between the '=== Job status ===' and '=== Events ===' sections in the Step 2 catch block (lines 68-69). Insert:\n\n          echo \"=== ConfigMap content ===\"\n          for cm in $(kubectl get cm -n $NAMESPACE -o name 2>/dev/null | grep config-); do\n            echo \"--- $cm ---\"\n            kubectl get -n $NAMESPACE \"$cm\" -o jsonpath='{.data}' 2>&1 || true\n          done\n\nThis matches the template at upgrade-flow/chainsaw-test.yaml:58-62 and image-upgrade/chainsaw-test.yaml:62-66.",
+      "evidence": "release-upgrade Step 2 catch (lines 49-70) sections: pod logs, job logs, pod describe, job status, events — MISSING ConfigMap content.\n\nupgrade-flow Step 2 catch (lines 38-64) sections: pod logs, job logs, pod describe, job status, ConfigMap content (lines 58-62), events.\n\nimage-upgrade Step 2 catch (lines 42-68) sections: pod logs, job logs, pod describe, job status, ConfigMap content (lines 62-66), events.",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a catch block to Step 3 (pre-upgrade API curl) and Step 6 (post-upgrade API curl) that dumps Keystone Service/Endpoints status — if the curl fails, knowing whether the Service exists and has endpoints would speed up debugging. This is not present in any sibling test's curl steps either, so it is an enhancement suggestion, not a consistency issue."
+  ],
+  "next_steps": [
+    "Add the missing ConfigMap content diagnostic section to the Step 2 catch block (AUTO_FIX — 5 lines of YAML)"
+  ],
+  "detected_patterns": []
+}

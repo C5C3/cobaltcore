@@ -1,0 +1,181 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for cross-release upgrade from 2025.2 to 2026.1 (CC-0060).
+# Verifies the full upgrade lifecycle including the expand-migrate-contract
+# database migration path (keystone 28.0.0 → 29.0.0):
+#   (1) Fresh deployment with tag 2025.2 reaches Ready=True with installedRelease=2025.2
+#   (2) Keystone API at /v3 is accessible before the upgrade
+#   (3) Patching spec.image.tag to 2026.1 triggers expand-migrate-contract upgrade
+#   (4) db-expand, db-migrate, and db-contract Jobs are created
+#   (5) Deployment image updates to 2026.1 and rollout completes
+#   (6) Ready=True with installedRelease=2026.1 after upgrade
+#   (7) Keystone API at /v3 remains accessible after the upgrade
+#
+# REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-006, REQ-007, REQ-008, REQ-009 (CC-0060)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-release-upgrade
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR with initial release 2025.2 ──────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert Ready and verify initial Deployment image ───────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-release-upgrade
+            namespace: openstack
+          status:
+            installedRelease: "2025.2"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        content: |
+          kubectl get deploy keystone-release-upgrade-api -n openstack \
+            -o jsonpath='{.spec.template.spec.containers[0].image}' | grep '2025\.2$'
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== ConfigMap content ==="
+          for cm in $(kubectl get cm -n $NAMESPACE -o name 2>/dev/null | grep config-); do
+            echo "--- $cm ---"
+            kubectl get -n $NAMESPACE "$cm" -o jsonpath='{.data}' 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Verify Keystone API accessible before upgrade ──────────────
+  - try:
+    - script:
+        timeout: 30s
+        content: |
+          kubectl run curl-test-release-pre -n $NAMESPACE --image=ghcr.io/c5c3/keystone:2025.2 --rm -i --restart=Never \
+            --command -- python3 -c "import urllib.request; print(urllib.request.urlopen('http://keystone-release-upgrade-api.openstack.svc:5000/v3').read().decode())"
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone Service ==="
+          kubectl get svc -n $NAMESPACE -l app.kubernetes.io/name=keystone 2>&1 || true
+          echo "=== Keystone Endpoints ==="
+          kubectl get endpoints -n $NAMESPACE -l app.kubernetes.io/name=keystone 2>&1 || true
+          echo "=== Keystone pod status ==="
+          kubectl get pods -n $NAMESPACE -l app.kubernetes.io/name=keystone -o wide 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -20 || true
+  # ── Step 4: Patch image tag to trigger cross-release upgrade ───────────
+  - try:
+    - patch:
+        file: 01-patch-upgrade.yaml
+  # ── Step 5: Assert upgrade completes with expand-migrate-contract ──────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-release-upgrade
+            namespace: openstack
+          status:
+            installedRelease: "2026.1"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        content: |
+          set -eu
+          echo "=== Verifying upgrade phase Jobs ==="
+          for phase in expand migrate contract; do
+            JOB="keystone-release-upgrade-db-${phase}"
+            if kubectl get job "$JOB" -n openstack >/dev/null 2>&1; then
+              echo "OK: Job $JOB exists"
+            else
+              echo "ERROR: Job $JOB not found"
+              exit 1
+            fi
+          done
+    - script:
+        content: |
+          kubectl get deploy keystone-release-upgrade-api -n openstack \
+            -o jsonpath='{.spec.template.spec.containers[0].image}' | grep '2026\.1$'
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-release-upgrade-api
+            namespace: openstack
+          status:
+            (availableReplicas > `0`): true
+            (updatedReplicas == replicas): true
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone status ==="
+          kubectl get keystone keystone-release-upgrade -n $NAMESPACE -o yaml 2>&1 | tail -40 || true
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 6: Verify Keystone API accessible after upgrade ───────────────
+  - try:
+    - script:
+        timeout: 30s
+        content: |
+          kubectl run curl-test-release-post -n $NAMESPACE --image=ghcr.io/c5c3/keystone:2026.1 --rm -i --restart=Never \
+            --command -- python3 -c "import urllib.request; print(urllib.request.urlopen('http://keystone-release-upgrade-api.openstack.svc:5000/v3').read().decode())"
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone Service ==="
+          kubectl get svc -n $NAMESPACE -l app.kubernetes.io/name=keystone 2>&1 || true
+          echo "=== Keystone Endpoints ==="
+          kubectl get endpoints -n $NAMESPACE -l app.kubernetes.io/name=keystone 2>&1 || true
+          echo "=== Keystone pod status ==="
+          kubectl get pods -n $NAMESPACE -l app.kubernetes.io/name=keystone -o wide 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -20 || true

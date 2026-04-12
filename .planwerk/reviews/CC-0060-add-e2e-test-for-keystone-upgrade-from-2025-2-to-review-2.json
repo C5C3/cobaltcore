@@ -1,0 +1,59 @@
+{
+  "feature_id": "CC-0060",
+  "title": "Add E2E test for Keystone upgrade from 2025.2 to 2026.1",
+  "date": "2026-04-12",
+  "summary": "Review of fix commit addressing three findings from berendt's external review: (1) W-001 stale documentation count — removed hardcoded '10' from two locations and expanded the file tree from 12 to all 20 suites; (2) I-001 minimal catch blocks — added pod status and namespace events to Steps 3 and 6 catch blocks; (3) I-002 missing namespace flag — added '-n $NAMESPACE' to both kubectl run commands. All three findings are correctly addressed. The chainsaw-test.yaml changes are minimal and targeted. The docs file tree now accurately reflects the 20 test suite directories on disk.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass", "checked": true},
+    {"item": "Edge cases are covered", "checked": true},
+    {"item": "Test names describe behavior", "checked": true},
+    {"item": "Catch blocks provide sufficient diagnostics", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns", "checked": true},
+    {"item": "No code duplication", "checked": true},
+    {"item": "Clear naming conventions", "checked": true},
+    {"item": "No dead code", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "All user inputs validated", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "No sensitive data in logs", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "Changes within requested scope", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unnecessary abstractions", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs validated", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "PC3",
+      "severity": "MINOR",
+      "description": "Review pattern I-002 (kubectl namespace flag) appended to wrong pattern file. The finding about missing '-n $NAMESPACE' on kubectl run commands was added to 'remove-tests-that-only-verify-language-semantics.md', which is about removing useless struct-assignment tests — completely unrelated. This will confuse future reviewers scanning that pattern file. The content ('Scan kubectl commands in test definitions for missing -n flag') belongs in a new review pattern or under the existing 'ensure-test-error-capture-blocks-collect-sufficient-diagnostic-context.md' pattern.",
+      "location": ".planwerk/review_patterns/remove-tests-that-only-verify-language-semantics.md:23-27",
+      "fix": "Create a new review pattern file (e.g., 'verify-kubectl-commands-use-explicit-namespace-flag.md') for the namespace flag consistency observation, or move it to a pattern about test command consistency. Remove the misplaced CC-0060 entry from remove-tests-that-only-verify-language-semantics.md and revert the occurrence count from 2 back to 1.",
+      "evidence": "Pattern file title: 'Remove tests that only verify language semantics'. Detection hint: 'Look for tests that create a struct, immediately assign values, then assert those same values'. Appended content: 'Feedback: Missing -n namespace flag on kubectl run commands in Steps 3 and 6.' — these are unrelated concerns.",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "The ASCII diagram in the Overview section (docs/reference/keystone-e2e-tests.md lines 28-54) still shows only 10 suites while the file tree now correctly shows 20. Consider updating the diagram in a follow-up to match — out of scope for CC-0060 since it pre-dates this PR.",
+    "The kubectl run commands in basic-deployment and basic-deployment-2026-1 still omit '-n $NAMESPACE' (the pre-CC-0060 pattern). Consider a follow-up to align all kubectl run commands across all test suites for full consistency."
+  ],
+  "next_steps": [
+    "Merge — all external review findings addressed correctly"
+  ],
+  "detected_patterns": []
+}

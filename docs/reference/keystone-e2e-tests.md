@@ -19,31 +19,43 @@ deployment automation, see
 
 ## Overview
 
-The 9 test suites cover the full reconciler lifecycle — from initial deployment through
-scaling, key rotation, image upgrades, and deletion cleanup. Each suite is independent
-and creates its own Keystone CR with a unique name in the `openstack` namespace, enabling
-parallel execution.
+The test suites cover the full reconciler lifecycle — from initial deployment through
+scaling, key rotation, image upgrades, cross-release upgrades, and deletion cleanup. Each
+suite is independent and creates its own Keystone CR with a unique name in the `openstack`
+namespace, enabling parallel execution.
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  Chainsaw E2E Runner (parallel: 4)                                         │
 │                                                                             │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌──────────────────────┐        │
-│  │ basic-deployment │  │ missing-secret  │  │ fernet-rotation      │        │
-│  │ (keystone-basic) │  │ (keystone-      │  │ (keystone-fernet)    │        │
-│  │                  │  │  missing-secret)│  │                      │        │
-│  └─────────────────┘  └─────────────────┘  └──────────────────────┘        │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌──────────────────────┐        │
-│  │ scale            │  │ deletion-cleanup│  │ policy-overrides     │        │
-│  │ (keystone-scale) │  │ (keystone-      │  │ (keystone-policy)    │        │
-│  │                  │  │  cleanup)       │  │                      │        │
-│  └─────────────────┘  └─────────────────┘  └──────────────────────┘        │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌──────────────────────┐        │
-│  │ middleware-config│  │ brownfield-     │  │ image-upgrade        │        │
-│  │ (keystone-      │  │  database       │  │ (keystone-upgrade)   │        │
-│  │  middleware)     │  │ (keystone-      │  │                      │        │
-│  │                  │  │  brownfield)    │  │                      │        │
-│  └─────────────────┘  └─────────────────┘  └──────────────────────┘        │
+│  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
+│  │ autoscaling        │  │ basic-deployment  │  │ basic-deployment-     │   │
+│  │                    │  │                   │  │  2026-1               │   │
+│  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
+│  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
+│  │ brownfield-        │  │ credential-       │  │ deletion-cleanup      │   │
+│  │  database          │  │  rotation         │  │                       │   │
+│  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
+│  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
+│  │ fernet-rotation    │  │ image-upgrade     │  │ invalid-cr            │   │
+│  │                    │  │                   │  │                       │   │
+│  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
+│  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
+│  │ middleware-config  │  │ missing-secret    │  │ namespace-scoped-     │   │
+│  │                    │  │                   │  │  rbac                 │   │
+│  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
+│  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
+│  │ network-policy     │  │ policy-overrides  │  │ release-upgrade       │   │
+│  │                    │  │                   │  │                       │   │
+│  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
+│  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
+│  │ resources          │  │ scale             │  │ trust-flush           │   │
+│  │                    │  │                   │  │                       │   │
+│  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
+│  ┌───────────────────┐  ┌───────────────────┐                              │
+│  │ upgrade-flow       │  │ uwsgi             │                              │
+│  │                    │  │                   │                              │
+│  └───────────────────┘  └───────────────────┘                              │
 │                                                                             │
 │  All tests run in: namespace openstack                                      │
 │  Infrastructure: MariaDB, Memcached, ESO, OpenBao (pre-deployed)           │
@@ -52,7 +64,7 @@ parallel execution.
 
 ## Prerequisites
 
-All 9 test suites require the infrastructure stack to be deployed and healthy. The
+All test suites require the infrastructure stack to be deployed and healthy. The
 `infra-stack-health` test (`tests/e2e/infrastructure/`) verifies this precondition.
 
 | Prerequisite | Details |
@@ -110,6 +122,7 @@ Deployment rollout, bootstrap Job).
 | [middleware-config](#middleware-config) | `keystone-middleware` | WSGI middleware pipeline customization in api-paste.ini | REQ-009, REQ-012, REQ-013 |
 | [brownfield-database](#brownfield-database) | `keystone-brownfield` | Explicit database host (no MariaDB CRs created) | REQ-010, REQ-012, REQ-013 |
 | [image-upgrade](#image-upgrade) | `keystone-upgrade` | Rolling image update without losing Ready status | REQ-011, REQ-012, REQ-013 |
+| [release-upgrade](#release-upgrade) | `keystone-release-upgrade` | Cross-release upgrade from 2025.2 to 2026.1 via expand-migrate-contract, API accessibility before/after | REQ-001–REQ-009 (CC-0060) |
 
 ---
 
@@ -326,6 +339,52 @@ container image updates and Ready=True is maintained after the rollout completes
 
 ---
 
+### release-upgrade
+
+**File:** `tests/e2e/keystone/release-upgrade/chainsaw-test.yaml`
+
+**Purpose:** Validates a cross-release upgrade from OpenStack 2025.2 to 2026.1 via the
+expand-migrate-contract database migration path (keystone 28.0.0 → 29.0.0). Deploys a
+Keystone CR with tag 2025.2, verifies the Keystone API at `/v3` is accessible, patches
+`spec.image.tag` to 2026.1, then verifies the expand/migrate/contract Jobs are created,
+the Deployment image updates to 2026.1, the rollout completes, `installedRelease` reaches
+2026.1, and the Keystone API remains accessible post-upgrade.
+
+This differs from `image-upgrade` (CC-0016), which tests same-release tag swaps
+(2025.2→2025.2-upgraded) without database migration, and from `upgrade-flow` (CC-0056),
+which focuses on internal state machine mechanics (skip-level rejection).
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR with tag 2025.2 | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-release-upgrade` in managed mode with tag 2025.2 |
+| 2 | Assert Ready and initial image | `assert` (5m) + `script` | Ready=True (AllReady), `installedRelease`=2025.2; script verifies Deployment `keystone-release-upgrade-api` container image ends with `2025.2` |
+| 3 | Verify API before upgrade | `script` (30s) | `kubectl run curl-test-release-pre` with python3 `urllib.request` — verifies GET `/v3` succeeds |
+| 4 | Patch image tag to 2026.1 | `patch` | Applies `01-patch-upgrade.yaml` — patches `spec.image.tag` to `2026.1` |
+| 5 | Assert upgrade completes | `assert` (5m) + `script` | `installedRelease`=2026.1, Ready=True (AllReady); scripts verify db-expand, db-migrate, db-contract Jobs exist and Deployment image ends with `2026.1`; assert verifies `updatedReplicas == replicas` and `availableReplicas > 0` |
+| 6 | Verify API after upgrade | `script` (30s) | `kubectl run curl-test-release-post` with python3 `urllib.request` — verifies GET `/v3` succeeds post-upgrade |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-patch-upgrade.yaml`
+
+**Diagnostics:** Steps 2 and 5 include `catch` blocks that capture pod logs (including
+`--previous`), Job logs, pod descriptions, Job status, and namespace events for
+debugging failures.
+
+**Design notes:**
+
+- API accessibility is tested via `kubectl run` with python3 `urllib.request` rather than
+  direct curl, because the test pods use the Keystone service image which provides python3.
+  The curl test pods use unique names (`curl-test-release-pre`, `curl-test-release-post`) to
+  avoid conflicts during parallel execution.
+- The 5-minute assert timeout accommodates the full expand→migrate→rolling-update→contract
+  cycle.
+- This test complements `upgrade-flow` (CC-0056): `upgrade-flow` validates internal state
+  machine behavior (skip-level rejection, phase transitions), while `release-upgrade`
+  validates the user-facing lifecycle (API accessibility before/after, Deployment rollout).
+
+---
+
 ## Assertion Patterns
 
 The test suites use three Chainsaw assertion patterns:
@@ -425,42 +484,84 @@ single assert step, validating the full progression.
 
 ```text
 tests/e2e/keystone/
+├── autoscaling/
+│   ├── chainsaw-test.yaml              HPA reconciliation (CC-0038)
+│   ├── 00-keystone-cr.yaml             Keystone CR with CPU autoscaling
+│   ├── 01-patch-add-memory-metric.yaml Patch to add memory metric
+│   └── 02-patch-disable-autoscaling.yaml Patch to disable autoscaling
 ├── basic-deployment/
 │   ├── chainsaw-test.yaml              Happy-path reconciliation (CC-0016)
 │   └── 00-keystone-cr.yaml             Keystone CR in managed mode
-├── missing-secret/
-│   ├── chainsaw-test.yaml              Secret dependency recovery (CC-0016)
-│   ├── 00-keystone-cr.yaml             Keystone CR with non-existent secretRefs
-│   └── 01-late-secrets.yaml            ExternalSecrets created after CR
-├── fernet-rotation/
-│   ├── chainsaw-test.yaml              Fernet key rotation (CC-0016)
+├── basic-deployment-2026-1/
+│   ├── chainsaw-test.yaml              Happy-path reconciliation 2026.1 (CC-0051)
+│   └── 00-keystone-cr.yaml             Keystone CR with 2026.1 image
+├── brownfield-database/
+│   ├── chainsaw-test.yaml              External database mode (CC-0016)
+│   ├── 00-brownfield-db-setup.yaml     External database setup
+│   └── 00-keystone-cr.yaml             Keystone CR with database.host
+├── credential-rotation/
+│   ├── chainsaw-test.yaml              Credential key rotation (CC-0036)
 │   └── 00-keystone-cr.yaml             Keystone CR with rotation schedule
-├── scale/
-│   ├── chainsaw-test.yaml              Replica scaling (CC-0016)
-│   ├── 00-keystone-cr.yaml             Keystone CR with replicas: 3
-│   ├── 01-patch-scale-up.yaml          Patch replicas to 5
-│   └── 02-patch-scale-down.yaml        Patch replicas to 2
 ├── deletion-cleanup/
 │   ├── chainsaw-test.yaml              Garbage collection (CC-0016)
 │   └── 00-keystone-cr.yaml             Keystone CR for cleanup test
-├── policy-overrides/
-│   ├── chainsaw-test.yaml              oslo.policy integration (CC-0016)
-│   ├── 00-policy-cm.yaml               Policy source ConfigMap
-│   └── 01-keystone-cr.yaml             Keystone CR with policyOverrides
-├── middleware-config/
-│   ├── chainsaw-test.yaml              Middleware pipeline (CC-0016)
-│   └── 00-keystone-cr.yaml             Keystone CR with custom middleware
-├── brownfield-database/
-│   ├── chainsaw-test.yaml              External database mode (CC-0016)
-│   └── 00-keystone-cr.yaml             Keystone CR with database.host
+├── fernet-rotation/
+│   ├── chainsaw-test.yaml              Fernet key rotation (CC-0016)
+│   └── 00-keystone-cr.yaml             Keystone CR with rotation schedule
 ├── image-upgrade/
 │   ├── chainsaw-test.yaml              Rolling image upgrade (CC-0016)
 │   ├── 00-keystone-cr.yaml             Keystone CR with initial image tag
 │   └── 01-patch-image.yaml             Patch spec.image.tag
-└── invalid-cr/
-    ├── chainsaw-test.yaml              CRD webhook validation (CC-0012)
-    ├── 00-invalid-cron.yaml            Invalid cron expression CR
-    └── 01-duplicate-plugins.yaml       Duplicate plugin configSection CR
+├── invalid-cr/
+│   ├── chainsaw-test.yaml              CRD webhook validation (CC-0012)
+│   ├── 00-invalid-cron.yaml            Invalid cron expression CR
+│   └── 01-duplicate-plugins.yaml       Duplicate plugin configSection CR
+├── middleware-config/
+│   ├── chainsaw-test.yaml              Middleware pipeline (CC-0016)
+│   └── 00-keystone-cr.yaml             Keystone CR with custom middleware
+├── missing-secret/
+│   ├── chainsaw-test.yaml              Secret dependency recovery (CC-0016)
+│   ├── 00-keystone-cr.yaml             Keystone CR with non-existent secretRefs
+│   └── 01-late-secrets.yaml            ExternalSecrets created after CR
+├── namespace-scoped-rbac/
+│   ├── chainsaw-test.yaml              Namespace-scoped RBAC (CC-0043)
+│   └── 00-keystone-cr.yaml             Keystone CR for RBAC test
+├── network-policy/
+│   ├── chainsaw-test.yaml              NetworkPolicy reconciliation (CC-0039)
+│   ├── 00-keystone-cr.yaml             Keystone CR with ingress policy
+│   ├── 01-patch-update-ingress.yaml    Patch ingress rule
+│   └── 02-patch-disable-networkpolicy.yaml Patch to disable NetworkPolicy
+├── policy-overrides/
+│   ├── chainsaw-test.yaml              oslo.policy integration (CC-0016)
+│   ├── 00-policy-cm.yaml               Policy source ConfigMap
+│   └── 01-keystone-cr.yaml             Keystone CR with policyOverrides
+├── release-upgrade/
+│   ├── chainsaw-test.yaml              Cross-release upgrade 2025.2→2026.1 (CC-0060)
+│   ├── 00-keystone-cr.yaml             Keystone CR with initial tag 2025.2
+│   └── 01-patch-upgrade.yaml           Patch spec.image.tag to 2026.1
+├── resources/
+│   ├── chainsaw-test.yaml              Resource defaults and propagation (CC-0042)
+│   ├── 00-keystone-cr.yaml             Keystone CR without explicit resources
+│   └── 01-patch-custom-resources.yaml  Patch with custom resource limits
+├── scale/
+│   ├── chainsaw-test.yaml              Replica scaling and PDB (CC-0016, CC-0037)
+│   ├── 00-keystone-cr.yaml             Keystone CR with replicas: 3
+│   ├── 01-patch-scale-up.yaml          Patch replicas to 5
+│   ├── 02-patch-scale-down.yaml        Patch replicas to 2
+│   └── 03-patch-scale-to-one.yaml      Patch replicas to 1
+├── trust-flush/
+│   ├── chainsaw-test.yaml              Trust flush CronJob (CC-0057)
+│   ├── 00-keystone-cr.yaml             Keystone CR with trustFlush config
+│   └── 01-patch-disable-trust-flush.yaml Patch to disable trust flush
+├── upgrade-flow/
+│   ├── chainsaw-test.yaml              Expand-migrate-contract upgrade (CC-0056)
+│   ├── 00-keystone-cr.yaml             Keystone CR with initial release
+│   ├── 01-patch-upgrade.yaml           Patch for sequential upgrade
+│   └── 02-patch-skip-level.yaml        Patch for skip-level upgrade
+└── uwsgi/
+    ├── chainsaw-test.yaml              uWSGI command propagation (CC-0040)
+    ├── 00-keystone-cr.yaml             Keystone CR without explicit uWSGI
+    └── 01-patch-custom-uwsgi.yaml      Patch with custom uWSGI settings
 ```
 
 ## Related Resources

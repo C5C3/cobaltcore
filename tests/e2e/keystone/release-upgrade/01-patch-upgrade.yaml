@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch to trigger a cross-release upgrade from 2025.2 to 2026.1 (CC-0060).
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-release-upgrade
+  namespace: openstack
+spec:
+  image:
+    tag: "2026.1"
