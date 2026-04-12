@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-12T13:18:00.271752+00:00",
+  "feature_id": "CC-0063",
+  "task_type": "commit",
+  "session_key": "CC-0063",
+  "model": "opus",
+  "prompt": "Generate a detailed git commit body for this commit.\nSubject: fix(CC-0063): address review #1 feedback from berendt\n\nReview feedback is in: /worktrees/CC-0063/.planwerk/reviews/CC-0063-github-review-by-berendt-external-1.json\nUse `git diff --cached -- ':(exclude).planwerk'` to see the full staged diff.\n\nDiff stat:\n.../keystone/graceful-shutdown/00-keystone-cr.yaml | 35 ++++++++\n .../keystone/graceful-shutdown/chainsaw-test.yaml  | 93 ++++++++++++++++++++++\n 2 files changed, 128 insertions(+)\n\nWrite ONLY the body text, no subject line, no markdown.\nFor each changed file, write a bullet point: '- path/to/file: what was changed'\nDo NOT mention .planwerk directory changes.\nOutput ONLY plain text — no tool_call tags, no XML, no code blocks.",
+  "prompt_length": 745,
+  "caller": "run_claude_cli"
+}
