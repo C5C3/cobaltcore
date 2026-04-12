@@ -1,0 +1,50 @@
+{
+  "feature_id": "CC-0064",
+  "title": "Add schema drift detection before DatabaseReady",
+  "date": "2026-04-12",
+  "summary": "Review of fixes addressing external review #1 feedback from berendt. The diff refactors buildSchemaCheckJob to delegate to buildDBJob (W-001), adds a Chainsaw E2E test for schema drift detection (W-003), hardens the pymysql OperationalError handler with int() cast (W-005), and adds explicit cursor close before connection close (W-006). All changes are minimal, focused, and correct. Tests pass (33/33), go vet is clean, no new lint issues in changed files.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (33 unit tests, 8 builder + 25 reconciler)", "checked": true},
+    {"item": "Edge cases covered (stale Job recreation, db_sync failure bypasses schema-check, InstalledRelease not updated on failure)", "checked": true},
+    {"item": "E2E test added for happy-path schema drift detection", "checked": true},
+    {"item": "Existing tests updated to include completedSchemaCheckJob fixture", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (buildDBJob delegation matches buildDBSyncJob, buildUpgradeJob)", "checked": true},
+    {"item": "No code duplication (buildSchemaCheckJob eliminated ~30 lines of duplicated Job construction)", "checked": true},
+    {"item": "E2E test follows Chainsaw pattern (SPDX header, numbered steps, timeouts, catch blocks, unique CR name)", "checked": true},
+    {"item": "Review patterns documented for future reviews", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Python script uses only SELECT (read-only, no DDL/DML)", "checked": true},
+    {"item": "OperationalError handler uses int() cast to prevent potential credential leakage", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "Sensitive data not exposed in error messages (only error code, not connection string)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "buildSchemaCheckJob delegates to buildDBJob, eliminating duplication drift risk", "checked": true},
+    {"item": "Schema-check inherits future buildDBJob changes automatically (e.g., CC-0042 resource limits)", "checked": true},
+    {"item": "Solution is minimal — only overrides backoffLimit and TTL", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code — shared Job construction via buildDBJob", "checked": true},
+    {"item": "No unnecessary abstractions added", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Schema drift returns error (not just requeue) for controller logs and exponential backoff", "checked": true},
+    {"item": "Explicit cursor close in exception path prevents resource leaks", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "OperationalError.args[0] wrapped with int() for type safety", "checked": true},
+    {"item": "Cursor explicitly closed before connection in both happy and error paths", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "W-004 (inline condition reason strings) and W-007 (single-head migration assumption) from external review #1 were not addressed in this round. Both were marked as lower-priority by the external reviewer. Consider tracking them for a follow-up PR if the codebase moves toward typed constants for condition reasons."
+  ],
+  "next_steps": [],
+  "detected_patterns": []
+}

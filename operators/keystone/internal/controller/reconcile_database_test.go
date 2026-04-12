@@ -138,6 +138,58 @@ func failedDBSyncJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 	return j
 }
 
+// --- Schema check test helpers (CC-0064) ---
+
+// completedSchemaCheckJob returns a schema-check Job that matches what
+// buildSchemaCheckJob produces for the given keystone and is marked as
+// complete with the correct pod-spec hash (CC-0064).
+func completedSchemaCheckJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
+	desired := buildSchemaCheckJob(ks, "keystone-config-abc123")
+	now := metav1.Now()
+	j := desired.DeepCopy()
+	j.Annotations = map[string]string{
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+	}
+	j.Status.Succeeded = 1
+	j.Status.CompletionTime = &now
+	j.Status.Conditions = []batchv1.JobCondition{
+		{
+			Type:   batchv1.JobComplete,
+			Status: corev1.ConditionTrue,
+		},
+	}
+	return j
+}
+
+// failedSchemaCheckJob returns a schema-check Job that is marked as
+// permanently failed (CC-0064).
+func failedSchemaCheckJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
+	desired := buildSchemaCheckJob(ks, "keystone-config-abc123")
+	j := desired.DeepCopy()
+	j.Annotations = map[string]string{
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+	}
+	j.Status.Failed = 3
+	j.Status.Conditions = []batchv1.JobCondition{
+		{
+			Type:   batchv1.JobFailed,
+			Status: corev1.ConditionTrue,
+		},
+	}
+	return j
+}
+
+// runningSchemaCheckJob returns a schema-check Job that exists but has not
+// completed yet (CC-0064).
+func runningSchemaCheckJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
+	desired := buildSchemaCheckJob(ks, "keystone-config-abc123")
+	j := desired.DeepCopy()
+	j.Annotations = map[string]string{
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+	}
+	return j
+}
+
 // readyMariaDBCluster returns a MariaDB cluster CR with Ready=True matching
 // the name referenced by ks.Spec.Database.ClusterRef (CC-0047).
 func readyMariaDBCluster(ks *keystonev1alpha1.Keystone) *mariadbv1alpha1.MariaDB {
@@ -218,6 +270,7 @@ func TestReconcileDatabase_Managed_AllReady_DatabaseSynced(t *testing.T) {
 		readyUser(ks),
 		readyGrant(ks),
 		completedDBSyncJob(ks),
+		completedSchemaCheckJob(ks),
 	)
 
 	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
@@ -227,7 +280,7 @@ func TestReconcileDatabase_Managed_AllReady_DatabaseSynced(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-	g.Expect(cond.Reason).To(Equal("DatabaseSynced"))
+	g.Expect(cond.Reason).To(Equal(conditionReasonDatabaseSynced))
 }
 
 func TestReconcileDatabase_Managed_DatabaseNotReady_Requeues(t *testing.T) {
@@ -246,7 +299,7 @@ func TestReconcileDatabase_Managed_DatabaseNotReady_Requeues(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("WaitingForDatabase"))
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForDatabase))
 }
 
 func TestReconcileDatabase_Managed_UserNotReady_Requeues(t *testing.T) {
@@ -268,7 +321,7 @@ func TestReconcileDatabase_Managed_UserNotReady_Requeues(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("WaitingForDatabase"))
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForDatabase))
 }
 
 func TestReconcileDatabase_Managed_ClusterMissing_Requeues(t *testing.T) {
@@ -287,7 +340,7 @@ func TestReconcileDatabase_Managed_ClusterMissing_Requeues(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("ClusterNotReady"))
+	g.Expect(cond.Reason).To(Equal(conditionReasonClusterNotReady))
 
 	// No Database CR should be created while the cluster is unavailable.
 	dbList := &mariadbv1alpha1.DatabaseList{}
@@ -306,7 +359,7 @@ func TestReconcileDatabase_Managed_ClusterNotReady_FlipsDatabaseReadyFalse(t *te
 	meta.SetStatusCondition(&ks.Status.Conditions, metav1.Condition{
 		Type:   "DatabaseReady",
 		Status: metav1.ConditionTrue,
-		Reason: "DatabaseSynced",
+		Reason: conditionReasonDatabaseSynced,
 	})
 
 	r := newDBTestReconciler(s, ks,
@@ -324,7 +377,7 @@ func TestReconcileDatabase_Managed_ClusterNotReady_FlipsDatabaseReadyFalse(t *te
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("ClusterNotReady"))
+	g.Expect(cond.Reason).To(Equal(conditionReasonClusterNotReady))
 	g.Expect(cond.Message).To(ContainSubstring("mariadb"))
 }
 
@@ -335,7 +388,7 @@ func TestReconcileDatabase_Brownfield_DBSyncComplete_DatabaseSynced(t *testing.T
 	s := dbTestScheme()
 	ks := brownfieldKeystone()
 
-	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks))
+	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), completedSchemaCheckJob(ks))
 
 	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
@@ -344,7 +397,7 @@ func TestReconcileDatabase_Brownfield_DBSyncComplete_DatabaseSynced(t *testing.T
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-	g.Expect(cond.Reason).To(Equal("DatabaseSynced"))
+	g.Expect(cond.Reason).To(Equal(conditionReasonDatabaseSynced))
 
 	// Verify no MariaDB CRs were created.
 	dbList := &mariadbv1alpha1.DatabaseList{}
@@ -373,7 +426,7 @@ func TestReconcileDatabase_DBSyncRunning_Requeues(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("DBSyncInProgress"))
+	g.Expect(cond.Reason).To(Equal(conditionReasonDBSyncInProgress))
 }
 
 func TestReconcileDatabase_DBSyncFailed_ReturnsError(t *testing.T) {
@@ -390,7 +443,7 @@ func TestReconcileDatabase_DBSyncFailed_ReturnsError(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("DBSyncFailed"))
+	g.Expect(cond.Reason).To(Equal(conditionReasonDBSyncFailed))
 }
 
 func TestReconcileDatabase_Brownfield_SkipsMariaDBCRs_CreatesDBSyncJob(t *testing.T) {
@@ -442,7 +495,7 @@ func TestReconcileDatabase_Brownfield_SkipsMariaDBCRs_CreatesDBSyncJob(t *testin
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("DBSyncInProgress"))
+	g.Expect(cond.Reason).To(Equal(conditionReasonDBSyncInProgress))
 	g.Expect(cond.Message).To(Equal("db_sync job is running"))
 }
 
@@ -670,7 +723,7 @@ func TestInitiateUpgrade_SequentialUpgrade(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("ExpandInProgress"))
+	g.Expect(cond.Reason).To(Equal(conditionReasonExpandInProgress))
 	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
 }
@@ -691,7 +744,7 @@ func TestInitiateUpgrade_SkipLevelRejected(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("UpgradePathInvalid"))
+	g.Expect(cond.Reason).To(Equal(conditionReasonUpgradePathInvalid))
 }
 
 func TestInitiateUpgrade_DowngradeRejected(t *testing.T) {
@@ -710,7 +763,7 @@ func TestInitiateUpgrade_DowngradeRejected(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("DowngradeNotSupported"))
+	g.Expect(cond.Reason).To(Equal(conditionReasonDowngradeNotSupported))
 }
 
 func TestInitiateUpgrade_InvalidVersionFormat(t *testing.T) {
@@ -729,7 +782,7 @@ func TestInitiateUpgrade_InvalidVersionFormat(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("VersionParseError"))
+	g.Expect(cond.Reason).To(Equal(conditionReasonVersionParseError))
 }
 
 // --- Upgrade detection in reconcileDatabase flow ---
@@ -740,7 +793,7 @@ func TestReconcileDatabase_FreshDeploy_SetsInstalledRelease(t *testing.T) {
 	ks := brownfieldKeystone()
 	// No installedRelease set — fresh deployment.
 
-	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks))
+	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), completedSchemaCheckJob(ks))
 
 	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
@@ -752,7 +805,7 @@ func TestReconcileDatabase_FreshDeploy_SetsInstalledRelease(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-	g.Expect(cond.Reason).To(Equal("DatabaseSynced"))
+	g.Expect(cond.Reason).To(Equal(conditionReasonDatabaseSynced))
 }
 
 func TestReconcileDatabase_PatchOnly_UsesSimpleDBSync(t *testing.T) {
@@ -775,7 +828,7 @@ func TestReconcileDatabase_PatchOnly_UsesSimpleDBSync(t *testing.T) {
 		{Type: batchv1.JobComplete, Status: corev1.ConditionTrue},
 	}
 
-	r := newDBTestReconciler(s, ks, completedJob)
+	r := newDBTestReconciler(s, ks, completedJob, completedSchemaCheckJob(ks))
 
 	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
@@ -804,7 +857,7 @@ func TestReconcileDatabase_ActiveUpgrade_DelegatesToReconcileUpgrade(t *testing.
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("ExpandInProgress"))
+	g.Expect(cond.Reason).To(Equal(conditionReasonExpandInProgress))
 	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
 }
@@ -815,7 +868,7 @@ func TestReconcileDatabase_SameVersionWithInstalledRelease_UsesSimpleDBSync(t *t
 	ks := brownfieldKeystone()
 	ks.Status.InstalledRelease = "2025.2"
 
-	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks))
+	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), completedSchemaCheckJob(ks))
 
 	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
@@ -894,6 +947,7 @@ func TestReconcileDatabase_Managed_ConditionMessages(t *testing.T) {
 			readyUser(ks),
 			readyGrant(ks),
 			completedDBSyncJob(ks),
+			completedSchemaCheckJob(ks),
 		)
 
 		_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
@@ -901,7 +955,7 @@ func TestReconcileDatabase_Managed_ConditionMessages(t *testing.T) {
 
 		cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 		g.Expect(cond).NotTo(BeNil())
-		g.Expect(cond.Message).To(Equal("Database schema is up to date"))
+		g.Expect(cond.Message).To(Equal("Database schema is up to date (revision verified)"))
 		g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
 	})
 }
@@ -970,7 +1024,7 @@ func TestReconcileExpand_NoExistingJob_CreatesJob(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("ExpandInProgress"))
+	g.Expect(cond.Reason).To(Equal(conditionReasonExpandInProgress))
 }
 
 func TestReconcileExpand_JobRunning_Requeues(t *testing.T) {
@@ -993,7 +1047,7 @@ func TestReconcileExpand_JobRunning_Requeues(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("ExpandInProgress"))
+	g.Expect(cond.Reason).To(Equal(conditionReasonExpandInProgress))
 	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
 }
@@ -1017,7 +1071,7 @@ func TestReconcileExpand_JobCompleted_TransitionsToMigrating(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("MigrateInProgress"))
+	g.Expect(cond.Reason).To(Equal(conditionReasonMigrateInProgress))
 }
 
 func TestReconcileExpand_JobFailed_ReturnsError(t *testing.T) {
@@ -1060,7 +1114,7 @@ func TestReconcileMigrate_JobRunning_Requeues(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("MigrateInProgress"))
+	g.Expect(cond.Reason).To(Equal(conditionReasonMigrateInProgress))
 	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
 }
@@ -1084,7 +1138,7 @@ func TestReconcileMigrate_JobCompleted_TransitionsToRollingUpdate(t *testing.T) 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("UpgradeRollingUpdate"))
+	g.Expect(cond.Reason).To(Equal(conditionReasonUpgradeRollingUpdate))
 	g.Expect(cond.Message).To(ContainSubstring("Migrate complete"))
 	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
@@ -1125,7 +1179,7 @@ func TestReconcileRollingUpdate_PassesThrough(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("UpgradeRollingUpdate"))
+	g.Expect(cond.Reason).To(Equal(conditionReasonUpgradeRollingUpdate))
 	g.Expect(cond.Message).To(ContainSubstring("Waiting for Deployment rollout"))
 	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
@@ -1211,7 +1265,7 @@ func TestReconcileContract_JobCompleted_CompletesUpgrade(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-	g.Expect(cond.Reason).To(Equal("DatabaseSynced"))
+	g.Expect(cond.Reason).To(Equal(conditionReasonDatabaseSynced))
 	g.Expect(cond.Message).To(ContainSubstring("upgraded"))
 	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
@@ -1297,7 +1351,7 @@ func TestReconcileDatabase_InterruptedExpand_Resumes(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("MigrateInProgress"))
+	g.Expect(cond.Reason).To(Equal(conditionReasonMigrateInProgress))
 }
 
 // TestReconcileDatabase_TagChangedDuringUpgrade_Blocks verifies that when the
@@ -1325,7 +1379,7 @@ func TestReconcileDatabase_TagChangedDuringUpgrade_Blocks(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("UpgradeTargetChanged"))
+	g.Expect(cond.Reason).To(Equal(conditionReasonUpgradeTargetChanged))
 	g.Expect(cond.Message).To(ContainSubstring("2026.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
@@ -1334,4 +1388,315 @@ func TestReconcileDatabase_TagChangedDuringUpgrade_Blocks(t *testing.T) {
 	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseExpanding))
 	g.Expect(ks.Status.TargetRelease).To(Equal("2026.1"))
 	g.Expect(ks.Status.InstalledRelease).To(Equal("2025.2"))
+}
+
+// --- Schema check tests (CC-0064) ---
+
+// TestBuildSchemaCheckJob_Name verifies that the schema-check Job has the correct
+// name ({keystone.Name}-schema-check) and namespace (CC-0064, REQ-003).
+func TestBuildSchemaCheckJob_Name(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := brownfieldKeystone()
+
+	j := buildSchemaCheckJob(ks, "keystone-config-abc123")
+
+	g.Expect(j.Name).To(Equal("test-keystone-schema-check"))
+	g.Expect(j.Namespace).To(Equal(ks.Namespace))
+}
+
+// TestBuildSchemaCheckJob_Image verifies that the schema-check container uses
+// the correct Keystone image ({spec.image.repository}:{spec.image.tag}) (CC-0064, REQ-003).
+func TestBuildSchemaCheckJob_Image(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := brownfieldKeystone()
+
+	j := buildSchemaCheckJob(ks, "keystone-config-abc123")
+
+	container := findContainerByName(j.Spec.Template.Spec.Containers, "schema-check")
+	g.Expect(container).NotTo(BeNil())
+	g.Expect(container.Image).To(Equal(fmt.Sprintf("%s:%s", ks.Spec.Image.Repository, ks.Spec.Image.Tag)))
+}
+
+// TestBuildSchemaCheckJob_SecurityContext verifies that the schema-check container
+// satisfies the PSS Restricted profile (CC-0064, REQ-003).
+func TestBuildSchemaCheckJob_SecurityContext(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := brownfieldKeystone()
+
+	j := buildSchemaCheckJob(ks, "keystone-config-abc123")
+
+	container := findContainerByName(j.Spec.Template.Spec.Containers, "schema-check")
+	expectRestrictedSecurityContext(g, container)
+}
+
+// TestBuildSchemaCheckJob_ConfigVolume verifies that the schema-check container
+// mounts the config ConfigMap at /etc/keystone/keystone.conf.d/ read-only (CC-0064, REQ-003).
+func TestBuildSchemaCheckJob_ConfigVolume(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := brownfieldKeystone()
+	configMap := "keystone-config-abc123"
+
+	j := buildSchemaCheckJob(ks, configMap)
+
+	container := findContainerByName(j.Spec.Template.Spec.Containers, "schema-check")
+	g.Expect(container).NotTo(BeNil())
+	g.Expect(container.VolumeMounts).To(HaveLen(1))
+	g.Expect(container.VolumeMounts[0].Name).To(Equal("config"))
+	g.Expect(container.VolumeMounts[0].MountPath).To(Equal("/etc/keystone/keystone.conf.d/"))
+	g.Expect(container.VolumeMounts[0].ReadOnly).To(BeTrue())
+
+	g.Expect(j.Spec.Template.Spec.Volumes).To(HaveLen(1))
+	g.Expect(j.Spec.Template.Spec.Volumes[0].Name).To(Equal("config"))
+	g.Expect(j.Spec.Template.Spec.Volumes[0].ConfigMap.Name).To(Equal(configMap))
+}
+
+// TestBuildSchemaCheckJob_BackoffLimit verifies that the schema-check Job has
+// backoffLimit=2 (not the default 4 used by db_sync) (CC-0064, REQ-004).
+func TestBuildSchemaCheckJob_BackoffLimit(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := brownfieldKeystone()
+
+	j := buildSchemaCheckJob(ks, "keystone-config-abc123")
+
+	g.Expect(j.Spec.BackoffLimit).NotTo(BeNil())
+	g.Expect(*j.Spec.BackoffLimit).To(Equal(int32(2)))
+}
+
+// TestBuildSchemaCheckJob_TTL verifies that the schema-check Job has
+// ttlSecondsAfterFinished=300 for automatic cleanup (CC-0064, REQ-004).
+func TestBuildSchemaCheckJob_TTL(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := brownfieldKeystone()
+
+	j := buildSchemaCheckJob(ks, "keystone-config-abc123")
+
+	g.Expect(j.Spec.TTLSecondsAfterFinished).NotTo(BeNil())
+	g.Expect(*j.Spec.TTLSecondsAfterFinished).To(Equal(int32(300)))
+}
+
+// TestBuildSchemaCheckJob_RestartPolicy verifies that the schema-check Job pod
+// has RestartPolicy=Never (CC-0064, REQ-004).
+func TestBuildSchemaCheckJob_RestartPolicy(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := brownfieldKeystone()
+
+	j := buildSchemaCheckJob(ks, "keystone-config-abc123")
+
+	g.Expect(j.Spec.Template.Spec.RestartPolicy).To(Equal(corev1.RestartPolicyNever))
+}
+
+// TestBuildSchemaCheckJob_Command verifies that the schema-check container uses
+// /bin/sh -eu -c with keystone-manage db_sync --check (CC-0064, REQ-003).
+func TestBuildSchemaCheckJob_Command(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := brownfieldKeystone()
+
+	j := buildSchemaCheckJob(ks, "keystone-config-abc123")
+
+	container := findContainerByName(j.Spec.Template.Spec.Containers, "schema-check")
+	g.Expect(container).NotTo(BeNil())
+	g.Expect(container.Command).To(HaveLen(4))
+	g.Expect(container.Command[:3]).To(Equal([]string{"/bin/sh", "-eu", "-c"}))
+	g.Expect(container.Command[3]).To(ContainSubstring("keystone-manage"))
+	g.Expect(container.Command[3]).To(ContainSubstring("db_sync --check"))
+}
+
+// TestReconcileDatabase_SchemaCheckRunning_Requeues verifies that when db_sync is
+// complete but schema-check is still running, the reconciler requeues with
+// RequeueDatabaseWait and sets the SchemaCheckInProgress condition (CC-0064).
+func TestReconcileDatabase_SchemaCheckRunning_Requeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := brownfieldKeystone()
+
+	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), runningSchemaCheckJob(ks))
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonSchemaCheckInProgress))
+}
+
+// TestReconcileDatabase_SchemaCheckComplete_DatabaseSynced verifies that when both
+// db_sync and schema-check complete, DatabaseReady=True with reason DatabaseSynced
+// and message containing 'revision' (CC-0064).
+func TestReconcileDatabase_SchemaCheckComplete_DatabaseSynced(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := brownfieldKeystone()
+
+	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), completedSchemaCheckJob(ks))
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(BeZero())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonDatabaseSynced))
+	g.Expect(cond.Message).To(ContainSubstring("revision"))
+}
+
+// TestReconcileDatabase_SchemaCheckFailed_SchemaDriftDetected verifies that when
+// the schema-check Job fails, DatabaseReady=False with reason SchemaDriftDetected
+// and an error is returned (CC-0064).
+func TestReconcileDatabase_SchemaCheckFailed_SchemaDriftDetected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := brownfieldKeystone()
+
+	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), failedSchemaCheckJob(ks))
+
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("schema-check"))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonSchemaDriftDetected))
+}
+
+// TestReconcileDatabase_Managed_AllReady_WithSchemaCheck verifies that in managed
+// mode, when all MariaDB CRs are ready and both db_sync and schema-check Jobs
+// complete, DatabaseReady=True with reason DatabaseSynced and message containing
+// 'revision' (CC-0064).
+func TestReconcileDatabase_Managed_AllReady_WithSchemaCheck(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := managedKeystone()
+
+	r := newDBTestReconciler(s, ks,
+		readyMariaDBCluster(ks),
+		readyDatabase(ks),
+		readyUser(ks),
+		readyGrant(ks),
+		completedDBSyncJob(ks),
+		completedSchemaCheckJob(ks),
+	)
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(BeZero())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonDatabaseSynced))
+	g.Expect(cond.Message).To(ContainSubstring("revision"))
+	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
+}
+
+// TestReconcileDatabase_SchemaCheckStale_Recreated verifies that a completed
+// schema-check Job with a stale pod-spec hash triggers deletion and recreation,
+// and the reconciler requeues (CC-0064).
+func TestReconcileDatabase_SchemaCheckStale_Recreated(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := brownfieldKeystone()
+
+	// Completed schema-check with a stale hash.
+	staleSchemaCheck := completedSchemaCheckJob(ks)
+	staleSchemaCheck.Annotations[job.PodSpecHashAnnotation] = "stale-hash-from-previous-image"
+
+	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), staleSchemaCheck)
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
+
+	// Verify the old Job was deleted and a new one created with the correct hash.
+	var newJob batchv1.Job
+	g.Expect(r.Client.Get(context.Background(), client.ObjectKey{
+		Name:      fmt.Sprintf("%s-schema-check", ks.Name),
+		Namespace: ks.Namespace,
+	}, &newJob)).To(Succeed())
+
+	desired := buildSchemaCheckJob(ks, "keystone-config-abc123")
+	expectedHash := job.PodSpecHash(&desired.Spec.Template.Spec)
+	g.Expect(newJob.Annotations[job.PodSpecHashAnnotation]).To(Equal(expectedHash))
+}
+
+// TestReconcileDatabase_SchemaCheckNotCreatedWhenDBSyncRunning verifies that when
+// db_sync is still running, no schema-check Job is created and the condition
+// remains DBSyncInProgress (CC-0064).
+func TestReconcileDatabase_SchemaCheckNotCreatedWhenDBSyncRunning(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := brownfieldKeystone()
+
+	// db_sync Job exists but is not completed (still running).
+	syncJob := buildDBSyncJob(ks, "keystone-config-abc123")
+	syncJob.Annotations = map[string]string{
+		job.PodSpecHashAnnotation: job.PodSpecHash(&syncJob.Spec.Template.Spec),
+	}
+	r := newDBTestReconciler(s, ks, syncJob)
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonDBSyncInProgress))
+
+	// Verify no schema-check Job was created.
+	var schemaCheckJob batchv1.Job
+	err = r.Get(context.Background(), client.ObjectKey{
+		Name:      fmt.Sprintf("%s-schema-check", ks.Name),
+		Namespace: ks.Namespace,
+	}, &schemaCheckJob)
+	g.Expect(err).To(HaveOccurred(), "schema-check Job should not exist when db_sync is running")
+}
+
+// TestReconcileDatabase_SchemaCheckNotCreatedWhenDBSyncFails verifies that when
+// db_sync fails, no schema-check Job is created and the condition is set to
+// DBSyncFailed (CC-0064).
+func TestReconcileDatabase_SchemaCheckNotCreatedWhenDBSyncFails(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := brownfieldKeystone()
+
+	r := newDBTestReconciler(s, ks, failedDBSyncJob(ks))
+
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("db_sync"))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonDBSyncFailed))
+
+	// Verify no schema-check Job was created.
+	var schemaCheckJob batchv1.Job
+	err = r.Get(context.Background(), client.ObjectKey{
+		Name:      fmt.Sprintf("%s-schema-check", ks.Name),
+		Namespace: ks.Namespace,
+	}, &schemaCheckJob)
+	g.Expect(err).To(HaveOccurred(), "schema-check Job should not exist when db_sync fails")
+}
+
+// TestReconcileDatabase_SchemaCheckFailed_InstalledReleaseNotUpdated verifies that
+// when the schema-check Job fails, InstalledRelease is NOT updated to the new
+// tag (CC-0064).
+func TestReconcileDatabase_SchemaCheckFailed_InstalledReleaseNotUpdated(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := brownfieldKeystone()
+	// Fresh deploy — InstalledRelease is empty.
+
+	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), failedSchemaCheckJob(ks))
+
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).To(HaveOccurred())
+
+	// InstalledRelease must NOT be updated when schema-check fails.
+	g.Expect(ks.Status.InstalledRelease).To(BeEmpty())
 }

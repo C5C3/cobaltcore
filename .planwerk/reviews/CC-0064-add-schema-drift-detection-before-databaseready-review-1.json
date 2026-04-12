@@ -1,0 +1,80 @@
+{
+  "summary": "Adds schema drift detection as a post-db_sync verification step in reconcileDatabase. A new buildSchemaCheckJob function constructs a Kubernetes Job with an embedded Python script that queries the alembic_version table and compares it against keystone-manage db_version output. The schema-check Job uses backoffLimit=2, ttlSecondsAfterFinished=300, and the same image/SecurityContext/config-mount as db_sync. The reconcileDatabase flow correctly sequences db_sync → schema-check → DatabaseReady=True with proper condition transitions (SchemaCheckInProgress, SchemaDriftDetected, DatabaseSynced). All existing tests are updated to include a completed schema-check Job fixture, and 16 new test cases cover build verification, integration flow, and edge cases. Reference documentation covers the feature comprehensively.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (go test ./internal/controller/... — 0.789s, all pass)", "checked": true},
+    {"item": "Build tests cover Job name, image, SecurityContext, config volume, backoffLimit, TTL, RestartPolicy, command (8 tests)", "checked": true},
+    {"item": "Integration tests cover schema-check running/complete/failed/stale/bypass scenarios (8 tests)", "checked": true},
+    {"item": "Existing tests updated with completedSchemaCheckJob fixture and new message assertion (6 reconcile_database_test + 6 keystone_controller_test)", "checked": true},
+    {"item": "Edge cases: db_sync running bypasses schema-check, db_sync failure bypasses schema-check, stale hash triggers recreation, InstalledRelease not updated on failure", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing sub-reconciler condition contract with ObservedGeneration", "checked": true},
+    {"item": "Schema-check flow mirrors db_sync flow structure (done/err pattern, condition transitions)", "checked": true},
+    {"item": "Test helpers (completedSchemaCheckJob, failedSchemaCheckJob, runningSchemaCheckJob) follow completedDBSyncJob/failedDBSyncJob pattern", "checked": true},
+    {"item": "Embedded Python script follows buildBootstrapJob script pattern (/bin/sh -eu -c, configparser, pymysql)", "checked": true},
+    {"item": "Schema drift failure returns error (not just requeue) for controller log visibility and exponential backoff", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "SQL query is static string, no interpolation (SELECT version_num FROM alembic_version)", "checked": true},
+    {"item": "subprocess.run uses list args (no shell=True), no user-controlled data in command", "checked": true},
+    {"item": "No hardcoded secrets — connection string read from ConfigMap at runtime", "checked": true},
+    {"item": "glob.glob path is static, no user-controlled input", "checked": true},
+    {"item": "Shell invocation uses Go backtick literal with no fmt.Sprintf interpolation", "checked": true},
+    {"item": "PSS Restricted profile via restrictedSecurityContext()", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Schema-check inserted between db_sync and DatabaseReady=True — correct sequencing", "checked": true},
+    {"item": "Non-upgrade path only — upgrade flow (expand-migrate-contract) has own Alembic validation", "checked": true},
+    {"item": "Uses job.RunJob for stale-detection and lifecycle management (consistent with upgrade jobs)", "checked": true},
+    {"item": "InstalledRelease gated behind both db_sync and schema-check success", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No unnecessary abstractions or over-engineering", "checked": true},
+    {"item": "buildSchemaCheckJob could reuse buildDBJob to reduce duplication (see suggestion)", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Schema drift returns error immediately (not deferred requeue)", "checked": true},
+    {"item": "Python script exits 1 on connection failure, missing table, mismatch", "checked": true},
+    {"item": "backoffLimit=2 for faster failure on permanent drift vs db_sync's 4", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Handles missing alembic_version table (exception catch + empty rows check)", "checked": true},
+    {"item": "Handles keystone-manage db_version failure (returncode check)", "checked": true},
+    {"item": "Handles database connection failure (try/except around pymysql.connect)", "checked": true},
+    {"item": "Config volume mounted read-only", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "Q3",
+      "severity": "MINOR",
+      "description": "buildSchemaCheckJob (line 578) duplicates ~25 lines of PodSpec construction already canonical in buildDBJob (line 504): RestartPolicy, SecurityContext, VolumeMounts, Volumes, Image construction. buildDBJob's doc comment explicitly states it exists to 'prevent drift when these need to change in the future.' The TTL and backoffLimit differences could be applied as post-construction mutations on the object returned by buildDBJob. However, buildBootstrapJob (line 69) already follows the same standalone pattern due to extra env vars and volume mounts, establishing precedent for independent builders when the Job has materially different structure. The schema-check Job's embedded Python script and different backoffLimit/TTL provide partial justification, but the shared structural elements (SecurityContext, config volume, image, RestartPolicy) risk drifting independently.",
+      "location": "operators/keystone/internal/controller/reconcile_database.go:578-666",
+      "fix": "Consider refactoring: call buildDBJob(keystone, configMapName, keystone.Spec.Image.Tag, \"schema-check\", command) then mutate j.Spec.BackoffLimit and j.Spec.TTLSecondsAfterFinished on the returned Job. This ensures SecurityContext, volume mounts, and image construction stay in sync with db_sync. Alternatively, extract a buildBasePodSpec helper used by all three builders.",
+      "evidence": "buildSchemaCheckJob lines 639-661 duplicate buildDBJob lines 514-537: identical RestartPolicy (corev1.RestartPolicyNever), SecurityContext (restrictedSecurityContext()), VolumeMounts ([{config, /etc/keystone/keystone.conf.d/, ReadOnly}]), Volumes ([{config, ConfigMap}]), and Image (fmt.Sprintf(\"%s:%s\", ...)).",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "C3",
+      "severity": "MINOR",
+      "description": "Python script line 621: if keystone-manage db_version succeeds (returncode=0) but produces empty stdout, result.stdout.strip().split() returns [] and [0] raises an unhandled IndexError. The script would exit with code 1 (Python traceback) rather than a descriptive error message. This is an unlikely edge case (db_version should always produce output on success) but violates the acceptance criterion of 'descriptive error message'.",
+      "location": "operators/keystone/internal/controller/reconcile_database.go:621",
+      "fix": "Add a guard: tokens = result.stdout.strip().split(); if not tokens: print('keystone-manage db_version returned empty output', file=sys.stderr); sys.exit(1); expected = tokens[0]",
+      "evidence": "expected = result.stdout.strip().split()[0]  # IndexError if stdout is empty after successful returncode",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider extracting the shared PodSpec elements (SecurityContext, config volume, RestartPolicy, image construction) from buildDBJob, buildBootstrapJob, and buildSchemaCheckJob into a buildBasePodSpec helper to prevent independent drift. This is a refactoring opportunity, not a defect — tracked as a suggestion for a future cleanup PR.",
+    "The pymysql connection failure handler (line 599-601) prints the raw exception via f-string, which in edge cases could include connection parameters. Consider printing only the error code/type: except pymysql.OperationalError as e: print(f'Failed to connect: error {e.args[0]}', file=sys.stderr). The current implementation is safe for the common OperationalError(1045, 'Access denied') case but the broad 'except Exception' catch is a fragile guarantee.",
+    "The condition message 'Database schema is up to date (revision verified)' is static. The acceptance criteria originally wanted the actual Alembic revision in the message. Task 2.1 documents this as a controller limitation (cannot read Job logs). If the revision is needed in the future, consider writing the version to a ConfigMap or annotation from the schema-check Job that the controller can read."
+  ],
+  "next_steps": [
+    "Merge to main — all blocking and major checks pass.",
+    "Consider adding an E2E Chainsaw test for schema drift detection in a future PR (CC-0064 follow-up). This would require a test database with an intentionally mismatched alembic_version.",
+    "Track the buildBasePodSpec refactoring suggestion as technical debt for a cleanup PR."
+  ],
+  "detected_patterns": []
+}

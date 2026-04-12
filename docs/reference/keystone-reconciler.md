@@ -1,7 +1,7 @@
 ---
 title: Keystone Reconciler Architecture
 quadrant: operator
-feature: CC-0013, CC-0015, CC-0038, CC-0057
+feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0064
 ---
 
 # Keystone Reconciler Architecture
@@ -140,7 +140,8 @@ RBAC markers on the reconciler generate the required ClusterRole:
 │           ▼                                                                  │
 │  ┌───────────────────┐                                                       │
 │  │ reconcileDatabase │  Managed mode: verify MariaDB cluster health first,   │
-│  │                   │  then ensure Database/User/Grant CRs + run db_sync Job│
+│  │                   │  then ensure Database/User/Grant CRs + run db_sync    │
+│  │                   │  Job + run schema-check Job (CC-0064)                 │
 │  │                   │  Sets: DatabaseReady                                  │
 │  └────────┬──────────┘  Requeue: 30s                                         │
 │           │                                                                  │
@@ -312,12 +313,18 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context,
     keystone *keystonev1alpha1.Keystone) (ctrl.Result, error)
 ```
 
-**Purpose:** Provision the Keystone database schema. Supports two modes:
+**Purpose:** Provision the Keystone database schema and verify schema integrity.
+Supports two modes:
 
 - **Managed mode** (`spec.database.clusterRef` set): Creates MariaDB Database, User,
-  and Grant CRs within the referenced cluster, then runs `db_sync`.
+  and Grant CRs within the referenced cluster, then runs `db_sync`, then runs
+  schema-check (CC-0064).
 - **Brownfield mode** (`spec.database.host` set): Skips MariaDB CRs entirely and runs
-  `db_sync` directly against the external database.
+  `db_sync` directly against the external database, then runs schema-check (CC-0064).
+
+After `db_sync` completes successfully, a schema-check Job verifies that the database
+schema matches the expected Alembic migration head. See
+[Schema Drift Detection](./keystone-schema-drift-detection.md) for details.
 
 **Managed Mode Resources:**
 
@@ -345,7 +352,9 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context,
 | `False` | `WaitingForDatabase` | "MariaDB User or Grant CR is not ready" | 30s |
 | `False` | `DBSyncInProgress` | "db_sync job is running" | 30s |
 | `False` | `DBSyncFailed` | "db_sync job failed: {error}" | — (error returned) |
-| `True` | `DatabaseSynced` | "Database schema is up to date" | — |
+| `False` | `SchemaCheckInProgress` | "schema-check job is running" | 30s |
+| `False` | `SchemaDriftDetected` | "schema-check job failed: {error}" | — (error returned) |
+| `True` | `DatabaseSynced` | "Database schema is up to date (revision verified)" | — |
 
 **Error handling:** Errors from `database.EnsureDatabase()`,
 `database.EnsureDatabaseUser()`, and `database.RunDBSyncJob()` are wrapped with
@@ -353,7 +362,7 @@ context and returned. The `DBSyncFailed` condition is set before returning the e
 so that the failure reason is visible in the CR status.
 
 **Shared library calls:** `database.EnsureDatabase()`, `database.EnsureDatabaseUser()`,
-`database.RunDBSyncJob()`
+`database.RunDBSyncJob()`, `job.RunJob()` (schema-check, CC-0064)
 
 ---
 

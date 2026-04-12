@@ -294,6 +294,13 @@ func driveFullReconciliation(t testing.TB, ctx context.Context, c client.Client,
 	}, eventuallyTimeout, pollInterval).Should(Succeed(), "db-sync Job should appear")
 	g.Expect(simulators.SimulateJobComplete(ctx, c, dbSyncKey)).To(Succeed(), "simulate db-sync Job completion")
 
+	// Wait for the schema-check Job to appear and simulate its completion (CC-0064).
+	schemaCheckKey := client.ObjectKey{Namespace: ns, Name: fmt.Sprintf("%s-schema-check", ksName)}
+	g.Eventually(func() error {
+		return c.Get(ctx, schemaCheckKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "schema-check Job should appear")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, schemaCheckKey)).To(Succeed(), "simulate schema-check Job completion")
+
 	// Wait for DatabaseReady=True.
 	waitForCondition(t, ctx, c, key, "DatabaseReady", metav1.ConditionTrue, eventuallyTimeout)
 
@@ -457,12 +464,19 @@ func TestIntegration_ConditionProgression(t *testing.T) {
 	dbCond := waitForCondition(t, ctx, c, key, "DatabaseReady", metav1.ConditionFalse, eventuallyTimeout)
 	g.Expect(dbCond.Reason).To(Equal("DBSyncInProgress"), "DatabaseReady reason should be DBSyncInProgress")
 
-	// Phase 3: Simulate db-sync completion → DatabaseReady=True.
+	// Phase 3: Simulate db-sync completion → schema-check → DatabaseReady=True.
 	dbSyncKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-db-sync", ks.Name)}
 	g.Eventually(func() error {
 		return c.Get(ctx, dbSyncKey, &batchv1.Job{})
 	}, eventuallyTimeout, pollInterval).Should(Succeed())
 	g.Expect(simulators.SimulateJobComplete(ctx, c, dbSyncKey)).To(Succeed())
+
+	// Wait for schema-check Job and simulate completion (CC-0064).
+	schemaCheckKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-schema-check", ks.Name)}
+	g.Eventually(func() error {
+		return c.Get(ctx, schemaCheckKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed())
+	g.Expect(simulators.SimulateJobComplete(ctx, c, schemaCheckKey)).To(Succeed())
 
 	waitForCondition(t, ctx, c, key, "DatabaseReady", metav1.ConditionTrue, eventuallyTimeout)
 
@@ -712,6 +726,13 @@ func TestIntegration_FullReconcile_Managed(t *testing.T) {
 	}, eventuallyLongTimeout, pollInterval).Should(Succeed(), "db-sync Job should appear")
 	g.Expect(simulators.SimulateJobComplete(ctx, c, dbSyncKey)).To(Succeed())
 
+	// Wait for schema-check Job and simulate completion (CC-0064).
+	schemaCheckKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-schema-check", ks.Name)}
+	g.Eventually(func() error {
+		return c.Get(ctx, schemaCheckKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "schema-check Job should appear")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, schemaCheckKey)).To(Succeed())
+
 	// Wait for DatabaseReady=True.
 	waitForCondition(t, ctx, c, key, "DatabaseReady", metav1.ConditionTrue, eventuallyTimeout)
 
@@ -889,6 +910,13 @@ func driveReconciliationToBootstrapJob(t testing.TB, ctx context.Context, c clie
 		return c.Get(ctx, dbSyncKey, &batchv1.Job{})
 	}, eventuallyTimeout, pollInterval).Should(Succeed(), "db-sync Job should appear")
 	g.Expect(simulators.SimulateJobComplete(ctx, c, dbSyncKey)).To(Succeed())
+
+	// Wait for schema-check Job and simulate completion (CC-0064).
+	schemaCheckKey := client.ObjectKey{Namespace: ns, Name: fmt.Sprintf("%s-schema-check", ksName)}
+	g.Eventually(func() error {
+		return c.Get(ctx, schemaCheckKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "schema-check Job should appear")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, schemaCheckKey)).To(Succeed())
 
 	waitForCondition(t, ctx, c, key, "DatabaseReady", metav1.ConditionTrue, eventuallyTimeout)
 
@@ -1489,6 +1517,20 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 		return j.Spec.Template.Spec.Containers[0].Image == expectedNewImage
 	}, eventuallyTimeout, pollInterval).Should(BeTrue(), "db-sync Job should be re-created with new image")
 	g.Expect(simulators.SimulateJobComplete(ctx, c, dbSyncKey)).To(Succeed(), "simulate post-upgrade db-sync completion")
+
+	// Wait for schema-check Job re-created with new image (CC-0064).
+	schemaCheckKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-schema-check", ks.Name)}
+	g.Eventually(func() bool {
+		j := &batchv1.Job{}
+		if err := c.Get(ctx, schemaCheckKey, j); err != nil {
+			return false
+		}
+		if len(j.Spec.Template.Spec.Containers) == 0 {
+			return false
+		}
+		return j.Spec.Template.Spec.Containers[0].Image == expectedNewImage
+	}, eventuallyTimeout, pollInterval).Should(BeTrue(), "schema-check Job should be re-created with new image")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, schemaCheckKey)).To(Succeed(), "simulate schema-check Job completion")
 
 	waitForCondition(t, ctx, c, key, "DatabaseReady", metav1.ConditionTrue, eventuallyTimeout)
 

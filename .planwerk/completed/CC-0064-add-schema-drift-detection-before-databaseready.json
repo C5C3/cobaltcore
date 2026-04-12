@@ -2,8 +2,8 @@
   "feature_id": "CC-0064",
   "title": "Add schema drift detection before DatabaseReady",
   "slug": "add-schema-drift-detection-before-databaseready",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #164: Add schema drift detection before setting DatabaseReady condition\n\n**Category**: improvement | **Scope**: Medium\n\n**Description**: The `DatabaseReady` condition is currently set to True as soon as the `db_sync` Job completes successfully. There is no verification that the database schema actually matches what the running Keystone version expects. Add a pre-flight schema version check that queries the `alembic_version` table and compares the result against the expected migration head before setting `DatabaseReady=True`.\n\nImplement this as a lightweight init container or a separate validation Job that runs after `db_sync` completes:\n\n1. Connect to the database using the existing connection string from the ConfigMap\n2. Execute `SELECT version_num FROM alembic_version` (single row, single column)\n3. Compare against the expected Alembic head revision for the deployed Keystone version\n4. If the version matches → exit 0 (schema is consistent)\n5. If the version does not match → exit 1 with a descriptive error message including both expected and actual versions\n\nAdditionally, surface the detected schema version in the `DatabaseReady` condition message so operators can see it via `kubectl get keystone -o yaml` without needing database access.\n\nThe expected Alembic head can be obtained by running `keystone-manage db_version` in the Keystone image. This value should be captured during the `db_sync` Job (or a follow-up check) and compared against the live database.\n\n**Motivation**: Schema drift can occur in several scenarios: a manual `ALTER TABLE` was run against the database, a partial migration failed silently (Alembic marked it complete but a DDL statement was rolled back by the storage engine), or the database was restored from a backup that predates the last migration. In all cases, the operator currently reports `DatabaseReady=True` based on a stale Job completion status, while Keystone encounters runtime errors (missing columns, type mismatches, integrity constraint violations). Detecting drift at the operator level enables early alerting and prevents rollout of incompatible API versions.\n\n**Affected Areas**:\n- `operators/keystone/internal/controller/reconcile_database.go` (add schema verification step after db_sync completion)\n- `operators/keystone/internal/controller/reconcile_database_test.go`\n\n**Acceptance Criteria**:\n- [ ] After `db_sync` Job succeeds, schema version is verified against the live database\n- [ ] `DatabaseReady` condition message includes the detected Alembic version (e.g. `DatabaseSynced at revision abc123`)\n- [ ] Schema mismatch sets `DatabaseReady=False` with reason `SchemaDriftDetected` and a message showing expected vs. actual version\n- [ ] Schema check is idempotent and read-only (SELECT only, no DDL)\n- [ ] Schema check uses the same image, SecurityContext, and config mounts as the db_sync Job\n- [ ] Schema check Job has `backoffLimit: 2` and `ttlSecondsAfterFinished: 300`\n- [ ] Requeue with `RequeueDatabaseWait` interval while schema check Job is running\n- [ ] Unit tests cover: matching version passes, mismatched version fails with descriptive reason, missing alembic_version table fails gracefully\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/164",
   "stories": [
@@ -290,6 +290,7 @@
       "description": "Add a buildSchemaCheckJob(keystone, configMapName) function to reconcile_database.go that builds a batchv1.Job for schema version verification. The Job must: (1) use a Python script that reads the keystone.conf connection string, queries SELECT version_num FROM alembic_version, runs keystone-manage db_version to get the expected head, compares them, and exits 0 on match or 1 on mismatch with descriptive stderr output. (2) Use backoffLimit=2, ttlSecondsAfterFinished=300. (3) Use the same image ({repo}:{tag}), restrictedSecurityContext(), config volume mount, and RestartPolicy=Never as buildDBJob. (4) Job name: {name}-schema-check, container name: schema-check. Follow the pattern from buildBootstrapJob for embedded Python scripts and TTL settings. Add unit tests in reconcile_database_test.go: TestBuildSchemaCheckJob_Name, TestBuildSchemaCheckJob_Image, TestBuildSchemaCheckJob_SecurityContext, TestBuildSchemaCheckJob_ConfigVolume, TestBuildSchemaCheckJob_BackoffLimit, TestBuildSchemaCheckJob_TTL, TestBuildSchemaCheckJob_RestartPolicy, TestBuildSchemaCheckJob_Command.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-004"
@@ -301,6 +302,7 @@
       "description": "Modify the non-upgrade path in reconcileDatabase (lines 139-173) to insert a schema-check step between db_sync completion and setting DatabaseReady=True. After db_sync succeeds (done=true), call job.RunJob with buildSchemaCheckJob. Handle three outcomes: (1) err != nil: set DatabaseReady=False/SchemaDriftDetected with error message, return error. (2) !done: set DatabaseReady=False/SchemaCheckInProgress, return RequeueAfter: RequeueDatabaseWait. (3) done: proceed to set InstalledRelease and DatabaseReady=True/DatabaseSynced with message 'Database schema is up to date at revision {version}'. The version string extraction is best-effort from the Job name convention since we cannot read Job logs from the controller; use a static message format instead. Update the existing DatabaseSynced condition message from 'Database schema is up to date' to 'Database schema is up to date at revision (verified)'.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-005",
@@ -315,6 +317,7 @@
       "description": "Add unit tests in reconcile_database_test.go covering the schema-check integration. Add test helper functions: completedSchemaCheckJob(ks) and failedSchemaCheckJob(ks) following the pattern of completedDBSyncJob/failedDBSyncJob. Add test cases: (1) TestReconcileDatabase_SchemaCheckRunning_Requeues: db_sync complete + schema-check running → requeues with RequeueDatabaseWait, condition=SchemaCheckInProgress. (2) TestReconcileDatabase_SchemaCheckComplete_DatabaseSynced: db_sync complete + schema-check complete → DatabaseReady=True/DatabaseSynced. (3) TestReconcileDatabase_SchemaCheckFailed_SchemaDriftDetected: db_sync complete + schema-check failed → DatabaseReady=False/SchemaDriftDetected, returns error. (4) TestReconcileDatabase_Managed_AllReady_WithSchemaCheck: managed mode with all CRs ready + db_sync + schema-check complete → DatabaseReady=True. (5) TestReconcileDatabase_SchemaCheckStale_Recreated: completed schema-check with stale hash → Job recreated, requeues.",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-005",
@@ -328,6 +331,7 @@
       "description": "Update existing tests in reconcile_database_test.go that assert DatabaseReady=True/DatabaseSynced to also include a completed schema-check Job in their test fixtures. Tests affected: TestReconcileDatabase_Managed_AllReady_DatabaseSynced, TestReconcileDatabase_Brownfield_DBSyncComplete_DatabaseSynced, TestReconcileDatabase_FreshDeploy_SetsInstalledRelease, TestReconcileDatabase_PatchOnly_UsesSimpleDBSync, TestReconcileDatabase_SameVersionWithInstalledRelease_UsesSimpleDBSync, TestReconcileDatabase_Managed_ConditionMessages/DatabaseSynced. For each: add completedSchemaCheckJob(ks) to the fake client objects list. Update condition message assertions to match the new format containing 'revision'.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-005"
@@ -339,6 +343,7 @@
       "description": "Update the existing docs/reference/keystone-reconciler.md to document the schema drift detection step. Add a new subsection under the reconcileDatabase documentation describing: (1) The schema-check Job purpose, when it runs, and its read-only nature. (2) The Job spec summary table (backoffLimit=2, ttlSecondsAfterFinished=300, image=same as API). (3) New condition reasons: SchemaCheckInProgress, SchemaDriftDetected. (4) Updated DatabaseSynced message format with revision string. (5) Update the reconciliation flow ASCII diagram to show the schema-check step between db_sync and DatabaseReady=True.",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -463,6 +468,405 @@
       "story": "Operator receives descriptive error when schema drift is detected",
       "expected": "When schema-check fails, InstalledRelease should NOT be updated to the new tag [unit]",
       "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_NotFound_ReturnsEmptyResult",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_SetsAllSubConditionsTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_AggregatesReadyCondition",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_StatusUpdatePersisted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_Idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSetupWithManager_RegistersWithoutError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_AllTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_OneFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_MissingCondition",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_Empty",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_EarlyReturnOnSecretsNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_EarlyReturnOnDatabaseNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_SequentialProgression",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_ReadyFalseWhenDeploymentNotAvailable",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_ObservedGenerationTracked",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSecretToKeystoneMapper_ReferencedSecrets",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestCommonLabels_ExactKeyValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSelectorLabels_ExactKeyValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSelectorLabels_SubsetOfCommonLabels",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSecretToKeystoneMapper_OwnedSecrets",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_AllReady_DatabaseSynced",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_DatabaseNotReady_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_UserNotReady_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_ClusterMissing_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_ClusterNotReady_FlipsDatabaseReadyFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Brownfield_DBSyncComplete_DatabaseSynced",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_DBSyncRunning_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_DBSyncFailed_ReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Brownfield_SkipsMariaDBCRs_CreatesDBSyncJob",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildDBSyncJob_SecurityContext",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_StaleDBSyncJob_Recreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildUpgradeJobs",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestIsUpgrade",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestInitiateUpgrade_SequentialUpgrade",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestInitiateUpgrade_SkipLevelRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestInitiateUpgrade_DowngradeRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestInitiateUpgrade_InvalidVersionFormat",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_FreshDeploy_SetsInstalledRelease",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_PatchOnly_UsesSimpleDBSync",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_ActiveUpgrade_DelegatesToReconcileUpgrade",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_SameVersionWithInstalledRelease_UsesSimpleDBSync",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_ConditionMessages",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileExpand_NoExistingJob_CreatesJob",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileExpand_JobRunning_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileExpand_JobCompleted_TransitionsToMigrating",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileExpand_JobFailed_ReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileMigrate_JobRunning_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileMigrate_JobCompleted_TransitionsToRollingUpdate",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileMigrate_JobFailed_ReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileRollingUpdate_PassesThrough",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileContract_NoExistingJob_CreatesJobAndRequeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileContract_JobRunning_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileContract_JobCompleted_CompletesUpgrade",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileContract_JobFailed_ReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileContract_UsesNewImage",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_InterruptedExpand_Resumes",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_TagChangedDuringUpgrade_Blocks",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],
@@ -490,8 +894,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-12T12:49:16.896580"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-12T13:52:40.428807"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-12T17:36:13.967061"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/181",
+  "pr_number": 181,
   "execution_history": [
     {
       "run_id": "689648ae-7354-47fc-bebe-9bcc3d681df4",
@@ -503,6 +917,64 @@
           "name": "prepare",
           "duration": 378.46909952163696,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "3447010c-25c9-496b-a89f-e1687aedd251",
+      "timestamp": "2026-04-12T14:35:18.753764",
+      "total_duration": 2284.9584221839905,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (1 tasks)",
+          "duration": 908.9959528446198,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (3 tasks)",
+          "duration": 322.76065492630005,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (1 tasks)",
+          "duration": 244.3773820400238,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0064] Code Review",
+          "duration": 354.6991231441498,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0064] Improvements",
+          "duration": 401.08562183380127,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0064] Simplify",
+          "duration": 53.039687395095825,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "488f2852-0b29-4bc6-bb11-55ed0ce3ab2c",
+      "timestamp": "2026-04-12T15:11:54.954286",
+      "total_duration": 1306.252070903778,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 1306.252070903778,
+          "type": "review_address",
           "status": "done"
         }
       ]

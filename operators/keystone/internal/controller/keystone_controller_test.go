@@ -181,6 +181,26 @@ func testCompletedDBSyncJob(configMapName string) runtime.Object {
 	return j
 }
 
+// testCompletedSchemaCheckJob returns a completed schema-check Job for testKeystone (CC-0064).
+func testCompletedSchemaCheckJob(configMapName string) runtime.Object {
+	ks := testKeystone()
+	desired := buildSchemaCheckJob(ks, configMapName)
+	now := metav1.Now()
+	j := desired.DeepCopy()
+	j.Annotations = map[string]string{
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+	}
+	j.Status.Succeeded = 1
+	j.Status.CompletionTime = &now
+	j.Status.Conditions = []batchv1.JobCondition{
+		{
+			Type:   batchv1.JobComplete,
+			Status: corev1.ConditionTrue,
+		},
+	}
+	return j
+}
+
 // testReadyKeystoneDeployment returns a ready Deployment for the test-keystone
 // CR. The Deployment must pre-exist and be available so that
 // reconcileDeployment does not requeue.
@@ -287,7 +307,7 @@ func TestReconcile_SetsAllSubConditionsTrue(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
 	configMapName := testComputeConfigMapName(t)
-	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
+	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedSchemaCheckJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
 	r := newTestReconciler(objs...)
 
 	result, err := r.Reconcile(context.Background(), reconcile.Request{
@@ -312,7 +332,7 @@ func TestReconcile_AggregatesReadyCondition(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
 	configMapName := testComputeConfigMapName(t)
-	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
+	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedSchemaCheckJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
 	r := newTestReconciler(objs...)
 
 	_, err := r.Reconcile(context.Background(), reconcile.Request{
@@ -333,7 +353,7 @@ func TestReconcile_StatusUpdatePersisted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
 	configMapName := testComputeConfigMapName(t)
-	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
+	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedSchemaCheckJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
 	r := newTestReconciler(objs...)
 
 	_, err := r.Reconcile(context.Background(), reconcile.Request{
@@ -351,7 +371,7 @@ func TestReconcile_Idempotent(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
 	configMapName := testComputeConfigMapName(t)
-	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
+	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedSchemaCheckJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
 	r := newTestReconciler(objs...)
 
 	// First reconcile.
@@ -572,7 +592,7 @@ func TestReconcile_ReadyFalseWhenDeploymentNotAvailable(t *testing.T) {
 	configMapName := testComputeConfigMapName(t)
 	// All prerequisites are ready: secrets, DB sync completed, DB credentials secret, fernet keys, credential keys.
 	// But no ready deployment — EnsureDeployment will create it (returns false).
-	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
+	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedSchemaCheckJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
 	r := newTestReconciler(objs...)
 
 	ctx := context.Background()
@@ -610,7 +630,7 @@ func TestReconcile_ObservedGenerationTracked(t *testing.T) {
 	ks := testKeystone()
 	ks.Generation = 42 // Use a distinctive generation value.
 	configMapName := testComputeConfigMapName(t)
-	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
+	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedSchemaCheckJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
 	r := newTestReconciler(objs...)
 
 	ctx := context.Background()
