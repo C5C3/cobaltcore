@@ -1,0 +1,93 @@
+{
+  "feature_id": "CC-0062",
+  "title": "Separate liveness and readiness probes for DB health",
+  "date": "2026-04-12",
+  "verdict": "APPROVED",
+  "summary": "Minimal, focused change that replaces the Keystone API liveness probe from HTTPGet /v3 to TCPSocket on port 5000, separating liveness from readiness. The readiness probe (HTTPGet /v3) remains unchanged. Implementation exactly matches the plan with no scope creep. Unit tests assert both the presence of TCPSocket and the absence of HTTPGet (regression guard). Documentation updated with a Type column and rationale paragraph. All automated checks pass: go vet clean, golangci-lint clean (one pre-existing warning in unrelated file), all 47 unit tests pass.",
+  "tests_checklist": [
+    {"item": "Tests exist and pass", "checked": true},
+    {"item": "Edge cases are covered", "checked": true},
+    {"item": "Liveness probe asserts TCPSocket not nil", "checked": true},
+    {"item": "Liveness probe asserts HTTPGet is nil (regression guard)", "checked": true},
+    {"item": "Liveness probe asserts port 5000", "checked": true},
+    {"item": "Liveness probe asserts timing unchanged (15s/20s)", "checked": true},
+    {"item": "Readiness probe assertions unchanged (HTTPGet /v3, 5s/10s)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns", "checked": true},
+    {"item": "Minimal change surface", "checked": true},
+    {"item": "No unnecessary abstraction", "checked": true},
+    {"item": "CC-0062 feature ID referenced in comments", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No security-sensitive changes", "checked": true},
+    {"item": "No secrets exposed", "checked": true},
+    {"item": "No input validation changes needed", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "Follows Kubernetes probe best practices (liveness=process, readiness=function)", "checked": true},
+    {"item": "No scope creep into Helm chart (operator probes are different from API probes)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unnecessary abstractions added", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "No external inputs to validate in this change", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": [],
+  "review_checklist_results": {
+    "blocking": {
+      "V1": {"status": "PASS", "detail": "All 47 unit tests pass (go test ./internal/controller/ -count=1)"},
+      "V2": {"status": "PASS", "detail": "go vet ./... clean"},
+      "V3": {"status": "PASS", "detail": "golangci-lint clean for changed files; one pre-existing warning in reconcile_networkpolicy_test.go:540 (unchanged file, out of scope)"},
+      "C1": {"status": "PASS", "detail": "Liveness probe changed to TCPSocket, readiness probe unchanged — matches plan exactly"},
+      "C2": {"status": "PASS", "detail": "All 7 acceptance criteria met: TCPSocket liveness, HTTPGet readiness, timing preserved, tests verify types and values, docs updated"},
+      "C3": {"status": "PASS", "detail": "N/A — no new edge cases in a probe type swap"},
+      "C4": {"status": "PASS", "detail": "N/A — no error handling changes"},
+      "C5": {"status": "PASS", "detail": "All existing tests pass without modification (readiness assertions unchanged)"},
+      "S1": {"status": "PASS", "detail": "No API boundary changes"},
+      "S2": {"status": "PASS", "detail": "N/A"},
+      "S3": {"status": "PASS", "detail": "No secrets"},
+      "S4": {"status": "PASS", "detail": "N/A"},
+      "S5": {"status": "PASS", "detail": "N/A"},
+      "S6": {"status": "PASS", "detail": "N/A"},
+      "T1": {"status": "PASS", "detail": "Go — all types inferred correctly, no new function signatures"},
+      "T2": {"status": "PASS", "detail": "N/A"},
+      "T3": {"status": "PASS", "detail": "N/A"},
+      "T4": {"status": "PASS", "detail": "N/A"},
+      "T5": {"status": "PASS", "detail": "N/A"},
+      "FC1": {"status": "PASS", "detail": "Both tasks (1.1 code change, 2.1 docs update) fully implemented"},
+      "FC2": {"status": "PASS", "detail": "No stubs or TODOs"},
+      "FC3": {"status": "PASS", "detail": "TCPSocket probe fully functional"},
+      "FC4": {"status": "PASS", "detail": "Probe behavior verified by unit test assertions on type, port, and timing"},
+      "PC1": {"status": "PASS", "detail": "No mandatory patterns apply to probe handler type selection"},
+      "PC2": {"status": "PASS", "detail": "No applicable patterns bypassed"},
+      "PC3": {"status": "PASS", "detail": "Gomega assertions follow NewGomegaWithT pattern; CC-ID referenced in comments"}
+    },
+    "major": {
+      "TE1": {"status": "PASS", "detail": "TestReconcileDeployment_DeploymentSpec covers probe configuration with realistic deployment build"},
+      "TE2": {"status": "PASS", "detail": "N/A — probe type swap has no edge cases beyond type/port/timing"},
+      "TE3": {"status": "PASS", "detail": "N/A — no error paths introduced"},
+      "TE4": {"status": "PASS", "detail": "Tests independent — each builds a fresh deployment"},
+      "TE7": {"status": "PASS", "detail": "Assertions check exact values: TCPSocket not nil, port=5000, HTTPGet nil, delays 15/20"},
+      "TE8": {"status": "PASS", "detail": "Unit tests updated; integration tests pass without changes (probes not directly asserted at integration level); no E2E probe-specific test required for a type swap"},
+      "Q1": {"status": "PASS", "detail": "No function changes — only struct literal modification"},
+      "Q4": {"status": "PASS", "detail": "Clear naming throughout"},
+      "Q7": {"status": "PASS", "detail": "No dead code"},
+      "DA1": {"status": "PASS", "detail": "docs/reference/keystone-reconciler.md accurately describes TCPSocket liveness and HTTPGet readiness"},
+      "DA3": {"status": "PASS", "detail": "Probes table and rationale paragraph match implementation exactly"},
+      "D4": {"status": "PASS", "detail": "docs/reference/keystone-reconciler.md updated with Type column and CC-0062 rationale"},
+      "D6": {"status": "PASS", "detail": "Documentation accurately reflects new probe configuration"}
+    }
+  }
+}

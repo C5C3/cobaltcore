@@ -2,8 +2,8 @@
   "feature_id": "CC-0062",
   "title": "Separate liveness and readiness probes for DB health",
   "slug": "separate-liveness-and-readiness-probes-for-db",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #163: Separate liveness and readiness probes to prevent DB-induced CrashLoop\n\n**Category**: improvement | **Scope**: Small\n\n**Description**: Both the liveness and readiness probes on the `keystone-api` container currently use the same check: `HTTPGet /v3:5000`. This endpoint requires a working database connection — if MariaDB is temporarily unavailable, `/v3` returns HTTP 500, the liveness probe fails, and kubelet kills the container. With multiple replicas this creates a thundering-herd restart: all pods crash-loop simultaneously and bombard the recovering database with connection storms, delaying recovery further.\n\nSeparate the probes by intent:\n\n- **Liveness probe** → `TCPSocket` on port 5000. This verifies that the uWSGI process is alive and accepting connections. A TCP check does not exercise the database path, so a transient DB outage will not trigger unnecessary restarts.\n- **Readiness probe** → `HTTPGet /v3` on port 5000 (unchanged). This verifies full API functionality including database connectivity. When the DB is down, the pod becomes not-ready and is removed from the Service endpoints — no traffic is routed to it, but the process stays alive and can recover in-place once the DB returns.\n\n```go\nLivenessProbe: &corev1.Probe{\n    ProbeHandler: corev1.ProbeHandler{\n        TCPSocket: &corev1.TCPSocketAction{\n            Port: intstr.FromInt32(5000),\n        },\n    },\n    InitialDelaySeconds: 15,\n    PeriodSeconds:       20,\n},\nReadinessProbe: &corev1.Probe{\n    ProbeHandler: corev1.ProbeHandler{\n        HTTPGet: &corev1.HTTPGetAction{\n            Path: \"/v3\",\n            Port: intstr.FromInt32(5000),\n        },\n    },\n    InitialDelaySeconds: 5,\n    PeriodSeconds:       10,\n},\n```\n\n**Motivation**: A shared database is a common-mode failure — restarting the application pod cannot fix it. The established pattern (proven by operators like Keycloak/Quarkus) is: liveness checks the process, readiness checks the function. When the DB recovers, pods that remained alive immediately pass their readiness probe and re-enter the Service endpoints without a cold start. This reduces mean-time-to-recovery from minutes (CrashLoop backoff) to seconds (next readiness probe cycle).\n\n**Affected Areas**:\n- `operators/keystone/internal/controller/reconcile_deployment.go` (`buildKeystoneDeployment`, lines 170-189)\n- `operators/keystone/internal/controller/reconcile_deployment_test.go`\n\n**Acceptance Criteria**:\n- [ ] Liveness probe uses `TCPSocket` on port 5000\n- [ ] Readiness probe uses `HTTPGet /v3` on port 5000 (unchanged)\n- [ ] Pods remain running (no restart) when MariaDB is temporarily unavailable\n- [ ] Pods are removed from Service endpoints when MariaDB is unavailable (readiness fails)\n- [ ] Pods re-enter Service endpoints within one readiness probe period after DB recovery\n- [ ] Unit tests verify probe types and configuration values\n- [ ] Existing liveness/readiness timing parameters (initialDelaySeconds, periodSeconds) remain unchanged\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/163",
   "stories": [
@@ -192,6 +192,7 @@
       "description": "In `operators/keystone/internal/controller/reconcile_deployment.go`, modify the `buildKeystoneDeployment` function (lines 185-194) to replace the liveness probe HTTPGet handler with a TCPSocket handler on port 5000. Keep InitialDelaySeconds=15 and PeriodSeconds=20. Leave the readiness probe (lines 195-204) unchanged. Then in `operators/keystone/internal/controller/reconcile_deployment_test.go`, update the liveness probe assertions in `TestReconcileDeployment_DeploymentSpec` (lines 237-243) to assert TCPSocket instead of HTTPGet: verify TCPSocket is not nil, TCPSocket.Port is 5000, and HTTPGet is nil. Readiness probe assertions (lines 245-251) remain unchanged.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -204,6 +205,7 @@
       "description": "In `docs/reference/keystone-reconciler.md`, update the Probes table (around line 600-603) to reflect the new liveness probe type. Change the Liveness row from `| Liveness | /v3 | 5000 | 15s | 20s |` to `| Liveness | TCPSocket | 5000 | 15s | 20s |` (or adjust the table header to include a Type column). Add a brief note below the table explaining the rationale: liveness uses TCPSocket to avoid DB-induced restarts; readiness uses HTTPGet /v3 to verify full API functionality including database connectivity.",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -244,6 +246,279 @@
       "story": "Keystone pods survive transient DB outages without restarting",
       "expected": "Full reconciliation flow succeeds with the updated probe configuration — integration test does not assert probe types directly but validates end-to-end reconciliation",
       "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_DeploymentAndServiceCreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_NotReady_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_Ready_SetsEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_OwnerReferences",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_DeploymentSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_NotReady_ConditionMessageAndGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_Ready_ConditionMessageAndGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_ServiceCreatedAlongsideDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_FernetKeysHashAnnotation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_FernetKeysHashAnnotation_EmptyHash",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_CredentialKeysHashAnnotation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_CredentialKeysHashAnnotation_EmptyHash",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestCredentialKeysHash_Deterministic",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestCredentialKeysHash_SecretNotFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_CredentialKeysHashFromSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestFernetKeysHash_Deterministic",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestFernetKeysHash_SecretNotFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_FernetKeysHashFromSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBCreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBLabelsAndSelector",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBMinAvailableForMultipleReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBMaxUnavailableForSingleReplica",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBUpdatedOnReplicaChange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBSelectorMatchesDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildPodDisruptionBudget_BoundaryReplicas2",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildPodDisruptionBudget_ZeroReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_ContainerResources",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_CustomResources",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_NilResources",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBEnsureError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestUWSGICommand_NilUWSGI",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestUWSGICommand_CustomValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestUWSGICommand_KeepAliveDisabled",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestUWSGICommand_KeepAliveEnabled",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestUWSGICommand_FixedFlagsAlwaysPresent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_RollingUpdate_ReadyDeployment_TransitionsToContracting",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_RollingUpdate_NotReady_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_NoUpgrade_Ready_SetsEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_OtherPhase_Ready_SetsEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],
@@ -272,8 +547,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-12T08:52:49.450386"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-12T09:05:14.521483"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-12T11:16:37.821002"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/178",
+  "pr_number": 178,
   "execution_history": [
     {
       "run_id": "b567e7ce-aeb9-4697-b004-1379c6ae8b0b",
@@ -285,6 +570,58 @@
           "name": "prepare",
           "duration": 142.92177271842957,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "eb7350ea-d88b-4409-9680-fa6533a43166",
+      "timestamp": "2026-04-12T09:14:17.251772",
+      "total_duration": 443.9777467250824,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (1 tasks)",
+          "duration": 130.58650660514832,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (1 tasks)",
+          "duration": 77.46101546287537,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0062] Code Review",
+          "duration": 183.77061939239502,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0062] Improvements",
+          "duration": 22.36466646194458,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0062] Simplify",
+          "duration": 29.794938802719116,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "b2cf5e98-10b2-4aae-87cd-3a066544f316",
+      "timestamp": "2026-04-12T10:41:43.571358",
+      "total_duration": 160.99808597564697,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 160.99808597564697,
+          "type": "review_address",
           "status": "done"
         }
       ]

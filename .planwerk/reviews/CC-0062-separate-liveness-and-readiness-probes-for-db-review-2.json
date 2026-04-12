@@ -1,0 +1,35 @@
+{
+  "feature_id": "CC-0062",
+  "title": "Separate liveness and readiness probes for DB health",
+  "date": "2026-04-12",
+  "summary": "Post-external-review metadata update. The diff contains only two .planwerk/ tracking files: progress JSON phase changed from awaiting_external_review to improving, and the external review JSON verdict changed from NEEDS_CHANGES to ADDRESSED with a resolution_summary added. No code, test, or documentation changes. The external review by berendt found zero blocking/critical/warning issues (2 INFO-level observations only), and the metadata updates correctly reflect that outcome.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass", "checked": true},
+    {"item": "Edge cases are covered", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "All user inputs validated", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs validated", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": []
+}

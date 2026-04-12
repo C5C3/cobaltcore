@@ -184,8 +184,7 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 						}},
 						LivenessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
-								HTTPGet: &corev1.HTTPGetAction{
-									Path: "/v3",
+								TCPSocket: &corev1.TCPSocketAction{
 									Port: intstr.FromInt32(5000),
 								},
 							},

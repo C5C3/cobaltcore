@@ -234,11 +234,13 @@ func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
 	g.Expect(container.Ports[0].ContainerPort).To(Equal(int32(5000)))
 	g.Expect(container.Ports[0].Name).To(Equal("keystone-api"))
 
-	// Verify liveness probe.
+	// Verify liveness probe uses TCPSocket (CC-0062): a TCP-only check ensures
+	// the uWSGI process is alive without exercising the database code path,
+	// preventing unnecessary pod restarts during transient DB outages.
 	g.Expect(container.LivenessProbe).NotTo(BeNil())
-	g.Expect(container.LivenessProbe.HTTPGet).NotTo(BeNil())
-	g.Expect(container.LivenessProbe.HTTPGet.Path).To(Equal("/v3"))
-	g.Expect(container.LivenessProbe.HTTPGet.Port.IntValue()).To(Equal(5000))
+	g.Expect(container.LivenessProbe.TCPSocket).NotTo(BeNil(), "liveness probe must use TCPSocket")
+	g.Expect(container.LivenessProbe.TCPSocket.Port.IntValue()).To(Equal(5000))
+	g.Expect(container.LivenessProbe.HTTPGet).To(BeNil(), "liveness probe must not use HTTPGet")
 	g.Expect(container.LivenessProbe.InitialDelaySeconds).To(Equal(int32(15)))
 	g.Expect(container.LivenessProbe.PeriodSeconds).To(Equal(int32(20)))
 

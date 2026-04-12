@@ -597,10 +597,12 @@ The `fernetKeysHash()` helper:
 
 **Probes:**
 
-| Probe | Path | Port | InitialDelay | Period |
-| --- | --- | --- | --- | --- |
-| Liveness | `/v3` | 5000 | 15s | 20s |
-| Readiness | `/v3` | 5000 | 5s | 10s |
+| Probe | Type | Target | Port | InitialDelay | Period |
+| --- | --- | --- | --- | --- | --- |
+| Liveness | TCPSocket | — | 5000 | 15s | 20s |
+| Readiness | HTTPGet | `/v3` | 5000 | 5s | 10s |
+
+The liveness and readiness probes are intentionally separated (CC-0062). The liveness probe uses a TCP socket check that only verifies the uWSGI process is accepting connections, without exercising the database code path. This prevents the kubelet from killing pods during transient database outages (e.g., MariaDB maintenance), avoiding CrashLoopBackOff cascades and thundering-herd restarts. The readiness probe continues to use HTTP GET `/v3`, which exercises the full stack including the database. When the database is unavailable, the readiness probe fails and the pod is removed from Service endpoints, preventing HTTP 500 responses to clients. Once the database recovers, the pod re-enters Service endpoints within one readiness probe period (10s).
 
 **Volume Mounts:**
 
