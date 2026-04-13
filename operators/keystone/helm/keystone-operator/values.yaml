@@ -1,4 +1,5 @@
 # Default values for keystone-operator.
+# Validated by values.schema.json (CC-0069).
 
 image:
   repository: ghcr.io/c5c3/keystone-operator

@@ -34,7 +34,7 @@ tests:
         enabled: true
     asserts:
       - failedTemplate:
-          errorMessage: "rbac.namespaceScoped=true requires webhook.enabled=false — namespace-scoped operators cannot manage cluster-scoped webhook configurations"
+          errorPattern: "webhook/enabled"
 
   - it: should not render Role when rbac.namespaceScoped is false
     asserts:

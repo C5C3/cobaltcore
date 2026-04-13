@@ -2,8 +2,8 @@
   "feature_id": "CC-0069",
   "title": "Add JSON schema for Helm chart values",
   "slug": "add-json-schema-for-helm-chart-values",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #189: Add JSON schema for Helm chart values\n\n**Category**: improvement | **Scope**: Medium\n\n**Description**: Create a values.schema.json file for the Helm chart that validates all values.yaml fields with proper types, constraints, descriptions, and defaults. Include constraints like minimum replica counts, valid log levels, valid image pull policies, port ranges, and resource request/limit formats. Reference it from Chart.yaml.\n\n**Motivation**: Without a JSON schema, users can set invalid values (e.g., replicas: -1, logLevel: 'verbose') without any feedback until Helm template rendering or runtime failure. A schema provides IDE autocompletion, early validation during helm install/upgrade, and serves as living documentation of all configuration options.\n\n**Affected Areas**:\n- `operators/keystone/charts/keystone-operator/`\n\n**Acceptance Criteria**:\n- [ ] values.schema.json covers all fields in values.yaml\n- [ ] Schema enforces type constraints, enums for known value sets, and min/max where applicable\n- [ ] helm install with invalid values produces a clear validation error\n- [ ] IDE autocompletion works with the schema in VS Code with the Helm extension\n- [ ] Schema is referenced in Chart.yaml\n\n---\nSource: https://github.com/C5C3/forge/issues/189",
   "stories": [
@@ -333,6 +333,7 @@
       "description": "Create operators/keystone/helm/keystone-operator/values.schema.json with JSON Schema Draft-07. Define every property from values.yaml: image (repository, tag, pullPolicy), replicas, resources (limits/requests with cpu/memory), rbac (namespaceScoped), leaderElection (enabled), webhook (enabled), metrics (port), serviceAccount (create, name). Also include nameOverride and fullnameOverride used in _helpers.tpl. Each property must have: type, description, default matching values.yaml. Use additionalProperties: false at all object levels.",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -346,6 +347,7 @@
       "description": "In the values.schema.json created in 1.1, ensure image.pullPolicy has enum: ['Always', 'IfNotPresent', 'Never']. This is part of 1.1 but called out explicitly for traceability.",
       "level": 1,
       "estimate_minutes": 5,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -356,6 +358,7 @@
       "description": "In the values.schema.json: replicas has minimum: 1. metrics.port has minimum: 1 and maximum: 65535. This is part of 1.1 but called out explicitly for traceability.",
       "level": 1,
       "estimate_minutes": 5,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -366,6 +369,7 @@
       "description": "In the values.schema.json: define a pattern for CPU and memory resource quantity strings. CPU pattern should accept: integer, decimal, millicpu (e.g., '500m', '1', '0.5'). Memory pattern should accept: plain integers and suffixed values (e.g., '128Mi', '1Gi', '256M', '512Ki'). Use regex patterns compatible with JSON Schema.",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -376,6 +380,7 @@
       "description": "Ensure every object in the schema (root, image, resources, resources.limits, resources.requests, rbac, leaderElection, webhook, metrics, serviceAccount) has additionalProperties: false. This is part of 1.1 but called out explicitly for traceability.",
       "level": 1,
       "estimate_minutes": 5,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -386,6 +391,7 @@
       "description": "Helm auto-discovers values.schema.json from the chart root directory. No Chart.yaml field is needed for discovery. However, the issue requests referencing it from Chart.yaml. Add a comment in Chart.yaml noting the schema file exists, or if Helm supports a 'schema' annotation, use that. Keep existing Chart.yaml fields unchanged.",
       "level": 2,
       "estimate_minutes": 5,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -396,6 +402,7 @@
       "description": "Create operators/keystone/helm/keystone-operator/tests/values_schema_test.yaml. Test cases: (1) default values pass validation (helm template succeeds), (2) invalid pullPolicy value fails, (3) replicas below minimum fails, (4) metrics.port out of range fails, (5) unknown top-level property fails, (6) unknown nested property fails. Note: helm-unittest may not directly test schema validation — if not, create a shell-based test script that uses helm template with --set to validate. Verify approach against helm-unittest capabilities first.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -406,21 +413,12 @@
       ]
     },
     {
-      "id": "2.3",
-      "title": "Verify all existing CI helm template scenarios pass with schema (REQ-010) [integration]",
-      "description": "Run locally all 5 CI helm template scenarios from .github/workflows/ci.yaml: (1) default values, (2) webhook.enabled=false, (3) serviceAccount.create=false + serviceAccount.name=existing-sa, (4) custom resources, (5) rbac.namespaceScoped=true + webhook.enabled=false. Also run helm lint and helm unittest. Fix any schema validation failures by adjusting the schema (not the CI scenarios).",
-      "level": 2,
-      "estimate_minutes": 10,
-      "requirements": [
-        "REQ-010"
-      ]
-    },
-    {
       "id": "3.1",
       "title": "Write Reference documentation for the values.schema.json (REQ-005)",
       "description": "Create docs/reference/backend/keystone-operator-helm-values-schema.md. Document: purpose of the schema, list of all validated fields with types/constraints/defaults in a table, how to use with IDE (VS Code Helm extension), how Helm validates values at install/upgrade time. Reference the existing docs/reference/backend/keystone-operator-packaging.md for chart packaging context.",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -531,6 +529,13 @@
       "story": "Chart developer gets IDE autocompletion for values",
       "expected": "All schema defaults match the corresponding values in values.yaml [unit]",
       "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "operators/keystone/helm/keystone-operator/tests/values_schema_test.yaml",
+      "test_function": "should fail when replicas is a string instead of integer",
+      "story": "Operator deployer gets validation of type constraints",
+      "expected": "helm template with --set-string replicas=three should fail with type error [unit]",
+      "requirement_id": "REQ-002"
     }
   ],
   "affected_files": [],
@@ -562,8 +567,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-12T19:49:06.759270"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-12T19:50:57.311628"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-13T06:38:02.926298"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/197",
+  "pr_number": 197,
   "execution_history": [
     {
       "run_id": "57503c83-bf69-4f44-aed9-4ed1a970e342",
@@ -575,6 +590,64 @@
           "name": "prepare",
           "duration": 227.0273003578186,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "97531296-d143-404e-985f-8ad55f456856",
+      "timestamp": "2026-04-12T20:17:19.827282",
+      "total_duration": 1375.5896589756012,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (5 tasks)",
+          "duration": 356.61189675331116,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (2 tasks)",
+          "duration": 509.9624650478363,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (1 tasks)",
+          "duration": 153.646728515625,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0069] Code Review",
+          "duration": 248.08673310279846,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0069] Improvements",
+          "duration": 73.62844634056091,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0069] Simplify",
+          "duration": 33.65338921546936,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "a51afa42-75e4-40c7-ae71-e6812e6cf430",
+      "timestamp": "2026-04-12T21:03:39.869349",
+      "total_duration": 787.4688518047333,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 787.4688518047333,
+          "type": "review_address",
           "status": "done"
         }
       ]

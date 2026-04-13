@@ -2,5 +2,11 @@ apiVersion: v2
 name: keystone-operator
 description: A Helm chart for deploying the Keystone OpenStack operator
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "0.1.0"
+# CC-0069, REQ-007: Helm validates values against values.schema.json automatically.
+annotations:
+  artifacthub.io/prerelease: "true"
+  artifacthub.io/changes: |
+    - kind: added
+      description: JSON Schema validation for chart values (CC-0069)

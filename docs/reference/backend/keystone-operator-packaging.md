@@ -20,6 +20,7 @@ operators/keystone/
 │   └── keystone-operator/
 │       ├── Chart.yaml                  Helm chart metadata (v0.1.0)
 │       ├── values.yaml                 Default configuration values
+│       ├── values.schema.json          JSON Schema for values validation (CC-0069)
 │       ├── crds/
 │       │   └── keystone.openstack.c5c3.io_keystones.yaml   CRD (auto-installed by Helm)
 │       └── templates/

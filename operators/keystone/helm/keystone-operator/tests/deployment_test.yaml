@@ -151,6 +151,8 @@ tests:
     set:
       rbac:
         namespaceScoped: true
+      webhook:
+        enabled: false
     asserts:
       - contains:
           path: spec.template.spec.containers[0].args
@@ -166,6 +168,8 @@ tests:
     set:
       rbac:
         namespaceScoped: true
+      webhook:
+        enabled: false
       leaderElection:
         enabled: true
     asserts:

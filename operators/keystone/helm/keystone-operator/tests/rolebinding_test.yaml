@@ -7,6 +7,8 @@ tests:
     set:
       rbac:
         namespaceScoped: true
+      webhook:
+        enabled: false
     asserts:
       - hasDocuments:
           count: 1

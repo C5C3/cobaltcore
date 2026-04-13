@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: When a file already uses a defensive pattern (e.g., capturing exit codes with `|| exit_code=$?`) in some test cases, scan ALL other test cases in the same file for the same invocation pattern without the guard.
 **Severity**: BLOCKING
-**Occurrences**: 5
+**Occurrences**: 6
 
 ## What to check
 
@@ -39,3 +39,8 @@ Silent test abortion means CI reports a failure with zero diagnostic output. Dev
 - **Feedback**: The project has 19 Chainsaw E2E test directories under tests/e2e/keystone/ covering every existing feature [...]. This PR adds a new operational feature but includes no corresponding E2E test that asserts the Deployment spec fields (terminationGracePeriodSeconds, startupProbe, lifecycle.preStop) on a real cluster.
 - **What was missed**: Check whether the project has a consistent 1-feature-to-1-E2E-test-directory convention. If it does, verify the PR includes a new test directory that asserts the feature's spec fields on a real cluster, not just unit/integration coverage.
 - **Fix**: Added a tests/e2e/keystone/graceful-shutdown/ directory with chainsaw-test.yaml that applies a Keystone CR and asserts the Deployment spec contains the expected terminationGracePeriodSeconds, startupProbe, and lifecycle.preStop fields.
+
+### CC-0069 — berendt
+- **Feedback**: The test suite has 26 negative test cases verifying that invalid values are rejected, but zero positive test cases verifying that valid non-default values are accepted through schema validation. If a future schema edit accidentally over-restricts a field (e.g., adding a maxLength that's too short, or a pattern that rejects a valid quantity), no test in this file would catch the regression.
+- **What was missed**: Schema validation test suites must include positive test cases that verify valid non-default values pass through the schema. Check that for each constrained field (patterns, ranges, enums), at least one test asserts a valid non-default value renders successfully.
+- **Fix**: Added 5 positive schema test cases covering custom replicas, custom metrics port, string resource quantities, numeric resource quantities, and the namespaceScoped+webhook combination, each asserting successful template rendering with isKind.

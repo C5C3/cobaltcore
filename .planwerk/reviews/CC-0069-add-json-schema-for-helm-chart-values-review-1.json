@@ -1,0 +1,78 @@
+{
+  "feature_id": "CC-0069",
+  "title": "Add JSON schema for Helm chart values",
+  "date": "2026-04-12",
+  "summary": "Adds a JSON Schema Draft-07 (values.schema.json) for the keystone-operator Helm chart that validates all values.yaml fields with correct types, constraints, descriptions, and defaults. Includes 25 helm-unittest test cases covering type constraints, enum validation, min/max boundaries, additionalProperties rejection, and resource quantity pattern validation. Chart.yaml is annotated with ArtifactHub metadata. Reference documentation is comprehensive and accurate.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (100/100 helm-unittest, including 25 new schema tests)", "checked": true},
+    {"item": "Type constraint edge cases covered (all 10 property types)", "checked": true},
+    {"item": "Enum constraint tested (pullPolicy)", "checked": true},
+    {"item": "Min/max boundary tests (replicas=0, port=0, port=65536)", "checked": true},
+    {"item": "additionalProperties rejection tested (7/10 object levels)", "checked": true},
+    {"item": "Resource quantity pattern rejection tested (string and numeric)", "checked": true},
+    {"item": "Happy path covered (implicitly via existing deployment_test.yaml with schema active)", "checked": true},
+    {"item": "Existing tests unaffected (all 75 pre-existing tests still pass)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing Helm test file conventions (# CC-NNNN header, suite, templates)", "checked": true},
+    {"item": "Schema is minimal and focused (171 lines, no over-engineering)", "checked": true},
+    {"item": "Uses $ref for shared resourceQuantity definition (DRY)", "checked": true},
+    {"item": "All schema defaults match values.yaml defaults exactly", "checked": true},
+    {"item": "No dead code or unused properties", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No secrets or sensitive data in schema or tests", "checked": true},
+    {"item": "additionalProperties: false prevents injection of unexpected config keys", "checked": true},
+    {"item": "Input validation enforced at Helm boundary (types, ranges, enums)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible (single schema file, standard JSON Schema Draft-07)", "checked": true},
+    {"item": "No scope creep beyond requested changes", "checked": true},
+    {"item": "Chart.yaml annotations are informational only (ArtifactHub), no functional coupling", "checked": true},
+    {"item": "Reference doc correctly references packaging doc for chart context", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated definitions (resourceQuantity is a shared $ref)", "checked": true},
+    {"item": "No speculative properties or constraints beyond values.yaml", "checked": true},
+    {"item": "No unnecessary schema features (no if/then, no oneOf beyond resourceQuantity)", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Schema validates before template rendering (Helm native behavior)", "checked": true},
+    {"item": "Error messages include JSON path to offending value", "checked": true},
+    {"item": "additionalProperties: false catches typos immediately", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs validated (every values.yaml field has type + constraints)", "checked": true},
+    {"item": "Resource quantities validated via pattern + numeric minimum", "checked": true},
+    {"item": "Port range bounded (1-65535)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "TE2",
+      "severity": "MINOR",
+      "description": "Missing additionalProperties rejection tests for rbac, webhook, and resources.requests objects. The pattern is tested on 7/10 object levels (root, image, resources, resources.limits, metrics, leaderElection, serviceAccount) but not on rbac, webhook, or resources.requests. While the schema correctly sets additionalProperties: false on all objects and would reject invalid input, the test coverage is incomplete for these 3 objects.",
+      "location": "operators/keystone/helm/keystone-operator/tests/schema_validation_test.yaml:183",
+      "fix": "Add 3 tests under the REQ-008 section: (1) should reject unknown property in rbac (set rbac.extraField: true), (2) should reject unknown property in webhook (set webhook.port: 9443), (3) should reject unknown property in resources.requests (set resources.requests.gpu: '1').",
+      "evidence": "Objects tested: root (line 127), image (line 134), resources (line 142), resources.limits (line 150), metrics (line 159), leaderElection (line 167), serviceAccount (line 175). Missing: rbac, webhook, resources.requests.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "D6",
+      "severity": "MINOR",
+      "description": "The existing packaging reference doc directory layout tree does not include values.schema.json. After this feature, the tree is incomplete. The file docs/reference/backend/keystone-operator-packaging.md shows the helm chart directory structure but omits the new values.schema.json file.",
+      "location": "docs/reference/backend/keystone-operator-packaging.md:16-30",
+      "fix": "Add 'values.schema.json' line to the directory tree between values.yaml and crds/ with description 'JSON Schema for values validation (CC-0069)'.",
+      "evidence": "Directory tree shows Chart.yaml, values.yaml, crds/, templates/ but not values.schema.json. The file now exists at operators/keystone/helm/keystone-operator/values.schema.json.",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a comment in values.yaml referencing the schema file for discoverability (e.g., '# Validated by values.schema.json (CC-0069)').",
+    "The resourceQuantity pattern does not cover Kubernetes exponential notation (e.g., '1e3') or leading-dot decimals (e.g., '.5'). These are rare in practice but technically valid K8s resource quantities. Current coverage handles all common formats per REQ-009."
+  ],
+  "next_steps": [],
+  "detected_patterns": []
+}

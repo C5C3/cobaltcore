@@ -1,0 +1,341 @@
+# CC-0069: Values schema validation unit tests.
+# Verifies that values.schema.json correctly rejects invalid inputs.
+suite: Values Schema Validation
+templates:
+  - templates/deployment.yaml
+tests:
+  # ---------------------------------------------------------------------------
+  # REQ-001, REQ-002: Type constraints
+  # ---------------------------------------------------------------------------
+  - it: should reject non-integer replicas (REQ-002)
+    set:
+      replicas: "notanumber"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/replicas.*got string, want integer"
+
+  - it: should reject non-string image.repository (REQ-002)
+    set:
+      image:
+        repository: 123
+    asserts:
+      - failedTemplate:
+          errorPattern: "/image/repository.*got number, want string"
+
+  - it: should reject non-string image.tag (REQ-002)
+    set:
+      image:
+        tag: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "/image/tag.*want string"
+
+  - it: should reject non-boolean leaderElection.enabled (REQ-002)
+    set:
+      leaderElection:
+        enabled: "yes"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/leaderElection/enabled.*got string, want boolean"
+
+  - it: should reject non-boolean webhook.enabled (REQ-002)
+    set:
+      webhook:
+        enabled: 42
+    asserts:
+      - failedTemplate:
+          errorPattern: "/webhook/enabled.*got number, want boolean"
+
+  - it: should reject non-boolean serviceAccount.create (REQ-002)
+    set:
+      serviceAccount:
+        create: "yes"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/serviceAccount/create.*got string, want boolean"
+
+  - it: should reject non-boolean rbac.namespaceScoped (REQ-002)
+    set:
+      rbac:
+        namespaceScoped: "true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/rbac/namespaceScoped.*got string, want boolean"
+
+  - it: should reject non-string nameOverride (REQ-002)
+    set:
+      nameOverride: 42
+    asserts:
+      - failedTemplate:
+          errorPattern: "/nameOverride.*got number, want string"
+
+  - it: should reject non-string fullnameOverride (REQ-002)
+    set:
+      fullnameOverride: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "/fullnameOverride.*want string"
+
+  - it: should reject non-integer metrics.port (REQ-002)
+    set:
+      metrics:
+        port: "http"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/metrics/port.*got string, want integer"
+
+  # ---------------------------------------------------------------------------
+  # REQ-003: Enum constraints
+  # ---------------------------------------------------------------------------
+  - it: should reject invalid image.pullPolicy enum value (REQ-003)
+    set:
+      image:
+        pullPolicy: InvalidPolicy
+    asserts:
+      - failedTemplate:
+          errorPattern: "/image/pullPolicy.*must be one of"
+
+  # ---------------------------------------------------------------------------
+  # REQ-004: Minimum/maximum constraints
+  # ---------------------------------------------------------------------------
+  - it: should reject replicas below minimum of 1 (REQ-004)
+    set:
+      replicas: 0
+    asserts:
+      - failedTemplate:
+          errorPattern: "/replicas.*minimum.*got 0, want 1"
+
+  - it: should reject metrics.port below minimum of 1 (REQ-004)
+    set:
+      metrics:
+        port: 0
+    asserts:
+      - failedTemplate:
+          errorPattern: "/metrics/port.*minimum.*got 0, want 1"
+
+  - it: should reject metrics.port above maximum of 65535 (REQ-004)
+    set:
+      metrics:
+        port: 65536
+    asserts:
+      - failedTemplate:
+          errorPattern: "/metrics/port.*maximum.*got 65.536, want 65.535"
+
+  # ---------------------------------------------------------------------------
+  # REQ-008: additionalProperties: false
+  # ---------------------------------------------------------------------------
+  - it: should reject unknown top-level property (REQ-008)
+    set:
+      unknownField: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "additional properties.*not allowed"
+
+  - it: should reject unknown property in image (REQ-008)
+    set:
+      image:
+        digest: "sha256:abc"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/image.*additional properties.*not allowed"
+
+  - it: should reject unknown property in resources (REQ-008)
+    set:
+      resources:
+        gpu: 1
+    asserts:
+      - failedTemplate:
+          errorPattern: "/resources.*additional properties.*not allowed"
+
+  - it: should reject unknown property in resources.limits (REQ-008)
+    set:
+      resources:
+        limits:
+          gpu: "1"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/resources/limits.*additional properties.*not allowed"
+
+  - it: should reject unknown property in metrics (REQ-008)
+    set:
+      metrics:
+        enabled: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "/metrics.*additional properties.*not allowed"
+
+  - it: should reject unknown property in leaderElection (REQ-008)
+    set:
+      leaderElection:
+        leaseDuration: "15s"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/leaderElection.*additional properties.*not allowed"
+
+  - it: should reject unknown property in serviceAccount (REQ-008)
+    set:
+      serviceAccount:
+        annotations: {}
+    asserts:
+      - failedTemplate:
+          errorPattern: "/serviceAccount.*additional properties.*not allowed"
+
+  - it: should reject unknown property in rbac (REQ-008)
+    set:
+      rbac:
+        extraField: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "/rbac.*additional properties.*not allowed"
+
+  - it: should reject unknown property in webhook (REQ-008)
+    set:
+      webhook:
+        port: 9443
+    asserts:
+      - failedTemplate:
+          errorPattern: "/webhook.*additional properties.*not allowed"
+
+  - it: should reject unknown property in resources.requests (REQ-008)
+    set:
+      resources:
+        requests:
+          gpu: "1"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/resources/requests.*additional properties.*not allowed"
+
+  # ---------------------------------------------------------------------------
+  # REQ-009: Resource quantity pattern validation
+  # ---------------------------------------------------------------------------
+  - it: should reject invalid CPU resource format (REQ-009)
+    set:
+      resources:
+        limits:
+          cpu: "not-valid"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/resources/limits/cpu.*does not match pattern"
+
+  - it: should reject invalid memory resource format (REQ-009)
+    set:
+      resources:
+        limits:
+          memory: "bad!"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/resources/limits/memory.*does not match pattern"
+
+  - it: should reject negative CPU resource quantity (REQ-009)
+    set:
+      resources:
+        limits:
+          cpu: -1
+    asserts:
+      - failedTemplate:
+          errorPattern: "/resources/limits/cpu.*minimum.*got -1, want 0"
+
+  - it: should reject invalid request CPU format (REQ-009)
+    set:
+      resources:
+        requests:
+          cpu: "abc!"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/resources/requests/cpu.*does not match pattern"
+
+  - it: should reject invalid request memory format (REQ-009)
+    set:
+      resources:
+        requests:
+          memory: "xyz"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/resources/requests/memory.*does not match pattern"
+
+  - it: should reject exponent combined with SI suffix in CPU (REQ-009)
+    set:
+      resources:
+        limits:
+          cpu: "1e3m"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/resources/limits/cpu.*does not match pattern"
+
+  - it: should reject exponent combined with binary suffix in memory (REQ-009)
+    set:
+      resources:
+        limits:
+          memory: "1e3Ki"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/resources/limits/memory.*does not match pattern"
+
+  # ---------------------------------------------------------------------------
+  # REQ-010: Conditional constraint — namespaceScoped requires webhook disabled
+  # ---------------------------------------------------------------------------
+  - it: should reject rbac.namespaceScoped=true when webhook.enabled is true (REQ-010)
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "webhook/enabled"
+
+  # ---------------------------------------------------------------------------
+  # Positive tests: valid non-default values pass schema validation (CC-0069)
+  # ---------------------------------------------------------------------------
+  - it: should accept custom replicas (CC-0069)
+    set:
+      replicas: 5
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - it: should accept custom metrics port (CC-0069)
+    set:
+      metrics:
+        port: 9090
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - it: should accept string resource quantities (CC-0069)
+    set:
+      resources:
+        limits:
+          cpu: "2"
+          memory: "1Gi"
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - it: should accept numeric resource quantities (CC-0069)
+    set:
+      resources:
+        limits:
+          cpu: 0.5
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - it: should accept exponent-only resource quantity (CC-0069)
+    set:
+      resources:
+        limits:
+          cpu: "1e3"
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - it: should accept rbac.namespaceScoped=true when webhook.enabled is false (CC-0069)
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - isKind:
+          of: Deployment

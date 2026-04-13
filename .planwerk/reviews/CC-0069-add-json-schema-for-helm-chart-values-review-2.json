@@ -1,0 +1,62 @@
+{
+  "feature_id": "CC-0069",
+  "title": "Add JSON schema for Helm chart values",
+  "date": "2026-04-12",
+  "verdict": "APPROVED",
+  "summary": "Review #2 after addressing external review feedback from berendt. All four items (W-001: positive tests, W-002: rbac/webhook conditional constraint, I-001: regex exponent+suffix fix, I-002: chart version bump) are correctly implemented. All 111 helm-unittest tests pass, helm lint is clean, and schema validation is verified end-to-end via helm template. Existing tests in 5 sibling test files were correctly updated to satisfy the new schema constraint by adding webhook.enabled=false wherever rbac.namespaceScoped=true was already set.",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (111 tests, 10 suites)", "checked": true},
+    {"item": "Edge cases covered (exponent+suffix rejection, boundary values, conditional constraint)", "checked": true},
+    {"item": "Positive tests verify valid non-default values pass schema validation", "checked": true},
+    {"item": "Negative tests verify invalid values produce clear error messages", "checked": true},
+    {"item": "Existing tests in sibling files updated for new schema constraint", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing Helm chart and test patterns", "checked": true},
+    {"item": "Schema uses shared $ref definition for resourceQuantity (DRY)", "checked": true},
+    {"item": "Test sections organized by requirement ID with comment headers", "checked": true},
+    {"item": "if/then conditional is well-structured with required guards", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "additionalProperties: false on all object levels prevents property injection", "checked": true},
+    {"item": "Regex patterns restrictive — no shell metacharacters or injection vectors", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible — minimal JSON Schema additions", "checked": true},
+    {"item": "Conditional constraint uses standard JSON Schema if/then (no custom extensions)", "checked": true},
+    {"item": "Defense in depth preserved — template-level fail directive remains alongside schema enforcement", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code — resourceQuantity shared via $ref", "checked": true},
+    {"item": "No unnecessary abstractions or over-engineering", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Schema validation catches errors before template rendering", "checked": true},
+    {"item": "Conditional constraint rejects invalid rbac+webhook combo at schema level", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs validated via schema types, enums, ranges, patterns", "checked": true},
+    {"item": "if condition uses required guards to prevent false matches", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "D6",
+      "severity": "MINOR",
+      "description": "Documentation at docs/reference/backend/helm-values-schema.md does not reflect three changes from this diff: (1) the rbac section (line 60-62) doesn't mention the new conditional constraint requiring webhook.enabled=false when rbac.namespaceScoped=true, (2) the resource quantity pattern shown on line 49 was already a simplification but now also omits the exponent+suffix mutual exclusion, (3) the test coverage table (lines 131-139) doesn't list the new positive tests or the conditional constraint tests. The chart version bump to 0.2.0 is not documented either.",
+      "location": "docs/reference/backend/helm-values-schema.md:49-139",
+      "fix": "Update the docs to reflect: (1) add a 'Conditional Constraints' section documenting rbac.namespaceScoped=true requires webhook.enabled=false, (2) update the regex pattern on line 49 to match the actual schema pattern, (3) add rows to the test coverage table for positive tests and conditional constraint tests.",
+      "evidence": "Line 49 shows pattern ^[0-9]+(\\.[0-9]+)?(m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei)?$ but schema has ^(\\.[0-9]+|[0-9]+(\\.[0-9]*)?)((e[0-9]+)|(m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei))?$. Line 62 shows rbac.namespaceScoped with no constraint column entry, but the schema now enforces webhook.enabled=false when true.",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a positive test for exponent-only resource quantities (e.g., cpu: '1e3') to complement the negative tests for exponent+suffix combinations."
+  ],
+  "next_steps": [
+    "Update docs/reference/backend/helm-values-schema.md to reflect the conditional constraint, corrected regex pattern, and expanded test coverage."
+  ],
+  "detected_patterns": []
+}
