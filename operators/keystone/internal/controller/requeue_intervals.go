@@ -35,4 +35,9 @@ const (
 	// Upgrade Jobs (expand, migrate, contract) may take several minutes depending
 	// on database size. A moderate interval balances responsiveness with API load (CC-0056).
 	RequeueUpgradeWait = 30 * time.Second
+
+	// RequeueValidationWait is the interval for polling policy validation Job
+	// completion. The oslopolicy-validator runs quickly, so a short interval
+	// balances responsiveness with API load (CC-0058).
+	RequeueValidationWait = 15 * time.Second
 )

@@ -2,8 +2,8 @@
   "feature_id": "CC-0058",
   "title": "Add policy validation Job before Deployment rollout",
   "slug": "add-policy-validation-job-before-deployment",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #159: Add policy validation Job before Deployment rollout\n\n**Category**: feature | **Scope**: Medium\n\n**Description**: When `spec.policyOverrides` is set, add a pre-deployment validation step that runs `oslopolicy-checker` (or `oslopolicy-validator`) against the rendered `policy.yaml` inside the Keystone container image before the Deployment is updated. Implement this as a short-lived Kubernetes Job that mounts the immutable ConfigMap, executes the policy check, and gates the Deployment rollout on successful completion. Add a new `PolicyValidReady` condition to track the validation result.\n\nThe validation Job should:\n1. Use the same Keystone image as the API Deployment\n2. Mount the rendered ConfigMap (containing `policy.yaml`) read-only\n3. Run `oslopolicy-checker --config-file /etc/keystone/keystone.conf --policy /etc/keystone/policy.yaml` (or equivalent)\n4. Succeed (exit 0) if all policy rules are syntactically valid and reference known Keystone actions\n5. Fail with a descriptive error if any rule is invalid (unknown target, malformed check string, etc.)\n\nThe Deployment sub-reconciler must not proceed until `PolicyValidReady=True`. When `spec.policyOverrides` is nil, skip validation entirely and set the condition to True with reason `NotRequired`.\n\n**Motivation**: Currently, policy overrides are rendered into the ConfigMap and mounted directly into the Deployment without any pre-flight check. An invalid policy rule (e.g., a typo in an action name or a malformed check string) is only discovered at runtime when Keystone rejects API requests with HTTP 500 or unexpected 403 errors. This can cause a service outage that is difficult to diagnose. Validating policies before rollout catches configuration errors early, before they reach running pods.\n\n**Affected Areas**:\n- `operators/keystone/internal/controller/reconcile_policyvalidation.go` (new file)\n- `operators/keystone/internal/controller/keystone_controller.go` (insert validation step between `reconcileConfig` and `reconcileDeployment`)\n- `operators/keystone/api/v1alpha1/keystone_types.go` (new `PolicyValidReady` condition constant)\n- `internal/common/policy/policy.go` (optional: helper for building the validator Job spec)\n\n**Acceptance Criteria**:\n- [ ] Validation Job runs only when `spec.policyOverrides` is set\n- [ ] Validation Job uses the same image, SecurityContext, and config mounts as the API Deployment\n- [ ] `PolicyValidReady` condition is False while the Job is running, True on success, False with reason on failure\n- [ ] Deployment reconciliation is gated on `PolicyValidReady=True`\n- [ ] When `spec.policyOverrides` is removed, the condition is set to True (reason `NotRequired`) and any existing validation Job is cleaned up\n- [ ] Invalid policy rules produce a clear error message in the condition (not just \"Job failed\")\n- [ ] Job has `backoffLimit: 2` and `ttlSecondsAfterFinished: 300`\n- [ ] Unit tests cover: valid policy passes, invalid policy fails with descriptive reason, no-policy skips validation\n- [ ] Integration test verifies the gating behavior (Deployment not updated until validation succeeds)\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/159",
   "stories": [
@@ -366,6 +366,7 @@
       "description": "Add 'PolicyValidReady' to the subConditionTypes slice in operators/keystone/internal/controller/keystone_controller.go (between 'NetworkPolicyReady' and 'DeploymentReady' since it runs between those sub-reconcilers). Add RequeueValidationWait = 15 * time.Second to operators/keystone/internal/controller/requeue_intervals.go with a doc comment explaining policy validation jobs are fast (syntax check only). Verify existing tests still pass since this changes the Ready aggregation input set.",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -376,6 +377,7 @@
       "description": "Create new file operators/keystone/internal/controller/reconcile_policyvalidation.go with: (1) reconcilePolicyValidation(ctx, keystone, configMapName) function following the sub-reconciler contract (returns ctrl.Result, error). Three paths: (a) policyOverrides nil → delete any existing Job via deleteValidationJob(), set PolicyValidReady=True/NotRequired; (b) Job not found or stale → call job.RunJob() with buildPolicyValidationJob(), requeue if running; (c) Job complete → set PolicyValidReady=True/PolicyValidationPassed; Job failed → set PolicyValidReady=False/PolicyValidationFailed. (2) buildPolicyValidationJob(keystone, configMapName) that builds a batchv1.Job with: name={name}-policy-validation, image=spec.Image, securityContext=restrictedSecurityContext(), command=[oslopolicy-checker --namespace keystone --policy /etc/keystone/keystone.conf.d/policy.yaml], backoffLimit=2, ttlSecondsAfterFinished=300, restartPolicy=Never, config ConfigMap volume mounted read-only at /etc/keystone/keystone.conf.d/. (3) deleteValidationJob(ctx, c, namespace, name) helper using client.IgnoreNotFound(c.Delete()). Create test file operators/keystone/internal/controller/reconcile_policyvalidation_test.go following the reconcile_bootstrap_test.go pattern: test scheme builder, Keystone CR fixture, reconciler factory, Job state helpers (completed/failed/running), and test cases for: skip path (no policyOverrides), Job creation, Job running (requeue), Job complete (condition True), Job failed (condition False with error), stale Job detection, cleanup on removal, Job builder spec (image, security context, command, backoff, TTL, mounts, termination message policy), observed generation on all conditions.",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -391,6 +393,7 @@
       "description": "Enhance reconcilePolicyValidation in operators/keystone/internal/controller/reconcile_policyvalidation.go to extract descriptive error messages from failed validation Jobs. (1) In buildPolicyValidationJob, set container.TerminationMessagePolicy = corev1.TerminationMessageFallbackToLogsOnError so the kubelet captures the last ~4KB of oslopolicy-checker output. (2) Add a getValidationErrorMessage(ctx, c, jobName, namespace) helper that: lists Pods with label job-name={jobName}, finds the most recent failed pod, reads containerStatuses[0].state.terminated.message, and returns a truncated version (max ~500 chars) suitable for a condition message. (3) When job.RunJob returns ErrJobFailed, call getValidationErrorMessage and include the result in the PolicyValidReady condition message. If the termination message is empty, fall back to 'Policy validation failed; check Job {name} logs: kubectl logs -n {ns} job/{name}'. Update unit tests: add test for descriptive error with termination message, test for fallback message when termination message unavailable.",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -401,6 +404,7 @@
       "description": "Update operators/keystone/internal/controller/keystone_controller.go Reconcile() method to call r.reconcilePolicyValidation(ctx, &keystone, configMapName) between reconcileNetworkPolicy and reconcileDeployment. Add a comment explaining that policy validation must complete before deployment to prevent invalid policies from reaching pods. Follow the existing early-exit pattern: 'if result, err := r.reconcilePolicyValidation(ctx, &keystone, configMapName); !result.IsZero() || err != nil { return r.updateStatus(ctx, &keystone, result, err) }'. This naturally gates reconcileDeployment on PolicyValidReady=True because the sub-reconciler returns a non-zero Result when validation is not yet complete. No changes needed to reconcileDeployment itself.",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -411,6 +415,7 @@
       "description": "Add integration tests to operators/keystone/internal/controller/integration_test.go following the existing envtest pattern. (1) TestIntegration_PolicyValidation_GatesDeployment: Create a Keystone CR with policyOverrides.rules set. Assert that PolicyValidReady=False/PolicyValidationInProgress appears on the status and a validation Job exists. Simulate Job completion by patching Job status. Assert that Deployment is eventually created and PolicyValidReady=True. (2) TestIntegration_PolicyValidation_NoPolicyDoesNotBlock: Create a Keystone CR without policyOverrides. Assert PolicyValidReady=True/NotRequired and Deployment proceeds normally. (3) TestIntegration_PolicyValidation_ReadyAggregation: Verify that when PolicyValidReady=False, the aggregate Ready condition is also False, even if all other sub-conditions are True. Use existing test helpers (setupEnvTestWithController, simulators for MariaDB/ESO/Memcached).",
       "level": 4,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-008"
@@ -421,7 +426,8 @@
       "title": "Update keystone-reconciler.md with PolicyValidation sub-reconciler documentation (CC-0058)",
       "description": "Update docs/reference/keystone-reconciler.md to document the new reconcilePolicyValidation sub-reconciler. Add: (1) Entry in the reconciliation order table/flow showing PolicyValidation between NetworkPolicy and Deployment. (2) Sub-reconciler contract section describing the three lifecycle paths (skip, validate, cleanup), condition types/reasons, and requeue behavior. (3) Update the subConditionTypes list to include PolicyValidReady. (4) Update the feature references in the frontmatter to include CC-0058. Follow the existing documentation style and level of detail used for other sub-reconcilers in the same file.",
       "level": 4,
-      "estimate_minutes": 15
+      "estimate_minutes": 15,
+      "status": "done"
     }
   ],
   "test_specifications": [
@@ -564,6 +570,300 @@
       "story": "Operator validates policy overrides before deployment rollout",
       "expected": "PolicyValidReady=False prevents Ready=True even when all other sub-conditions are True. Ready=True only when PolicyValidReady=True.",
       "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_NotFound_ReturnsEmptyResult",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_SetsAllSubConditionsTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_AggregatesReadyCondition",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_StatusUpdatePersisted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_Idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSetupWithManager_RegistersWithoutError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_AllTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_OneFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_MissingCondition",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_Empty",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSubConditionTypes_IncludesPolicyValidReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestRequeueValidationWait_Value",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_EarlyReturnOnSecretsNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_EarlyReturnOnDatabaseNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_SequentialProgression",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_ReadyFalseWhenDeploymentNotAvailable",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_ObservedGenerationTracked",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSecretToKeystoneMapper_ReferencedSecrets",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestCommonLabels_ExactKeyValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSelectorLabels_ExactKeyValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSelectorLabels_SubsetOfCommonLabels",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSecretToKeystoneMapper_OwnedSecrets",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FullReconcile_Brownfield",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_ConditionProgression",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_ResourceCreation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_StatusEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_ObservedGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FullReconcile_Managed",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_CronJobDetailedSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_BootstrapJobDetailedSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PDBSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PDBUpdatedOnReplicaChange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HPASpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HPAUpdatedOnAutoscalingChange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HPADeletedWhenAutoscalingRemoved",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FreshDeployment_InstalledReleaseTracking",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_UpgradeCycle_ExpandMigrateContract",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_TrustFlush_CronJobCreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_TrustFlush_CronJobDeleted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_TrustFlush_OmittedDoesNotCreateCronJob",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_GracefulShutdownSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PolicyValidation_NotRequired",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],
@@ -595,8 +895,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-10T15:24:58.706916"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-12T17:41:32.517533"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-13T10:21:19.927767"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/187",
+  "pr_number": 187,
   "execution_history": [
     {
       "run_id": "6444fedd-833d-44d9-bef7-986c3a1061c4",
@@ -608,6 +918,70 @@
           "name": "prepare",
           "duration": 659.3956451416016,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "551a9243-3259-4e6d-a388-2df01f1cf489",
+      "timestamp": "2026-04-12T18:49:15.773270",
+      "total_duration": 3827.2814066410065,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (1 tasks)",
+          "duration": 626.3210258483887,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (1 tasks)",
+          "duration": 755.6737117767334,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (2 tasks)",
+          "duration": 611.7275683879852,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (2 tasks)",
+          "duration": 420.91372323036194,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0058] Code Review",
+          "duration": 437.91640615463257,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0058] Improvements",
+          "duration": 765.1395757198334,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0058] Simplify",
+          "duration": 209.5893955230713,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "b9e9e549-3057-493b-a8bf-c28d62c59c12",
+      "timestamp": "2026-04-12T19:26:00.426786",
+      "total_duration": 1347.7811858654022,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 1347.7811858654022,
+          "type": "review_address",
           "status": "done"
         }
       ]

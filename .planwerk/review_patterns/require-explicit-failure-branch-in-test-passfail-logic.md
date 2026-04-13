@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: Look for if-blocks that increment PASS but have no corresponding else/elif that increments FAIL. Search for patterns like `if <condition>; then ... PASS=$((PASS + 1)) ... fi` without an else clause.
 **Severity**: BLOCKING
-**Occurrences**: 3
+**Occurrences**: 4
 
 ## What to check
 
@@ -24,3 +24,8 @@ A test that silently returns without incrementing PASS or FAIL gives a false sen
 - **Feedback**: The project has Chainsaw E2E tests for every existing feature under tests/e2e/keystone/ (autoscaling, basic-deployment, brownfield-database, credential-rotation, deletion-cleanup, fernet-rotation, image-upgrade, invalid-cr, middleware-config, missing-secret, policy-overrid...
 - **What was missed**: Verify the PR includes a Chainsaw (or equivalent) E2E test suite that covers at minimum the create, update, and delete lifecycle of the new resource. The test directory name should match the feature name for discoverability.
 - **Fix**: Created tests/e2e/keystone/network-policy/ with four files (chainsaw-test.yaml, 00-keystone-cr.yaml, 01-patch-update-ingress.yaml, 02-patch-disable-networkpolicy.yaml) covering create, update, and delete flows.
+
+### CC-0058 — berendt
+- **Feedback**: The project has 21 Chainsaw E2E test directories under tests/e2e/keystone/ covering every existing feature. This PR introduces a new feature (policy validation gating) with a new condition (PolicyValidReady), a new Job resource, and new gating behavior but adds no Chainsaw E2E test.
+- **What was missed**: List the E2E test directories under the relevant test path. Compare against the set of features. If the new PR introduces a feature without a corresponding test directory, flag it.
+- **Fix**: Created tests/e2e/keystone/policy-validation/ with chainsaw-test.yaml and supporting manifests covering PolicyValidReady condition transitions, validation Job existence, DeploymentReady gating, and policy removal cleanup.

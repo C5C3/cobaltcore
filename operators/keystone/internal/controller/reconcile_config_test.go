@@ -357,7 +357,7 @@ func TestReconcileConfig_PolicyOverridesInlineRules(t *testing.T) {
 	// oslo_policy section should be in keystone.conf.
 	keystoneConf := cm.Data["keystone.conf"]
 	g.Expect(keystoneConf).To(ContainSubstring("[oslo_policy]"))
-	g.Expect(keystoneConf).To(ContainSubstring("policy_file = /etc/keystone/policy.yaml"))
+	g.Expect(keystoneConf).To(ContainSubstring("policy_file = /etc/keystone/keystone.conf.d/policy.yaml"))
 }
 
 func TestReconcileConfig_PolicyOverridesConfigMapRef(t *testing.T) {
@@ -394,7 +394,7 @@ func TestReconcileConfig_PolicyOverridesConfigMapRef(t *testing.T) {
 
 	keystoneConf := cm.Data["keystone.conf"]
 	g.Expect(keystoneConf).To(ContainSubstring("[oslo_policy]"))
-	g.Expect(keystoneConf).To(ContainSubstring("policy_file = /etc/keystone/policy.yaml"))
+	g.Expect(keystoneConf).To(ContainSubstring("policy_file = /etc/keystone/keystone.conf.d/policy.yaml"))
 }
 
 func TestReconcileConfig_Middleware(t *testing.T) {

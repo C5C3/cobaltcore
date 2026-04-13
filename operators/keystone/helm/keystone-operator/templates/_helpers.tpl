@@ -130,6 +130,16 @@ Extracted into a named template to prevent drift when rules change.
   verbs:
     - create
     - patch
+# core - pods (read-only, CC-0058)
+# Required for getValidationErrorMessage to list pods of failed policy
+# validation Jobs and extract error details from terminated container state.
+- apiGroups:
+    - ""
+  resources:
+    - pods
+  verbs:
+    - get
+    - list
 # batch - jobs, cronjobs (CC-0017)
 - apiGroups:
     - batch

@@ -1,7 +1,7 @@
 ---
 title: Keystone Reconciler Architecture
 quadrant: operator
-feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0064, CC-0068
+feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0068
 ---
 
 # Keystone Reconciler Architecture
@@ -158,6 +158,13 @@ RBAC markers on the reconciler generate the required ClusterRole:
 │  └────────┬─────────┘  Returns: configMapName                                │
 │           │                                                                  │
 │           ▼                                                                  │
+│  ┌─────────────────────────────────┐                                     │
+│  │ reconcilePolicyValidation       │  Validate oslo.policy overrides     │
+│  │                                 │  via oslopolicy-validator Job       │
+│  │                                 │  Sets: PolicyValidReady             │
+│  └────────┬────────────────────────┘  Requeue: 15s                       │
+│           │                                                              │
+│           ▼                                                              │
 │  ┌──────────────────────┐                                                    │
 │  │ reconcileDeployment  │  Ensure Deployment + Service                       │
 │  │                      │  Sets: DeploymentReady, status.endpoint            │
@@ -262,6 +269,7 @@ sub-reconciler is responsible for:
 | `SecretsReady` | `reconcileSecrets` | ESO-provided credentials are synced |
 | `DatabaseReady` | `reconcileDatabase` | MariaDB CRs ready and db_sync complete |
 | `FernetKeysReady` | `reconcileFernetKeys` | Fernet Secret, CronJob, and PushSecret ensured |
+| `PolicyValidReady` | `reconcilePolicyValidation` | Policy override validation passed or not required (CC-0058) |
 | `DeploymentReady` | `reconcileDeployment` | Deployment available and Service created |
 | `HPAReady` | `reconcileHPA` | HPA configured or not required |
 | `BootstrapReady` | `reconcileBootstrap` | Bootstrap Job completed successfully |
@@ -556,6 +564,78 @@ are set by this sub-reconciler.
 `config.CreateImmutableConfigMap()`, `plugins.RenderPluginConfig()`,
 `plugins.RenderPastePipelineINI()`, `policy.LoadPolicyFromConfigMap()`,
 `policy.RenderPolicyYAML()`
+
+---
+
+### reconcilePolicyValidation
+
+**File:** `operators/keystone/internal/controller/reconcile_policyvalidation.go`
+
+**Signature:**
+
+```go
+func (r *KeystoneReconciler) reconcilePolicyValidation(ctx context.Context,
+    keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error)
+```
+
+**Purpose:** Validate custom oslo.policy overrides via `oslopolicy-validator` before the
+Deployment is updated (CC-0058). This sub-reconciler gates the Deployment rollout:
+invalid policy overrides are caught before reaching running pods. Two lifecycle paths:
+
+1. **No policy overrides** (`spec.policyOverrides` is nil): Delete any existing
+   validation Job and set `PolicyValidReady=True` with reason `NotRequired`.
+2. **Policy overrides set** (`spec.policyOverrides` is set): Build and run a validation
+   Job via `job.RunJob()`. Track lifecycle through InProgress → Passed/Failed states.
+
+> **Note:** This sub-reconciler accepts the `configMapName` returned by
+> `reconcileConfig` to mount the correct immutable ConfigMap (containing the rendered
+> `policy.yaml`) in the validation Job pod spec.
+
+**Validation Job:**
+
+| Field | Value |
+| --- | --- |
+| Name | `{name}-policy-validation` |
+| Image | `{spec.image.repository}:{spec.image.tag}` |
+| Command | `oslopolicy-validator --namespace keystone --config-dir /etc/keystone/keystone.conf.d/` |
+| BackoffLimit | 2 |
+| TTLSecondsAfterFinished | 300 |
+| RestartPolicy | Never |
+| SecurityContext | `restrictedSecurityContext()` (PSS Restricted) |
+| TerminationMessagePolicy | `FallbackToLogsOnError` |
+
+**Volume Mounts:**
+
+| Volume Name | Mount Path | Source | ReadOnly |
+| --- | --- | --- | --- |
+| `config` | `/etc/keystone/keystone.conf.d/` | ConfigMap `{configMapName}` | Yes |
+
+**Error Extraction (`getValidationErrorMessage`):**
+
+When a validation Job fails, the reconciler extracts a descriptive error message from the
+failed Pod's termination message (CC-0058, REQ-006):
+
+1. Lists Pods by `job-name` label selector in the Job's namespace.
+2. Sorts by creation timestamp (most recent first).
+3. Searches container termination messages for a non-empty `Terminated.Message`.
+4. Truncates to 500 characters if the message exceeds that length.
+5. Falls back to a `kubectl logs` reference if no termination message is available.
+
+**Condition Contract:**
+
+| Status | Reason | Message | RequeueAfter |
+| --- | --- | --- | --- |
+| `True` | `NotRequired` | "No policy overrides configured" | — |
+| `False` | `PolicyValidationInProgress` | "Policy validation job is running" | 15s |
+| `True` | `PolicyValidationPassed` | "Policy validation completed successfully" | — |
+| `False` | `PolicyValidationFailed` | Descriptive error from Pod termination message | — (error returned) |
+
+**Error handling:** Errors from `job.RunJob()` are wrapped with "running policy validation"
+context. When `job.ErrJobFailed` is detected, `getValidationErrorMessage()` extracts the
+failure detail before setting the condition. The `PolicyValidationFailed` condition is set
+before returning the error so that the failure reason is visible in the CR status.
+
+**Shared library calls:** `job.RunJob()`
 
 ---
 
@@ -876,6 +956,7 @@ controller-runtime for exponential backoff.
 | `reconcileDatabase` | db_sync running | 30s | API error → exponential backoff |
 | `reconcileFernetKeys` | — | — | API error → exponential backoff |
 | `reconcileConfig` | — | — | Secret read failure, render failure → exponential backoff |
+| `reconcilePolicyValidation` | Job running | 15s | `ErrJobFailed` from validation → descriptive error |
 | `reconcileDeployment` | Deployment not available | 10s | API error → exponential backoff |
 | `reconcileHPA` | — | — | API error → exponential backoff |
 | `reconcileBootstrap` | Job running | 60s | `ErrJobFailed` from bootstrap |
@@ -909,6 +990,7 @@ Keystone CR via `controllerutil.SetControllerReference()`. This enables:
 | Service | `keystone-api` | Keystone CR |
 | PodDisruptionBudget | `{name}-api` | Keystone CR |
 | HorizontalPodAutoscaler | `{name}-api` | Keystone CR (only when `spec.autoscaling` is set) |
+| Job | `{name}-policy-validation` | Keystone CR (only when `spec.policyOverrides` is set) |
 | CronJob | `{name}-trust-flush` | Keystone CR (only when `spec.trustFlush` is set) |
 | Database | `keystone` | Keystone CR (managed mode only) |
 | User | `keystone` | Keystone CR (managed mode only) |
@@ -938,6 +1020,7 @@ For end-to-end Chainsaw tests that validate the reconciler in a real cluster, se
 | `reconcile_database_test.go` | Managed/brownfield modes, MariaDB CRs, db_sync lifecycle, stale Job detection |
 | `reconcile_fernet_test.go` | Key generation, Secret idempotency, CronJob schedule, PushSecret, key validity |
 | `reconcile_config_test.go` | INI generation, extraConfig merge, plugin config, policy overrides, ConfigMap hashing |
+| `reconcile_policyvalidation_test.go` | Policy validation lifecycle, condition contract, error extraction, Job spec (CC-0058) |
 | `reconcile_deployment_test.go` | Deployment spec, Service creation, readiness, endpoint, owner references, fernet-keys hash annotation (CC-0015) |
 | `reconcile_hpa_test.go` | HPA creation, update, deletion, metrics (CPU/memory), minReplicas defaulting, condition contract, error propagation (CC-0038) |
 | `reconcile_trustflush_test.go` | CronJob creation, deletion, schedule/suspend/args, security context, volume mounts, condition contract, error propagation (CC-0057) |
@@ -962,6 +1045,7 @@ operators/keystone/
     │   ├── reconcile_database.go               reconcileDatabase sub-reconciler
     │   ├── reconcile_fernet.go                 reconcileFernetKeys sub-reconciler
     │   ├── reconcile_config.go                 reconcileConfig sub-reconciler
+    │   ├── reconcile_policyvalidation.go        reconcilePolicyValidation sub-reconciler (CC-0058)
     │   ├── reconcile_deployment.go             reconcileDeployment sub-reconciler
     │   ├── reconcile_hpa.go                   reconcileHPA sub-reconciler (CC-0038)
     │   ├── reconcile_trustflush.go            reconcileTrustFlush sub-reconciler (CC-0057)
@@ -971,6 +1055,7 @@ operators/keystone/
     │   ├── reconcile_database_test.go          Database tests
     │   ├── reconcile_fernet_test.go            Fernet tests
     │   ├── reconcile_config_test.go            Config tests
+    │   ├── reconcile_policyvalidation_test.go   Policy validation tests (CC-0058)
     │   ├── reconcile_deployment_test.go        Deployment tests
     │   ├── reconcile_hpa_test.go              HPA tests (CC-0038)
     │   ├── reconcile_trustflush_test.go       Trust flush tests (CC-0057)

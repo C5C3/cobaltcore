@@ -1791,3 +1791,160 @@ func TestIntegration_GracefulShutdownSpec(t *testing.T) {
 	g.Expect(container.StartupProbe.FailureThreshold).To(Equal(int32(30)))
 	g.Expect(container.StartupProbe.PeriodSeconds).To(Equal(int32(10)))
 }
+
+// --- Task CC-0058/3.1: PolicyValidation gating tests (REQ-004, REQ-008) ---
+
+// driveReconciliationToPolicyValidation drives external dependencies through
+// reconciliation phases until the policy validation Job appears, without
+// simulating its completion. The Keystone CR MUST have spec.policyOverrides
+// set so reconcilePolicyValidation creates a validation Job (CC-0058).
+func driveReconciliationToPolicyValidation(t testing.TB, ctx context.Context, c client.Client, ksName, ns string) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	key := types.NamespacedName{Name: ksName, Namespace: ns}
+
+	// Wait for SecretsReady=True (prerequisites already created).
+	waitForCondition(t, ctx, c, key, "SecretsReady", metav1.ConditionTrue, eventuallyTimeout)
+
+	// Wait for FernetKeysReady=True (reconciler creates fernet keys automatically).
+	waitForCondition(t, ctx, c, key, "FernetKeysReady", metav1.ConditionTrue, eventuallyTimeout)
+
+	// Wait for the db-sync Job to appear and simulate its completion.
+	dbSyncKey := client.ObjectKey{Namespace: ns, Name: fmt.Sprintf("%s-db-sync", ksName)}
+	g.Eventually(func() error {
+		return c.Get(ctx, dbSyncKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "db-sync Job should appear")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, dbSyncKey)).To(Succeed(), "simulate db-sync Job completion")
+
+	// Wait for the schema-check Job to appear and simulate its completion (CC-0064).
+	schemaCheckKey := client.ObjectKey{Namespace: ns, Name: fmt.Sprintf("%s-schema-check", ksName)}
+	g.Eventually(func() error {
+		return c.Get(ctx, schemaCheckKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "schema-check Job should appear")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, schemaCheckKey)).To(Succeed(), "simulate schema-check Job completion")
+
+	// Wait for DatabaseReady=True.
+	waitForCondition(t, ctx, c, key, "DatabaseReady", metav1.ConditionTrue, eventuallyTimeout)
+
+	// Wait for the policy validation Job to appear.
+	valJobKey := client.ObjectKey{Namespace: ns, Name: fmt.Sprintf("%s-policy-validation", ksName)}
+	g.Eventually(func() error {
+		return c.Get(ctx, valJobKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "policy-validation Job should appear")
+}
+
+// TestIntegration_PolicyValidation_GatesDeployment verifies that when
+// spec.policyOverrides is set, the reconciler creates a validation Job BEFORE
+// the Deployment and does not set DeploymentReady until the validation Job
+// completes (CC-0058, REQ-004, REQ-008).
+func TestIntegration_PolicyValidation_GatesDeployment(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-policyval-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	// Create a brownfield Keystone CR WITH inline policy overrides (CC-0058).
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	ks.Spec.PolicyOverrides = &commonv1.PolicySpec{
+		Rules: map[string]string{
+			"identity:list_projects": "role:admin",
+		},
+	}
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+
+	// Drive reconciliation through secrets, fernet, database, network policy
+	// until the policy validation Job appears.
+	driveReconciliationToPolicyValidation(t, ctx, c, ks.Name, ns.Name)
+
+	// PolicyValidReady should be False with reason PolicyValidationInProgress
+	// while the validation Job is running (CC-0058, REQ-008).
+	pvCond := waitForCondition(t, ctx, c, key, conditionTypePolicyValidReady, metav1.ConditionFalse, eventuallyTimeout)
+	g.Expect(pvCond.Reason).To(Equal(conditionReasonPolicyValidationInProgress),
+		"PolicyValidReady reason should be PolicyValidationInProgress")
+
+	// DeploymentReady should be absent (nil) — the Deployment must NOT be
+	// created while policy validation is pending (CC-0058, REQ-004).
+	g.Consistently(func(ig Gomega) {
+		ksState := &keystonev1alpha1.Keystone{}
+		ig.Expect(c.Get(ctx, key, ksState)).To(Succeed())
+		ig.Expect(meta.FindStatusCondition(ksState.Status.Conditions, "DeploymentReady")).To(BeNil(),
+			"DeploymentReady should be absent while policy validation is in progress")
+	}, 2*time.Second, pollInterval).Should(Succeed())
+
+	// Simulate the policy validation Job completion.
+	valJobKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-policy-validation", ks.Name)}
+	g.Expect(simulators.SimulateJobComplete(ctx, c, valJobKey)).To(Succeed(),
+		"simulate policy-validation Job completion")
+
+	// PolicyValidReady should transition to True with reason PolicyValidationPassed.
+	pvCond = waitForCondition(t, ctx, c, key, conditionTypePolicyValidReady, metav1.ConditionTrue, eventuallyTimeout)
+	g.Expect(pvCond.Reason).To(Equal(conditionReasonPolicyValidationPassed),
+		"PolicyValidReady reason should be PolicyValidationPassed")
+
+	// After validation passes, the Deployment should appear. Simulate readiness.
+	deployKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-api", ks.Name)}
+	deploy := &appsv1.Deployment{}
+	g.Eventually(func() error {
+		return c.Get(ctx, deployKey, deploy)
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "Deployment should appear after validation passes")
+	g.Expect(simulators.SimulateDeploymentReady(ctx, c, deployKey, ptr.Deref(deploy.Spec.Replicas, 1))).
+		To(Succeed(), "simulate Deployment ready")
+
+	// Wait for DeploymentReady=True.
+	waitForCondition(t, ctx, c, key, "DeploymentReady", metav1.ConditionTrue, eventuallyTimeout)
+
+	// Continue through bootstrap to Ready=True to verify full lifecycle works.
+	bootstrapKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-bootstrap", ks.Name)}
+	g.Eventually(func() error {
+		return c.Get(ctx, bootstrapKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "bootstrap Job should appear")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, bootstrapKey)).To(Succeed(),
+		"simulate bootstrap Job completion")
+
+	waitForCondition(t, ctx, c, key, "BootstrapReady", metav1.ConditionTrue, eventuallyTimeout)
+	waitForCondition(t, ctx, c, key, "Ready", metav1.ConditionTrue, eventuallyTimeout)
+}
+
+// TestIntegration_PolicyValidation_NotRequired verifies that when
+// spec.policyOverrides is nil, PolicyValidReady is set to True with reason
+// PolicyValidationNotRequired and no validation Job is created (CC-0058, REQ-004).
+func TestIntegration_PolicyValidation_NotRequired(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-policyval-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	// Create a brownfield Keystone CR WITHOUT policy overrides (default).
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	// Drive the full reconciliation to Ready=True.
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	// Verify PolicyValidReady=True with reason PolicyValidationNotRequired (CC-0058, REQ-004).
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+	cond := waitForCondition(t, ctx, c, key, conditionTypePolicyValidReady, metav1.ConditionTrue, eventuallyTimeout)
+	g.Expect(cond.Reason).To(Equal(conditionReasonPolicyValidationNotRequired),
+		"PolicyValidReady reason should be PolicyValidationNotRequired when policyOverrides is nil")
+
+	// Verify no policy-validation Job exists (CC-0058, REQ-004).
+	valJobKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-policy-validation", ks.Name)}
+	g.Consistently(func() bool {
+		err := c.Get(ctx, valJobKey, &batchv1.Job{})
+		return err != nil
+	}, 2*time.Second, pollInterval).Should(BeTrue(),
+		"policy-validation Job should not exist when policyOverrides is nil")
+}

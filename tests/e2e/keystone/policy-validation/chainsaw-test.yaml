@@ -1,0 +1,156 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for policy validation gating feature (CC-0058).
+# Verifies:
+#   - PolicyValidReady transitions through False/PolicyValidationInProgress
+#     to True/PolicyValidationPassed when policyOverrides is set
+#   - Validation Job exists with the correct name pattern
+#   - DeploymentReady only appears after PolicyValidReady=True
+#   - PolicyValidReady transitions to True/PolicyValidationNotRequired when
+#     policyOverrides is removed, and the validation Job is cleaned up
+#
+# REQ-001, REQ-002, REQ-003, REQ-005 (CC-0058)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-policy-validation
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply policy source ConfigMap ──────────────────────────────
+  - try:
+    - apply:
+        file: 00-policy-cm.yaml
+  # ── Step 2: Apply Keystone CR with policyOverrides ─────────────────────
+  - try:
+    - apply:
+        file: 01-keystone-cr.yaml
+  # ── Step 3: Assert PolicyValidReady transitions to True/PolicyValidationPassed
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-policy-validation
+            namespace: openstack
+          status:
+            (conditions[?type == 'PolicyValidReady']):
+            - status: "True"
+              reason: PolicyValidationPassed
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Assert validation Job exists with correct name pattern ─────
+  - try:
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: keystone-policy-validation-policy-validation
+            namespace: openstack
+  # ── Step 5: Wait for Ready=True (DeploymentReady after PolicyValidReady)
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-policy-validation
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== ConfigMap content ==="
+          for cm in $(kubectl get cm -n $NAMESPACE -o name 2>/dev/null | grep config-); do
+            echo "--- $cm ---"
+            kubectl get -n $NAMESPACE "$cm" -o jsonpath='{.data}' 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 6: Assert DeploymentReady=True (confirms gating worked) ───────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-policy-validation
+            namespace: openstack
+          status:
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+  # ── Step 7: Disable policy overrides (set spec.policyOverrides to null)
+  - try:
+    - patch:
+        file: 02-patch-disable-policy.yaml
+  # ── Step 8: Assert PolicyValidReady=True with reason PolicyValidationNotRequired
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-policy-validation
+            namespace: openstack
+          status:
+            (conditions[?type == 'PolicyValidReady']):
+            - status: "True"
+              reason: PolicyValidationNotRequired
+  # ── Step 9: Assert validation Job deleted ──────────────────────────────
+  - try:
+    - script:
+        content: |
+          # Verify validation Job no longer exists (CC-0058, REQ-003).
+          if kubectl get job keystone-policy-validation-policy-validation -n $NAMESPACE 2>/dev/null; then
+            echo "FAIL: Validation Job should have been deleted"
+            exit 1
+          fi
+          echo "PASS: Validation Job correctly deleted"

@@ -1,0 +1,77 @@
+{
+  "feature_id": "CC-0058",
+  "title": "Add policy validation Job before Deployment rollout",
+  "date": "2026-04-12",
+  "verdict": "APPROVED",
+  "summary": "Well-structured implementation of pre-deployment oslo.policy validation via a short-lived Kubernetes Job. All external review feedback (B-001, W-001 through W-004) has been properly addressed: E2E Chainsaw test added, DeletePropagationBackground on Job deletion, typed constants for condition strings, error logging in pod list query, and TODO(CC-0042) for resource propagation. Unit tests (16), integration tests (2), and E2E tests (1 Chainsaw suite with 9 steps) provide comprehensive coverage across all tiers. Code passes go vet and golangci-lint clean on changed files. No new bugs introduced by the fixes.",
+  "tests_checklist": [
+    {"item": "Unit tests exist and pass (16 tests, 0.835s)", "checked": true},
+    {"item": "Integration tests exist and pass (2 tests)", "checked": true},
+    {"item": "E2E Chainsaw test exists (9-step suite)", "checked": true},
+    {"item": "Skip path tested (no policyOverrides)", "checked": true},
+    {"item": "Job creation tested", "checked": true},
+    {"item": "Job running/requeue tested", "checked": true},
+    {"item": "Job complete tested", "checked": true},
+    {"item": "Job failed tested", "checked": true},
+    {"item": "Stale Job detection tested", "checked": true},
+    {"item": "Descriptive error extraction tested", "checked": true},
+    {"item": "Fallback error message tested", "checked": true},
+    {"item": "Job spec validation tested (image, security context, command, backoff, TTL, mounts, termination policy)", "checked": true},
+    {"item": "ObservedGeneration tested on all condition paths", "checked": true},
+    {"item": "Integration: gating behavior verified", "checked": true},
+    {"item": "Integration: not-required path verified", "checked": true},
+    {"item": "E2E: condition transitions, Job existence, deployment gating, cleanup on removal", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing sub-reconciler patterns", "checked": true},
+    {"item": "Typed constants for condition strings (W-002 fix)", "checked": true},
+    {"item": "DeletePropagationBackground on Job deletion (W-001 fix)", "checked": true},
+    {"item": "Error logged before fallback in getValidationErrorMessage (W-004 fix)", "checked": true},
+    {"item": "TODO(CC-0042) for resource propagation gap (W-003 fix)", "checked": true},
+    {"item": "Functions are single-responsibility and appropriately sized", "checked": true},
+    {"item": "No dead code or commented-out code", "checked": true},
+    {"item": "Uses shared helpers (job.RunJob, restrictedSecurityContext, conditions.SetCondition)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "SecurityContext satisfies PSS Restricted profile", "checked": true},
+    {"item": "ConfigMap mounted read-only", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "No path traversal vulnerabilities", "checked": true},
+    {"item": "RBAC markers present for pods (get, list)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Validation gates Deployment via early-exit pattern", "checked": true},
+    {"item": "PolicyValidReady in subConditionTypes before DeploymentReady", "checked": true},
+    {"item": "Three lifecycle paths (skip, validate, cleanup) follow sub-reconciler contract", "checked": true},
+    {"item": "Uses shared job.RunJob for stale detection and lifecycle management", "checked": true},
+    {"item": "Job name derived from CR name (multi-instance safe)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unnecessary abstractions", "checked": true},
+    {"item": "Uses existing job.RunJob instead of reimplementing lifecycle", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early via pre-deployment validation", "checked": true},
+    {"item": "Descriptive error messages from Pod termination messages", "checked": true},
+    {"item": "Fallback message with kubectl command for manual inspection", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Nil policyOverrides handled (skip path)", "checked": true},
+    {"item": "Missing Pod termination message handled (fallback)", "checked": true},
+    {"item": "Pod list query error logged before fallback", "checked": true},
+    {"item": "Job not-found on delete handled via client.IgnoreNotFound", "checked": true},
+    {"item": "Termination message truncated to 500 chars", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Minor naming inconsistency: conditionReasonNotRequired uses bare 'NotRequired' while sibling reconcilers use '{Feature}NotRequired' (e.g., HPANotRequired, NetworkPolicyNotRequired, TrustFlushNotRequired). Not blocking — condition reasons are scoped per condition type — but standardizing to 'PolicyValidationNotRequired' would improve consistency. Deferring since the value is already used in E2E assertions and changing it would cascade across fixtures."
+  ],
+  "next_steps": [
+    "PR is ready to merge. All blocking, critical, and major checks pass.",
+    "When CC-0042 lands, wire spec.Resources to the validation Job container."
+  ],
+  "detected_patterns": []
+}

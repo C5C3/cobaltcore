@@ -1,0 +1,96 @@
+{
+  "feature_id": "CC-0058",
+  "title": "Add policy validation Job before Deployment rollout",
+  "date": "2026-04-12",
+  "verdict": "NEEDS_CHANGES",
+  "summary": "The policy validation sub-reconciler is well-implemented, follows all established patterns (job.RunJob lifecycle, sub-reconciler condition contract, restrictedSecurityContext, delete-on-nil-spec), and has comprehensive test coverage (17 unit tests + 2 integration tests all passing). One critical finding: the new +kubebuilder:rbac pods marker is not synced to the Helm chart RBAC template, which will cause 403 errors for getValidationErrorMessage when deployed via Helm.",
+  "tests_checklist": [
+    {"item": "Unit tests exist and pass (17/17)", "checked": true},
+    {"item": "Integration tests exist and pass (2 tests, //go:build integration tagged)", "checked": true},
+    {"item": "Skip path tested (nil policyOverrides)", "checked": true},
+    {"item": "Job creation tested", "checked": true},
+    {"item": "Job running/requeue tested", "checked": true},
+    {"item": "Job complete tested", "checked": true},
+    {"item": "Job failed tested", "checked": true},
+    {"item": "Stale Job detection tested", "checked": true},
+    {"item": "Cleanup on policy removal tested", "checked": true},
+    {"item": "Descriptive error extraction tested", "checked": true},
+    {"item": "Fallback error message tested", "checked": true},
+    {"item": "Job builder spec verified (image, security, command, backoff, TTL, mounts)", "checked": true},
+    {"item": "ObservedGeneration verified on all 4 condition paths", "checked": true},
+    {"item": "Integration: gating behavior (Deployment blocked until validation passes)", "checked": true},
+    {"item": "Integration: NotRequired path (no policy, no Job)", "checked": true},
+    {"item": "SecurityContext verified via shared expectRestrictedSecurityContext helper", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing sub-reconciler patterns (bootstrap, trustflush)", "checked": true},
+    {"item": "Uses shared job.RunJob library for Job lifecycle", "checked": true},
+    {"item": "Uses shared restrictedSecurityContext() from security_context.go", "checked": true},
+    {"item": "Uses shared conditions.SetCondition for condition management", "checked": true},
+    {"item": "Delete-on-nil pattern matches deleteCronJob and deleteNetworkPolicy", "checked": true},
+    {"item": "Job name derived from CR name (multi-instance safe)", "checked": true},
+    {"item": "Functions are single-responsibility and well-sized", "checked": true},
+    {"item": "No dead code or unnecessary abstractions", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "SecurityContext satisfies PSS Restricted profile", "checked": true},
+    {"item": "ConfigMap mounted read-only", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "No sensitive data in condition messages", "checked": true},
+    {"item": "Termination message truncated to 500 chars (prevents oversized status)", "checked": true},
+    {"item": "RBAC marker synced with Helm chart", "checked": false}
+  ],
+  "architecture_checklist": [
+    {"item": "PolicyValidReady positioned correctly in subConditionTypes (before DeploymentReady)", "checked": true},
+    {"item": "Reconciliation call order correct (after NetworkPolicy, before Deployment)", "checked": true},
+    {"item": "Early-exit pattern gates Deployment on PolicyValidReady", "checked": true},
+    {"item": "Stale Job detection via pod-spec hash (job.RunJob built-in)", "checked": true},
+    {"item": "Solution is minimal — no unnecessary abstractions", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code (reuses job.RunJob, restrictedSecurityContext, conditions.SetCondition)", "checked": true},
+    {"item": "No speculative features or unnecessary configurability", "checked": true},
+    {"item": "Delete helper follows established inline pattern (not over-abstracted)", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early (validation before deployment)", "checked": true},
+    {"item": "Descriptive error messages extracted from Pod termination messages", "checked": true},
+    {"item": "Fallback message with kubectl command when termination message unavailable", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Nil policyOverrides handled (skip path)", "checked": true},
+    {"item": "Missing Job handled (create new)", "checked": true},
+    {"item": "Missing Pod for error extraction handled (fallback message)", "checked": true},
+    {"item": "client.IgnoreNotFound on Job deletion (idempotent cleanup)", "checked": true},
+    {"item": "Message truncation prevents oversized condition messages", "checked": true}
+  ],
+  "security_findings": [
+    {
+      "severity": "HIGH",
+      "description": "New +kubebuilder:rbac marker for pods (get, list) added to keystone_controller.go but not synced to the Helm chart RBAC template in _helpers.tpl. When deployed via Helm, the operator will receive 403 Forbidden errors when getValidationErrorMessage() attempts to list pods for error extraction. The feature degrades gracefully (falls back to generic error message) but provides a worse user experience.",
+      "location": "operators/keystone/internal/controller/keystone_controller.go:62 vs operators/keystone/helm/keystone-operator/templates/_helpers.tpl:109-132",
+      "fix": "Add a new RBAC rule block to the rbacRules template in _helpers.tpl: apiGroups: [\"\"], resources: [pods], verbs: [get, list] with a CC-0058 comment. Also update role.yaml sync comment if applicable.",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "S4",
+      "severity": "BLOCKING",
+      "description": "RBAC pods rule missing from Helm chart. The controller adds +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list but the Helm _helpers.tpl rbacRules template has no corresponding rule. The core group rules only cover services/configmaps/secrets/serviceaccounts and events. This means Helm-deployed operators cannot list pods for error message extraction from failed validation Jobs.",
+      "location": "operators/keystone/helm/keystone-operator/templates/_helpers.tpl:109-132",
+      "fix": "Add between the events rule (line 132) and the batch rule (line 133): # core - pods (CC-0058) \\n- apiGroups:\\n    - \"\"\\n  resources:\\n    - pods\\n  verbs:\\n    - get\\n    - list",
+      "evidence": "keystone_controller.go:62 has `// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list` but grep for 'pods' in the Helm templates directory returns zero matches. The _helpers.tpl core rules at lines 110-132 list only: services, configmaps, secrets, serviceaccounts (lines 113-116) and events (lines 128-129).",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a Chainsaw E2E test under tests/e2e/keystone/ for the policy validation lifecycle to complement the envtest integration tests, especially for testing with a real oslopolicy-checker binary."
+  ],
+  "next_steps": [
+    "Add pods get/list RBAC rule to Helm chart _helpers.tpl and verify role.yaml sync comment",
+    "Run Helm chart unit tests to verify the new RBAC rule renders correctly"
+  ],
+  "detected_patterns": []
+}

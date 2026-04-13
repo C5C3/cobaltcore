@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch to disable policy overrides by setting spec.policyOverrides to null
+# (CC-0058, REQ-003).
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-policy-validation
+  namespace: openstack
+spec:
+  policyOverrides: null

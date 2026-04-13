@@ -41,7 +41,7 @@ tests:
       - hasDocuments:
           count: 0
 
-  - it: should have 16 rules matching ClusterRole
+  - it: should have 17 rules matching ClusterRole
     set:
       rbac:
         namespaceScoped: true
@@ -50,7 +50,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 16
+          count: 17
 
   - it: should grant full CRUD on keystones
     set:
@@ -177,6 +177,24 @@ tests:
             verbs:
               - create
               - patch
+
+  - it: should grant read-only on pods for policy validation error extraction (CC-0058)
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - pods
+            verbs:
+              - get
+              - list
 
   - it: should grant full CRUD on batch resources
     set:

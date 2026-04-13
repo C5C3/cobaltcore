@@ -324,7 +324,7 @@ func TestReconcile_SetsAllSubConditionsTrue(t *testing.T) {
 	var updated keystonev1alpha1.Keystone
 	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
 
-	for _, condType := range []string{"SecretsReady", "FernetKeysReady", "CredentialKeysReady", "DatabaseReady", "DeploymentReady", "HPAReady", "NetworkPolicyReady", "BootstrapReady", "TrustFlushReady"} {
+	for _, condType := range []string{"SecretsReady", "FernetKeysReady", "CredentialKeysReady", "DatabaseReady", conditionTypePolicyValidReady, "DeploymentReady", "HPAReady", "NetworkPolicyReady", "BootstrapReady", "TrustFlushReady"} {
 		cond := meta.FindStatusCondition(updated.Status.Conditions, condType)
 		g.Expect(cond).NotTo(BeNil(), "condition %s should exist", condType)
 		g.Expect(cond.Status).To(Equal(metav1.ConditionTrue), "condition %s should be True", condType)
@@ -422,6 +422,7 @@ func TestAggregateReady_AllTrue(t *testing.T) {
 		{Type: "FernetKeysReady", Status: metav1.ConditionTrue},
 		{Type: "CredentialKeysReady", Status: metav1.ConditionTrue},
 		{Type: "DatabaseReady", Status: metav1.ConditionTrue},
+		{Type: conditionTypePolicyValidReady, Status: metav1.ConditionTrue},
 		{Type: "DeploymentReady", Status: metav1.ConditionTrue},
 		{Type: "HPAReady", Status: metav1.ConditionTrue},
 		{Type: "NetworkPolicyReady", Status: metav1.ConditionTrue},
@@ -438,6 +439,7 @@ func TestAggregateReady_OneFalse(t *testing.T) {
 		{Type: "FernetKeysReady", Status: metav1.ConditionTrue},
 		{Type: "CredentialKeysReady", Status: metav1.ConditionTrue},
 		{Type: "DatabaseReady", Status: metav1.ConditionFalse},
+		{Type: conditionTypePolicyValidReady, Status: metav1.ConditionTrue},
 		{Type: "DeploymentReady", Status: metav1.ConditionTrue},
 		{Type: "HPAReady", Status: metav1.ConditionTrue},
 		{Type: "NetworkPolicyReady", Status: metav1.ConditionTrue},
@@ -462,6 +464,21 @@ func TestAggregateReady_MissingCondition(t *testing.T) {
 func TestAggregateReady_Empty(t *testing.T) {
 	g := NewGomegaWithT(t)
 	g.Expect(aggregateReady(nil)).To(BeFalse())
+}
+
+// TestSubConditionTypes_IncludesPolicyValidReady verifies that the
+// PolicyValidReady condition type is registered in subConditionTypes so that
+// the aggregate Ready condition gates on policy validation (CC-0058, REQ-008).
+func TestSubConditionTypes_IncludesPolicyValidReady(t *testing.T) {
+	g := NewGomegaWithT(t)
+	g.Expect(subConditionTypes).To(ContainElement(conditionTypePolicyValidReady))
+}
+
+// TestRequeueValidationWait_Value verifies the polling interval for policy
+// validation Job completion (CC-0058).
+func TestRequeueValidationWait_Value(t *testing.T) {
+	g := NewGomegaWithT(t)
+	g.Expect(RequeueValidationWait).To(Equal(15 * time.Second))
 }
 
 func TestReconcile_EarlyReturnOnSecretsNotReady(t *testing.T) {

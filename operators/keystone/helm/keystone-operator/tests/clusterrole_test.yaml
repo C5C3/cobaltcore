@@ -7,7 +7,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 16
+          count: 17
 
   - it: should grant full CRUD on keystones
     asserts:
@@ -104,6 +104,19 @@ tests:
             verbs:
               - create
               - patch
+
+  - it: should grant read-only on pods for policy validation error extraction (CC-0058)
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - pods
+            verbs:
+              - get
+              - list
 
   - it: should grant full CRUD on batch resources
     asserts:
