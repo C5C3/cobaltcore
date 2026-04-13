@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-13T12:16:12.623708+00:00",
+  "feature_id": "CC-0067",
+  "task_type": "quick",
+  "session_key": "CC-0067",
+  "model": "opus",
+  "prompt": "Summarize this external code review in 1-3 concise sentences. Focus on WHAT the reviewer wants changed, not boilerplate. Strip tool share links, HTML tags, promotional text.\n\n## Review Feedback\nSorry @berendt, you have reached your weekly rate limit of 500000 diff characters.\n\nPlease try again later or [upgrade](https://app.sourcery.ai/login?connection=github&git_namespace_id=258270606&utm_source=github&utm_medium=bot&utm_campaign=rate_limited) to continue using Sourcery\n\n",
+  "prompt_length": 477,
+  "caller": "run_claude_cli"
+}

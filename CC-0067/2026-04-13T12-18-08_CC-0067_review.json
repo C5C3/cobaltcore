@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-13T12:18:08.908630+00:00",
+  "feature_id": "CC-0067",
+  "task_type": "review",
+  "session_key": "CC-0067",
+  "model": "opus",
+  "prompt": "Analyze the following external review that has been addressed.\nIdentify what our INTERNAL code review should have caught\nBEFORE the external reviewer found it.\n\n## External Review Feedback\n\n\n## Code Comments (with Resolutions)\n- [operators/keystone/internal/controller/requeue_intervals_test.go:20] Entirely useless test for constant values. Remove entire test file.\n\n## Resolution Summary\n\n\nExtract 0-3 review improvement patterns. For each:\n- name: Short, action-oriented name IN ENGLISH\n- review_area: error-handling | security | testing | performance | type-safety | validation | architecture | naming | documentation\n- detection_hint: How should the reviewer detect this?\n- severity: BLOCKING | WARNING\n- what_to_check: What exactly to check\n- why_it_matters: Why it matters\n- example_feedback: Original quote from the reviewer\n- example_fix: What was changed\n\nQUALITY: Only real review blindspots. No subjective style opinions.\nNothing that only a domain expert could know.\nIf nothing extractable: empty array.\n\nLANGUAGE: ALL fields MUST be in English.\n\nResponse: ONLY JSON array.",
+  "prompt_length": 1086,
+  "caller": "run_claude_cli"
+}

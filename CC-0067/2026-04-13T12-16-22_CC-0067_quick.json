@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-13T12:16:22.307427+00:00",
+  "feature_id": "CC-0067",
+  "task_type": "quick",
+  "session_key": "CC-0067",
+  "model": "opus",
+  "prompt": "Summarize this external code review in 1-3 concise sentences. Focus on WHAT the reviewer wants changed, not boilerplate. Strip tool share links, HTML tags, promotional text.\n\n## Review Feedback\n<!-- Blacksmith CI Status -->\nFound 1 test failure on Blacksmith runners:\n\n### Failure\n\n| Test | View Logs |\n| --- | --- |\n| <code>tests/e2e/keystone/network-policy/keystone-network-policy</code> | [View Logs](https://app.blacksmith.sh/C5C3/runs/24315372157/jobs/70992445543?attempt=1&ref=gh_comment&autoLogin=true&tab=tests&status=failed#test=a9a15f2a-3fe5-4c6a-b12d-6c8912377c4f) |\n\n<a href=\"https://backend.blacksmith.sh/track/cursor?cursor_url=cursor%3A%2F%2Fanysphere.cursor-deeplink%2Fprompt%3Ftext%3DFix%2Bthese%2Bfailing%2Btests%253A%250A%250A1.%2Btests%252Fe2e%252Fkeystone%252Fnetwork-policy%252Fkeystone-network-policy%250A&amp;expires=1778618013&amp;installation=C5C3&amp;job_id=70992445543&amp;run_id=24315372157&amp;test_count=1&amp;signature=55f80abb2c6ac21198f5907f821b84dae9c60cdee49d118c1af977e639219fd3\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://pr-comments-assets.blacksmith.sh/fix_with_cursor_dark.svg\"><source media=\"(prefers-color-scheme: light)\" srcset=\"https://pr-comments-assets.blacksmith.sh/fix_with_cursor_light.svg\"><img alt=\"Fix in Cursor\" src=\"https://pr-comments-assets.blacksmith.sh/fix_with_cursor.svg\"></picture></a>\n\n\n",
+  "prompt_length": 1377,
+  "caller": "run_claude_cli"
+}
