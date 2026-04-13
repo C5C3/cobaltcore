@@ -1,7 +1,7 @@
 ---
 title: Keystone Reconciler Architecture
 quadrant: operator
-feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0064
+feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0064, CC-0068
 ---
 
 # Keystone Reconciler Architecture
@@ -213,8 +213,21 @@ This guarantees:
 
 `updateStatus()` persists all condition changes via `r.Status().Update()` and returns
 the provided `(result, error)` pair unchanged. If the status update itself fails, the
-status update error takes precedence and is returned to controller-runtime for
-exponential backoff.
+behavior depends on whether a reconcile error is also present (CC-0068):
+
+| reconcileErr | Status().Update() | Returned error |
+| --- | --- | --- |
+| nil | succeeds | nil |
+| non-nil | succeeds | reconcileErr (unchanged) |
+| nil | fails | `fmt.Errorf("updating status: %w", statusErr)` |
+| non-nil | fails | `errors.Join(reconcileErr, fmt.Errorf("updating status: %w", statusErr))` |
+
+In the dual-failure case, `errors.Join` preserves both the original reconcile error and
+the status update error. Both are unwrappable via `errors.Is` and `errors.As`, and both
+appear in the controller-runtime log output (separated by newline). The reconcile error
+appears first in the joined error string for readability. When `reconcileErr` is nil,
+`errors.Join(nil, statusErr)` discards the nil argument per the Go spec, returning a
+joined error containing only the status update error.
 
 ### Ready Condition Aggregation
 

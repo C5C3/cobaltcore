@@ -1,0 +1,61 @@
+{
+  "feature_id": "CC-0068",
+  "title": "Fix updateStatus to preserve original reconcile error",
+  "date": "2026-04-12",
+  "verdict": "APPROVED",
+  "summary": "Single-line change in updateStatus replaces error-discarding `fmt.Errorf(\"updating status: %w\", err)` with `errors.Join(reconcileErr, fmt.Errorf(\"updating status: %w\", err))`, preserving both errors in the dual-failure case. 8 focused unit tests cover all 4 error combinations plus result passthrough and unwrappability. Documentation updated with a truth table describing the new behavior. All 64+ existing tests pass, go vet clean.",
+  "review_steps": {
+    "1_INTENT": "Plan specifies: refactor updateStatus to use errors.Join so that the original reconcile error is never lost when the status update also fails. Acceptance criteria: both errors returned, single-failure preserved, unit tests, docs update.",
+    "2_SCOPE": "3 files changed (excluding .planwerk progress JSON and go.work.sum): keystone_controller.go (+4 lines), keystone_controller_test.go (+171 lines), keystone-reconciler.md (+17 lines). No scope creep — all changes directly implement CC-0068.",
+    "3_VERIFICATION": "go vet: clean. go test ./internal/controller/... -count=1: PASS (0.802s, all tests pass). No golangci-lint config change needed — existing linters pass.",
+    "4_PATTERNS": "Uses established interceptor.Funcs pattern for mocking status update failures (same as reconcile_hpa_test.go, reconcile_secrets_test.go, etc.). Uses NewGomegaWithT(t) per gomega-test-assertions pattern. Uses testScheme() and testKeystone() shared helpers. No new patterns introduced.",
+    "5_TESTS": "8 tests covering: dual-failure joined error (BothErrors_Joined), unwrappability (JoinedError_IsUnwrappable), reconcile-error-only passthrough (ReconcileErrorOnly_Preserved), happy path (NoErrors_ReturnsNil), status-error-only (StatusErrorOnly_Returned), no nil segments (StatusErrorOnly_NoNilSegments), result passthrough on dual failure (ResultPassthrough_DualFailure), result passthrough on success (ResultPassthrough_WithRequeueAfter). All assertions are unconditional and specific.",
+    "6_SECURITY": "No security surface — internal error handling refactor with no user input, no secrets, no network exposure.",
+    "7_COMPLEXITY": "Simplest possible solution: one-line change from direct return to errors.Join. No new types, no new interfaces, no abstraction layers.",
+    "8_COMPLETENESS": "Task 1.1 (refactor + tests): done. Task 2.1 (docs): done. All acceptance criteria met. CC-0068 added to doc frontmatter.",
+    "9_PROMPT_QUALITY": "No new prompt files. N/A."
+  },
+  "tests_checklist": [
+    {"item": "Tests exist and pass", "checked": true},
+    {"item": "Edge cases covered (nil reconcileErr + status fail, both nil, both non-nil)", "checked": true},
+    {"item": "Error unwrappability verified via errors.Is", "checked": true},
+    {"item": "No nil segments in error string when reconcileErr is nil", "checked": true},
+    {"item": "Result passthrough verified for both success and dual-failure paths", "checked": true},
+    {"item": "Existing tests unmodified and passing", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (interceptor.Funcs, NewGomegaWithT)", "checked": true},
+    {"item": "Minimal change — single line modified in production code", "checked": true},
+    {"item": "Clear naming and documentation", "checked": true},
+    {"item": "No dead code or unnecessary abstractions", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No user inputs involved", "checked": true},
+    {"item": "No secrets exposed in errors or logs", "checked": true},
+    {"item": "No new attack surface introduced", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible (errors.Join from stdlib)", "checked": true},
+    {"item": "No new dependencies added", "checked": true},
+    {"item": "Consistent with controller-runtime error handling conventions", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No speculative abstractions", "checked": true},
+    {"item": "Helper function (newUpdateStatusReconciler) reused across 8 tests", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected and returned immediately", "checked": true},
+    {"item": "Status update failure logged before returning", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "errors.Join(nil, err) correctly discards nil per Go spec — verified by NoNilSegments test", "checked": true},
+    {"item": "All external inputs validated (N/A — internal function)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": []
+}

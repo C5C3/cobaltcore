@@ -2,8 +2,8 @@
   "feature_id": "CC-0068",
   "title": "Fix updateStatus to preserve original reconcile error",
   "slug": "fix-updatestatus-to-preserve-original-reconcile",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #186: Fix updateStatus to preserve the original reconcile error\n\n**Category**: refactoring | **Scope**: Small\n\n**Description**: In keystone_controller.go:139-145, when r.Status().Update() fails, the original reconcileErr is discarded and only the status update error is returned. Refactor updateStatus to use errors.Join or a multi-error pattern that preserves both the original reconcile error and the status update error, ensuring the root cause is always visible in controller logs.\n\n**Motivation**: When a reconcile fails AND the subsequent status update also fails, the root cause of the original failure is silently lost. This makes debugging production issues significantly harder because the logs only show 'failed to update status' without any indication of what actually went wrong.\n\n**Affected Areas**:\n- `operators/keystone/internal/controller/keystone_controller.go`\n\n**Acceptance Criteria**:\n- [ ] Both the original reconcile error and the status update error are returned when both fail\n- [ ] Controller logs contain the root cause error, not just the status update failure\n- [ ] Unit test verifies error preservation in the dual-failure case\n- [ ] Single-failure cases (reconcile fails, status succeeds and vice versa) still work correctly\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/186",
   "stories": [
@@ -153,6 +153,7 @@
       "description": "In operators/keystone/internal/controller/keystone_controller.go:139-145, replace the current updateStatus implementation that discards reconcileErr on status update failure. Add 'errors' to imports. Change the error branch from `return ctrl.Result{}, fmt.Errorf(\"updating status: %w\", err)` to `return ctrl.Result{}, errors.Join(reconcileErr, fmt.Errorf(\"updating status: %w\", err))`. Add 8 unit tests to keystone_controller_test.go: (1) TestUpdateStatus_BothErrors_Joined — use interceptor.Funcs{SubResourceUpdate: ...} to fail status update, pass a non-nil reconcileErr, assert returned error contains both messages. (2) TestUpdateStatus_JoinedError_IsUnwrappable — verify errors.Unwrap on the joined error. (3) TestUpdateStatus_ReconcileErrorOnly — status update succeeds, assert returned error equals reconcileErr. (4) TestUpdateStatus_NoErrors — both succeed, assert nil. (5) TestUpdateStatus_StatusErrorOnly — reconcileErr is nil, status update fails, assert returned error wraps only the status error. (6) TestUpdateStatus_StatusErrorOnly_NoNilSegments — verify error string has no '<nil>' segments. (7) TestUpdateStatus_ResultPassthrough_DualFailure — verify ctrl.Result{} on dual failure. (8) TestUpdateStatus_ResultPassthrough_WithRequeueAfter — verify RequeueAfter preserved on success. Follow existing interceptor pattern from reconcile_hpa_test.go.",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -166,6 +167,7 @@
       "description": "In docs/reference/keystone-reconciler.md, update the 'Status Update Pattern' section (lines 212-217). Replace the sentence 'If the status update itself fails, the status update error takes precedence and is returned to controller-runtime for exponential backoff.' with a description of the new errors.Join behavior: when the status update fails and a reconcile error is also present, both errors are joined via errors.Join so the root cause is never lost. Add CC-0068 to the feature list in the frontmatter (line 4). Keep the rest of the section unchanged.",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -227,6 +229,146 @@
       "story": "Operator sees correct single error in single-failure cases",
       "expected": "When status update succeeds and input result has RequeueAfter set, the returned ctrl.Result preserves RequeueAfter [unit]",
       "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_NotFound_ReturnsEmptyResult",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_SetsAllSubConditionsTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_AggregatesReadyCondition",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_StatusUpdatePersisted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_Idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSetupWithManager_RegistersWithoutError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_AllTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_OneFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_MissingCondition",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_Empty",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_EarlyReturnOnSecretsNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_EarlyReturnOnDatabaseNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_SequentialProgression",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_ReadyFalseWhenDeploymentNotAvailable",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_ObservedGenerationTracked",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSecretToKeystoneMapper_ReferencedSecrets",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestCommonLabels_ExactKeyValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSelectorLabels_ExactKeyValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSelectorLabels_SubsetOfCommonLabels",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSecretToKeystoneMapper_OwnedSecrets",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],
@@ -252,8 +394,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-12T18:37:23.728600"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-12T19:13:36.281621"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-13T09:28:29.325188"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/196",
+  "pr_number": 196,
   "execution_history": [
     {
       "run_id": "4f0e1c07-e644-4261-88d6-c7e1b4f5fe9e",
@@ -265,6 +417,58 @@
           "name": "prepare",
           "duration": 414.9833390712738,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "3206df0d-d671-415b-b2e1-6347d033e083",
+      "timestamp": "2026-04-12T19:30:22.258976",
+      "total_duration": 853.7150807380676,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (1 tasks)",
+          "duration": 480.82688570022583,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (1 tasks)",
+          "duration": 75.50467848777771,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0068] Code Review",
+          "duration": 212.43309020996094,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0068] Improvements",
+          "duration": 27.076393604278564,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0068] Simplify",
+          "duration": 57.874032735824585,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "01d3be9f-5ed9-4d91-ac5d-ef9a57a5903e",
+      "timestamp": "2026-04-12T20:00:19.809179",
+      "total_duration": 277.2153205871582,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 277.2153205871582,
+          "type": "review_address",
           "status": "done"
         }
       ]

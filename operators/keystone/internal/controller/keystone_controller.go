@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
@@ -136,10 +137,12 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 }
 
 // updateStatus persists the current status conditions and returns the given result and error.
+// When both reconcileErr and the status update fail, both errors are preserved via errors.Join
+// so that the original reconcile failure is visible in controller-runtime logs (CC-0068).
 func (r *KeystoneReconciler) updateStatus(ctx context.Context, keystone *keystonev1alpha1.Keystone, result ctrl.Result, reconcileErr error) (ctrl.Result, error) {
 	if err := r.Status().Update(ctx, keystone); err != nil {
 		log.FromContext(ctx).Error(err, "unable to update Keystone status")
-		return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
+		return ctrl.Result{}, errors.Join(reconcileErr, fmt.Errorf("updating status: %w", err))
 	}
 	return result, reconcileErr
 }

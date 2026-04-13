@@ -6,8 +6,10 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
@@ -26,6 +28,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/c5c3/forge/internal/common/job"
@@ -780,4 +783,172 @@ func TestSecretToKeystoneMapper_OwnedSecrets(t *testing.T) {
 	reqs := mapper(context.Background(), ownedSecret)
 	g.Expect(reqs).To(HaveLen(1))
 	g.Expect(reqs[0].NamespacedName.Name).To(Equal(ks.Name))
+}
+
+// --- updateStatus unit tests (CC-0068) ---
+
+// newUpdateStatusReconciler builds a KeystoneReconciler with the given Keystone CR
+// pre-loaded and an optional SubResourceUpdate interceptor to simulate status
+// update failures. It also fetches the Keystone object back from the fake client
+// so that its ResourceVersion matches, allowing status updates to succeed when
+// no interceptor error is injected.
+func newUpdateStatusReconciler(t *testing.T, ks *keystonev1alpha1.Keystone, statusUpdateErr error) (*KeystoneReconciler, *keystonev1alpha1.Keystone) {
+	t.Helper()
+	s := testScheme()
+	cb := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks.DeepCopy()).
+		WithStatusSubresource(&keystonev1alpha1.Keystone{})
+	if statusUpdateErr != nil {
+		cb = cb.WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(_ context.Context, _ client.Client, _ string, _ client.Object, _ ...client.SubResourceUpdateOption) error {
+				return statusUpdateErr
+			},
+		})
+	}
+	c := cb.Build()
+
+	// Re-fetch so the object carries the ResourceVersion assigned by the fake client.
+	fetched := &keystonev1alpha1.Keystone{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(ks), fetched); err != nil {
+		t.Fatalf("fetching Keystone from fake client: %v", err)
+	}
+	return &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}, fetched
+}
+
+// TestUpdateStatus_BothErrors_Joined verifies that when reconcileErr is non-nil
+// and Status().Update() fails, the returned error contains both error messages
+// and both are unwrappable (REQ-001, CC-0068).
+func TestUpdateStatus_BothErrors_Joined(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	reconcileErr := fmt.Errorf("database connection refused")
+	statusErr := fmt.Errorf("simulated status update error")
+	r, ks := newUpdateStatusReconciler(t, testKeystone(), statusErr)
+
+	_, err := r.updateStatus(context.Background(), ks, ctrl.Result{}, reconcileErr)
+
+	g.Expect(err).To(HaveOccurred(), "should return an error when both fail")
+	g.Expect(err.Error()).To(ContainSubstring("database connection refused"),
+		"joined error must contain the reconcile error message")
+	g.Expect(err.Error()).To(ContainSubstring("updating status:"),
+		"joined error must contain the status update error prefix")
+	g.Expect(err.Error()).To(ContainSubstring("simulated status update error"),
+		"joined error must contain the status update error message")
+}
+
+// TestUpdateStatus_JoinedError_IsUnwrappable verifies that the joined error
+// supports errors.Unwrap returning both constituent errors (REQ-001, CC-0068).
+func TestUpdateStatus_JoinedError_IsUnwrappable(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	reconcileErr := fmt.Errorf("reconcile failed")
+	statusErr := fmt.Errorf("status update failed")
+	r, ks := newUpdateStatusReconciler(t, testKeystone(), statusErr)
+
+	_, err := r.updateStatus(context.Background(), ks, ctrl.Result{}, reconcileErr)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(errors.Is(err, reconcileErr)).To(BeTrue(),
+		"errors.Is must match the original reconcile error")
+	g.Expect(errors.Is(err, statusErr)).To(BeTrue(),
+		"errors.Is must unwrap through the joined error to find the original status update error")
+}
+
+// TestUpdateStatus_ReconcileErrorOnly_Preserved verifies that when reconcileErr
+// is non-nil but Status().Update() succeeds, the returned error equals
+// reconcileErr exactly (REQ-002, CC-0068).
+func TestUpdateStatus_ReconcileErrorOnly_Preserved(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	reconcileErr := fmt.Errorf("sub-reconciler failed")
+	r, ks := newUpdateStatusReconciler(t, testKeystone(), nil) // status update succeeds
+
+	_, err := r.updateStatus(context.Background(), ks, ctrl.Result{}, reconcileErr)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err).To(Equal(reconcileErr),
+		"returned error must be the original reconcile error, not wrapped")
+}
+
+// TestUpdateStatus_NoErrors_ReturnsNil verifies that when reconcileErr is nil
+// and Status().Update() succeeds, the returned error is nil (REQ-003, CC-0068).
+func TestUpdateStatus_NoErrors_ReturnsNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	r, ks := newUpdateStatusReconciler(t, testKeystone(), nil) // status update succeeds
+
+	result, err := r.updateStatus(context.Background(), ks, ctrl.Result{}, nil)
+
+	g.Expect(err).NotTo(HaveOccurred(), "should return nil when both succeed")
+	g.Expect(result).To(Equal(ctrl.Result{}))
+}
+
+// TestUpdateStatus_StatusErrorOnly_Returned verifies that when reconcileErr is
+// nil and Status().Update() fails, the returned error wraps only the status
+// error with 'updating status:' prefix (REQ-004, CC-0068).
+func TestUpdateStatus_StatusErrorOnly_Returned(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	statusErr := fmt.Errorf("conflict on status update")
+	r, ks := newUpdateStatusReconciler(t, testKeystone(), statusErr)
+
+	_, err := r.updateStatus(context.Background(), ks, ctrl.Result{}, nil)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("updating status:"))
+	g.Expect(err.Error()).To(ContainSubstring("conflict on status update"))
+}
+
+// TestUpdateStatus_StatusErrorOnly_NoNilSegments verifies that when reconcileErr
+// is nil and Status().Update() fails, the error string does not contain '<nil>'
+// or empty segments from errors.Join (REQ-004, CC-0068).
+func TestUpdateStatus_StatusErrorOnly_NoNilSegments(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	statusErr := fmt.Errorf("status write failed")
+	r, ks := newUpdateStatusReconciler(t, testKeystone(), statusErr)
+
+	_, err := r.updateStatus(context.Background(), ks, ctrl.Result{}, nil)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).NotTo(ContainSubstring("<nil>"),
+		"error string must not contain <nil> from nil error arguments")
+	g.Expect(err.Error()).NotTo(HavePrefix("\n"),
+		"error string must not start with a newline from joined nil")
+}
+
+// TestUpdateStatus_ResultPassthrough_DualFailure verifies that when both errors
+// are non-nil, the returned ctrl.Result is ctrl.Result{} (empty) (REQ-001, CC-0068).
+func TestUpdateStatus_ResultPassthrough_DualFailure(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	reconcileErr := fmt.Errorf("reconcile error")
+	statusErr := fmt.Errorf("status error")
+	r, ks := newUpdateStatusReconciler(t, testKeystone(), statusErr)
+
+	result, _ := r.updateStatus(context.Background(), ks, ctrl.Result{RequeueAfter: 5 * time.Second}, reconcileErr)
+
+	g.Expect(result).To(Equal(ctrl.Result{}),
+		"dual-failure should return empty Result so controller-runtime applies error-based backoff")
+}
+
+// TestUpdateStatus_ResultPassthrough_WithRequeueAfter verifies that when status
+// update succeeds and the input result has RequeueAfter set, the returned
+// ctrl.Result preserves RequeueAfter (REQ-002, CC-0068).
+func TestUpdateStatus_ResultPassthrough_WithRequeueAfter(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	r, ks := newUpdateStatusReconciler(t, testKeystone(), nil) // status update succeeds
+	inputResult := ctrl.Result{RequeueAfter: 30 * time.Second}
+
+	result, err := r.updateStatus(context.Background(), ks, inputResult, nil)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(inputResult),
+		"result must be passed through unchanged when status update succeeds")
 }
