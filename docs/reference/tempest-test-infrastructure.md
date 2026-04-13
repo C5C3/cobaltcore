@@ -216,6 +216,51 @@ For Keystone, two patterns include all identity-related tests:
 | `tempest.api.identity` | Core Tempest identity API tests |
 | `keystone_tempest_plugin.tests` | Keystone-specific plugin tests |
 
+#### Scope-split invariant
+
+Both runners (`hack/ci-run-tempest.sh` and `hack/run-tempest.sh`) split this
+include list into two phase files at runtime and run `stestr` twice in the
+same workspace:
+
+1. `phase-1-core.txt` — every non-comment line that starts with `tempest.`
+2. `phase-2-plugin.txt` — every non-comment line that starts with
+   `keystone_tempest_plugin.`
+
+The two phases run **sequentially**; within each phase `stestr` runs at
+`TEMPEST_CONCURRENCY` (default 4).
+
+Each runner enforces that every non-comment, non-empty line in
+`include-tests.txt` lands in exactly one phase. A line with any other prefix
+causes the runner to abort with a clear error — this guards against silent
+drops when new include patterns are added. Both phases must be non-empty.
+
+**Why sequential.** Keystone re-resolves the list of enabled federation
+service providers on every `POST /v3/auth/tokens` and `GET /v3/auth/tokens`
+call and injects it into the response body; the token itself does not cache
+it. `tempest.api.identity.v3.test_tokens.TokensV3Test.test_validate_token`
+issues a token via POST, validates it via GET, and asserts the two response
+bodies are equal. When `keystone_tempest_plugin.tests.api.identity.v3.
+test_service_providers.ServiceProvidersTest` runs concurrently on another
+stestr worker, its per-test `addCleanup` deletes the service provider it
+created — and if that cleanup lands in the ~20 ms window between
+`test_validate_token`'s POST and GET, the two responses diverge on the
+`service_providers` key and the assertion fails.
+
+Upstream's `openstack/keystone` `keystone-tempest` gate job sets
+`tempest_test_regex: "keystone_tempest_plugin"` and therefore only runs
+`keystone_tempest_plugin.*` tests — the core `tempest.api.identity.*` suite
+(which contains `test_validate_token`) never runs in the same Tempest
+invocation as the service-providers tests, so upstream never observes this
+race. We run both suites for fuller coverage and replicate the isolation by
+running them in two separate stestr invocations.
+
+The two phases each emit a subunit stream (`phase-1-core.subunit`,
+`phase-2-plugin.subunit`); the runner concatenates them into
+`tempest.subunit` and converts that to JUnit XML. Subunit v2 is
+stream-concatenation safe by design. The overall exit code is the maximum
+of the two phase exit codes, so both phases always run and any failure in
+either is reported.
+
 ### exclude-tests.txt
 
 **Location:** `tests/tempest/<service>/exclude-tests.txt`
@@ -312,7 +357,7 @@ SERVICE=keystone hack/run-tempest.sh
 | Pre-flight checks | Validates `SERVICE` is set, required tools (`docker`, `kubectl`, `yq`) are installed, Docker is running, service config directory exists, `test-refs.yaml` exists | Exits 1 with descriptive error |
 | Build Tempest image | Resolves versions from `test-refs.yaml`, builds with `docker build` using named build contexts pointing to GHCR base images | Exits on build failure (set -e) |
 | Extract admin password | Reads `keystone-admin` secret from the K8s cluster via `kubectl get secret` | Exits 1 if secret is not found or empty |
-| Run Tempest | Mounts `tempest.conf`, `include-tests.txt`, `exclude-tests.txt` into container; initializes Tempest workspace; runs `stestr run --subunit`; converts to JUnit XML via `subunit2junitxml` | Returns Tempest exit code |
+| Run Tempest | Mounts `tempest.conf`, `phases/phase-1-core.txt`, `phases/phase-2-plugin.txt`, `exclude-tests.txt` into container; initializes Tempest workspace; runs `stestr run --subunit` once per phase; concatenates the subunit streams; converts to JUnit XML via `subunit2junitxml` | Returns max of the two phase exit codes |
 
 **Output files:**
 
@@ -321,7 +366,9 @@ SERVICE=keystone hack/run-tempest.sh
 | `_output/tempest/tempest-results.xml` | JUnit XML | Test results for CI artifact upload |
 | `_output/tempest/tempest.subunit` | Subunit v2 | Raw test result stream |
 
-The script exits with the same exit code as `stestr run` — non-zero if any test fails.
+The script exits with the maximum of the two per-phase `stestr` exit codes —
+non-zero if any test fails in either phase. Both phases always run, so a
+failure in phase 1 does not short-circuit phase 2.
 
 ### make tempest-test
 
@@ -487,11 +534,16 @@ releases/<release>/test-refs.yaml ──yq──▶ TEMPEST_VERSION + KEYSTONE_T
                          ▼
          docker run --network host \
            -v tempest.conf:/etc/tempest/tempest.conf \
-           -v include-tests.txt:/etc/tempest/include-tests.txt \
+           -v phases/phase-1-core.txt:/etc/tempest/phases/phase-1-core.txt \
+           -v phases/phase-2-plugin.txt:/etc/tempest/phases/phase-2-plugin.txt \
            -v exclude-tests.txt:/etc/tempest/exclude-tests.txt \
            c5c3/tempest:<release> bash -c "
-             tempest init . && cp tempest.conf etc/ &&
-             stestr run --subunit | tee tempest.subunit &&
+             tempest init . && cp tempest.conf etc/;
+             stestr run --include-list phases/phase-1-core.txt ... --subunit \
+               | tee /output/phase-1-core.subunit;
+             stestr run --include-list phases/phase-2-plugin.txt ... --subunit \
+               | tee /output/phase-2-plugin.subunit;
+             cat phase-1-core.subunit phase-2-plugin.subunit > tempest.subunit;
              subunit2junitxml < tempest.subunit > tempest-results.xml"
                          │
                          ▼

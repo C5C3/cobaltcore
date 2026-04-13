@@ -11,6 +11,10 @@
 #   2. Build the Tempest container image using the service Dockerfile
 #   3. Extract the admin password from the Kubernetes secret
 #   4. Run Tempest inside the container with the service-specific configuration
+#      in two sequential stestr phases (core tempest.api.* vs
+#      keystone_tempest_plugin.*) to isolate suites that share Keystone's
+#      dynamic service_providers state — see docs/reference/tempest-test-
+#      infrastructure.md
 #   5. Convert subunit results to JUnit XML for CI artifact upload
 #
 # REQ-006: Local Tempest execution orchestration script.
@@ -239,18 +243,47 @@ run_tempest() {
     -e "s|http://[^/]*:5000|http://${container_host}:5000|" \
     -e "s|\${KEYSTONE_ADMIN_PASSWORD}|${admin_password}|" \
     "${config_dir}/tempest.conf" > "${etc_dir}/tempest.conf"
-  [[ -f "${config_dir}/include-tests.txt" ]] && cp "${config_dir}/include-tests.txt" "${etc_dir}/"
   [[ -f "${config_dir}/exclude-tests.txt" ]] && cp "${config_dir}/exclude-tests.txt" "${etc_dir}/"
+
+  # Scope-split the include list into two phase files so core tempest.api.*
+  # and keystone_tempest_plugin.* run in separate sequential stestr passes.
+  # Keystone injects the current list of federation service providers into
+  # every token issue/validate response, so ServiceProvidersTest cleanups
+  # race against tempest.api.identity.v3.test_tokens.TokensV3Test.
+  # test_validate_token when both suites share workers. Upstream's
+  # keystone-tempest gate only runs keystone_tempest_plugin.* and therefore
+  # never sees this race; we run both suites and isolate them by time.
+  if [[ ! -f "${config_dir}/include-tests.txt" ]]; then
+    log "ERROR: ${config_dir}/include-tests.txt is required for scope-split execution."
+    return 1
+  fi
+  local phases_dir="${etc_dir}/phases"
+  mkdir -p "${phases_dir}"
+  grep -E '^tempest\.' "${config_dir}/include-tests.txt" \
+    > "${phases_dir}/phase-1-core.txt" || true
+  grep -E '^keystone_tempest_plugin\.' "${config_dir}/include-tests.txt" \
+    > "${phases_dir}/phase-2-plugin.txt" || true
+
+  local total_patterns phase1_count phase2_count
+  total_patterns=$(grep -cE '^[^#[:space:]]' \
+    "${config_dir}/include-tests.txt" || true)
+  phase1_count=$(wc -l < "${phases_dir}/phase-1-core.txt" | tr -d ' ')
+  phase2_count=$(wc -l < "${phases_dir}/phase-2-plugin.txt" | tr -d ' ')
+  if [[ $((phase1_count + phase2_count)) -ne "${total_patterns}" ]]; then
+    log "ERROR: scope-split does not cover include-tests.txt: ${total_patterns} patterns, $((phase1_count + phase2_count)) covered (phase1=${phase1_count}, phase2=${phase2_count})."
+    log "ERROR: every non-comment line must start with 'tempest.' or 'keystone_tempest_plugin.'."
+    return 1
+  fi
+  if [[ "${phase1_count}" -eq 0 || "${phase2_count}" -eq 0 ]]; then
+    log "ERROR: scope-split produced an empty phase (phase1=${phase1_count}, phase2=${phase2_count}); both phases must have at least one pattern."
+    return 1
+  fi
 
   log "Running Tempest tests for service '${SERVICE}'..."
   log "  Endpoint: http://${container_host}:5000"
   log "  Output:   ${OUTPUT_DIR}"
   log "  Timeout:  ${TEMPEST_TIMEOUT}s"
-
-  local tempest_cmd="stestr run"
-  [[ -f "${etc_dir}/include-tests.txt" ]] && tempest_cmd+=" --include-list /etc/tempest/include-tests.txt"
-  [[ -f "${etc_dir}/exclude-tests.txt" ]] && tempest_cmd+=" --exclude-list /etc/tempest/exclude-tests.txt"
-  tempest_cmd+=" --concurrency ${TEMPEST_CONCURRENCY} --subunit"
+  log "  Phases:   phase-1-core (${phase1_count}), phase-2-plugin (${phase2_count})"
 
   local rc=0
   timeout "${TEMPEST_TIMEOUT}" \
@@ -271,14 +304,46 @@ run_tempest() {
         cd /tmp/tempest-workspace
         tempest init .
         cp /etc/tempest/tempest.conf etc/tempest.conf
-        set +e
-        ${tempest_cmd} | tee /output/tempest.subunit | subunit2pyunit 2>&1 | grep --line-buffered -E '\.\.\. '
-        rc=\${PIPESTATUS[0]}
-        set -e
-        if [[ -f /output/tempest.subunit ]]; then
-          subunit2junitxml < /output/tempest.subunit > /output/tempest-results.xml 2>/dev/null || true
+
+        exclude_args=''
+        if [[ -f /etc/tempest/exclude-tests.txt ]]; then
+          exclude_args='--exclude-list /etc/tempest/exclude-tests.txt'
         fi
-        exit \${rc}
+
+        run_phase() {
+          local phase=\$1
+          echo
+          echo \"--- Tempest phase: \${phase} ---\"
+          set +e
+          # shellcheck disable=SC2086  # intentional word-splitting on exclude_args
+          stestr run --include-list /etc/tempest/phases/\${phase}.txt \${exclude_args} --concurrency ${TEMPEST_CONCURRENCY} --subunit | tee /output/\${phase}.subunit | subunit2pyunit 2>&1 | grep --line-buffered -E '\.\.\. '
+          local phase_rc=\${PIPESTATUS[0]}
+          set -e
+          return \${phase_rc}
+        }
+
+        overall_rc=0
+        run_phase phase-1-core || overall_rc=\$?
+        phase2_rc=0
+        run_phase phase-2-plugin || phase2_rc=\$?
+        if [[ \${phase2_rc} -gt \${overall_rc} ]]; then
+          overall_rc=\${phase2_rc}
+        fi
+
+        # Subunit v2 is stream-concatenation safe, so cat'ing the two phase
+        # streams produces a single valid subunit stream.
+        cat /output/phase-1-core.subunit /output/phase-2-plugin.subunit > /output/tempest.subunit
+        subunit2junitxml < /output/tempest.subunit > /output/tempest-results.xml 2>/dev/null || true
+
+        # Guard against stestr run --subunit exiting 0 on test failures:
+        # check the JUnit XML for reported failures or errors.
+        if [[ \${overall_rc} -eq 0 && -f /output/tempest-results.xml ]]; then
+          if grep -qE 'failures=\"[1-9]|errors=\"[1-9]' /output/tempest-results.xml; then
+            echo 'ERROR: Tempest reported test failures.'
+            overall_rc=1
+          fi
+        fi
+        exit \${overall_rc}
       " || rc=$?
 
   if [[ "${rc}" -eq 124 ]]; then
