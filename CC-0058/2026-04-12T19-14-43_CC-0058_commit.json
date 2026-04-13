@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-12T19:14:43.893490+00:00",
+  "feature_id": "CC-0058",
+  "task_type": "commit",
+  "session_key": "CC-0058",
+  "model": "opus",
+  "prompt": "Generate a detailed git commit body for this commit.\nSubject: fix(CC-0058): address review #1 feedback from berendt\n\nReview feedback is in: /worktrees/CC-0058/.planwerk/reviews/CC-0058-github-review-by-berendt-external-1.json\nUse `git diff --cached -- ':(exclude).planwerk'` to see the full staged diff.\n\nDiff stat:\n.../internal/controller/integration_test.go        |  12 +-\n .../internal/controller/keystone_controller.go     |   2 +-\n .../controller/keystone_controller_test.go         |   8 +-\n .../controller/reconcile_policyvalidation.go       |  36 +++--\n .../controller/reconcile_policyvalidation_test.go  |  44 +++---\n .../keystone/policy-validation/00-policy-cm.yaml   |  17 +++\n .../keystone/policy-validation/01-keystone-cr.yaml |  38 +++++\n .../policy-validation/02-patch-disable-policy.yaml |  13 ++\n .../keystone/policy-validation/chainsaw-test.yaml  | 156 +++++++++++++++++++++\n 9 files changed, 283 insertions(+), 43 deletions(-)\n\nWrite ONLY the body text, no subject line, no markdown.\nFor each changed file, write a bullet point: '- path/to/file: what was changed'\nDo NOT mention .planwerk directory changes.\nOutput ONLY plain text — no tool_call tags, no XML, no code blocks.",
+  "prompt_length": 1195,
+  "caller": "run_claude_cli"
+}
