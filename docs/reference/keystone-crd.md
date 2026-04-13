@@ -92,6 +92,11 @@ status:
       reason: AllSubResourcesReady
       message: All sub-resources are ready
       lastTransitionTime: "2026-03-09T00:00:00Z"
+    - type: KeystoneAPIReady
+      status: "True"
+      reason: APIHealthy
+      message: "Keystone API is responding at http://keystone-api.openstack.svc.cluster.local:5000/v3"
+      lastTransitionTime: "2026-03-09T00:00:00Z"
   endpoint: https://keystone.openstack.svc:5000/v3
 ```
 

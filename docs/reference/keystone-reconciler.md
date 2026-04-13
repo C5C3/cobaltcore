@@ -1,7 +1,7 @@
 ---
 title: Keystone Reconciler Architecture
 quadrant: operator
-feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0068
+feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0067, CC-0068
 ---
 
 # Keystone Reconciler Architecture
@@ -85,8 +85,9 @@ periodic requeue (CC-0047).
 ```go
 type KeystoneReconciler struct {
     client.Client
-    Scheme   *runtime.Scheme
-    Recorder events.EventRecorder
+    Scheme     *runtime.Scheme
+    Recorder   record.EventRecorder
+    HTTPClient HTTPDoer
 }
 ```
 
@@ -94,7 +95,8 @@ type KeystoneReconciler struct {
 | --- | --- | --- |
 | `Client` | `client.Client` | Kubernetes API client for CRUD operations |
 | `Scheme` | `*runtime.Scheme` | Runtime scheme for owner reference resolution |
-| `Recorder` | `events.EventRecorder` | Records Kubernetes events for state transitions |
+| `Recorder` | `record.EventRecorder` | Records Kubernetes events for state transitions |
+| `HTTPClient` | `HTTPDoer` | Injectable HTTP client for health checks; falls back to `http.DefaultClient` when nil (CC-0067) |
 
 ---
 
@@ -169,6 +171,12 @@ RBAC markers on the reconciler generate the required ClusterRole:
 │  │ reconcileDeployment  │  Ensure Deployment + Service                       │
 │  │                      │  Sets: DeploymentReady, status.endpoint            │
 │  └────────┬─────────────┘  Requeue: 10s                                      │
+│           │                                                                  │
+│           ▼                                                                  │
+│  ┌────────────────────────┐                                                  │
+│  │ reconcileHealthCheck   │  HTTP GET to Status.Endpoint                     │
+│  │                        │  Sets: KeystoneAPIReady                          │
+│  └────────┬───────────────┘  Requeue: 10s (CC-0067)                          │
 │           │                                                                  │
 │           ▼                                                                  │
 │  ┌──────────────┐                                                            │
@@ -271,6 +279,7 @@ sub-reconciler is responsible for:
 | `FernetKeysReady` | `reconcileFernetKeys` | Fernet Secret, CronJob, and PushSecret ensured |
 | `PolicyValidReady` | `reconcilePolicyValidation` | Policy override validation passed or not required (CC-0058) |
 | `DeploymentReady` | `reconcileDeployment` | Deployment available and Service created |
+| `KeystoneAPIReady` | `reconcileHealthCheck` | Keystone API responding to HTTP health check (CC-0067) |
 | `HPAReady` | `reconcileHPA` | HPA configured or not required |
 | `BootstrapReady` | `reconcileBootstrap` | Bootstrap Job completed successfully |
 | `TrustFlushReady` | `reconcileTrustFlush` | Trust flush CronJob configured or not required (CC-0057) |
@@ -763,6 +772,88 @@ and returned.
 
 ---
 
+### reconcileHealthCheck
+
+**File:** `operators/keystone/internal/controller/reconcile_healthcheck.go`
+
+**Signature:**
+
+```go
+func (r *KeystoneReconciler) reconcileHealthCheck(ctx context.Context,
+    keystone *keystonev1alpha1.Keystone) (ctrl.Result, error)
+```
+
+**Purpose:** Perform an HTTP GET to the Keystone `/v3` endpoint after the Deployment
+reports ready, verifying that the API is actually responding to requests (CC-0067).
+This catches cases where pods pass their readiness probe but the API is not
+functionally healthy.
+
+**Endpoint:** Uses `keystone.Status.Endpoint` which is set by `reconcileDeployment`
+(e.g., `http://keystone-api.{namespace}.svc.cluster.local:5000/v3`). If the endpoint
+is empty (not yet configured), the health check sets `KeystoneAPIReady=False` with
+reason `EndpointNotReady` and requeues.
+
+**HTTPDoer Interface:**
+
+```go
+type HTTPDoer interface {
+    Do(*http.Request) (*http.Response, error)
+}
+```
+
+The `HTTPDoer` interface abstracts `*http.Client` so that tests can inject mock HTTP
+servers via `httptest.NewServer`. The `httpClient()` helper returns the injected
+`HTTPClient` field if non-nil, otherwise falls back to `http.DefaultClient`.
+
+**Timeout:** The HTTP request uses a derived context with `HealthCheckTimeout`
+(10 seconds), preventing a hanging Keystone API from blocking the reconcile loop.
+
+**Error Classification:**
+
+Network errors are classified into descriptive condition reasons via
+`classifyHealthCheckError()`:
+
+| Error Type | Detection | Reason | Message |
+| --- | --- | --- | --- |
+| Context deadline exceeded | `errors.Is(err, context.DeadlineExceeded)` | `HealthCheckTimeout` | `"health check timed out"` |
+| DNS resolution failure | `errors.As(err, &net.DNSError)` | `EndpointNotReady` | `"endpoint not resolvable"` |
+| Connection refused | `strings.Contains(err.Error(), "connection refused")` | `ConnectionFailed` | `"connection failed: {error}"` |
+| Other network error | fallthrough | `HealthCheckFailed` | `"health check failed: {error}"` |
+
+All network errors result in a condition False + requeue, **not** a returned error.
+Returning network errors would trigger controller-runtime's exponential backoff,
+delaying recovery. Instead, a descriptive condition is set and the reconciler requeues
+at a fixed interval (`RequeueHealthCheck = 10s`).
+
+**Condition Contract:**
+
+| Status | Reason | Message | RequeueAfter |
+| --- | --- | --- | --- |
+| `False` | `EndpointNotReady` | `"endpoint not yet configured"` | 10s |
+| `False` | `EndpointNotReady` | `"endpoint not resolvable"` | 10s |
+| `False` | `HealthCheckTimeout` | `"health check timed out"` | 10s |
+| `False` | `ConnectionFailed` | `"connection failed: {error}"` | 10s |
+| `False` | `HealthCheckFailed` | `"health check failed: {error}"` | 10s |
+| `False` | `APIUnhealthy` | `"Keystone API returned HTTP {status}"` | 10s |
+| `True` | `APIHealthy` | `"Keystone API is responding at {endpoint}"` | — |
+
+**Requeue Constants (defined in `requeue_intervals.go`):**
+
+| Constant | Value | Purpose |
+| --- | --- | --- |
+| `RequeueHealthCheck` | `10s` | Interval for requeuing on health check failure |
+| `HealthCheckTimeout` | `10s` | Bounded timeout for the HTTP health check request |
+
+**Response body handling:** The HTTP response body is always closed via `defer
+resp.Body.Close()`, even on non-2xx responses. Go's `net/http` returns a non-nil
+`Body` for all responses regardless of status code.
+
+**Error handling:** Only the `http.NewRequestWithContext` error (malformed URL) is
+returned as a reconcile error. All HTTP transport errors and non-2xx responses set a
+condition and requeue — they are never returned as errors.
+
+---
+
 ### reconcileHPA
 
 **File:** `operators/keystone/internal/controller/reconcile_hpa.go`
@@ -958,6 +1049,7 @@ controller-runtime for exponential backoff.
 | `reconcileConfig` | — | — | Secret read failure, render failure → exponential backoff |
 | `reconcilePolicyValidation` | Job running | 15s | `ErrJobFailed` from validation → descriptive error |
 | `reconcileDeployment` | Deployment not available | 10s | API error → exponential backoff |
+| `reconcileHealthCheck` | Non-2xx, timeout, DNS, connection refused | 10s | Malformed URL → exponential backoff (CC-0067) |
 | `reconcileHPA` | — | — | API error → exponential backoff |
 | `reconcileBootstrap` | Job running | 60s | `ErrJobFailed` from bootstrap |
 | `reconcileTrustFlush` | — | — | API error → exponential backoff |
@@ -1022,6 +1114,7 @@ For end-to-end Chainsaw tests that validate the reconciler in a real cluster, se
 | `reconcile_config_test.go` | INI generation, extraConfig merge, plugin config, policy overrides, ConfigMap hashing |
 | `reconcile_policyvalidation_test.go` | Policy validation lifecycle, condition contract, error extraction, Job spec (CC-0058) |
 | `reconcile_deployment_test.go` | Deployment spec, Service creation, readiness, endpoint, owner references, fernet-keys hash annotation (CC-0015) |
+| `reconcile_healthcheck_test.go` | Health check happy/unhealthy paths, timeout, DNS, connection refused, empty endpoint, response body close, HTTPDoer injection (CC-0067) |
 | `reconcile_hpa_test.go` | HPA creation, update, deletion, metrics (CPU/memory), minReplicas defaulting, condition contract, error propagation (CC-0038) |
 | `reconcile_trustflush_test.go` | CronJob creation, deletion, schedule/suspend/args, security context, volume mounts, condition contract, error propagation (CC-0057) |
 | `reconcile_bootstrap_test.go` | Job creation, completion, failure, stale detection, TTL/backoff |
@@ -1047,6 +1140,7 @@ operators/keystone/
     │   ├── reconcile_config.go                 reconcileConfig sub-reconciler
     │   ├── reconcile_policyvalidation.go        reconcilePolicyValidation sub-reconciler (CC-0058)
     │   ├── reconcile_deployment.go             reconcileDeployment sub-reconciler
+    │   ├── reconcile_healthcheck.go           reconcileHealthCheck sub-reconciler (CC-0067)
     │   ├── reconcile_hpa.go                   reconcileHPA sub-reconciler (CC-0038)
     │   ├── reconcile_trustflush.go            reconcileTrustFlush sub-reconciler (CC-0057)
     │   ├── reconcile_bootstrap.go              reconcileBootstrap sub-reconciler
@@ -1057,6 +1151,7 @@ operators/keystone/
     │   ├── reconcile_config_test.go            Config tests
     │   ├── reconcile_policyvalidation_test.go   Policy validation tests (CC-0058)
     │   ├── reconcile_deployment_test.go        Deployment tests
+    │   ├── reconcile_healthcheck_test.go      Health check tests (CC-0067)
     │   ├── reconcile_hpa_test.go              HPA tests (CC-0038)
     │   ├── reconcile_trustflush_test.go       Trust flush tests (CC-0057)
     │   ├── reconcile_bootstrap_test.go         Bootstrap tests

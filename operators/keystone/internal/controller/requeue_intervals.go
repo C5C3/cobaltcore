@@ -40,4 +40,14 @@ const (
 	// completion. The oslopolicy-validator runs quickly, so a short interval
 	// balances responsiveness with API load (CC-0058).
 	RequeueValidationWait = 15 * time.Second
+
+	// RequeueHealthCheck is the interval for requeuing when the Keystone API
+	// health check fails. The API may take a few seconds to start responding
+	// after the Deployment reports ready, so a moderate interval is appropriate (CC-0067).
+	RequeueHealthCheck = 10 * time.Second
+
+	// HealthCheckTimeout is the bounded timeout for the HTTP health check
+	// request. Prevents a hanging Keystone API from blocking the reconcile
+	// loop indefinitely (CC-0067).
+	HealthCheckTimeout = 10 * time.Second
 )

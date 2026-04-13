@@ -1,0 +1,98 @@
+{
+  "feature_id": "CC-0067",
+  "title": "Add post-deployment Keystone API health check",
+  "date": "2026-04-12",
+  "summary": "Adds a reconcileHealthCheck sub-reconciler that performs an HTTP GET to the Keystone /v3 endpoint after reconcileDeployment confirms readiness. Sets a KeystoneAPIReady condition based on the HTTP response. Classifies network errors (timeout, DNS, connection refused, generic) into descriptive condition reasons and requeues rather than returning errors. Includes HTTPDoer interface for test injection, constants in requeue_intervals.go, updated subConditionTypes, comprehensive unit tests (16 test functions), chain-ordering integration test, and complete documentation updates.",
+  "verdict": "NEEDS_CHANGES",
+  "review_steps": {
+    "1_INTENT": "Feature CC-0067 adds an HTTP health check sub-reconciler that verifies the Keystone API is actually serving requests after pods report ready. This bridges the gap between infrastructure readiness and service readiness.",
+    "2_SCOPE": "Changes are strictly within scope: new reconcile_healthcheck.go + test, modified keystone_controller.go (struct + chain + subConditionTypes), requeue_intervals.go (constants + test), and docs updates. No scope creep detected.",
+    "3_VERIFICATION": "go vet passes clean. All 16 health check tests pass. All controller tests pass. golangci-lint reports 1 errcheck finding in new code (resp.Body.Close).",
+    "4_PATTERNS": "Sub-reconciler follows established condition contract pattern with ObservedGeneration. HTTPDoer interface is minimal. Constants co-located in requeue_intervals.go. Test file uses NewWithT instead of codebase-standard NewGomegaWithT.",
+    "5_TESTS": "Comprehensive: healthy 200, unhealthy 500/503, empty endpoint, timeout, DNS error, connection refused, generic error, ObservedGeneration tracking, response body close (success + error), HTTPDoer injection, chain-ordering integration, aggregate-ready inclusion. 16 test functions in healthcheck test + 4 new tests in controller test.",
+    "6_SECURITY": "No security concerns. HTTP client uses bounded context timeout. No secrets in health check path. No user-controlled input beyond Status.Endpoint (set by reconciler, not user).",
+    "7_COMPLEXITY": "Minimal and appropriate. classifyHealthCheckError is a clean pure function. reconcileHealthCheck follows the established sub-reconciler pattern exactly.",
+    "8_COMPLETENESS": "All acceptance criteria met. All 10 tasks marked done. Docs updated with condition type, sub-reconciler section, ASCII flow diagram, CRD example, test file listing, and directory tree.",
+    "9_PROMPT_QUALITY": "No new prompt files — N/A."
+  },
+  "tests_checklist": [
+    {"item": "Tests exist and pass", "checked": true},
+    {"item": "Happy path tested (HTTP 200)", "checked": true},
+    {"item": "Unhappy paths tested (500, 503)", "checked": true},
+    {"item": "Empty endpoint edge case", "checked": true},
+    {"item": "Timeout error classification", "checked": true},
+    {"item": "DNS error classification", "checked": true},
+    {"item": "Connection refused classification", "checked": true},
+    {"item": "Generic error classification", "checked": true},
+    {"item": "ObservedGeneration tracked", "checked": true},
+    {"item": "Response body close verified (success + error)", "checked": true},
+    {"item": "HTTPDoer injection tested", "checked": true},
+    {"item": "Chain ordering integration test", "checked": true},
+    {"item": "AggregateReady includes KeystoneAPIReady", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing sub-reconciler pattern", "checked": true},
+    {"item": "Functions have single responsibility", "checked": true},
+    {"item": "No code duplication", "checked": true},
+    {"item": "Clear naming conventions", "checked": true},
+    {"item": "Constants co-located with existing intervals", "checked": true},
+    {"item": "No dead code", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Bounded HTTP timeout prevents blocking", "checked": true},
+    {"item": "No secrets in health check path", "checked": true},
+    {"item": "No hardcoded credentials", "checked": true},
+    {"item": "No user-controlled input injection", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "HTTPDoer interface is minimal (single method)", "checked": true},
+    {"item": "Network errors requeue, not returned as errors", "checked": true},
+    {"item": "subConditionTypes ordering matches chain", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unused exports", "checked": true},
+    {"item": "No speculative abstractions", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Empty endpoint detected early with requeue", "checked": true},
+    {"item": "Malformed URL returns hard error", "checked": true},
+    {"item": "All network errors classified and requeued", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "HTTP response body always closed via defer", "checked": true},
+    {"item": "Context timeout bounds HTTP request", "checked": true},
+    {"item": "All error paths set condition before requeue", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "V3",
+      "severity": "BLOCKER",
+      "description": "golangci-lint errcheck: resp.Body.Close() return value is not checked. This is a lint error in the new code that must be resolved for the build to pass clean.",
+      "location": "operators/keystone/internal/controller/reconcile_healthcheck.go:70",
+      "fix": "Change `defer resp.Body.Close()` to `defer func() { _ = resp.Body.Close() }()` to explicitly discard the error, satisfying errcheck.",
+      "evidence": "defer resp.Body.Close()\n\ngolangci-lint output: operators/keystone/internal/controller/reconcile_healthcheck.go:70:23: Error return value of `resp.Body.Close` is not checked (errcheck)",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "PC3",
+      "severity": "MAJOR",
+      "description": "reconcile_healthcheck_test.go uses NewWithT(t) (15 occurrences) while all other test files in the same package use NewGomegaWithT(t) (235 occurrences). Both are functionally identical (NewGomegaWithT is an alias), but the codebase convention is NewGomegaWithT per the established 'Gomega test assertions with NewGomegaWithT' pattern.",
+      "location": "operators/keystone/internal/controller/reconcile_healthcheck_test.go:88",
+      "fix": "Replace all 15 occurrences of `NewWithT(t)` with `NewGomegaWithT(t)` to match the established codebase convention.",
+      "evidence": "reconcile_healthcheck_test.go:88: g := NewWithT(t)\nreconcile_healthcheck_test.go:98: g := NewWithT(t)\n... (15 total)\n\nvs. 235 occurrences of NewGomegaWithT(t) across all other test files in the package",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding os.ErrDeadlineExceeded to the timeout classification (currently only checks context.DeadlineExceeded). While HTTP client timeouts use context.DeadlineExceeded, socket-level I/O deadline errors use os.ErrDeadlineExceeded. These are not equivalent per errors.Is. Low risk since http.Client with context timeout always produces context.DeadlineExceeded."
+  ],
+  "next_steps": [
+    "Fix errcheck lint error: change defer resp.Body.Close() to defer func() { _ = resp.Body.Close() }()",
+    "Replace NewWithT with NewGomegaWithT across reconcile_healthcheck_test.go (15 occurrences)"
+  ],
+  "detected_patterns": []
+}

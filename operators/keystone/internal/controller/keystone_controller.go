@@ -41,6 +41,7 @@ var subConditionTypes = []string{
 	"DatabaseReady",
 	conditionTypePolicyValidReady,
 	"DeploymentReady",
+	conditionTypeKeystoneAPIReady,
 	"HPAReady",
 	"NetworkPolicyReady",
 	"BootstrapReady",
@@ -50,8 +51,9 @@ var subConditionTypes = []string{
 // KeystoneReconciler reconciles a Keystone object.
 type KeystoneReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Scheme     *runtime.Scheme
+	Recorder   record.EventRecorder
+	HTTPClient HTTPDoer
 }
 
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones,verbs=get;list;watch;create;update;patch;delete
@@ -123,6 +125,12 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	if result, err := r.reconcileDeployment(ctx, &keystone, configMapName); !result.IsZero() || err != nil {
+		return r.updateStatus(ctx, &keystone, result, err)
+	}
+
+	// Health check runs after Deployment because it depends on
+	// Status.Endpoint which reconcileDeployment sets (CC-0067, REQ-007).
+	if result, err := r.reconcileHealthCheck(ctx, &keystone); !result.IsZero() || err != nil {
 		return r.updateStatus(ctx, &keystone, result, err)
 	}
 

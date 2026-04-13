@@ -2,8 +2,8 @@
   "feature_id": "CC-0067",
   "title": "Add post-deployment Keystone API health check",
   "slug": "add-post-deployment-keystone-api-health-check",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #183: Add post-deployment Keystone API health verification\n\n**Category**: feature | **Scope**: Medium\n\n**Description**: After reconcileDeployment confirms all replicas are available, add a health check sub-reconciler that performs an HTTP GET to the Keystone /v3 endpoint from within the reconciler. This verifies that the Keystone API is actually serving requests, not just that pods are running. Set a KeystoneAPIReady condition based on the probe result.\n\n**Motivation**: A Deployment can report all replicas as ready while uWSGI serves 500s due to misconfigured keystone.conf, database connectivity issues, or other runtime failures. Deployment readiness only confirms the container started and passed its readiness probe — it does not verify end-to-end API functionality. This is a gap between infrastructure readiness and service readiness.\n\n**Affected Areas**:\n- `operators/keystone/internal/controller/reconcile_deployment.go`\n- `operators/keystone/internal/controller/keystone_controller.go`\n\n**Acceptance Criteria**:\n- [ ] New sub-reconciler or post-check performs HTTP GET to Keystone /v3 endpoint\n- [ ] KeystoneAPIReady condition reflects actual API availability\n- [ ] Configurable timeout and retry for the health check\n- [ ] Reconciler handles cases where Service is not yet created or endpoints are not ready\n- [ ] Unit test with mock HTTP server validates health check logic\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/183",
   "stories": [
@@ -297,6 +297,7 @@
       "description": "In operators/keystone/internal/controller/reconcile_healthcheck.go, define the HTTPDoer interface with a single Do(*http.Request) (*http.Response, error) method. Add an HTTPClient HTTPDoer field to the KeystoneReconciler struct in keystone_controller.go. Add a helper method httpClient() that returns HTTPClient if non-nil, else http.DefaultClient. Unit test in reconcile_healthcheck_test.go: verify httpClient() returns the injected client when set and http.DefaultClient when nil.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -307,6 +308,7 @@
       "description": "Add RequeueHealthCheck = 10 * time.Second and HealthCheckTimeout = 10 * time.Second to requeue_intervals.go with doc comments following the existing pattern. RequeueHealthCheck is the interval for requeuing on health check failure. HealthCheckTimeout is the bounded timeout for the HTTP request to prevent blocking the reconcile loop.",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -317,6 +319,7 @@
       "description": "Add 'KeystoneAPIReady' to the subConditionTypes slice in keystone_controller.go, positioned after 'DeploymentReady' and before 'HPAReady'. Unit test in keystone_controller_test.go: verify aggregateReady returns false when KeystoneAPIReady is missing from conditions, and true when all conditions including KeystoneAPIReady are True.",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -327,6 +330,7 @@
       "description": "Create operators/keystone/internal/controller/reconcile_healthcheck.go with the reconcileHealthCheck method. The method: (1) checks keystone.Status.Endpoint is non-empty, returning False/EndpointNotReady if empty; (2) creates an HTTP GET request with a context timeout of HealthCheckTimeout; (3) calls httpClient().Do(req); (4) if err != nil, classifies the error and sets condition; (5) if resp received, defers resp.Body.Close(), checks status 200-299 for True/APIHealthy, else False/APIUnhealthy with status code in message; (6) returns ctrl.Result{} on success or ctrl.Result{RequeueAfter: RequeueHealthCheck} on failure. Unit tests using httptest.NewServer: test healthy 200, unhealthy 500, unhealthy 503, and verify ObservedGeneration is set.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-004",
@@ -339,6 +343,7 @@
       "description": "In reconcile_healthcheck.go, ensure the empty endpoint check returns KeystoneAPIReady=False with Reason 'EndpointNotReady' and Message 'endpoint not yet configured'. Unit test in reconcile_healthcheck_test.go: create a Keystone CR with empty Status.Endpoint, call reconcileHealthCheck, verify condition is False/EndpointNotReady and result.RequeueAfter equals RequeueHealthCheck.",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -349,6 +354,7 @@
       "description": "In reconcile_healthcheck.go, add error classification logic: (1) context.DeadlineExceeded or os.ErrDeadlineExceeded → Reason 'HealthCheckTimeout'; (2) *net.DNSError → Reason 'EndpointNotReady'; (3) connection refused (string match on 'connection refused') → Reason 'ConnectionFailed'; (4) fallback → Reason 'HealthCheckFailed'. All network errors set KeystoneAPIReady=False and return RequeueAfter (not error). Unit tests with mock HTTPDoer returning each error type.",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-003"
@@ -360,6 +366,7 @@
       "description": "Unit tests in reconcile_healthcheck_test.go: (1) connection refused — mock HTTPDoer returns a *url.Error wrapping 'connection refused' — verify condition False/ConnectionFailed and RequeueAfter; (2) DNS failure — mock HTTPDoer returns a *net.DNSError — verify condition False/EndpointNotReady; (3) generic error — mock returns plain error — verify condition False/HealthCheckFailed. All tests verify ObservedGeneration matches keystone.Generation.",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -370,6 +377,7 @@
       "description": "In keystone_controller.go Reconcile(), add the reconcileHealthCheck call after reconcileDeployment and before reconcileHPA, following the same pattern: if result, err := r.reconcileHealthCheck(ctx, &keystone); !result.IsZero() || err != nil { return r.updateStatus(...) }. Unit test in keystone_controller_test.go: verify reconcileHealthCheck requeue prevents HPA and later sub-reconcilers from running.",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -380,6 +388,7 @@
       "description": "Unit tests: (1) verify HTTP response body is closed after processing for both 200 and 500 responses by using a custom ReadCloser that tracks Close() calls; (2) verify the full reconcile chain calls reconcileHealthCheck when DeploymentReady passes and skips it when deployment is not ready.",
       "level": 3,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-007",
         "REQ-008"
@@ -391,6 +400,7 @@
       "description": "Update docs/reference/keystone-reconciler.md: (1) add KeystoneAPIReady to the Sub-Condition Types table with Set By 'reconcileHealthCheck' and Description 'Keystone /v3 endpoint responding with HTTP 2xx'; (2) add a reconcileHealthCheck section following the existing sub-reconciler documentation pattern (File, Signature, Purpose, Condition Contract table with all Reason/Message/RequeueAfter values); (3) update the Reconciliation Flow ASCII diagram to include the health check step between reconcileDeployment and reconcileHPA. Update docs/reference/keystone-crd.md: add KeystoneAPIReady to the conditions example.",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-005"
@@ -530,6 +540,195 @@
       "story": "Health check sub-reconciler is testable with mock HTTP server",
       "expected": "HTTP response body is closed after processing a 500 response, verified via a custom ReadCloser that tracks Close() calls [unit]",
       "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_NotFound_ReturnsEmptyResult",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_SetsAllSubConditionsTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_AggregatesReadyCondition",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_StatusUpdatePersisted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_Idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSetupWithManager_RegistersWithoutError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_AllTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_OneFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_MissingCondition",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_Empty",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_EarlyReturnOnSecretsNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_EarlyReturnOnDatabaseNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_SequentialProgression",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_ReadyFalseWhenDeploymentNotAvailable",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_ObservedGenerationTracked",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSecretToKeystoneMapper_ReferencedSecrets",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestCommonLabels_ExactKeyValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSelectorLabels_ExactKeyValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSelectorLabels_SubsetOfCommonLabels",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSecretToKeystoneMapper_OwnedSecrets",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSubConditionTypesIncludesKeystoneAPIReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReadyIncludesKeystoneAPIReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReadyAllTrueWithKeystoneAPIReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_healthcheck_test.go",
+      "test_function": "TestHttpClientReturnsInjectedClient",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_healthcheck_test.go",
+      "test_function": "TestHttpClientReturnsDefaultClientWhenNil",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/requeue_intervals_test.go",
+      "test_function": "TestRequeueHealthCheckConstants",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_HealthCheckStopsChainOnFailure",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],
@@ -558,8 +757,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-12T17:52:45.292701"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-12T18:28:40.381737"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-13T12:34:55.051663"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/195",
+  "pr_number": 195,
   "execution_history": [
     {
       "run_id": "8d088e53-3e54-474c-b6e9-566efa01beea",
@@ -571,6 +780,84 @@
           "name": "prepare",
           "duration": 649.2046031951904,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "60d48622-1dfb-44ae-83f3-8cc476435eaf",
+      "timestamp": "2026-04-12T19:05:41.489286",
+      "total_duration": 1967.2386581897736,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (3 tasks)",
+          "duration": 477.70311665534973,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (4 tasks)",
+          "duration": 364.37877225875854,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (2 tasks)",
+          "duration": 390.4868161678314,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (1 tasks)",
+          "duration": 207.86515736579895,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0067] Code Review",
+          "duration": 336.223806142807,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0067] Improvements",
+          "duration": 135.24310898780823,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0067] Simplify",
+          "duration": 55.33788061141968,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "91caf762-1c66-47fd-9e52-8ff476555f40",
+      "timestamp": "2026-04-12T19:33:23.432598",
+      "total_duration": 800.9854946136475,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 800.9854946136475,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "f72ffdfb-8599-49e3-a4d5-241c0cdb7670",
+      "timestamp": "2026-04-13T12:20:33.103870",
+      "total_duration": 189.39447665214539,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 189.39447665214539,
+          "type": "review_address",
           "status": "done"
         }
       ]

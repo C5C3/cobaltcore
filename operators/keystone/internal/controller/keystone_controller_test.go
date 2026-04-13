@@ -8,6 +8,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -294,6 +297,17 @@ func newTestReconciler(objs ...runtime.Object) *KeystoneReconciler {
 	}
 }
 
+// testHealthyHTTPClient returns a mock HTTPDoer that responds with HTTP 200 so
+// that reconcileHealthCheck sets KeystoneAPIReady=True during integration tests (CC-0067).
+func testHealthyHTTPClient() HTTPDoer {
+	return &mockHTTPDoer{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("")),
+		},
+	}
+}
+
 func TestReconcile_NotFound_ReturnsEmptyResult(t *testing.T) {
 	g := NewGomegaWithT(t)
 	r := newTestReconciler()
@@ -312,6 +326,7 @@ func TestReconcile_SetsAllSubConditionsTrue(t *testing.T) {
 	configMapName := testComputeConfigMapName(t)
 	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedSchemaCheckJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
 	r := newTestReconciler(objs...)
+	r.HTTPClient = testHealthyHTTPClient()
 
 	result, err := r.Reconcile(context.Background(), reconcile.Request{
 		NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace},
@@ -324,7 +339,7 @@ func TestReconcile_SetsAllSubConditionsTrue(t *testing.T) {
 	var updated keystonev1alpha1.Keystone
 	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
 
-	for _, condType := range []string{"SecretsReady", "FernetKeysReady", "CredentialKeysReady", "DatabaseReady", conditionTypePolicyValidReady, "DeploymentReady", "HPAReady", "NetworkPolicyReady", "BootstrapReady", "TrustFlushReady"} {
+	for _, condType := range []string{"SecretsReady", "FernetKeysReady", "CredentialKeysReady", "DatabaseReady", conditionTypePolicyValidReady, "DeploymentReady", conditionTypeKeystoneAPIReady, "HPAReady", "NetworkPolicyReady", "BootstrapReady", "TrustFlushReady"} {
 		cond := meta.FindStatusCondition(updated.Status.Conditions, condType)
 		g.Expect(cond).NotTo(BeNil(), "condition %s should exist", condType)
 		g.Expect(cond.Status).To(Equal(metav1.ConditionTrue), "condition %s should be True", condType)
@@ -337,6 +352,7 @@ func TestReconcile_AggregatesReadyCondition(t *testing.T) {
 	configMapName := testComputeConfigMapName(t)
 	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedSchemaCheckJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
 	r := newTestReconciler(objs...)
+	r.HTTPClient = testHealthyHTTPClient()
 
 	_, err := r.Reconcile(context.Background(), reconcile.Request{
 		NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace},
@@ -358,6 +374,7 @@ func TestReconcile_StatusUpdatePersisted(t *testing.T) {
 	configMapName := testComputeConfigMapName(t)
 	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedSchemaCheckJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
 	r := newTestReconciler(objs...)
+	r.HTTPClient = testHealthyHTTPClient()
 
 	_, err := r.Reconcile(context.Background(), reconcile.Request{
 		NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace},
@@ -376,6 +393,7 @@ func TestReconcile_Idempotent(t *testing.T) {
 	configMapName := testComputeConfigMapName(t)
 	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedSchemaCheckJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
 	r := newTestReconciler(objs...)
+	r.HTTPClient = testHealthyHTTPClient()
 
 	// First reconcile.
 	result1, err := r.Reconcile(context.Background(), reconcile.Request{
@@ -424,6 +442,7 @@ func TestAggregateReady_AllTrue(t *testing.T) {
 		{Type: "DatabaseReady", Status: metav1.ConditionTrue},
 		{Type: conditionTypePolicyValidReady, Status: metav1.ConditionTrue},
 		{Type: "DeploymentReady", Status: metav1.ConditionTrue},
+		{Type: "KeystoneAPIReady", Status: metav1.ConditionTrue},
 		{Type: "HPAReady", Status: metav1.ConditionTrue},
 		{Type: "NetworkPolicyReady", Status: metav1.ConditionTrue},
 		{Type: "BootstrapReady", Status: metav1.ConditionTrue},
@@ -645,6 +664,57 @@ func TestReconcile_ReadyFalseWhenDeploymentNotAvailable(t *testing.T) {
 		"BootstrapReady should not be set when deployment is not available")
 }
 
+// TestReconcile_HealthCheckStopsChainOnFailure verifies that when the API
+// health check returns a non-2xx response, the reconcile chain short-circuits:
+// conditions before the health check in the chain are set, but conditions
+// after it (HPA, Bootstrap, TrustFlush) are not (CC-0067, REQ-007).
+func TestReconcile_HealthCheckStopsChainOnFailure(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	configMapName := testComputeConfigMapName(t)
+	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedSchemaCheckJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
+	r := newTestReconciler(objs...)
+	r.HTTPClient = &mockHTTPDoer{
+		resp: &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Body:       io.NopCloser(strings.NewReader("")),
+		},
+	}
+
+	ctx := context.Background()
+	result, err := r.Reconcile(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace},
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueHealthCheck))
+
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
+
+	// Conditions set BEFORE health check in the chain should be True.
+	for _, condType := range []string{"SecretsReady", "FernetKeysReady", "CredentialKeysReady", "DatabaseReady", "DeploymentReady", "NetworkPolicyReady"} {
+		cond := meta.FindStatusCondition(updated.Status.Conditions, condType)
+		g.Expect(cond).NotTo(BeNil(), "condition %s should exist (runs before health check)", condType)
+		g.Expect(cond.Status).To(Equal(metav1.ConditionTrue), "condition %s should be True", condType)
+	}
+
+	// KeystoneAPIReady should be False with APIUnhealthy reason.
+	apiCond := meta.FindStatusCondition(updated.Status.Conditions, "KeystoneAPIReady")
+	g.Expect(apiCond).NotTo(BeNil(), "KeystoneAPIReady should be set")
+	g.Expect(apiCond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(apiCond.Reason).To(Equal("APIUnhealthy"))
+
+	// Conditions set AFTER health check should NOT exist (chain stopped).
+	for _, condType := range []string{"HPAReady", "BootstrapReady", "TrustFlushReady"} {
+		cond := meta.FindStatusCondition(updated.Status.Conditions, condType)
+		g.Expect(cond).To(BeNil(), "condition %s should not be set when health check fails", condType)
+	}
+
+	// Ready should not be set (updateStatus was called from health check, not from the end).
+	readyCond := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
+	g.Expect(readyCond).To(BeNil(), "Ready should not be set when health check short-circuits the chain")
+}
+
 func TestReconcile_ObservedGenerationTracked(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -652,6 +722,7 @@ func TestReconcile_ObservedGenerationTracked(t *testing.T) {
 	configMapName := testComputeConfigMapName(t)
 	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedSchemaCheckJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
 	r := newTestReconciler(objs...)
+	r.HTTPClient = testHealthyHTTPClient()
 
 	ctx := context.Background()
 	result, err := r.Reconcile(ctx, reconcile.Request{
@@ -968,4 +1039,49 @@ func TestUpdateStatus_ResultPassthrough_WithRequeueAfter(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(inputResult),
 		"result must be passed through unchanged when status update succeeds")
+}
+
+func TestSubConditionTypesIncludesKeystoneAPIReady(t *testing.T) {
+	g := NewGomegaWithT(t)
+	g.Expect(subConditionTypes).To(ContainElement("KeystoneAPIReady"))
+}
+
+func TestAggregateReadyIncludesKeystoneAPIReady(t *testing.T) {
+	g := NewGomegaWithT(t)
+	// All expected sub-conditions are True EXCEPT KeystoneAPIReady is missing.
+	// aggregateReady must return false when KeystoneAPIReady is absent.
+	conditions := []metav1.Condition{
+		{Type: "SecretsReady", Status: metav1.ConditionTrue},
+		{Type: "FernetKeysReady", Status: metav1.ConditionTrue},
+		{Type: "CredentialKeysReady", Status: metav1.ConditionTrue},
+		{Type: "DatabaseReady", Status: metav1.ConditionTrue},
+		{Type: conditionTypePolicyValidReady, Status: metav1.ConditionTrue},
+		{Type: "DeploymentReady", Status: metav1.ConditionTrue},
+		{Type: "HPAReady", Status: metav1.ConditionTrue},
+		{Type: "NetworkPolicyReady", Status: metav1.ConditionTrue},
+		{Type: "BootstrapReady", Status: metav1.ConditionTrue},
+		{Type: "TrustFlushReady", Status: metav1.ConditionTrue},
+	}
+	g.Expect(aggregateReady(conditions)).To(BeFalse(),
+		"aggregateReady should return false when KeystoneAPIReady condition is missing")
+}
+
+func TestAggregateReadyAllTrueWithKeystoneAPIReady(t *testing.T) {
+	g := NewGomegaWithT(t)
+	// All sub-conditions including KeystoneAPIReady are True.
+	conditions := []metav1.Condition{
+		{Type: "SecretsReady", Status: metav1.ConditionTrue},
+		{Type: "FernetKeysReady", Status: metav1.ConditionTrue},
+		{Type: "CredentialKeysReady", Status: metav1.ConditionTrue},
+		{Type: "DatabaseReady", Status: metav1.ConditionTrue},
+		{Type: conditionTypePolicyValidReady, Status: metav1.ConditionTrue},
+		{Type: "DeploymentReady", Status: metav1.ConditionTrue},
+		{Type: "KeystoneAPIReady", Status: metav1.ConditionTrue},
+		{Type: "HPAReady", Status: metav1.ConditionTrue},
+		{Type: "NetworkPolicyReady", Status: metav1.ConditionTrue},
+		{Type: "BootstrapReady", Status: metav1.ConditionTrue},
+		{Type: "TrustFlushReady", Status: metav1.ConditionTrue},
+	}
+	g.Expect(aggregateReady(conditions)).To(BeTrue(),
+		"aggregateReady should return true when all conditions including KeystoneAPIReady are True")
 }

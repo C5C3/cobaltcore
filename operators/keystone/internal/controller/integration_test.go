@@ -68,9 +68,10 @@ func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, c
 		},
 		func(mgr ctrl.Manager) error {
 			r := &KeystoneReconciler{
-				Client:   mgr.GetClient(),
-				Scheme:   mgr.GetScheme(),
-				Recorder: mgr.GetEventRecorderFor("keystone-controller"),
+				Client:     mgr.GetClient(),
+				Scheme:     mgr.GetScheme(),
+				Recorder:   mgr.GetEventRecorderFor("keystone-controller"),
+				HTTPClient: testHealthyHTTPClient(),
 			}
 			return ctrl.NewControllerManagedBy(mgr).
 				For(&keystonev1alpha1.Keystone{}).
