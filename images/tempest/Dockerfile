@@ -22,7 +22,8 @@ RUN --mount=type=bind,from=upper-constraints,source=upper-constraints.txt,target
         tempest==${TEMPEST_VERSION} \
         keystone-tempest-plugin==${KEYSTONE_TEMPEST_PLUGIN_VERSION} \
         python-subunit \
-        junitxml
+        junitxml \
+        defusedxml
 
 # ---------- Stage 2: runtime ----------
 # hadolint ignore=DL3006

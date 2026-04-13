@@ -14,8 +14,10 @@ name: Verify Container Images
       - releases/**
       - patches/**
       - scripts/**
+      - hack/tempest/**
       - tests/container-images/**
       - tests/scripts/**
+      - tests/tempest/test_retry_helpers.py
       - .github/workflows/build-images.yaml
       - .github/workflows/verify-container-images.yaml
   pull_request:
@@ -24,8 +26,10 @@ name: Verify Container Images
       - releases/**
       - patches/**
       - scripts/**
+      - hack/tempest/**
       - tests/container-images/**
       - tests/scripts/**
+      - tests/tempest/test_retry_helpers.py
       - .github/workflows/build-images.yaml
       - .github/workflows/verify-container-images.yaml
 
@@ -67,3 +71,11 @@ jobs:
 
       - name: Test apply-constraint-overrides
         run: bash tests/scripts/test_apply_constraint_overrides.sh
+
+      - name: Install tempest retry helper test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3-defusedxml
+
+      - name: Test tempest retry helpers
+        run: python3 tests/tempest/test_retry_helpers.py

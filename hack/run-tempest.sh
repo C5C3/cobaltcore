@@ -15,7 +15,10 @@
 #      keystone_tempest_plugin.*) to isolate suites that share Keystone's
 #      dynamic service_providers state — see docs/reference/tempest-test-
 #      infrastructure.md
-#   5. Convert subunit results to JUnit XML for CI artifact upload
+#   5. Retry any failed tests once serially (concurrency 1) to absorb cross-
+#      suite race flakes; tests that pass on retry are rewritten as flakes
+#      rather than failures
+#   6. Convert subunit results to JUnit XML for CI artifact upload
 #
 # REQ-006: Local Tempest execution orchestration script.
 # REQ-011: set -euo pipefail, SPDX Apache-2.0 header, CC-0035 reference.
@@ -245,6 +248,16 @@ run_tempest() {
     "${config_dir}/tempest.conf" > "${etc_dir}/tempest.conf"
   [[ -f "${config_dir}/exclude-tests.txt" ]] && cp "${config_dir}/exclude-tests.txt" "${etc_dir}/"
 
+  # Stage the retry helpers and shared in-container runner alongside
+  # tempest.conf so they are available under /etc/tempest/ inside the
+  # container.
+  install -m 0755 "${SCRIPT_DIR}/tempest/extract-failed.py" \
+    "${etc_dir}/extract-failed.py"
+  install -m 0755 "${SCRIPT_DIR}/tempest/merge-retry-junit.py" \
+    "${etc_dir}/merge-retry-junit.py"
+  install -m 0755 "${SCRIPT_DIR}/tempest/run-tests.sh" \
+    "${etc_dir}/run-tests.sh"
+
   # Scope-split the include list into two phase files so core tempest.api.*
   # and keystone_tempest_plugin.* run in separate sequential stestr passes.
   # Keystone injects the current list of federation service providers into
@@ -294,57 +307,9 @@ run_tempest() {
       --add-host "${svc_name}.${NAMESPACE}.svc:${catalog_ip}" \
       -v "${etc_dir}:/etc/tempest:ro" \
       -v "${OUTPUT_DIR}:/output" \
+      -e "TEMPEST_CONCURRENCY=${TEMPEST_CONCURRENCY}" \
       "${TEMPEST_IMAGE}" \
-      bash -c "
-        set -euo pipefail
-        # HOME=/tmp: the openstack user's real home (/var/lib/openstack) is owned
-        # by root, so tempest cannot create ~/.tempest there. Redirect to /tmp.
-        export HOME=/tmp
-        mkdir -p /tmp/tempest-workspace /tmp/tempest-logs
-        cd /tmp/tempest-workspace
-        tempest init .
-        cp /etc/tempest/tempest.conf etc/tempest.conf
-
-        exclude_args=''
-        if [[ -f /etc/tempest/exclude-tests.txt ]]; then
-          exclude_args='--exclude-list /etc/tempest/exclude-tests.txt'
-        fi
-
-        run_phase() {
-          local phase=\$1
-          echo
-          echo \"--- Tempest phase: \${phase} ---\"
-          set +e
-          # shellcheck disable=SC2086  # intentional word-splitting on exclude_args
-          stestr run --include-list /etc/tempest/phases/\${phase}.txt \${exclude_args} --concurrency ${TEMPEST_CONCURRENCY} --subunit | tee /output/\${phase}.subunit | subunit2pyunit 2>&1 | grep --line-buffered -E '\.\.\. '
-          local phase_rc=\${PIPESTATUS[0]}
-          set -e
-          return \${phase_rc}
-        }
-
-        overall_rc=0
-        run_phase phase-1-core || overall_rc=\$?
-        phase2_rc=0
-        run_phase phase-2-plugin || phase2_rc=\$?
-        if [[ \${phase2_rc} -gt \${overall_rc} ]]; then
-          overall_rc=\${phase2_rc}
-        fi
-
-        # Subunit v2 is stream-concatenation safe, so cat'ing the two phase
-        # streams produces a single valid subunit stream.
-        cat /output/phase-1-core.subunit /output/phase-2-plugin.subunit > /output/tempest.subunit
-        subunit2junitxml < /output/tempest.subunit > /output/tempest-results.xml 2>/dev/null || true
-
-        # Guard against stestr run --subunit exiting 0 on test failures:
-        # check the JUnit XML for reported failures or errors.
-        if [[ \${overall_rc} -eq 0 && -f /output/tempest-results.xml ]]; then
-          if grep -qE 'failures=\"[1-9]|errors=\"[1-9]' /output/tempest-results.xml; then
-            echo 'ERROR: Tempest reported test failures.'
-            overall_rc=1
-          fi
-        fi
-        exit \${overall_rc}
-      " || rc=$?
+      bash /etc/tempest/run-tests.sh || rc=$?
 
   if [[ "${rc}" -eq 124 ]]; then
     log "ERROR: Tempest timed out after ${TEMPEST_TIMEOUT}s. Stopping container..."

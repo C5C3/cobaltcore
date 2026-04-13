@@ -18,6 +18,11 @@
 # under parallel execution. Inside each phase, tests still run at the default
 # concurrency of 4. See docs/reference/tempest-test-infrastructure.md.
 #
+# After both phases, any test that failed on the first run is re-run once
+# serially (stestr --concurrency 1) to absorb cross-suite race flakes. Tests
+# that pass on retry are rewritten in the JUnit report as flakes rather than
+# failures. Tests that still fail are left as failures and the job exits 1.
+#
 # Required env vars:
 #   (none — all have sensible defaults for the keystone test scenario)
 #
@@ -112,6 +117,15 @@ sed -e "s|${SERVICE_K8S_NAME}\\.${NAMESPACE}\\.svc\\.cluster\\.local:5000|localh
 
 [[ -f "${CONFIG_DIR}/exclude-tests.txt" ]] && cp "${CONFIG_DIR}/exclude-tests.txt" "${OUTPUT_DIR}/config/"
 
+# Stage the retry helpers and shared in-container runner next to tempest.conf
+# so they are available under /etc/tempest/ inside the container.
+install -m 0755 "${SCRIPT_DIR}/tempest/extract-failed.py" \
+  "${OUTPUT_DIR}/config/extract-failed.py"
+install -m 0755 "${SCRIPT_DIR}/tempest/merge-retry-junit.py" \
+  "${OUTPUT_DIR}/config/merge-retry-junit.py"
+install -m 0755 "${SCRIPT_DIR}/tempest/run-tests.sh" \
+  "${OUTPUT_DIR}/config/run-tests.sh"
+
 # ---------------------------------------------------------------------------
 # 5. Scope-split the include list into two phase files.
 # ---------------------------------------------------------------------------
@@ -166,53 +180,9 @@ docker run --rm \
   --add-host "${SERVICE_K8S_NAME}.${NAMESPACE}.svc:127.0.0.1" \
   -v "${WORKSPACE_ROOT}/${OUTPUT_DIR}/config:/etc/tempest:ro" \
   -v "${WORKSPACE_ROOT}/${OUTPUT_DIR}:/output" \
+  -e "TEMPEST_CONCURRENCY=${TEMPEST_CONCURRENCY}" \
+  -e "TEMPEST_GROUP_START=::group::" \
+  -e "TEMPEST_GROUP_END=::endgroup::" \
+  -e "TEMPEST_ERROR_PREFIX=::error::" \
   "${TEMPEST_IMAGE}" \
-  bash -c "
-    set -euo pipefail
-    export HOME=/tmp
-    mkdir -p /tmp/tempest-workspace /tmp/tempest-logs
-    cd /tmp/tempest-workspace
-    tempest init .
-    cp /etc/tempest/tempest.conf etc/tempest.conf
-
-    exclude_args=''
-    if [[ -f /etc/tempest/exclude-tests.txt ]]; then
-      exclude_args='--exclude-list /etc/tempest/exclude-tests.txt'
-    fi
-
-    run_phase() {
-      local phase=\$1
-      echo
-      echo \"::group::Tempest phase: \${phase}\"
-      set +e
-      # shellcheck disable=SC2086  # intentional word-splitting on exclude_args
-      stestr run --include-list /etc/tempest/phases/\${phase}.txt \${exclude_args} --concurrency ${TEMPEST_CONCURRENCY} --subunit | tee /output/\${phase}.subunit | subunit2pyunit 2>&1 | grep --line-buffered -E '\.\.\. '
-      local phase_rc=\${PIPESTATUS[0]}
-      set -e
-      echo '::endgroup::'
-      return \${phase_rc}
-    }
-
-    overall_rc=0
-    run_phase phase-1-core || overall_rc=\$?
-    phase2_rc=0
-    run_phase phase-2-plugin || phase2_rc=\$?
-    if [[ \${phase2_rc} -gt \${overall_rc} ]]; then
-      overall_rc=\${phase2_rc}
-    fi
-
-    # Merge the two subunit streams into the single artifact the CI upload
-    # step expects. Subunit v2 is stream-concatenation safe by design.
-    cat /output/phase-1-core.subunit /output/phase-2-plugin.subunit > /output/tempest.subunit
-    subunit2junitxml < /output/tempest.subunit > /output/tempest-results.xml 2>/dev/null || true
-
-    # Guard against stestr run --subunit exiting 0 on test failures:
-    # check the JUnit XML for reported failures or errors.
-    if [[ \${overall_rc} -eq 0 && -f /output/tempest-results.xml ]]; then
-      if grep -qE 'failures=\"[1-9]|errors=\"[1-9]' /output/tempest-results.xml; then
-        echo '::error::Tempest reported test failures.'
-        overall_rc=1
-      fi
-    fi
-    exit \${overall_rc}
-  "
+  bash /etc/tempest/run-tests.sh

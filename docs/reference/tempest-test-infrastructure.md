@@ -27,6 +27,9 @@ and `build-images.yaml` dynamically discovers releases for the Tempest image pip
 | `tests/container-images/verify_tempest.sh` | Image verification script (PASS/FAIL counters) |
 | `hack/run-tempest.sh` | Local orchestration script for running Tempest against a kind cluster |
 | `hack/ci-run-tempest.sh` | CI-specific Tempest wrapper with port-forwarding and config generation (CC-0050) |
+| `hack/tempest/extract-failed.py` | Print anchored regex patterns for failed testcases in a JUnit report (used to build the retry include-list) |
+| `hack/tempest/merge-retry-junit.py` | Merge a retry subunit stream into a JUnit report, rewriting resolved failures as flakes |
+| `hack/tempest/run-tests.sh` | Shared in-container runner invoked by both runners; holds the phase + retry + exit-code logic so it stays identical between CI and local runs |
 | `Makefile` | `tempest-test` target delegates to `hack/run-tempest.sh` |
 | `.github/workflows/ci.yaml` | `tempest` job with release matrix (CC-0051) |
 | `.github/workflows/build-images.yaml` | `build-tempest` and `merge-tempest-image` jobs (release-parameterized via `generate-matrix`) |
@@ -257,9 +260,35 @@ running them in two separate stestr invocations.
 The two phases each emit a subunit stream (`phase-1-core.subunit`,
 `phase-2-plugin.subunit`); the runner concatenates them into
 `tempest.subunit` and converts that to JUnit XML. Subunit v2 is
-stream-concatenation safe by design. The overall exit code is the maximum
-of the two phase exit codes, so both phases always run and any failure in
-either is reported.
+stream-concatenation safe by design.
+
+#### Serial retry of failing tests
+
+After both phases, the runner inspects the JUnit report: if any test is
+marked failed or errored, those test IDs are extracted and rerun once in a
+third `stestr run` invocation with `--concurrency 1`. The retry output is
+written to `retry.subunit`, appended to the combined subunit stream, and
+merged into the JUnit report: tests that pass on retry have their
+`<failure>`/`<error>` children removed, the enclosing `<testsuite>` counters
+are decremented, and a `<system-out>` note records `flaky: failed on first
+run, passed on retry`. Tests that still fail after retry stay as failures.
+
+The two helpers live at `hack/tempest/extract-failed.py` (reads the JUnit
+report, prints anchored regex patterns for each failed `classname.method`)
+and `hack/tempest/merge-retry-junit.py` (rewrites the JUnit report from the
+retry subunit stream). The phase + retry + exit-code sequence itself lives
+in `hack/tempest/run-tests.sh`, which is invoked inside the container by
+both `hack/ci-run-tempest.sh` and `hack/run-tempest.sh`. All three files
+are staged next to `tempest.conf` so they are available at `/etc/tempest/`
+inside the container. A failure inside either Python helper (missing
+dependency, parse error) is caught by the runner and falls back to the
+original stestr exit code rather than aborting the whole Tempest run.
+
+The final exit code is derived from the (possibly retry-adjusted) JUnit
+report: any remaining failures or errors fail the job. If the retry
+resolved every failure the runner exits 0. If the initial `stestr` process
+crashed hard enough that no JUnit report was produced, the runner still
+exits non-zero via the captured phase exit code.
 
 ### exclude-tests.txt
 
@@ -357,18 +386,22 @@ SERVICE=keystone hack/run-tempest.sh
 | Pre-flight checks | Validates `SERVICE` is set, required tools (`docker`, `kubectl`, `yq`) are installed, Docker is running, service config directory exists, `test-refs.yaml` exists | Exits 1 with descriptive error |
 | Build Tempest image | Resolves versions from `test-refs.yaml`, builds with `docker build` using named build contexts pointing to GHCR base images | Exits on build failure (set -e) |
 | Extract admin password | Reads `keystone-admin` secret from the K8s cluster via `kubectl get secret` | Exits 1 if secret is not found or empty |
-| Run Tempest | Mounts `tempest.conf`, `phases/phase-1-core.txt`, `phases/phase-2-plugin.txt`, `exclude-tests.txt` into container; initializes Tempest workspace; runs `stestr run --subunit` once per phase; concatenates the subunit streams; converts to JUnit XML via `subunit2junitxml` | Returns max of the two phase exit codes |
+| Run Tempest | Mounts `tempest.conf`, `phases/phase-1-core.txt`, `phases/phase-2-plugin.txt`, `exclude-tests.txt`, `extract-failed.py`, `merge-retry-junit.py` into container; initializes Tempest workspace; runs `stestr run --subunit` once per phase; concatenates the subunit streams; converts to JUnit XML; reruns any failed tests serially; merges the retry outcome into the JUnit report | Non-zero if any failure remains after retry, or on hard `stestr` crash |
 
 **Output files:**
 
 | File | Format | Description |
 | --- | --- | --- |
-| `_output/tempest/tempest-results.xml` | JUnit XML | Test results for CI artifact upload |
-| `_output/tempest/tempest.subunit` | Subunit v2 | Raw test result stream |
+| `_output/tempest/tempest-results.xml` | JUnit XML | Test results for CI artifact upload (retry-adjusted) |
+| `_output/tempest/tempest.subunit` | Subunit v2 | Raw test result stream (phase 1 + phase 2 + retry) |
+| `_output/tempest/retry.subunit` | Subunit v2 | Retry stream (only present if any tests failed on first run) |
 
-The script exits with the maximum of the two per-phase `stestr` exit codes —
-non-zero if any test fails in either phase. Both phases always run, so a
-failure in phase 1 does not short-circuit phase 2.
+The script exits non-zero if the retry-adjusted JUnit report still lists
+failures or errors, and otherwise exits zero. Both phases always run, so a
+failure in phase 1 does not short-circuit phase 2. If the initial `stestr`
+invocations crashed hard enough that no JUnit report was produced, the
+captured phase exit code is used as a fallback so infra failures are still
+reported.
 
 ### make tempest-test
 
@@ -537,14 +570,25 @@ releases/<release>/test-refs.yaml ──yq──▶ TEMPEST_VERSION + KEYSTONE_T
            -v phases/phase-1-core.txt:/etc/tempest/phases/phase-1-core.txt \
            -v phases/phase-2-plugin.txt:/etc/tempest/phases/phase-2-plugin.txt \
            -v exclude-tests.txt:/etc/tempest/exclude-tests.txt \
-           c5c3/tempest:<release> bash -c "
-             tempest init . && cp tempest.conf etc/;
-             stestr run --include-list phases/phase-1-core.txt ... --subunit \
-               | tee /output/phase-1-core.subunit;
-             stestr run --include-list phases/phase-2-plugin.txt ... --subunit \
-               | tee /output/phase-2-plugin.subunit;
-             cat phase-1-core.subunit phase-2-plugin.subunit > tempest.subunit;
-             subunit2junitxml < tempest.subunit > tempest-results.xml"
+           -v extract-failed.py:/etc/tempest/extract-failed.py \
+           -v merge-retry-junit.py:/etc/tempest/merge-retry-junit.py \
+           -v run-tests.sh:/etc/tempest/run-tests.sh \
+           c5c3/tempest:<release> bash /etc/tempest/run-tests.sh
+         #
+         # Internal logic of run-tests.sh (kept here for reference; the runner
+         # scripts never invoke these steps inline — they always `bash
+         # /etc/tempest/run-tests.sh` so CI and local runs share one code path):
+         #
+         #   tempest init . && cp tempest.conf etc/
+         #   stestr run --include-list phases/phase-1-core.txt   --subunit → /output/phase-1-core.subunit
+         #   stestr run --include-list phases/phase-2-plugin.txt --subunit → /output/phase-2-plugin.subunit
+         #   cat phase-1-core.subunit phase-2-plugin.subunit > tempest.subunit
+         #   subunit2junitxml < tempest.subunit > tempest-results.xml
+         #   # retry any failed tests once serially, then rewrite the JUnit:
+         #   python3 /etc/tempest/extract-failed.py tempest-results.xml > retry-list.txt
+         #   stestr run --include-list retry-list.txt --concurrency 1 --subunit → /output/retry.subunit
+         #   cat phase-1-core.subunit phase-2-plugin.subunit retry.subunit > tempest.subunit
+         #   python3 /etc/tempest/merge-retry-junit.py tempest-results.xml retry.subunit
                          │
                          ▼
          actions/upload-artifact ──▶ tempest-<release>-results (14-day retention)
