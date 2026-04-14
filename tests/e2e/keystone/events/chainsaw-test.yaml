@@ -1,0 +1,89 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for Kubernetes event emission (CC-0070).
+# Validates that the controller emits Kubernetes events for key lifecycle
+# transitions, which unit tests with FakeRecorder cannot fully cover:
+#   - BootstrapComplete event after bootstrap job finishes
+#   - DatabaseSynced event after db_sync completes
+#   - FernetKeysGenerated event after initial Fernet key creation
+#   - CredentialKeysGenerated event after initial credential key creation
+#
+# REQ-001, REQ-002 (CC-0070)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-events
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR ──────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Wait for full reconciliation ───────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-events
+            namespace: openstack
+          status:
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+              reason: DatabaseSynced
+            (conditions[?type == 'BootstrapReady']):
+            - status: "True"
+              reason: BootstrapComplete
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Assert lifecycle events exist ───────────────────────────────
+  - try:
+    - script:
+        timeout: 30s
+        content: |
+          set -eu
+          failed=0
+          for reason in BootstrapComplete DatabaseSynced FernetKeysGenerated CredentialKeysGenerated; do
+            count=$(kubectl get events -n openstack \
+              --field-selector reason="$reason",involvedObject.name=keystone-events \
+              -o name 2>/dev/null | wc -l)
+            if [ "$count" -eq 0 ]; then
+              echo "FAIL: no $reason event found for keystone-events"
+              failed=1
+            else
+              echo "OK: found $count $reason event(s)"
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "--- All events for keystone-events ---"
+            kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30
+            exit 1
+          fi

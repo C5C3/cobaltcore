@@ -42,8 +42,15 @@ const (
 	conditionReasonDowngradeNotSupported = "DowngradeNotSupported"
 	conditionReasonUpgradePathInvalid    = "UpgradePathInvalid"
 	conditionReasonExpandInProgress      = "ExpandInProgress"
+	conditionReasonExpandFailed          = "ExpandFailed"
 	conditionReasonMigrateInProgress     = "MigrateInProgress"
+	conditionReasonMigrateFailed         = "MigrateFailed"
 	conditionReasonUpgradeRollingUpdate  = "UpgradeRollingUpdate"
+	conditionReasonContractFailed        = "ContractFailed"
+	conditionReasonUpgradeInitiated      = "UpgradeInitiated"
+	conditionReasonExpandComplete        = "ExpandComplete"
+	conditionReasonMigrateComplete       = "MigrateComplete"
+	conditionReasonUpgradeComplete       = "UpgradeComplete"
 )
 
 // isMariaDBClusterReady returns whether the MariaDB cluster referenced by
@@ -143,9 +150,10 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, keystone *ke
 				Status:             metav1.ConditionFalse,
 				ObservedGeneration: keystone.Generation,
 				Reason:             conditionReasonUpgradeTargetChanged,
-				Message: fmt.Sprintf("Image tag changed to %s during active upgrade %s → %s; complete or roll back the current upgrade first",
+				Message: fmt.Sprintf("Image tag changed to %s during active upgrade %s \u2192 %s; complete or roll back the current upgrade first",
 					keystone.Spec.Image.Tag, keystone.Status.InstalledRelease, keystone.Status.TargetRelease),
 			})
+			r.Recorder.Eventf(keystone, corev1.EventTypeWarning, conditionReasonUpgradeTargetChanged, "Image tag changed to %s during active upgrade %s \u2192 %s", keystone.Spec.Image.Tag, keystone.Status.InstalledRelease, keystone.Status.TargetRelease)
 			return ctrl.Result{}, fmt.Errorf("image tag changed during active upgrade: current upgrade targets %s but spec.image.tag is %s",
 				keystone.Status.TargetRelease, keystone.Spec.Image.Tag)
 		}
@@ -167,6 +175,7 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, keystone *ke
 			Reason:             conditionReasonDBSyncFailed,
 			Message:            fmt.Sprintf("db_sync job failed: %v", err),
 		})
+		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, conditionReasonDBSyncFailed, "db_sync job failed: %v", err)
 		return ctrl.Result{}, fmt.Errorf("running db_sync: %w", err)
 	}
 	if !done {
@@ -191,6 +200,7 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, keystone *ke
 			Reason:             conditionReasonSchemaDriftDetected,
 			Message:            fmt.Sprintf("schema-check job failed: %v", err),
 		})
+		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, conditionReasonSchemaDriftDetected, "schema-check job failed: %v", err)
 		return ctrl.Result{}, fmt.Errorf("running schema-check: %w", err)
 	}
 	if !done {
@@ -216,6 +226,7 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, keystone *ke
 		Reason:             conditionReasonDatabaseSynced,
 		Message:            "Database schema is up to date (revision verified)",
 	})
+	r.Recorder.Event(keystone, corev1.EventTypeNormal, conditionReasonDatabaseSynced, "Database schema is up to date")
 	return ctrl.Result{}, nil
 }
 
@@ -257,6 +268,7 @@ func (r *KeystoneReconciler) initiateUpgrade(ctx context.Context, keystone *keys
 			Reason:             conditionReasonVersionParseError,
 			Message:            fmt.Sprintf("failed to parse installed release %q: %v", keystone.Status.InstalledRelease, err),
 		})
+		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, conditionReasonVersionParseError, "Failed to parse installed release %q: %v", keystone.Status.InstalledRelease, err)
 		return ctrl.Result{}, fmt.Errorf("parse installed release %q: %w", keystone.Status.InstalledRelease, err)
 	}
 
@@ -269,6 +281,7 @@ func (r *KeystoneReconciler) initiateUpgrade(ctx context.Context, keystone *keys
 			Reason:             conditionReasonVersionParseError,
 			Message:            fmt.Sprintf("failed to parse target release %q: %v", keystone.Spec.Image.Tag, err),
 		})
+		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, conditionReasonVersionParseError, "Failed to parse target release %q: %v", keystone.Spec.Image.Tag, err)
 		return ctrl.Result{}, fmt.Errorf("parse target release %q: %w", keystone.Spec.Image.Tag, err)
 	}
 
@@ -280,6 +293,7 @@ func (r *KeystoneReconciler) initiateUpgrade(ctx context.Context, keystone *keys
 			Reason:             conditionReasonDowngradeNotSupported,
 			Message:            fmt.Sprintf("downgrade from %s to %s is not supported", from.Raw, to.Raw),
 		})
+		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, conditionReasonDowngradeNotSupported, "Downgrade from %s to %s is not supported", from.Raw, to.Raw)
 		return ctrl.Result{}, fmt.Errorf("downgrade from %s to %s is not supported", from.Raw, to.Raw)
 	}
 
@@ -291,6 +305,7 @@ func (r *KeystoneReconciler) initiateUpgrade(ctx context.Context, keystone *keys
 			Reason:             conditionReasonUpgradePathInvalid,
 			Message:            fmt.Sprintf("upgrade from %s to %s is not sequential; only sequential upgrades are supported", from.Raw, to.Raw),
 		})
+		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, conditionReasonUpgradePathInvalid, "Upgrade from %s to %s is not sequential", from.Raw, to.Raw)
 		return ctrl.Result{}, fmt.Errorf("upgrade from %s to %s is not sequential; only sequential upgrades are supported", from.Raw, to.Raw)
 	}
 
@@ -305,6 +320,7 @@ func (r *KeystoneReconciler) initiateUpgrade(ctx context.Context, keystone *keys
 	})
 
 	logger.Info("Upgrade detected", "from", from.Raw, "to", to.Raw, "phase", keystonev1alpha1.UpgradePhaseExpanding)
+	r.Recorder.Eventf(keystone, corev1.EventTypeNormal, conditionReasonUpgradeInitiated, "Upgrade initiated: %s \u2192 %s", from.Raw, to.Raw)
 	return ctrl.Result{Requeue: true}, nil
 }
 
@@ -362,6 +378,7 @@ func (r *KeystoneReconciler) reconcileExpand(ctx context.Context, keystone *keys
 	done, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, expandJob)
 	if err != nil {
 		setUpgradeJobFailed(keystone, "Expand", expandJob.Name, err)
+		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, conditionReasonExpandFailed, "Expand job %s failed: %v", expandJob.Name, err)
 		return ctrl.Result{}, fmt.Errorf("running expand job: %w", err)
 	}
 	if !done {
@@ -378,6 +395,7 @@ func (r *KeystoneReconciler) reconcileExpand(ctx context.Context, keystone *keys
 		Reason:             conditionReasonMigrateInProgress,
 		Message:            fmt.Sprintf("Expand complete, starting migrate: %s \u2192 %s", keystone.Status.InstalledRelease, keystone.Status.TargetRelease),
 	})
+	r.Recorder.Eventf(keystone, corev1.EventTypeNormal, conditionReasonExpandComplete, "Expand phase complete: %s \u2192 %s", keystone.Status.InstalledRelease, keystone.Status.TargetRelease)
 	return ctrl.Result{Requeue: true}, nil
 }
 
@@ -391,6 +409,7 @@ func (r *KeystoneReconciler) reconcileMigrate(ctx context.Context, keystone *key
 	done, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, migrateJob)
 	if err != nil {
 		setUpgradeJobFailed(keystone, "Migrate", migrateJob.Name, err)
+		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, conditionReasonMigrateFailed, "Migrate job %s failed: %v", migrateJob.Name, err)
 		return ctrl.Result{}, fmt.Errorf("running migrate job: %w", err)
 	}
 	if !done {
@@ -407,6 +426,7 @@ func (r *KeystoneReconciler) reconcileMigrate(ctx context.Context, keystone *key
 		Reason:             conditionReasonUpgradeRollingUpdate,
 		Message:            fmt.Sprintf("Migrate complete, waiting for Deployment rollout: %s \u2192 %s", keystone.Status.InstalledRelease, keystone.Status.TargetRelease),
 	})
+	r.Recorder.Eventf(keystone, corev1.EventTypeNormal, conditionReasonMigrateComplete, "Migrate phase complete: %s \u2192 %s", keystone.Status.InstalledRelease, keystone.Status.TargetRelease)
 	return ctrl.Result{Requeue: true}, nil
 }
 
@@ -430,6 +450,7 @@ func (r *KeystoneReconciler) reconcileContract(ctx context.Context, keystone *ke
 	done, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, contractJob)
 	if err != nil {
 		setUpgradeJobFailed(keystone, "Contract", contractJob.Name, err)
+		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, conditionReasonContractFailed, "Contract job %s failed: %v", contractJob.Name, err)
 		return ctrl.Result{}, fmt.Errorf("running contract job: %w", err)
 	}
 	if !done {
@@ -450,6 +471,7 @@ func (r *KeystoneReconciler) reconcileContract(ctx context.Context, keystone *ke
 		Reason:             conditionReasonDatabaseSynced,
 		Message:            fmt.Sprintf("Database schema is up to date (upgraded %s \u2192 %s)", from, to),
 	})
+	r.Recorder.Eventf(keystone, corev1.EventTypeNormal, conditionReasonUpgradeComplete, "Upgrade complete: %s \u2192 %s", from, to)
 	log.FromContext(ctx).Info("Upgrade complete", "from", from, "to", to)
 	return ctrl.Result{}, nil
 }

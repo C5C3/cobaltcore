@@ -1024,6 +1024,8 @@ func TestReconcileDeployment_RollingUpdate_ReadyDeployment_TransitionsToContract
 
 	// Endpoint should NOT be set during upgrade phase transition (deferred to normal path).
 	g.Expect(ks.Status.Endpoint).To(BeEmpty())
+
+	expectEvent(g, r, "Normal DeploymentRolloutComplete")
 }
 
 // TestReconcileDeployment_RollingUpdate_NotReady_Requeues verifies that when the Deployment
@@ -1085,6 +1087,8 @@ func TestReconcileDeployment_NoUpgrade_Ready_SetsEndpoint(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal("DeploymentReady"))
+
+	expectNoEvent(g, r)
 }
 
 // TestReconcileDeployment_OtherPhase_Ready_SetsEndpoint verifies that when an upgrade is

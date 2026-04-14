@@ -30,6 +30,9 @@ import (
 
 // Feature: CC-0013
 
+// Condition reason constants for DeploymentReady.
+const conditionReasonDeploymentRolloutComplete = "DeploymentRolloutComplete"
+
 // keysHash reads the named Secret for the given Keystone instance and returns
 // a deterministic SHA-256 hex digest of its Data map. If the Secret does not
 // exist, the not-found error is returned to the caller.
@@ -103,6 +106,7 @@ func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *
 	// Transition from RollingUpdate to Contracting when Deployment is ready (CC-0056, REQ-004).
 	if keystone.Status.UpgradePhase == keystonev1alpha1.UpgradePhaseRollingUpdate {
 		keystone.Status.UpgradePhase = keystonev1alpha1.UpgradePhaseContracting
+		r.Recorder.Eventf(keystone, corev1.EventTypeNormal, conditionReasonDeploymentRolloutComplete, "Deployment rollout complete during upgrade %s \u2192 %s", keystone.Status.InstalledRelease, keystone.Status.TargetRelease)
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               "DeploymentReady",
 			Status:             metav1.ConditionTrue,

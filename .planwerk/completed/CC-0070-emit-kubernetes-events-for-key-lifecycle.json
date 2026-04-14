@@ -2,8 +2,8 @@
   "feature_id": "CC-0070",
   "title": "Emit Kubernetes Events for key lifecycle transitions",
   "slug": "emit-kubernetes-events-for-key-lifecycle",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #185: Emit Kubernetes Events for key lifecycle transitions using the existing Recorder\n\n**Category**: improvement | **Scope**: Small\n\n**Description**: The KeystoneReconciler has an unused Recorder field (keystone_controller.go:52). Wire it into all sub-reconcilers to emit Events for significant lifecycle transitions: bootstrap completion, database migration phases (expand/migrate/contract), fernet/credential key rotation, upgrade start/completion, and error conditions. Use Normal type for success and Warning type for failures.\n\n**Motivation**: Operators relying on kubectl describe keystone or event-based alerting currently get zero signal about what the controller is doing. Events are the standard Kubernetes mechanism for surfacing controller activity and are critical for operational visibility, especially during upgrades and key rotations.\n\n**Affected Areas**:\n- `operators/keystone/internal/controller/keystone_controller.go`\n- `operators/keystone/internal/controller/reconcile_bootstrap.go`\n- `operators/keystone/internal/controller/reconcile_database.go`\n- `operators/keystone/internal/controller/reconcile_fernet.go`\n- `operators/keystone/internal/controller/reconcile_credential.go`\n\n**Acceptance Criteria**:\n- [ ] Events emitted for: bootstrap success/failure, each upgrade phase transition, key rotation success/failure, deployment rollout\n- [ ] Events visible via kubectl describe keystone and kubectl get events\n- [ ] Event reasons are structured and documented for use in alerting rules\n- [ ] Unit tests verify event emission for each lifecycle transition\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/185",
   "stories": [
@@ -348,6 +348,7 @@
       "description": "In operators/keystone/internal/controller/reconcile_bootstrap.go, add r.Recorder.Eventf() calls: (1) Warning/BootstrapFailed after the condition at line 32-39, (2) Normal/BootstrapComplete after the condition at line 53-59. In reconcile_bootstrap_test.go, add event assertions to TestReconcileBootstrap_JobComplete (assert Normal BootstrapComplete), TestReconcileBootstrap_JobFailed (assert Warning BootstrapFailed), and TestReconcileBootstrap_JobRunning (assert no event emitted). Use r.Recorder.(*record.FakeRecorder).Events with gomega Receive matcher.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-006",
@@ -360,6 +361,7 @@
       "description": "In operators/keystone/internal/controller/reconcile_fernet.go, add r.Recorder.Event() call: Normal/FernetKeysGenerated after the createFernetKeysSecret call succeeds at line 72, before setting the GeneratingKeys condition. In reconcile_fernet_test.go, add event assertion to TestReconcileFernetKeys_NoSecret_CreatesSecretAndRequeues (assert Normal FernetKeysGenerated), and verify TestReconcileFernetKeys_SecretExists does NOT emit FernetKeysGenerated.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-006",
@@ -372,6 +374,7 @@
       "description": "In operators/keystone/internal/controller/reconcile_credential.go, add r.Recorder.Event() call: Normal/CredentialKeysGenerated after the createCredentialKeysSecret call succeeds at line 80, before setting the GeneratingKeys condition. In reconcile_credential_test.go, add event assertion to TestReconcileCredentialKeys_NoSecret_CreatesSecretAndRequeues (assert Normal CredentialKeysGenerated), and verify TestReconcileCredentialKeys_SecretExists does NOT emit CredentialKeysGenerated.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-006",
@@ -384,6 +387,7 @@
       "description": "In operators/keystone/internal/controller/reconcile_database.go, add r.Recorder.Eventf() calls for the non-upgrade path: (1) Warning/DBSyncFailed after the condition at line 163-169, (2) Warning/SchemaDriftDetected after the condition at line 187-193, (3) Normal/DatabaseSynced after the condition at line 212-218. In reconcile_database_test.go, add event assertions to existing tests that exercise the brownfield db_sync path: assert DBSyncFailed on job failure, SchemaDriftDetected on schema-check failure, and DatabaseSynced on success.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-006",
@@ -396,6 +400,7 @@
       "description": "In operators/keystone/internal/controller/reconcile_database.go, add r.Recorder.Eventf() calls for: (1) Warning/UpgradeTargetChanged at line 141-151, (2) Warning/VersionParseError at lines 253-260 and 265-272, (3) Warning/DowngradeNotSupported at line 276-283, (4) Warning/UpgradePathInvalid at line 287-294, (5) Normal/UpgradeInitiated at line 299-308, (6) Warning/ExpandFailed after setUpgradeJobFailed call in reconcileExpand at line 364, (7) Normal/ExpandComplete at line 373-381, (8) Warning/MigrateFailed in reconcileMigrate at line 393, (9) Normal/MigrateComplete at line 401-410, (10) Warning/ContractFailed in reconcileContract at line 431, (11) Normal/UpgradeComplete at line 440-454. In reconcile_database_test.go, add event assertions to the existing upgrade tests covering each scenario.",
       "level": 1,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-006",
@@ -408,6 +413,7 @@
       "description": "In operators/keystone/internal/controller/reconcile_deployment.go, add r.Recorder.Eventf() call: Normal/DeploymentRolloutComplete when the Deployment becomes ready during UpgradePhaseRollingUpdate at lines 104-116, before transitioning to Contracting. In reconcile_deployment_test.go, add event assertion to the existing test that covers the RollingUpdate->Contracting transition (assert Normal DeploymentRolloutComplete), and verify the normal deployment-ready path does NOT emit a rollout event.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-006",
@@ -420,6 +426,7 @@
       "description": "Create docs/reference/keystone-events.md documenting all event reasons emitted by the Keystone controller (CC-0070). Include a table with columns: Reason, Type (Normal/Warning), Sub-reconciler, Trigger Condition, Example Message. Cover all 20 events across bootstrap (2), database non-upgrade (3), database upgrade (11), fernet (1), credential (1), deployment (1). Include a section on using event reasons for alerting rule configuration with kubectl get events examples. Add cross-reference to the existing keystone-reconciler.md doc.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -558,6 +565,902 @@
       "story": "Cluster operator tracks upgrade progress via events",
       "expected": "FakeRecorder Events channel should NOT contain DeploymentRolloutComplete when deployment is ready outside an upgrade",
       "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileMigrate_Failed (add event assertion)",
+      "story": "Cluster operator tracks upgrade progress via events",
+      "expected": "FakeRecorder Events channel should receive string containing 'Warning MigrateFailed' when migrate Job fails",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileContract_Failed (add event assertion)",
+      "story": "Cluster operator tracks upgrade progress via events",
+      "expected": "FakeRecorder Events channel should receive string containing 'Warning ContractFailed' when contract Job fails",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_JobCreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_JobComplete",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_JobRunning",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_JobFailed",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_StaleJobDetection",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_JobFailed_ConditionMessage",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_JobComplete_ConditionMessageAndGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestBuildBootstrapJob_SecurityContext",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_PublicEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_JobSpec_TTLAndBackoff",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_NoSecret_CreatesSecretAndRequeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_SecretAlreadyExists",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_CronJobScheduleUpdated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_GeneratedKeysAreValid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_CronJobScheduleMatchesSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_PushSecretReferencesCorrectSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestCredentialKeyGeneration_Valid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestCredentialKeyGeneration_Unique",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_MinActiveKeysFloor",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_ConditionMessages",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestCredentialRotationCronJob_SecurityContext",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_CronJobSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_AllReady_DatabaseSynced",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_DatabaseNotReady_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_UserNotReady_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_ClusterMissing_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_ClusterNotReady_FlipsDatabaseReadyFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Brownfield_DBSyncComplete_DatabaseSynced",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_DBSyncRunning_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_DBSyncFailed_ReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Brownfield_SkipsMariaDBCRs_CreatesDBSyncJob",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildDBSyncJob_SecurityContext",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_StaleDBSyncJob_Recreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildUpgradeJobs",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestIsUpgrade",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestInitiateUpgrade_SequentialUpgrade",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestInitiateUpgrade_SkipLevelRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestInitiateUpgrade_DowngradeRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestInitiateUpgrade_InvalidVersionFormat",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_FreshDeploy_SetsInstalledRelease",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_PatchOnly_UsesSimpleDBSync",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_ActiveUpgrade_DelegatesToReconcileUpgrade",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_SameVersionWithInstalledRelease_UsesSimpleDBSync",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_ConditionMessages",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileExpand_NoExistingJob_CreatesJob",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileExpand_JobRunning_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileExpand_JobCompleted_TransitionsToMigrating",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileExpand_JobFailed_ReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileMigrate_JobRunning_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileMigrate_JobCompleted_TransitionsToRollingUpdate",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileMigrate_JobFailed_ReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileRollingUpdate_PassesThrough",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileContract_NoExistingJob_CreatesJobAndRequeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileContract_JobRunning_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileContract_JobCompleted_CompletesUpgrade",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileContract_JobFailed_ReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileContract_UsesNewImage",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_InterruptedExpand_Resumes",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_TagChangedDuringUpgrade_Blocks",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildSchemaCheckJob_Name",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildSchemaCheckJob_Image",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildSchemaCheckJob_SecurityContext",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildSchemaCheckJob_ConfigVolume",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildSchemaCheckJob_BackoffLimit",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildSchemaCheckJob_TTL",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildSchemaCheckJob_RestartPolicy",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildSchemaCheckJob_Command",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_SchemaCheckRunning_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_SchemaCheckComplete_DatabaseSynced",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_SchemaCheckFailed_SchemaDriftDetected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_AllReady_WithSchemaCheck",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_SchemaCheckStale_Recreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_SchemaCheckNotCreatedWhenDBSyncRunning",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_SchemaCheckNotCreatedWhenDBSyncFails",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_SchemaCheckFailed_InstalledReleaseNotUpdated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_DeploymentAndServiceCreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_NotReady_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_Ready_SetsEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_OwnerReferences",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_DeploymentSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_NotReady_ConditionMessageAndGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_Ready_ConditionMessageAndGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_ServiceCreatedAlongsideDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_FernetKeysHashAnnotation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_FernetKeysHashAnnotation_EmptyHash",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_CredentialKeysHashAnnotation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_CredentialKeysHashAnnotation_EmptyHash",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestCredentialKeysHash_Deterministic",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestCredentialKeysHash_SecretNotFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_CredentialKeysHashFromSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestFernetKeysHash_Deterministic",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestFernetKeysHash_SecretNotFound",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_FernetKeysHashFromSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBCreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBLabelsAndSelector",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBMinAvailableForMultipleReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBMaxUnavailableForSingleReplica",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBUpdatedOnReplicaChange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBSelectorMatchesDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildPodDisruptionBudget_BoundaryReplicas2",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildPodDisruptionBudget_ZeroReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_ContainerResources",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_CustomResources",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_NilResources",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBEnsureError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestUWSGICommand_NilUWSGI",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestUWSGICommand_CustomValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestUWSGICommand_KeepAliveDisabled",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestUWSGICommand_KeepAliveEnabled",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestUWSGICommand_FixedFlagsAlwaysPresent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_RollingUpdate_ReadyDeployment_TransitionsToContracting",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_RollingUpdate_NotReady_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_NoUpgrade_Ready_SetsEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_OtherPhase_Ready_SetsEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_NoSecret_CreatesSecretAndRequeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_SecretAlreadyExists",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_CronJobScheduleUpdated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_GeneratedKeysAreValid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_CronJobScheduleMatchesSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_PushSecretReferencesCorrectSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestGenerateFernetKey_Valid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestGenerateFernetKey_Unique",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_MinActiveKeysFloor",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_ConditionMessages",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestFernetRotationCronJob_SecurityContext",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_CronJobSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],
@@ -585,8 +1488,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-13T06:50:56.308060"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-13T06:57:57.595502"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-14T09:45:42.815366"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/199",
+  "pr_number": 199,
   "execution_history": [
     {
       "run_id": "6dfdf5be-7c63-4ede-932d-0f2d80d68266",
@@ -598,6 +1511,58 @@
           "name": "prepare",
           "duration": 639.0197093486786,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "d5145ef6-09f5-43d0-bca7-0614fd2a7ad8",
+      "timestamp": "2026-04-13T07:25:27.035067",
+      "total_duration": 1483.0061917304993,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (6 tasks)",
+          "duration": 880.0894331932068,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (1 tasks)",
+          "duration": 218.02949333190918,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0070] Code Review",
+          "duration": 317.887508392334,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0070] Improvements",
+          "duration": 14.592202425003052,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0070] Simplify",
+          "duration": 52.407554388046265,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "7e56ccdd-049f-4983-8467-1b8cc68558cb",
+      "timestamp": "2026-04-13T09:57:49.468743",
+      "total_duration": 1373.4313139915466,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 1373.4313139915466,
+          "type": "review_address",
           "status": "done"
         }
       ]

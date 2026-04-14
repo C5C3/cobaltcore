@@ -1,0 +1,67 @@
+{
+  "feature_id": "CC-0070",
+  "title": "Emit Kubernetes Events for key lifecycle transitions",
+  "date": "2026-04-13",
+  "summary": "Implementation adds 19 unique Kubernetes event reasons (20 Recorder calls) across 5 sub-reconciler files: bootstrap (2 events), database non-upgrade (3), database upgrade (11 reasons across 12 calls), fernet (1), credential (1), deployment (1). Events are emitted alongside existing condition-setting code using r.Recorder.Event/Eventf with Normal type for success and Warning type for failures. No events are emitted for polling/in-progress states. Unit tests verify event emission for every code path using FakeRecorder with Receive/ContainSubstring assertions, plus negative assertions for polling states. Reference documentation at docs/reference/keystone-events.md covers all 19 event reasons with type, trigger condition, example messages, alerting configuration examples, and an event flow diagram. VitePress sidebar updated.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass for all event-emitting code paths", "checked": true},
+    {"item": "Positive assertions verify correct event type and reason for each lifecycle transition", "checked": true},
+    {"item": "Negative assertions verify no events emitted for polling/in-progress states", "checked": true},
+    {"item": "FakeRecorder pattern consistent with existing test infrastructure", "checked": true},
+    {"item": "Edge cases covered (stale job detection, tag change during upgrade, version parse errors)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (Recorder calls alongside condition-setting)", "checked": true},
+    {"item": "Event reason strings are stable PascalCase identifiers", "checked": true},
+    {"item": "Normal type for success, Warning type for failure - no exceptions", "checked": true},
+    {"item": "No events for polling states to avoid noise", "checked": true},
+    {"item": "Minimal change footprint - single-line additions", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Events RBAC marker (core/events create;patch) already present pre-PR", "checked": true},
+    {"item": "No user input passed unsanitized to event messages", "checked": true},
+    {"item": "No secrets or sensitive data exposed in event messages", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Events complement conditions (not replace them)", "checked": true},
+    {"item": "Solution is minimal - single Recorder call per transition", "checked": true},
+    {"item": "Existing Recorder field on KeystoneReconciler properly utilized", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated event emission logic", "checked": true},
+    {"item": "No abstraction layer - direct Recorder calls", "checked": true},
+    {"item": "No future-proofing or speculative features", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Error events emitted immediately at point of failure", "checked": true},
+    {"item": "Event messages include error details for debugging", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "No external inputs to validate (events use internal state only)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": [
+    {
+      "name": "Kubernetes event emission alongside condition-setting with FakeRecorder test assertions",
+      "component": "operators/keystone/internal/controller",
+      "category": "logging",
+      "applies_when": "Adding a new sub-reconciler or lifecycle transition that sets a status condition on the Keystone CR (or future operator CRs following the same pattern)",
+      "description": "Every significant lifecycle transition (success or failure) that sets a status condition via conditions.SetCondition also emits a Kubernetes event via r.Recorder.Event/Eventf. Normal type for success, Warning type for failure. No events for polling/in-progress states. Event reasons are stable PascalCase strings matching the condition Reason. Tests use record.NewFakeRecorder(10) and assert event emission with g.Expect(fakeRecorder.Events).To(Receive(ContainSubstring(\"Type Reason\"))) for positive cases and g.Expect(fakeRecorder.Events).ToNot(Receive()) for negative cases (polling states).",
+      "examples": [
+        {
+          "location": "operators/keystone/internal/controller/reconcile_bootstrap.go:39",
+          "code": "r.Recorder.Eventf(keystone, corev1.EventTypeWarning, \"BootstrapFailed\", \"Keystone bootstrap job failed: %v\", err)"
+        },
+        {
+          "location": "operators/keystone/internal/controller/reconcile_bootstrap_test.go:205-206",
+          "code": "fakeRecorder := r.Recorder.(*record.FakeRecorder)\ng.Expect(fakeRecorder.Events).To(Receive(ContainSubstring(\"Normal BootstrapComplete\")))"
+        }
+      ]
+    }
+  ]
+}

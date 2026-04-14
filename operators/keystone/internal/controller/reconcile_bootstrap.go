@@ -36,6 +36,7 @@ func (r *KeystoneReconciler) reconcileBootstrap(ctx context.Context, keystone *k
 			Reason:             "BootstrapFailed",
 			Message:            fmt.Sprintf("Keystone bootstrap job failed: %v", err),
 		})
+		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, "BootstrapFailed", "Keystone bootstrap job failed: %v", err)
 		return ctrl.Result{}, fmt.Errorf("running bootstrap: %w", err)
 	}
 	if !done {
@@ -57,6 +58,7 @@ func (r *KeystoneReconciler) reconcileBootstrap(ctx context.Context, keystone *k
 		Reason:             "BootstrapComplete",
 		Message:            "Keystone bootstrap completed successfully",
 	})
+	r.Recorder.Event(keystone, corev1.EventTypeNormal, "BootstrapComplete", "Keystone bootstrap completed successfully")
 	return ctrl.Result{}, nil
 }
 

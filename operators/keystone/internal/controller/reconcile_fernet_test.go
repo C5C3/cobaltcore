@@ -114,6 +114,8 @@ func TestReconcileFernetKeys_NoSecret_CreatesSecretAndRequeues(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal("GeneratingKeys"))
+
+	expectEvent(g, r, "Normal FernetKeysGenerated")
 }
 
 func TestReconcileFernetKeys_SecretAlreadyExists(t *testing.T) {
@@ -177,6 +179,8 @@ func TestReconcileFernetKeys_SecretAlreadyExists(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "FernetKeysReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+
+	expectNoEvent(g, r)
 }
 
 func TestReconcileFernetKeys_CronJobScheduleUpdated(t *testing.T) {

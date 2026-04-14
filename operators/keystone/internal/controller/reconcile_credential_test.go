@@ -118,6 +118,8 @@ func TestReconcileCredentialKeys_NoSecret_CreatesSecretAndRequeues(t *testing.T)
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal("GeneratingKeys"))
+
+	expectEvent(g, r, "Normal CredentialKeysGenerated")
 }
 
 func TestReconcileCredentialKeys_SecretAlreadyExists(t *testing.T) {
@@ -181,6 +183,8 @@ func TestReconcileCredentialKeys_SecretAlreadyExists(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "CredentialKeysReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+
+	expectNoEvent(g, r)
 }
 
 func TestReconcileCredentialKeys_CronJobScheduleUpdated(t *testing.T) {

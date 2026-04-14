@@ -71,6 +71,7 @@ func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
 		if err := r.createFernetKeysSecret(ctx, keystone, secretName); err != nil {
 			return ctrl.Result{}, fmt.Errorf("creating fernet keys secret: %w", err)
 		}
+		r.Recorder.Event(keystone, corev1.EventTypeNormal, "FernetKeysGenerated", "Initial Fernet encryption keys have been generated")
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               "FernetKeysReady",
 			Status:             metav1.ConditionFalse,

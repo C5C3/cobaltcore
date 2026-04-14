@@ -201,6 +201,8 @@ func TestReconcileBootstrap_JobComplete(t *testing.T) {
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal("BootstrapComplete"))
 	g.Expect(cond.Message).To(Equal("Keystone bootstrap completed successfully"))
+
+	expectEvent(g, r, "Normal BootstrapComplete")
 }
 
 func TestReconcileBootstrap_JobRunning(t *testing.T) {
@@ -219,6 +221,8 @@ func TestReconcileBootstrap_JobRunning(t *testing.T) {
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal("BootstrapInProgress"))
 	g.Expect(cond.Message).To(Equal("Keystone bootstrap job is running"))
+
+	expectNoEvent(g, r)
 }
 
 func TestReconcileBootstrap_JobFailed(t *testing.T) {
@@ -236,6 +240,8 @@ func TestReconcileBootstrap_JobFailed(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal("BootstrapFailed"))
+
+	expectEvent(g, r, "Warning BootstrapFailed")
 }
 
 func TestReconcileBootstrap_StaleJobDetection(t *testing.T) {

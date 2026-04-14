@@ -281,6 +281,8 @@ func TestReconcileDatabase_Managed_AllReady_DatabaseSynced(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal(conditionReasonDatabaseSynced))
+
+	expectEvent(g, r, "Normal DatabaseSynced")
 }
 
 func TestReconcileDatabase_Managed_DatabaseNotReady_Requeues(t *testing.T) {
@@ -300,6 +302,8 @@ func TestReconcileDatabase_Managed_DatabaseNotReady_Requeues(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForDatabase))
+
+	expectNoEvent(g, r)
 }
 
 func TestReconcileDatabase_Managed_UserNotReady_Requeues(t *testing.T) {
@@ -322,6 +326,8 @@ func TestReconcileDatabase_Managed_UserNotReady_Requeues(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForDatabase))
+
+	expectNoEvent(g, r)
 }
 
 func TestReconcileDatabase_Managed_ClusterMissing_Requeues(t *testing.T) {
@@ -346,6 +352,8 @@ func TestReconcileDatabase_Managed_ClusterMissing_Requeues(t *testing.T) {
 	dbList := &mariadbv1alpha1.DatabaseList{}
 	g.Expect(r.Client.List(context.Background(), dbList, client.InNamespace("default"))).To(Succeed())
 	g.Expect(dbList.Items).To(BeEmpty())
+
+	expectNoEvent(g, r)
 }
 
 func TestReconcileDatabase_Managed_ClusterNotReady_FlipsDatabaseReadyFalse(t *testing.T) {
@@ -379,6 +387,8 @@ func TestReconcileDatabase_Managed_ClusterNotReady_FlipsDatabaseReadyFalse(t *te
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonClusterNotReady))
 	g.Expect(cond.Message).To(ContainSubstring("mariadb"))
+
+	expectNoEvent(g, r)
 }
 
 // --- Brownfield mode tests ---
@@ -398,6 +408,8 @@ func TestReconcileDatabase_Brownfield_DBSyncComplete_DatabaseSynced(t *testing.T
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal(conditionReasonDatabaseSynced))
+
+	expectEvent(g, r, "Normal DatabaseSynced")
 
 	// Verify no MariaDB CRs were created.
 	dbList := &mariadbv1alpha1.DatabaseList{}
@@ -427,6 +439,8 @@ func TestReconcileDatabase_DBSyncRunning_Requeues(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonDBSyncInProgress))
+
+	expectNoEvent(g, r)
 }
 
 func TestReconcileDatabase_DBSyncFailed_ReturnsError(t *testing.T) {
@@ -444,6 +458,8 @@ func TestReconcileDatabase_DBSyncFailed_ReturnsError(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonDBSyncFailed))
+
+	expectEvent(g, r, "Warning DBSyncFailed")
 }
 
 func TestReconcileDatabase_Brownfield_SkipsMariaDBCRs_CreatesDBSyncJob(t *testing.T) {
@@ -726,6 +742,8 @@ func TestInitiateUpgrade_SequentialUpgrade(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal(conditionReasonExpandInProgress))
 	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+
+	expectEvent(g, r, "Normal UpgradeInitiated")
 }
 
 func TestInitiateUpgrade_SkipLevelRejected(t *testing.T) {
@@ -745,6 +763,8 @@ func TestInitiateUpgrade_SkipLevelRejected(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonUpgradePathInvalid))
+
+	expectEvent(g, r, "Warning UpgradePathInvalid")
 }
 
 func TestInitiateUpgrade_DowngradeRejected(t *testing.T) {
@@ -764,6 +784,8 @@ func TestInitiateUpgrade_DowngradeRejected(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonDowngradeNotSupported))
+
+	expectEvent(g, r, "Warning DowngradeNotSupported")
 }
 
 func TestInitiateUpgrade_InvalidVersionFormat(t *testing.T) {
@@ -783,6 +805,8 @@ func TestInitiateUpgrade_InvalidVersionFormat(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonVersionParseError))
+
+	expectEvent(g, r, "Warning VersionParseError")
 }
 
 // --- Upgrade detection in reconcileDatabase flow ---
@@ -806,6 +830,8 @@ func TestReconcileDatabase_FreshDeploy_SetsInstalledRelease(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal(conditionReasonDatabaseSynced))
+
+	expectEvent(g, r, "Normal DatabaseSynced")
 }
 
 func TestReconcileDatabase_PatchOnly_UsesSimpleDBSync(t *testing.T) {
@@ -837,6 +863,8 @@ func TestReconcileDatabase_PatchOnly_UsesSimpleDBSync(t *testing.T) {
 	// Verify it used the simple db_sync path and updated installedRelease.
 	g.Expect(ks.Status.InstalledRelease).To(Equal("2025.2-p1"))
 	g.Expect(ks.Status.UpgradePhase).To(BeEmpty())
+
+	expectEvent(g, r, "Normal DatabaseSynced")
 }
 
 func TestReconcileDatabase_ActiveUpgrade_DelegatesToReconcileUpgrade(t *testing.T) {
@@ -860,6 +888,8 @@ func TestReconcileDatabase_ActiveUpgrade_DelegatesToReconcileUpgrade(t *testing.
 	g.Expect(cond.Reason).To(Equal(conditionReasonExpandInProgress))
 	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+
+	expectNoEvent(g, r)
 }
 
 func TestReconcileDatabase_SameVersionWithInstalledRelease_UsesSimpleDBSync(t *testing.T) {
@@ -881,6 +911,8 @@ func TestReconcileDatabase_SameVersionWithInstalledRelease_UsesSimpleDBSync(t *t
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+
+	expectEvent(g, r, "Normal DatabaseSynced")
 }
 
 func TestReconcileDatabase_Managed_ConditionMessages(t *testing.T) {
@@ -1025,6 +1057,8 @@ func TestReconcileExpand_NoExistingJob_CreatesJob(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonExpandInProgress))
+
+	expectNoEvent(g, r)
 }
 
 func TestReconcileExpand_JobRunning_Requeues(t *testing.T) {
@@ -1050,6 +1084,8 @@ func TestReconcileExpand_JobRunning_Requeues(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal(conditionReasonExpandInProgress))
 	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+
+	expectNoEvent(g, r)
 }
 
 func TestReconcileExpand_JobCompleted_TransitionsToMigrating(t *testing.T) {
@@ -1072,6 +1108,8 @@ func TestReconcileExpand_JobCompleted_TransitionsToMigrating(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonMigrateInProgress))
+
+	expectEvent(g, r, "Normal ExpandComplete")
 }
 
 func TestReconcileExpand_JobFailed_ReturnsError(t *testing.T) {
@@ -1090,6 +1128,8 @@ func TestReconcileExpand_JobFailed_ReturnsError(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal("ExpandFailed"))
+
+	expectEvent(g, r, "Warning ExpandFailed")
 }
 
 // --- Migrate phase tests (CC-0056) ---
@@ -1117,6 +1157,8 @@ func TestReconcileMigrate_JobRunning_Requeues(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal(conditionReasonMigrateInProgress))
 	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+
+	expectNoEvent(g, r)
 }
 
 func TestReconcileMigrate_JobCompleted_TransitionsToRollingUpdate(t *testing.T) {
@@ -1142,6 +1184,8 @@ func TestReconcileMigrate_JobCompleted_TransitionsToRollingUpdate(t *testing.T) 
 	g.Expect(cond.Message).To(ContainSubstring("Migrate complete"))
 	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+
+	expectEvent(g, r, "Normal MigrateComplete")
 }
 
 func TestReconcileMigrate_JobFailed_ReturnsError(t *testing.T) {
@@ -1160,6 +1204,8 @@ func TestReconcileMigrate_JobFailed_ReturnsError(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal("MigrateFailed"))
+
+	expectEvent(g, r, "Warning MigrateFailed")
 }
 
 // --- RollingUpdate phase tests (CC-0056) ---
@@ -1183,6 +1229,8 @@ func TestReconcileRollingUpdate_PassesThrough(t *testing.T) {
 	g.Expect(cond.Message).To(ContainSubstring("Waiting for Deployment rollout"))
 	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+
+	expectNoEvent(g, r)
 }
 
 // --- Contract phase tests (CC-0056) ---
@@ -1214,6 +1262,8 @@ func TestReconcileContract_NoExistingJob_CreatesJobAndRequeues(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal("ContractInProgress"))
+
+	expectNoEvent(g, r)
 }
 
 func TestReconcileContract_JobRunning_Requeues(t *testing.T) {
@@ -1239,6 +1289,8 @@ func TestReconcileContract_JobRunning_Requeues(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal("ContractInProgress"))
 	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+
+	expectNoEvent(g, r)
 }
 
 func TestReconcileContract_JobCompleted_CompletesUpgrade(t *testing.T) {
@@ -1269,6 +1321,8 @@ func TestReconcileContract_JobCompleted_CompletesUpgrade(t *testing.T) {
 	g.Expect(cond.Message).To(ContainSubstring("upgraded"))
 	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+
+	expectEvent(g, r, "Normal UpgradeComplete")
 }
 
 func TestReconcileContract_JobFailed_ReturnsError(t *testing.T) {
@@ -1290,6 +1344,8 @@ func TestReconcileContract_JobFailed_ReturnsError(t *testing.T) {
 
 	// Verify upgrade phase remains Contracting (not cleared on failure).
 	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseContracting))
+
+	expectEvent(g, r, "Warning ContractFailed")
 }
 
 func TestReconcileContract_UsesNewImage(t *testing.T) {
@@ -1352,6 +1408,8 @@ func TestReconcileDatabase_InterruptedExpand_Resumes(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonMigrateInProgress))
+
+	expectEvent(g, r, "Normal ExpandComplete")
 }
 
 // TestReconcileDatabase_TagChangedDuringUpgrade_Blocks verifies that when the
@@ -1388,6 +1446,8 @@ func TestReconcileDatabase_TagChangedDuringUpgrade_Blocks(t *testing.T) {
 	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseExpanding))
 	g.Expect(ks.Status.TargetRelease).To(Equal("2026.1"))
 	g.Expect(ks.Status.InstalledRelease).To(Equal("2025.2"))
+
+	expectEvent(g, r, "Warning UpgradeTargetChanged")
 }
 
 // --- Schema check tests (CC-0064) ---
@@ -1519,6 +1579,8 @@ func TestReconcileDatabase_SchemaCheckRunning_Requeues(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonSchemaCheckInProgress))
+
+	expectNoEvent(g, r)
 }
 
 // TestReconcileDatabase_SchemaCheckComplete_DatabaseSynced verifies that when both
@@ -1540,6 +1602,8 @@ func TestReconcileDatabase_SchemaCheckComplete_DatabaseSynced(t *testing.T) {
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal(conditionReasonDatabaseSynced))
 	g.Expect(cond.Message).To(ContainSubstring("revision"))
+
+	expectEvent(g, r, "Normal DatabaseSynced")
 }
 
 // TestReconcileDatabase_SchemaCheckFailed_SchemaDriftDetected verifies that when
@@ -1560,6 +1624,8 @@ func TestReconcileDatabase_SchemaCheckFailed_SchemaDriftDetected(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonSchemaDriftDetected))
+
+	expectEvent(g, r, "Warning SchemaDriftDetected")
 }
 
 // TestReconcileDatabase_Managed_AllReady_WithSchemaCheck verifies that in managed
@@ -1590,6 +1656,8 @@ func TestReconcileDatabase_Managed_AllReady_WithSchemaCheck(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal(conditionReasonDatabaseSynced))
 	g.Expect(cond.Message).To(ContainSubstring("revision"))
 	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
+
+	expectEvent(g, r, "Normal DatabaseSynced")
 }
 
 // TestReconcileDatabase_SchemaCheckStale_Recreated verifies that a completed
@@ -1653,6 +1721,8 @@ func TestReconcileDatabase_SchemaCheckNotCreatedWhenDBSyncRunning(t *testing.T) 
 		Namespace: ks.Namespace,
 	}, &schemaCheckJob)
 	g.Expect(err).To(HaveOccurred(), "schema-check Job should not exist when db_sync is running")
+
+	expectNoEvent(g, r)
 }
 
 // TestReconcileDatabase_SchemaCheckNotCreatedWhenDBSyncFails verifies that when
@@ -1681,6 +1751,8 @@ func TestReconcileDatabase_SchemaCheckNotCreatedWhenDBSyncFails(t *testing.T) {
 		Namespace: ks.Namespace,
 	}, &schemaCheckJob)
 	g.Expect(err).To(HaveOccurred(), "schema-check Job should not exist when db_sync fails")
+
+	expectEvent(g, r, "Warning DBSyncFailed")
 }
 
 // TestReconcileDatabase_SchemaCheckFailed_InstalledReleaseNotUpdated verifies that
@@ -1699,4 +1771,6 @@ func TestReconcileDatabase_SchemaCheckFailed_InstalledReleaseNotUpdated(t *testi
 
 	// InstalledRelease must NOT be updated when schema-check fails.
 	g.Expect(ks.Status.InstalledRelease).To(BeEmpty())
+
+	expectEvent(g, r, "Warning SchemaDriftDetected")
 }

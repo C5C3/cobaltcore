@@ -79,6 +79,7 @@ func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 		if err := r.createCredentialKeysSecret(ctx, keystone, secretName); err != nil {
 			return ctrl.Result{}, fmt.Errorf("creating credential keys secret: %w", err)
 		}
+		r.Recorder.Event(keystone, corev1.EventTypeNormal, "CredentialKeysGenerated", "Initial credential encryption keys have been generated")
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               "CredentialKeysReady",
 			Status:             metav1.ConditionFalse,

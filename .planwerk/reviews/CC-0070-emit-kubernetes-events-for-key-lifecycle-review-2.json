@@ -1,0 +1,52 @@
+{
+  "feature_id": "CC-0070",
+  "title": "Emit Kubernetes Events for key lifecycle transitions",
+  "date": "2026-04-13",
+  "summary": "Review of changes addressing external review #1 feedback from berendt. All 5 feedback items (3 warnings, 2 infos) were properly addressed: W-001 extracted shared expectEvent/expectNoEvent test helpers into event_helpers_test.go replacing 37 inline assertion blocks; W-002 replaced 12 inline event reason string literals in reconcile_database.go with conditionReason* constants (10 existing + 4 new); W-003 added Chainsaw E2E test under tests/e2e/keystone/events/ validating BootstrapComplete event emission on a real cluster; I-001 standardized arrow encoding to \\u2192 across all files; I-002 removed all CC-0070 ticket-reference comments from test code. Tests pass, go vet clean, no security issues.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "All unit tests pass (0.780s)", "checked": true},
+    {"item": "Event emission tested for happy path via expectEvent helper", "checked": true},
+    {"item": "No-event assertions for polling/in-progress states via expectNoEvent helper", "checked": true},
+    {"item": "E2E test validates BootstrapComplete event on real cluster via field-selector", "checked": true},
+    {"item": "Test helpers extracted to shared event_helpers_test.go — no inline FakeRecorder casts remain", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Shared test helpers follow cross-cutting helpers pattern (dedicated file, same package)", "checked": true},
+    {"item": "conditionReason* constants used for event reasons that have condition counterparts", "checked": true},
+    {"item": "Arrow encoding standardized to \\u2192 across all files", "checked": true},
+    {"item": "No CC-0070 ticket-reference comments in test code", "checked": true},
+    {"item": "SPDX headers on all new files", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Event messages contain only operator-controlled strings (image tags, version numbers, job names) — no user input injection risk", "checked": true},
+    {"item": "No hardcoded secrets or sensitive data in events", "checked": true},
+    {"item": "gosec reports no issues on changed files", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "E2E test follows Chainsaw test suite structure pattern (SPDX header, REQ references, 5m timeout, numbered steps, catch blocks)", "checked": true},
+    {"item": "E2E fixture uses unique CR name (keystone-events) and database (keystone_events) for parallel execution", "checked": true},
+    {"item": "Test helper file naming (event_helpers_test.go) is descriptive and package-scoped", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "37 inline FakeRecorder assertion blocks replaced by 2 shared helpers — significant duplication reduction", "checked": true},
+    {"item": "No unnecessary abstractions added beyond what was requested", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "E2E test Step 3 fails immediately if BootstrapComplete event is absent", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "expectEvent/expectNoEvent perform type assertion on FakeRecorder safely (test-only code)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "3 event reasons in reconcile_database.go remain as inline strings (\"ExpandFailed\" L378, \"MigrateFailed\" L409, \"ContractFailed\" L450) while 12 others use conditionReason* constants. These don't duplicate existing constants (their condition counterparts are dynamically constructed via phase+\"Failed\" in setUpgradeJobFailed), so they were correctly outside W-002 scope. For full alerting stability, consider adding conditionReasonExpandFailed/MigrateFailed/ContractFailed constants in a follow-up. Same applies to \"DeploymentRolloutComplete\" in reconcile_deployment.go:106.",
+    "The E2E test asserts only BootstrapComplete. A future enhancement could also assert DatabaseSynced, FernetKeysGenerated, and CredentialKeysGenerated events for broader E2E coverage of the event emission feature."
+  ],
+  "next_steps": [
+    "Merge PR after CI passes"
+  ],
+  "detected_patterns": []
+}
