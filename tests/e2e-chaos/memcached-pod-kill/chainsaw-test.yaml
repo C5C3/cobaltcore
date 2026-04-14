@@ -41,35 +41,61 @@ spec:
   - try:
     - apply:
         file: 01-podchaos.yaml
-  # ── Step 4: Wait for Memcached pod recovery and assert Ready=True maintained ─
-  # Uses condition-based waits instead of fixed sleep to avoid flakiness on
-  # slower clusters (CC-0047). The two-phase wait confirms both that chaos
-  # took effect (pod becomes NotReady) and that recovery completed (pod
-  # returns to Ready) before asserting operator conditions.
-  # NOTE: Theoretical race — if pod kill + restart completes faster than
-  # Chainsaw's poll interval, the Ready=false wait may timeout. In practice,
-  # pod-kill with gracePeriod:0 plus controller restart takes multiple
-  # seconds, so this is unlikely. If CI flakiness occurs, add a small
-  # initial sleep before the first wait as mitigation.
+  # ── Step 4: Verify Memcached pod kill and recovery, assert Ready=True maintained ─
+  # Polls the Memcached Deployment's readyReplicas instead of using kubectl wait
+  # on individual Pods. kubectl wait resolves the label selector once at query
+  # time and watches the specific Pod object — when Chaos Mesh deletes the Pod,
+  # the watch errors with NotFound instead of re-resolving onto the replacement
+  # Pod (CC-0076, issue #214). Deployment-level polling is resilient to Pod
+  # replacement, following the operator-pod-crash and api-pod-kill-pdb pattern.
   - try:
-    - wait:
-        apiVersion: v1
-        kind: Pod
-        selector: app.kubernetes.io/name=memcached
-        timeout: 2m
-        for:
-          condition:
-            name: Ready
-            value: 'false'
-    - wait:
-        apiVersion: v1
-        kind: Pod
-        selector: app.kubernetes.io/name=memcached
-        timeout: 2m
-        for:
-          condition:
-            name: Ready
-            value: 'true'
+    - script:
+        # Timeout budget: Phase 1 (15×2s=30s) + Phase 2 (45×2s=90s) = 120s
+        # worst case. 150s gives 30s margin (CC-0076, review #1).
+        timeout: 150s
+        content: |
+          # NOTE: set -euo pipefail is intentionally omitted. The polling loop
+          # uses ${READY:-0} defensive defaults that would fail under set -e
+          # when kubectl returns empty output, and the loop's exit condition
+          # is checked explicitly rather than relying on exit codes.
+
+          # Read desired replica count from Deployment spec so the test remains
+          # valid if the memcached replica count changes (CC-0076, review #1).
+          DESIRED=$(kubectl get deployment openstack-memcached -n $NAMESPACE -o jsonpath='{.spec.replicas}')
+          if [ -z "$DESIRED" ] || [ "$DESIRED" -lt 1 ]; then
+            echo "ERROR: could not determine desired replica count from openstack-memcached Deployment"
+            exit 1
+          fi
+          echo "Desired replicas: ${DESIRED}"
+
+          # Phase 1: poll until readyReplicas drops below DESIRED (chaos took effect).
+          # 15 iterations × 2s = 30s max. Pod kill with gracePeriod=0 is near-instant,
+          # so 30s is generous (CC-0076, review #1).
+          for i in $(seq 1 15); do
+            READY=$(kubectl get deployment openstack-memcached -n $NAMESPACE -o jsonpath='{.status.readyReplicas}')
+            if [ "${READY:-0}" -lt "$DESIRED" ]; then
+              break
+            fi
+            sleep 2
+          done
+          if [ "${READY:-0}" -ge "$DESIRED" ]; then
+            echo "ERROR: readyReplicas never dropped below ${DESIRED} — pod kill did not take effect"
+            exit 1
+          fi
+          echo "Pod kill confirmed: readyReplicas=${READY:-0}"
+
+          # Phase 2: poll until readyReplicas returns to DESIRED (memcached recovered).
+          # 45 iterations × 2s = 90s max (CC-0076, review #1).
+          for i in $(seq 1 45); do
+            READY=$(kubectl get deployment openstack-memcached -n $NAMESPACE -o jsonpath='{.status.readyReplicas}')
+            if [ "${READY:-0}" -eq "$DESIRED" ]; then
+              echo "Memcached recovered: readyReplicas=${DESIRED}"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ERROR: memcached did not recover — readyReplicas=${READY:-0}, expected ${DESIRED}"
+          exit 1
     - assert:
         resource:
           apiVersion: keystone.openstack.c5c3.io/v1alpha1

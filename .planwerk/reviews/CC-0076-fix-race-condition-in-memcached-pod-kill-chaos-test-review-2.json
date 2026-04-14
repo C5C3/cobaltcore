@@ -1,0 +1,65 @@
+{
+  "summary": "Addresses both sourcery-ai[bot] review items: (1) tightened loop bounds (Phase 1: 30→15 iterations, Phase 2: 60→45 iterations) and increased script timeout from 120s to 150s for 30s safety margin with budget documented in comments, (2) replaced hardcoded replica count of 3 with dynamic reading from .spec.replicas plus a guard clause. The chainsaw-test.yaml changes are correct and well-implemented. However, docs/reference/chaos-e2e-tests.md step table was not updated to reflect the new timeout (150s) and dynamic replica count, making it stale.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "E2E chaos test exists (chainsaw-test.yaml)", "checked": true},
+    {"item": "Script Phase 1 confirms chaos effect before Phase 2 checks recovery", "checked": true},
+    {"item": "Guard clause validates DESIRED is non-empty and >= 1", "checked": true},
+    {"item": "All 6 Keystone condition assertions preserved verbatim (lines 107-119)", "checked": true},
+    {"item": "Timeout budget documented with worst-case analysis in comment (line 53-54)", "checked": true},
+    {"item": "Error messages are descriptive and include expected vs actual values", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows operator-pod-crash Deployment readyReplicas polling pattern", "checked": true},
+    {"item": "Comments reference CC-0076 and review #1 for traceability", "checked": true},
+    {"item": "No hardcoded replica counts — reads from .spec.replicas", "checked": true},
+    {"item": "Worst-case runtime (120s) < timeout (150s) with 30s margin", "checked": true},
+    {"item": "${READY:-0} defensive defaults consistent with sibling tests", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No security concerns — test-only YAML/shell with no secrets handling", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is resilient to pod replacement (Deployment-level polling)", "checked": true},
+    {"item": "Pattern consistent with operator-pod-crash and api-pod-kill-pdb", "checked": true},
+    {"item": "No files outside expected scope modified", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No unnecessary code or over-engineering", "checked": true},
+    {"item": "Single DESIRED variable eliminates all hardcoded replica references", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "DESIRED guard fails fast with clear error before polling begins", "checked": true},
+    {"item": "Phase 1 fails fast if chaos did not take effect after 30s", "checked": true},
+    {"item": "Phase 2 fails fast if recovery not observed after 90s", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "${READY:-0} defensive defaults handle empty kubectl output", "checked": true},
+    {"item": "DESIRED validated for both empty and < 1 cases", "checked": true},
+    {"item": "Non-numeric DESIRED caught by -lt comparison failure propagating through || to guard clause", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "DA3",
+      "severity": "MAJOR",
+      "description": "docs/reference/chaos-e2e-tests.md step table (line 198) is stale after review #1 changes. Three values need updating: (1) script timeout says '120s' but is now 150s, (2) 'drop below 3' should reference desired replicas read from .spec.replicas, (3) 'return to 3' should reference desired replicas.",
+      "location": "docs/reference/chaos-e2e-tests.md:198",
+      "fix": "Update the step 4 row: change `script (120s)` to `script (150s)` and change 'drop below 3' / 'return to 3' to 'drop below desired' / 'return to desired (read from .spec.replicas)'.",
+      "evidence": "| 4 | Verify chaos effect and assert no-regression | `script` (120s) + `assert` (5m) | Polls Memcached Deployment `readyReplicas` to confirm chaos took effect (drop below 3) and recovery completed (return to 3)...",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "The CC-0076 timeout/loop-bound feedback was appended to .planwerk/review_patterns/parallel-test-execution-with-shared-mutable-state.md, but it concerns script timeout budgeting — not parallel execution or shared mutable state. Consider creating a separate review pattern (e.g., 'test-script-timeout-must-exceed-worst-case-loop-duration') so future reviews can detect this category independently."
+  ],
+  "next_steps": [
+    "Update docs/reference/chaos-e2e-tests.md line 198: change timeout from 120s to 150s and replace hardcoded '3' references with dynamic replica phrasing to match the implementation"
+  ],
+  "detected_patterns": [],
+  "feature_id": "CC-0076",
+  "title": "Fix race condition in memcached-pod-kill chaos test",
+  "date": "2026-04-14",
+  "review_sequence": 2
+}

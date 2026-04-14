@@ -195,7 +195,7 @@ test asserts that all 6 conditions remain `True` while Memcached is down.
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-chaos-mc` with database `keystone_chaos_mc` |
 | 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady |
 | 3 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml` — PodChaos `kill-memcached` targeting `app.kubernetes.io/name: memcached` in `openstack` |
-| 4 | Wait for pod recovery and assert no-regression | `wait` (2m) + `assert` (5m) | Waits for Memcached pod Ready=false (chaos took effect), then Ready=true (recovery complete), then asserts all 6 conditions: SecretsReady=True, FernetKeysReady=True, DatabaseReady=True, DeploymentReady=True, BootstrapReady=True, Ready=True (AllReady) |
+| 4 | Verify chaos effect and assert no-regression | `script` (150s) + `assert` (5m) | Reads desired replica count from Deployment `.spec.replicas`, polls Memcached Deployment `readyReplicas` to confirm chaos took effect (drop below desired replicas) and recovery completed (return to desired replicas), then asserts all 6 conditions: SecretsReady=True, FernetKeysReady=True, DatabaseReady=True, DeploymentReady=True, BootstrapReady=True, Ready=True (AllReady) |
 | 5 | Delete PodChaos | `delete` | Removes PodChaos `kill-memcached` to allow recovery |
 | 6 | Assert Ready=True after recovery | `assert` (5m) | Ready=True with reason AllReady |
 
@@ -205,9 +205,13 @@ test asserts that all 6 conditions remain `True` while Memcached is down.
 Chaos Mesh experiment status, Keystone CR status, pod logs (including `--previous`), and
 namespace events.
 
-**Design note:** Step 4 uses condition-based waits (Ready=false then Ready=true) instead
-of a fixed sleep. This confirms chaos actually took effect before asserting operator
-conditions, and is both faster and more reliable than a fixed delay.
+**Design note:** Step 4 uses Deployment-level `readyReplicas` polling instead of Pod-level
+`kubectl wait` with label selectors. The original `kubectl wait` approach raced with pod
+deletion — when Chaos Mesh deletes a pod, the watch errors with `NotFound` because it
+resolves the label selector once and watches the specific pod object rather than
+re-resolving onto the replacement pod (CC-0076, issue #214). Deployment-level polling
+watches the persistent Deployment object and is resilient to pod replacements, matching
+the pattern used by `operator-pod-crash` and `api-pod-kill-pdb`.
 
 ---
 

@@ -2,8 +2,8 @@
   "feature_id": "CC-0076",
   "title": "Fix race condition in memcached-pod-kill chaos test",
   "slug": "fix-race-condition-in-memcached-pod-kill-chaos-test",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #214: Fix race condition in memcached-pod-kill chaos test that causes flaky failures\n\n**Category**: bug | **Scope**: Small\n\n**Description**: The `keystone-memcached-pod-kill` chaos test in `tests/e2e-chaos/memcached-pod-kill/chainsaw-test.yaml` races with Chaos Mesh pod deletion and fails non-deterministically. In step-4 the test uses `wait` with a label selector to confirm the killed pod becomes `Ready=false` before asserting Keystone stays `Ready=True`. chainsaw/kubectl `wait` resolves the label selector once up front, grabs the doomed pod (e.g. `openstack-memcached-75845cbcd5-ht4h9`), and watches that specific object. When Chaos Mesh deletes the pod mid-wait, the watch errors with `Error from server (NotFound): pods \"openstack-memcached-75845cbcd5-ht4h9\" not found` instead of re-resolving the selector onto the replacement pod the ReplicaSet immediately creates. Observed in run https://github.com/C5C3/forge/actions/runs/24412091069/job/71314792352: the replacement pod `openstack-memcached-75845cbcd5-ptznn` was already `Scheduled`/`Created`/`Started` within the same second (visible in the event dump), the memcached-operator Deployment was healthy, and the Keystone CR ended the test with `Ready=True/AllReady` — confirming this is a test-only race, not an operator regression. The `NOTE` block at lines 50-56 of `chainsaw-test.yaml` already anticipates this race, but the documented mitigation (\"pod-kill with gracePeriod:0 plus controller restart takes multiple seconds\") does not hold in practice — the Pending→Scheduled→Created transition for the replacement pod happens at the same timestamp as the delete.\n\n**Motivation**: The `keystone-mariadb-pod-kill` and `keystone-openbao-pod-kill` tests in the same suite pass reliably because they assert on Keystone CR sub-conditions (e.g. `DatabaseReady=False`), which chainsaw retries internally until they match. The memcached test cannot use that pattern by design — cache outages are treated as performance degradation only and must not flip any Keystone condition (CC-0047, SC-CHAOS-002). The current workaround (pod-level `Ready=false` wait) introduces a structural race that produces false negatives in CI, blocks the chaos test suite (issue #165), and hides real regressions in the noise.\n\n**Affected Areas**:\n- `tests/e2e-chaos/memcached-pod-kill/chainsaw-test.yaml`\n\n**Acceptance Criteria**:\n- [ ] `keystone-memcached-pod-kill` no longer relies on `wait` with `condition: Ready=false` against a label selector that matches the pod being deleted\n- [ ] The chaos effect is verified via a mechanism that is resilient to pod replacement, e.g. asserting on `Deployment.status.unavailableReplicas > 0` or on a `Pod` UID/`resourceVersion` change, both of which chainsaw retries\n- [ ] Alternatively, the `Ready=false` wait is dropped entirely and the test relies only on the subsequent `Ready=true` wait plus the Keystone `AllReady` assertion — which is sufficient to validate the test's actual goal (memcached failures do not degrade Keystone)\n- [ ] The `NOTE` block at lines 50-56 is removed or rewritten to reflect the new approach\n- [ ] The test passes on three consecutive CI runs of `.github/workflows/ci.yaml` (e2e-chaos job)\n- [ ] No change is required in the memcached-operator repository — this is a pure test fix\n\n**Labels:** bug\n\n---\nSource: https://github.com/C5C3/forge/issues/214",
   "stories": [
@@ -183,6 +183,7 @@
       "description": "In tests/e2e-chaos/memcached-pod-kill/chainsaw-test.yaml step 4: (1) Replace the step-4 comment block (lines 44-48) and NOTE block (lines 49-53) with a new comment explaining Deployment-level polling, referencing CC-0076/issue #214 and the operator-pod-crash/api-pod-kill-pdb pattern. (2) Replace the two wait sub-steps (lines 54-72: wait Ready=false then wait Ready=true on Pods) with a single script sub-step that follows the operator-pod-crash pattern (lines 54-85 of operator-pod-crash/chainsaw-test.yaml): Phase 1 polls readyReplicas dropping below desired (chaos confirmed), Phase 2 polls readyReplicas returning to desired (recovery confirmed). Use the memcached Deployment name openstack-memcached in $NAMESPACE. Omit set -euo pipefail (same rationale as operator-pod-crash: ${READY:-0} defaults are incompatible with set -e). Use 120s script timeout. (3) Keep the existing assert sub-step (lines 73-93: all 6 Keystone conditions) and catch block (lines 94-96) completely unchanged.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -197,6 +198,7 @@
       "description": "In docs/reference/chaos-e2e-tests.md: (1) Update the memcached-pod-kill step 4 row in the steps table (line 198) — change Type from 'wait (2m) + assert (5m)' to 'script (120s) + assert (5m)' and update Details to describe Deployment readyReplicas polling for chaos confirmation and recovery, followed by all 6 condition assertions. (2) Update the Design note (lines 208-210) to describe the Deployment-level approach, reference CC-0076, and explain why Pod-level wait was replaced (label-selector race with pod deletion).",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -255,8 +257,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-14T18:10:58.230617"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-14T18:19:13.373803"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-14T19:53:59.071730"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/216",
+  "pr_number": 216,
   "execution_history": [
     {
       "run_id": "dd444d66-3b06-413c-9197-ff43198d5a88",
@@ -268,6 +280,66 @@
           "name": "prepare",
           "duration": 634.1622948646545,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "595015f4-20ae-4bff-b643-b65821e2f74f",
+      "timestamp": "2026-04-14T18:33:11.601523",
+      "total_duration": 783.5880599021912,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (2 tasks)",
+          "duration": 399.0240669250488,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0076] Code Review",
+          "duration": 278.7556846141815,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0076] Improvements",
+          "duration": 65.7109603881836,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0076] Simplify",
+          "duration": 40.09734797477722,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "4ccf3737-e3aa-44cb-b73e-f975fb2597f3",
+      "timestamp": "2026-04-14T18:53:55.966393",
+      "total_duration": 571.5535752773285,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 571.5535752773285,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "e7ef3916-491c-4e1e-9379-d951a84b5364",
+      "timestamp": "2026-04-14T19:04:09.668558",
+      "total_duration": 211.32043433189392,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 211.32043433189392,
+          "type": "review_address",
           "status": "done"
         }
       ]
