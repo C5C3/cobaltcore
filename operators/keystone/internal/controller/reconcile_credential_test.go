@@ -632,3 +632,65 @@ func TestCredentialRotateScript_EmbeddedContent(t *testing.T) {
 	// Verify error handling: script must check HTTP response status.
 	g.Expect(credentialRotateScript).To(ContainSubstring("Secret update failed"))
 }
+
+// TestReconcileCredentialKeys_ConditionObservedGeneration verifies that
+// ObservedGeneration is set on the CredentialKeysReady condition for both
+// the False (GeneratingKeys) and True (CredentialKeysAvailable) paths
+// with distinct generation values (CC-0072, REQ-002, REQ-003).
+func TestReconcileCredentialKeys_ConditionObservedGeneration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := credentialTestScheme()
+
+	// Test ObservedGeneration for the GeneratingKeys path (no existing secret).
+	ks := credentialTestKeystone()
+	ks.Generation = 7
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks).
+		Build()
+
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "CredentialKeysReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.ObservedGeneration).To(Equal(int64(7)))
+
+	// Test ObservedGeneration for the CredentialKeysAvailable path (secret exists).
+	ks2 := credentialTestKeystone()
+	ks2.Generation = 12
+
+	credentialSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone-credential-keys", Namespace: "default"},
+		Data: map[string][]byte{
+			"0": []byte("existing-key-0"),
+			"1": []byte("existing-key-1"),
+			"2": []byte("existing-key-2"),
+		},
+	}
+
+	c2 := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks2, credentialSecret).
+		Build()
+
+	r2 := &KeystoneReconciler{
+		Client:   c2,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err = r2.reconcileCredentialKeys(context.Background(), ks2, "test-keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond2 := meta.FindStatusCondition(ks2.Status.Conditions, "CredentialKeysReady")
+	g.Expect(cond2).NotTo(BeNil())
+	g.Expect(cond2.ObservedGeneration).To(Equal(int64(12)))
+}

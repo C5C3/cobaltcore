@@ -1125,6 +1125,42 @@ func TestReconcileDeployment_OtherPhase_Ready_SetsEndpoint(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal("DeploymentReady"))
 }
 
+// TestReconcileDeployment_ConditionObservedGeneration verifies that
+// ObservedGeneration is set on the DeploymentReady condition for both
+// the False (WaitingForDeployment) and True (DeploymentReady) paths
+// with distinct generation values (CC-0072, REQ-002, REQ-003).
+func TestReconcileDeployment_ConditionObservedGeneration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+
+	// Test ObservedGeneration for the WaitingForDeployment path.
+	ks := deployTestKeystone()
+	ks.Generation = 7
+
+	r := newDeployTestReconciler(s, ks)
+
+	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DeploymentReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.ObservedGeneration).To(Equal(int64(7)))
+
+	// Test ObservedGeneration for the DeploymentReady path.
+	ks2 := deployTestKeystone()
+	ks2.Generation = 12
+
+	deploy := readyDeployment(ks2, "keystone-config-abc123")
+	r2 := newDeployTestReconciler(s, ks2, deploy)
+
+	_, err = r2.reconcileDeployment(context.Background(), ks2, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond2 := meta.FindStatusCondition(ks2.Status.Conditions, "DeploymentReady")
+	g.Expect(cond2).NotTo(BeNil())
+	g.Expect(cond2.ObservedGeneration).To(Equal(int64(12)))
+}
+
 // indexOf returns the index of the first occurrence of s in slice, or -1.
 func indexOf(slice []string, s string) int {
 	for i, v := range slice {

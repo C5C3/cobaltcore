@@ -1,0 +1,75 @@
+{
+  "feature_id": "CC-0072",
+  "title": "Standardize observedGeneration on sub-reconciler conditions",
+  "date": "2026-04-13",
+  "verdict": "APPROVED",
+  "summary": "Added dedicated TestReconcile*_ConditionObservedGeneration tests to 6 sub-reconciler test files (secrets, fernet, credential, database, deployment, bootstrap). All tests pass, go vet and golangci-lint are clean, no production code modified. Documentation updated with ObservedGeneration convention and test pattern. All 50 SetCondition calls in production code already include ObservedGeneration. Tests follow the established HPA reference pattern with non-default generation values (5, 7, 12) covering both True and False condition paths.",
+  "review_process": {
+    "step_1_intent": "Plan specifies adding dedicated ObservedGeneration tests to 6 sub-reconcilers and documenting the convention. Test-only changes with no production code modifications.",
+    "step_2_scope": "Only *_test.go files (6) and docs/reference/keystone-reconciler.md modified. No scope creep. .planwerk metadata files are project management only.",
+    "step_3_verification": "go test -run ConditionObservedGeneration: 10 test functions pass (14 including subtests). go vet: clean. golangci-lint: clean.",
+    "step_4_patterns": "All 6 new tests follow the HPA reference pattern exactly: NewGomegaWithT, file-specific scheme/helper, Generation=7 for False path, Generation=12 for True path, meta.FindStatusCondition, ObservedGeneration assertion.",
+    "step_5_tests": "Each test covers at least one True and one False condition path. Bootstrap covers 3 paths (running=False, completed=True, failed=False). Generation values are non-default (5, 7, 12).",
+    "step_6_security": "N/A — test-only changes with no production code, no user input handling, no secrets.",
+    "step_7_complexity": "Minimal — each test is a straightforward exercise of the reconciler with generation assertion. Simplest possible approach.",
+    "step_8_completeness": "All 6 task items (1.1-1.6) and task 2.1 (docs) are complete. Documentation accurately describes the convention.",
+    "step_9_prompt_quality": "N/A — no new prompt files."
+  },
+  "tests_checklist": [
+    {"item": "Tests exist for all 6 planned sub-reconcilers", "checked": true},
+    {"item": "Tests pass (go test -run ConditionObservedGeneration)", "checked": true},
+    {"item": "go vet clean", "checked": true},
+    {"item": "golangci-lint clean", "checked": true},
+    {"item": "Non-default generation values used (not 0 or 1)", "checked": true},
+    {"item": "Both True and False condition paths covered", "checked": true},
+    {"item": "Tests follow HPA reference pattern", "checked": true},
+    {"item": "No production code changes", "checked": true},
+    {"item": "grep TestReconcile.*_ConditionObservedGeneration yields 11 matches", "checked": false, "note": "Yields 10. The 11th (healthcheck) uses _ObservedGenerationSet naming from CC-0067 — see suggested_improvements"}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (HPA reference)", "checked": true},
+    {"item": "Uses existing test helpers (file-specific scheme, keystone builders)", "checked": true},
+    {"item": "No code duplication beyond necessary test setup", "checked": true},
+    {"item": "Clear naming and structure", "checked": true},
+    {"item": "Feature ID (CC-0072) and REQ references in test comments", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "N/A — test-only changes", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "Tests are independent (fresh keystone + reconciler per path)", "checked": true},
+    {"item": "No unnecessary abstractions", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code beyond necessary test structure", "checked": true},
+    {"item": "No over-engineering or future-proofing", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "N/A — test-only changes", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "N/A — test-only changes", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "D6",
+      "severity": "MINOR",
+      "description": "Docs table marks 'ObservedGeneration' for reconcile_healthcheck_test.go coverage, but the dedicated test in that file is named TestReconcileHealthCheck_ObservedGenerationSet (from CC-0067), not TestReconcileHealthCheck_ConditionObservedGeneration. The docs section 'ObservedGeneration Test Convention' establishes _ConditionObservedGeneration as the naming convention. This creates a minor inconsistency between the documented convention and the healthcheck's test name.",
+      "location": "docs/reference/keystone-reconciler.md:1155",
+      "fix": "In a follow-up PR, rename TestReconcileHealthCheck_ObservedGenerationSet to TestReconcileHealthCheck_ConditionObservedGeneration in reconcile_healthcheck_test.go to align with the convention.",
+      "evidence": "grep 'func TestReconcile.*_ConditionObservedGeneration' yields 10 matches (not 11). grep 'func TestReconcileHealthCheck_ObservedGenerationSet' yields 1 match in reconcile_healthcheck_test.go:177.",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "Rename TestReconcileHealthCheck_ObservedGenerationSet to TestReconcileHealthCheck_ConditionObservedGeneration (follow-up PR) to reach 11/11 matching the documented convention"
+  ],
+  "next_steps": [
+    "Merge as-is — the naming inconsistency is cosmetic and pre-dates this PR (CC-0067)",
+    "Consider a follow-up micro-PR to rename the healthcheck test for convention alignment"
+  ],
+  "detected_patterns": []
+}

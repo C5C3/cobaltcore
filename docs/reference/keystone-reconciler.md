@@ -1,7 +1,7 @@
 ---
 title: Keystone Reconciler Architecture
 quadrant: operator
-feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0067, CC-0068, CC-0071, CC-0073
+feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0067, CC-0068, CC-0071, CC-0072, CC-0073
 ---
 
 # Keystone Reconciler Architecture
@@ -429,10 +429,38 @@ All sub-reconcilers are private methods on the `KeystoneReconciler` receiver. Ea
 sub-reconciler is responsible for:
 
 1. Ensuring the resources it manages exist with the correct spec.
-2. Setting its designated status condition with a descriptive `Reason` and `Message`.
+2. Setting its designated status condition with `ObservedGeneration`, `Reason`, and `Message`.
 3. Returning `(ctrl.Result{RequeueAfter: N}, nil)` for transient not-ready states.
 4. Returning `(ctrl.Result{}, error)` for failures.
 5. Returning `(ctrl.Result{}, nil)` when its phase is complete.
+
+### ObservedGeneration Convention
+
+Every `conditions.SetCondition` call **must** include `ObservedGeneration: keystone.Generation`
+so that external tooling (ArgoCD health checks, status controllers) can distinguish whether
+a condition reflects the current spec or a stale generation (CC-0072). This applies to both
+`True` and `False` condition paths — no condition may omit the field.
+
+```go
+conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+    Type:               "SecretsReady",
+    Status:             metav1.ConditionFalse,
+    ObservedGeneration: keystone.Generation,
+    Reason:             "SecretStoreNotReady",
+    Message:            "ClusterSecretStore is not ready",
+})
+```
+
+Because Go struct literals allow zero-value omission, the compiler cannot enforce
+the presence of `ObservedGeneration`. Enforcement is instead provided by a dedicated
+unit test in each sub-reconciler test file, following the naming convention
+`TestReconcile{SubReconciler}_ConditionObservedGeneration`. Each test exercises at
+least the `True` and one `False` condition path with distinct, non-default generation
+values (e.g. 7 and 12) to verify the field is propagated correctly.
+
+The integration test `TestIntegration_ObservedGeneration` additionally verifies that
+after a full reconcile loop, every condition in the status carries the correct
+`ObservedGeneration`.
 
 ### Sub-Condition Types
 
@@ -1394,24 +1422,33 @@ For end-to-end Chainsaw tests that validate the reconciler in a real cluster, se
 | All controller tests | `go test ./operators/keystone/internal/controller/...` |
 | Specific sub-reconciler | `go test -run TestReconcileSecrets ./operators/keystone/internal/controller/` |
 
+### ObservedGeneration Test Convention
+
+Every sub-reconciler test file that sets conditions includes a dedicated
+`TestReconcile{SubReconciler}_ConditionObservedGeneration` test function (CC-0072).
+This test exercises at least one `True` and one `False` condition path with distinct,
+non-default generation values to verify that `ObservedGeneration` is propagated on
+every code path. When adding a new sub-reconciler, copy this test pattern from any
+existing file (e.g. `reconcile_hpa_test.go`).
+
 ### Test Files
 
 | File | Coverage |
 | --- | --- |
 | `keystone_controller_test.go` | Reconcile() orchestration, sequential execution, parallel group (CC-0071), early return, Ready aggregation, idempotency, benchmark |
-| `reconcile_secrets_test.go` | DB/admin credential readiness, error propagation, condition messages |
-| `reconcile_database_test.go` | Managed/brownfield modes, MariaDB CRs, db_sync lifecycle, stale Job detection |
-| `reconcile_fernet_test.go` | Key generation, Secret idempotency, script ConfigMap creation, CronJob schedule/volumes, PushSecret, key validity (CC-0073) |
-| `reconcile_credential_test.go` | Key generation, Secret idempotency, script ConfigMap creation, CronJob schedule/volumes, PushSecret, RBAC, key validity (CC-0036, CC-0073) |
+| `reconcile_secrets_test.go` | DB/admin credential readiness, error propagation, condition messages, ObservedGeneration (CC-0072) |
+| `reconcile_database_test.go` | Managed/brownfield modes, MariaDB CRs, db_sync lifecycle, stale Job detection, ObservedGeneration (CC-0072) |
+| `reconcile_fernet_test.go` | Key generation, Secret idempotency, script ConfigMap creation, CronJob schedule/volumes, PushSecret, key validity (CC-0073), ObservedGeneration (CC-0072) |
+| `reconcile_credential_test.go` | Key generation, Secret idempotency, script ConfigMap creation, CronJob schedule/volumes, PushSecret, RBAC, key validity (CC-0036, CC-0073), ObservedGeneration (CC-0072) |
 | `reconcile_networkpolicy_test.go` | NetworkPolicy creation, update, deletion, ingress rules, condition contract (CC-0039) |
 | `reconcile_config_test.go` | INI generation, extraConfig merge, plugin config, policy overrides, ConfigMap hashing |
-| `reconcile_policyvalidation_test.go` | Policy validation lifecycle, condition contract, error extraction, Job spec (CC-0058) |
-| `reconcile_deployment_test.go` | Deployment spec, Service creation, readiness, endpoint, owner references, fernet-keys hash annotation (CC-0015) |
-| `reconcile_healthcheck_test.go` | Health check happy/unhealthy paths, timeout, DNS, connection refused, empty endpoint, response body close, HTTPDoer injection (CC-0067) |
-| `reconcile_hpa_test.go` | HPA creation, update, deletion, metrics (CPU/memory), minReplicas defaulting, condition contract, error propagation (CC-0038) |
-| `reconcile_trustflush_test.go` | CronJob creation, deletion, schedule/suspend/args, security context, volume mounts, condition contract, error propagation (CC-0057) |
-| `reconcile_bootstrap_test.go` | Job creation, completion, failure, stale detection, TTL/backoff |
-| `integration_test.go` | Full reconciliation envtest: CronJob spec, bootstrap Job spec, brownfield mode, condition progression (CC-0015) |
+| `reconcile_policyvalidation_test.go` | Policy validation lifecycle, condition contract, error extraction, Job spec (CC-0058), ObservedGeneration |
+| `reconcile_deployment_test.go` | Deployment spec, Service creation, readiness, endpoint, owner references, fernet-keys hash annotation (CC-0015), ObservedGeneration (CC-0072) |
+| `reconcile_healthcheck_test.go` | Health check happy/unhealthy paths, timeout, DNS, connection refused, empty endpoint, response body close, HTTPDoer injection (CC-0067), ObservedGeneration |
+| `reconcile_hpa_test.go` | HPA creation, update, deletion, metrics (CPU/memory), minReplicas defaulting, condition contract, error propagation (CC-0038), ObservedGeneration |
+| `reconcile_trustflush_test.go` | CronJob creation, deletion, schedule/suspend/args, security context, volume mounts, condition contract, error propagation (CC-0057), ObservedGeneration |
+| `reconcile_bootstrap_test.go` | Job creation, completion, failure, stale detection, TTL/backoff, ObservedGeneration (CC-0072) |
+| `integration_test.go` | Full reconciliation envtest: CronJob spec, bootstrap Job spec, brownfield mode, condition progression (CC-0015), ObservedGeneration (CC-0072, pre-existing) |
 
 ---
 

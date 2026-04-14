@@ -1774,3 +1774,89 @@ func TestReconcileDatabase_SchemaCheckFailed_InstalledReleaseNotUpdated(t *testi
 
 	expectEvent(g, r, "Warning SchemaDriftDetected")
 }
+
+// TestReconcileDatabase_ConditionObservedGeneration verifies that
+// ObservedGeneration is set on the DatabaseReady condition for
+// False (ClusterNotReady, WaitingForDatabase, DBSyncFailed,
+// SchemaDriftDetected) and True (DatabaseSynced) paths with distinct
+// generation values (CC-0072, REQ-002, REQ-003).
+func TestReconcileDatabase_ConditionObservedGeneration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+
+	// Test ObservedGeneration for the ClusterNotReady path (cluster missing).
+	ks := managedKeystone()
+	ks.Generation = 7
+
+	r := newDBTestReconciler(s, ks)
+
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.ObservedGeneration).To(Equal(int64(7)))
+
+	// Test ObservedGeneration for the WaitingForDatabase path (User/Grant not ready).
+	ks3 := managedKeystone()
+	ks3.Generation = 5
+
+	r3 := newDBTestReconciler(s, ks3,
+		readyMariaDBCluster(ks3),
+		readyDatabase(ks3),
+		buildUser(ks3), // exists but not ready
+	)
+
+	_, err = r3.reconcileDatabase(context.Background(), ks3, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond3 := meta.FindStatusCondition(ks3.Status.Conditions, "DatabaseReady")
+	g.Expect(cond3).NotTo(BeNil())
+	g.Expect(cond3.ObservedGeneration).To(Equal(int64(5)))
+
+	// Test ObservedGeneration for the DBSyncFailed path.
+	ks4 := brownfieldKeystone()
+	ks4.Generation = 9
+
+	r4 := newDBTestReconciler(s, ks4, failedDBSyncJob(ks4))
+
+	_, err = r4.reconcileDatabase(context.Background(), ks4, "keystone-config-abc123")
+	g.Expect(err).To(HaveOccurred())
+
+	cond4 := meta.FindStatusCondition(ks4.Status.Conditions, "DatabaseReady")
+	g.Expect(cond4).NotTo(BeNil())
+	g.Expect(cond4.ObservedGeneration).To(Equal(int64(9)))
+
+	// Test ObservedGeneration for the SchemaDriftDetected path.
+	ks5 := brownfieldKeystone()
+	ks5.Generation = 15
+
+	r5 := newDBTestReconciler(s, ks5, completedDBSyncJob(ks5), failedSchemaCheckJob(ks5))
+
+	_, err = r5.reconcileDatabase(context.Background(), ks5, "keystone-config-abc123")
+	g.Expect(err).To(HaveOccurred())
+
+	cond5 := meta.FindStatusCondition(ks5.Status.Conditions, "DatabaseReady")
+	g.Expect(cond5).NotTo(BeNil())
+	g.Expect(cond5.ObservedGeneration).To(Equal(int64(15)))
+
+	// Test ObservedGeneration for the DatabaseSynced path (all ready).
+	ks2 := managedKeystone()
+	ks2.Generation = 12
+
+	r2 := newDBTestReconciler(s, ks2,
+		readyMariaDBCluster(ks2),
+		readyDatabase(ks2),
+		readyUser(ks2),
+		readyGrant(ks2),
+		completedDBSyncJob(ks2),
+		completedSchemaCheckJob(ks2),
+	)
+
+	_, err = r2.reconcileDatabase(context.Background(), ks2, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond2 := meta.FindStatusCondition(ks2.Status.Conditions, "DatabaseReady")
+	g.Expect(cond2).NotTo(BeNil())
+	g.Expect(cond2.ObservedGeneration).To(Equal(int64(12)))
+}

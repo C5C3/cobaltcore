@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: When a test name contains universal quantifiers like 'All', 'Every', 'Runs all', or 'Full', verify that every branch or validation path in the function under test is actually exercised. Cross-reference the test setup with the production code's branches.
 **Severity**: WARNING
-**Occurrences**: 4
+**Occurrences**: 5
 
 ## What to check
 
@@ -34,3 +34,8 @@ Misleadingly named tests give false confidence that all paths are covered and th
 - **Feedback**: The project has Chainsaw E2E tests for every existing feature (13 directories under tests/e2e/keystone/), but this PR adds no E2E test for the resources feature.
 - **What was missed**: When every existing feature has a corresponding test directory or test suite (e.g., 13 out of 13 features have tests/e2e/ directories), a PR adding a new feature must include the same kind of test. Absence is a gap, not an oversight to defer.
 - **Fix**: Created tests/e2e/keystone/resources/ with a chainsaw-test.yaml covering default resource propagation and custom resource patching.
+
+### CC-0072 — berendt
+- **Feedback**: reconcile_database.go contains approximately 15 distinct SetCondition calls across paths like ClusterNotReady, WaitingForDatabase, WaitingForUser, etc. The test covers only 2 paths (one True, one False). If someone removes ObservedGeneration from an untested path, no test catches it.
+- **What was missed**: Count the distinct code paths in production that set the property under test. Compare to the number of paths exercised in the new tests. If coverage is below ~30% of paths, flag that regressions in untested paths will go undetected.
+- **Fix**: Expanded reconcile_database_test.go from 2 to 5 tested condition paths (added WaitingForDatabase, DBSyncFailed, SchemaDriftDetected) and reconcile_secrets_test.go from 2 to 4 paths (added WaitingForDBCredentials, WaitingForAdminCredentials).

@@ -3,7 +3,7 @@
 **Review-Area**: documentation
 **Detection-Hint**: When CI workflow documentation groups jobs under a heading that implies a specific trigger mechanism (e.g., 'path-filtered'), cross-reference each listed job against the actual workflow YAML to confirm it truly uses that mechanism.
 **Severity**: WARNING
-**Occurrences**: 2
+**Occurrences**: 3
 
 ## What to check
 
@@ -24,3 +24,8 @@ Misleading DAG documentation causes engineers to misunderstand which jobs are ga
 - **Feedback**: The PR updates the count from 9 to 10, but there are actually 20 test suite directories under tests/e2e/keystone/. The same stale count appears on line 59. Avoid hardcoding a count that will go stale with every new test PR.
 - **What was missed**: Search the diff for changes to numeric literals in prose text. For each changed number, verify it matches the actual count of the referenced items (directories, files, endpoints, etc.). Also search for other occurrences of the old number in the same file.
 - **Fix**: Removed the hardcoded '10' from both locations, replacing with generic language: 'The test suites...' and 'All test suites...'.
+
+### CC-0072 — berendt
+- **Feedback**: The PR description states that individual sub-reconcilers are inconsistent — some set ObservedGeneration, others omit it. However, git diff main...HEAD -- '*.go' ':!*_test.go' produces no output — the production code on main already sets ObservedGeneration on all 49 SetCondition calls across all 13 reconciler files.
+- **What was missed**: Run the diff filtered to production files (exclude tests and docs). If the diff is empty but the description claims a production fix, the description is misleading about the current state of the codebase.
+- **Fix**: Updated the PR description to clarify that production code was already standardized in prior feature PRs and this ticket adds the missing test coverage and documents the convention.

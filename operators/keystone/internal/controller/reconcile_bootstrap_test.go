@@ -376,3 +376,51 @@ func TestReconcileBootstrap_JobSpec_TTLAndBackoff(t *testing.T) {
 	g.Expect(createdJob.OwnerReferences).To(HaveLen(1))
 	g.Expect(createdJob.OwnerReferences[0].Name).To(Equal("test-keystone"))
 }
+
+// TestReconcileBootstrap_ConditionObservedGeneration verifies that
+// ObservedGeneration is set on the BootstrapReady condition for the
+// False (BootstrapInProgress, BootstrapFailed) and True (BootstrapComplete)
+// paths with distinct generation values (CC-0072, REQ-002, REQ-003).
+func TestReconcileBootstrap_ConditionObservedGeneration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := bootstrapTestScheme()
+
+	// Test ObservedGeneration for the BootstrapInProgress path (running job).
+	ks := bootstrapKeystone()
+	ks.Generation = 5
+
+	r := newBootstrapTestReconciler(s, ks, runningBootstrapJob(ks))
+
+	_, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "BootstrapReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.ObservedGeneration).To(Equal(int64(5)))
+
+	// Test ObservedGeneration for the BootstrapComplete path (completed job).
+	ks2 := bootstrapKeystone()
+	ks2.Generation = 7
+
+	r2 := newBootstrapTestReconciler(s, ks2, completedBootstrapJob(ks2))
+
+	_, err = r2.reconcileBootstrap(context.Background(), ks2, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond2 := meta.FindStatusCondition(ks2.Status.Conditions, "BootstrapReady")
+	g.Expect(cond2).NotTo(BeNil())
+	g.Expect(cond2.ObservedGeneration).To(Equal(int64(7)))
+
+	// Test ObservedGeneration for the BootstrapFailed path (failed job).
+	ks3 := bootstrapKeystone()
+	ks3.Generation = 12
+
+	r3 := newBootstrapTestReconciler(s, ks3, failedBootstrapJob(ks3))
+
+	_, err = r3.reconcileBootstrap(context.Background(), ks3, "keystone-config-abc123")
+	g.Expect(err).To(HaveOccurred())
+
+	cond3 := meta.FindStatusCondition(ks3.Status.Conditions, "BootstrapReady")
+	g.Expect(cond3).NotTo(BeNil())
+	g.Expect(cond3.ObservedGeneration).To(Equal(int64(12)))
+}

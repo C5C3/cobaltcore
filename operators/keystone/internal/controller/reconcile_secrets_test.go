@@ -579,3 +579,139 @@ func TestReconcileSecrets_StoreCheckedBeforeExternalSecret(t *testing.T) {
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal("SecretStoreNotReady"))
 }
+
+// TestReconcileSecrets_ConditionObservedGeneration verifies that
+// ObservedGeneration is set on the SecretsReady condition for
+// False (SecretStoreNotReady, WaitingForDBCredentials,
+// WaitingForAdminCredentials) and True (SecretsAvailable) paths
+// with distinct generation values (CC-0072, REQ-002, REQ-003).
+func TestReconcileSecrets_ConditionObservedGeneration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := secretsTestScheme()
+
+	// Test ObservedGeneration for the SecretStoreNotReady path.
+	ks := secretsTestKeystone()
+	ks.Generation = 7
+
+	store := notReadyClusterSecretStore("openbao-cluster-store")
+	dbES := readyExternalSecret("keystone-db", "default")
+	adminES := readyExternalSecret("keystone-admin", "default")
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(store, dbES, adminES).
+		WithStatusSubresource(dbES, adminES, store).
+		Build()
+
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err := r.reconcileSecrets(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.ObservedGeneration).To(Equal(int64(7)))
+
+	// Test ObservedGeneration for the WaitingForDBCredentials path (ES not synced).
+	ks3 := secretsTestKeystone()
+	ks3.Generation = 5
+
+	c3 := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(
+			readyClusterSecretStore("openbao-cluster-store"),
+			notReadyExternalSecret("keystone-db", "default"),
+			readyExternalSecret("keystone-admin", "default"),
+		).
+		WithStatusSubresource(
+			&esov1.ExternalSecret{},
+			&esov1.ClusterSecretStore{},
+		).
+		Build()
+
+	r3 := &KeystoneReconciler{
+		Client:   c3,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err = r3.reconcileSecrets(context.Background(), ks3)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond3 := meta.FindStatusCondition(ks3.Status.Conditions, "SecretsReady")
+	g.Expect(cond3).NotTo(BeNil())
+	g.Expect(cond3.ObservedGeneration).To(Equal(int64(5)))
+
+	// Test ObservedGeneration for the WaitingForAdminCredentials path (ES not synced).
+	ks4 := secretsTestKeystone()
+	ks4.Generation = 9
+
+	c4 := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(
+			readyClusterSecretStore("openbao-cluster-store"),
+			readyExternalSecret("keystone-db", "default"),
+			&corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "keystone-db", Namespace: "default"},
+				Data:       map[string][]byte{"username": []byte("keystone"), "password": []byte("secret")},
+			},
+			notReadyExternalSecret("keystone-admin", "default"),
+		).
+		WithStatusSubresource(
+			&esov1.ExternalSecret{},
+			&esov1.ClusterSecretStore{},
+		).
+		Build()
+
+	r4 := &KeystoneReconciler{
+		Client:   c4,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err = r4.reconcileSecrets(context.Background(), ks4)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond4 := meta.FindStatusCondition(ks4.Status.Conditions, "SecretsReady")
+	g.Expect(cond4).NotTo(BeNil())
+	g.Expect(cond4.ObservedGeneration).To(Equal(int64(9)))
+
+	// Test ObservedGeneration for the SecretsAvailable path.
+	ks2 := secretsTestKeystone()
+	ks2.Generation = 12
+
+	dbES2 := readyExternalSecret("keystone-db", "default")
+	adminES2 := readyExternalSecret("keystone-admin", "default")
+	dbSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "keystone-db", Namespace: "default"},
+		Data:       map[string][]byte{"username": []byte("keystone"), "password": []byte("secret")},
+	}
+	adminSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "keystone-admin", Namespace: "default"},
+		Data:       map[string][]byte{"password": []byte("admin-password")},
+	}
+	store2 := readyClusterSecretStore("openbao-cluster-store")
+
+	c2 := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(store2, dbES2, adminES2, dbSecret, adminSecret).
+		WithStatusSubresource(dbES2, adminES2, store2).
+		Build()
+
+	r2 := &KeystoneReconciler{
+		Client:   c2,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err = r2.reconcileSecrets(context.Background(), ks2)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond2 := meta.FindStatusCondition(ks2.Status.Conditions, "SecretsReady")
+	g.Expect(cond2).NotTo(BeNil())
+	g.Expect(cond2.ObservedGeneration).To(Equal(int64(12)))
+}

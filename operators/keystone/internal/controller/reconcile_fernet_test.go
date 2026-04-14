@@ -625,3 +625,65 @@ func TestFernetRotateScript_EmbeddedContent(t *testing.T) {
 	// Verify error handling: script must check HTTP response status.
 	g.Expect(fernetRotateScript).To(ContainSubstring("Secret update failed"))
 }
+
+// TestReconcileFernetKeys_ConditionObservedGeneration verifies that
+// ObservedGeneration is set on the FernetKeysReady condition for both
+// the False (GeneratingKeys) and True (FernetKeysAvailable) paths
+// with distinct generation values (CC-0072, REQ-002, REQ-003).
+func TestReconcileFernetKeys_ConditionObservedGeneration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := fernetTestScheme()
+
+	// Test ObservedGeneration for the GeneratingKeys path (no existing secret).
+	ks := fernetTestKeystone()
+	ks.Generation = 7
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks).
+		Build()
+
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "FernetKeysReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.ObservedGeneration).To(Equal(int64(7)))
+
+	// Test ObservedGeneration for the FernetKeysAvailable path (secret exists).
+	ks2 := fernetTestKeystone()
+	ks2.Generation = 12
+
+	fernetSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone-fernet-keys", Namespace: "default"},
+		Data: map[string][]byte{
+			"0": []byte("existing-key-0"),
+			"1": []byte("existing-key-1"),
+			"2": []byte("existing-key-2"),
+		},
+	}
+
+	c2 := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks2, fernetSecret).
+		Build()
+
+	r2 := &KeystoneReconciler{
+		Client:   c2,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err = r2.reconcileFernetKeys(context.Background(), ks2, "test-keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond2 := meta.FindStatusCondition(ks2.Status.Conditions, "FernetKeysReady")
+	g.Expect(cond2).NotTo(BeNil())
+	g.Expect(cond2.ObservedGeneration).To(Equal(int64(12)))
+}

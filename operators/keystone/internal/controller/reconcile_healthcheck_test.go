@@ -172,9 +172,11 @@ func TestReconcileHealthCheck_Unhealthy503_SetsConditionFalse(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal(conditionReasonAPIUnhealthy))
 }
 
-// --- ObservedGeneration tracking (REQ-001) ---
-
-func TestReconcileHealthCheck_ObservedGenerationSet(t *testing.T) {
+// TestReconcileHealthCheck_ConditionObservedGeneration verifies that
+// ObservedGeneration is set on the KeystoneAPIReady condition for both
+// the True (healthy) and False (unhealthy) paths with distinct
+// generation values (CC-0067, CC-0072, REQ-001).
+func TestReconcileHealthCheck_ConditionObservedGeneration(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	t.Run("healthy response", func(_ *testing.T) {
