@@ -1,0 +1,47 @@
+{
+  "feature_id": "CC-0048",
+  "title": "L003: Add operator resilience and workload chaos tests",
+  "date": "2026-04-13",
+  "summary": "Post-external-review improvement cycle addressing 3 findings from berendt. W-001: Job cleanup for re-runnability added to SC-CHAOS-005 Step 4 via kubectl delete --ignore-not-found before create. W-002: Kill-detection assertion added to SC-CHAOS-008 Step 5 to prevent vacuous passes when PodChaos never takes effect. I-001: Echo message changed from 'PDB enforced' to 'Availability maintained during pod kill' to accurately describe runtime validation scope. Review pattern files updated with correct occurrence counts and new CC-0048 examples. All fixes are minimal, correct, and introduce no new issues.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "W-001 fix: Job cleanup before creation makes SC-CHAOS-005 Step 4 idempotent and re-runnable", "checked": true},
+    {"item": "W-002 fix: Kill-detection assertion prevents vacuous pass when PodChaos selector mismatch or Chaos Mesh not running", "checked": true},
+    {"item": "I-001 fix: Echo message accurately describes runtime availability validation, not PDB enforcement", "checked": true},
+    {"item": "Fixes follow existing Chainsaw test patterns (numbered steps, catch blocks, diagnostic scripts)", "checked": true},
+    {"item": "No new test logic gaps introduced by the changes", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing chaos E2E test suite structure pattern", "checked": true},
+    {"item": "Changes are minimal — only addresses external review findings", "checked": true},
+    {"item": "YAML indentation and structure correct after multiline script change", "checked": true},
+    {"item": "Defensive defaults (${READY:-0}) used consistently in kill-detection assertion", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No secrets or credentials in test files", "checked": true},
+    {"item": "No command injection vectors in kubectl commands", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "No scope creep — only files flagged by external review are modified", "checked": true},
+    {"item": "Review pattern files correctly updated with new occurrence counts", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No unnecessary code added beyond the fixes", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Kill-detection assertion fails fast with descriptive error before availability check", "checked": true},
+    {"item": "Job deletion uses --ignore-not-found for safe idempotency", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Pre-creation cleanup guards against stale Job leftovers from previous runs", "checked": true},
+    {"item": "Explicit loop-exhaustion check prevents silent vacuous passes", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Minor: tests/e2e-chaos/api-pod-kill-pdb/chainsaw-test.yaml:92 — inline comment still says '(PDB enforcement)' while the echo on line 98 was updated to 'Availability maintained during pod kill' per I-001. Consider aligning the comment for consistency, though this is not a functional issue."
+  ],
+  "next_steps": [],
+  "detected_patterns": []
+}

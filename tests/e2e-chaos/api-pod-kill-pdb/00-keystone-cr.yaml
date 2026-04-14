@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR fixture for the API pod kill with PDB chaos test (CC-0048).
+# Uses unique name (keystone-chaos-api) and database (keystone_chaos_api)
+# to avoid conflicts with other test suites.
+# NOTE: replicas: 3 (unlike other chaos CRs) to trigger PDB creation
+# via buildPodDisruptionBudget() which requires replicas > 1.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-chaos-api
+  namespace: openstack
+spec:
+  replicas: 3
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_chaos_api
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne

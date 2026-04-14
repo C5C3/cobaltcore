@@ -1,0 +1,111 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for operator pod crash recovery (CC-0048).
+# Verifies the Keystone operator self-recovers after its own pod is killed
+# and maintains Ready=True throughout — the operator crash should be
+# invisible to the Keystone CR conditions since the Deployment controller
+# restarts the operator pod and reconciliation resumes.
+#
+# SC-CHAOS-004, REQ-001, REQ-005, REQ-006, REQ-008 (CC-0048)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-operator-pod-crash
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR ──────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert baseline Ready=True before chaos injection ──────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-op
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-chaos-op
+  # ── Step 3: Inject PodChaos to kill operator pod ───────────────────────
+  - try:
+    - apply:
+        file: 01-podchaos.yaml
+  # ── Step 4: Wait for operator pod crash and recovery ───────────────────
+  # Polls the operator Deployment's readyReplicas because PodChaos mode:one
+  # kills only 1 of 2 operator replicas — `kubectl wait pods --for=Ready=false`
+  # would hang forever since it requires ALL matching pods to meet the
+  # condition, and the surviving replica stays Ready=true.
+  # NOTE: Operator runs in `default` namespace because hack/ci-deploy-operator.sh
+  # invokes `helm install` without `--namespace`. The Deployment name is
+  # `keystone-operator` (release name contains the chart name, so fullname
+  # == release name).
+  - try:
+    - script:
+        timeout: 150s
+        content: |
+          # NOTE: set -euo pipefail is intentionally omitted. The polling loop
+          # uses ${READY:-0} defensive defaults that would fail under set -e
+          # when kubectl returns empty output, and the loop's exit condition
+          # is checked explicitly rather than relying on exit codes.
+          # Phase 1: poll until readyReplicas drops below 2 (chaos took effect).
+          for i in $(seq 1 60); do
+            READY=$(kubectl get deployment keystone-operator -n default -o jsonpath='{.status.readyReplicas}')
+            if [ "${READY:-0}" -lt 2 ]; then
+              break
+            fi
+            sleep 2
+          done
+          if [ "${READY:-0}" -ge 2 ]; then
+            echo "ERROR: readyReplicas never dropped below 2 — pod kill did not take effect"
+            exit 1
+          fi
+          echo "Pod kill confirmed: readyReplicas=${READY:-0}"
+          # Phase 2: poll until readyReplicas returns to 2 (operator recovered).
+          for i in $(seq 1 60); do
+            READY=$(kubectl get deployment keystone-operator -n default -o jsonpath='{.status.readyReplicas}')
+            if [ "${READY:-0}" -eq 2 ]; then
+              echo "Operator recovered: readyReplicas=2"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ERROR: operator did not recover — readyReplicas=${READY:-0}"
+          exit 1
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-op --dep-label=app.kubernetes.io/name=keystone-operator --dep-ns=default
+  # ── Step 5: Delete PodChaos to clean up ────────────────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          name: kill-operator
+  # ── Step 6: Assert Ready=True after operator recovery ──────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-op
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-op --dep-label=app.kubernetes.io/name=keystone-operator --dep-ns=default

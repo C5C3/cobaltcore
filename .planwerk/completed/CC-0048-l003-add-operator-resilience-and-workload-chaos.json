@@ -2,8 +2,8 @@
   "feature_id": "CC-0048",
   "title": "L003: Add operator resilience and workload chaos tests",
   "slug": "l003-add-operator-resilience-and-workload-chaos",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 📦 medium\n**Category:** testing\n**Priority:** high\n**Source:** Proposed for '# GitHub Issue #132: Add negative and chaos E2E te'\n\nImplement the 3 scenarios that test operator self-recovery, CronJob failure handling, and PDB enforcement.\n\n**Scenarios:**\n1. **SC-CHAOS-004: `tests/e2e-chaos/operator-pod-crash/`** — PodChaos kills operator pod mid-reconcile → verify controller-runtime restarts the pod → assert re-reconciliation drives back to `Ready=True` (validates no unrecoverable state from partial reconciliation)\n2. **SC-CHAOS-005: `tests/e2e-chaos/cronjob-rotation-failure/`** — PodChaos with pod-failure action targets CronJob-spawned pods → verify failed Job is detected → assert operator status reflects the failure condition (validates `stale-completed-job-detection-via-pod-template-spec-comparison` pattern behavior under fault)\n3. **SC-CHAOS-008: `tests/e2e-chaos/api-pod-kill-pdb/`** — PodChaos targets Keystone API pods → assert PDB prevents simultaneous termination of all replicas → verify at least one pod remains running throughout the disruption\n\nEach test follows the established framework from L002: SPDX headers, CC-0048 references, numbered steps, catch blocks with diagnostics, JMESPath condition assertions per `chainsaw-e2e-test-suite-structure` pattern.\n\n**Rationale:** These scenarios cover operator-level resilience (crash recovery without entering unrecoverable state), workload correctness (CronJob failure detection), and availability guarantees (PDB enforcement). They are distinct from dependency pod kills because they test the operator's own lifecycle and Kubernetes workload management, not external dependency health.\n\n**Affected Areas:**\n- tests/e2e-chaos/operator-pod-crash/chainsaw-test.yaml\n- tests/e2e-chaos/operator-pod-crash/00-keystone-cr.yaml\n- tests/e2e-chaos/operator-pod-crash/01-podchaos.yaml\n- tests/e2e-chaos/cronjob-rotation-failure/chainsaw-test.yaml\n- tests/e2e-chaos/cronjob-rotation-failure/00-keystone-cr.yaml\n- tests/e2e-chaos/cronjob-rotation-failure/01-podchaos.yaml\n- tests/e2e-chaos/api-pod-kill-pdb/chainsaw-test.yaml\n- tests/e2e-chaos/api-pod-kill-pdb/00-keystone-cr.yaml\n- tests/e2e-chaos/api-pod-kill-pdb/01-podchaos.yaml",
   "stories": [
@@ -324,6 +324,7 @@
       "title": "Create tests/e2e-chaos/operator-pod-crash/ fixtures: 00-keystone-cr.yaml (Keystone CR keystone-chaos-op, database keystone_chaos_op, replicas: 1) and 01-podchaos.yaml (PodChaos kill-operator, action: pod-kill, mode: one, selector: app.kubernetes.io/name=keystone-operator in openstack namespace, gracePeriod: 0). Both files with SPDX headers referencing CC-0048. Follow exact patterns from tests/e2e-chaos/mariadb-pod-kill/ fixtures. (CC-0048, REQ-001, REQ-007, REQ-008)",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-007",
@@ -335,6 +336,7 @@
       "title": "Create tests/e2e-chaos/cronjob-rotation-failure/ fixtures: 00-keystone-cr.yaml (Keystone CR keystone-chaos-cron, database keystone_chaos_cron, replicas: 1) and 01-podchaos.yaml (PodChaos fail-cronjob, action: pod-failure, mode: all, duration: 60s, selector: job-name=chaos-cron-test in openstack namespace). Both files with SPDX headers referencing CC-0048. CR follows pattern from tests/e2e-chaos/mariadb-pod-kill/00-keystone-cr.yaml; PodChaos uses pod-failure action (not pod-kill) per feature spec. (CC-0048, REQ-002, REQ-007, REQ-008)",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-007",
@@ -346,6 +348,7 @@
       "title": "Create tests/e2e-chaos/api-pod-kill-pdb/ fixtures: 00-keystone-cr.yaml (Keystone CR keystone-chaos-api, database keystone_chaos_api, replicas: 3 — differs from other fixtures to trigger minAvailable=1 PDB) and 01-podchaos.yaml (PodChaos kill-keystone-api, action: pod-kill, mode: one, selector: app.kubernetes.io/name=keystone AND app.kubernetes.io/instance=keystone-chaos-api in openstack, gracePeriod: 0). Both files with SPDX headers referencing CC-0048. (CC-0048, REQ-003, REQ-004, REQ-007, REQ-008)",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-004",
@@ -358,6 +361,7 @@
       "title": "Create tests/e2e-chaos/operator-pod-crash/chainsaw-test.yaml — SC-CHAOS-004 operator crash recovery test. 6 steps: (1) Apply 00-keystone-cr.yaml, (2) Assert baseline Ready=True with reason AllReady + catch diagnostics.sh baseline, (3) Apply 01-podchaos.yaml kill-operator, (4) Wait for operator pod Ready=false then Ready=true (condition-based waits, selector: app.kubernetes.io/name=keystone-operator, timeout: 2m each) + catch diagnostics, (5) Delete PodChaos kill-operator, (6) Assert Ready=True with reason AllReady + catch diagnostics.sh chaos. Test name: keystone-operator-pod-crash. Namespace: openstack. Timeouts: assert: 5m. SPDX header, CC-0048 + SC-CHAOS-004 comment block, numbered step comments. Follow pattern from tests/e2e-chaos/memcached-pod-kill/chainsaw-test.yaml (no-regression with condition waits). (CC-0048, REQ-001, REQ-005, REQ-006, REQ-008)",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-005",
@@ -370,6 +374,7 @@
       "title": "Create tests/e2e-chaos/cronjob-rotation-failure/chainsaw-test.yaml — SC-CHAOS-005 CronJob failure resilience test. 7 steps: (1) Apply 00-keystone-cr.yaml, (2) Assert baseline Ready=True + catch diagnostics.sh baseline, (3) Apply 01-podchaos.yaml fail-cronjob (PodChaos must be active BEFORE Job creation so it catches pods on creation), (4) Script: 'kubectl create job chaos-cron-test --from=cronjob/keystone-chaos-cron-fernet-rotate -n $NAMESPACE' + catch with CronJob status, (5) Assert FernetKeysReady=True AND Ready=True with reason AllReady + catch with Job status, job pod logs, diagnostics.sh chaos, (6) Delete PodChaos fail-cronjob, (7) Assert Ready=True + catch diagnostics.sh chaos. Test name: keystone-cronjob-rotation-failure. Namespace: openstack. Timeouts: assert: 5m. SPDX header, CC-0048 + SC-CHAOS-005 comment block. (CC-0048, REQ-002, REQ-006, REQ-008)",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-006",
@@ -381,6 +386,7 @@
       "title": "Create tests/e2e-chaos/api-pod-kill-pdb/chainsaw-test.yaml — SC-CHAOS-008 PDB enforcement test. 7 steps: (1) Apply 00-keystone-cr.yaml (replicas: 3), (2) Assert baseline Ready=True + catch diagnostics.sh baseline, (3) Assert PDB keystone-chaos-api-api exists with spec.minAvailable: 1 (apiVersion: policy/v1) + catch with PDB describe, (4) Apply 01-podchaos.yaml kill-keystone-api, (5) Script step: poll until Deployment readyReplicas < 3 (kill took effect), then assert availableReplicas >= 1; followed by Chainsaw assert of DeploymentReady=True AND Ready=True with reason AllReady + catch diagnostics, (6) Delete PodChaos kill-keystone-api, (7) Assert Ready=True with reason AllReady + catch diagnostics.sh chaos. Test name: keystone-api-pod-kill-pdb. Namespace: openstack. Timeouts: assert: 5m. SPDX header, CC-0048 + SC-CHAOS-008 comment block. (CC-0048, REQ-003, REQ-004, REQ-006, REQ-008)",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-004",
@@ -393,6 +399,7 @@
       "title": "Update docs/reference/chaos-e2e-tests.md — Add SC-CHAOS-004, SC-CHAOS-005, SC-CHAOS-008 to the existing reference documentation. Update: (a) Overview diagram to include the 3 new scenarios, (b) Test Suite Inventory table with scenario IDs, CR names, test patterns, condition assertions, and requirement references, (c) Detailed sections for each scenario (Purpose, Steps table, Fixtures, Catch blocks) following the pattern of existing SC-CHAOS-001/002/003 sections, (d) Keystone CR Fixtures table with new names/databases, (e) PodChaos CRD Pattern section noting pod-failure action for SC-CHAOS-005 and multi-label selector for SC-CHAOS-008, (f) File Layout tree with 3 new directories, (g) Catch Block Diagnostics matrix with new scenarios. (CC-0048, REQ-008)",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -537,8 +544,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-12T10:00:08.353043"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-13T18:56:22.894133"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-14T12:45:45.958832"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/202",
+  "pr_number": 202,
   "execution_history": [
     {
       "run_id": "0d95c575-87e0-4aef-9bcf-60fe605159e0",
@@ -550,6 +567,64 @@
           "name": "prepare",
           "duration": 1096.1898868083954,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "9b9340b5-06d7-4707-bf45-0d43361c12a0",
+      "timestamp": "2026-04-13T19:22:38.702190",
+      "total_duration": 1373.613332748413,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (3 tasks)",
+          "duration": 296.51624155044556,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (3 tasks)",
+          "duration": 185.00023651123047,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (1 tasks)",
+          "duration": 318.181111574173,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0048] Code Review",
+          "duration": 469.4329137802124,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0048] Improvements",
+          "duration": 64.55485892295837,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0048] Simplify",
+          "duration": 39.92797040939331,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "f6ee92fd-2e26-4860-a9b5-f869cb6cc88b",
+      "timestamp": "2026-04-13T19:53:05.776358",
+      "total_duration": 461.5152475833893,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 461.5152475833893,
+          "type": "review_address",
           "status": "done"
         }
       ]

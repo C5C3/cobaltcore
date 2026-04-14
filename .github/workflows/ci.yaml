@@ -66,18 +66,18 @@ jobs:
               - 'images/python-base/**'
               - 'images/venv-builder/**'
               - 'images/tempest/**'
-              - 'tests/tempest/**'
               - 'releases/**'
               - '.github/workflows/ci.yaml'
             # Per-operator paths — only the relevant E2E job is triggered.
+            # Test-definition paths (tests/e2e/<op>/**) are covered by
+            # tests_e2e_operator so they run the full E2E suite without also
+            # pulling in lint/unit/format jobs.
             keystone:
               - 'operators/keystone/**'
               - 'images/keystone/**'
-              - 'tests/e2e/keystone/**'
             # glance:                        # uncomment when glance is added
             #   - 'operators/glance/**'
             #   - 'images/glance/**'
-            #   - 'tests/e2e/glance/**'
             docs:
               - 'docs/**'
               - 'package.json'
@@ -98,6 +98,13 @@ jobs:
               - 'deploy/**'
               - '.github/workflows/ci.yaml'
               - '.github/actions/**'
+            # CC-0054 follow-up: Any E2E test-definition change forces all E2E
+            # jobs to run. Kept separate from go_common so pure test edits do
+            # not also trigger lint/unit/format/vuln jobs.
+            tests_e2e_operator:
+              - 'tests/e2e/**'
+            tests_tempest:
+              - 'tests/tempest/**'
       # CC-0050: Extracted to hack/ci-resolve-changes.sh (review #2 comment 3).
       - name: Resolve effective changes
         id: result
@@ -109,6 +116,8 @@ jobs:
           FILTER_helm: ${{ steps.filter.outputs.helm }}
           FILTER_e2e_infra: ${{ steps.filter.outputs.e2e_infra }}
           FILTER_e2e_chaos: ${{ steps.filter.outputs.e2e_chaos }}
+          FILTER_tests_e2e_operator: ${{ steps.filter.outputs.tests_e2e_operator }}
+          FILTER_tests_tempest: ${{ steps.filter.outputs.tests_tempest }}
           FILTER_go_common: ${{ steps.filter.outputs.go_common }}
         run: hack/ci-resolve-changes.sh
       # CC-0051: Derive Tempest release matrix from releases/ directories (review #1).
@@ -398,7 +407,11 @@ jobs:
   # after all pre-flight checks (lint, tests, shellcheck) have passed.
   e2e-operator:
     needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]
+    # always(): allow the job to run when upstream Go jobs are skipped
+    # (e.g. pure E2E test-definition PRs where go=false). The explicit
+    # failure/cancelled guard still blocks if any upstream actually failed.
     if: |
+      always() &&
       needs.changes.outputs.has-e2e-operators == 'true' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
@@ -481,7 +494,11 @@ jobs:
   # dependencies.
   e2e-chaos:
     needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, e2e-operator]
+    # always(): allow the job to run when upstream Go jobs are skipped
+    # (e.g. pure E2E test-definition PRs where go=false). The explicit
+    # failure/cancelled guard still blocks if any upstream actually failed.
     if: |
+      always() &&
       needs.changes.outputs.e2e-chaos == 'true' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
@@ -544,7 +561,11 @@ jobs:
   # CC-0051: Matrix over OpenStack releases to validate each release independently.
   tempest:
     needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]
+    # always(): allow the job to run when upstream Go jobs are skipped
+    # (e.g. pure E2E test-definition PRs where go=false). The explicit
+    # failure/cancelled guard still blocks if any upstream actually failed.
     if: |
+      always() &&
       needs.changes.outputs.has-e2e-operators == 'true' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')

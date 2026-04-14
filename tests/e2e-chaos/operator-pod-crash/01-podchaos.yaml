@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos CR to kill the Keystone operator pod (CC-0048).
+# One-shot pod-kill action — the Deployment controller will restart the pod.
+# The operator pod lives in the `default` namespace because hack/ci-deploy-operator.sh
+# runs `helm install` without `--namespace`. The PodChaos resource itself stays in
+# `openstack` (the test namespace), but its selector targets the operator's namespace.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: kill-operator
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces:
+    - default
+    labelSelectors:
+      app.kubernetes.io/name: keystone-operator
+  gracePeriod: 0

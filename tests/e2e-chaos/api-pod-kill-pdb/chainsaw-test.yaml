@@ -1,0 +1,137 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for API pod kill with PDB enforcement (CC-0048).
+# Verifies that:
+# 1. The operator creates a PodDisruptionBudget (minAvailable: 1) for
+#    Keystone API pods when replicas > 1.
+# 2. After a pod-kill, at least 1 API replica remains available (PDB
+#    guarantees minimum availability during voluntary disruptions).
+# 3. The Keystone CR maintains DeploymentReady=True and Ready=True
+#    throughout the disruption.
+#
+# Uses replicas: 3 in the Keystone CR to trigger PDB creation via
+# buildPodDisruptionBudget() which requires replicas > 1.
+#
+# SC-CHAOS-008, REQ-003, REQ-004, REQ-006, REQ-008 (CC-0048)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-api-pod-kill-pdb
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR (replicas: 3) ────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert baseline Ready=True before chaos injection ──────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-api
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-chaos-api
+  # ── Step 3: Assert PDB exists with minAvailable: 1 ────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: keystone-chaos-api-api
+            namespace: openstack
+          spec:
+            minAvailable: 1
+    catch:
+    - script:
+        content: kubectl describe pdb keystone-chaos-api-api -n $NAMESPACE 2>/dev/null || kubectl get pdb -n $NAMESPACE -o wide
+  # ── Step 4: Inject PodChaos to kill one Keystone API pod ───────────────
+  - try:
+    - apply:
+        file: 01-podchaos.yaml
+  # ── Step 5: Verify availability during involuntary disruption ───────────
+  # Step 3 validates PDB *spec* (minAvailable: 1 exists). This step validates
+  # that at least 1 replica remains *available* during an involuntary pod kill.
+  # PDB only governs voluntary disruptions (evictions/drains), so these two
+  # validations are complementary: Step 3 = PDB config correctness, Step 5 =
+  # runtime availability under involuntary disruption (CC-0048).
+  - try:
+    - script:
+        timeout: 120s
+        content: |
+          # NOTE: set -euo pipefail is intentionally omitted. The polling loop
+          # uses ${READY:-0} defensive defaults that would fail under set -e
+          # when kubectl returns empty output, and the loop's exit condition
+          # is checked explicitly rather than relying on exit codes.
+          # Poll until readyReplicas < 3 (confirms pod kill took effect)
+          for i in $(seq 1 60); do
+            READY=$(kubectl get deployment keystone-chaos-api-api -n $NAMESPACE -o jsonpath='{.status.readyReplicas}')
+            if [ "${READY:-0}" -lt 3 ]; then
+              break
+            fi
+            sleep 2
+          done
+          # Fail explicitly if the kill never took effect
+          if [ "${READY:-0}" -ge 3 ]; then
+            echo "ERROR: readyReplicas never dropped below 3 — pod kill did not take effect"
+            exit 1
+          fi
+          # Assert at least 1 replica remains available during pod kill
+          AVAILABLE=$(kubectl get deployment keystone-chaos-api-api -n $NAMESPACE -o jsonpath='{.status.availableReplicas}')
+          if [ "${AVAILABLE:-0}" -lt 1 ]; then
+            echo "ERROR: availableReplicas ($AVAILABLE) < 1 — availability not maintained during pod kill"
+            exit 1
+          fi
+          echo "Availability maintained during pod kill: readyReplicas=${READY:-0}, availableReplicas=${AVAILABLE}"
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-api
+            namespace: openstack
+          status:
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-api --dep-label=app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-chaos-api
+  # ── Step 6: Delete PodChaos to clean up ────────────────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          name: kill-keystone-api
+  # ── Step 7: Assert Ready=True after chaos cleanup ──────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-api
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-api --dep-label=app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-chaos-api

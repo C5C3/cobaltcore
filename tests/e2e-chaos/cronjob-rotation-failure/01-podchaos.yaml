@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos CR to inject failures into CronJob-spawned rotation pods (CC-0048).
+# Uses pod-failure action (not pod-kill) with 60s duration to simulate
+# transient failures in fernet rotation Job pods. Mode: all ensures every
+# pod spawned by the targeted Job is affected.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: fail-cronjob
+  namespace: openstack
+spec:
+  action: pod-failure
+  mode: all
+  duration: "60s"
+  selector:
+    namespaces:
+    - openstack
+    labelSelectors:
+      job-name: chaos-cron-test

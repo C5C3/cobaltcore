@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: When a test name contains universal quantifiers like 'All', 'Every', 'Runs all', or 'Full', verify that every branch or validation path in the function under test is actually exercised. Cross-reference the test setup with the production code's branches.
 **Severity**: WARNING
-**Occurrences**: 5
+**Occurrences**: 6
 
 ## What to check
 
@@ -39,3 +39,8 @@ Misleadingly named tests give false confidence that all paths are covered and th
 - **Feedback**: reconcile_database.go contains approximately 15 distinct SetCondition calls across paths like ClusterNotReady, WaitingForDatabase, WaitingForUser, etc. The test covers only 2 paths (one True, one False). If someone removes ObservedGeneration from an untested path, no test catches it.
 - **What was missed**: Count the distinct code paths in production that set the property under test. Compare to the number of paths exercised in the new tests. If coverage is below ~30% of paths, flag that regressions in untested paths will go undetected.
 - **Fix**: Expanded reconcile_database_test.go from 2 to 5 tested condition paths (added WaitingForDatabase, DBSyncFailed, SchemaDriftDetected) and reconcile_secrets_test.go from 2 to 4 paths (added WaitingForDBCredentials, WaitingForAdminCredentials).
+
+### CC-0048 — berendt
+- **Feedback**: The Job `chaos-cron-test` is created via a `script` step, which means Chainsaw does not track it for automatic cleanup. After the test completes, this Job remains in the `openstack` namespace. On a subsequent test run, Step 4 will fail with `AlreadyExists`.
+- **What was missed**: When a test step creates a named resource via a shell script rather than through the test framework's declarative resource management, verify that (1) a pre-creation cleanup with --ignore-not-found or equivalent guards against stale leftovers, and (2) a post-test cleanup step exists. Without both, the test breaks on re-run.
+- **Fix**: Add `kubectl delete job chaos-cron-test -n $NAMESPACE --ignore-not-found` before `kubectl create job` to make the step idempotent.

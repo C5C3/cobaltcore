@@ -1,0 +1,78 @@
+{
+  "feature_id": "CC-0048",
+  "title": "L003: Add operator resilience and workload chaos tests",
+  "date": "2026-04-13",
+  "summary": "Implements 3 chaos E2E test scenarios (SC-CHAOS-004, SC-CHAOS-005, SC-CHAOS-008) covering operator self-recovery after pod crash, CronJob fernet rotation failure tolerance, and PDB availability guarantee during API pod kill. Each scenario has 3 files (Keystone CR fixture, PodChaos CR, chainsaw test) totaling 9 new test files. Reference documentation updated with all 3 scenarios including inventory table, detailed sections, test patterns, PodChaos CRD patterns, fixtures table, file layout, and diagnostics matrix.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "All 9 test files exist (3 directories x 3 files)", "checked": true},
+    {"item": "SPDX Apache-2.0 headers on all 9 files (lines 1-3)", "checked": true},
+    {"item": "CC-0048 references in comment blocks on all files", "checked": true},
+    {"item": "Unique CR name/database pairs: keystone-chaos-op/keystone_chaos_op, keystone-chaos-cron/keystone_chaos_cron, keystone-chaos-api/keystone_chaos_api", "checked": true},
+    {"item": "No name collision with L002 CRs (keystone-chaos-db, keystone-chaos-mc, keystone-chaos-bao)", "checked": true},
+    {"item": "SC-CHAOS-004: pod-kill action, selector targets keystone-operator", "checked": true},
+    {"item": "SC-CHAOS-005: pod-failure action with duration: 60s, selector targets job-name: chaos-cron-test", "checked": true},
+    {"item": "SC-CHAOS-008: pod-kill action, multi-label selector (name + instance)", "checked": true},
+    {"item": "All chainsaw tests use numbered step pattern and JMESPath condition assertions", "checked": true},
+    {"item": "Catch blocks present on all assert steps across all 3 tests", "checked": true},
+    {"item": "SC-CHAOS-004: condition-based waits (Ready=false then Ready=true) on operator pod", "checked": true},
+    {"item": "SC-CHAOS-005: PodChaos applied BEFORE Job creation (Step 3 before Step 4)", "checked": true},
+    {"item": "SC-CHAOS-005: asserts FernetKeysReady=True and Ready=True maintained", "checked": true},
+    {"item": "SC-CHAOS-008: replicas: 3 in Keystone CR", "checked": true},
+    {"item": "SC-CHAOS-008: PDB assertion on keystone-chaos-api-api with minAvailable: 1 (policy/v1)", "checked": true},
+    {"item": "SC-CHAOS-008: script verifies availableReplicas >= 1 during pod kill", "checked": true},
+    {"item": "SC-CHAOS-008: DeploymentReady=True assertion", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing chaos E2E test suite structure pattern exactly", "checked": true},
+    {"item": "CR fixtures follow identical spec pattern to mariadb-pod-kill/00-keystone-cr.yaml", "checked": true},
+    {"item": "PodChaos CRDs follow established structure with correct fields", "checked": true},
+    {"item": "Step numbering and comment format consistent with L002 tests", "checked": true},
+    {"item": "diagnostics.sh usage consistent across all catch blocks", "checked": true},
+    {"item": "No unnecessary complexity or over-engineering", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No secrets or credentials in test fixtures", "checked": true},
+    {"item": "No path traversal or injection risks in script steps", "checked": true},
+    {"item": "PodChaos selectors correctly scoped to avoid unintended targets", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Each scenario tests a distinct resilience concern (operator lifecycle, workload failure, availability guarantee)", "checked": true},
+    {"item": "Test patterns appropriate for each scenario type", "checked": true},
+    {"item": "File layout follows established conventions (00-/01- prefix, directory per scenario)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated test logic — each scenario is unique", "checked": true},
+    {"item": "Shared diagnostics.sh reused instead of duplicating inline kubectl commands", "checked": true},
+    {"item": "No speculative features or unused test steps", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Script step exits 1 on PDB enforcement failure with descriptive error", "checked": true},
+    {"item": "Catch blocks collect diagnostics on every assert failure", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Polling script uses ${READY:-0} and ${AVAILABLE:-0} defaults for empty values", "checked": true},
+    {"item": "PodChaos cleanup (delete) before recovery assertion in all scenarios", "checked": true},
+    {"item": "Condition-based waits instead of fixed sleeps for flakiness resistance", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "D2",
+      "severity": "MINOR",
+      "description": "The polling script in api-pod-kill-pdb Step 5 is a multi-command script that omits 'set -euo pipefail'. The chainsaw E2E test pattern says 'Script steps use set -euo pipefail for multi-command scripts'. Here the omission is justified (polling loop with defensive defaults would break under set -e), but a comment explaining the intentional omission would improve clarity.",
+      "location": "tests/e2e-chaos/api-pod-kill-pdb/chainsaw-test.yaml:81",
+      "fix": "Add a comment at the top of the script block: '# NOTE: set -euo pipefail intentionally omitted — polling loop uses defensive defaults (${READY:-0}) to handle transient kubectl failures gracefully.'",
+      "evidence": "content: |\n  # Poll until readyReplicas < 3 (confirms pod kill took effect)\n  for i in $(seq 1 60); do\n    READY=$(kubectl get deployment ...)",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a comment in the api-pod-kill-pdb chainsaw-test.yaml noting that PDB enforcement is validated via spec assertion (Step 3) while the script step (Step 5) validates availability maintenance during involuntary disruption — PDB only governs voluntary disruptions (evictions/drains), so the two validations are complementary rather than redundant."
+  ],
+  "next_steps": [
+    "Rebase onto latest main before PR to resolve the CC-0072 feature file divergence (file added to main after branch creation)"
+  ],
+  "detected_patterns": []
+}

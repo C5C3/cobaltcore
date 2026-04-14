@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: When a test verifies that a value was replaced/updated, check if it asserts both the presence of the new value AND the absence of the old value. Compare with similar tests in the same file for consistency.
 **Severity**: WARNING
-**Occurrences**: 3
+**Occurrences**: 4
 
 ## What to check
 
@@ -29,3 +29,8 @@ Without negative assertions, a bug where the old value is never deleted goes und
 - **Feedback**: The test's Step 4 script only checks the desired spec, not the actual running container image. Combined with replicas: 1 and default RollingUpdate strategy, the old pod remains available during the stalled rollout, so availableReplicas > 0 passes against the OLD pod — making this test either flaky (passes vacuously against old pods) or fails after 5m timeout.
 - **What was missed**: For every test that mutates a Kubernetes resource, verify that at least one assertion checks a status field (status.updatedReplicas, status.containerStatuses[].image, etc.) that proves the change was actually applied, not just requested.
 - **Fix**: Added an `updatedReplicas == replicas` assertion in image-upgrade Step 4 to prove new pods actually started, rather than only checking spec.image.tag.
+
+### CC-0048 — berendt
+- **Feedback**: Polling loop passes vacuously if kill never takes effect (e.g., PodChaos selector mismatch, Chaos Mesh not running).
+- **What was missed**: After a mutation step (chaos injection, pod kill, config change), verify the test includes an assertion that the old state is gone or disrupted before asserting the new/recovered state. For example, after a pod kill, assert the old pod UID disappeared before asserting a new pod is Running.
+- **Fix**: Add an assertion that the targeted pod's old UID is no longer present (assert absence of old state) before polling for recovery to a healthy state.

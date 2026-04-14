@@ -1,0 +1,105 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for CronJob fernet rotation failure (CC-0048).
+# Verifies the Keystone operator maintains FernetKeysReady=True and
+# Ready=True even when a manually triggered fernet rotation Job's pods
+# are killed by PodChaos. Existing fernet keys remain valid; the failed
+# rotation is a transient event that does not degrade the CR status.
+#
+# The PodChaos CR is applied BEFORE creating the Job so that Chaos Mesh
+# intercepts the Job's pods on creation (pod-failure action, mode: all).
+#
+# SC-CHAOS-005, REQ-002, REQ-006, REQ-008 (CC-0048)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-cronjob-rotation-failure
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR ──────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert baseline Ready=True before chaos injection ──────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-cron
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-chaos-cron
+  # ── Step 3: Inject PodChaos BEFORE Job creation ────────────────────────
+  # PodChaos must be active before the Job is created so that Chaos Mesh
+  # can intercept the Job's pods on creation with pod-failure action.
+  - try:
+    - apply:
+        file: 01-podchaos.yaml
+  # ── Step 4: Trigger fernet rotation Job under chaos ────────────────────
+  - try:
+    - script:
+        content: |
+          kubectl delete job chaos-cron-test -n $NAMESPACE --ignore-not-found
+          kubectl create job chaos-cron-test --from=cronjob/keystone-chaos-cron-fernet-rotate -n $NAMESPACE
+    catch:
+    - script:
+        content: kubectl get cronjob -n $NAMESPACE -l app.kubernetes.io/instance=keystone-chaos-cron -o wide
+  # ── Step 5: Assert FernetKeysReady=True and Ready=True maintained ──────
+  # The failed rotation Job should not cause FernetKeysReady to go False
+  # because existing fernet keys remain valid and in-place.
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-cron
+            namespace: openstack
+          status:
+            (conditions[?type == 'FernetKeysReady']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: kubectl get job chaos-cron-test -n $NAMESPACE -o wide 2>/dev/null; kubectl get pods -n $NAMESPACE -l job-name=chaos-cron-test -o wide 2>/dev/null
+    - script:
+        content: kubectl logs -n $NAMESPACE -l job-name=chaos-cron-test --tail=50 2>/dev/null || true
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-cron --dep-label=job-name=chaos-cron-test
+  # ── Step 6: Delete PodChaos to lift fault ──────────────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          name: fail-cronjob
+  # ── Step 7: Assert Ready=True after chaos cleanup ──────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-cron
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-cron --dep-label=job-name=chaos-cron-test
