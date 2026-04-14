@@ -1,0 +1,117 @@
+{
+  "summary": "CC-0071 adds helpers (shortestRequeue, mergeParallelConditions, reconcileParallelGroup) and comprehensive tests for parallel sub-reconciler execution via errgroup. However, reconcileParallelGroup is never called from Reconcile() — the core feature is scaffolded but not wired in. The reconcile loop remains fully sequential. Additionally, shortestRequeue silently drops ctrl.Result{Requeue: true}, which both reconcileFernetKeys and reconcileCredentialKeys use during initial key generation.",
+  "verdict": "BLOCKED",
+  "tests_checklist": [
+    {"item": "All existing tests pass (go test -race -count=1)", "checked": true},
+    {"item": "shortestRequeue: AllZero, SingleNonZero, PicksMinimum tests present", "checked": true},
+    {"item": "mergeParallelConditions: merge, skip, preserve tests present", "checked": true},
+    {"item": "reconcileParallelGroup: success, error cancellation, partial merge tests present", "checked": true},
+    {"item": "BenchmarkReconcile_FullReconcile exists and runs", "checked": true},
+    {"item": "Integration test through Reconcile() verifying parallel group (TestReconcile_ParallelGroupSetsAllConditions)", "checked": false},
+    {"item": "shortestRequeue handles Requeue:true edge case", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Functions are small and single-purpose", "checked": true},
+    {"item": "Naming is clear and intention-revealing", "checked": true},
+    {"item": "No dead code or unused functions", "checked": false},
+    {"item": "No magic numbers/strings", "checked": true},
+    {"item": "DeepCopy pattern eliminates shared mutable state", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No user input processed directly", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "No sensitive data in logs", "checked": true},
+    {"item": "errgroup.WithContext propagates cancellation", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "reconcileParallelGroup wired into Reconcile()", "checked": false},
+    {"item": "errgroup.WithContext used (not plain errgroup.Group)", "checked": true},
+    {"item": "Dependency graph correctly identifies parallelizable sub-reconcilers", "checked": true},
+    {"item": "DeepCopy-per-goroutine eliminates data races (go test -race passes)", "checked": true},
+    {"item": "Only expected files modified (no sub-reconciler implementation changes)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unnecessary abstractions", "checked": true},
+    {"item": "parallelSubReconciler struct is minimal and sufficient", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "First error cancels errgroup context", "checked": true},
+    {"item": "Partial conditions merged even on failure", "checked": true},
+    {"item": "Error propagated to caller via g.Wait()", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "nil condition handled in mergeParallelConditions", "checked": true},
+    {"item": "Empty results handled in shortestRequeue", "checked": true},
+    {"item": "Requeue:true handled in shortestRequeue", "checked": false}
+  ],
+  "security_findings": [],
+  "architecture_findings": [
+    {
+      "severity": "BLOCKING",
+      "description": "reconcileParallelGroup is defined at keystone_controller.go:235 but never called from Reconcile(). The Reconcile function (lines 78-153) still calls reconcileFernetKeys, reconcileCredentialKeys, and reconcileNetworkPolicy individually and sequentially. The core feature — parallel execution — is scaffolded but not integrated. Task 2.1 explicitly requires: 'Restructure Reconcile to call reconcileParallelGroup between reconcileConfig and reconcileDatabase with the standard early-return pattern.'",
+      "location": "operators/keystone/internal/controller/keystone_controller.go:102-119",
+      "fix": "Replace the three sequential sub-reconciler calls (lines 102-119: reconcileFernetKeys, reconcileCredentialKeys, reconcileNetworkPolicy) with a single reconcileParallelGroup call. Create the parallelSubReconciler slice with closures that capture configMapName for FernetKeys and CredentialKeys. Wire it between reconcileConfig and reconcileDatabase with the standard early-return pattern: if result, err := r.reconcileParallelGroup(ctx, &keystone, subs); !result.IsZero() || err != nil { return r.updateStatus(ctx, &keystone, result, err) }",
+      "fix_classification": "ASK"
+    }
+  ],
+  "issues_found": [
+    {
+      "check_id": "FC3",
+      "severity": "BLOCKING",
+      "description": "reconcileParallelGroup is defined but never called from Reconcile(). The feature is scaffolded but not functional. Lines 102-119 of Reconcile() still call reconcileFernetKeys, reconcileCredentialKeys sequentially (and reconcileNetworkPolicy at line 118). The method reconcileParallelGroup at line 235 is dead code in production — only exercised by tests.",
+      "location": "operators/keystone/internal/controller/keystone_controller.go:102-119",
+      "fix": "Wire reconcileParallelGroup into Reconcile() between reconcileConfig and reconcileDatabase. Replace the three sequential calls with: subs := []parallelSubReconciler{{conditionType: \"FernetKeysReady\", fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) { return r.reconcileFernetKeys(ctx, ks, configMapName) }}, {conditionType: \"CredentialKeysReady\", fn: ...}, {conditionType: \"NetworkPolicyReady\", fn: r.reconcileNetworkPolicy}}; if result, err := r.reconcileParallelGroup(ctx, &keystone, subs); !result.IsZero() || err != nil { return r.updateStatus(ctx, &keystone, result, err) }",
+      "evidence": "Lines 102-119: if result, err := r.reconcileFernetKeys(ctx, &keystone, configMapName); !result.IsZero() || err != nil { ... } if result, err := r.reconcileCredentialKeys(ctx, &keystone, configMapName); !result.IsZero() || err != nil { ... } Lines 117-119: if result, err := r.reconcileNetworkPolicy(ctx, &keystone); !result.IsZero() || err != nil { ... } — grep for 'reconcileParallelGroup' in keystone_controller.go shows it only appears in the method definition (line 235) and its doc comment (line 228), never in Reconcile().",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "C3",
+      "severity": "BLOCKING",
+      "description": "shortestRequeue silently drops ctrl.Result{Requeue: true} (immediate requeue without RequeueAfter). Line 199 skips any result where RequeueAfter <= 0, which includes {Requeue: true, RequeueAfter: 0}. Both reconcileFernetKeys (line 82) and reconcileCredentialKeys (line 90) return ctrl.Result{Requeue: true} during initial key generation. Once reconcileParallelGroup is wired in, this bug would cause the reconciler to skip the immediate requeue after key generation, continuing to reconcileDatabase before confirming keys are available.",
+      "location": "operators/keystone/internal/controller/keystone_controller.go:196-207",
+      "fix": "Add handling for Requeue:true in shortestRequeue. An immediate requeue (Requeue: true) is more urgent than any RequeueAfter, so if any result has Requeue: true, the merged result must also have Requeue: true. Suggested approach: track a 'hasImmediateRequeue' flag, and if set, return ctrl.Result{Requeue: true} regardless of RequeueAfter values. Add TestShortestRequeue_RequeueTrue test case.",
+      "evidence": "shortestRequeue line 199: if r.RequeueAfter <= 0 { continue } — skips {Requeue: true}. reconcile_fernet.go:82: return ctrl.Result{Requeue: true}, nil. reconcile_credential.go:90: return ctrl.Result{Requeue: true}, nil.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "C2",
+      "severity": "BLOCKING",
+      "description": "Multiple acceptance criteria are not met because reconcileParallelGroup is not wired into Reconcile(): (1) 'Independent sub-reconcilers run concurrently via errgroup' — NOT MET, they run sequentially. (2) 'Reconcile latency reduced by at least 30% for initial CR creation in benchmarks' — NOT VERIFIABLE, the benchmark measures the unchanged sequential path. (3) 'No behavioral change in reconcile outcomes compared to sequential execution' — NOT VERIFIABLE without the wiring.",
+      "location": "operators/keystone/internal/controller/keystone_controller.go:78-153",
+      "fix": "Wire reconcileParallelGroup into Reconcile() (same fix as FC3). Once wired, re-run the benchmark to compare sequential vs parallel latency.",
+      "evidence": "Reconcile() at lines 78-153 contains no call to reconcileParallelGroup. BenchmarkReconcile_FullReconcile calls r.Reconcile() which runs the sequential path.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "DA3",
+      "severity": "MAJOR",
+      "description": "docs/reference/keystone-reconciler.md describes a parallel group flow diagram (lines 149-164) showing FernetKeys, CredentialKeys, and NetworkPolicy running concurrently via errgroup between reconcileConfig and reconcileDatabase. The actual Reconcile() code runs them sequentially. The Execution Model section (line 219) states 'Parallel group (reconcileParallelGroup) runs three independent sub-reconcilers concurrently' — this is not true in the current code.",
+      "location": "docs/reference/keystone-reconciler.md:149-164",
+      "fix": "Once the code is wired (FC3 fix), the docs will match. Alternatively, if shipping docs ahead of implementation, add a note indicating the parallel group is not yet active in Reconcile().",
+      "evidence": "Docs line 150: '║  reconcileParallelGroup (CC-0071)' with FernetKeys, CredentialKeys, NetworkPolicy shown as concurrent. Code line 102-119: three sequential if-blocks calling each sub-reconciler individually.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "TE8",
+      "severity": "MAJOR",
+      "description": "Task 2.2 required TestReconcile_ParallelGroupSetsAllConditions — a full reconcile test through Reconcile() verifying that the parallel group produces the same outcome as sequential execution. This test is missing. Existing tests only call reconcileParallelGroup directly (TestReconcileParallelGroup_SuccessPath, _ErrorCancellation, _PartialConditionMerge), never through the Reconcile() entry point.",
+      "location": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "fix": "Add TestReconcile_ParallelGroupSetsAllConditions that calls r.Reconcile() with all sub-resources pre-created and verifies FernetKeysReady, CredentialKeysReady, and NetworkPolicyReady are all True — proving the parallel group produces the same conditions as the sequential path.",
+      "evidence": "grep 'reconcileParallelGroup' in test file shows calls only at lines 1266, 1307, 1342 — all direct method calls, none through r.Reconcile().",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "Add TestShortestRequeue_RequeueTrue to verify that ctrl.Result{Requeue: true} is propagated correctly when mixed with RequeueAfter results",
+    "Consider adding TestShortestRequeue_NoArgs to verify behavior with zero variadic arguments (returns ctrl.Result{})",
+    "The BenchmarkReconcile_FullReconcile warm-up could verify the reconcile result to catch setup issues earlier: if res, err := r.Reconcile(...); err != nil || !res.IsZero() { b.Fatalf(...) }"
+  ],
+  "next_steps": [
+    "Fix shortestRequeue to handle ctrl.Result{Requeue: true} — add Requeue:true propagation and corresponding test",
+    "Wire reconcileParallelGroup into Reconcile() between reconcileConfig and reconcileDatabase, replacing the three sequential sub-reconciler calls",
+    "Add TestReconcile_ParallelGroupSetsAllConditions integration test through Reconcile()",
+    "Re-run BenchmarkReconcile_FullReconcile to compare sequential vs parallel latency and verify 30% improvement"
+  ],
+  "detected_patterns": []
+}

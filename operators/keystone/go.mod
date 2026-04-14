@@ -9,6 +9,7 @@ require (
 	github.com/mariadb-operator/mariadb-operator v0.38.1
 	github.com/onsi/gomega v1.39.1
 	github.com/robfig/cron/v3 v3.0.1
+	golang.org/x/sync v0.19.0
 	k8s.io/api v0.35.3
 	k8s.io/apiextensions-apiserver v0.35.3
 	k8s.io/apimachinery v0.35.3
@@ -65,7 +66,6 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/net v0.49.0 // indirect
 	golang.org/x/oauth2 v0.34.0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.40.0 // indirect
 	golang.org/x/term v0.39.0 // indirect
 	golang.org/x/text v0.33.0 // indirect

@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: Look for tests that create a struct, immediately assign values, then assert those same values are present — without invoking any production logic, transformation, or side effect.
 **Severity**: WARNING
-**Occurrences**: 1
+**Occurrences**: 2
 
 ## What to check
 
@@ -19,3 +19,8 @@ Useless tests inflate test counts, give false confidence in coverage, and add ma
 - **Feedback**: Useless test. We certainly do not need to test, if a struct we just created has values we assign to it. This tests go-lang more than it helps us in any way testing the controller.
 - **What was missed**: Each test case should exercise actual production code behavior (a function, reconciliation loop, or side effect). A test that only verifies Go's struct literal assignment provides zero coverage of application logic.
 - **Fix**: Removed the test that only verified struct field assignment without exercising any controller logic.
+
+### CC-0071 — gndrmnn
+- **Feedback**: I don't see a reason why the check for `r.Requeue` was added here. The linter even complains that `r.Requeue` is deprecated.
+- **What was missed**: For every new test added, verify the behavior it locks in is intentional and built on supported APIs. Tests for deprecated code paths cement bad decisions and make future cleanup harder.
+- **Fix**: Removed `TestShortestRequeue_RequeueTrue` along with the deprecated `Requeue` early-return branch it was testing.

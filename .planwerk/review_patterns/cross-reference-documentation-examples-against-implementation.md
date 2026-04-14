@@ -3,7 +3,7 @@
 **Review-Area**: documentation
 **Detection-Hint**: When a PR modifies a Dockerfile, script, or configuration file, search the docs/ directory for code examples that reference or illustrate the same file. Compare the documented pattern against the actual changed code.
 **Severity**: WARNING
-**Occurrences**: 3
+**Occurrences**: 4
 
 ## What to check
 
@@ -29,3 +29,8 @@ Stale documentation examples mislead developers who follow the docs instead of r
 - **Feedback**: The install example uses --set image.tag=latest which contradicts Helm and Kubernetes best practices. latest is a mutable tag that destroys deployment reproducibility and makes rollback ambiguous.
 - **What was missed**: All install/upgrade examples in documentation must use pinned, immutable image tags (e.g., v0.1.0) rather than 'latest'. Users copy-paste examples directly; mutable tags destroy reproducibility and make rollback ambiguous.
 - **Fix**: Replaced image.tag=latest with image.tag=v0.1.0 in the multi-tenant deployment documentation example.
+
+### CC-0071 — berendt
+- **Feedback**: The comment states 'reconcileDatabase (below) depends on their results' which claims a data dependency that does not exist. The PR's own dependency table lists reconcileDatabase's dependencies as [contradicting the comment].
+- **What was missed**: Does the comment's claim (e.g. 'X depends on Y's results') match the dependency graph or data flow visible in the code? Do other artifacts in the same PR contradict the comment?
+- **Fix**: Correct the comment to accurately reflect the actual dependencies, or remove the dependency claim entirely.

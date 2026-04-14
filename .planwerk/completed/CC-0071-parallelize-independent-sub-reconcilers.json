@@ -2,8 +2,8 @@
   "feature_id": "CC-0071",
   "title": "Parallelize independent sub-reconcilers",
   "slug": "parallelize-independent-sub-reconcilers",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #188: Parallelize independent sub-reconcilers for reduced reconcile latency\n\n**Category**: performance | **Scope**: Large\n\n**Description**: Refactor the reconcile loop in keystone_controller.go to identify and run independent sub-reconcilers concurrently using errgroup. After reconcileConfig (which produces configMapName needed by downstream reconcilers), run reconcileFernetKeys, reconcileCredentialKeys, and reconcileNetworkPolicy in parallel since they have no data dependency on each other. Merge results and continue with dependent reconcilers sequentially.\n\n**Motivation**: The 10 sub-reconcilers currently execute fully sequentially (keystone_controller.go:84-131). Some are provably independent and could run concurrently, reducing end-to-end reconcile latency. This matters most during initial CR creation when all sub-resources must be created, and during upgrades when multiple phases execute.\n\n**Affected Areas**:\n- `operators/keystone/internal/controller/keystone_controller.go`\n\n**Acceptance Criteria**:\n- [ ] Independent sub-reconcilers run concurrently via errgroup\n- [ ] Dependency graph between sub-reconcilers is documented\n- [ ] Error from any parallel sub-reconciler cancels the group and is returned\n- [ ] Condition updates from parallel sub-reconcilers do not race (use mutex or sequential condition writes)\n- [ ] Reconcile latency reduced by at least 30% for initial CR creation in benchmarks\n- [ ] No behavioral change in reconcile outcomes compared to sequential execution\n\n---\nSource: https://github.com/C5C3/forge/issues/188",
   "stories": [
@@ -319,6 +319,7 @@
       "description": "Add two helper functions to operators/keystone/internal/controller/keystone_controller.go: (1) shortestRequeue(results ...ctrl.Result) ctrl.Result that returns the minimum non-zero RequeueAfter from the given results, returning ctrl.Result{} if all are zero. (2) mergeParallelConditions(dst *keystonev1alpha1.Keystone, sources ...parallelConditionSource) that extracts a specific condition type from each source's DeepCopy and sets it on the destination using conditions.SetCondition. Define parallelConditionSource struct {conditionType string; source *keystonev1alpha1.Keystone}. Add unit tests in keystone_controller_test.go: TestShortestRequeue_AllZero, TestShortestRequeue_SingleNonZero, TestShortestRequeue_PicksMinimum, TestMergeParallelConditions_MergesCorrectly, TestMergeParallelConditions_SkipsMissingCondition, TestMergeParallelConditions_PreservesExistingConditions.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-004"
@@ -330,6 +331,7 @@
       "description": "Add a new method reconcileParallelGroup(ctx, keystone, configMapName) (ctrl.Result, error) to KeystoneReconciler in operators/keystone/internal/controller/keystone_controller.go. Implementation: (1) Create 3 DeepCopy instances of keystone. (2) Create errgroup.WithContext(ctx). (3) Launch 3 goroutines: reconcileFernetKeys(gctx, ksCopyFernet, configMapName), reconcileCredentialKeys(gctx, ksCopyCred, configMapName), reconcileNetworkPolicy(gctx, ksCopyNetpol). Capture ctrl.Result from each in closure variables. (4) Call g.Wait() to collect the first error. (5) Call mergeParallelConditions to extract FernetKeysReady, CredentialKeysReady, NetworkPolicyReady from copies into original. (6) If error, return it. (7) Return shortestRequeue of the three results. Restructure Reconcile to call reconcileParallelGroup between reconcileConfig and reconcileDatabase with the standard early-return pattern. Import golang.org/x/sync/errgroup, run go mod tidy to promote it from indirect to direct dependency.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -342,20 +344,10 @@
       "description": "Add tests in operators/keystone/internal/controller/keystone_controller_test.go: (1) TestReconcile_ParallelGroupSetsAllConditions: full reconcile with all sub-resources ready, verify FernetKeysReady, CredentialKeysReady, and NetworkPolicyReady are all True (validates parallel group produces same outcome as sequential). (2) TestReconcileParallelGroup_ErrorCancelsAndReturns: use fake client with interceptor.Funcs to inject an error on the Create call for the fernet keys Secret, verify Reconcile returns a non-nil error, verify conditions from successful parallel reconcilers (e.g. NetworkPolicyReady) are still merged. (3) TestReconcileParallelGroup_RequeueMerged: mock a sub-reconciler that returns RequeueAfter, verify reconcileParallelGroup returns the requeue result. Use existing test helpers (testKeystone, testReadyExternalSecrets, newTestReconciler, testComputeConfigMapName).",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
-        "REQ-008"
-      ]
-    },
-    {
-      "id": "3.1",
-      "title": "Verify all existing unit and integration tests pass with go test -race flag (CC-0071, REQ-003, REQ-008)",
-      "description": "Run go test -race -count=1 ./operators/keystone/internal/controller/... to verify no data races in the parallel execution path. Run go test -race -count=1 -tags=integration ./operators/keystone/internal/controller/... to verify integration tests pass under the race detector. Fix any race conditions found. This validates REQ-003 (no shared mutable state races) and REQ-008 (existing behavior unchanged).",
-      "level": 3,
-      "estimate_minutes": 15,
-      "requirements": [
-        "REQ-003",
         "REQ-008"
       ]
     },
@@ -365,6 +357,7 @@
       "description": "Add BenchmarkReconcile_FullReconcile in operators/keystone/internal/controller/keystone_controller_test.go. Setup: create a fake client with all required objects pre-loaded (testKeystone, testReadyExternalSecrets, testDBCredentialsSecret, testAdminCredentialsSecret, testCompletedDBSyncJob, testCompletedSchemaCheckJob, testCompletedBootstrapJob, testReadyKeystoneDeployment, testFernetKeysSecret, testCredentialKeysSecret). In b.ResetTimer/b.Run loop, call r.Reconcile(ctx, req) and verify no error. This measures the full reconcile cycle including the parallel group. Document the baseline ns/op result in the PR description for comparison.",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -375,6 +368,7 @@
       "description": "Update operators/keystone/docs (actually docs/reference/keystone-reconciler.md): (1) Replace the sequential Reconciliation Flow ASCII diagram with a new diagram showing the parallel group (FernetKeys, CredentialKeys, NetworkPolicy in a box with 'errgroup.WithContext' label) between Config and Database. (2) Add a Sub-Reconciler Dependency Graph table with columns: Sub-Reconciler, Inputs, Outputs/Condition, Dependencies, Parallel-eligible. (3) Update the Sequential Execution Contract section to describe the hybrid sequential+parallel pattern. (4) Add a Parallel Execution section documenting: the DeepCopy-per-goroutine pattern, mergeParallelConditions, shortestRequeue, and why mutex was not chosen (DeepCopy eliminates shared state entirely). (5) Add CC-0071 to the feature list in the frontmatter.",
       "level": 4,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -492,6 +486,244 @@
       "story": "Operator maintains thread-safe condition updates during parallel execution",
       "expected": "All unit tests (existing + new) pass under go test -race with no data races detected [unit]",
       "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_NotFound_ReturnsEmptyResult",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_StatusUpdatePersisted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSetupWithManager_RegistersWithoutError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_AllTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_OneFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_MissingCondition",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReady_Empty",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSubConditionTypes_IncludesPolicyValidReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestRequeueValidationWait_Value",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_EarlyReturnOnSecretsNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_EarlyReturnOnDatabaseNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_SequentialProgression",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_ReadyFalseWhenDeploymentNotAvailable",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_HealthCheckStopsChainOnFailure",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcile_ObservedGenerationTracked",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSecretToKeystoneMapper_ReferencedSecrets",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestCommonLabels_ExactKeyValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSelectorLabels_ExactKeyValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSelectorLabels_SubsetOfCommonLabels",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSecretToKeystoneMapper_OwnedSecrets",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestUpdateStatus_BothErrors_Joined",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestUpdateStatus_JoinedError_IsUnwrappable",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestUpdateStatus_ReconcileErrorOnly_Preserved",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestUpdateStatus_NoErrors_ReturnsNil",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestUpdateStatus_StatusErrorOnly_Returned",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestUpdateStatus_StatusErrorOnly_NoNilSegments",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestUpdateStatus_ResultPassthrough_DualFailure",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestUpdateStatus_ResultPassthrough_WithRequeueAfter",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestSubConditionTypesIncludesKeystoneAPIReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReadyIncludesKeystoneAPIReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestAggregateReadyAllTrueWithKeystoneAPIReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcileParallelGroup_SuccessPath",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcileParallelGroup_ErrorCancellation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcileParallelGroup_PartialConditionMerge",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],
@@ -521,8 +753,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-13T10:25:32.487534"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-13T18:51:18.721082"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-14T12:18:30.774062"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/203",
+  "pr_number": 203,
   "execution_history": [
     {
       "run_id": "be74f12d-6dae-4dad-8b1f-9b54c296a942",
@@ -534,6 +776,84 @@
           "name": "prepare",
           "duration": 826.5102090835571,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "92040361-d7a6-431d-8b62-fcfefabe9dc7",
+      "timestamp": "2026-04-13T19:39:16.942673",
+      "total_duration": 2695.8336386680603,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (1 tasks)",
+          "duration": 275.8009777069092,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (2 tasks)",
+          "duration": 534.0569868087769,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (1 tasks)",
+          "duration": 283.87211656570435,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (1 tasks)",
+          "duration": 637.0501718521118,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0071] Code Review",
+          "duration": 498.69715332984924,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0071] Improvements",
+          "duration": 324.3675489425659,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0071] Simplify",
+          "duration": 141.98868346214294,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "e5a2a1e2-e7bb-4513-983f-983c723ae26b",
+      "timestamp": "2026-04-13T20:06:08.577931",
+      "total_duration": 700.7721574306488,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 700.7721574306488,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "a67bf990-9c85-4fdb-82c4-d4e43ccd0cbf",
+      "timestamp": "2026-04-14T12:13:30.138462",
+      "total_duration": 349.17406845092773,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 349.17406845092773,
+          "type": "review_address",
           "status": "done"
         }
       ]

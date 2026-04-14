@@ -262,7 +262,7 @@ func testCompletedBootstrapJob(configMapName string) runtime.Object {
 
 // testComputeConfigMapName creates a temporary reconciler, runs reconcileConfig,
 // and returns the deterministic configMapName that will be used in integration tests.
-func testComputeConfigMapName(t *testing.T) string {
+func testComputeConfigMapName(t testing.TB) string {
 	t.Helper()
 	s := testScheme()
 	ks := testKeystone()
@@ -562,13 +562,18 @@ func TestReconcile_EarlyReturnOnDatabaseNotReady(t *testing.T) {
 	g.Expect(dbCond).NotTo(BeNil(), "DatabaseReady condition should be set")
 	g.Expect(dbCond.Status).To(Equal(metav1.ConditionFalse))
 
-	// Deployment, HPA, NetworkPolicy, and Bootstrap should not have run.
+	// FernetKeysReady, CredentialKeysReady, and NetworkPolicyReady run in the
+	// parallel group BEFORE Database, so they should be set (CC-0071).
+	for _, condType := range []string{"FernetKeysReady", "CredentialKeysReady", "NetworkPolicyReady"} {
+		cond := meta.FindStatusCondition(updated.Status.Conditions, condType)
+		g.Expect(cond).NotTo(BeNil(), "%s should be set by the parallel group before database", condType)
+	}
+
+	// Deployment, HPA, and Bootstrap run AFTER Database, so they should not have run.
 	g.Expect(meta.FindStatusCondition(updated.Status.Conditions, "DeploymentReady")).To(BeNil(),
 		"DeploymentReady should not be set when database is not ready")
 	g.Expect(meta.FindStatusCondition(updated.Status.Conditions, "HPAReady")).To(BeNil(),
 		"HPAReady should not be set when database is not ready")
-	g.Expect(meta.FindStatusCondition(updated.Status.Conditions, "NetworkPolicyReady")).To(BeNil(),
-		"NetworkPolicyReady should not be set when database is not ready")
 	g.Expect(meta.FindStatusCondition(updated.Status.Conditions, "BootstrapReady")).To(BeNil(),
 		"BootstrapReady should not be set when database is not ready")
 }
@@ -1084,4 +1089,468 @@ func TestAggregateReadyAllTrueWithKeystoneAPIReady(t *testing.T) {
 	}
 	g.Expect(aggregateReady(conditions)).To(BeTrue(),
 		"aggregateReady should return true when all conditions including KeystoneAPIReady are True")
+}
+
+// ---------------------------------------------------------------------------
+// shortestRequeue tests (CC-0071, REQ-003)
+// ---------------------------------------------------------------------------
+
+// TestShortestRequeue_AllZero verifies that shortestRequeue with all zero
+// Results returns ctrl.Result{} (zero value).
+func TestShortestRequeue_AllZero(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	result := shortestRequeue(ctrl.Result{}, ctrl.Result{}, ctrl.Result{})
+
+	g.Expect(result).To(Equal(ctrl.Result{}),
+		"all-zero inputs must produce a zero Result")
+}
+
+// TestShortestRequeue_SingleNonZero verifies that shortestRequeue with one
+// non-zero RequeueAfter returns that Result.
+func TestShortestRequeue_SingleNonZero(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	result := shortestRequeue(
+		ctrl.Result{},
+		ctrl.Result{RequeueAfter: 15 * time.Second},
+		ctrl.Result{},
+	)
+
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: 15 * time.Second}),
+		"single non-zero RequeueAfter must be returned")
+}
+
+// TestShortestRequeue_PicksMinimum verifies that shortestRequeue with
+// RequeueAfter 15s and 30s returns ctrl.Result{RequeueAfter: 15s}.
+func TestShortestRequeue_PicksMinimum(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	result := shortestRequeue(
+		ctrl.Result{RequeueAfter: 30 * time.Second},
+		ctrl.Result{RequeueAfter: 15 * time.Second},
+	)
+
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: 15 * time.Second}),
+		"must pick the shortest non-zero RequeueAfter")
+}
+
+// TestShortestRequeue_NoArgs verifies that shortestRequeue with zero
+// variadic arguments returns ctrl.Result{} (CC-0071, REQ-003).
+func TestShortestRequeue_NoArgs(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	result := shortestRequeue()
+
+	g.Expect(result).To(Equal(ctrl.Result{}),
+		"zero arguments must produce a zero Result")
+}
+
+// ---------------------------------------------------------------------------
+// mergeParallelConditions tests (CC-0071, REQ-004)
+// ---------------------------------------------------------------------------
+
+// TestMergeParallelConditions_MergesCorrectly verifies that
+// mergeParallelConditions extracts FernetKeysReady from source copy and sets
+// it on destination.
+func TestMergeParallelConditions_MergesCorrectly(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	dst := testKeystone()
+	src := dst.DeepCopy()
+	// Simulate a parallel sub-reconciler setting FernetKeysReady on the copy.
+	meta.SetStatusCondition(&src.Status.Conditions, metav1.Condition{
+		Type:               "FernetKeysReady",
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: src.Generation,
+		Reason:             "FernetKeysReady",
+		Message:            "Fernet keys are ready",
+	})
+
+	mergeParallelConditions(dst, src, "FernetKeysReady")
+
+	cond := meta.FindStatusCondition(dst.Status.Conditions, "FernetKeysReady")
+	g.Expect(cond).NotTo(BeNil(), "FernetKeysReady must be present on dst after merge")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("FernetKeysReady"))
+}
+
+// TestMergeParallelConditions_SkipsMissingCondition verifies that
+// mergeParallelConditions does not modify destination when source copy lacks
+// the expected condition type.
+func TestMergeParallelConditions_SkipsMissingCondition(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	dst := testKeystone()
+	src := dst.DeepCopy()
+	// src has no FernetKeysReady condition.
+
+	mergeParallelConditions(dst, src, "FernetKeysReady")
+
+	cond := meta.FindStatusCondition(dst.Status.Conditions, "FernetKeysReady")
+	g.Expect(cond).To(BeNil(),
+		"FernetKeysReady must not appear on dst when absent from src")
+}
+
+// TestMergeParallelConditions_PreservesExistingConditions verifies that
+// mergeParallelConditions does not overwrite pre-existing conditions (e.g.
+// SecretsReady) on the destination.
+func TestMergeParallelConditions_PreservesExistingConditions(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	dst := testKeystone()
+	// Simulate SecretsReady already set on dst by a prior sequential reconciler.
+	meta.SetStatusCondition(&dst.Status.Conditions, metav1.Condition{
+		Type:               "SecretsReady",
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: dst.Generation,
+		Reason:             "SecretsReady",
+		Message:            "Secrets are ready",
+	})
+
+	src := dst.DeepCopy()
+	// Simulate parallel sub-reconciler setting FernetKeysReady on the copy.
+	meta.SetStatusCondition(&src.Status.Conditions, metav1.Condition{
+		Type:               "FernetKeysReady",
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: src.Generation,
+		Reason:             "FernetKeysReady",
+		Message:            "Fernet keys are ready",
+	})
+
+	mergeParallelConditions(dst, src, "FernetKeysReady")
+
+	// SecretsReady must still be present and unchanged.
+	secretsCond := meta.FindStatusCondition(dst.Status.Conditions, "SecretsReady")
+	g.Expect(secretsCond).NotTo(BeNil(), "SecretsReady must be preserved on dst")
+	g.Expect(secretsCond.Status).To(Equal(metav1.ConditionTrue))
+
+	// FernetKeysReady must also be present.
+	fernetCond := meta.FindStatusCondition(dst.Status.Conditions, "FernetKeysReady")
+	g.Expect(fernetCond).NotTo(BeNil(), "FernetKeysReady must be merged onto dst")
+	g.Expect(fernetCond.Status).To(Equal(metav1.ConditionTrue))
+}
+
+// ---------------------------------------------------------------------------
+// reconcileParallelGroup tests (CC-0071, REQ-001, REQ-002, REQ-008)
+// ---------------------------------------------------------------------------
+
+// TestReconcileParallelGroup_SuccessPath verifies that all sub-reconcilers run
+// concurrently, their conditions are merged onto the primary keystone, and the
+// shortest non-zero RequeueAfter is returned (CC-0071, REQ-001).
+func TestReconcileParallelGroup_SuccessPath(t *testing.T) {
+	g := NewGomegaWithT(t)
+	r := newTestReconciler()
+	ks := testKeystone()
+
+	subs := []parallelSubReconciler{
+		{
+			conditionType: "FernetKeysReady",
+			fn: func(_ context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+				meta.SetStatusCondition(&ks.Status.Conditions, metav1.Condition{
+					Type:   "FernetKeysReady",
+					Status: metav1.ConditionTrue,
+					Reason: "Ready",
+				})
+				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+			},
+		},
+		{
+			conditionType: "CredentialKeysReady",
+			fn: func(_ context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+				meta.SetStatusCondition(&ks.Status.Conditions, metav1.Condition{
+					Type:   "CredentialKeysReady",
+					Status: metav1.ConditionTrue,
+					Reason: "Ready",
+				})
+				return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+			},
+		},
+		{
+			conditionType: "NetworkPolicyReady",
+			fn: func(_ context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+				meta.SetStatusCondition(&ks.Status.Conditions, metav1.Condition{
+					Type:   "NetworkPolicyReady",
+					Status: metav1.ConditionTrue,
+					Reason: "Ready",
+				})
+				return ctrl.Result{}, nil
+			},
+		},
+	}
+
+	result, err := r.reconcileParallelGroup(context.Background(), ks, subs)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: 15 * time.Second}),
+		"must return shortest non-zero requeue")
+
+	// All conditions must be merged onto the primary keystone.
+	for _, condType := range []string{"FernetKeysReady", "CredentialKeysReady", "NetworkPolicyReady"} {
+		cond := meta.FindStatusCondition(ks.Status.Conditions, condType)
+		g.Expect(cond).NotTo(BeNil(), "condition %s must be merged", condType)
+		g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	}
+}
+
+// TestReconcileParallelGroup_ErrorCancellation verifies that when one
+// sub-reconciler fails, errgroup cancels the derived context and the error is
+// propagated to the caller (CC-0071, REQ-002).
+func TestReconcileParallelGroup_ErrorCancellation(t *testing.T) {
+	g := NewGomegaWithT(t)
+	r := newTestReconciler()
+	ks := testKeystone()
+
+	subs := []parallelSubReconciler{
+		{
+			conditionType: "FernetKeysReady",
+			fn: func(_ context.Context, _ *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+				return ctrl.Result{}, fmt.Errorf("fernet rotation failed")
+			},
+		},
+		{
+			conditionType: "CredentialKeysReady",
+			fn: func(ctx context.Context, _ *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+				// Block until the context is cancelled by errgroup. If
+				// cancellation does not propagate, this goroutine hangs and
+				// the test times out — proving the contract.
+				<-ctx.Done()
+				return ctrl.Result{}, nil
+			},
+		},
+	}
+
+	_, err := r.reconcileParallelGroup(context.Background(), ks, subs)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("fernet rotation failed"))
+}
+
+// TestReconcileParallelGroup_PartialConditionMerge verifies that conditions
+// from successful sub-reconcilers are merged even when a peer fails, so that
+// partial progress is visible in status after updateStatus (CC-0071, REQ-008).
+func TestReconcileParallelGroup_PartialConditionMerge(t *testing.T) {
+	g := NewGomegaWithT(t)
+	r := newTestReconciler()
+	ks := testKeystone()
+
+	subs := []parallelSubReconciler{
+		{
+			conditionType: "FernetKeysReady",
+			fn: func(_ context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+				meta.SetStatusCondition(&ks.Status.Conditions, metav1.Condition{
+					Type:   "FernetKeysReady",
+					Status: metav1.ConditionTrue,
+					Reason: "Ready",
+				})
+				return ctrl.Result{}, nil
+			},
+		},
+		{
+			conditionType: "DatabaseReady",
+			fn: func(_ context.Context, _ *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+				// Fail without setting a condition.
+				return ctrl.Result{}, fmt.Errorf("db migration failed")
+			},
+		},
+	}
+
+	_, err := r.reconcileParallelGroup(context.Background(), ks, subs)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("db migration failed"))
+
+	// FernetKeysReady must still be merged despite the peer failure.
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "FernetKeysReady")
+	g.Expect(cond).NotTo(BeNil(), "FernetKeysReady must be merged from successful goroutine")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+
+	// DatabaseReady should not be present (failed goroutine did not set it).
+	g.Expect(meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")).To(BeNil(),
+		"DatabaseReady should not be set by the failing goroutine")
+}
+
+// TestReconcile_ParallelGroupSetsAllConditions exercises the full Reconcile()
+// entry point and verifies that FernetKeysReady, CredentialKeysReady, and
+// NetworkPolicyReady — all three conditions produced by reconcileParallelGroup —
+// are set correctly on the Keystone status. This proves the parallel group
+// is wired into Reconcile() and produces the same outcome as sequential
+// execution (CC-0071, REQ-001, TE-008).
+func TestReconcile_ParallelGroupSetsAllConditions(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	configMapName := testComputeConfigMapName(t)
+
+	objs := append(
+		[]runtime.Object{
+			ks,
+			testCompletedDBSyncJob(configMapName),
+			testCompletedSchemaCheckJob(configMapName),
+			testCompletedBootstrapJob(configMapName),
+			testDBCredentialsSecret(),
+			testAdminCredentialsSecret(),
+			testReadyKeystoneDeployment(),
+			testFernetKeysSecret(),
+			testCredentialKeysSecret(),
+		},
+		testReadyExternalSecrets()...,
+	)
+	r := newTestReconciler(objs...)
+	r.HTTPClient = testHealthyHTTPClient()
+
+	result, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace},
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}), "full reconcile should not requeue")
+
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
+
+	// Verify all three parallel-group conditions are True with correct ObservedGeneration.
+	for _, condType := range []string{"FernetKeysReady", "CredentialKeysReady", "NetworkPolicyReady"} {
+		cond := meta.FindStatusCondition(updated.Status.Conditions, condType)
+		g.Expect(cond).NotTo(BeNil(), "condition %s must exist after full reconcile through Reconcile()", condType)
+		g.Expect(cond.Status).To(Equal(metav1.ConditionTrue), "condition %s must be True", condType)
+		g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation),
+			"condition %s must track ObservedGeneration", condType)
+	}
+
+	// Verify overall Ready condition aggregates correctly.
+	readyCond := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
+	g.Expect(readyCond).NotTo(BeNil(), "Ready condition must exist")
+	g.Expect(readyCond.Status).To(Equal(metav1.ConditionTrue), "Ready must be True when all sub-conditions are True")
+}
+
+// BenchmarkReconcile_FullReconcile measures ns/op for a full reconcile cycle
+// with a fake client and all sub-resources pre-created. This establishes a
+// baseline for comparing sequential vs parallel execution latency
+// (CC-0071, REQ-007).
+func BenchmarkReconcile_FullReconcile(b *testing.B) {
+	configMapName := testComputeConfigMapName(b)
+	ks := testKeystone()
+	objs := append(
+		[]runtime.Object{
+			ks,
+			testCompletedDBSyncJob(configMapName),
+			testCompletedSchemaCheckJob(configMapName),
+			testCompletedBootstrapJob(configMapName),
+			testDBCredentialsSecret(),
+			testAdminCredentialsSecret(),
+			testReadyKeystoneDeployment(),
+			testFernetKeysSecret(),
+			testCredentialKeysSecret(),
+		},
+		testReadyExternalSecrets()...,
+	)
+	r := newTestReconciler(objs...)
+	r.HTTPClient = testHealthyHTTPClient()
+	req := reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace},
+	}
+
+	// Warm-up: run one reconcile so all resources are created/updated.
+	// Verify the result to catch setup issues early (CC-0071).
+	if res, err := r.Reconcile(context.Background(), req); err != nil {
+		b.Fatalf("warm-up reconcile failed: %v", err)
+	} else if !res.IsZero() {
+		b.Fatalf("warm-up reconcile returned non-zero result: %+v", res)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = r.Reconcile(context.Background(), req)
+	}
+}
+
+// BenchmarkReconcile_FullReconcile_WithLatency measures ns/op for a full
+// reconcile cycle with simulated network latency injected into every API call.
+// Unlike BenchmarkReconcile_FullReconcile (which uses an in-memory fake client
+// completing in microseconds), this benchmark validates that parallelizing
+// independent sub-reconcilers produces a measurable wall-clock improvement
+// when API calls have realistic round-trip times (CC-0071, REQ-007).
+func BenchmarkReconcile_FullReconcile_WithLatency(b *testing.B) {
+	const apiLatency = 5 * time.Millisecond
+
+	configMapName := testComputeConfigMapName(b)
+	ks := testKeystone()
+	objs := append(
+		[]runtime.Object{
+			ks,
+			testCompletedDBSyncJob(configMapName),
+			testCompletedSchemaCheckJob(configMapName),
+			testCompletedBootstrapJob(configMapName),
+			testDBCredentialsSecret(),
+			testAdminCredentialsSecret(),
+			testReadyKeystoneDeployment(),
+			testFernetKeysSecret(),
+			testCredentialKeysSecret(),
+		},
+		testReadyExternalSecrets()...,
+	)
+
+	s := testScheme()
+	cb := fake.NewClientBuilder().WithScheme(s)
+	for _, obj := range objs {
+		cb = cb.WithRuntimeObjects(obj)
+	}
+	cb = cb.WithStatusSubresource(&keystonev1alpha1.Keystone{}, &esov1.ExternalSecret{})
+
+	// Inject simulated network latency into every client operation so that
+	// parallelization gains become visible in wall-clock time (CC-0071).
+	cb = cb.WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			time.Sleep(apiLatency)
+			return c.Get(ctx, key, obj, opts...)
+		},
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			time.Sleep(apiLatency)
+			return c.List(ctx, list, opts...)
+		},
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			time.Sleep(apiLatency)
+			return c.Create(ctx, obj, opts...)
+		},
+		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			time.Sleep(apiLatency)
+			return c.Update(ctx, obj, opts...)
+		},
+		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			time.Sleep(apiLatency)
+			return c.Patch(ctx, obj, patch, opts...)
+		},
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			time.Sleep(apiLatency)
+			return c.Delete(ctx, obj, opts...)
+		},
+		SubResourceUpdate: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+			time.Sleep(apiLatency)
+			return c.Status().Update(ctx, obj, opts...)
+		},
+	})
+
+	r := &KeystoneReconciler{
+		Client:   cb.Build(),
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+	r.HTTPClient = testHealthyHTTPClient()
+	req := reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace},
+	}
+
+	// Warm-up: run one reconcile so all resources are created/updated.
+	// Verify the result to catch setup issues early (CC-0071).
+	if res, err := r.Reconcile(context.Background(), req); err != nil {
+		b.Fatalf("warm-up reconcile failed: %v", err)
+	} else if !res.IsZero() {
+		b.Fatalf("warm-up reconcile returned non-zero result: %+v", res)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = r.Reconcile(context.Background(), req)
+	}
 }

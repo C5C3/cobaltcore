@@ -12,6 +12,7 @@ import (
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
+	"golang.org/x/sync/errgroup"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
@@ -85,7 +86,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, fmt.Errorf("fetching Keystone: %w", err)
 	}
 
-	// Run sub-reconcilers sequentially.
+	// Run sub-reconcilers in dependency order; independent groups run concurrently.
 	if result, err := r.reconcileSecrets(ctx, &keystone); !result.IsZero() || err != nil {
 		return r.updateStatus(ctx, &keystone, result, err)
 	}
@@ -98,23 +99,35 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return r.updateStatus(ctx, &keystone, ctrl.Result{}, err)
 	}
 
-	if result, err := r.reconcileFernetKeys(ctx, &keystone, configMapName); !result.IsZero() || err != nil {
-		return r.updateStatus(ctx, &keystone, result, err)
-	}
-
-	if result, err := r.reconcileCredentialKeys(ctx, &keystone, configMapName); !result.IsZero() || err != nil {
+	// FernetKeys, CredentialKeys, and NetworkPolicy are independent of each
+	// other and can run concurrently. All three depend on reconcileConfig
+	// (above) having completed. NetworkPolicy has no data dependency on the
+	// Deployment — it uses selectorLabels derived from the CR
+	// (CC-0039, CC-0071, REQ-001).
+	if result, err := r.reconcileParallelGroup(ctx, &keystone, []parallelSubReconciler{
+		{
+			conditionType: "FernetKeysReady",
+			fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+				return r.reconcileFernetKeys(ctx, ks, configMapName)
+			},
+		},
+		{
+			conditionType: "CredentialKeysReady",
+			fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+				return r.reconcileCredentialKeys(ctx, ks, configMapName)
+			},
+		},
+		{
+			conditionType: "NetworkPolicyReady",
+			fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+				return r.reconcileNetworkPolicy(ctx, ks)
+			},
+		},
+	}); !result.IsZero() || err != nil {
 		return r.updateStatus(ctx, &keystone, result, err)
 	}
 
 	if result, err := r.reconcileDatabase(ctx, &keystone, configMapName); !result.IsZero() || err != nil {
-		return r.updateStatus(ctx, &keystone, result, err)
-	}
-
-	// NetworkPolicy runs before Deployment so that pods are born into a
-	// restricted network rather than running unrestricted until the policy is
-	// applied. The NetworkPolicy has no data dependency on the Deployment — it
-	// uses selectorLabels derived from the CR (CC-0039).
-	if result, err := r.reconcileNetworkPolicy(ctx, &keystone); !result.IsZero() || err != nil {
 		return r.updateStatus(ctx, &keystone, result, err)
 	}
 
@@ -187,6 +200,95 @@ func setReadyCondition(keystone *keystonev1alpha1.Keystone) {
 // aggregateReady returns true if all sub-condition types are True.
 func aggregateReady(conds []metav1.Condition) bool {
 	return conditions.AllTrue(conds, subConditionTypes...)
+}
+
+// shortestRequeue returns the ctrl.Result with the shortest non-zero
+// RequeueAfter from the given results. If no result requests a requeue,
+// a zero ctrl.Result is returned (CC-0071, REQ-003).
+func shortestRequeue(results ...ctrl.Result) ctrl.Result {
+	var shortest ctrl.Result
+	for _, r := range results {
+		if r.RequeueAfter <= 0 {
+			continue
+		}
+		if shortest.RequeueAfter <= 0 || r.RequeueAfter < shortest.RequeueAfter {
+			shortest = r
+		}
+	}
+	return shortest
+}
+
+// mergeParallelConditions copies a single condition of the given type from src
+// into dst. If src does not contain a condition of that type, dst is left
+// unchanged. Pre-existing conditions on dst are preserved (CC-0071, REQ-004).
+func mergeParallelConditions(dst, src *keystonev1alpha1.Keystone, conditionType string) {
+	cond := conditions.GetCondition(src.Status.Conditions, conditionType)
+	if cond == nil {
+		return
+	}
+	conditions.SetCondition(&dst.Status.Conditions, *cond)
+}
+
+// parallelSubReconciler describes a sub-reconciler that runs in a parallel
+// group. Each sub-reconciler receives its own DeepCopy of the Keystone CR
+// and sets exactly one condition type (CC-0071, REQ-001).
+type parallelSubReconciler struct {
+	conditionType string
+	fn            func(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error)
+}
+
+// reconcileParallelGroup runs the given sub-reconcilers concurrently using
+// errgroup.WithContext. Each goroutine operates on a DeepCopy of the Keystone
+// CR to avoid data races (CC-0071, REQ-002). After all goroutines complete,
+// conditions from every sub-reconciler — including those that succeeded before
+// a peer failed — are merged back into the primary keystone so that partial
+// progress is visible in status. On success the shortest non-zero RequeueAfter
+// is returned (CC-0071, REQ-001, REQ-005).
+func (r *KeystoneReconciler) reconcileParallelGroup(
+	ctx context.Context,
+	keystone *keystonev1alpha1.Keystone,
+	subs []parallelSubReconciler,
+) (ctrl.Result, error) {
+	g, gctx := errgroup.WithContext(ctx)
+
+	type outcome struct {
+		result   ctrl.Result
+		copy     *keystonev1alpha1.Keystone
+		condType string
+		err      error
+	}
+	outcomes := make([]outcome, len(subs))
+
+	for i, sub := range subs {
+		ksCopy := keystone.DeepCopy()
+		outcomes[i].condType = sub.conditionType
+		g.Go(func() error {
+			res, err := sub.fn(gctx, ksCopy)
+			outcomes[i].result = res
+			outcomes[i].copy = ksCopy
+			outcomes[i].err = err
+			return err
+		})
+	}
+
+	groupErr := g.Wait()
+
+	// Merge conditions from all completed sub-reconcilers back into the
+	// primary keystone, even on partial failure, so the caller can persist
+	// partial progress via updateStatus.
+	var results []ctrl.Result
+	for _, o := range outcomes {
+		mergeParallelConditions(keystone, o.copy, o.condType)
+		if o.err == nil {
+			results = append(results, o.result)
+		}
+	}
+
+	if groupErr != nil {
+		return ctrl.Result{}, groupErr
+	}
+
+	return shortestRequeue(results...), nil
 }
 
 // SetupWithManager registers the KeystoneReconciler with the controller manager.

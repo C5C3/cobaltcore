@@ -1,7 +1,7 @@
 ---
 title: Keystone Reconciler Architecture
 quadrant: operator
-feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0067, CC-0068
+feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0067, CC-0068, CC-0071
 ---
 
 # Keystone Reconciler Architecture
@@ -133,12 +133,37 @@ RBAC markers on the reconciler generate the required ClusterRole:
 │         ▼                                                                    │
 │  Fetch Keystone CR (return empty result if NotFound)                         │
 │         │                                                                    │
-│         ▼                                                                    │
-│  ┌──────────────────┐                                                        │
-│  │ reconcileSecrets │  Check ESO ExternalSecrets are synced                  │
-│  │                  │  Sets: SecretsReady                                    │
-│  └────────┬─────────┘  Requeue: 15s                                          │
+│         ▼                                    ┌─────────────────────────────┐ │
+│  ┌──────────────────┐                        │         LEGEND              │ │
+│  │ reconcileSecrets │  Check ESO synced      │  ───── Sequential           │ │
+│  │                  │  Sets: SecretsReady     │  ═════ Parallel (CC-0071)   │ │
+│  └────────┬─────────┘  Requeue: 15s          └─────────────────────────────┘ │
 │           │                                                                  │
+│           ▼                                                                  │
+│  ┌──────────────────┐                                                        │
+│  │ reconcileConfig  │  Render keystone.conf + api-paste.ini                  │
+│  │                  │  Create immutable ConfigMap                             │
+│  └────────┬─────────┘  Returns: configMapName                                │
+│           │                                                                  │
+│           ▼                                                                  │
+│  ╔══════════════════════════════════════════════════════════════════════════╗ │
+│  ║  reconcileParallelGroup (CC-0071)                                      ║ │
+│  ║                                                                        ║ │
+│  ║  errgroup.WithContext — each goroutine receives a DeepCopy of the CR   ║ │
+│  ║                                                                        ║ │
+│  ║  ┌─────────────────────┐  ┌──────────────────────────┐                 ║ │
+│  ║  │ reconcileFernetKeys │  │ reconcileCredentialKeys   │  (concurrent)  ║ │
+│  ║  │ Sets: FernetKeysReady│ │ Sets: CredentialKeysReady │                ║ │
+│  ║  └─────────────────────┘  └──────────────────────────┘                 ║ │
+│  ║  ┌────────────────────────┐                                            ║ │
+│  ║  │ reconcileNetworkPolicy │  (concurrent)                              ║ │
+│  ║  │ Sets: NetworkPolicyReady│                                            ║ │
+│  ║  └────────────────────────┘                                            ║ │
+│  ║                                                                        ║ │
+│  ║  g.Wait() → mergeParallelConditions → shortestRequeue                  ║ │
+│  ╚═══════════════════════════════╤════════════════════════════════════════╝ │
+│                                  │                                           │
+│           ┌──────────────────────┘                                           │
 │           ▼                                                                  │
 │  ┌───────────────────┐                                                       │
 │  │ reconcileDatabase │  Managed mode: verify MariaDB cluster health first,   │
@@ -148,25 +173,13 @@ RBAC markers on the reconciler generate the required ClusterRole:
 │  └────────┬──────────┘  Requeue: 30s                                         │
 │           │                                                                  │
 │           ▼                                                                  │
-│  ┌─────────────────────┐                                                     │
-│  │ reconcileFernetKeys │  Generate keys, CronJob, PushSecret                │
-│  │                     │  Sets: FernetKeysReady                              │
-│  └────────┬────────────┘  Requeue: none                                      │
+│  ┌─────────────────────────────────┐                                         │
+│  │ reconcilePolicyValidation       │  Validate oslo.policy overrides         │
+│  │                                 │  via oslopolicy-validator Job           │
+│  │                                 │  Sets: PolicyValidReady                 │
+│  └────────┬────────────────────────┘  Requeue: 15s                           │
 │           │                                                                  │
 │           ▼                                                                  │
-│  ┌──────────────────┐                                                        │
-│  │ reconcileConfig  │  Render keystone.conf + api-paste.ini                  │
-│  │                  │  Create immutable ConfigMap                             │
-│  └────────┬─────────┘  Returns: configMapName                                │
-│           │                                                                  │
-│           ▼                                                                  │
-│  ┌─────────────────────────────────┐                                     │
-│  │ reconcilePolicyValidation       │  Validate oslo.policy overrides     │
-│  │                                 │  via oslopolicy-validator Job       │
-│  │                                 │  Sets: PolicyValidReady             │
-│  └────────┬────────────────────────┘  Requeue: 15s                       │
-│           │                                                              │
-│           ▼                                                              │
 │  ┌──────────────────────┐                                                    │
 │  │ reconcileDeployment  │  Ensure Deployment + Service                       │
 │  │                      │  Sets: DeploymentReady, status.endpoint            │
@@ -203,14 +216,21 @@ RBAC markers on the reconciler generate the required ClusterRole:
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Sequential Execution Contract
+### Execution Model
 
-Sub-reconcilers execute **strictly sequentially**. Each sub-reconciler is called only
-if all previous sub-reconcilers succeeded without requesting a requeue. The call
-pattern for each sub-reconciler (except `reconcileConfig`) is:
+Sub-reconcilers execute in a defined order using two execution modes (CC-0071):
+
+1. **Sequential sub-reconcilers** run one at a time. Each is called only if all
+   previous sub-reconcilers succeeded without requesting a requeue.
+2. **Parallel group** (`reconcileParallelGroup`) runs three independent sub-reconcilers
+   concurrently via `errgroup.WithContext`. Each goroutine operates on a `DeepCopy` of
+   the Keystone CR to prevent data races. See
+   [Parallel Group Architecture](#parallel-group-architecture) for details.
+
+The sequential call pattern for each sub-reconciler (except `reconcileConfig`) is:
 
 ```go
-if result, err := r.reconcileX(ctx, &keystone); err != nil || result.RequeueAfter > 0 {
+if result, err := r.reconcileX(ctx, &keystone); !result.IsZero() || err != nil {
     return r.updateStatus(ctx, &keystone, result, err)
 }
 ```
@@ -219,10 +239,14 @@ This guarantees:
 
 1. A sub-reconciler error **propagates immediately** — subsequent sub-reconcilers are
    skipped.
-2. A requeue result (`RequeueAfter > 0`) causes an **early return** — status is
-   persisted and the reconciler exits.
+2. A non-zero result (`RequeueAfter > 0` or `Requeue: true`) causes an **early
+   return** — status is persisted and the reconciler exits.
 3. Status conditions from the failing/requeuing sub-reconciler are **always persisted**
    via `updateStatus()` before returning.
+
+The parallel group follows a different contract: all three sub-reconcilers run
+simultaneously, errors cancel the errgroup context, and conditions from completed
+sub-reconcilers are merged even on partial failure.
 
 ### Status Update Pattern
 
@@ -259,6 +283,145 @@ clients can detect stale status.
 
 ---
 
+### Parallel Group Architecture
+
+Three sub-reconcilers — `reconcileFernetKeys`, `reconcileCredentialKeys`, and
+`reconcileNetworkPolicy` — run concurrently via `reconcileParallelGroup` after
+`reconcileConfig` completes and before `reconcileDatabase` begins (CC-0071). These
+sub-reconcilers are eligible for parallelization because they have no data
+dependencies on each other (see [Dependency Graph](#dependency-graph) below).
+
+**File:** `operators/keystone/internal/controller/keystone_controller.go`
+
+**Signature:**
+
+```go
+func (r *KeystoneReconciler) reconcileParallelGroup(
+    ctx context.Context,
+    keystone *keystonev1alpha1.Keystone,
+    subs []parallelSubReconciler,
+) (ctrl.Result, error)
+```
+
+Each parallel sub-reconciler is described by a `parallelSubReconciler` struct:
+
+```go
+type parallelSubReconciler struct {
+    conditionType string
+    fn            func(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error)
+}
+```
+
+#### Dependency Graph
+
+The dependency graph determines which sub-reconcilers can run in parallel. A
+sub-reconciler is eligible for parallelization when it has no data dependency on any
+other parallelizable sub-reconciler and no downstream sub-reconciler depends on its
+output (other than conditions merged after the group completes).
+
+| Sub-Reconciler | Inputs | Condition Type | Dependencies | Parallel |
+| --- | --- | --- | --- | --- |
+| `reconcileSecrets` | CR spec | `SecretsReady` | none | no (must run first) |
+| `reconcileConfig` | CR spec, DB secret | *(returns configMapName)* | Secrets | no (produces configMapName) |
+| `reconcileFernetKeys` | configMapName | `FernetKeysReady` | Config | **yes** |
+| `reconcileCredentialKeys` | configMapName | `CredentialKeysReady` | Config | **yes** |
+| `reconcileNetworkPolicy` | CR spec | `NetworkPolicyReady` | none | **yes** |
+| `reconcileDatabase` | configMapName | `DatabaseReady` | Config | no (complex state machine) |
+| `reconcilePolicyValidation` | configMapName | `PolicyValidReady` | Config | no (gates Deployment) |
+| `reconcileDeployment` | configMapName | `DeploymentReady` | Database (implicit) | no |
+| `reconcileHealthCheck` | status.endpoint | `KeystoneAPIReady` | Deployment (sets endpoint) | no |
+| `reconcileHPA` | CR spec | `HPAReady` | Deployment (naming) | no |
+| `reconcileBootstrap` | configMapName | `BootstrapReady` | Deployment (API must be running) | no |
+| `reconcileTrustFlush` | configMapName | `TrustFlushReady` | Config | no |
+
+Key constraints that prevent further parallelization:
+
+- **reconcileDatabase** has a multi-step state machine (MariaDB CRs → db_sync Job →
+  schema-check Job) with 30s requeue waits, and `reconcileDeployment` depends on the
+  database being ready.
+- **reconcilePolicyValidation** must gate `reconcileDeployment` — invalid policy
+  overrides must be caught before reaching running pods.
+- **reconcileBootstrap** requires the API to be running (depends on Deployment).
+
+#### DeepCopy Condition Merge Pattern
+
+Each parallel sub-reconciler receives its own `DeepCopy` of the Keystone CR. This
+eliminates shared mutable state by construction — `conditions.SetCondition` writes to
+the copy's `Status.Conditions` slice, not the original. No `sync.Mutex` is needed.
+
+```text
+Keystone CR (original, with SecretsReady set)
+    │
+    ├─ DeepCopy → ksCopyFernet ──[goroutine 1]──→ FernetKeysReady on copy
+    ├─ DeepCopy → ksCopyCred   ──[goroutine 2]──→ CredentialKeysReady on copy
+    └─ DeepCopy → ksCopyNetpol ──[goroutine 3]──→ NetworkPolicyReady on copy
+                                                     │
+                                          errgroup.Wait()
+                                                     │
+                                    mergeParallelConditions (sequential):
+                                      copy1 → FernetKeysReady     → original
+                                      copy2 → CredentialKeysReady → original
+                                      copy3 → NetworkPolicyReady  → original
+```
+
+After `g.Wait()` returns, conditions from each copy are merged sequentially into the
+original via `mergeParallelConditions(dst, src, conditionType)`:
+
+```go
+func mergeParallelConditions(dst, src *keystonev1alpha1.Keystone, conditionType string) {
+    cond := conditions.GetCondition(src.Status.Conditions, conditionType)
+    if cond == nil {
+        return
+    }
+    conditions.SetCondition(&dst.Status.Conditions, *cond)
+}
+```
+
+Merge behavior:
+
+- Pre-existing conditions on the destination are **preserved**.
+- If the source copy does not contain a condition of the expected type (e.g., the
+  goroutine was cancelled before setting it), the destination is **left unchanged**.
+- Conditions from sub-reconcilers that completed before an error are **still merged**,
+  so partial progress is visible in the CR status.
+
+#### errgroup Usage
+
+The parallel group uses `errgroup.WithContext(ctx)` for two properties:
+
+1. **Error propagation** — The first error from any goroutine is returned by
+   `g.Wait()`.
+2. **Context cancellation** — When one goroutine returns an error, the derived context
+   (`gctx`) is cancelled, signalling remaining goroutines to exit promptly.
+
+```go
+g, gctx := errgroup.WithContext(ctx)
+// Each goroutine receives gctx, not the parent ctx
+```
+
+The error returned by `g.Wait()` is returned as the `Reconcile` error, triggering
+controller-runtime's exponential backoff. Conditions from all completed goroutines —
+including those that succeeded before the error — are merged before returning.
+
+#### Requeue Resolution
+
+When all parallel sub-reconcilers succeed, `shortestRequeue` selects the `ctrl.Result`
+with the shortest non-zero `RequeueAfter` from the group:
+
+```go
+func shortestRequeue(results ...ctrl.Result) ctrl.Result
+```
+
+| All results zero | Shortest non-zero | Returned result |
+| --- | --- | --- |
+| Yes | — | `ctrl.Result{}` (no requeue) |
+| No | e.g. 15s | `ctrl.Result{RequeueAfter: 15s}` |
+
+This ensures the reconcile loop runs at the pace of the most urgent sub-reconciler in
+the group.
+
+---
+
 ## Sub-Reconciler Contracts
 
 All sub-reconcilers are private methods on the `KeystoneReconciler` receiver. Each
@@ -277,6 +440,8 @@ sub-reconciler is responsible for:
 | `SecretsReady` | `reconcileSecrets` | ESO-provided credentials are synced |
 | `DatabaseReady` | `reconcileDatabase` | MariaDB CRs ready and db_sync complete |
 | `FernetKeysReady` | `reconcileFernetKeys` | Fernet Secret, CronJob, and PushSecret ensured |
+| `CredentialKeysReady` | `reconcileCredentialKeys` | Credential keys Secret, CronJob, and PushSecret ensured (CC-0036) |
+| `NetworkPolicyReady` | `reconcileNetworkPolicy` | NetworkPolicy configured or not required (CC-0039) |
 | `PolicyValidReady` | `reconcilePolicyValidation` | Policy override validation passed or not required (CC-0058) |
 | `DeploymentReady` | `reconcileDeployment` | Deployment available and Service created |
 | `KeystoneAPIReady` | `reconcileHealthCheck` | Keystone API responding to HTTP health check (CC-0067) |
@@ -1046,6 +1211,8 @@ controller-runtime for exponential backoff.
 | `reconcileDatabase` | MariaDB CRs not ready | 30s | `ErrJobFailed` from db_sync |
 | `reconcileDatabase` | db_sync running | 30s | API error → exponential backoff |
 | `reconcileFernetKeys` | — | — | API error → exponential backoff |
+| `reconcileCredentialKeys` | — | — | API error → exponential backoff |
+| `reconcileNetworkPolicy` | — | — | API error → exponential backoff |
 | `reconcileConfig` | — | — | Secret read failure, render failure → exponential backoff |
 | `reconcilePolicyValidation` | Job running | 15s | `ErrJobFailed` from validation → descriptive error |
 | `reconcileDeployment` | Deployment not available | 10s | API error → exponential backoff |
@@ -1107,10 +1274,12 @@ For end-to-end Chainsaw tests that validate the reconciler in a real cluster, se
 
 | File | Coverage |
 | --- | --- |
-| `keystone_controller_test.go` | Reconcile() orchestration, sequential execution, early return, Ready aggregation, idempotency |
+| `keystone_controller_test.go` | Reconcile() orchestration, sequential execution, parallel group (CC-0071), early return, Ready aggregation, idempotency, benchmark |
 | `reconcile_secrets_test.go` | DB/admin credential readiness, error propagation, condition messages |
 | `reconcile_database_test.go` | Managed/brownfield modes, MariaDB CRs, db_sync lifecycle, stale Job detection |
 | `reconcile_fernet_test.go` | Key generation, Secret idempotency, CronJob schedule, PushSecret, key validity |
+| `reconcile_credential_test.go` | Credential key generation, Secret idempotency, CronJob schedule, PushSecret, RBAC (CC-0036) |
+| `reconcile_networkpolicy_test.go` | NetworkPolicy creation, update, deletion, ingress rules, condition contract (CC-0039) |
 | `reconcile_config_test.go` | INI generation, extraConfig merge, plugin config, policy overrides, ConfigMap hashing |
 | `reconcile_policyvalidation_test.go` | Policy validation lifecycle, condition contract, error extraction, Job spec (CC-0058) |
 | `reconcile_deployment_test.go` | Deployment spec, Service creation, readiness, endpoint, owner references, fernet-keys hash annotation (CC-0015) |
@@ -1137,6 +1306,8 @@ operators/keystone/
     │   ├── reconcile_secrets.go                reconcileSecrets sub-reconciler
     │   ├── reconcile_database.go               reconcileDatabase sub-reconciler
     │   ├── reconcile_fernet.go                 reconcileFernetKeys sub-reconciler
+    │   ├── reconcile_credential.go             reconcileCredentialKeys sub-reconciler (CC-0036)
+    │   ├── reconcile_networkpolicy.go          reconcileNetworkPolicy sub-reconciler (CC-0039)
     │   ├── reconcile_config.go                 reconcileConfig sub-reconciler
     │   ├── reconcile_policyvalidation.go        reconcilePolicyValidation sub-reconciler (CC-0058)
     │   ├── reconcile_deployment.go             reconcileDeployment sub-reconciler
@@ -1148,6 +1319,8 @@ operators/keystone/
     │   ├── reconcile_secrets_test.go           Secrets tests
     │   ├── reconcile_database_test.go          Database tests
     │   ├── reconcile_fernet_test.go            Fernet tests
+    │   ├── reconcile_credential_test.go        Credential keys tests (CC-0036)
+    │   ├── reconcile_networkpolicy_test.go     NetworkPolicy tests (CC-0039)
     │   ├── reconcile_config_test.go            Config tests
     │   ├── reconcile_policyvalidation_test.go   Policy validation tests (CC-0058)
     │   ├── reconcile_deployment_test.go        Deployment tests
