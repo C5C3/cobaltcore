@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"strconv"
 
@@ -14,11 +15,13 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/forge/internal/common/config"
 	"github.com/c5c3/forge/internal/common/job"
 	"github.com/c5c3/forge/internal/common/secrets"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
@@ -32,31 +35,10 @@ import (
 // Secret via the API using the pod's ServiceAccount token.
 // The credential_migrate step is critical: without it, credentials encrypted with the
 // old primary key become inaccessible once that key is purged (CC-0036).
+// Extracted to scripts/credential_rotate.sh for independent linting and testing (CC-0073).
 //
-//nolint:gosec // G101: const name contains "credential" but value is a shell script, not credentials (CC-0059)
-const credentialRotateScript = `set -e
-keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ credential_rotate
-keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ credential_migrate
-python3 << 'PYTHON'
-import os, json, base64, glob, ssl, http.client
-data = {}
-for f in sorted(glob.glob("/etc/keystone/credential-keys/*")):
-    if os.path.isfile(f):
-        with open(f, "rb") as fh:
-            data[os.path.basename(f)] = base64.b64encode(fh.read()).decode()
-with open("/var/run/secrets/kubernetes.io/serviceaccount/token") as f:
-    token = f.read().strip()
-ctx = ssl.create_default_context(cafile="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
-conn = http.client.HTTPSConnection("kubernetes.default.svc", context=ctx)
-conn.request("PATCH",
-    "/api/v1/namespaces/{}/secrets/{}".format(os.environ["SECRET_NAMESPACE"], os.environ["SECRET_NAME"]),
-    json.dumps({"data": data}),
-    {"Authorization": "Bearer " + token, "Content-Type": "application/strategic-merge-patch+json"})
-resp = conn.getresponse()
-if resp.status >= 300:
-    raise RuntimeError("Secret update failed: {} {}".format(resp.status, resp.read().decode()))
-print("Credential keys Secret updated successfully")
-PYTHON`
+//go:embed scripts/credential_rotate.sh
+var credentialRotateScript string
 
 // normalizedCredentialMaxActiveKeys returns the effective maximum number of active
 // credential keys, applying a minimum floor of 3. The webhook defaults 0 to 3, but
@@ -99,19 +81,27 @@ func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 		return ctrl.Result{}, fmt.Errorf("ensuring credential rotation RBAC: %w", err)
 	}
 
-	// 3. Ensure the rotation CronJob exists.
-	cronJob := credentialRotationCronJob(keystone, configMapName)
+	// 3. Create the immutable ConfigMap containing the rotation script (CC-0073).
+	scriptConfigMapName, err := config.CreateImmutableConfigMap(ctx, r.Client, r.Scheme, keystone,
+		fmt.Sprintf("%s-credential-rotate-script", keystone.Name), keystone.Namespace,
+		map[string]string{"credential_rotate.sh": credentialRotateScript})
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("creating credential rotate script ConfigMap: %w", err)
+	}
+
+	// 4. Ensure the rotation CronJob exists.
+	cronJob := credentialRotationCronJob(keystone, configMapName, scriptConfigMapName)
 	if err := job.EnsureCronJob(ctx, r.Client, r.Scheme, keystone, cronJob); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring credential rotation cronjob: %w", err)
 	}
 
-	// 4. Ensure the PushSecret for OpenBao backup exists.
+	// 5. Ensure the PushSecret for OpenBao backup exists.
 	ps := credentialKeysPushSecret(keystone)
 	if err := secrets.EnsurePushSecret(ctx, r.Client, r.Scheme, keystone, ps); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring credential keys pushsecret: %w", err)
 	}
 
-	// 5. Set the CredentialKeysReady condition.
+	// 6. Set the CredentialKeysReady condition.
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 		Type:               "CredentialKeysReady",
 		Status:             metav1.ConditionTrue,
@@ -216,9 +206,10 @@ func (r *KeystoneReconciler) createCredentialKeysSecret(ctx context.Context,
 // via the API. The CronJob:
 //  1. Mounts the existing credential keys Secret as a read-only volume.
 //  2. Uses an init container to copy keys to a writable emptyDir.
-//  3. Runs keystone-manage credential_rotate followed by credential_migrate.
-//  4. Pushes the updated keys to the K8s API using the pod's ServiceAccount (CC-0036).
-func credentialRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName string) *batchv1.CronJob {
+//  3. Mounts the rotation script from a versioned ConfigMap at /scripts/ (CC-0073).
+//  4. Runs /scripts/credential_rotate.sh against the emptyDir.
+//  5. Pushes the updated keys to the K8s API using the pod's ServiceAccount (CC-0036).
+func credentialRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName string, scriptConfigMapName string) *batchv1.CronJob {
 	secretName := fmt.Sprintf("%s-credential-keys", keystone.Name)
 	fernetSecretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
 	saName := fmt.Sprintf("%s-credential-rotate", keystone.Name)
@@ -257,7 +248,7 @@ func credentialRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapNam
 								// TODO(CC-0042): Wire spec.Resources (or a smaller Job-specific default) to
 								// this container. Currently runs as BestEffort QoS. See reconcile_deployment.go
 								// containerResources() for the pattern used by the keystone-api container.
-								Command:         []string{"sh", "-c", credentialRotateScript},
+								Command:         []string{"/scripts/credential_rotate.sh"},
 								SecurityContext: restrictedSecurityContext(),
 								Env: []corev1.EnvVar{
 									{Name: "SECRET_NAME", Value: secretName},
@@ -277,6 +268,7 @@ func credentialRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapNam
 									{Name: "credential-keys", MountPath: "/etc/keystone/credential-keys"},
 									{Name: "fernet-keys", MountPath: "/etc/keystone/fernet-keys", ReadOnly: true},
 									{Name: "config", MountPath: "/etc/keystone/keystone.conf.d/", ReadOnly: true},
+									{Name: "scripts", MountPath: "/scripts", ReadOnly: true},
 								},
 							}},
 							Volumes: []corev1.Volume{
@@ -306,6 +298,15 @@ func credentialRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapNam
 									VolumeSource: corev1.VolumeSource{
 										ConfigMap: &corev1.ConfigMapVolumeSource{
 											LocalObjectReference: corev1.LocalObjectReference{Name: configMapName},
+										},
+									},
+								},
+								{
+									Name: "scripts",
+									VolumeSource: corev1.VolumeSource{
+										ConfigMap: &corev1.ConfigMapVolumeSource{
+											LocalObjectReference: corev1.LocalObjectReference{Name: scriptConfigMapName},
+											DefaultMode:          ptr.To(int32(0o555)),
 										},
 									},
 								},

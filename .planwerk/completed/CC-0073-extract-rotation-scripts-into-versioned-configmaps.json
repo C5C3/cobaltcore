@@ -2,8 +2,8 @@
   "feature_id": "CC-0073",
   "title": "Extract rotation scripts into versioned ConfigMaps",
   "slug": "extract-rotation-scripts-into-versioned-configmaps",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #191: Extract embedded rotation scripts into versioned, testable ConfigMaps\n\n**Category**: refactoring | **Scope**: Medium\n\n**Description**: Replace the inline Go string constants fernetRotateScript and credentialRotateScript (in reconcile_fernet.go and reconcile_credential.go) with externally managed script files embedded via go:embed. Mount them as ConfigMaps in the rotation CronJob pods. This enables linting (shellcheck, pylint), unit testing of script logic, and independent versioning of the rotation logic.\n\n**Motivation**: The current ~40-line scripts mixing shell, Python, and Kubernetes API calls are embedded as raw Go constants with no linting, type checking, or unit testing. A bug in these scripts silently breaks key rotation — one of the most security-critical operations in the system. Extracting them makes them independently testable and auditable.\n\n**Affected Areas**:\n- `operators/keystone/internal/controller/reconcile_fernet.go`\n- `operators/keystone/internal/controller/reconcile_credential.go`\n\n**Acceptance Criteria**:\n- [ ] Scripts extracted to standalone files under a scripts/ or embed/ directory\n- [ ] Scripts embedded via go:embed and mounted as ConfigMap volumes\n- [ ] shellcheck passes on shell portions of the scripts\n- [ ] Script logic has at least basic unit/integration tests\n- [ ] Rotation CronJobs function identically to before extraction\n\n---\nSource: https://github.com/C5C3/forge/issues/191",
   "stories": [
@@ -334,6 +334,7 @@
       "description": "Create operators/keystone/internal/controller/scripts/ directory. Extract the fernetRotateScript constant body from reconcile_fernet.go:35-56 into scripts/fernet_rotate.sh, prepending #!/bin/sh shebang. Extract credentialRotateScript from reconcile_credential.go:37-59 into scripts/credential_rotate.sh, prepending #!/bin/sh shebang. Ensure both files end with a newline. Verify with shellcheck.",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-001"
       ]
@@ -344,6 +345,7 @@
       "description": "In reconcile_fernet.go: add '_ \"embed\"' import, replace 'const fernetRotateScript = `...`' with '//go:embed scripts/fernet_rotate.sh' + 'var fernetRotateScript string'. In reconcile_credential.go: same pattern for credentialRotateScript, also remove the //nolint:gosec G101 comment (no longer needed since go:embed vars don't trigger G101). Update comments above the variables to reference the file paths. Verify: go build ./operators/keystone/... succeeds, go vet passes.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -354,6 +356,7 @@
       "description": "In reconcile_fernet_test.go add TestFernetRotateScript_EmbeddedContent: verify fernetRotateScript is non-empty, starts with '#!/bin/sh', contains 'set -e', contains 'fernet_rotate', contains 'python3', contains 'Secret update failed'. In reconcile_credential_test.go add TestCredentialRotateScript_EmbeddedContent: same checks plus verify it contains both 'credential_rotate' and 'credential_migrate'. These tests guard against broken go:embed directives producing empty strings.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -364,6 +367,7 @@
       "description": "In reconcile_fernet.go: (1) Add config import for CreateImmutableConfigMap and ptr import for DefaultMode. (2) In reconcileFernetKeys, after RBAC setup and before CronJob creation, call config.CreateImmutableConfigMap to create a ConfigMap named '{name}-fernet-rotate-script' containing {'fernet_rotate.sh': fernetRotateScript}. Pass the returned scriptConfigMapName to fernetRotationCronJob. (3) Update fernetRotationCronJob signature to accept scriptConfigMapName string parameter. (4) Add 'scripts' volume sourced from scriptConfigMapName ConfigMap with DefaultMode ptr.To(int32(0555)). (5) Add VolumeMount {Name: 'scripts', MountPath: '/scripts', ReadOnly: true} to main container. (6) Change Command from []string{'sh', '-c', fernetRotateScript} to []string{'/scripts/fernet_rotate.sh'}.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-004",
@@ -376,6 +380,7 @@
       "description": "In reconcile_fernet_test.go: (1) Update TestReconcileFernetKeys_CronJobSpec: change Command assertion to []string{'/scripts/fernet_rotate.sh'}, update volume count from 4 to 5, update volume mount count from 3 to 4, add assertions for 'scripts' volume (ConfigMap source with name prefix 'test-keystone-fernet-rotate-script-', DefaultMode 0555), add assertion for '/scripts' volume mount (read-only). (2) Update TestReconcileFernetKeys_SecretAlreadyExists to verify script ConfigMap is created. (3) Verify all env vars, other volumes, init container, security context, labels assertions are unchanged. (4) Run tests: go test ./operators/keystone/internal/controller/ -run TestReconcileFernet.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-005"
@@ -387,6 +392,7 @@
       "description": "In reconcile_credential.go: mirror the changes from task 2.1. (1) Add config and ptr imports. (2) In reconcileCredentialKeys, create ConfigMap named '{name}-credential-rotate-script' containing {'credential_rotate.sh': credentialRotateScript}. (3) Update credentialRotationCronJob signature to accept scriptConfigMapName. (4) Add 'scripts' volume with DefaultMode 0555. (5) Add '/scripts' volume mount to main container. (6) Change Command to []string{'/scripts/credential_rotate.sh'}.",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-004",
@@ -399,6 +405,7 @@
       "description": "In reconcile_credential_test.go: mirror the changes from task 2.2. (1) Update TestReconcileCredentialKeys_CronJobSpec: change Command assertion, update volume/mount counts, add script volume assertions with 'test-keystone-credential-rotate-script-' prefix. (2) Update TestReconcileCredentialKeys_SecretAlreadyExists to verify script ConfigMap creation. (3) Verify credential_rotate and credential_migrate command verification is preserved (script content test, not CronJob command). (4) Run tests: go test ./operators/keystone/internal/controller/ -run TestReconcileCredential.",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-005"
@@ -410,6 +417,7 @@
       "description": "In Makefile: add a 'shellcheck' target under a new 'Script Linting' section. Target runs: shellcheck operators/keystone/internal/controller/scripts/*.sh. Add .PHONY declaration. Add comment with CC-0073 reference. Verify: make shellcheck passes. The target should fail with non-zero exit if any script has warnings.",
       "level": 4,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -419,7 +427,8 @@
       "title": "Reference documentation for rotation script ConfigMap pattern (CC-0073)",
       "description": "Create docs/reference/backend/rotation-scripts.md documenting: (1) the go:embed pattern for rotation scripts, (2) the ConfigMap mounting approach with content-hash naming, (3) how to modify rotation scripts (edit .sh file, rebuild operator, ConfigMap auto-updates), (4) how to run shellcheck locally. Keep concise (<80 lines). Reference CC-0073 and existing CreateImmutableConfigMap pattern.",
       "level": 4,
-      "estimate_minutes": 10
+      "estimate_minutes": 10,
+      "status": "done"
     }
   ],
   "test_specifications": [
@@ -562,6 +571,188 @@
       "story": "CI validates shell script quality via shellcheck",
       "expected": "shellcheck exits 0 with no warnings on credential_rotate.sh",
       "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_NoSecret_CreatesSecretAndRequeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_SecretAlreadyExists",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_CronJobScheduleUpdated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_GeneratedKeysAreValid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_CronJobScheduleMatchesSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_PushSecretReferencesCorrectSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestCredentialKeyGeneration_Valid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestCredentialKeyGeneration_Unique",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_MinActiveKeysFloor",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_ConditionMessages",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestCredentialRotationCronJob_SecurityContext",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_CronJobSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestCredentialRotateScript_EmbeddedContent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_NoSecret_CreatesSecretAndRequeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_SecretAlreadyExists",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_CronJobScheduleUpdated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_GeneratedKeysAreValid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_CronJobScheduleMatchesSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_PushSecretReferencesCorrectSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestGenerateFernetKey_Valid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestGenerateFernetKey_Unique",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_MinActiveKeysFloor",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_ConditionMessages",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestFernetRotationCronJob_SecurityContext",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_CronJobSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestFernetRotateScript_EmbeddedContent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],
@@ -589,8 +780,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-13T19:23:03.316568"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-13T19:36:30.408508"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-14T12:06:31.896200"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/204",
+  "pr_number": 204,
   "execution_history": [
     {
       "run_id": "38e5fa03-e4c2-4069-b065-8d8e6d3b1b9e",
@@ -602,6 +803,70 @@
           "name": "prepare",
           "duration": 667.1785504817963,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "2c903e19-602c-4d3f-b35e-91d0390d24c9",
+      "timestamp": "2026-04-13T20:13:02.358648",
+      "total_duration": 2051.745372056961,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (3 tasks)",
+          "duration": 384.477392911911,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (2 tasks)",
+          "duration": 388.50391483306885,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (2 tasks)",
+          "duration": 217.22613501548767,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (2 tasks)",
+          "duration": 367.1721467971802,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0073] Code Review",
+          "duration": 409.435129404068,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0073] Improvements",
+          "duration": 245.1701421737671,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0073] Simplify",
+          "duration": 39.76051092147827,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "d6214d71-d812-44b6-aee1-8dab588ecd58",
+      "timestamp": "2026-04-14T06:40:56.890665",
+      "total_duration": 514.3332364559174,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 514.3332364559174,
+          "type": "review_address",
           "status": "done"
         }
       ]

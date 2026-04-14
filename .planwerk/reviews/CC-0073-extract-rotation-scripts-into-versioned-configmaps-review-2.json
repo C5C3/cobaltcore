@@ -1,0 +1,83 @@
+{
+  "feature_id": "CC-0073",
+  "title": "Extract rotation scripts into versioned ConfigMaps",
+  "date": "2026-04-14",
+  "review_scope": "Post external-review improvement cycle (berendt feedback, 4 warnings + 2 info items)",
+  "summary": "All external reviewer feedback correctly addressed: conn.close() added to both scripts (W-001), HTML TODO comments on pre-existing hardcoded names in docs (W-002), VolumeMounts assertions refactored from index-based to find-by-name switch pattern matching the existing Volumes assertion style (W-003), sync cross-reference comments added to duplicated Python PATCH blocks (W-004), set -e upgraded to set -eu in both scripts (I-002). No new issues introduced.",
+  "verdict": "APPROVED",
+  "verification": {
+    "tests": "All controller tests pass (go test ./operators/keystone/internal/controller/ — 0.917s)",
+    "vet": "go vet clean — no issues",
+    "lint": "golangci-lint reports 1 pre-existing issue in reconcile_networkpolicy_test.go:540 (unchanged file, out of scope)",
+    "shellcheck": "shellcheck binary not available in CI environment — make shellcheck exits 127 (not a regression, tool not installed)"
+  },
+  "external_review_feedback_addressed": {
+    "W-001": {
+      "status": "fixed",
+      "description": "conn.close() added before success print in both fernet_rotate.sh:26 and credential_rotate.sh:27"
+    },
+    "W-002": {
+      "status": "acknowledged",
+      "description": "HTML TODO comments added to 4 pre-existing hardcoded rows (keystone-db-sync, keystone-bootstrap, keystone-api Deployment, keystone-api Service) in docs/reference/keystone-reconciler.md:1210-1213"
+    },
+    "W-003": {
+      "status": "fixed",
+      "description": "VolumeMounts assertions in both test files refactored from index-based (container.VolumeMounts[3]) to find-by-name switch pattern, matching the existing Volumes assertion pattern in the same test"
+    },
+    "W-004": {
+      "status": "acknowledged",
+      "description": "Sync cross-reference comments added to both scripts: '# NOTE: The Python K8s API PATCH block below MUST stay in sync with {sibling}.sh (CC-0073, W-004)'"
+    },
+    "I-001": {
+      "status": "no_action",
+      "description": "E2E tests implicitly validate ConfigMap mounting through successful rotation — accepted as adequate"
+    },
+    "I-002": {
+      "status": "fixed",
+      "description": "Both scripts changed from 'set -e' to 'set -eu' to detect unset variables"
+    }
+  },
+  "tests_checklist": [
+    {"item": "Tests exist and pass", "checked": true},
+    {"item": "Edge cases are covered (empty embed guard, HaveLen + find-by-name)", "checked": true},
+    {"item": "Test assertions are specific (exact mount paths, ReadOnly flags, ConfigMap prefixes, DefaultMode)", "checked": true},
+    {"item": "Tests independent (no shared mutable state)", "checked": true},
+    {"item": "Find-by-name pattern consistent across both test files", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (switch-based find-by-name mirrors Volumes assertion)", "checked": true},
+    {"item": "No dead code introduced", "checked": true},
+    {"item": "Comments are accurate and reference correct CC/W IDs", "checked": true},
+    {"item": "Changes are minimal and scoped to feedback items only", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "conn.close() ensures explicit resource cleanup", "checked": true},
+    {"item": "set -eu catches unset SECRET_NAMESPACE/SECRET_NAME early", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "TLS verification preserved (ssl.create_default_context with CA)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "No scope creep — only feedback items addressed", "checked": true},
+    {"item": "W-002 correctly deferred as pre-existing with TODO tracking", "checked": true},
+    {"item": "W-004 correctly deferred with sync comments instead of premature extraction", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code introduced", "checked": true},
+    {"item": "Existing duplication (Python PATCH block) acknowledged with sync comments, not over-engineered", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "set -eu catches unset variables before they reach Python", "checked": true},
+    {"item": "conn.close() ensures deterministic cleanup", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs validated (env vars via os.environ which raises KeyError)", "checked": true},
+    {"item": "HTTP response status checked before proceeding", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": []
+}

@@ -7,6 +7,7 @@ package controller
 import (
 	"context"
 	"crypto/rand"
+	_ "embed"
 	"encoding/base64"
 	"fmt"
 	"strconv"
@@ -16,11 +17,13 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/forge/internal/common/config"
 	"github.com/c5c3/forge/internal/common/job"
 	"github.com/c5c3/forge/internal/common/secrets"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
@@ -32,28 +35,10 @@ import (
 // It rotates the keys on an emptyDir working copy, then pushes the updated keys
 // back to the Kubernetes Secret via the API using the pod's ServiceAccount token.
 // Only Python standard library modules are used to avoid image dependencies (CC-0013).
-const fernetRotateScript = `set -e
-keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ fernet_rotate
-python3 << 'PYTHON'
-import os, json, base64, glob, ssl, http.client
-data = {}
-for f in sorted(glob.glob("/etc/keystone/fernet-keys/*")):
-    if os.path.isfile(f):
-        with open(f, "rb") as fh:
-            data[os.path.basename(f)] = base64.b64encode(fh.read()).decode()
-with open("/var/run/secrets/kubernetes.io/serviceaccount/token") as f:
-    token = f.read().strip()
-ctx = ssl.create_default_context(cafile="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
-conn = http.client.HTTPSConnection("kubernetes.default.svc", context=ctx)
-conn.request("PATCH",
-    "/api/v1/namespaces/{}/secrets/{}".format(os.environ["SECRET_NAMESPACE"], os.environ["SECRET_NAME"]),
-    json.dumps({"data": data}),
-    {"Authorization": "Bearer " + token, "Content-Type": "application/strategic-merge-patch+json"})
-resp = conn.getresponse()
-if resp.status >= 300:
-    raise RuntimeError("Secret update failed: {} {}".format(resp.status, resp.read().decode()))
-print("Fernet keys Secret updated successfully")
-PYTHON`
+// Extracted to scripts/fernet_rotate.sh for independent linting and testing (CC-0073).
+//
+//go:embed scripts/fernet_rotate.sh
+var fernetRotateScript string
 
 // reconcileFernetKeys ensures that a Fernet keys Secret exists, a rotation
 // CronJob is configured, and a PushSecret backs up the keys to OpenBao.
@@ -90,19 +75,27 @@ func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
 		return ctrl.Result{}, fmt.Errorf("ensuring fernet rotation RBAC: %w", err)
 	}
 
-	// 3. Ensure the rotation CronJob exists.
-	cronJob := fernetRotationCronJob(keystone, configMapName)
+	// 3. Create the immutable ConfigMap containing the rotation script (CC-0073).
+	scriptConfigMapName, err := config.CreateImmutableConfigMap(ctx, r.Client, r.Scheme, keystone,
+		fmt.Sprintf("%s-fernet-rotate-script", keystone.Name), keystone.Namespace,
+		map[string]string{"fernet_rotate.sh": fernetRotateScript})
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("creating fernet rotate script ConfigMap: %w", err)
+	}
+
+	// 4. Ensure the rotation CronJob exists.
+	cronJob := fernetRotationCronJob(keystone, configMapName, scriptConfigMapName)
 	if err := job.EnsureCronJob(ctx, r.Client, r.Scheme, keystone, cronJob); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring fernet rotation cronjob: %w", err)
 	}
 
-	// 4. Ensure the PushSecret for OpenBao backup exists.
+	// 5. Ensure the PushSecret for OpenBao backup exists.
 	ps := fernetKeysPushSecret(keystone)
 	if err := secrets.EnsurePushSecret(ctx, r.Client, r.Scheme, keystone, ps); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring fernet keys pushsecret: %w", err)
 	}
 
-	// 5. Set the FernetKeysReady condition.
+	// 6. Set the FernetKeysReady condition.
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 		Type:               "FernetKeysReady",
 		Status:             metav1.ConditionTrue,
@@ -222,9 +215,10 @@ func generateFernetKey() (string, error) {
 // the result back to the Kubernetes Secret via the API. The CronJob:
 //  1. Mounts the existing fernet keys Secret as a read-only volume.
 //  2. Uses an init container to copy keys to a writable emptyDir.
-//  3. Runs keystone-manage fernet_rotate against the emptyDir.
-//  4. Pushes the updated keys to the K8s API using the pod's ServiceAccount (CC-0013).
-func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName string) *batchv1.CronJob {
+//  3. Mounts the rotation script from a versioned ConfigMap at /scripts/ (CC-0073).
+//  4. Runs /scripts/fernet_rotate.sh against the emptyDir.
+//  5. Pushes the updated keys to the K8s API using the pod's ServiceAccount (CC-0013).
+func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName string, scriptConfigMapName string) *batchv1.CronJob {
 	secretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
 	credentialSecretName := fmt.Sprintf("%s-credential-keys", keystone.Name)
 	saName := fmt.Sprintf("%s-fernet-rotate", keystone.Name)
@@ -263,7 +257,7 @@ func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName st
 								// TODO(CC-0042): Wire spec.Resources (or a smaller Job-specific default) to
 								// this container. Currently runs as BestEffort QoS. See reconcile_deployment.go
 								// containerResources() for the pattern used by the keystone-api container.
-								Command:         []string{"sh", "-c", fernetRotateScript},
+								Command:         []string{"/scripts/fernet_rotate.sh"},
 								SecurityContext: restrictedSecurityContext(),
 								Env: []corev1.EnvVar{
 									{Name: "SECRET_NAME", Value: secretName},
@@ -283,6 +277,7 @@ func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName st
 									{Name: "fernet-keys", MountPath: "/etc/keystone/fernet-keys"},
 									{Name: "credential-keys", MountPath: "/etc/keystone/credential-keys", ReadOnly: true},
 									{Name: "config", MountPath: "/etc/keystone/keystone.conf.d/", ReadOnly: true},
+									{Name: "scripts", MountPath: "/scripts", ReadOnly: true},
 								},
 							}},
 							Volumes: []corev1.Volume{
@@ -312,6 +307,15 @@ func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName st
 									VolumeSource: corev1.VolumeSource{
 										ConfigMap: &corev1.ConfigMapVolumeSource{
 											LocalObjectReference: corev1.LocalObjectReference{Name: configMapName},
+										},
+									},
+								},
+								{
+									Name: "scripts",
+									VolumeSource: corev1.VolumeSource{
+										ConfigMap: &corev1.ConfigMapVolumeSource{
+											LocalObjectReference: corev1.LocalObjectReference{Name: scriptConfigMapName},
+											DefaultMode:          ptr.To(int32(0o555)),
 										},
 									},
 								},

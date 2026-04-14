@@ -131,6 +131,19 @@ govulncheck:
 	done
 
 # ============================================================================
+# Shell Script Targets (CC-0073)
+# ============================================================================
+
+.PHONY: shellcheck
+# shellcheck lints all shell scripts with shellcheck --severity=warning (CC-0073, REQ-006).
+# Covers hack/ utility scripts and operator rotation scripts embedded via ConfigMaps.
+shellcheck:
+	@echo "Linting hack/*.sh..."
+	@shellcheck --severity=warning hack/*.sh
+	@echo "Linting operator rotation scripts..."
+	@shellcheck --severity=warning operators/*/internal/controller/scripts/*.sh
+
+# ============================================================================
 # Format Targets (CC-0053)
 # ============================================================================
 

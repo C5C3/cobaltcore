@@ -1,7 +1,7 @@
 ---
 title: Keystone Reconciler Architecture
 quadrant: operator
-feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0067, CC-0068, CC-0071
+feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0067, CC-0068, CC-0071, CC-0073
 ---
 
 # Keystone Reconciler Architecture
@@ -153,6 +153,7 @@ RBAC markers on the reconciler generate the required ClusterRole:
 │  ║                                                                        ║ │
 │  ║  ┌─────────────────────┐  ┌──────────────────────────┐                 ║ │
 │  ║  │ reconcileFernetKeys │  │ reconcileCredentialKeys   │  (concurrent)  ║ │
+│  ║  │ + script ConfigMap  │  │ + script ConfigMap        │  (CC-0073)     ║ │
 │  ║  │ Sets: FernetKeysReady│ │ Sets: CredentialKeysReady │                ║ │
 │  ║  └─────────────────────┘  └──────────────────────────┘                 ║ │
 │  ║  ┌────────────────────────┐                                            ║ │
@@ -439,8 +440,8 @@ sub-reconciler is responsible for:
 | --- | --- | --- |
 | `SecretsReady` | `reconcileSecrets` | ESO-provided credentials are synced |
 | `DatabaseReady` | `reconcileDatabase` | MariaDB CRs ready and db_sync complete |
-| `FernetKeysReady` | `reconcileFernetKeys` | Fernet Secret, CronJob, and PushSecret ensured |
-| `CredentialKeysReady` | `reconcileCredentialKeys` | Credential keys Secret, CronJob, and PushSecret ensured (CC-0036) |
+| `FernetKeysReady` | `reconcileFernetKeys` | Fernet Secret, script ConfigMap, CronJob, and PushSecret ensured (CC-0073) |
+| `CredentialKeysReady` | `reconcileCredentialKeys` | Credential keys Secret, script ConfigMap, CronJob, and PushSecret ensured (CC-0036, CC-0073) |
 | `NetworkPolicyReady` | `reconcileNetworkPolicy` | NetworkPolicy configured or not required (CC-0039) |
 | `PolicyValidReady` | `reconcilePolicyValidation` | Policy override validation passed or not required (CC-0058) |
 | `DeploymentReady` | `reconcileDeployment` | Deployment available and Service created |
@@ -569,7 +570,7 @@ so that the failure reason is visible in the CR status.
 
 ```go
 func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
-    keystone *keystonev1alpha1.Keystone) (ctrl.Result, error)
+    keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error)
 ```
 
 **Purpose:** Manage Fernet token signing keys — initial generation, rotation schedule,
@@ -577,11 +578,17 @@ and disaster recovery backup to OpenBao.
 
 **Steps (in order):**
 
-1. **Ensure Fernet keys Secret** — If `keystone-fernet-keys` Secret does not exist,
+1. **Ensure Fernet keys Secret** — If `{name}-fernet-keys` Secret does not exist,
    generate initial keys and create the Secret with a controller owner reference.
-2. **Ensure rotation CronJob** — Create or update `keystone-fernet-rotate` CronJob
+2. **Ensure rotation RBAC** — Create or update the ServiceAccount, Role, and
+   RoleBinding (`{name}-fernet-rotate`) for the rotation CronJob.
+3. **Create script ConfigMap** — Create an immutable, versioned ConfigMap
+   `{name}-fernet-rotate-script-{hash}` containing the embedded
+   `fernet_rotate.sh` script (CC-0073). Uses `config.CreateImmutableConfigMap()`
+   which appends a content-hash suffix and sets `immutable: true`.
+4. **Ensure rotation CronJob** — Create or update `{name}-fernet-rotate` CronJob
    with the schedule from `spec.fernet.rotationSchedule`.
-3. **Ensure PushSecret** — Create or update `keystone-fernet-keys-backup` PushSecret
+5. **Ensure PushSecret** — Create or update `{name}-fernet-keys-backup` PushSecret
    targeting `kv-v2/data/openstack/keystone/fernet-keys` in the `openbao`
    ClusterSecretStore.
 
@@ -593,24 +600,30 @@ and disaster recovery backup to OpenBao.
 | Encoding | URL-safe base64 without padding (`base64.URLEncoding.WithPadding(base64.NoPadding)`) |
 | Key count | `max(spec.fernet.maxActiveKeys, 3)` |
 | Secret data keys | String indices: `"0"`, `"1"`, `"2"`, ... |
-| Secret name | `keystone-fernet-keys` |
+| Secret name | `{name}-fernet-keys` |
 
 **Rotation CronJob:**
 
 | Field | Value |
 | --- | --- |
-| Name | `keystone-fernet-rotate` |
+| Name | `{name}-fernet-rotate` |
 | Schedule | `spec.fernet.rotationSchedule` |
-| Command | `keystone-manage fernet_rotate --keystone-user keystone --keystone-group keystone` |
-| Volume | `keystone-fernet-keys` Secret at `/etc/keystone/fernet-keys` |
+| ServiceAccount | `{name}-fernet-rotate` |
+| Init container | Copies keys from `fernet-keys-src` (Secret) to `fernet-keys` (emptyDir) |
+| Command | `/scripts/fernet_rotate.sh` (CC-0073) |
+| Volume `fernet-keys-src` | Secret `{name}-fernet-keys` (read-only source) |
+| Volume `fernet-keys` | emptyDir (writable working copy) |
+| Volume `credential-keys` | Secret `{name}-credential-keys` (read-only, required by config) |
+| Volume `config` | ConfigMap `{configMapName}` |
+| Volume `scripts` | ConfigMap `{name}-fernet-rotate-script-{hash}` (`defaultMode: 0555`) (CC-0073) |
 
 **PushSecret:**
 
 | Field | Value |
 | --- | --- |
-| Name | `keystone-fernet-keys-backup` |
+| Name | `{name}-fernet-keys-backup` |
 | Store | `ClusterSecretStore/openbao` |
-| Source Secret | `keystone-fernet-keys` |
+| Source Secret | `{name}-fernet-keys` |
 | Remote Key | `kv-v2/data/openstack/keystone/fernet-keys` |
 
 **Condition Contract:**
@@ -620,14 +633,120 @@ and disaster recovery backup to OpenBao.
 | `False` | `GeneratingKeys` | "Initial Fernet keys have been generated" | — |
 | `True` | `FernetKeysAvailable` | "Fernet keys Secret exists and rotation CronJob is configured" | — |
 
-**Error handling:** Errors from Secret creation, CronJob ensure, or PushSecret ensure
-are wrapped with context and returned directly. No requeue delays — errors trigger
-controller-runtime exponential backoff.
+**Versioned Script ConfigMap (CC-0073):**
 
-**Idempotency:** If the `keystone-fernet-keys` Secret already exists, it is not
+The rotation script is embedded in the Go binary via `go:embed` and mounted into the
+CronJob pod through a versioned, immutable ConfigMap. The ConfigMap name includes a
+content-hash suffix (e.g., `{name}-fernet-rotate-script-abc123`), which ensures that
+changes to the script trigger a new CronJob spec and thus a rolling update. The
+ConfigMap is created with `immutable: true` to prevent accidental modification and
+enable kube-apiserver caching optimizations.
+
+**Error handling:** Errors from Secret creation, RBAC ensure, script ConfigMap creation,
+CronJob ensure, or PushSecret ensure are wrapped with context and returned directly.
+No requeue delays — errors trigger controller-runtime exponential backoff.
+
+**Idempotency:** If the `{name}-fernet-keys` Secret already exists, it is not
+modified. This prevents overwriting keys that have been rotated by the CronJob.
+The script ConfigMap uses content-based naming — if the script has not changed,
+`config.CreateImmutableConfigMap()` returns the existing ConfigMap name without
+creating a new one.
+
+**Shared library calls:** `config.CreateImmutableConfigMap()`, `job.EnsureCronJob()`,
+`secrets.EnsurePushSecret()`
+
+---
+
+### reconcileCredentialKeys
+
+**File:** `operators/keystone/internal/controller/reconcile_credential.go`
+
+**Signature:**
+
+```go
+func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
+    keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error)
+```
+
+**Purpose:** Manage credential encryption keys — initial generation, rotation schedule
+with credential migration, and disaster recovery backup to OpenBao (CC-0036).
+
+**Steps (in order):**
+
+1. **Ensure credential keys Secret** — If `{name}-credential-keys` Secret does not
+   exist, generate initial keys and create the Secret with a controller owner reference.
+2. **Ensure rotation RBAC** — Create or update the ServiceAccount, Role, and
+   RoleBinding (`{name}-credential-rotate`) for the rotation CronJob.
+3. **Create script ConfigMap** — Create an immutable, versioned ConfigMap
+   `{name}-credential-rotate-script-{hash}` containing the embedded
+   `credential_rotate.sh` script (CC-0073). Uses `config.CreateImmutableConfigMap()`
+   which appends a content-hash suffix and sets `immutable: true`.
+4. **Ensure rotation CronJob** — Create or update `{name}-credential-rotate` CronJob
+   with the schedule from `spec.credentialKeys.rotationSchedule`.
+5. **Ensure PushSecret** — Create or update `{name}-credential-keys-backup` PushSecret
+   targeting `kv-v2/data/openstack/keystone/credential-keys` in the `openbao`
+   ClusterSecretStore.
+
+**Key Generation:**
+
+| Property | Value |
+| --- | --- |
+| Algorithm | `crypto/rand` (32 bytes), same format as Fernet keys |
+| Encoding | URL-safe base64 (`base64.URLEncoding.EncodeToString`) |
+| Key count | `max(spec.credentialKeys.maxActiveKeys, 3)` |
+| Secret data keys | String indices: `"0"`, `"1"`, `"2"`, ... |
+| Secret name | `{name}-credential-keys` |
+
+**Rotation CronJob:**
+
+| Field | Value |
+| --- | --- |
+| Name | `{name}-credential-rotate` |
+| Schedule | `spec.credentialKeys.rotationSchedule` |
+| ServiceAccount | `{name}-credential-rotate` |
+| Init container | Copies keys from `credential-keys-src` (Secret) to `credential-keys` (emptyDir) |
+| Command | `/scripts/credential_rotate.sh` (CC-0073) |
+| Volume `credential-keys-src` | Secret `{name}-credential-keys` (read-only source) |
+| Volume `credential-keys` | emptyDir (writable working copy) |
+| Volume `fernet-keys` | Secret `{name}-fernet-keys` (read-only, required by config) |
+| Volume `config` | ConfigMap `{configMapName}` |
+| Volume `scripts` | ConfigMap `{name}-credential-rotate-script-{hash}` (`defaultMode: 0555`) (CC-0073) |
+
+> **Note:** The `credential_rotate.sh` script runs both `credential_rotate` and
+> `credential_migrate`. The migrate step re-encrypts existing credentials in the
+> database with the new primary key, which is critical to prevent data loss when
+> old keys are eventually purged (CC-0036).
+
+**PushSecret:**
+
+| Field | Value |
+| --- | --- |
+| Name | `{name}-credential-keys-backup` |
+| Store | `ClusterSecretStore/openbao` |
+| Source Secret | `{name}-credential-keys` |
+| Remote Key | `kv-v2/data/openstack/keystone/credential-keys` |
+
+**Condition Contract:**
+
+| Status | Reason | Message | RequeueAfter |
+| --- | --- | --- | --- |
+| `False` | `GeneratingKeys` | "Initial credential keys have been generated" | — |
+| `True` | `CredentialKeysAvailable` | "Credential keys Secret exists and rotation CronJob is configured" | — |
+
+**Versioned Script ConfigMap (CC-0073):**
+
+Uses the same versioned, immutable ConfigMap pattern as `reconcileFernetKeys`. See the
+description in that section for details on content-hash naming and immutability.
+
+**Error handling:** Errors from Secret creation, RBAC ensure, script ConfigMap creation,
+CronJob ensure, or PushSecret ensure are wrapped with context and returned directly.
+No requeue delays — errors trigger controller-runtime exponential backoff.
+
+**Idempotency:** If the `{name}-credential-keys` Secret already exists, it is not
 modified. This prevents overwriting keys that have been rotated by the CronJob.
 
-**Shared library calls:** `job.EnsureCronJob()`, `secrets.EnsurePushSecret()`
+**Shared library calls:** `config.CreateImmutableConfigMap()`, `job.EnsureCronJob()`,
+`secrets.EnsurePushSecret()`
 
 ---
 
@@ -1239,18 +1358,23 @@ Keystone CR via `controllerutil.SetControllerReference()`. This enables:
 
 | Resource | Name | Owner |
 | --- | --- | --- |
-| Secret | `keystone-fernet-keys` | Keystone CR |
-| CronJob | `keystone-fernet-rotate` | Keystone CR |
-| PushSecret | `keystone-fernet-keys-backup` | Keystone CR |
-| ConfigMap | `keystone-config-{hash}` | Keystone CR |
-| Job | `keystone-db-sync` | Keystone CR |
-| Job | `keystone-bootstrap` | Keystone CR |
-| Deployment | `keystone-api` | Keystone CR |
-| Service | `keystone-api` | Keystone CR |
+| Secret | `{name}-fernet-keys` | Keystone CR |
+| CronJob | `{name}-fernet-rotate` | Keystone CR |
+| PushSecret | `{name}-fernet-keys-backup` | Keystone CR |
+| Secret | `{name}-credential-keys` | Keystone CR |
+| CronJob | `{name}-credential-rotate` | Keystone CR |
+| PushSecret | `{name}-credential-keys-backup` | Keystone CR |
+| ConfigMap | `{name}-config-{hash}` | Keystone CR |
+| Job | `keystone-db-sync` | Keystone CR | <!-- TODO: align to {name}-* pattern (pre-existing, CC-0073 W-002) -->
+| Job | `keystone-bootstrap` | Keystone CR | <!-- TODO: align to {name}-* pattern (pre-existing, CC-0073 W-002) -->
+| Deployment | `keystone-api` | Keystone CR | <!-- TODO: align to {name}-* pattern (pre-existing, CC-0073 W-002) -->
+| Service | `keystone-api` | Keystone CR | <!-- TODO: align to {name}-* pattern (pre-existing, CC-0073 W-002) -->
 | PodDisruptionBudget | `{name}-api` | Keystone CR |
 | HorizontalPodAutoscaler | `{name}-api` | Keystone CR (only when `spec.autoscaling` is set) |
 | Job | `{name}-policy-validation` | Keystone CR (only when `spec.policyOverrides` is set) |
 | CronJob | `{name}-trust-flush` | Keystone CR (only when `spec.trustFlush` is set) |
+| ConfigMap | `{name}-fernet-rotate-script-{hash}` | Keystone CR (CC-0073) |
+| ConfigMap | `{name}-credential-rotate-script-{hash}` | Keystone CR (CC-0073) |
 | Database | `keystone` | Keystone CR (managed mode only) |
 | User | `keystone` | Keystone CR (managed mode only) |
 | Grant | `keystone` | Keystone CR (managed mode only) |
@@ -1277,8 +1401,8 @@ For end-to-end Chainsaw tests that validate the reconciler in a real cluster, se
 | `keystone_controller_test.go` | Reconcile() orchestration, sequential execution, parallel group (CC-0071), early return, Ready aggregation, idempotency, benchmark |
 | `reconcile_secrets_test.go` | DB/admin credential readiness, error propagation, condition messages |
 | `reconcile_database_test.go` | Managed/brownfield modes, MariaDB CRs, db_sync lifecycle, stale Job detection |
-| `reconcile_fernet_test.go` | Key generation, Secret idempotency, CronJob schedule, PushSecret, key validity |
-| `reconcile_credential_test.go` | Credential key generation, Secret idempotency, CronJob schedule, PushSecret, RBAC (CC-0036) |
+| `reconcile_fernet_test.go` | Key generation, Secret idempotency, script ConfigMap creation, CronJob schedule/volumes, PushSecret, key validity (CC-0073) |
+| `reconcile_credential_test.go` | Key generation, Secret idempotency, script ConfigMap creation, CronJob schedule/volumes, PushSecret, RBAC, key validity (CC-0036, CC-0073) |
 | `reconcile_networkpolicy_test.go` | NetworkPolicy creation, update, deletion, ingress rules, condition contract (CC-0039) |
 | `reconcile_config_test.go` | INI generation, extraConfig merge, plugin config, policy overrides, ConfigMap hashing |
 | `reconcile_policyvalidation_test.go` | Policy validation lifecycle, condition contract, error extraction, Job spec (CC-0058) |
@@ -1315,11 +1439,14 @@ operators/keystone/
     │   ├── reconcile_hpa.go                   reconcileHPA sub-reconciler (CC-0038)
     │   ├── reconcile_trustflush.go            reconcileTrustFlush sub-reconciler (CC-0057)
     │   ├── reconcile_bootstrap.go              reconcileBootstrap sub-reconciler
+    │   ├── scripts/
+    │   │   ├── fernet_rotate.sh               Fernet key rotation script (CC-0073)
+    │   │   └── credential_rotate.sh           Credential key rotation script (CC-0073)
     │   ├── keystone_controller_test.go         Orchestration tests
     │   ├── reconcile_secrets_test.go           Secrets tests
     │   ├── reconcile_database_test.go          Database tests
-    │   ├── reconcile_fernet_test.go            Fernet tests
-    │   ├── reconcile_credential_test.go        Credential keys tests (CC-0036)
+    │   ├── reconcile_fernet_test.go            Fernet tests (CC-0073)
+    │   ├── reconcile_credential_test.go        Credential keys tests (CC-0036, CC-0073)
     │   ├── reconcile_networkpolicy_test.go     NetworkPolicy tests (CC-0039)
     │   ├── reconcile_config_test.go            Config tests
     │   ├── reconcile_policyvalidation_test.go   Policy validation tests (CC-0058)

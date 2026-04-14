@@ -1,0 +1,110 @@
+{
+  "summary": "Extracts Fernet and credential rotation shell scripts from inline Go string constants into standalone .sh files under scripts/, embeds them via go:embed, and mounts them into CronJob pods as immutable, content-hash-named ConfigMaps. Adds a Makefile shellcheck target, extends CI shellcheck coverage, adds embedded content tests, and comprehensively updates the keystone reconciler reference documentation.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "All existing unit tests pass (go test ./operators/keystone/... — 0 failures)", "checked": true},
+    {"item": "Fernet CronJob spec tests updated: Command, volume count (4→5), mount count (3→4), scripts volume assertions", "checked": true},
+    {"item": "Credential CronJob spec tests updated: Command, volume count (4→5), mount count (3→4), scripts volume assertions", "checked": true},
+    {"item": "TestFernetRotateScript_EmbeddedContent verifies non-empty, shebang, set -e, fernet_rotate, python3 heredoc, error handling", "checked": true},
+    {"item": "TestCredentialRotateScript_EmbeddedContent verifies non-empty, shebang, set -e, credential_rotate+migrate, python3 heredoc, error handling", "checked": true},
+    {"item": "Script ConfigMap creation verified in SecretAlreadyExists tests (both fernet and credential)", "checked": true},
+    {"item": "SecurityContext tests updated to pass scriptConfigMapName parameter", "checked": true},
+    {"item": "go vet passes with no errors", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing CreateImmutableConfigMap pattern from reconcile_config.go", "checked": true},
+    {"item": "Fernet and credential implementations are symmetric (identical structure)", "checked": true},
+    {"item": "go:embed replaces inline constants cleanly — no residual dead code", "checked": true},
+    {"item": "Removed //nolint:gosec G101 comment (no longer needed for go:embed var)", "checked": true},
+    {"item": "Error wrapping follows existing fmt.Errorf pattern with context", "checked": true},
+    {"item": "Step numbering in comments updated consistently (3→6 steps)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "restrictedSecurityContext() still applied to all init and main containers (no regression)", "checked": true},
+    {"item": "Script ConfigMap mounted read-only (ReadOnly: true)", "checked": true},
+    {"item": "ConfigMap DefaultMode 0555 (r-xr-xr-x) — executable but not writable", "checked": true},
+    {"item": "ConfigMap is immutable (prevents runtime modification)", "checked": true},
+    {"item": "Scripts use ssl.create_default_context with CA cert (proper TLS verification)", "checked": true},
+    {"item": "No secrets passed as command-line arguments", "checked": true},
+    {"item": "No hardcoded secrets in scripts", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Uses config.CreateImmutableConfigMap (shared library, not raw corev1.ConfigMap)", "checked": true},
+    {"item": "Content-hash naming ensures CronJob spec updates when script changes", "checked": true},
+    {"item": "Script files under operators/keystone/internal/controller/scripts/ (co-located with consumers)", "checked": true},
+    {"item": "CronJob spec diff shows ONLY: added scripts volume+mount, changed Command", "checked": true},
+    {"item": "All other CronJob fields unchanged (env, image, schedule, RBAC, security context)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code between fernet and credential (symmetric but each handles its own type)", "checked": true},
+    {"item": "No unnecessary abstractions — direct go:embed + CreateImmutableConfigMap", "checked": true},
+    {"item": "No speculative features added", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Script ConfigMap creation error returned immediately with context", "checked": true},
+    {"item": "Broken go:embed produces empty string — caught by TestXxxScript_EmbeddedContent tests", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Scripts have set -e for immediate failure on command errors", "checked": true},
+    {"item": "Python heredoc checks HTTP response status >= 300", "checked": true},
+    {"item": "Embedded content tests guard against silent go:embed breakage", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "PC1",
+      "severity": "BLOCKING",
+      "description": "Missing SPDX Apache-2.0 license headers on new shell scripts. Per mandatory pattern 'SPDX Apache-2.0 header on infrastructure files' (applies_when: 'Adding any new shell script to the repository'), all .sh files must have the SPDX header after the shebang. Both fernet_rotate.sh and credential_rotate.sh start with '#!/bin/sh\\nset -e' without the required 3-line SPDX block.",
+      "location": "operators/keystone/internal/controller/scripts/fernet_rotate.sh:1-2, operators/keystone/internal/controller/scripts/credential_rotate.sh:1-2",
+      "fix": "Add SPDX header lines 2-4 after the shebang in both files:\n#!/bin/sh\n# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company\n#\n# SPDX-License-Identifier: Apache-2.0\nset -e\n...",
+      "evidence": "fernet_rotate.sh line 1-2: '#!/bin/sh\\nset -e' — missing SPDX block. Compare with hack/ci-build-service-image.sh which has SPDX on lines 2-4 per pattern.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "D5",
+      "severity": "MAJOR",
+      "description": "Task 4.2 specifies creating docs/reference/backend/rotation-scripts.md as a standalone reference document. This file does not exist. The documentation content was instead integrated into docs/reference/keystone-reconciler.md, which covers the go:embed pattern, ConfigMap mounting, content-hash naming, and error handling. The content is comprehensive and arguably better-placed, but deviates from the explicit task specification.",
+      "location": "docs/reference/backend/rotation-scripts.md (missing)",
+      "fix": "Either: (a) create the standalone docs/reference/backend/rotation-scripts.md per task spec with a focused explanation of how to modify rotation scripts and run shellcheck locally, or (b) explicitly document in the progress JSON that task 4.2 was satisfied by updating keystone-reconciler.md instead.",
+      "evidence": "ls docs/reference/backend/ returns only: helm-values-schema.md, keystone-operator-packaging.md — no rotation-scripts.md. Task 4.2 description: 'Create docs/reference/backend/rotation-scripts.md documenting: (1) the go:embed pattern, (2) ConfigMap mounting, (3) how to modify rotation scripts, (4) how to run shellcheck locally.'",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "CI shellcheck step (.github/workflows/ci.yaml:173) duplicates the Makefile shellcheck target logic. Consider having CI run 'make shellcheck' to maintain a single source of truth for which script globs are linted, per 'eliminate duplicated source-of-truth between CI and build system' review pattern.",
+    "The keystone-reconciler.md documentation update also corrects pre-existing inaccuracies (hardcoded 'keystone-' prefixes → '{name}-' parameterization, diagram reordering to match actual code). These corrections are accurate and improve doc quality, but are tangential to CC-0073 scope — consider noting them in the commit message for traceability."
+  ],
+  "next_steps": [
+    "Add SPDX Apache-2.0 headers to both fernet_rotate.sh and credential_rotate.sh (AUTO_FIX)",
+    "Decide on docs/reference/backend/rotation-scripts.md: create standalone file or document deviation from task 4.2",
+    "Update embedded content tests if SPDX headers change the script prefix (shebang line test should still pass)"
+  ],
+  "detected_patterns": [
+    {
+      "name": "Embedded script via go:embed with versioned ConfigMap mount",
+      "component": "operators/keystone/internal/controller",
+      "category": "configuration",
+      "applies_when": "Adding a new shell script that needs to run inside a CronJob or Job pod managed by an operator reconciler, where the script content should be independently lintable, testable, and versioned",
+      "description": "Shell scripts are stored as standalone .sh files under a scripts/ subdirectory co-located with the reconciler that uses them. The script is embedded into the Go binary via '//go:embed scripts/<name>.sh' as a string variable. At reconciliation time, the script content is passed to config.CreateImmutableConfigMap() which creates an immutable ConfigMap with a content-hash suffix (e.g., '{name}-fernet-rotate-script-abc123'). The ConfigMap is mounted as a volume with DefaultMode 0555 (executable, read-only) at /scripts/ in the pod spec. The container Command references the mounted path (e.g., ['/scripts/fernet_rotate.sh']) instead of inline 'sh -c <script>'. A companion unit test (TestXxxScript_EmbeddedContent) verifies the embedded variable is non-empty, starts with the correct shebang, and contains key commands — guarding against broken go:embed directives.",
+      "examples": [
+        {
+          "location": "operators/keystone/internal/controller/reconcile_fernet.go:38-39",
+          "code": "//go:embed scripts/fernet_rotate.sh\nvar fernetRotateScript string"
+        },
+        {
+          "location": "operators/keystone/internal/controller/reconcile_fernet.go:77-83",
+          "code": "\t// 3. Create the immutable ConfigMap containing the rotation script (CC-0073).\n\tscriptConfigMapName, err := config.CreateImmutableConfigMap(ctx, r.Client, r.Scheme, keystone,\n\t\tfmt.Sprintf(\"%s-fernet-rotate-script\", keystone.Name), keystone.Namespace,\n\t\tmap[string]string{\"fernet_rotate.sh\": fernetRotateScript})\n\tif err != nil {\n\t\treturn ctrl.Result{}, fmt.Errorf(\"creating fernet rotate script ConfigMap: %w\", err)\n\t}"
+        },
+        {
+          "location": "operators/keystone/internal/controller/reconcile_fernet.go:309-318",
+          "code": "\t\t\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\t\tName: \"scripts\",\n\t\t\t\t\t\t\t\t\tVolumeSource: corev1.VolumeSource{\n\t\t\t\t\t\t\t\t\t\tConfigMap: &corev1.ConfigMapVolumeSource{\n\t\t\t\t\t\t\t\t\t\t\tLocalObjectReference: corev1.LocalObjectReference{Name: scriptConfigMapName},\n\t\t\t\t\t\t\t\t\t\t\tDefaultMode:          ptr.To(int32(0555)),\n\t\t\t\t\t\t\t\t\t\t},\n\t\t\t\t\t\t\t\t\t},\n\t\t\t\t\t\t\t\t},"
+        },
+        {
+          "location": "operators/keystone/internal/controller/reconcile_credential.go:38-39",
+          "code": "//go:embed scripts/credential_rotate.sh\nvar credentialRotateScript string"
+        }
+      ]
+    }
+  ]
+}

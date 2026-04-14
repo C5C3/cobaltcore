@@ -838,7 +838,7 @@ func TestIntegration_CronJobDetailedSpec(t *testing.T) {
 	mainContainer := podSpec.Containers[0]
 	g.Expect(mainContainer.Name).To(Equal("fernet-rotate"))
 	g.Expect(mainContainer.Image).To(Equal(expectedImage), "main container image should match spec")
-	g.Expect(mainContainer.Command).To(Equal([]string{"sh", "-c", fernetRotateScript}))
+	g.Expect(mainContainer.Command).To(Equal([]string{"/scripts/fernet_rotate.sh"}))
 
 	// Verify main container env vars.
 	envMap := map[string]corev1.EnvVar{}
@@ -858,7 +858,7 @@ func TestIntegration_CronJobDetailedSpec(t *testing.T) {
 		"OS_fernet_tokens__max_active_keys should match spec.fernet.maxActiveKeys")
 
 	// Verify main container volume mounts.
-	g.Expect(mainContainer.VolumeMounts).To(HaveLen(3))
+	g.Expect(mainContainer.VolumeMounts).To(HaveLen(4))
 	g.Expect(mainContainer.VolumeMounts[0].Name).To(Equal("fernet-keys"))
 	g.Expect(mainContainer.VolumeMounts[0].MountPath).To(Equal("/etc/keystone/fernet-keys"))
 	g.Expect(mainContainer.VolumeMounts[1].Name).To(Equal("credential-keys"))
@@ -867,13 +867,16 @@ func TestIntegration_CronJobDetailedSpec(t *testing.T) {
 	g.Expect(mainContainer.VolumeMounts[2].Name).To(Equal("config"))
 	g.Expect(mainContainer.VolumeMounts[2].MountPath).To(Equal("/etc/keystone/keystone.conf.d/"))
 	g.Expect(mainContainer.VolumeMounts[2].ReadOnly).To(BeTrue())
+	g.Expect(mainContainer.VolumeMounts[3].Name).To(Equal("scripts"))
+	g.Expect(mainContainer.VolumeMounts[3].MountPath).To(Equal("/scripts"))
+	g.Expect(mainContainer.VolumeMounts[3].ReadOnly).To(BeTrue())
 
-	// Verify volumes: fernet-keys-src (Secret), fernet-keys (emptyDir), credential-keys (Secret), and config (ConfigMap).
+	// Verify volumes: fernet-keys-src (Secret), fernet-keys (emptyDir), credential-keys (Secret), config (ConfigMap), and scripts (ConfigMap).
 	volMap := map[string]corev1.Volume{}
 	for _, v := range podSpec.Volumes {
 		volMap[v.Name] = v
 	}
-	g.Expect(volMap).To(HaveLen(4))
+	g.Expect(volMap).To(HaveLen(5))
 
 	g.Expect(volMap).To(HaveKey("fernet-keys-src"))
 	g.Expect(volMap["fernet-keys-src"].Secret).NotTo(BeNil(), "fernet-keys-src volume should be a Secret")
@@ -890,6 +893,13 @@ func TestIntegration_CronJobDetailedSpec(t *testing.T) {
 	g.Expect(volMap["config"].ConfigMap).NotTo(BeNil(), "config volume should be a ConfigMap")
 	g.Expect(volMap["config"].ConfigMap.Name).To(HavePrefix(fmt.Sprintf("%s-config-", ks.Name)),
 		"config volume should reference a ConfigMap with the expected name prefix")
+
+	g.Expect(volMap).To(HaveKey("scripts"))
+	g.Expect(volMap["scripts"].ConfigMap).NotTo(BeNil(), "scripts volume should be a ConfigMap")
+	g.Expect(volMap["scripts"].ConfigMap.Name).To(HavePrefix(fmt.Sprintf("%s-fernet-rotate-script-", ks.Name)),
+		"scripts volume should reference a ConfigMap with the expected name prefix")
+	g.Expect(volMap["scripts"].ConfigMap.DefaultMode).NotTo(BeNil())
+	g.Expect(*volMap["scripts"].ConfigMap.DefaultMode).To(Equal(int32(0o555)))
 }
 
 // --- Task CC-0015/2.2: Bootstrap Job detailed spec test (REQ-007) ---

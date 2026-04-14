@@ -170,8 +170,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - name: Run shellcheck on hack/*.sh
-        run: shellcheck --severity=warning hack/*.sh
+      - name: Run shellcheck on hack/*.sh and operator rotation scripts
+        run: make shellcheck
 
   # CC-0018: Matrix over [common, keystone, c5c3] to deduplicate common coverage
   # into a single leg (review comment #7/#8).

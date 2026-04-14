@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/base64"
 	"strconv"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -163,6 +164,21 @@ func TestReconcileCredentialKeys_SecretAlreadyExists(t *testing.T) {
 		Name:      "test-keystone-credential-keys",
 	}, &secret)).To(Succeed())
 	g.Expect(string(secret.Data["0"])).To(Equal("existing-key-0"))
+
+	// Verify the script ConfigMap was created (CC-0073).
+	var cmList corev1.ConfigMapList
+	g.Expect(c.List(context.Background(), &cmList, client.InNamespace("default"))).To(Succeed())
+	var scriptCM *corev1.ConfigMap
+	for i := range cmList.Items {
+		if strings.HasPrefix(cmList.Items[i].Name, "test-keystone-credential-rotate-script-") {
+			scriptCM = &cmList.Items[i]
+			break
+		}
+	}
+	g.Expect(scriptCM).NotTo(BeNil(), "script ConfigMap with prefix test-keystone-credential-rotate-script- should exist")
+	g.Expect(scriptCM.Data).To(HaveKey("credential_rotate.sh"))
+	g.Expect(scriptCM.Immutable).NotTo(BeNil())
+	g.Expect(*scriptCM.Immutable).To(BeTrue())
 
 	// Verify CronJob and PushSecret were still created.
 	var cronJob batchv1.CronJob
@@ -457,7 +473,7 @@ func TestCredentialRotationCronJob_SecurityContext(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := credentialTestKeystone()
 
-	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123")
+	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123")
 
 	podSpec := cronJob.Spec.JobTemplate.Spec.Template.Spec
 
@@ -519,15 +535,11 @@ func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 	g.Expect(initContainer.Image).To(Equal("ghcr.io/c5c3/keystone:2025.2"))
 	g.Expect(initContainer.VolumeMounts).To(HaveLen(2))
 
-	// Verify main container uses shell script for rotation + migration + K8s API push (CC-0036).
+	// Verify main container uses script from versioned ConfigMap (CC-0073).
 	container := podSpec.Containers[0]
 	g.Expect(container.Name).To(Equal("credential-rotate"))
 	g.Expect(container.Image).To(Equal("ghcr.io/c5c3/keystone:2025.2"))
-	g.Expect(container.Command).To(Equal([]string{"sh", "-c", credentialRotateScript}))
-
-	// Verify the rotation script includes both credential_rotate and credential_migrate (CC-0036).
-	g.Expect(credentialRotateScript).To(ContainSubstring("credential_rotate"))
-	g.Expect(credentialRotateScript).To(ContainSubstring("credential_migrate"))
+	g.Expect(container.Command).To(Equal([]string{"/scripts/credential_rotate.sh"}))
 
 	// Verify env vars for Secret update via K8s API and oslo.config override (CC-0036).
 	g.Expect(container.Env).To(HaveLen(3))
@@ -537,20 +549,32 @@ func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 	g.Expect(container.Env[2].Name).To(Equal("OS_credential__max_active_keys"))
 	g.Expect(container.Env[2].Value).To(Equal("3"))
 
-	// Verify volume mounts on main container: credential-keys + fernet-keys (read-only) + config.
-	g.Expect(container.VolumeMounts).To(HaveLen(3))
-	g.Expect(container.VolumeMounts[0].Name).To(Equal("credential-keys"))
-	g.Expect(container.VolumeMounts[0].MountPath).To(Equal("/etc/keystone/credential-keys"))
-	g.Expect(container.VolumeMounts[1].Name).To(Equal("fernet-keys"))
-	g.Expect(container.VolumeMounts[1].MountPath).To(Equal("/etc/keystone/fernet-keys"))
-	g.Expect(container.VolumeMounts[1].ReadOnly).To(BeTrue())
-	g.Expect(container.VolumeMounts[2].Name).To(Equal("config"))
-	g.Expect(container.VolumeMounts[2].MountPath).To(Equal("/etc/keystone/keystone.conf.d/"))
-	g.Expect(container.VolumeMounts[2].ReadOnly).To(BeTrue())
+	// Verify volume mounts on main container: credential-keys + fernet-keys (read-only) + config + scripts (CC-0073).
+	g.Expect(container.VolumeMounts).To(HaveLen(4))
+	var credMount, fernetMount, cfgMount, scriptsMount corev1.VolumeMount
+	for _, vm := range container.VolumeMounts {
+		switch vm.Name {
+		case "credential-keys":
+			credMount = vm
+		case "fernet-keys":
+			fernetMount = vm
+		case "config":
+			cfgMount = vm
+		case "scripts":
+			scriptsMount = vm
+		}
+	}
+	g.Expect(credMount.MountPath).To(Equal("/etc/keystone/credential-keys"))
+	g.Expect(fernetMount.MountPath).To(Equal("/etc/keystone/fernet-keys"))
+	g.Expect(fernetMount.ReadOnly).To(BeTrue())
+	g.Expect(cfgMount.MountPath).To(Equal("/etc/keystone/keystone.conf.d/"))
+	g.Expect(cfgMount.ReadOnly).To(BeTrue())
+	g.Expect(scriptsMount.MountPath).To(Equal("/scripts"))
+	g.Expect(scriptsMount.ReadOnly).To(BeTrue())
 
-	// Verify volumes: credential-keys-src (Secret), credential-keys (emptyDir), fernet-keys (Secret), config (ConfigMap).
-	g.Expect(podSpec.Volumes).To(HaveLen(4))
-	var srcVol, workVol, fernetVol, cfgVol corev1.Volume
+	// Verify volumes: credential-keys-src (Secret), credential-keys (emptyDir), fernet-keys (Secret), config (ConfigMap), scripts (ConfigMap) (CC-0073).
+	g.Expect(podSpec.Volumes).To(HaveLen(5))
+	var srcVol, workVol, fernetVol, cfgVol, scriptsVol corev1.Volume
 	for _, v := range podSpec.Volumes {
 		switch v.Name {
 		case "credential-keys-src":
@@ -561,6 +585,8 @@ func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 			fernetVol = v
 		case "config":
 			cfgVol = v
+		case "scripts":
+			scriptsVol = v
 		}
 	}
 	g.Expect(srcVol.Secret).NotTo(BeNil())
@@ -570,4 +596,39 @@ func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 	g.Expect(fernetVol.Secret.SecretName).To(Equal("test-keystone-fernet-keys"))
 	g.Expect(cfgVol.ConfigMap).NotTo(BeNil())
 	g.Expect(cfgVol.ConfigMap.Name).To(Equal("test-keystone-config-abc123"))
+	g.Expect(scriptsVol.ConfigMap).NotTo(BeNil())
+	g.Expect(scriptsVol.ConfigMap.Name).To(HavePrefix("test-keystone-credential-rotate-script-"))
+	g.Expect(scriptsVol.ConfigMap.DefaultMode).NotTo(BeNil())
+	g.Expect(*scriptsVol.ConfigMap.DefaultMode).To(Equal(int32(0o555)))
+}
+
+// TestCredentialRotateScript_EmbeddedContent verifies that the go:embed directive
+// correctly loads scripts/credential_rotate.sh into the credentialRotateScript variable.
+// A broken or missing embed silently produces an empty string, which would cause
+// the rotation CronJob pod to fail at runtime (CC-0073, REQ-007).
+func TestCredentialRotateScript_EmbeddedContent(t *testing.T) {
+	g := NewWithT(t)
+
+	// Guard against broken go:embed producing an empty variable.
+	g.Expect(credentialRotateScript).NotTo(BeEmpty(), "credentialRotateScript must not be empty — check go:embed directive")
+
+	// Verify POSIX shebang for standalone execution (REQ-001).
+	g.Expect(credentialRotateScript).To(HavePrefix("#!/bin/sh\n"))
+
+	// Verify SPDX Apache-2.0 license header (mandatory pattern).
+	g.Expect(credentialRotateScript).To(ContainSubstring("SPDX-License-Identifier: Apache-2.0"))
+
+	// Verify shell error propagation is enabled.
+	g.Expect(credentialRotateScript).To(ContainSubstring("set -e"))
+
+	// Verify both credential rotation commands are present (CC-0036).
+	g.Expect(credentialRotateScript).To(ContainSubstring("credential_rotate"))
+	g.Expect(credentialRotateScript).To(ContainSubstring("credential_migrate"))
+
+	// Verify the Python heredoc for K8s API Secret patching is present.
+	g.Expect(credentialRotateScript).To(ContainSubstring("python3 << 'PYTHON'"))
+	g.Expect(credentialRotateScript).To(ContainSubstring("strategic-merge-patch+json"))
+
+	// Verify error handling: script must check HTTP response status.
+	g.Expect(credentialRotateScript).To(ContainSubstring("Secret update failed"))
 }
