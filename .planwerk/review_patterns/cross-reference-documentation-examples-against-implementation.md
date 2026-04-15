@@ -3,7 +3,7 @@
 **Review-Area**: documentation
 **Detection-Hint**: When a PR modifies a Dockerfile, script, or configuration file, search the docs/ directory for code examples that reference or illustrate the same file. Compare the documented pattern against the actual changed code.
 **Severity**: WARNING
-**Occurrences**: 4
+**Occurrences**: 6
 
 ## What to check
 
@@ -34,3 +34,13 @@ Stale documentation examples mislead developers who follow the docs instead of r
 - **Feedback**: The comment states 'reconcileDatabase (below) depends on their results' which claims a data dependency that does not exist. The PR's own dependency table lists reconcileDatabase's dependencies as [contradicting the comment].
 - **What was missed**: Does the comment's claim (e.g. 'X depends on Y's results') match the dependency graph or data flow visible in the code? Do other artifacts in the same PR contradict the comment?
 - **Fix**: Correct the comment to accurately reflect the actual dependencies, or remove the dependency claim entirely.
+
+### CC-0066 — berendt
+- **Feedback**: The documentation step table lists 7 steps, but chainsaw-test.yaml has 8 Chainsaw steps. The polling script step (code Step 4 — 'Wait for operator pod kill and recovery') is omitted from the documentation table, shifting all subsequent step numbers.
+- **What was missed**: The number of rows in a documentation step table must exactly match the number of steps in the corresponding test file. Verify that every test step (including polling/wait scripts) has a corresponding documentation row and that subsequent step numbers are consistent across all sections (design notes, diagnostics tables, flow diagrams).
+- **Fix**: Inserted the missing polling script as Step 4 in the docs table, renumbered all subsequent steps to 8 total, and updated cascading references in design notes (Step 5→6, Step 6→7) and diagnostics table (Steps 2, 5, 7 → Steps 2, 4, 6, 8).
+
+### CC-0066 — berendt
+- **Feedback**: W-002 (wrong flag name) was fixed by replacing --log-label with --dep-label and adding --dep-ns=default in the Catch blocks sentence.
+- **What was missed**: Every CLI flag mentioned in documentation or inline comments must match the actual flag name accepted by the tool. Check for typos, outdated names from earlier revisions, and missing required companion flags.
+- **Fix**: Replaced `--log-label` with `--dep-label` and added the missing `--dep-ns=default` flag in the catch block documentation.

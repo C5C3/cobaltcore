@@ -2,8 +2,8 @@
   "feature_id": "CC-0066",
   "title": "Add E2E tests for concurrent CR conflicts and failover",
   "slug": "add-e2e-tests-for-concurrent-cr-conflicts-and",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #184: Add E2E tests for concurrent CR conflicts and operator pod failover\n\n**Category**: testing | **Scope**: Medium\n\n**Description**: Create E2E tests for two untested scenarios: (1) two Keystone CRs in the same namespace sharing database or secret names to verify the secretToKeystoneMapper and reconciler behavior under resource contention, and (2) killing the operator pod during active reconciliation to validate leader election failover and incomplete status update recovery.\n\n**Motivation**: The secretToKeystoneMapper returns reconcile requests for all matching CRs but reconcilers assume exclusive ownership of sub-resources by name. This conflict is untested. Similarly, chaos tests kill dependency pods but never the operator itself, leaving leader election failover and partial-reconcile recovery unvalidated.\n\n**Affected Areas**:\n- `operators/keystone/internal/controller/keystone_controller.go`\n- `operators/keystone/test/e2e/`\n\n**Acceptance Criteria**:\n- [ ] E2E test deploys two Keystone CRs in the same namespace and verifies no resource conflicts or data corruption\n- [ ] E2E test kills operator pod during reconciliation and verifies the new leader resumes correctly\n- [ ] Status conditions are consistent after operator pod failover\n- [ ] Test verifies no orphaned or duplicate sub-resources after concurrent CR operations\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/184",
   "stories": [
@@ -297,6 +297,7 @@
       "description": "Create tests/e2e/keystone/concurrent-cr-conflicts/ with:\n\n**Fixtures:**\n- 00-keystone-cr-a.yaml: Keystone CR keystone-concurrent-a, replicas 1, clusterRef openstack-db, database keystone_concurrent_a, secretRef keystone-db, adminPasswordSecretRef keystone-admin\n- 01-keystone-cr-b.yaml: Keystone CR keystone-concurrent-b, replicas 1, clusterRef openstack-db, database keystone_concurrent_b, secretRef keystone-db, adminPasswordSecretRef keystone-admin\n\n**chainsaw-test.yaml steps:**\n1. Apply both CR fixtures (00-keystone-cr-a.yaml, 01-keystone-cr-b.yaml)\n2. Assert both CRs Ready=True with AllReady (all sub-conditions True on each) — catch: dump both CR statuses + pod logs + events\n3. Assert unique Deployments: keystone-concurrent-a-api (availableReplicas > 0), keystone-concurrent-b-api (availableReplicas > 0); unique Services: port 5000 each\n4. Assert unique Fernet CronJobs: keystone-concurrent-a-fernet-rotate, keystone-concurrent-b-fernet-rotate; unique ConfigMaps: script grep for keystone-concurrent-a-config- and keystone-concurrent-b-config-\n5. Delete keystone-concurrent-a; error-assert: Deployment keystone-concurrent-a-api, Service keystone-concurrent-a-api, CronJob keystone-concurrent-a-fernet-rotate all NotFound; script: count Deployments with label app.kubernetes.io/name=keystone, assert count is 1\n6. Assert keystone-concurrent-b still Ready=True with AllReady; assert Deployment keystone-concurrent-b-api still has availableReplicas > 0 — catch: dump CR-B status + pod logs + events\n\n**Conventions:** SPDX Apache-2.0 header on all files. Feature ID CC-0066 in comments. Follow basic-deployment test pattern for assertions. timeouts.assert: 5m at spec level. namespace: openstack.",
       "level": 1,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -311,6 +312,7 @@
       "description": "Create tests/e2e-chaos/operator-pod-kill/ with:\n\n**Fixtures:**\n- 00-keystone-cr.yaml: Keystone CR keystone-chaos-op, replicas 1, clusterRef openstack-db, database keystone_chaos_op, secretRef keystone-db, adminPasswordSecretRef keystone-admin. Follow existing chaos CR pattern (CC-0047).\n- 01-podchaos.yaml: PodChaos kill-operator, action pod-kill, mode all, selector namespaces [default], labelSelectors app.kubernetes.io/name: keystone-operator, gracePeriod 0. mode: all ensures the active leader is killed, forcing leader election.\n- 02-patch-replicas.yaml: Keystone patch for keystone-chaos-op, spec.replicas: 2. Used to verify the new leader can reconcile spec changes.\n\n**chainsaw-test.yaml steps:**\n1. Apply 00-keystone-cr.yaml\n2. Assert baseline Ready=True with AllReady — catch: diagnostics.sh baseline keystone-chaos-op\n3. Apply 01-podchaos.yaml (kills all operator pods)\n4. Delete PodChaos kill-operator (lift fault, allow Deployment to restart pods cleanly)\n5. Assert Keystone CR Ready=True with AllReady (status consistent after failover) — catch: diagnostics.sh chaos keystone-chaos-op --log-label=app.kubernetes.io/name=keystone-operator. Also assert sub-conditions: SecretsReady, FernetKeysReady, DatabaseReady, DeploymentReady, BootstrapReady all True.\n6. Patch 02-patch-replicas.yaml (replicas 1 -> 2)\n7. Assert Deployment keystone-chaos-op-api has replicas: 2 and availableReplicas >= 2; assert Ready=True maintained — catch: diagnostics.sh chaos keystone-chaos-op --log-label=app.kubernetes.io/name=keystone-operator\n\n**Conventions:** SPDX Apache-2.0 header on all files. Feature ID CC-0066 in comments. Follow mariadb-pod-kill pattern for test structure. timeouts.assert: 5m at spec level. namespace: openstack. PodChaos targets default namespace (operator deployment namespace).",
       "level": 1,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-006",
@@ -324,6 +326,7 @@
       "description": "Add the concurrent-cr-conflicts test suite to the existing Keystone E2E test reference documentation.\n\n**Additions:**\n1. Add row to Test Suite Inventory table: Suite concurrent-cr-conflicts, CR Names keystone-concurrent-a + keystone-concurrent-b, Behavior validated: concurrent CRs with shared secretRef, sub-resource isolation, deletion cleanup.\n2. Add detailed section under Test Suite Details with: purpose, steps table (6 steps), fixtures list, design notes about secretToKeystoneMapper behavior.\n3. Update the ASCII overview diagram to include concurrent-cr-conflicts box.\n4. Add to File Layout section: tests/e2e/keystone/concurrent-cr-conflicts/ with 3 files.\n\n**Follow existing doc patterns** from basic-deployment and deletion-cleanup sections. Reference CC-0066 feature ID.",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -334,6 +337,7 @@
       "description": "Add the operator-pod-kill test suite to the existing Chaos E2E test reference documentation.\n\n**Additions:**\n1. Add row to Test Suite Inventory table: Suite operator-pod-kill, Scenario ID SC-CHAOS-004, CR Name keystone-chaos-op, Test Pattern operator-failover, Condition Assertions: Ready=True maintained → replica patch applied.\n2. Add detailed section under Test Suite Details with: purpose, steps table (7 steps), fixtures list, PodChaos targeting details (mode: all, default namespace), design notes about leader election.\n3. Add new Test Pattern section: Operator Failover (SC-CHAOS-004) describing the baseline → kill → recover → verify-reconciliation pattern.\n4. Update Keystone CR Fixtures table: add keystone-chaos-op / keystone_chaos_op row.\n5. Update Catch Block Diagnostics matrix table: add operator-pod-kill column.\n6. Update File Layout section: add operator-pod-kill/ directory with 4 files.\n7. Update Overview section count from '3 Phase 1 test suites' to '4 test suites' and add operator-pod-kill box to ASCII diagram.\n\n**Follow existing doc patterns** from mariadb-pod-kill section. Reference CC-0066 feature ID.",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -487,8 +491,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-12T17:15:56.323847"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-14T17:56:42.401537"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-15T06:13:42.255261"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/215",
+  "pr_number": 215,
   "execution_history": [
     {
       "run_id": "6d380404-180a-4402-b3bb-9d0892652a69",
@@ -500,6 +514,58 @@
           "name": "prepare",
           "duration": 945.7557430267334,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "8183b3b4-6d91-4d5a-bb39-7e4f17b732ab",
+      "timestamp": "2026-04-14T18:29:04.931748",
+      "total_duration": 1835.7916989326477,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (2 tasks)",
+          "duration": 575.8925099372864,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (2 tasks)",
+          "duration": 355.6996145248413,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0066] Code Review",
+          "duration": 646.1525793075562,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0066] Improvements",
+          "duration": 227.6103115081787,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0066] Simplify",
+          "duration": 30.436683654785156,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "855db3ac-3769-4cad-8095-e372ed2bce2d",
+      "timestamp": "2026-04-14T18:52:59.831092",
+      "total_duration": 677.9592177867889,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 677.9592177867889,
+          "type": "review_address",
           "status": "done"
         }
       ]

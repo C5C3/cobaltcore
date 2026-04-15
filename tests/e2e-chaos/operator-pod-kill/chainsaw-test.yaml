@@ -1,0 +1,194 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for operator pod kill with leader election
+# failover (CC-0066). Verifies that:
+# 1. Killing ALL operator pods (mode: all) triggers Deployment controller
+#    restart and leader re-election.
+# 2. The Keystone CR maintains Ready=True after failover (status conditions
+#    are consistent because no infrastructure changed).
+# 3. The new leader can reconcile spec changes (replica patch 1->2), proving
+#    full operational capability beyond just running.
+#
+# Differs from operator-pod-crash (SC-CHAOS-004, CC-0048) which uses mode: one
+# and does not verify post-failover reconciliation.
+#
+# REQ-005, REQ-006, REQ-007, REQ-008 (CC-0066)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-operator-pod-kill
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR ──────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert baseline Ready=True before chaos injection ──────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-opk
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-chaos-opk
+  # ── Step 3: Inject chaos and verify all operator pods were replaced ───
+  # Identity-based verification: capture pod UIDs, apply PodChaos, then wait
+  # for those specific UIDs to disappear from the pod list. Polling
+  # readyReplicas for a transient drop is racy because with mode: all and
+  # gracePeriod: 0 the kill+reschedule+ready cycle can complete faster than
+  # the first poll observes (prior attempt failed this way — the loop saw
+  # readyReplicas=2 throughout because replacement pods became ready before
+  # polling began). Tracking UIDs proves replacement happened regardless of
+  # timing. Apply + poll live in one script so the pre-chaos snapshot and
+  # the wait share state.
+  # NOTE: Operator runs in `default` namespace because hack/ci-deploy-operator.sh
+  # invokes `helm install` without `--namespace`. The Deployment name is
+  # `keystone-operator` (release name contains the chart name, so fullname
+  # == release name).
+  - try:
+    - script:
+        # Timeout budget: Phase 1 (60×2s=120s) + Phase 2 (60×2s=120s) = 240s
+        # worst case. 270s gives 30s margin, matching CC-0076 review #1.
+        timeout: 270s
+        content: |
+          # NOTE: set -euo pipefail is intentionally omitted. The polling
+          # loops use ${VAR:-0} defensive defaults that would fail under
+          # set -e when kubectl returns empty output, and loop exit
+          # conditions are checked explicitly rather than via exit codes.
+
+          # Read desired replica count from the Deployment so the test stays
+          # valid if the operator replica count changes (CC-0076 review #1).
+          DESIRED=$(kubectl get deployment keystone-operator -n default -o jsonpath='{.spec.replicas}')
+          if [ -z "$DESIRED" ] || [ "$DESIRED" -lt 1 ]; then
+            echo "ERROR: could not determine desired replica count from keystone-operator Deployment"
+            exit 1
+          fi
+          echo "Desired replicas: ${DESIRED}"
+
+          # Snapshot pre-chaos pod UIDs. These are the pods PodChaos must
+          # replace; checking their absence after injection is race-free.
+          OLD_UIDS=$(kubectl get pods -n default -l app.kubernetes.io/name=keystone-operator -o jsonpath='{.items[*].metadata.uid}')
+          if [ -z "$OLD_UIDS" ]; then
+            echo "ERROR: no operator pods found before chaos injection"
+            exit 1
+          fi
+          echo "Pre-chaos operator pod UIDs: ${OLD_UIDS}"
+
+          # Inject chaos (kill all operator pods).
+          kubectl apply -f 01-podchaos.yaml
+
+          # Phase 1: wait until none of the pre-chaos UIDs exist anymore,
+          # proving every pod was replaced. 60 iterations × 2s = 120s max.
+          for i in $(seq 1 60); do
+            CURRENT_UIDS=$(kubectl get pods -n default -l app.kubernetes.io/name=keystone-operator -o jsonpath='{.items[*].metadata.uid}')
+            SURVIVED=0
+            for uid in $OLD_UIDS; do
+              case " $CURRENT_UIDS " in
+                *" $uid "*) SURVIVED=1; break ;;
+              esac
+            done
+            if [ "$SURVIVED" -eq 0 ]; then
+              echo "All pre-chaos operator pods replaced"
+              break
+            fi
+            sleep 2
+          done
+          if [ "$SURVIVED" -ne 0 ]; then
+            echo "ERROR: pre-chaos operator pods survived chaos injection"
+            echo "  pre-chaos UIDs: ${OLD_UIDS}"
+            echo "  current UIDs:   ${CURRENT_UIDS}"
+            exit 1
+          fi
+
+          # Phase 2: wait until readyReplicas returns to DESIRED (operator
+          # recovered and leader re-election completed). 60×2s = 120s max.
+          for i in $(seq 1 60); do
+            READY=$(kubectl get deployment keystone-operator -n default -o jsonpath='{.status.readyReplicas}')
+            if [ "${READY:-0}" -eq "${DESIRED}" ]; then
+              echo "Operator recovered: readyReplicas=${DESIRED}"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ERROR: operator did not recover — readyReplicas=${READY:-0}, desired=${DESIRED}"
+          exit 1
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-opk --dep-label=app.kubernetes.io/name=keystone-operator --dep-ns=default
+  # ── Step 4: Delete PodChaos to lift fault ──────────────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          name: kill-operator-all
+  # ── Step 5: Assert Ready=True after operator failover ──────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-opk
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+            (conditions[?type == 'FernetKeysReady']):
+            - status: "True"
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+            (conditions[?type == 'BootstrapReady']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-opk --dep-label=app.kubernetes.io/name=keystone-operator --dep-ns=default
+  # ── Step 6: Patch replicas 1->2 to verify new leader reconciles ────────
+  - try:
+    - patch:
+        file: 02-patch-replicas.yaml
+  # ── Step 7: Assert replica patch applied and Ready=True maintained ─────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-chaos-opk-api
+            namespace: openstack
+          spec:
+            replicas: 2
+          status:
+            availableReplicas: 2
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-opk
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-opk --dep-label=app.kubernetes.io/name=keystone-operator --dep-ns=default

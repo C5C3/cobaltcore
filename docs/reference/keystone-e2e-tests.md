@@ -52,10 +52,10 @@ namespace, enabling parallel execution.
 │  │ resources          │  │ scale             │  │ trust-flush           │   │
 │  │                    │  │                   │  │                       │   │
 │  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
-│  ┌───────────────────┐  ┌───────────────────┐                              │
-│  │ upgrade-flow       │  │ uwsgi             │                              │
-│  │                    │  │                   │                              │
-│  └───────────────────┘  └───────────────────┘                              │
+│  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
+│  │ upgrade-flow       │  │ uwsgi             │  │ concurrent-cr-        │   │
+│  │                    │  │                   │  │  conflicts            │   │
+│  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
 │                                                                             │
 │  All tests run in: namespace openstack                                      │
 │  Infrastructure: MariaDB, Memcached, ESO, OpenBao (pre-deployed)           │
@@ -123,6 +123,7 @@ Deployment rollout, bootstrap Job).
 | [brownfield-database](#brownfield-database) | `keystone-brownfield` | Explicit database host (no MariaDB CRs created) | REQ-010, REQ-012, REQ-013 |
 | [image-upgrade](#image-upgrade) | `keystone-upgrade` | Rolling image update without losing Ready status | REQ-011, REQ-012, REQ-013 |
 | [release-upgrade](#release-upgrade) | `keystone-release-upgrade` | Cross-release upgrade from 2025.2 to 2026.1 via expand-migrate-contract, API accessibility before/after | REQ-001–REQ-009 (CC-0060) |
+| [concurrent-cr-conflicts](#concurrent-cr-conflicts) | `keystone-concurrent-a`, `keystone-concurrent-b` | Concurrent CR reconciliation with shared secrets, sub-resource isolation, deletion without cross-CR impact | REQ-001, REQ-002, REQ-003, REQ-004, REQ-008 (CC-0066) |
 
 ---
 
@@ -385,6 +386,44 @@ debugging failures.
 
 ---
 
+### concurrent-cr-conflicts
+
+**File:** `tests/e2e/keystone/concurrent-cr-conflicts/chainsaw-test.yaml`
+
+**Purpose:** Validates that two Keystone CRs sharing the same `secretRef` and
+`adminPasswordSecretRef` can coexist in the same namespace without interference.
+Both CRs reach Ready=True with unique owned resources (Deployments, Services,
+CronJobs, ConfigMaps), and deleting one CR does not affect the other's health
+or resources.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply both CR fixtures | `apply` | Applies `00-keystone-cr-a.yaml` and `01-keystone-cr-b.yaml` — Keystone CRs `keystone-concurrent-a` and `keystone-concurrent-b` sharing `keystone-db` secretRef and `keystone-admin` adminPasswordSecretRef |
+| 2 | Assert both CRs Ready=True | `assert` (5m) | Both CRs have Ready=True with reason AllReady |
+| 3 | Assert unique Deployments and Services | `assert` (5m) | Deployment `keystone-concurrent-a-api` and `keystone-concurrent-b-api` both have `availableReplicas > 0`; Services `keystone-concurrent-a-api` and `keystone-concurrent-b-api` both have port 5000 |
+| 4 | Assert unique Fernet CronJobs and ConfigMaps | `assert` + `script` | CronJobs `keystone-concurrent-a-fernet-rotate` and `keystone-concurrent-b-fernet-rotate` exist; script verifies ConfigMaps `keystone-concurrent-a-config-*` and `keystone-concurrent-b-config-*` exist |
+| 5 | Delete CR-A and assert cleanup | `delete` + `error` + `script` | Deletes Keystone CR `keystone-concurrent-a`; error assertions verify Deployment, Service, and CronJob for CR-A are deleted; script verifies exactly 1 Deployment with `app.kubernetes.io/name=keystone` remains |
+| 6 | Assert CR-B still Ready | `assert` (5m) | CR-B has Ready=True with reason AllReady and Deployment `keystone-concurrent-b-api` has `availableReplicas > 0` |
+
+**Fixtures:** `00-keystone-cr-a.yaml`, `01-keystone-cr-b.yaml`
+
+**Catch blocks:** Steps 2–6 include catch blocks dumping CR status, Deployment status,
+Service status, CronJob status, ConfigMap list, pod logs, and namespace events.
+
+**Design notes:**
+
+- Both CRs share `secretRef: keystone-db` and `adminPasswordSecretRef: keystone-admin`
+  to exercise the `secretToKeystoneMapper` under resource contention — the mapper must
+  enqueue both CRs when the shared Secret changes without causing cross-CR interference.
+- Each CR uses a unique database name (`keystone_concurrent_a`, `keystone_concurrent_b`)
+  to avoid MariaDB conflicts while sharing the same `clusterRef`.
+- Step 5 verifies isolation by checking that exactly 1 Deployment remains after CR-A
+  deletion, confirming owner references correctly scope garbage collection.
+
+---
+
 ## Assertion Patterns
 
 The test suites use three Chainsaw assertion patterns:
@@ -499,6 +538,10 @@ tests/e2e/keystone/
 │   ├── chainsaw-test.yaml              External database mode (CC-0016)
 │   ├── 00-brownfield-db-setup.yaml     External database setup
 │   └── 00-keystone-cr.yaml             Keystone CR with database.host
+├── concurrent-cr-conflicts/
+│   ├── chainsaw-test.yaml              Concurrent CR conflict handling (CC-0066)
+│   ├── 00-keystone-cr-a.yaml           Keystone CR fixture A (keystone-concurrent-a)
+│   └── 01-keystone-cr-b.yaml           Keystone CR fixture B (keystone-concurrent-b)
 ├── credential-rotation/
 │   ├── chainsaw-test.yaml              Credential key rotation (CC-0036)
 │   └── 00-keystone-cr.yaml             Keystone CR with rotation schedule

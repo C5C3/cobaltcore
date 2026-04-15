@@ -1,0 +1,91 @@
+{
+  "feature_id": "CC-0066",
+  "title": "Add E2E tests for concurrent CR conflicts and failover",
+  "date": "2026-04-14",
+  "summary": "Implementation adds two E2E test suites (concurrent-cr-conflicts for tests/e2e/, operator-pod-kill for tests/e2e-chaos/) with CR fixtures, PodChaos manifests, a replica patch file, and reference documentation updates. Both test suites follow established Chainsaw conventions with correct SPDX headers, unique CR/database names, numbered step structure, JMESPath condition assertions, and catch blocks on all assert steps. Two issues require changes: a missing `set -euo pipefail` in a multi-command verification script (functional bug where first grep failure is masked), and the chaos test lacks verification that the operator pod kill actually took effect before asserting recovery.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "E2E test deploys two Keystone CRs and both reach Ready=True", "checked": true},
+    {"item": "Sub-resource isolation verified (unique Deployment, Service, CronJob, ConfigMap per CR)", "checked": true},
+    {"item": "CR deletion isolation verified (deleting CR-A leaves CR-B Ready=True)", "checked": true},
+    {"item": "Operator pod kill recovery verified (Ready=True after failover)", "checked": true},
+    {"item": "Post-failover reconciliation verified (replica patch applied by new leader)", "checked": true},
+    {"item": "Every assert step has catch block with diagnostics", "checked": true},
+    {"item": "Verification that operator pod kill actually took effect before recovery assertion", "checked": false},
+    {"item": "Multi-command script uses set -euo pipefail to prevent masked failures", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing Chainsaw E2E test suite structure", "checked": true},
+    {"item": "Follows existing Chaos E2E test suite structure", "checked": true},
+    {"item": "SPDX Apache-2.0 headers on all files", "checked": true},
+    {"item": "CC-0066 feature ID referenced in all file comments", "checked": true},
+    {"item": "CR and database names unique across all test suites", "checked": true},
+    {"item": "Fixture files use 00-/01-/02- numeric prefix ordering", "checked": true},
+    {"item": "Step comments use established # ── Step N: Title ── format", "checked": true},
+    {"item": "Consistent use of $NAMESPACE vs hardcoded namespace in scripts", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets in test fixtures or scripts", "checked": true},
+    {"item": "CR fixtures reference secretRef names only (no secret values)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Test suites are in correct directories (tests/e2e/ vs tests/e2e-chaos/)", "checked": true},
+    {"item": "Chaos test uses shared diagnostics.sh (not inline kubectl)", "checked": true},
+    {"item": "E2E test uses inline diagnostics (matching E2E pattern, not chaos pattern)", "checked": true},
+    {"item": "PodChaos selector correctly targets default namespace for operator pods", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated test logic", "checked": true},
+    {"item": "Reuses shared diagnostics.sh helper for chaos test catch blocks", "checked": true},
+    {"item": "CR fixtures are minimal (only required spec fields)", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early via JMESPath condition assertions", "checked": true},
+    {"item": "Error assertions verify resource non-existence after deletion", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Catch blocks use || true to prevent diagnostic failures from masking test results", "checked": true},
+    {"item": "Script assertions use explicit count checks and exit codes", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "PC1",
+      "severity": "BLOCKING",
+      "description": "Step 4 verification script in concurrent-cr-conflicts test is missing `set -euo pipefail`. The script has 2 grep commands but without the shell guard, only the last command's exit code determines step success. If the first grep fails (no keystone-concurrent-a-config-* ConfigMap exists), the step still passes as long as the second grep succeeds. The deletion-cleanup test uses `set -eu` for its analogous ConfigMap verification script (line 168).",
+      "location": "tests/e2e/keystone/concurrent-cr-conflicts/chainsaw-test.yaml:132-135",
+      "fix": "Add `set -euo pipefail` as the first line of the script content block:\n```yaml\n    - script:\n        content: |\n          set -euo pipefail\n          kubectl get cm -n $NAMESPACE -o name | grep keystone-concurrent-a-config-\n          kubectl get cm -n $NAMESPACE -o name | grep keystone-concurrent-b-config-\n```",
+      "evidence": "    - script:\n        content: |\n          kubectl get cm -n openstack -o name | grep keystone-concurrent-a-config-\n          kubectl get cm -n openstack -o name | grep keystone-concurrent-b-config-\n\nCompare with deletion-cleanup/chainsaw-test.yaml:167-173 which uses `set -eu` for its verification script.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "TE7",
+      "severity": "MAJOR",
+      "description": "The operator-pod-kill chaos test has no verification that the pod kill actually took effect. Between PodChaos injection (step 3) and PodChaos deletion (step 4), there is no wait or assertion that operator pods were killed. The sibling operator-pod-crash test (CC-0048) includes a 150s polling script that verifies readyReplicas drops before checking recovery. Without this verification, the test could pass vacuously if Chaos Mesh hasn't processed the PodChaos CR before it's deleted in step 4 — the test would assert Ready=True on a system that was never disrupted, and the replica patch in step 6 would be processed by the original (never-killed) leader, defeating the purpose of testing leader re-election.",
+      "location": "tests/e2e-chaos/operator-pod-kill/chainsaw-test.yaml:47-58",
+      "fix": "Add a polling script step between the current steps 3 and 4 (inject PodChaos and delete PodChaos) that verifies readyReplicas drops to 0 before proceeding. Example based on operator-pod-crash step 4 pattern:\n```yaml\n  # ── Step 4: Wait for operator pod kill to take effect ───────────────\n  - try:\n    - script:\n        timeout: 150s\n        content: |\n          # Poll until readyReplicas drops to 0 (all pods killed).\n          for i in $(seq 1 60); do\n            READY=$(kubectl get deployment keystone-operator -n default -o jsonpath='{.status.readyReplicas}')\n            if [ \"${READY:-0}\" -eq 0 ]; then\n              echo \"Pod kill confirmed: readyReplicas=0\"\n              exit 0\n            fi\n            sleep 2\n          done\n          echo \"ERROR: readyReplicas never dropped to 0 — pod kill did not take effect\"\n          exit 1\n    catch:\n    - script:\n        content: ../diagnostics.sh chaos keystone-chaos-opk --dep-label=app.kubernetes.io/name=keystone-operator --dep-ns=default\n```\nThen renumber subsequent steps (current 4→5, 5→6, 6→7, 7→8).",
+      "evidence": "Current flow:\n  Step 3: apply 01-podchaos.yaml (inject)\n  Step 4: delete PodChaos (lift fault) — NO WAIT between inject and delete\n  Step 5: assert Ready=True\n\nCompare with operator-pod-crash/chainsaw-test.yaml:54-85 which has a polling script verifying readyReplicas drops before proceeding.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "PC3",
+      "severity": "MINOR",
+      "description": "The operator-pod-kill diagnostics catch blocks use `--log-label` without `--dep-label` or `--dep-ns=default`. The sibling operator-pod-crash test uses `--dep-label=app.kubernetes.io/name=keystone-operator --dep-ns=default` which displays operator pod status in the correct namespace during diagnostic collection. Without `--dep-label`, the diagnostics output omits the 'Dependency pod status' section, reducing debuggability when the chaos test fails.",
+      "location": "tests/e2e-chaos/operator-pod-kill/chainsaw-test.yaml:83",
+      "fix": "Change diagnostics.sh invocations to include --dep-label and --dep-ns matching the operator-pod-crash pattern:\n```\n../diagnostics.sh chaos keystone-chaos-opk --dep-label=app.kubernetes.io/name=keystone-operator --dep-ns=default\n```\nApply to both catch blocks at lines 83 and 114.",
+      "evidence": "Current: ../diagnostics.sh chaos keystone-chaos-opk --log-label=app.kubernetes.io/name=keystone-operator\nSibling: ../diagnostics.sh chaos keystone-chaos-op --dep-label=app.kubernetes.io/name=keystone-operator --dep-ns=default",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Step 5 script in concurrent-cr-conflicts (line 176) could benefit from `set -euo pipefail` for consistency with the recommended fix for step 4, though its explicit if/then error handling mitigates the risk",
+    "The docs update to chaos-e2e-tests.md correctly adds CC-0066 to the frontmatter feature list but the body text (line 8) references only CC-0047, CC-0048, CC-0066 — CC-0054 is missing from the body text (pre-existing issue, not introduced by this PR)"
+  ],
+  "next_steps": [
+    "Fix PC1: Add `set -euo pipefail` to concurrent-cr-conflicts step 4 script and change hardcoded `-n openstack` to `-n $NAMESPACE`",
+    "Fix TE7: Add a polling verification step in operator-pod-kill between PodChaos injection and deletion to confirm pods were actually killed (design decision: polling script vs sleep-then-assert)",
+    "Fix PC3: Update diagnostics.sh invocations in operator-pod-kill catch blocks to include --dep-label and --dep-ns=default"
+  ],
+  "detected_patterns": []
+}

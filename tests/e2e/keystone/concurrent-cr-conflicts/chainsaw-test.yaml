@@ -1,0 +1,239 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for concurrent CR conflict handling (CC-0066).
+# Deploys two Keystone CRs that share the same secretRef and
+# adminPasswordSecretRef, verifies both reach Ready=True with unique
+# owned resources, then deletes one CR and asserts the other remains
+# healthy and its resources are unaffected.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-concurrent-cr-conflicts
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply both CR fixtures ───────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr-a.yaml
+    - apply:
+        file: 01-keystone-cr-b.yaml
+  # ── Step 2: Assert both CRs Ready=True ───────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-concurrent-a
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-concurrent-b
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR-A status ==="
+          kubectl get keystone keystone-concurrent-a -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone CR-B status ==="
+          kubectl get keystone keystone-concurrent-b -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Assert unique Deployments and Services ───────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-concurrent-a-api
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-concurrent-b-api
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: keystone-concurrent-a-api
+            namespace: openstack
+          spec:
+            ports:
+            - port: 5000
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: keystone-concurrent-b-api
+            namespace: openstack
+          spec:
+            ports:
+            - port: 5000
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR-A status ==="
+          kubectl get keystone keystone-concurrent-a -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone CR-B status ==="
+          kubectl get keystone keystone-concurrent-b -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Deployments ==="
+          kubectl get deployments -n $NAMESPACE -l app.kubernetes.io/name=keystone -o wide 2>&1 || true
+          echo "=== Services ==="
+          kubectl get services -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Assert unique Fernet CronJobs and ConfigMaps ─────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: keystone-concurrent-a-fernet-rotate
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: keystone-concurrent-b-fernet-rotate
+            namespace: openstack
+    - script:
+        content: |
+          set -eu
+          kubectl get cm -n $NAMESPACE -o name | grep keystone-concurrent-a-config-
+          kubectl get cm -n $NAMESPACE -o name | grep keystone-concurrent-b-config-
+    catch:
+    - script:
+        content: |
+          echo "=== CronJobs ==="
+          kubectl get cronjobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== ConfigMaps ==="
+          kubectl get cm -n $NAMESPACE -o name 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 5: Delete CR-A and assert cleanup ───────────────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          name: keystone-concurrent-a
+          namespace: openstack
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-concurrent-a-api
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: keystone-concurrent-a-api
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: keystone-concurrent-a-fernet-rotate
+            namespace: openstack
+    - script:
+        # Scope the check to this test's own CR instances — the shared
+        # `openstack` namespace hosts other chainsaw tests in parallel.
+        content: |
+          set -eu
+          COUNT_A=$(kubectl get deployments -n $NAMESPACE \
+            -l app.kubernetes.io/instance=keystone-concurrent-a -o name | wc -l)
+          COUNT_B=$(kubectl get deployments -n $NAMESPACE \
+            -l app.kubernetes.io/instance=keystone-concurrent-b -o name | wc -l)
+          if [ "$COUNT_A" -ne 0 ]; then
+            echo "ERROR: expected 0 Deployments for keystone-concurrent-a, found $COUNT_A"
+            exit 1
+          fi
+          if [ "$COUNT_B" -ne 1 ]; then
+            echo "ERROR: expected 1 Deployment for keystone-concurrent-b, found $COUNT_B"
+            exit 1
+          fi
+          echo "CR-A Deployment removed, CR-B Deployment intact: correct"
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR-B status ==="
+          kubectl get keystone keystone-concurrent-b -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Remaining Deployments ==="
+          kubectl get deployments -n $NAMESPACE -l app.kubernetes.io/name=keystone -o wide 2>&1 || true
+          echo "=== Remaining Services ==="
+          kubectl get services -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== Remaining CronJobs ==="
+          kubectl get cronjobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 6: Assert CR-B still Ready ──────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-concurrent-b
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-concurrent-b-api
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR-B status ==="
+          kubectl get keystone keystone-concurrent-b -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

@@ -1,0 +1,42 @@
+{
+  "feature_id": "CC-0066",
+  "title": "Add E2E tests for concurrent CR conflicts and failover",
+  "date": "2026-04-14",
+  "summary": "Post-external-review fixes addressing 5 WARNING findings from berendt. All fixes are correct and complete: (1) documentation step numbering corrected from 7 to 8 steps with cascading updates to design notes, flow diagram, and diagnostics table; (2) --log-label replaced with --dep-label and --dep-ns=default in catch block documentation; (3-4) range assertions replaced with exact-match assertions across both test files (4 occurrences total); (5) diagnostics table step references updated. No new issues introduced.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "E2E test assertions use exact-match values for deterministic fields (availableReplicas)", "checked": true},
+    {"item": "Operator-pod-kill test has 8 steps matching documentation", "checked": true},
+    {"item": "Concurrent-cr-conflicts test assertions corrected (3 occurrences)", "checked": true},
+    {"item": "Catch blocks reference correct diagnostics.sh flags (--dep-label, --dep-ns)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing exact-match assertion pattern (CC-0016)", "checked": true},
+    {"item": "Documentation step table matches actual chainsaw-test.yaml steps", "checked": true},
+    {"item": "Design notes reference correct step numbers after renumbering", "checked": true},
+    {"item": "Flow diagram and numbered list updated consistently", "checked": true},
+    {"item": "Diagnostics table references correct steps for Pod Kill (009)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No security-relevant changes in this diff", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Changes are scoped to fixing external review feedback only", "checked": true},
+    {"item": "No scope creep beyond the 5 WARNING fixes", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No unnecessary additions", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Exact-match assertions fail immediately on unexpected state", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "No external input handling changes", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": []
+}

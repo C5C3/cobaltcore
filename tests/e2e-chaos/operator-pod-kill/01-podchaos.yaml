@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos CR to kill ALL Keystone operator pods (CC-0066).
+# Uses mode: all (unlike operator-pod-crash which uses mode: one) to kill
+# every operator pod, forcing the Deployment controller to restart all pods
+# and trigger leader re-election. The operator pod lives in the `default`
+# namespace because hack/ci-deploy-operator.sh runs `helm install` without
+# `--namespace`.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: kill-operator-all
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: all
+  selector:
+    namespaces:
+    - default
+    labelSelectors:
+      app.kubernetes.io/name: keystone-operator
+  gracePeriod: 0
