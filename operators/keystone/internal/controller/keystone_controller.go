@@ -141,6 +141,13 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return r.updateStatus(ctx, &keystone, result, err)
 	}
 
+	// Prune stale immutable ConfigMaps after Deployment is ready to ensure
+	// all pods are running the new config before old ConfigMaps are deleted
+	// (CC-0077, REQ-007).
+	if err := r.pruneStaleConfigMaps(ctx, &keystone, configMapName); err != nil {
+		return r.updateStatus(ctx, &keystone, ctrl.Result{}, err)
+	}
+
 	// Health check runs after Deployment because it depends on
 	// Status.Endpoint which reconcileDeployment sets (CC-0067, REQ-007).
 	if result, err := r.reconcileHealthCheck(ctx, &keystone); !result.IsZero() || err != nil {

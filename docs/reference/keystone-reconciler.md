@@ -1,7 +1,7 @@
 ---
 title: Keystone Reconciler Architecture
 quadrant: operator
-feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0067, CC-0068, CC-0071, CC-0072, CC-0073
+feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0067, CC-0068, CC-0071, CC-0072, CC-0073, CC-0077
 ---
 
 # Keystone Reconciler Architecture
@@ -187,6 +187,12 @@ RBAC markers on the reconciler generate the required ClusterRole:
 │  └────────┬─────────────┘  Requeue: 10s                                      │
 │           │                                                                  │
 │           ▼                                                                  │
+│  ┌─────────────────────────┐                                                 │
+│  │ pruneStaleConfigMaps    │  Delete old {name}-config-{hash} ConfigMaps     │
+│  │                         │  Retain 3 historical + current (CC-0077)        │
+│  └────────┬────────────────┘  No condition, no requeue                       │
+│           │                                                                  │
+│           ▼                                                                  │
 │  ┌────────────────────────┐                                                  │
 │  │ reconcileHealthCheck   │  HTTP GET to Status.Endpoint                     │
 │  │                        │  Sets: KeystoneAPIReady                          │
@@ -330,6 +336,7 @@ output (other than conditions merged after the group completes).
 | `reconcileDatabase` | configMapName | `DatabaseReady` | Config | no (complex state machine) |
 | `reconcilePolicyValidation` | configMapName | `PolicyValidReady` | Config | no (gates Deployment) |
 | `reconcileDeployment` | configMapName | `DeploymentReady` | Database (implicit) | no |
+| `pruneStaleConfigMaps` | configMapName | *(none)* | Deployment (must be ready) | no |
 | `reconcileHealthCheck` | status.endpoint | `KeystoneAPIReady` | Deployment (sets endpoint) | no |
 | `reconcileHPA` | CR spec | `HPAReady` | Deployment (naming) | no |
 | `reconcileBootstrap` | configMapName | `BootstrapReady` | Deployment (API must be running) | no |
@@ -1084,6 +1091,75 @@ and returned.
 
 ---
 
+### pruneStaleConfigMaps
+
+**File:** `operators/keystone/internal/controller/reconcile_config.go`
+
+**Signature:**
+
+```go
+func (r *KeystoneReconciler) pruneStaleConfigMaps(ctx context.Context,
+    keystone *keystonev1alpha1.Keystone, configMapName string) error
+```
+
+**Purpose:** Remove historical immutable ConfigMaps that exceed the retain count
+after the Deployment has rolled out successfully. This prevents unbounded accumulation
+of `{name}-config-{hash}` ConfigMaps in the namespace (CC-0077).
+
+> **Note:** This is not a sub-reconciler — it does not set any status condition and
+> returns only `error`. It is a thin wrapper around `config.PruneImmutableConfigMaps`
+> that derives the `baseName` from the Keystone CR name and passes the hardcoded
+> retain count.
+
+**Placement rationale:** Pruning runs after `reconcileDeployment` returns ready to
+ensure all pods are running the new configuration before old ConfigMaps are deleted.
+During a rolling update, old ReplicaSet pods still reference the previous ConfigMap —
+pruning before Deployment readiness could delete a ConfigMap that is still mounted.
+
+**Parameters:**
+
+| Name | Source | Description |
+| --- | --- | --- |
+| `keystone` | CR | Owning Keystone CR (provides UID for owner-reference filtering and name for baseName) |
+| `configMapName` | `reconcileConfig` return value | Currently active ConfigMap name (never deleted) |
+
+**Delegation:**
+
+```go
+baseName := fmt.Sprintf("%s-config", keystone.Name)
+config.PruneImmutableConfigMaps(ctx, r.Client, keystone,
+    baseName, keystone.Namespace, configMapName, defaultConfigMapRetainCount)
+```
+
+**Constants:**
+
+| Name | Value | Description |
+| --- | --- | --- |
+| `defaultConfigMapRetainCount` | `3` | Number of historical ConfigMaps to keep beyond the current active one. Keeps current + 3 historical = 4 total, sufficient for rollback. Not CRD-configurable by design. |
+
+**Behavior:**
+
+| State | Result |
+| --- | --- |
+| 5 historical ConfigMaps, retain=3 | 2 oldest deleted, 3 newest + current remain (4 total) |
+| 2 historical ConfigMaps, retain=3 | No-op (fewer than retain count) |
+| 0 historical ConfigMaps | No-op |
+| ConfigMap owned by different CR | Skipped (owner UID mismatch) |
+| ConfigMap with no owner reference | Skipped |
+| ConfigMap deleted between list and delete | `NotFound` silently ignored via `client.IgnoreNotFound` |
+
+**Auditability:** Each pruned ConfigMap name is logged at info level with structured
+fields `name` and `namespace`.
+
+**Error handling:** Errors from listing or deleting ConfigMaps are wrapped with
+context and returned to the reconcile loop, which applies exponential backoff via
+controller-runtime. All preceding steps (config creation, deployment) are idempotent,
+so requeue after a pruning error is safe.
+
+**Shared library calls:** `config.PruneImmutableConfigMaps()`
+
+---
+
 ### reconcileHealthCheck
 
 **File:** `operators/keystone/internal/controller/reconcile_healthcheck.go`
@@ -1363,6 +1439,7 @@ controller-runtime for exponential backoff.
 | `reconcileConfig` | — | — | Secret read failure, render failure → exponential backoff |
 | `reconcilePolicyValidation` | Job running | 15s | `ErrJobFailed` from validation → descriptive error |
 | `reconcileDeployment` | Deployment not available | 10s | API error → exponential backoff |
+| `pruneStaleConfigMaps` | — | — | List/delete failure → exponential backoff (CC-0077) |
 | `reconcileHealthCheck` | Non-2xx, timeout, DNS, connection refused | 10s | Malformed URL → exponential backoff (CC-0067) |
 | `reconcileHPA` | — | — | API error → exponential backoff |
 | `reconcileBootstrap` | Job running | 60s | `ErrJobFailed` from bootstrap |
@@ -1469,7 +1546,7 @@ operators/keystone/
     │   ├── reconcile_fernet.go                 reconcileFernetKeys sub-reconciler
     │   ├── reconcile_credential.go             reconcileCredentialKeys sub-reconciler (CC-0036)
     │   ├── reconcile_networkpolicy.go          reconcileNetworkPolicy sub-reconciler (CC-0039)
-    │   ├── reconcile_config.go                 reconcileConfig sub-reconciler
+    │   ├── reconcile_config.go                 reconcileConfig + pruneStaleConfigMaps (CC-0077)
     │   ├── reconcile_policyvalidation.go        reconcilePolicyValidation sub-reconciler (CC-0058)
     │   ├── reconcile_deployment.go             reconcileDeployment sub-reconciler
     │   ├── reconcile_healthcheck.go           reconcileHealthCheck sub-reconciler (CC-0067)

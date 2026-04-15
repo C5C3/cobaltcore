@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: When a test verifies that a value was replaced/updated, check if it asserts both the presence of the new value AND the absence of the old value. Compare with similar tests in the same file for consistency.
 **Severity**: WARNING
-**Occurrences**: 4
+**Occurrences**: 5
 
 ## What to check
 
@@ -34,3 +34,8 @@ Without negative assertions, a bug where the old value is never deleted goes und
 - **Feedback**: Polling loop passes vacuously if kill never takes effect (e.g., PodChaos selector mismatch, Chaos Mesh not running).
 - **What was missed**: After a mutation step (chaos injection, pod kill, config change), verify the test includes an assertion that the old state is gone or disrupted before asserting the new/recovered state. For example, after a pod kill, assert the old pod UID disappeared before asserting a new pod is Running.
 - **Fix**: Add an assertion that the targeted pod's old UID is no longer present (assert absence of old state) before polling for recovery to a healthy state.
+
+### CC-0077 — berendt
+- **Feedback**: Integration test not verifying which ConfigMaps were retained.
+- **What was missed**: Look for test assertions that only check list length or 'something was deleted'. Verify that the test explicitly asserts the identity of retained and removed items (e.g., the two oldest are gone, the three newest remain).
+- **Fix**: TestPruneImmutableConfigMaps_deletesStaleConfigMaps in config_test.go explicitly asserts absence of the two oldest ConfigMaps (NotTo ContainElement), and the controller-level test verifies deletion via apierrors.IsNotFound on specific named resources.

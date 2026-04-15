@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // Feature: CC-0004
@@ -112,6 +113,12 @@ func InjectSecrets(config map[string]map[string]string, secrets map[string]strin
 
 // Feature: CC-0005
 
+// ConfigBaseLabelKey is the label key applied to immutable ConfigMaps created
+// by CreateImmutableConfigMap, identifying the base name that generated them.
+// PruneImmutableConfigMaps uses this label as a server-side selector to avoid
+// listing all ConfigMaps in the namespace (CC-0077).
+const ConfigBaseLabelKey = "forge.c5c3.io/config-base"
+
 // hashTruncateLen is the number of hex characters kept from the SHA-256
 // content hash when building immutable ConfigMap name suffixes. 8 hex chars
 // (32 bits) yield a collision probability of ~1 in 4 billion per base name,
@@ -150,6 +157,9 @@ func CreateImmutableConfigMap(ctx context.Context, c client.Client, scheme *runt
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
+			Labels: map[string]string{
+				ConfigBaseLabelKey: baseName,
+			},
 		},
 		Data:      data,
 		Immutable: &immutable,
@@ -198,4 +208,67 @@ func InjectOsloPolicyConfig(config map[string]map[string]string, policyFilePath 
 	}
 	result["oslo_policy"]["policy_file"] = policyFilePath
 	return result
+}
+
+// Feature: CC-0077
+
+// PruneImmutableConfigMaps deletes stale immutable ConfigMaps that were
+// previously created by CreateImmutableConfigMap. It retains the newest
+// `retain` historical ConfigMaps (by CreationTimestamp) plus the currently
+// active one identified by currentName. This prevents unbounded accumulation
+// of immutable ConfigMaps across reconcile cycles.
+//
+// Known limitation: ConfigMaps created before the ConfigBaseLabelKey label was
+// introduced (CC-0077) lack the label and are invisible to the server-side
+// selector used by this function. These pre-existing ConfigMaps will not be
+// pruned but are bounded in number (no new unlabeled ConfigMaps are created
+// after the upgrade) and will be garbage-collected by Kubernetes when the
+// owning CR is deleted, since they carry a controller owner reference.
+func PruneImmutableConfigMaps(ctx context.Context, c client.Client, owner client.Object, baseName, namespace, currentName string, retain int) error {
+	logger := log.FromContext(ctx)
+
+	// Clamp negative retain to 0 to prevent panics from misconfigured values. (CC-0077)
+	if retain < 0 {
+		retain = 0
+	}
+
+	var allConfigMaps corev1.ConfigMapList
+	if err := c.List(ctx, &allConfigMaps, client.InNamespace(namespace), client.MatchingLabels{ConfigBaseLabelKey: baseName}); err != nil {
+		return fmt.Errorf("listing ConfigMaps in namespace %s: %w", namespace, err)
+	}
+
+	prefix := baseName + "-"
+	var candidates []corev1.ConfigMap
+	for _, cm := range allConfigMaps.Items {
+		if !strings.HasPrefix(cm.Name, prefix) {
+			continue
+		}
+		if cm.Name == currentName {
+			continue
+		}
+		controllerRef := metav1.GetControllerOf(&cm)
+		if controllerRef == nil || controllerRef.UID != owner.GetUID() {
+			continue
+		}
+		candidates = append(candidates, cm)
+	}
+
+	// Sort candidates by CreationTimestamp descending (newest first).
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].CreationTimestamp.After(candidates[j].CreationTimestamp.Time)
+	})
+
+	if len(candidates) <= retain {
+		return nil
+	}
+
+	for i := retain; i < len(candidates); i++ {
+		cm := candidates[i]
+		if err := client.IgnoreNotFound(c.Delete(ctx, &cm)); err != nil {
+			return fmt.Errorf("deleting stale ConfigMap %s/%s: %w", namespace, cm.Name, err)
+		}
+		logger.Info("pruned stale immutable ConfigMap", "name", cm.Name, "namespace", namespace, "baseName", baseName, "ownerName", owner.GetName(), "ownerUID", owner.GetUID())
+	}
+
+	return nil
 }

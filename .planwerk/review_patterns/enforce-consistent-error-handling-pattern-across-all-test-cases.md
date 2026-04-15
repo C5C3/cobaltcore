@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: When a file already uses a defensive pattern (e.g., capturing exit codes with `|| exit_code=$?`) in some test cases, scan ALL other test cases in the same file for the same invocation pattern without the guard.
 **Severity**: BLOCKING
-**Occurrences**: 6
+**Occurrences**: 7
 
 ## What to check
 
@@ -44,3 +44,8 @@ Silent test abortion means CI reports a failure with zero diagnostic output. Dev
 - **Feedback**: The test suite has 26 negative test cases verifying that invalid values are rejected, but zero positive test cases verifying that valid non-default values are accepted through schema validation. If a future schema edit accidentally over-restricts a field (e.g., adding a maxLength that's too short, or a pattern that rejects a valid quantity), no test in this file would catch the regression.
 - **What was missed**: Schema validation test suites must include positive test cases that verify valid non-default values pass through the schema. Check that for each constrained field (patterns, ranges, enums), at least one test asserts a valid non-default value renders successfully.
 - **Fix**: Added 5 positive schema test cases covering custom replicas, custom metrics port, string resource quantities, numeric resource quantities, and the namespaceScoped+webhook combination, each asserting successful template rendering with isKind.
+
+### CC-0077 — berendt
+- **Feedback**: The project has 25 Chainsaw E2E test directories under tests/e2e/keystone/ covering every existing feature. This PR adds a new operational behavior (pruning) but includes no tests/e2e/keystone/config-pruning/ directory.
+- **What was missed**: Count existing E2E test directories and compare against the feature set. If a new operational behavior is introduced without a matching E2E test directory, flag it. Look at the test directory structure (e.g., tests/e2e/) for the established convention.
+- **Fix**: Created tests/e2e/keystone/config-pruning/chainsaw-test.yaml with a 00-keystone-cr.yaml fixture, covering CR deploy, 4 sequential config patches, DeploymentReady waits, and a final assertion that ConfigMap count is at most retain+1=4.

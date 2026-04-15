@@ -8,17 +8,21 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	. "github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	"github.com/c5c3/forge/internal/common/config"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -721,4 +725,147 @@ func TestResolveCacheServers(t *testing.T) {
 			g.Expect(result).To(Equal(tt.expected))
 		})
 	}
+}
+
+// Feature: CC-0077
+
+// pruneTestConfigMap creates a ConfigMap for pruning tests with an explicit
+// CreationTimestamp, config-base label, and controller owner reference pointing
+// to the given Keystone CR.
+func pruneTestConfigMap(name, namespace, baseName string, owner *keystonev1alpha1.Keystone, creationTime time.Time) *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              name,
+			Namespace:         namespace,
+			CreationTimestamp: metav1.NewTime(creationTime),
+			Labels: map[string]string{
+				config.ConfigBaseLabelKey: baseName,
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion:         keystonev1alpha1.GroupVersion.String(),
+					Kind:               "Keystone",
+					Name:               owner.Name,
+					UID:                owner.UID,
+					Controller:         ptr.To(true),
+					BlockOwnerDeletion: ptr.To(true),
+				},
+			},
+		},
+		Data: map[string]string{"keystone.conf": "test"},
+	}
+}
+
+// TestPruneStaleConfigMaps_deletesOldConfigMaps verifies that
+// pruneStaleConfigMaps deletes ConfigMaps beyond the retain count using the
+// correct baseName pattern (keystone.Name + "-config") (CC-0077, REQ-001).
+func TestPruneStaleConfigMaps_deletesOldConfigMaps(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	ctx := context.Background()
+
+	ks := configTestKeystone()
+	baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// 5 historical ConfigMaps matching the baseName prefix, plus 1 current.
+	currentCM := pruneTestConfigMap("test-keystone-config-current1", "default", "test-keystone-config", ks, baseTime.Add(5*time.Hour))
+	hist := []*corev1.ConfigMap{
+		pruneTestConfigMap("test-keystone-config-aaaa0001", "default", "test-keystone-config", ks, baseTime),
+		pruneTestConfigMap("test-keystone-config-bbbb0002", "default", "test-keystone-config", ks, baseTime.Add(1*time.Hour)),
+		pruneTestConfigMap("test-keystone-config-cccc0003", "default", "test-keystone-config", ks, baseTime.Add(2*time.Hour)),
+		pruneTestConfigMap("test-keystone-config-dddd0004", "default", "test-keystone-config", ks, baseTime.Add(3*time.Hour)),
+		pruneTestConfigMap("test-keystone-config-eeee0005", "default", "test-keystone-config", ks, baseTime.Add(4*time.Hour)),
+	}
+	// ConfigMap with a different baseName label — must NOT be pruned, proving
+	// the wrapper uses the correct baseName (keystone.Name + "-config").
+	otherCM := pruneTestConfigMap("test-keystone-other-abcd1234", "default", "test-keystone-other", ks, baseTime)
+
+	objs := []client.Object{ks, currentCM, otherCM}
+	for _, h := range hist {
+		objs = append(objs, h)
+	}
+	r := newConfigTestReconciler(s, objs...)
+
+	err := r.pruneStaleConfigMaps(ctx, ks, "test-keystone-config-current1")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// The 2 oldest historical ConfigMaps (T0, T1) should be deleted.
+	for _, name := range []string{"test-keystone-config-aaaa0001", "test-keystone-config-bbbb0002"} {
+		cm := &corev1.ConfigMap{}
+		err := r.Get(ctx, client.ObjectKey{Namespace: "default", Name: name}, cm)
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "expected %s to be deleted", name)
+	}
+
+	// ConfigMap with a different prefix must still exist.
+	cm := &corev1.ConfigMap{}
+	g.Expect(r.Client.Get(ctx, client.ObjectKey{Namespace: "default", Name: "test-keystone-other-abcd1234"}, cm)).To(Succeed())
+}
+
+// TestPruneStaleConfigMaps_retainsRecentConfigMaps verifies that
+// pruneStaleConfigMaps retains the 3 most recent historical ConfigMaps and
+// the current one (4 total) (CC-0077, REQ-001).
+func TestPruneStaleConfigMaps_retainsRecentConfigMaps(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	ctx := context.Background()
+
+	ks := configTestKeystone()
+	baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	currentCM := pruneTestConfigMap("test-keystone-config-current1", "default", "test-keystone-config", ks, baseTime.Add(5*time.Hour))
+	hist := []*corev1.ConfigMap{
+		pruneTestConfigMap("test-keystone-config-aaaa0001", "default", "test-keystone-config", ks, baseTime),
+		pruneTestConfigMap("test-keystone-config-bbbb0002", "default", "test-keystone-config", ks, baseTime.Add(1*time.Hour)),
+		pruneTestConfigMap("test-keystone-config-cccc0003", "default", "test-keystone-config", ks, baseTime.Add(2*time.Hour)),
+		pruneTestConfigMap("test-keystone-config-dddd0004", "default", "test-keystone-config", ks, baseTime.Add(3*time.Hour)),
+		pruneTestConfigMap("test-keystone-config-eeee0005", "default", "test-keystone-config", ks, baseTime.Add(4*time.Hour)),
+	}
+
+	objs := []client.Object{ks, currentCM}
+	for _, h := range hist {
+		objs = append(objs, h)
+	}
+	r := newConfigTestReconciler(s, objs...)
+
+	err := r.pruneStaleConfigMaps(ctx, ks, "test-keystone-config-current1")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Exactly 4 ConfigMaps should remain: current + 3 newest historical.
+	var remaining corev1.ConfigMapList
+	g.Expect(r.Client.List(ctx, &remaining, client.InNamespace("default"))).To(Succeed())
+	g.Expect(remaining.Items).To(HaveLen(4))
+
+	// Verify the retained ConfigMaps are the correct ones.
+	for _, name := range []string{
+		"test-keystone-config-current1",
+		"test-keystone-config-cccc0003",
+		"test-keystone-config-dddd0004",
+		"test-keystone-config-eeee0005",
+	} {
+		cm := &corev1.ConfigMap{}
+		g.Expect(r.Client.Get(ctx, client.ObjectKey{Namespace: "default", Name: name}, cm)).To(Succeed(),
+			"expected %s to be retained", name)
+	}
+}
+
+// TestPruneStaleConfigMaps_noopWithNoCandidates verifies that
+// pruneStaleConfigMaps returns nil when only the current ConfigMap exists
+// (CC-0077, REQ-001).
+func TestPruneStaleConfigMaps_noopWithNoCandidates(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	ctx := context.Background()
+
+	ks := configTestKeystone()
+	baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	currentCM := pruneTestConfigMap("test-keystone-config-current1", "default", "test-keystone-config", ks, baseTime)
+	r := newConfigTestReconciler(s, ks, currentCM)
+
+	err := r.pruneStaleConfigMaps(ctx, ks, "test-keystone-config-current1")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// The current ConfigMap must still exist.
+	cm := &corev1.ConfigMap{}
+	g.Expect(r.Client.Get(ctx, client.ObjectKey{Namespace: "default", Name: "test-keystone-config-current1"}, cm)).To(Succeed())
 }

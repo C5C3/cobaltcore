@@ -8,6 +8,7 @@ import (
 	"context"
 	"reflect"
 	"testing"
+	"time"
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -483,6 +484,7 @@ func TestCreateImmutableConfigMap_creates(t *testing.T) {
 	g.Expect(c.Get(ctx, client.ObjectKey{Name: name, Namespace: "default"}, &cm)).To(Succeed())
 	g.Expect(cm.Data).To(Equal(data))
 	g.Expect(*cm.Immutable).To(BeTrue())
+	g.Expect(cm.Labels).To(HaveKeyWithValue(ConfigBaseLabelKey, "my-config"))
 	g.Expect(cm.OwnerReferences).To(HaveLen(1))
 	g.Expect(cm.OwnerReferences[0].Name).To(Equal("test-owner"))
 }
@@ -591,4 +593,490 @@ func TestCreateImmutableConfigMap_rejectsUnownedExisting(t *testing.T) {
 	_, err = CreateImmutableConfigMap(ctx, c2, s, owner, "my-config", "default", data)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("not owned by"))
+}
+
+// Feature: CC-0077
+
+func ownedConfigMap(name, namespace, baseName string, owner *corev1.ConfigMap, creationTime time.Time) *corev1.ConfigMap {
+	isController := true
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              name,
+			Namespace:         namespace,
+			CreationTimestamp: metav1.NewTime(creationTime),
+			Labels: map[string]string{
+				ConfigBaseLabelKey: baseName,
+			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "v1",
+				Kind:       "ConfigMap",
+				Name:       owner.Name,
+				UID:        owner.UID,
+				Controller: &isController,
+			}},
+		},
+	}
+}
+
+func TestPruneImmutableConfigMaps_deletesStaleConfigMaps(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	ctx := context.Background()
+
+	baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	currentName := "my-config-current1"
+
+	// 5 historical ConfigMaps + 1 current
+	cm1 := ownedConfigMap("my-config-aaaaaaaa", "default", "my-config", owner, baseTime)
+	cm2 := ownedConfigMap("my-config-bbbbbbbb", "default", "my-config", owner, baseTime.Add(1*time.Hour))
+	cm3 := ownedConfigMap("my-config-cccccccc", "default", "my-config", owner, baseTime.Add(2*time.Hour))
+	cm4 := ownedConfigMap("my-config-dddddddd", "default", "my-config", owner, baseTime.Add(3*time.Hour))
+	cm5 := ownedConfigMap("my-config-eeeeeeee", "default", "my-config", owner, baseTime.Add(4*time.Hour))
+	current := ownedConfigMap(currentName, "default", "my-config", owner, baseTime.Add(5*time.Hour))
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, cm1, cm2, cm3, cm4, cm5, current).Build()
+
+	err := PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, 3)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var cmList corev1.ConfigMapList
+	g.Expect(c.List(ctx, &cmList, client.InNamespace("default"))).To(Succeed())
+
+	remaining := make([]string, 0)
+	for _, cm := range cmList.Items {
+		if cm.Name != "test-owner" {
+			remaining = append(remaining, cm.Name)
+		}
+	}
+	// 3 newest historical + current = 4 remaining
+	g.Expect(remaining).To(HaveLen(4))
+	g.Expect(remaining).To(ContainElement(currentName))
+	g.Expect(remaining).To(ContainElement("my-config-cccccccc"))
+	g.Expect(remaining).To(ContainElement("my-config-dddddddd"))
+	g.Expect(remaining).To(ContainElement("my-config-eeeeeeee"))
+	// 2 oldest should be deleted
+	g.Expect(remaining).NotTo(ContainElement("my-config-aaaaaaaa"))
+	g.Expect(remaining).NotTo(ContainElement("my-config-bbbbbbbb"))
+}
+
+func TestPruneImmutableConfigMaps_retainsNewestByCreationTimestamp(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	ctx := context.Background()
+
+	baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	currentName := "my-config-current1"
+
+	// Names sort alphabetically: aaa < bbb < zzz
+	// But timestamps are: zzz (oldest), aaa (middle), bbb (newest)
+	cmZzz := ownedConfigMap("my-config-zzzzzzzz", "default", "my-config", owner, baseTime)
+	cmAaa := ownedConfigMap("my-config-aaaaaaaa", "default", "my-config", owner, baseTime.Add(2*time.Hour))
+	cmBbb := ownedConfigMap("my-config-bbbbbbbb", "default", "my-config", owner, baseTime.Add(4*time.Hour))
+	current := ownedConfigMap(currentName, "default", "my-config", owner, baseTime.Add(6*time.Hour))
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, cmZzz, cmAaa, cmBbb, current).Build()
+
+	err := PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, 1)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var cmList corev1.ConfigMapList
+	g.Expect(c.List(ctx, &cmList, client.InNamespace("default"))).To(Succeed())
+
+	remaining := make([]string, 0)
+	for _, cm := range cmList.Items {
+		if cm.Name != "test-owner" {
+			remaining = append(remaining, cm.Name)
+		}
+	}
+	// retain=1: newest historical (bbb) + current = 2
+	g.Expect(remaining).To(HaveLen(2))
+	g.Expect(remaining).To(ContainElement(currentName))
+	g.Expect(remaining).To(ContainElement("my-config-bbbbbbbb"))
+	// zzz and aaa (older by timestamp) should be deleted
+	g.Expect(remaining).NotTo(ContainElement("my-config-zzzzzzzz"))
+	g.Expect(remaining).NotTo(ContainElement("my-config-aaaaaaaa"))
+}
+
+func TestPruneImmutableConfigMaps_retainZeroDeletesAllHistorical(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	ctx := context.Background()
+
+	baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	currentName := "my-config-current1"
+
+	cm1 := ownedConfigMap("my-config-aaaaaaaa", "default", "my-config", owner, baseTime)
+	cm2 := ownedConfigMap("my-config-bbbbbbbb", "default", "my-config", owner, baseTime.Add(1*time.Hour))
+	cm3 := ownedConfigMap("my-config-cccccccc", "default", "my-config", owner, baseTime.Add(2*time.Hour))
+	current := ownedConfigMap(currentName, "default", "my-config", owner, baseTime.Add(3*time.Hour))
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, cm1, cm2, cm3, current).Build()
+
+	err := PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, 0)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var cmList corev1.ConfigMapList
+	g.Expect(c.List(ctx, &cmList, client.InNamespace("default"))).To(Succeed())
+
+	remaining := make([]string, 0)
+	for _, cm := range cmList.Items {
+		if cm.Name != "test-owner" {
+			remaining = append(remaining, cm.Name)
+		}
+	}
+	// Only current should remain
+	g.Expect(remaining).To(HaveLen(1))
+	g.Expect(remaining).To(ContainElement(currentName))
+}
+
+func TestPruneImmutableConfigMaps_idempotentOnSecondCall(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	ctx := context.Background()
+
+	baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	currentName := "my-config-current1"
+
+	cm1 := ownedConfigMap("my-config-aaaaaaaa", "default", "my-config", owner, baseTime)
+	cm2 := ownedConfigMap("my-config-bbbbbbbb", "default", "my-config", owner, baseTime.Add(1*time.Hour))
+	cm3 := ownedConfigMap("my-config-cccccccc", "default", "my-config", owner, baseTime.Add(2*time.Hour))
+	current := ownedConfigMap(currentName, "default", "my-config", owner, baseTime.Add(3*time.Hour))
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, cm1, cm2, cm3, current).Build()
+
+	// First call: should delete cm1 (oldest), retain cm2, cm3, current
+	err := PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, 2)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Second call: nothing more to delete
+	err = PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, 2)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var cmList corev1.ConfigMapList
+	g.Expect(c.List(ctx, &cmList, client.InNamespace("default"))).To(Succeed())
+
+	remaining := make([]string, 0)
+	for _, cm := range cmList.Items {
+		if cm.Name != "test-owner" {
+			remaining = append(remaining, cm.Name)
+		}
+	}
+	g.Expect(remaining).To(HaveLen(3))
+	g.Expect(remaining).To(ContainElement(currentName))
+	g.Expect(remaining).To(ContainElement("my-config-bbbbbbbb"))
+	g.Expect(remaining).To(ContainElement("my-config-cccccccc"))
+}
+
+func TestPruneImmutableConfigMaps_ignoresNotFoundOnDelete(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	ctx := context.Background()
+
+	baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	currentName := "my-config-current1"
+
+	cm1 := ownedConfigMap("my-config-aaaaaaaa", "default", "my-config", owner, baseTime)
+	cm2 := ownedConfigMap("my-config-bbbbbbbb", "default", "my-config", owner, baseTime.Add(1*time.Hour))
+	cm3 := ownedConfigMap("my-config-cccccccc", "default", "my-config", owner, baseTime.Add(2*time.Hour))
+	current := ownedConfigMap(currentName, "default", "my-config", owner, baseTime.Add(3*time.Hour))
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, cm1, cm2, cm3, current).Build()
+
+	// Pre-delete cm1 to simulate it being removed between list and delete
+	g.Expect(c.Delete(ctx, cm1)).To(Succeed())
+
+	// Prune with retain=1: should try to delete cm1 (already gone) and succeed
+	err := PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, 1)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestPruneImmutableConfigMaps_skipsConfigMapsOwnedByDifferentController(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	ctx := context.Background()
+
+	baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	currentName := "my-config-current1"
+
+	// ConfigMap owned by a different controller
+	otherOwner := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "other-owner",
+			Namespace: "default",
+			UID:       "other-uid",
+		},
+	}
+	cmOther := ownedConfigMap("my-config-aaaaaaaa", "default", "my-config", otherOwner, baseTime)
+	cmOwned := ownedConfigMap("my-config-bbbbbbbb", "default", "my-config", owner, baseTime.Add(1*time.Hour))
+	current := ownedConfigMap(currentName, "default", "my-config", owner, baseTime.Add(2*time.Hour))
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, otherOwner, cmOther, cmOwned, current).Build()
+
+	// retain=0 should only delete owner's historical ConfigMaps
+	err := PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, 0)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var cmList corev1.ConfigMapList
+	g.Expect(c.List(ctx, &cmList, client.InNamespace("default"))).To(Succeed())
+
+	remaining := make([]string, 0)
+	for _, cm := range cmList.Items {
+		if cm.Name != "test-owner" && cm.Name != "other-owner" {
+			remaining = append(remaining, cm.Name)
+		}
+	}
+	// cmOther (different owner) + current = 2
+	g.Expect(remaining).To(HaveLen(2))
+	g.Expect(remaining).To(ContainElement("my-config-aaaaaaaa"))
+	g.Expect(remaining).To(ContainElement(currentName))
+}
+
+func TestPruneImmutableConfigMaps_skipsConfigMapsWithoutOwnerReference(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	ctx := context.Background()
+
+	baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	currentName := "my-config-current1"
+
+	// Unowned ConfigMap with matching label but no owner reference.
+	unowned := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "my-config-unowned1",
+			Namespace:         "default",
+			CreationTimestamp: metav1.NewTime(baseTime),
+			Labels: map[string]string{
+				ConfigBaseLabelKey: "my-config",
+			},
+		},
+	}
+	cmOwned := ownedConfigMap("my-config-bbbbbbbb", "default", "my-config", owner, baseTime.Add(1*time.Hour))
+	current := ownedConfigMap(currentName, "default", "my-config", owner, baseTime.Add(2*time.Hour))
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, unowned, cmOwned, current).Build()
+
+	err := PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, 0)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var cmList corev1.ConfigMapList
+	g.Expect(c.List(ctx, &cmList, client.InNamespace("default"))).To(Succeed())
+
+	remaining := make([]string, 0)
+	for _, cm := range cmList.Items {
+		if cm.Name != "test-owner" {
+			remaining = append(remaining, cm.Name)
+		}
+	}
+	// unowned + current = 2
+	g.Expect(remaining).To(HaveLen(2))
+	g.Expect(remaining).To(ContainElement("my-config-unowned1"))
+	g.Expect(remaining).To(ContainElement(currentName))
+}
+
+func TestPruneImmutableConfigMaps_neverDeletesCurrentConfigMap(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	ctx := context.Background()
+
+	baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	currentName := "my-config-cccccccc"
+
+	cm1 := ownedConfigMap("my-config-aaaaaaaa", "default", "my-config", owner, baseTime)
+	cm2 := ownedConfigMap("my-config-bbbbbbbb", "default", "my-config", owner, baseTime.Add(1*time.Hour))
+	// current is in the candidate set but must never be deleted
+	current := ownedConfigMap(currentName, "default", "my-config", owner, baseTime.Add(2*time.Hour))
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, cm1, cm2, current).Build()
+
+	// retain=0: delete all historical, but never current
+	err := PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, 0)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var cmList corev1.ConfigMapList
+	g.Expect(c.List(ctx, &cmList, client.InNamespace("default"))).To(Succeed())
+
+	remaining := make([]string, 0)
+	for _, cm := range cmList.Items {
+		if cm.Name != "test-owner" {
+			remaining = append(remaining, cm.Name)
+		}
+	}
+	g.Expect(remaining).To(HaveLen(1))
+	g.Expect(remaining).To(ContainElement(currentName))
+}
+
+func TestPruneImmutableConfigMaps_noopWhenFewerThanRetain(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	ctx := context.Background()
+
+	baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	currentName := "my-config-current1"
+
+	cm1 := ownedConfigMap("my-config-aaaaaaaa", "default", "my-config", owner, baseTime)
+	cm2 := ownedConfigMap("my-config-bbbbbbbb", "default", "my-config", owner, baseTime.Add(1*time.Hour))
+	current := ownedConfigMap(currentName, "default", "my-config", owner, baseTime.Add(2*time.Hour))
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, cm1, cm2, current).Build()
+
+	// retain=3 with only 2 historical: no deletions
+	err := PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, 3)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var cmList corev1.ConfigMapList
+	g.Expect(c.List(ctx, &cmList, client.InNamespace("default"))).To(Succeed())
+
+	remaining := make([]string, 0)
+	for _, cm := range cmList.Items {
+		if cm.Name != "test-owner" {
+			remaining = append(remaining, cm.Name)
+		}
+	}
+	g.Expect(remaining).To(HaveLen(3))
+}
+
+func TestPruneImmutableConfigMaps_noopWhenNoHistoricalConfigMaps(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	ctx := context.Background()
+
+	baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	currentName := "my-config-current1"
+
+	current := ownedConfigMap(currentName, "default", "my-config", owner, baseTime)
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, current).Build()
+
+	err := PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, 3)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var cmList corev1.ConfigMapList
+	g.Expect(c.List(ctx, &cmList, client.InNamespace("default"))).To(Succeed())
+
+	remaining := make([]string, 0)
+	for _, cm := range cmList.Items {
+		if cm.Name != "test-owner" {
+			remaining = append(remaining, cm.Name)
+		}
+	}
+	g.Expect(remaining).To(HaveLen(1))
+	g.Expect(remaining).To(ContainElement(currentName))
+}
+
+func TestPruneImmutableConfigMaps_skipsMismatchedPrefix(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	ctx := context.Background()
+
+	baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	currentName := "my-config-current1"
+
+	// ConfigMap with different baseName prefix and label value.
+	cmOther := ownedConfigMap("other-config-aaaaaaaa", "default", "other-config", owner, baseTime)
+	cmOwned := ownedConfigMap("my-config-bbbbbbbb", "default", "my-config", owner, baseTime.Add(1*time.Hour))
+	current := ownedConfigMap(currentName, "default", "my-config", owner, baseTime.Add(2*time.Hour))
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, cmOther, cmOwned, current).Build()
+
+	// retain=0 should only delete "my-config-" prefixed historical ones
+	err := PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, 0)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var cmList corev1.ConfigMapList
+	g.Expect(c.List(ctx, &cmList, client.InNamespace("default"))).To(Succeed())
+
+	remaining := make([]string, 0)
+	for _, cm := range cmList.Items {
+		if cm.Name != "test-owner" {
+			remaining = append(remaining, cm.Name)
+		}
+	}
+	// other-config-aaaaaaaa + current = 2
+	g.Expect(remaining).To(HaveLen(2))
+	g.Expect(remaining).To(ContainElement("other-config-aaaaaaaa"))
+	g.Expect(remaining).To(ContainElement(currentName))
+}
+
+func TestPruneImmutableConfigMaps_handlesOverlappingPrefixCorrectly(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	ctx := context.Background()
+
+	baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	currentName := "test-config-current1"
+
+	// "test-config-extra-def12345" has prefix "test-config-" but NOT "test-config-extra-"
+	// When baseName is "test-config", it matches "test-config-abc12345" and "test-config-extra-def12345"
+	// because both have prefix "test-config-"
+	// But when baseName is "test-config-extra", it should NOT match "test-config-abc12345"
+	cmMatch := ownedConfigMap("test-config-abc12345", "default", "test-config", owner, baseTime)
+	cmOverlap := ownedConfigMap("test-config-extra-def12345", "default", "test-config-extra", owner, baseTime.Add(1*time.Hour))
+	current := ownedConfigMap(currentName, "default", "test-config", owner, baseTime.Add(2*time.Hour))
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, cmMatch, cmOverlap, current).Build()
+
+	// Prune with baseName "test-config-extra": should only match "test-config-extra-def12345"
+	err := PruneImmutableConfigMaps(ctx, c, owner, "test-config-extra", "default", currentName, 0)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var cmList corev1.ConfigMapList
+	g.Expect(c.List(ctx, &cmList, client.InNamespace("default"))).To(Succeed())
+
+	remaining := make([]string, 0)
+	for _, cm := range cmList.Items {
+		if cm.Name != "test-owner" {
+			remaining = append(remaining, cm.Name)
+		}
+	}
+	// test-config-abc12345 (not matching prefix "test-config-extra-") + current = 2
+	g.Expect(remaining).To(HaveLen(2))
+	g.Expect(remaining).To(ContainElement("test-config-abc12345"))
+	g.Expect(remaining).To(ContainElement(currentName))
+	g.Expect(remaining).NotTo(ContainElement("test-config-extra-def12345"))
+}
+
+// CC-0077: Verify negative retain is clamped to 0, deleting all historical ConfigMaps.
+func TestPruneImmutableConfigMaps_negativeRetainClampedToZero(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	ctx := context.Background()
+
+	baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	currentName := "my-config-current1"
+
+	cm1 := ownedConfigMap("my-config-aaaaaaaa", "default", "my-config", owner, baseTime)
+	cm2 := ownedConfigMap("my-config-bbbbbbbb", "default", "my-config", owner, baseTime.Add(1*time.Hour))
+	current := ownedConfigMap(currentName, "default", "my-config", owner, baseTime.Add(2*time.Hour))
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, cm1, cm2, current).Build()
+
+	// Negative retain should behave like retain=0: delete all historical, keep current.
+	err := PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, -5)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var cmList corev1.ConfigMapList
+	g.Expect(c.List(ctx, &cmList, client.InNamespace("default"))).To(Succeed())
+
+	remaining := make([]string, 0)
+	for _, cm := range cmList.Items {
+		if cm.Name != "test-owner" {
+			remaining = append(remaining, cm.Name)
+		}
+	}
+	// Only current should remain — all historical deleted.
+	g.Expect(remaining).To(HaveLen(1))
+	g.Expect(remaining).To(ContainElement(currentName))
 }

@@ -1,0 +1,157 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for immutable ConfigMap pruning (CC-0077).
+# Verifies:
+#   - After multiple config changes, stale ConfigMaps are pruned
+#   - The number of ConfigMaps matching the base prefix never exceeds
+#     retain + 1 (current + 3 historical = 4 max)
+#   - Ready=True is maintained throughout
+#
+# REQ-007 (CC-0077)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-config-pruning
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR ──────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Wait for Ready=True ────────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-pruning
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Trigger 4 config changes and verify pruning ────────────────
+  # Each patch sets a unique extraConfig value, producing a new immutable
+  # ConfigMap. With retain=3, after the 4th patch the operator must prune
+  # the oldest ConfigMap, capping the total at retain + 1 = 4.
+  - try:
+    - script:
+        timeout: 300s
+        content: |
+          set -eu
+
+          NS="openstack"
+          CR_NAME="keystone-pruning"
+          CM_PREFIX="keystone-pruning-config-"
+
+          # Count ConfigMaps matching the prefix.
+          count_cms() {
+            kubectl get cm -n "$NS" -o name | grep -c "configmap/${CM_PREFIX}" || echo 0
+          }
+
+          # Wait for DeploymentReady after a config change (poll every 5s).
+          wait_for_ready() {
+            local timeout=120 elapsed=0
+            while [ $elapsed -lt $timeout ]; do
+              READY=$(kubectl get keystone "$CR_NAME" -n "$NS" \
+                -o jsonpath='{.status.conditions[?(@.type=="DeploymentReady")].status}' 2>/dev/null || true)
+              if [ "$READY" = "True" ]; then
+                return 0
+              fi
+              sleep 5
+              elapsed=$((elapsed + 5))
+            done
+            echo "ERROR: DeploymentReady did not become True within ${timeout}s"
+            return 1
+          }
+
+          echo "Initial ConfigMap count: $(count_cms)"
+
+          # Apply 4 sequential config changes via extraConfig patches.
+          for i in 1 2 3 4; do
+            echo "=== Patch $i: setting extraConfig ==="
+            kubectl patch keystone "$CR_NAME" -n "$NS" --type=merge -p \
+              "{\"spec\":{\"extraConfig\":{\"DEFAULT\":{\"e2e_pruning_marker\":\"iteration-$i\"}}}}"
+
+            # Wait for the reconciler to process the change.
+            sleep 5
+            wait_for_ready
+
+            CM_COUNT=$(count_cms)
+            echo "After patch $i: ConfigMap count = $CM_COUNT"
+          done
+
+          # Final assertion: at most retain + 1 = 4 ConfigMaps.
+          # Pruning runs only after reconcileDeployment returns Ready, so after
+          # the last patch there is a window where the new ConfigMap exists but
+          # the prune pass from the follow-up reconcile has not yet executed.
+          # Poll until the count converges, matching the controller's eventual
+          # consistency model rather than racing a single reconcile cycle.
+          FINAL_COUNT=$(count_cms)
+          elapsed=0
+          while [ "$FINAL_COUNT" -gt 4 ] && [ $elapsed -lt 120 ]; do
+            sleep 5
+            elapsed=$((elapsed + 5))
+            FINAL_COUNT=$(count_cms)
+          done
+          echo "Final ConfigMap count: $FINAL_COUNT (after ${elapsed}s wait)"
+          if [ "$FINAL_COUNT" -gt 4 ]; then
+            echo "FAIL: Expected at most 4 ConfigMaps (retain=3 + current), got $FINAL_COUNT"
+            kubectl get cm -n "$NS" -o name | grep "$CM_PREFIX" || true
+            exit 1
+          fi
+          echo "OK: ConfigMap count ($FINAL_COUNT) is within expected bounds (<= 4)"
+    catch:
+    - script:
+        content: |
+          echo "=== ConfigMaps ==="
+          kubectl get cm -n $NAMESPACE -o name | grep pruning-config- || true
+          echo "=== Keystone status ==="
+          kubectl get keystone keystone-pruning -n $NAMESPACE -o yaml 2>&1 | tail -40 || true
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Assert Ready=True maintained after pruning ─────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-pruning
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady

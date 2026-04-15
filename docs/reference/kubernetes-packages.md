@@ -1,7 +1,7 @@
 ---
 title: Kubernetes-Interacting Packages
 quadrant: shared-library
-feature: CC-0005
+feature: CC-0005, CC-0077
 ---
 
 # Kubernetes-Interacting Packages
@@ -111,6 +111,92 @@ name, err := config.CreateImmutableConfigMap(ctx, client, scheme, owner,
     map[string]string{"keystone.conf": renderedINI},
 )
 // name == "keystone-config-a1b2c3d4"
+```
+
+### PruneImmutableConfigMaps
+
+```go
+func PruneImmutableConfigMaps(
+    ctx context.Context,
+    c client.Client,
+    owner client.Object,
+    baseName, namespace, currentName string,
+    retain int,
+) error
+```
+
+Deletes stale immutable ConfigMaps that were previously created by
+`CreateImmutableConfigMap`, retaining the newest `retain` historical ConfigMaps
+(by `CreationTimestamp`) plus the currently active one identified by `currentName`.
+This prevents unbounded accumulation of immutable ConfigMaps across reconcile
+cycles (CC-0077).
+
+**Parameters:**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `ctx` | `context.Context` | Request context |
+| `c` | `client.Client` | Kubernetes API client |
+| `owner` | `client.Object` | Owning CR — only ConfigMaps with a controller owner reference matching this object's UID are considered |
+| `baseName` | `string` | Base name prefix for candidate ConfigMaps (matches `baseName-*`) |
+| `namespace` | `string` | Namespace to list ConfigMaps in |
+| `currentName` | `string` | Name of the currently active ConfigMap (never deleted, even with `retain=0`) |
+| `retain` | `int` | Number of historical ConfigMaps to keep beyond the current one |
+
+**Returns:**
+
+| Value | Description |
+| --- | --- |
+| `error` | Non-nil on list or delete failure; `nil` on success or when no pruning is needed |
+
+**Algorithm:**
+
+1. Lists ConfigMaps matching the `forge.c5c3.io/config-base` label in the namespace.
+2. Filters to ConfigMaps matching the `baseName + "-"` prefix.
+3. Excludes the ConfigMap named `currentName` (the active one).
+4. Excludes ConfigMaps without a controller owner reference matching `owner.GetUID()`.
+5. Sorts remaining candidates by `CreationTimestamp` descending (newest first).
+6. If the number of candidates is less than or equal to `retain`, returns `nil` (no-op).
+7. Deletes candidates from index `retain` onwards (oldest first).
+8. Logs each deletion at info level for auditability.
+
+**Idempotency and concurrency safety:**
+
+- Uses `client.IgnoreNotFound()` on delete operations, so a ConfigMap deleted between
+  the list and delete calls does not cause an error.
+- Calling the function twice with the same state produces the same result.
+- Does not use optimistic locking — concurrent reconcile goroutines may both attempt
+  to delete the same ConfigMap, but `IgnoreNotFound` makes this safe.
+
+**Filtering rules:**
+
+| ConfigMap State | Included in Candidates? |
+| --- | --- |
+| Name matches `baseName-*` prefix, owned by `owner` | Yes |
+| Name equals `currentName` | No (always excluded) |
+| Name does not match `baseName-*` prefix | No |
+| No owner reference | No |
+| Owner reference UID does not match `owner` | No |
+
+**Edge cases:**
+
+| Scenario | Result |
+| --- | --- |
+| No historical ConfigMaps exist | No-op, returns `nil` |
+| Fewer historical ConfigMaps than `retain` | No-op, returns `nil` |
+| `retain=0` | All historical ConfigMaps deleted, only `currentName` survives |
+| ConfigMap deleted between list and delete | `NotFound` silently ignored |
+| Overlapping prefix (e.g., `test-config-` vs `test-config-extra-`) | Strict `baseName + "-"` prefix prevents false matches |
+| Pre-existing ConfigMaps without `forge.c5c3.io/config-base` label | Not pruned — invisible to server-side selector. Bounded in number and GC'd on CR deletion via owner reference (CC-0077). |
+
+**Example:**
+
+```go
+// After creating a new ConfigMap, prune old ones keeping 3 historical:
+err := config.PruneImmutableConfigMaps(ctx, client, keystoneCR,
+    "keystone-config", "openstack", "keystone-config-a1b2c3d4", 3,
+)
+// With 5 historical ConfigMaps, the 2 oldest are deleted, 3 newest + current remain.
 ```
 
 ---
@@ -612,6 +698,7 @@ DatabaseReady     → database.EnsureDatabase, database.EnsureDatabaseUser,
                     database.RunDBSyncJob
 ConfigReady       → config.CreateImmutableConfigMap
 DeploymentReady   → deployment.EnsureDeployment, deployment.EnsureService
+ConfigMapPruning  → config.PruneImmutableConfigMaps (after DeploymentReady)
 TLSReady          → tls.EnsureCertificate, tls.GetTLSSecret
 PolicyReady       → policy.LoadPolicyFromConfigMap
 ```

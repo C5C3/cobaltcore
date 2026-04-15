@@ -1,0 +1,44 @@
+{
+  "feature_id": "CC-0077",
+  "title": "Prune stale immutable ConfigMaps after deployment",
+  "date": "2026-04-15",
+  "summary": "Addresses sourcery-ai[bot] review feedback with two targeted fixes: (1) clamps negative retain values to 0 at function entry to prevent runtime panics from misconfigured inputs, and (2) enriches the prune log entry with baseName, ownerName, and ownerUID fields for multi-tenant correlation. A new test verifies the clamping behavior with retain=-5.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "All existing prune tests still pass (13/13)", "checked": true},
+    {"item": "New test covers negative retain edge case with retain=-5", "checked": true},
+    {"item": "Test verifies all historical ConfigMaps deleted and current preserved", "checked": true},
+    {"item": "Test follows existing pattern: NewGomegaWithT, fake client, explicit CreationTimestamps", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Guard clause is minimal and placed at function entry before any use of retain", "checked": true},
+    {"item": "Log enrichment adds only fields already available in scope (no new computation)", "checked": true},
+    {"item": "No unnecessary changes beyond what the external review requested", "checked": true},
+    {"item": "Feature ID (CC-0077) included in guard clause comment", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "Input validation added for retain parameter (defensive clamping)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Fix is localized to the function that uses retain — no unnecessary abstraction", "checked": true},
+    {"item": "Clamping chosen over error return — appropriate since negative retain has a safe semantic (delete all historical)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code introduced", "checked": true},
+    {"item": "No speculative features added", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Negative retain is normalized before reaching any index operation", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Negative retain clamped to 0 preventing slice index panic", "checked": true},
+    {"item": "client.IgnoreNotFound still wraps Delete for idempotency", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": []
+}

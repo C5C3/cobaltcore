@@ -21,6 +21,11 @@ import (
 
 // Feature: CC-0013
 
+// defaultConfigMapRetainCount is the number of historical immutable ConfigMaps
+// to retain after pruning. Combined with the current active ConfigMap, this
+// allows rollback to 3 previous configurations (CC-0077).
+const defaultConfigMapRetainCount = 3
+
 // reconcileConfig builds the Keystone configuration and creates an immutable
 // ConfigMap containing keystone.conf, api-paste.ini, and optionally policy.yaml.
 // It returns the name of the created ConfigMap (with content-hash suffix).
@@ -181,6 +186,14 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 	}
 
 	return configMapName, nil
+}
+
+// pruneStaleConfigMaps removes historical immutable ConfigMaps that exceed
+// the retain count, keeping only the newest historical ConfigMaps plus the
+// currently active one (CC-0077, REQ-007).
+func (r *KeystoneReconciler) pruneStaleConfigMaps(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) error {
+	baseName := fmt.Sprintf("%s-config", keystone.Name)
+	return config.PruneImmutableConfigMaps(ctx, r.Client, keystone, baseName, keystone.Namespace, configMapName, defaultConfigMapRetainCount)
 }
 
 // resolveCacheServers returns the memcache server list based on the cache spec.

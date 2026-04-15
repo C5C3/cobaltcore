@@ -1,0 +1,55 @@
+{
+  "feature_id": "CC-0077",
+  "title": "Prune stale immutable ConfigMaps after deployment",
+  "date": "2026-04-15",
+  "verdict": "APPROVED",
+  "summary": "All three items from berendt's external review (W-001, W-002, W-003) are correctly addressed. Known limitation for pre-existing ConfigMaps is documented in godoc and reference docs. Integration test now asserts absence of oldest ConfigMap. New E2E Chainsaw test covers deploy, 4 sequential config changes, DeploymentReady waits, and ConfigMap count assertion. All unit tests pass, go vet clean, no lint issues.",
+  "tests_checklist": [
+    {"item": "Unit tests pass (go test ./internal/common/config/...)", "checked": true},
+    {"item": "Controller tests pass (go test ./operators/keystone/internal/controller/...)", "checked": true},
+    {"item": "Integration test asserts absence of oldest ConfigMap (W-003 fix)", "checked": true},
+    {"item": "E2E Chainsaw test exists for config-pruning (W-002 fix)", "checked": true},
+    {"item": "Edge cases covered (retain=0, no candidates, overlapping prefix)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns", "checked": true},
+    {"item": "Known limitation documented in godoc (config.go:221-226)", "checked": true},
+    {"item": "Known limitation documented in reference docs (kubernetes-packages.md:190)", "checked": true},
+    {"item": "Review pattern created for label-based selector backward compatibility", "checked": true},
+    {"item": "Existing review patterns updated with CC-0077 occurrences", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Owner UID check prevents unauthorized deletion (config.go:249-251)", "checked": true},
+    {"item": "Label selector uses controller-runtime API (no injection vector)", "checked": true},
+    {"item": "client.IgnoreNotFound prevents race condition errors (config.go:267)", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "W-001 addressed via documentation (team decision: known limitation)", "checked": true},
+    {"item": "E2E test follows established Chainsaw pattern", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No speculative abstractions", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Negative retain clamped to 0 (config.go:230-233)", "checked": true},
+    {"item": "Errors propagated with context (config.go:237, 268)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs validated (owner UID, prefix, currentName exclusion)", "checked": true},
+    {"item": "NotFound errors handled gracefully for concurrent reconcile safety", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "The idempotency integration test (integration_test.go:187-236) does not track firstCreatedName or assert its absence, unlike the prune test (line 184). Adding g.Expect(remaining).NotTo(ContainElement(firstCreatedName)) would strengthen the idempotency assertion to verify WHICH ConfigMaps survived, not just the count. This is a pre-existing gap not introduced in this diff, so it is a suggestion only.",
+    "Documentation algorithm step 1 (kubernetes-packages.md:154) says 'Lists all ConfigMaps in the namespace' but the implementation uses client.MatchingLabels as a server-side selector. Updating to 'Lists ConfigMaps matching the forge.c5c3.io/config-base label' would be more precise and make the pre-existing limitation self-evident from the algorithm description. This line was not changed in this diff."
+  ],
+  "next_steps": [
+    "Merge — all blocking and major checks pass, external review feedback fully addressed"
+  ],
+  "detected_patterns": []
+}

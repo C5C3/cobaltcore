@@ -1,0 +1,60 @@
+{
+  "feature_id": "CC-0077",
+  "title": "Prune stale immutable ConfigMaps after deployment",
+  "date": "2026-04-15",
+  "summary": "Adds PruneImmutableConfigMaps to internal/common/config/ that lists, filters by owner+prefix, sorts by CreationTimestamp, and deletes ConfigMaps beyond the retain count. Wired into the Keystone reconcile loop after reconcileDeployment via a thin pruneStaleConfigMaps wrapper with hardcoded retain=3. 12 unit tests, 2 integration tests, and 3 controller-level tests cover all edge cases. Reference docs updated in kubernetes-packages.md and keystone-reconciler.md.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Unit tests exist and pass (12 prune tests in config_test.go, 3 in reconcile_config_test.go)", "checked": true},
+    {"item": "Integration tests exist (2 in integration_test.go with envtest)", "checked": true},
+    {"item": "Edge cases covered: retain=0, fewer-than-retain, no-historical, different-owner, no-owner, mismatched-prefix, overlapping-prefix", "checked": true},
+    {"item": "Idempotency tested (second call produces same result)", "checked": true},
+    {"item": "Concurrency safety tested (NotFound on delete is silently ignored)", "checked": true},
+    {"item": "Current ConfigMap is never deleted even with retain=0", "checked": true},
+    {"item": "Retention is by CreationTimestamp not alphabetical order", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (NewGomegaWithT, fake.NewClientBuilder, client.IgnoreNotFound)", "checked": true},
+    {"item": "Functions do one thing (PruneImmutableConfigMaps: list+filter+sort+delete; pruneStaleConfigMaps: thin wrapper)", "checked": true},
+    {"item": "Clear naming (PruneImmutableConfigMaps, pruneStaleConfigMaps, defaultConfigMapRetainCount)", "checked": true},
+    {"item": "No code duplication — shared function in config package, thin wrapper in controller", "checked": true},
+    {"item": "Error wrapping with fmt.Errorf and %w for errors.Is/As compatibility", "checked": true},
+    {"item": "No dead code or unused imports", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Owner UID matching prevents cross-CR ConfigMap deletion", "checked": true},
+    {"item": "No user input directly processed (baseName derived from CR name validated by Kubernetes)", "checked": true},
+    {"item": "client.IgnoreNotFound prevents TOCTOU race from causing errors", "checked": true},
+    {"item": "No secrets handled in this code path", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is minimal — list+filter+sort+delete with no unnecessary abstractions", "checked": true},
+    {"item": "Pruning placed after reconcileDeployment to ensure pods are on new config before old ConfigMaps are deleted", "checked": true},
+    {"item": "Shared library function (config.PruneImmutableConfigMaps) reusable by future operators", "checked": true},
+    {"item": "No new dependencies added", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code between config package and controller", "checked": true},
+    {"item": "No speculative features (no CRD-configurable retain count, no label-based filtering)", "checked": true},
+    {"item": "No unnecessary abstractions or interfaces", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "List errors returned immediately with context", "checked": true},
+    {"item": "Delete errors returned immediately with namespace/name context", "checked": true},
+    {"item": "Early return when candidates <= retain (no unnecessary iteration)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Handles ConfigMaps without owner references (skipped)", "checked": true},
+    {"item": "Handles ConfigMaps owned by different controllers (skipped)", "checked": true},
+    {"item": "Handles already-deleted ConfigMaps via client.IgnoreNotFound", "checked": true},
+    {"item": "Handles overlapping name prefixes correctly", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Consider adding a label (e.g., forge.c5c3.io/config-base=<baseName>) to ConfigMaps created by CreateImmutableConfigMap in a future feature, allowing PruneImmutableConfigMaps to use a label selector instead of listing all ConfigMaps in the namespace. This would improve performance in namespaces with many unrelated ConfigMaps but is not needed at current scale."
+  ],
+  "next_steps": [],
+  "detected_patterns": []
+}

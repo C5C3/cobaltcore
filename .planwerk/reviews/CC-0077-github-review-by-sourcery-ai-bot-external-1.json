@@ -1,0 +1,37 @@
+{
+  "feature_id": "CC-0077",
+  "title": "GitHub Review by sourcery-ai[bot]",
+  "summary": "The reviewer wants a guard against negative `retain` values in `PruneImmutableConfigMaps` to prevent runtime panics (clamp to 0 or return a validation error). They also suggest adding `baseName` and owner name/UID fields to the prune log entries for better traceability in multi-tenant environments.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "sourcery-ai[bot]",
+  "date": "2026-04-15T06:37:38Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "Hey - I've found 1 issue, and left some high level feedback:\n\n- In `PruneImmutableConfigMaps`, consider explicitly normalizing or validating the `retain` parameter (e.g., treating negative values as 0) to avoid surprising behavior where a misconfigured retain value could cause more aggressive pruning than intended.\n- When logging pruned ConfigMaps in `PruneImmutableConfigMaps`, it could be useful to include additional contextual fields such as `baseName` and the owner's name/UID to make it easier to correlate prune events with specific controllers in multi-tenant environments.\n\n<details>\n<summary>Prompt for AI Agents</summary>\n\n~~~markdown\nPlease address the comments from this code review:\n\n## Overall Comments\n- In `PruneImmutableConfigMaps`, consider explicitly normalizing or validating the `retain` parameter (e.g., treating negative values as 0) to avoid surprising behavior where a misconfigured retain value could cause more aggressive pruning than intended.\n- When logging pruned ConfigMaps in `PruneImmutableConfigMaps`, it could be useful to include additional contextual fields such as `baseName` and the owner's name/UID to make it easier to correlate prune events with specific controllers in multi-tenant environments.\n\n## Individual Comments\n\n### Comment 1\n<location path=\"internal/common/config/config.go\" line_range=\"220-229\" />\n<code_context>\n+func PruneImmutableConfigMaps(ctx context.Context, c client.Client, owner client.Object, baseName, namespace, currentName string, retain int) error {\n</code_context>\n<issue_to_address>\n**issue (bug_risk):** Guard against negative retain values to avoid panics when indexing into candidates\n\n`retain` is used directly in `len(candidates) <= retain` and as the start index in `for i := retain; i < len(candidates); i++`. If a negative value is ever passed (e.g., via a misconfigured CR), `candidates[i]` will panic at runtime. Consider normalizing `retain` (e.g., clamp to 0) or returning a validation error when `retain < 0`.\n</issue_to_address>\n~~~\n\n</details>\n\n***\n\n<details>\n<summary>Sourcery is free for open source - if you like our reviews please consider sharing them ✨</summary>\n\n- [X](https://twitter.com/intent/tweet?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [Mastodon](https://mastodon.social/share?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [LinkedIn](https://www.linkedin.com/sharing/share-offsite/?url=https://sourcery.ai)\n- [Facebook](https://www.facebook.com/sharer/sharer.php?u=https://sourcery.ai)\n\n</details>\n\n<sub>\nHelp me be more useful! Please click 👍 or 👎 on each comment and I'll use the feedback to improve your reviews.\n</sub>",
+  "code_comments": [
+    {
+      "body": "**issue (bug_risk):** Guard against negative retain values to avoid panics when indexing into candidates\n\n`retain` is used directly in `len(candidates) <= retain` and as the start index in `for i := retain; i < len(candidates); i++`. If a negative value is ever passed (e.g., via a misconfigured CR), `candidates[i]` will panic at runtime. Consider normalizing `retain` (e.g., clamp to 0) or returning a validation error when `retain < 0`.",
+      "path": "internal/common/config/config.go",
+      "line": 229,
+      "author": "sourcery-ai[bot]",
+      "created_at": "2026-04-15T06:37:38Z",
+      "id": null,
+      "resolution": "Added a guard clause at config.go:223-226 that clamps negative retain values to 0 before they are used in comparisons or as slice indices, preventing potential panics. The fix uses simple normalization (if retain < 0 { retain = 0 }) rather than returning a validation error. A corresponding test (TestPruneImmutableConfigMaps_negativeRetainClampedToZero) was added to verify that retain=-5 behaves identically to retain=0, deleting all historical ConfigMaps while preserving the current one."
+    }
+  ],
+  "resolution_summary": "Both review comments were addressed in internal/common/config/config.go. A guard clause was added at lines 223-226 to clamp negative retain values to 0, preventing runtime panics from misconfigured values. The logger.Info call at line 263 was enriched with baseName, ownerName, and ownerUID fields for multi-tenant correlation. A new test TestPruneImmutableConfigMaps_negativeRetainClampedToZero was added in internal/common/config/config_test.go (lines 1051-1082) to verify the clamping behavior with retain=-5.",
+  "github_review_id": 4111331328
+}

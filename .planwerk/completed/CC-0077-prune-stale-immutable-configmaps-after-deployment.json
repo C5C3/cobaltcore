@@ -2,8 +2,8 @@
   "feature_id": "CC-0077",
   "title": "Prune stale immutable ConfigMaps after deployment",
   "slug": "prune-stale-immutable-configmaps-after-deployment",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #134: Prune stale immutable ConfigMaps after Deployment rollout\n\n**Category**: improvement | **Scope**: Small\n\n**Description**: reconcileConfig creates new immutable ConfigMaps with content-hash suffixes on every config change but never deletes old ones. Add a pruning step that lists ConfigMaps matching the naming pattern, identifies those no longer referenced by any active Pod or ReplicaSet, and deletes them. Retain the last N (e.g., 3) for rollback safety.\n\n**Motivation**: Over the operator's lifetime, orphaned ConfigMaps accumulate indefinitely. This wastes etcd storage and clutters namespace listings, making debugging harder.\n\n**Affected Areas**:\n- `operators/keystone/internal/controller/reconcile_config.go`\n- `internal/common/config/`\n\n**Acceptance Criteria**:\n- [ ] After a successful Deployment rollout, unreferenced ConfigMaps older than the current one are deleted\n- [ ] The last 3 ConfigMaps are retained for rollback\n- [ ] Pruning is idempotent and safe against concurrent reconcile loops\n- [ ] Unit tests validate pruning logic\n\n---\nSource: https://github.com/C5C3/forge/issues/134",
   "stories": [
@@ -285,6 +285,7 @@
       "description": "Add `PruneImmutableConfigMaps(ctx, c, owner, baseName, namespace, currentName string, retain int) error` to `internal/common/config/config.go`. The function: (1) lists all ConfigMaps in namespace via c.List, (2) filters to those owned by owner (matching UID) AND having name prefix baseName+'-' AND name != currentName, (3) sorts candidates by CreationTimestamp descending, (4) if len(candidates) <= retain returns nil, (5) deletes candidates[retain:] using client.IgnoreNotFound for idempotency. Add the following unit tests to `internal/common/config/config_test.go`: TestPruneImmutableConfigMaps_deletesStaleConfigMaps, TestPruneImmutableConfigMaps_retainsNewestByCreationTimestamp, TestPruneImmutableConfigMaps_retainZeroDeletesAllHistorical, TestPruneImmutableConfigMaps_idempotentOnSecondCall, TestPruneImmutableConfigMaps_ignoresNotFoundOnDelete, TestPruneImmutableConfigMaps_skipsConfigMapsOwnedByDifferentController, TestPruneImmutableConfigMaps_skipsConfigMapsWithoutOwnerReference, TestPruneImmutableConfigMaps_neverDeletesCurrentConfigMap, TestPruneImmutableConfigMaps_noopWhenFewerThanRetain, TestPruneImmutableConfigMaps_noopWhenNoHistoricalConfigMaps, TestPruneImmutableConfigMaps_skipsMismatchedPrefix, TestPruneImmutableConfigMaps_handlesOverlappingPrefixCorrectly. Follow the existing test pattern: NewGomegaWithT(t), fake.NewClientBuilder, pre-populate ConfigMaps with explicit CreationTimestamps via WithObjects.",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -301,6 +302,7 @@
       "description": "Add TestIntegration_PruneImmutableConfigMaps and TestIntegration_PruneImmutableConfigMaps_idempotent to `internal/common/config/integration_test.go`. Follow the existing pattern: envtestutil.SkipIfEnvTestUnavailable(t), envtestutil.SetupEnvTest(t), create owner ConfigMap, create 5 ConfigMaps with CreateImmutableConfigMap using different data, call PruneImmutableConfigMaps with retain=3, verify 4 remain (current + 3 historical). For idempotency test, call PruneImmutableConfigMaps twice and verify same result.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-003"
@@ -312,6 +314,7 @@
       "description": "In `operators/keystone/internal/controller/reconcile_config.go`: (1) add constant `defaultConfigMapRetainCount = 3`, (2) add method `pruneStaleConfigMaps(ctx, keystone, currentConfigMapName) error` that calls `config.PruneImmutableConfigMaps(ctx, r.Client, keystone, fmt.Sprintf(\"%s-config\", keystone.Name), keystone.Namespace, currentConfigMapName, defaultConfigMapRetainCount)`. In `operators/keystone/internal/controller/keystone_controller.go`: add the pruning call after the reconcileDeployment check (line ~141) as `if err := r.pruneStaleConfigMaps(ctx, &keystone, configMapName); err != nil { return r.updateStatus(ctx, &keystone, ctrl.Result{}, fmt.Errorf(\"pruning stale ConfigMaps: %w\", err)) }`. Add unit tests to `operators/keystone/internal/controller/reconcile_config_test.go`: TestPruneStaleConfigMaps_deletesOldConfigMaps, TestPruneStaleConfigMaps_retainsRecentConfigMaps, TestPruneStaleConfigMaps_noopWithNoCandidates. Follow existing test helpers: configTestScheme(), configTestKeystone(), newConfigTestReconciler().",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-007"
@@ -323,6 +326,7 @@
       "description": "Update `docs/reference/kubernetes-packages.md`: add a PruneImmutableConfigMaps section after the existing CreateImmutableConfigMap section, documenting the function signature, parameters table, behavior description, and usage example (follow the CreateImmutableConfigMap section format). Update `docs/reference/keystone-reconciler.md`: add a 'ConfigMap Pruning' subsection in the reconcileConfig section documenting that stale ConfigMaps are pruned after deployment rollout with retain count of 3, and update the reconcile flow diagram/table to include the pruning step after reconcileDeployment.",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001"
       ]
@@ -447,6 +451,258 @@
       "story": "Pruning handles edge cases without errors",
       "expected": "pruneStaleConfigMaps returns nil when only the current ConfigMap exists",
       "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestRenderINI",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestMergeDefaults",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestMergeDefaults_doesNotMutateInputs",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestInjectSecrets",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestInjectSecrets_doesNotMutateInput",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestInjectOsloPolicyConfig",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestInjectOsloPolicyConfig_doesNotMutateInput",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestInjectOsloPolicyConfig_emptyPathReturnsOriginalReference",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestCreateImmutableConfigMap_creates",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestCreateImmutableConfigMap_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestCreateImmutableConfigMap_deterministic",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestCreateImmutableConfigMap_differentData",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestCreateImmutableConfigMap_newlineInValueIsUnambiguous",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/config_test.go",
+      "test_function": "TestCreateImmutableConfigMap_rejectsUnownedExisting",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/integration_test.go",
+      "test_function": "TestIntegration_CreateImmutableConfigMap",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/integration_test.go",
+      "test_function": "TestIntegration_CreateImmutableConfigMap_immutabilityFlag",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/integration_test.go",
+      "test_function": "TestIntegration_CreateImmutableConfigMap_ownerReference",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/config/integration_test.go",
+      "test_function": "TestIntegration_CreateImmutableConfigMap_idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_BasicManagedDatabaseAndCache",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_BrownfieldDatabase",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_SpecialCharactersInCredentialsAreURLEncoded",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_BrownfieldCache",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_ManagedCacheCustomReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_PluginConfig",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_ExtraConfigOverridesDefaults",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_PolicyOverridesInlineRules",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_PolicyOverridesConfigMapRef",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_Middleware",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_ConfigMapNameContainsContentHash",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_ImmutableConfigMapWithOwnerReference",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_CredentialKeysSectionPresent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_CredentialKeysCustomMaxActiveKeys",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestReconcileConfig_OsloPolicyEnforceScopeDefaults",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestResolveDatabaseHost",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestDBPort",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_config_test.go",
+      "test_function": "TestResolveCacheServers",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],
@@ -474,8 +730,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-15T05:47:48.401486"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-15T05:49:17.110368"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-15T13:05:28.564442"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/218",
+  "pr_number": 218,
   "execution_history": [
     {
       "run_id": "f96e6b50-05e7-47f8-893e-d94801bd82ab",
@@ -487,6 +753,78 @@
           "name": "prepare",
           "duration": 622.1946392059326,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "469f0a6e-1de5-48ba-b954-80c5bd7c7845",
+      "timestamp": "2026-04-15T06:28:39.655237",
+      "total_duration": 2159.9027528762817,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (2 tasks)",
+          "duration": 657.4359691143036,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (1 tasks)",
+          "duration": 453.57924151420593,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (1 tasks)",
+          "duration": 315.12799072265625,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0077] Code Review",
+          "duration": 158.71070456504822,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0077] Improvements",
+          "duration": 456.8517987728119,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0077] Simplify",
+          "duration": 118.19704818725586,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "fee053a4-ac0d-49d6-8ed2-5a9cccb0240a",
+      "timestamp": "2026-04-15T06:53:24.611173",
+      "total_duration": 287.92998123168945,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 287.92998123168945,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "b463f071-3e07-430c-86ff-16c7a4236f26",
+      "timestamp": "2026-04-15T09:17:38.689193",
+      "total_duration": 875.1589827537537,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 875.1589827537537,
+          "type": "review_address",
           "status": "done"
         }
       ]
