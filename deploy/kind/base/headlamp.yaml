@@ -1,0 +1,185 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Headlamp Kubernetes UI (kind-only demo addon).
+#
+# Bundled with the official Flux plugin (headlamp-k8s/plugins) via an
+# init-container that copies the plugin bundle into an emptyDir mounted
+# at /build/plugins. The main container discovers plugins through
+# config.pluginsDir.
+#
+# This manifest is deployed only from the kind overlay
+# (deploy/kind/base/kustomization.yaml) and NEVER reaches
+# deploy/flux-system/ — an unauthenticated web UI has no place in
+# production clusters.
+#
+# Access in the quick-start guide is via kubectl port-forward + a
+# short-lived ServiceAccount token bound to read-only RBAC (view
+# ClusterRole plus the headlamp-flux-viewer ClusterRole defined below,
+# which covers the Flux toolkit API groups and forge-stack CRs).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: headlamp-system
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: headlamp
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://kubernetes-sigs.github.io/headlamp/
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: headlamp
+  namespace: headlamp-system
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: headlamp
+      version: ">=0.41.0 <1.0.0"
+      sourceRef:
+        kind: HelmRepository
+        name: headlamp
+        namespace: flux-system
+  install:
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    replicaCount: 1
+    serviceAccount:
+      create: true
+      name: headlamp
+    service:
+      type: ClusterIP
+      port: 80
+    config:
+      pluginsDir: /build/plugins
+    initContainers:
+      - name: headlamp-plugins
+        image: ghcr.io/headlamp-k8s/headlamp-plugin-flux:v0.6.0
+        imagePullPolicy: IfNotPresent
+        command:
+          - /bin/sh
+          - -c
+          - cp -r /plugins/. /build/plugins/
+        volumeMounts:
+          - name: headlamp-plugins
+            mountPath: /build/plugins
+    volumes:
+      - name: headlamp-plugins
+        emptyDir: {}
+    volumeMounts:
+      - name: headlamp-plugins
+        mountPath: /build/plugins
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+---
+# Read-only ClusterRole covering the Flux toolkit API groups and the
+# forge-stack CRDs. The built-in `view` role (bound below) does not
+# know about these groups, so the UI would otherwise show empty panes.
+#
+# Resources are enumerated explicitly rather than using ["*"] so the
+# demo RBAC stays close to least-privilege: the role only grants read
+# access to the kinds the Headlamp Flux plugin actually renders and the
+# forge-stack CRs that the quick-start walks through.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: headlamp-flux-viewer
+rules:
+  # Flux source-controller — the plugin's "Sources" pane.
+  - apiGroups: ["source.toolkit.fluxcd.io"]
+    resources:
+      - buckets
+      - gitrepositories
+      - helmcharts
+      - helmrepositories
+      - ocirepositories
+    verbs: ["get", "list", "watch"]
+  # Flux helm-controller — the plugin's "Helm Releases" pane.
+  - apiGroups: ["helm.toolkit.fluxcd.io"]
+    resources: ["helmreleases"]
+    verbs: ["get", "list", "watch"]
+  # Flux kustomize-controller — the plugin's "Kustomizations" pane.
+  - apiGroups: ["kustomize.toolkit.fluxcd.io"]
+    resources: ["kustomizations"]
+    verbs: ["get", "list", "watch"]
+  # Flux notification-controller — the plugin's "Notifications" pane.
+  - apiGroups: ["notification.toolkit.fluxcd.io"]
+    resources: ["alerts", "providers", "receivers"]
+    verbs: ["get", "list", "watch"]
+  # Flux image-automation — the plugin's "Image Automation" pane.
+  - apiGroups: ["image.toolkit.fluxcd.io"]
+    resources:
+      - imagepolicies
+      - imagerepositories
+      - imageupdateautomations
+    verbs: ["get", "list", "watch"]
+  # CRDs — needed so the plugin can discover which groups are served.
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch"]
+  # forge-stack CRs the quick-start walkthrough reconciles.
+  - apiGroups: ["keystone.openstack.c5c3.io"]
+    resources: ["keystones"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["memcached.c5c3.io"]
+    resources: ["memcacheds"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["k8s.mariadb.com"]
+    resources: ["mariadbs", "databases", "users", "grants"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["external-secrets.io"]
+    resources:
+      - clustersecretstores
+      - externalsecrets
+      - secretstores
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["cert-manager.io"]
+    resources:
+      - certificaterequests
+      - certificates
+      - clusterissuers
+      - issuers
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: headlamp-view
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
+subjects:
+  - kind: ServiceAccount
+    name: headlamp
+    namespace: headlamp-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: headlamp-flux-view
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: headlamp-flux-viewer
+subjects:
+  - kind: ServiceAccount
+    name: headlamp
+    namespace: headlamp-system

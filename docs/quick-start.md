@@ -130,7 +130,12 @@ external-secrets      external-secrets-*     Ready
 openbao-system        openbao-0              Ready (unsealed)
 openstack             openstack-db-*         Ready (MariaDB cluster)
 openstack             openstack-memcached-*  Ready (Memcached cluster)
+headlamp-system       headlamp-*             Starting (kind-only demo UI, not waited on)
 ```
+
+Headlamp is deployed asynchronously and is **not** part of the `deploy-infra` wait list — a
+broken upstream chart release must never block E2E runs. Step 4 below waits for it explicitly
+at the point you actually need the UI.
 
 The `openstack` namespace also holds the synced secrets:
 
@@ -142,7 +147,29 @@ openstack   keystone-db           (database credentials from OpenBao)
 
 ---
 
-## Step 4 — Deploy the Keystone operator
+## Step 4 — Open the Headlamp UI
+
+The kind overlay ships [Headlamp](https://headlamp.dev/) with the Flux plugin preloaded, so
+you can watch Steps 5–9 reconcile live. Wait for the HelmRelease to become Ready, then
+get a token, port-forward, and open the UI:
+
+```bash
+kubectl wait helmrelease/headlamp \
+  -n headlamp-system \
+  --for=condition=Ready \
+  --timeout=300s
+
+kubectl create token headlamp -n headlamp-system --duration=8h
+kubectl port-forward svc/headlamp -n headlamp-system 8080:80
+```
+
+Open `http://localhost:8080`, paste the token. The sidebar shows **Flux → Helm Releases /
+Kustomizations / Sources** alongside the standard resources. The `headlamp` ServiceAccount is
+bound to a read-only ClusterRole covering Flux toolkit API groups and forge-stack CRDs.
+
+---
+
+## Step 5 — Deploy the Keystone operator
 
 The Keystone operator is distributed as a Helm chart. There are two ways to deploy it depending on
 your goal.
@@ -211,7 +238,7 @@ keystone-operator-6d7f9f4d5b-xyz99   1/1     Running   0          30s
 
 ---
 
-## Step 5 — Build and load the Keystone service image
+## Step 6 — Build and load the Keystone service image
 
 The `Keystone` CR references a service image that runs the actual OpenStack Keystone API. Either
 pull the pre-built image from GHCR or build it locally.
@@ -263,11 +290,11 @@ kind load docker-image "ghcr.io/c5c3/keystone:${RELEASE}" --name forge-e2e
 
 ---
 
-## Step 6 — Create a Keystone CR
+## Step 7 — Create a Keystone CR
 
 Apply the following manifest to deploy a Keystone instance in **managed mode**. In this mode the
 operator creates and manages the MariaDB database (via `clusterRef`) and configures Memcached
-for session caching. Replace `<RELEASE>` with the same value used in Step 5 (e.g. `2025.2`):
+for session caching. Replace `<RELEASE>` with the same value used in Step 6 (e.g. `2025.2`):
 
 ```yaml
 # keystone.yaml
@@ -280,7 +307,7 @@ spec:
   replicas: 3
   image:
     repository: ghcr.io/c5c3/keystone
-    tag: "<RELEASE>"   # e.g. 2025.2 — must match the image loaded in Step 5
+    tag: "<RELEASE>"   # e.g. 2025.2 — must match the image loaded in Step 6
   database:
     clusterRef:
       name: openstack-db
@@ -307,7 +334,7 @@ kubectl apply -f keystone.yaml
 
 ---
 
-## Step 7 — Wait for Keystone to become Ready
+## Step 8 — Wait for Keystone to become Ready
 
 The operator reconciles the CR through five sequential sub-conditions before the aggregate
 `Ready` condition is set:
@@ -343,7 +370,7 @@ keystone.keystone.openstack.c5c3.io/keystone condition met
 
 ---
 
-## Step 8 — Verify the deployment
+## Step 9 — Verify the deployment
 
 ### Check all owned resources
 
@@ -467,7 +494,7 @@ JUnit XML reports are written to `_output/reports/` after each run.
 
 ## Running Tempest API tests
 
-With the Keystone CR Ready from Step 7, validate the identity API with the OpenStack Tempest
+With the Keystone CR Ready from Step 8, validate the identity API with the OpenStack Tempest
 test suite:
 
 ```bash
