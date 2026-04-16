@@ -14,6 +14,13 @@ CC-0050 refactored repeated E2E logic into reusable shell scripts (`hack/ci-*.sh
 composite GitHub Action (`.github/actions/setup-e2e-infra/`), reducing duplication across
 the `e2e-infra`, `e2e-operator`, and `tempest` jobs.
 
+The `build-e2e-images` job centralises E2E image builds: it builds all Docker images
+(operator, service, tempest) once and uploads them as zstd-compressed tarballs. The
+`e2e-operator` and `tempest` jobs download and load the shared artifact via the
+`load-e2e-images` composite action instead of rebuilding, saving ~5-10 min per CI run.
+The build always includes `keystone` (required by tempest) regardless of which operator
+triggered the pipeline.
+
 ## File Location
 
 `.github/workflows/ci.yaml`
@@ -86,7 +93,7 @@ Gate Jobs (always run):
   format-check ─────┤
   shellcheck ───────┤
   verify-codegen ───┤
-  test (matrix) ────┼──> E2E Jobs + Publish Jobs
+  test (matrix) ────┼──> build-e2e-images ──> E2E Jobs
   test-integration ─┘
 
 Conditional Jobs (path-filtered via changes job):
@@ -95,11 +102,14 @@ Conditional Jobs (path-filtered via changes job):
   helm-validate ──> needs: [changes], if: needs.changes.outputs.helm == 'true'
   docs ──────────> needs: [changes], if: needs.changes.outputs.docs == 'true'
 
-E2E Jobs (depends on gates):
+Image Build (depends on gates):
+  build-e2e-images ──> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]
+
+E2E Jobs (depends on build-e2e-images):
   e2e-infra ──────> needs: [changes], if: needs.changes.outputs.e2e-infra == 'true'
-  e2e-operator ───> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]
+  e2e-operator ───> needs: [changes, build-e2e-images]
   e2e-chaos ──────> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, e2e-operator]
-  tempest ────────> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]
+  tempest ────────> needs: [changes, build-e2e-images]
 
 Publish Jobs (main/tags only, depends on E2E):
   build-and-push (matrix: operator × platform) ──> needs: [changes, e2e-operator], if: push event
@@ -434,29 +444,58 @@ validates health of all operators, CRs, and ExternalSecrets.
 
 Timeout: 20 minutes.
 
+### build-e2e-images
+
+Centralised image build for E2E test jobs. Builds all Docker images (base, operator,
+service, tempest) once and uploads them as zstd-compressed tarballs. The `e2e-operator`
+and `tempest` jobs download the artifact instead of rebuilding, saving ~5-10 min per CI run.
+
+**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]`
+**Condition:** Runs only when `has-e2e-operators == 'true'` and no gate job failed. Uses
+`always()` so the job runs when upstream Go jobs are skipped (e.g. pure E2E test-definition
+PRs where `go=false`).
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 2 | Verify zstd | Fails fast if `zstd` is not available on the runner |
+| 3 | Resolve build operators | Unions `e2e-operators` with a fixed `keystone` entry (required by tempest) |
+| 4 | Build base images | Builds `python-base` and `venv-builder` (reused by subsequent builds) |
+| 5 | Build operator images | Builds `<IMAGE_PREFIX>/<op>-operator:dev` for each resolved operator |
+| 6 | Build service images | Builds `<IMAGE_PREFIX>/<op>:<release>` for each operator x release combination |
+| 7 | Build Tempest images | Builds `c5c3/tempest:<release>` for all releases |
+| 8 | Save images | Compresses each image as a zstd tarball (`zstd -T0 -3`) |
+| 9 | Upload artifact | Uploads `_output/e2e-images/` as `e2e-images` (1-day retention, no additional compression) |
+
+The "Resolve build operators" step guarantees that `keystone` is always in the build set.
+This is required because the `tempest` job hardcodes `keystone-operator:dev` and
+`keystone:<release>` — without the union, a pipeline triggered by a different operator
+(e.g. glance) would fail tempest due to missing keystone images.
+
+Timeout: 30 minutes.
+
 ### e2e-operator
 
 End-to-end operator test using kind cluster and Chainsaw (CC-0018 REQ-005, CC-0050).
-Builds the operator and service images locally, loads them into kind, deploys the
-infrastructure stack and operator via Helm, and runs Chainsaw E2E test suites.
+Loads pre-built images from the `build-e2e-images` artifact via the `load-e2e-images`
+composite action, deploys the infrastructure stack and operator via Helm, and runs
+Chainsaw E2E test suites.
 
-**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]`
-**Condition:** Runs only when `has-e2e-operators == 'true'` and all gate jobs succeeded.
+**Dependencies:** `needs: [changes, build-e2e-images]`
+**Condition:** Runs only when `has-e2e-operators == 'true'` and `build-e2e-images` succeeded.
 
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
 | 3 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge-e2e`) |
-| 4 | `make docker-build` | Builds operator image with tag `<IMAGE_PREFIX>/<operator>-operator:dev` |
-| 5 | `hack/ci-build-service-image.sh` | Builds the OpenStack 2025.2 service image (CC-0050 REQ-002) |
-| 6 | `hack/ci-build-service-image.sh` (2026.1) | Builds the OpenStack 2026.1 service image with `RELEASE=2026.1` (CC-0051 REQ-005) |
-| 7 | `kind load docker-image` | Loads operator, 2025.2 service, 2025.2-upgraded, and 2026.1 service images into kind |
-| 8 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack (CC-0050 REQ-005) |
-| 9 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm (CC-0050 REQ-003) |
-| 10 | `chainsaw test` | Runs E2E tests from `tests/e2e/<operator>/` |
-| 11 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs (CC-0050 REQ-001) |
-| 12 | Upload JUnit report | Uploads test results as artifact (14-day retention) |
+| 4 | `load-e2e-images` composite action | Downloads shared artifact and loads all zstd-compressed images into Docker |
+| 5 | `kind load docker-image` | Loads operator, 2025.2 service, 2025.2-upgraded, and 2026.1 service images into kind |
+| 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack (CC-0050 REQ-005) |
+| 7 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm (CC-0050 REQ-003) |
+| 8 | `chainsaw test` | Runs E2E tests from `tests/e2e/<operator>/` |
+| 9 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs (CC-0050 REQ-001) |
+| 10 | Upload JUnit report | Uploads test results as artifact (14-day retention) |
 
 **Matrix strategy:**
 
@@ -529,10 +568,11 @@ tests validate operator resilience against the current codebase.
 Tempest API integration tests (CC-0035, CC-0050, CC-0051). Deploys services into a kind
 cluster and runs the OpenStack Tempest test suite against them. Uses a release matrix
 (CC-0051) to validate each OpenStack release independently, with per-release Tempest
-configuration, Keystone CRs, and K8s service names.
+configuration, Keystone CRs, and K8s service names. Loads pre-built images from the
+`build-e2e-images` artifact via the `load-e2e-images` composite action.
 
-**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]`
-**Condition:** Runs only when `has-e2e-operators == 'true'` and all gate jobs succeeded.
+**Dependencies:** `needs: [changes, build-e2e-images]`
+**Condition:** Runs only when `has-e2e-operators == 'true'` and `build-e2e-images` succeeded.
 
 **Matrix strategy (CC-0051):**
 
@@ -561,16 +601,14 @@ these via `matrix.release`, `matrix.config-dir`, `matrix.cr-name`, and
 | 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
 | 3 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge-e2e`) |
-| 4 | `make docker-build` | Builds operator image (keystone) |
-| 5 | `hack/ci-build-service-image.sh` | Builds the OpenStack service image for `matrix.release` (CC-0050 REQ-002) |
-| 6 | `hack/ci-build-tempest-image.sh` | Builds Tempest Docker image for `matrix.release` with pinned versions from `releases/` config (CC-0050 REQ-002) |
-| 7 | `kind load docker-image` | Loads operator and service images into kind |
-| 8 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack (CC-0050 REQ-005) |
-| 9 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm (CC-0050 REQ-003) |
-| 10 | Deploy Keystone CR | Applies `matrix.config-dir/00-keystone-cr.yaml` and waits for `matrix.cr-name` Ready |
-| 11 | `hack/ci-run-tempest.sh` | Runs Tempest API tests with `CONFIG_DIR=matrix.config-dir`, `SERVICE_K8S_NAME=matrix.service-k8s-name` (CC-0050 REQ-004) |
-| 12 | Upload Tempest results | Uploads `_output/tempest/` as `tempest-<release>-results` artifact (14-day retention) |
-| 13 | `hack/ci-dump-diagnostics.sh` (always) | Dumps diagnostic info with `OPERATOR=keystone` (CC-0050 REQ-001) |
+| 4 | `load-e2e-images` composite action | Downloads shared artifact and loads all zstd-compressed images into Docker |
+| 5 | `kind load docker-image` | Loads keystone operator and service images into kind |
+| 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack (CC-0050 REQ-005) |
+| 7 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm (CC-0050 REQ-003) |
+| 8 | Deploy Keystone CR | Applies `matrix.config-dir/00-keystone-cr.yaml` and waits for `matrix.cr-name` Ready |
+| 9 | `hack/ci-run-tempest.sh` | Runs Tempest API tests with `CONFIG_DIR=matrix.config-dir`, `SERVICE_K8S_NAME=matrix.service-k8s-name` (CC-0050 REQ-004) |
+| 10 | Upload Tempest results | Uploads `_output/tempest/` as `tempest-<release>-results` artifact (14-day retention) |
+| 11 | `hack/ci-dump-diagnostics.sh` (always) | Dumps diagnostic info with `OPERATOR=keystone` (CC-0050 REQ-001) |
 
 Timeout: 45 minutes.
 
@@ -850,28 +888,54 @@ Usage in a workflow job:
 The action takes no inputs. All configuration is handled by existing Makefile targets and
 environment variables.
 
+## Composite Action: load-e2e-images
+
+`.github/actions/load-e2e-images/action.yaml`
+
+A composite GitHub Action that downloads the pre-built E2E image artifact from the
+`build-e2e-images` job and loads all images into the local Docker daemon. Shared between
+`e2e-operator` and `tempest` jobs to avoid duplicating the artifact download + zstd
+decompress + docker load sequence.
+
+| Step | Description |
+| --- | --- |
+| 1 | Downloads the `e2e-images` artifact to `_output/e2e-images/` via `actions/download-artifact@v8` (SHA-pinned) |
+| 2 | Verifies `zstd` is available on the runner (fails fast with `::error::` annotation if missing) |
+| 3 | Decompresses each `.tar.zst` file and pipes into `docker load` |
+
+Usage in a workflow job:
+
+```yaml
+- name: Load E2E images
+  uses: ./.github/actions/load-e2e-images
+```
+
+The action takes no inputs. It assumes the `e2e-images` artifact was uploaded by a prior
+`build-e2e-images` job in the same workflow run.
+
 ## How the Pieces Fit Together
 
 The E2E jobs follow a common pattern, with shared components extracted by CC-0050:
 
 ```
 1. Checkout + Go setup + kind cluster creation     (workflow steps)
-2. Build operator image                             (make docker-build)
-3. Build service image                              (hack/ci-build-service-image.sh)
-4. Load images into kind                            (workflow steps)
-5. Deploy infrastructure                            (setup-e2e-infra composite action)
-6. Deploy operator                                  (hack/ci-deploy-operator.sh)
-7. Run tests                                        (chainsaw / hack/ci-run-tempest.sh)
-8. Dump diagnostics                                 (hack/ci-dump-diagnostics.sh)
-9. Upload artifacts                                 (workflow steps)
+2. Load pre-built images from artifact              (load-e2e-images composite action)
+3. Load images into kind                            (workflow steps)
+4. Deploy infrastructure                            (setup-e2e-infra composite action)
+5. Deploy operator                                  (hack/ci-deploy-operator.sh)
+6. Run tests                                        (chainsaw / hack/ci-run-tempest.sh)
+7. Dump diagnostics                                 (hack/ci-dump-diagnostics.sh)
+8. Upload artifacts                                 (workflow steps)
 ```
 
-The `e2e-infra` job uses steps 1, 5, 7-9 (no operator or service images needed). The
-`e2e-operator` job uses all steps. The `e2e-chaos` job (CC-0054) uses all steps with a
-chaos-specific Chainsaw config (`tests/e2e-chaos/chainsaw-config.yaml`) and test directory
-(`tests/e2e-chaos/`). The `tempest` job uses all steps plus an additional Tempest image
-build and Keystone CR deployment before running `hack/ci-run-tempest.sh` instead of
-Chainsaw.
+Image building is centralised in `build-e2e-images`, which runs once before the E2E jobs.
+The `e2e-infra` job uses steps 1, 4, 6-8 (no operator or service images needed). The
+`e2e-operator` and `tempest` jobs use all steps, loading images from the shared artifact.
+The `e2e-chaos` job (CC-0054) still builds its own images locally (it does not depend on
+`build-e2e-images`) and uses a chaos-specific Chainsaw config
+(`tests/e2e-chaos/chainsaw-config.yaml`) and test directory (`tests/e2e-chaos/`). The
+`tempest` job additionally deploys a Keystone CR before running `hack/ci-run-tempest.sh`
+instead of Chainsaw.
 
 ## Go Setup Convention
 
@@ -1056,7 +1120,7 @@ The CI workflow depends on artifacts introduced by CC-0001, CC-0010, and CC-0050
 | `Makefile` (`test-operator` target) | `test` job (operator legs) | Runs unit tests for a single operator with coverage profile |
 | `Makefile` (`test-integration` target) | `test-integration` job (operator legs) | Runs envtest integration tests per operator with coverage profiles |
 | `Makefile` (`test-integration-common` target) | `test-integration` job (`common` leg) | Runs envtest integration tests for `internal/common` with coverage profile |
-| `Makefile` (`docker-build` target) | `e2e-operator`, `tempest`, `build-and-push` jobs | Builds operator Docker images |
+| `Makefile` (`docker-build` target) | `build-e2e-images`, `e2e-chaos`, `build-and-push` jobs | Builds operator Docker images |
 | `Makefile` (`helm-package` target) | `helm-push` job | Packages operator Helm charts |
 | `.golangci.yml` | `lint` job | Provides linter configuration (enabled linters, exclusion rules, timeout) |
 | `go.work` | All Go-based jobs | Provides the Go version for `actions/setup-go@v6` |
@@ -1067,6 +1131,7 @@ The CI workflow depends on artifacts introduced by CC-0001, CC-0010, and CC-0050
 | `hack/ci-deploy-operator.sh` | `e2e-operator`, `e2e-chaos`, `tempest` jobs | Deploys operator via Helm (CC-0050) |
 | `hack/ci-run-tempest.sh` | `tempest` job | Runs Tempest API tests (CC-0050) |
 | `.github/actions/setup-e2e-infra/` | `e2e-infra`, `e2e-operator`, `e2e-chaos`, `tempest` jobs | Composite action for infra setup (CC-0050) |
+| `.github/actions/load-e2e-images/` | `e2e-operator`, `tempest` jobs | Composite action for artifact download + zstd decompress + docker load |
 | `tests/e2e-chaos/chainsaw-config.yaml` | `e2e-chaos` job | Chaos-specific Chainsaw configuration (CC-0054) |
 
 :::

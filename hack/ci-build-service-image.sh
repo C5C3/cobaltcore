@@ -71,8 +71,20 @@ git clone --depth 1 --branch "${SERVICE_REF}" \
 # ---------------------------------------------------------------------------
 # 5. Build image chain: python-base -> venv-builder -> service
 # ---------------------------------------------------------------------------
-docker build -t python-base "${REPO_ROOT}/images/python-base/"
-docker build -t venv-builder "${REPO_ROOT}/images/venv-builder/"
+# Reuse existing base images when available (e.g. when a prior invocation in
+# the same job or an artifact load already created them).  Saves ~30s per
+# redundant rebuild within e2e-operator (which calls this script twice for
+# different releases).
+if ! docker image inspect python-base >/dev/null 2>&1; then
+  docker build -t python-base "${REPO_ROOT}/images/python-base/"
+else
+  echo "Reusing existing python-base image"
+fi
+if ! docker image inspect venv-builder >/dev/null 2>&1; then
+  docker build -t venv-builder "${REPO_ROOT}/images/venv-builder/"
+else
+  echo "Reusing existing venv-builder image"
+fi
 docker build -t "${IMAGE_PREFIX}/${OPERATOR}:${RELEASE}" \
   --build-arg "PIP_EXTRAS=${PIP_EXTRAS}" \
   --build-arg "PIP_PACKAGES=${PIP_PACKAGES}" \

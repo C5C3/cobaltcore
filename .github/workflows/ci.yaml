@@ -400,12 +400,11 @@ jobs:
           path: _output/reports/
           retention-days: 14
 
-  # CC-0018, REQ-005: End-to-end operator tests using kind cluster and Chainsaw.
-  # Builds the operator image, loads it into kind, deploys via Helm, and runs
-  # Chainsaw test suites per operator.
-  # Only runs when Go/operator code or E2E test definitions change, and only
-  # after all pre-flight checks (lint, tests, shellcheck) have passed.
-  e2e-operator:
+  # Centralized image build for E2E test jobs.
+  # Builds all Docker images (operator, service, tempest) once and uploads them
+  # as zstd-compressed tarballs.  e2e-operator and tempest download and load
+  # the artifact instead of rebuilding, saving ~5-10 min per CI run.
+  build-e2e-images:
     needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]
     # always(): allow the job to run when upstream Go jobs are skipped
     # (e.g. pure E2E test-definition PRs where go=false). The explicit
@@ -413,6 +412,124 @@ jobs:
     if: |
       always() &&
       needs.changes.outputs.has-e2e-operators == 'true' &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Verify zstd is available
+        run: |
+          if ! command -v zstd &>/dev/null; then
+            echo "::error::zstd is not installed on this runner"
+            exit 1
+          fi
+          echo "zstd version: $(zstd --version)"
+
+      # Tempest always tests keystone, so keystone must be built regardless
+      # of which operator triggered the pipeline.  Union the changed-operator
+      # list with a fixed "keystone" entry so the dependency is explicit.
+      - name: Resolve build operators
+        run: |
+          ops=$(echo '${{ needs.changes.outputs.e2e-operators }}' | jq -r '.operator[]')
+          if ! printf '%s\n' $ops | grep -qx keystone; then
+            ops=$(printf '%s\nkeystone' "$ops")
+          fi
+          {
+            echo "BUILD_OPERATORS<<EOF"
+            echo "$ops"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      # Build base images once — all subsequent service and tempest builds
+      # reuse them via the skip-if-exists guard in ci-build-service-image.sh.
+      - name: Build base images
+        run: |
+          docker build -t python-base images/python-base/
+          docker build -t venv-builder images/venv-builder/
+
+      # Build operator images for all resolved operators (changed + keystone).
+      - name: Build operator images
+        run: |
+          for op in $BUILD_OPERATORS; do
+            echo "::group::Building ${op}-operator:dev"
+            make docker-build OPERATOR="${op}" IMG="${IMAGE_PREFIX}/${op}-operator:dev"
+            echo "::endgroup::"
+          done
+
+      # Build service images for every operator × release combination.
+      # Iterates releases/*/ directories which is the single source of truth
+      # for both e2e-operator (2025.2, 2026.1) and tempest matrix releases.
+      - name: Build service images
+        run: |
+          for op in $BUILD_OPERATORS; do
+            for release_dir in releases/*/; do
+              release="${release_dir%/}"
+              release="${release##*/}"
+              echo "::group::Building ${op}:${release}"
+              OPERATOR="${op}" IMAGE_PREFIX="${IMAGE_PREFIX}" RELEASE="${release}" \
+                hack/ci-build-service-image.sh
+              echo "::endgroup::"
+            done
+          done
+
+      # Build Tempest images for all releases.
+      - name: Build Tempest images
+        run: |
+          for release_dir in releases/*/; do
+            release="${release_dir%/}"
+            release="${release##*/}"
+            echo "::group::Building tempest:${release}"
+            RELEASE="${release}" TEMPEST_IMAGE="c5c3/tempest:${release}" \
+              hack/ci-build-tempest-image.sh
+            echo "::endgroup::"
+          done
+
+      # Save each image as an individually zstd-compressed tarball.
+      # zstd -T0 uses all available cores; -3 is the default level (fast).
+      - name: Save images
+        run: |
+          mkdir -p _output/e2e-images
+          for op in $BUILD_OPERATORS; do
+            docker save "${IMAGE_PREFIX}/${op}-operator:dev" \
+              | zstd -T0 -3 -o "_output/e2e-images/${op}-operator-dev.tar.zst"
+            for release_dir in releases/*/; do
+              release="${release_dir%/}"
+              release="${release##*/}"
+              docker save "${IMAGE_PREFIX}/${op}:${release}" \
+                | zstd -T0 -3 -o "_output/e2e-images/${op}-${release}.tar.zst"
+            done
+          done
+          for release_dir in releases/*/; do
+            release="${release_dir%/}"
+            release="${release##*/}"
+            docker save "c5c3/tempest:${release}" \
+              | zstd -T0 -3 -o "_output/e2e-images/tempest-${release}.tar.zst"
+          done
+          echo "Saved images:"
+          ls -lh _output/e2e-images/
+
+      - name: Upload E2E images
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-images
+          path: _output/e2e-images/
+          retention-days: 1
+          if-no-files-found: error
+          compression-level: 0  # already compressed with zstd
+
+  # CC-0018, REQ-005: End-to-end operator tests using kind cluster and Chainsaw.
+  # Loads pre-built images from the build-e2e-images artifact, deploys via Helm,
+  # and runs Chainsaw test suites per operator.
+  # Only runs when Go/operator code or E2E test definitions change, and only
+  # after all pre-flight checks (lint, tests, shellcheck) have passed.
+  e2e-operator:
+    needs: [changes, build-e2e-images]
+    if: |
+      always() &&
+      needs.changes.outputs.has-e2e-operators == 'true' &&
+      needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -430,21 +547,9 @@ jobs:
         with:
           config: hack/kind-config.yaml
           cluster_name: forge-e2e
-      - name: Build operator image
-        run: make docker-build OPERATOR=${{ matrix.operator }} IMG=${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator:dev
-      # CC-0050: Use shared service image build script (REQ-002).
-      - name: Build service image
-        run: hack/ci-build-service-image.sh
-        env:
-          OPERATOR: ${{ matrix.operator }}
-          IMAGE_PREFIX: ${{ env.IMAGE_PREFIX }}
-      # CC-0051: Build 2026.1 service image for basic-deployment-2026-1 E2E test (REQ-005).
-      - name: Build service image (2026.1)
-        run: hack/ci-build-service-image.sh
-        env:
-          OPERATOR: ${{ matrix.operator }}
-          IMAGE_PREFIX: ${{ env.IMAGE_PREFIX }}
-          RELEASE: "2026.1"
+      # Load pre-built images from shared artifact instead of building.
+      - name: Load E2E images
+        uses: ./.github/actions/load-e2e-images
       - name: Load images into kind
         run: |
           # Tag the service image with the upgrade tag used by the image-upgrade E2E test.
@@ -560,13 +665,11 @@ jobs:
   # services can be added to this single job without needing separate runs.
   # CC-0051: Matrix over OpenStack releases to validate each release independently.
   tempest:
-    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]
-    # always(): allow the job to run when upstream Go jobs are skipped
-    # (e.g. pure E2E test-definition PRs where go=false). The explicit
-    # failure/cancelled guard still blocks if any upstream actually failed.
+    needs: [changes, build-e2e-images]
     if: |
       always() &&
       needs.changes.outputs.has-e2e-operators == 'true' &&
+      needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -585,21 +688,9 @@ jobs:
           config: hack/kind-config.yaml
           cluster_name: forge-e2e
       # -- Keystone --------------------------------------------------------
-      - name: Build operator image (keystone)
-        run: make docker-build OPERATOR=keystone IMG=${{ env.IMAGE_PREFIX }}/keystone-operator:dev
-      # CC-0050: Use shared service image build script (REQ-002).
-      - name: Build service image (keystone)
-        run: hack/ci-build-service-image.sh
-        env:
-          OPERATOR: keystone
-          IMAGE_PREFIX: ${{ env.IMAGE_PREFIX }}
-          RELEASE: ${{ matrix.release }}
-      # CC-0050: Use shared Tempest image build script (REQ-002).
-      - name: Build Tempest image
-        run: hack/ci-build-tempest-image.sh
-        env:
-          RELEASE: ${{ matrix.release }}
-          TEMPEST_IMAGE: c5c3/tempest:${{ matrix.release }}
+      # Load pre-built images from shared artifact instead of building.
+      - name: Load E2E images
+        uses: ./.github/actions/load-e2e-images
       - name: Load images into kind
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name forge-e2e
