@@ -7,8 +7,24 @@ FROM ubuntu:noble@sha256:84e77dee7d1bc93fb029a45e3c6cb9d8aa4831ccfcc7103d36e8769
 ENV PATH=/var/lib/openstack/bin:$PATH
 ENV LANG=C.UTF-8
 
+# Optional APT mirror override (e.g. https://azure.archive.ubuntu.com for
+# GitHub Actions runners).  When empty the default Ubuntu mirrors are kept.
+# On arm64 ports.ubuntu.com has no Azure equivalent so the sed is a no-op.
+ARG APT_MIRROR=""
+RUN if [ -n "$APT_MIRROR" ]; then \
+        sed -i \
+            -e "s|http://archive.ubuntu.com|${APT_MIRROR}|g" \
+            -e "s|http://security.ubuntu.com|${APT_MIRROR}|g" \
+            /etc/apt/sources.list.d/ubuntu.sources; \
+    fi && \
+    echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/80-retries
+
 # Runtime dependencies shared by all services
-RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends \
+# Cache mounts speed up rebuilds under BuildKit; the trailing rm is a no-op
+# when the mount is active but keeps the layer clean on non-BuildKit engines.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     netbase \
     python3 \

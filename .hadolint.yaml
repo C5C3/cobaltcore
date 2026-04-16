@@ -11,3 +11,4 @@
 ignored:
   - DL3006
   - DL3008
+  - DL3009  # apt lists are in --mount=type=cache, not in the image layer

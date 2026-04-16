@@ -446,7 +446,9 @@ jobs:
       # reuse them via the skip-if-exists guard in ci-build-service-image.sh.
       - name: Build base images
         run: |
-          docker build -t python-base images/python-base/
+          docker build -t python-base \
+            --build-arg APT_MIRROR=http://azure.archive.ubuntu.com \
+            images/python-base/
           docker build -t venv-builder images/venv-builder/
 
       # Build operator images for all resolved operators (changed + keystone).

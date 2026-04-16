@@ -123,6 +123,8 @@ jobs:
           context: images/python-base
           platform: ${{ matrix.platform }}
           platform-pair: ${{ steps.platform-pair.outputs.value }}
+          build-args: |
+            APT_MIRROR=http://azure.archive.ubuntu.com
           labels-title: python-base
           labels-description: Python runtime base image for OpenStack services
           extra-labels: |

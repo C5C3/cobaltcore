@@ -54,7 +54,9 @@ COPY --from=build --link /var/lib/openstack /var/lib/openstack
 # "E: No packages specified" from apt-get. CI always provides packages
 # via the workflow's "Resolve extra packages" step.
 # hadolint ignore=DL3008
-RUN if [ -n "${EXTRA_APT_PACKAGES}" ]; then \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    if [ -n "${EXTRA_APT_PACKAGES}" ]; then \
     DEBIAN_FRONTEND=noninteractive apt-get update && \
     apt-get install -y --no-install-recommends ${EXTRA_APT_PACKAGES} && \
     rm -rf /var/lib/apt/lists/*; \
