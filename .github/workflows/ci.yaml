@@ -447,7 +447,7 @@ jobs:
     # failure/cancelled guard still blocks if any upstream actually failed.
     if: |
       always() &&
-      needs.changes.outputs.has-e2e-operators == 'true' &&
+      (needs.changes.outputs.has-e2e-operators == 'true' || needs.changes.outputs.e2e-chaos == 'true') &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -651,13 +651,14 @@ jobs:
   # runs to consider making this job blocking and adding it to publish
   # dependencies.
   e2e-chaos:
-    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, e2e-operator]
+    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, build-e2e-images]
     # always(): allow the job to run when upstream Go jobs are skipped
     # (e.g. pure E2E test-definition PRs where go=false). The explicit
     # failure/cancelled guard still blocks if any upstream actually failed.
     if: |
       always() &&
       needs.changes.outputs.e2e-chaos == 'true' &&
+      needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -670,8 +671,8 @@ jobs:
         with:
           config: hack/kind-config.yaml
           cluster_name: forge-e2e
-      # Load pre-built images from shared artifact instead of rebuilding
-      # (e2e-operator already waited on build-e2e-images, so the artifact is available).
+      # Load pre-built images from shared artifact instead of rebuilding.
+      # build-e2e-images is in needs, so the artifact is guaranteed to exist.
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
       - name: Load images into kind
