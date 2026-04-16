@@ -6,18 +6,13 @@ package controller
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strconv"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -33,49 +28,15 @@ import (
 // Condition reason constants for DeploymentReady.
 const conditionReasonDeploymentRolloutComplete = "DeploymentRolloutComplete"
 
-// keysHash reads the named Secret for the given Keystone instance and returns
-// a deterministic SHA-256 hex digest of its Data map. If the Secret does not
-// exist, the not-found error is returned to the caller.
-func (r *KeystoneReconciler) keysHash(ctx context.Context, keystone *keystonev1alpha1.Keystone, suffix string) (string, error) {
-	secretName := fmt.Sprintf("%s-%s", keystone.Name, suffix)
-	var secret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{
-		Name:      secretName,
-		Namespace: keystone.Namespace,
-	}, &secret); err != nil {
-		return "", fmt.Errorf("getting %s Secret %s/%s: %w", suffix, keystone.Namespace, secretName, err)
-	}
-	// json.Marshal sorts map keys, so the hash is deterministic (CC-0015).
-	data, _ := json.Marshal(secret.Data)
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
-}
-
-// fernetKeysHash reads the fernet-keys Secret for the given Keystone instance
-// and returns a deterministic SHA-256 hex digest of its Data map (CC-0015).
-func (r *KeystoneReconciler) fernetKeysHash(ctx context.Context, keystone *keystonev1alpha1.Keystone) (string, error) {
-	return r.keysHash(ctx, keystone, "fernet-keys")
-}
-
-// credentialKeysHash reads the credential-keys Secret for the given Keystone instance
-// and returns a deterministic SHA-256 hex digest of its Data map (CC-0036).
-func (r *KeystoneReconciler) credentialKeysHash(ctx context.Context, keystone *keystonev1alpha1.Keystone) (string, error) {
-	return r.keysHash(ctx, keystone, "credential-keys")
-}
-
 // reconcileDeployment ensures the Keystone API Deployment and Service exist
 // with the correct spec. It sets the DeploymentReady condition and the
 // status endpoint when the Deployment becomes available (CC-0013, REQ-006, REQ-012).
+//
+// Key rotation (fernet + credential) is handled in-place via kubelet Secret
+// projection. The pod template does not include hash annotations, so Secret
+// data changes do not trigger Deployment rollouts (CC-0074).
 func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
-	fernetHash, err := r.fernetKeysHash(ctx, keystone)
-	if err != nil && !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, fmt.Errorf("computing fernet-keys hash: %w", err)
-	}
-	credentialHash, err := r.credentialKeysHash(ctx, keystone)
-	if err != nil && !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, fmt.Errorf("computing credential-keys hash: %w", err)
-	}
-	deploy := buildKeystoneDeployment(keystone, configMapName, fernetHash, credentialHash)
+	deploy := buildKeystoneDeployment(keystone, configMapName)
 	ready, err := deployment.EnsureDeployment(ctx, r.Client, r.Scheme, keystone, deploy)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring Deployment: %w", err)
@@ -151,7 +112,7 @@ func selectorLabels(keystone *keystonev1alpha1.Keystone) map[string]string {
 	}
 }
 
-func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName string, fernetKeysHash string, credentialKeysHash string) *appsv1.Deployment {
+func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName string) *appsv1.Deployment {
 	selector := selectorLabels(keystone)
 	labels := commonLabels(keystone)
 	replicas := int32(keystone.Spec.Replicas)
@@ -171,10 +132,6 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
-					Annotations: map[string]string{
-						"keystone.c5c3.io/fernet-keys-hash":     fernetKeysHash,
-						"keystone.c5c3.io/credential-keys-hash": credentialKeysHash,
-					},
 				},
 				Spec: corev1.PodSpec{
 					TerminationGracePeriodSeconds: ptr.To(int64(30)),

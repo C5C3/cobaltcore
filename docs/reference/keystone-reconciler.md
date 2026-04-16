@@ -1,7 +1,7 @@
 ---
 title: Keystone Reconciler Architecture
 quadrant: operator
-feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0067, CC-0068, CC-0071, CC-0072, CC-0073, CC-0077
+feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0067, CC-0068, CC-0071, CC-0072, CC-0073, CC-0074, CC-0077
 ---
 
 # Keystone Reconciler Architecture
@@ -984,28 +984,20 @@ spec. Sets `status.endpoint` when the Deployment becomes available.
 > **Note:** This sub-reconciler accepts the `configMapName` returned by
 > `reconcileConfig` to reference the correct immutable ConfigMap in volume mounts.
 
-**Fernet Keys Hash Annotation (CC-0015):**
+**In-Place Key Rotation (CC-0074):**
 
-Before building the Deployment, `reconcileDeployment` calls `fernetKeysHash()` to
-compute a SHA-256 digest of the `{name}-fernet-keys` Secret data. This hash is set
-as the pod template annotation `keystone.c5c3.io/fernet-keys-hash`, which triggers a
-rolling restart whenever the Fernet rotation CronJob updates the Secret.
+Fernet and credential key rotation is handled in-place via kubelet Secret
+projection. When the rotation CronJob updates a Secret, the kubelet
+automatically projects the new data into running pods without requiring a
+Deployment rollout. The pod template does not include hash annotations for
+Secret data, so Secret changes do not trigger rolling restarts. This preserves
+Keystone availability, PDB budget, and uWSGI/Memcached connections during
+routine key rotation.
 
 ```text
-CronJob rotates keys → Secret data changes → secretToKeystoneMapper watch
-  → Reconcile() → reconcileDeployment() reads Secret → computes hash
-  → annotation value changes → Kubernetes triggers rolling restart
+CronJob rotates keys → Secret data changes → kubelet projects new keys
+  → running pods see updated key files (no rollout)
 ```
-
-The `fernetKeysHash()` helper:
-
-| Behavior | Detail |
-| --- | --- |
-| Secret name | `{keystone.Name}-fernet-keys` |
-| Algorithm | SHA-256 of `json.Marshal(secret.Data)` |
-| Output | Hex-encoded digest (64 characters) |
-| Secret not found | Returns empty string (no error) — safe because `reconcileFernetKeys` runs before `reconcileDeployment` |
-| Determinism | `json.Marshal` on `map[string][]byte` sorts keys alphabetically |
 
 **Deployment Spec:**
 
@@ -1018,12 +1010,6 @@ The `fernetKeysHash()` helper:
 | Container name | `keystone-api` |
 | Image | `{spec.image.repository}:{spec.image.tag}` |
 | Port | 5000 (named `keystone-api`) |
-
-**Pod Template Annotations:**
-
-| Annotation | Value | Purpose |
-| --- | --- | --- |
-| `keystone.c5c3.io/fernet-keys-hash` | SHA-256 hex digest of fernet-keys Secret data | Triggers rolling restart on Fernet key rotation (CC-0015) |
 
 **Probes:**
 
@@ -1520,7 +1506,7 @@ existing file (e.g. `reconcile_hpa_test.go`).
 | `reconcile_networkpolicy_test.go` | NetworkPolicy creation, update, deletion, ingress rules, condition contract (CC-0039) |
 | `reconcile_config_test.go` | INI generation, extraConfig merge, plugin config, policy overrides, ConfigMap hashing |
 | `reconcile_policyvalidation_test.go` | Policy validation lifecycle, condition contract, error extraction, Job spec (CC-0058), ObservedGeneration |
-| `reconcile_deployment_test.go` | Deployment spec, Service creation, readiness, endpoint, owner references, fernet-keys hash annotation (CC-0015), ObservedGeneration (CC-0072) |
+| `reconcile_deployment_test.go` | Deployment spec, Service creation, readiness, endpoint, owner references, stable pod template (CC-0074), ObservedGeneration (CC-0072) |
 | `reconcile_healthcheck_test.go` | Health check happy/unhealthy paths, timeout, DNS, connection refused, empty endpoint, response body close, HTTPDoer injection (CC-0067), ObservedGeneration |
 | `reconcile_hpa_test.go` | HPA creation, update, deletion, metrics (CPU/memory), minReplicas defaulting, condition contract, error propagation (CC-0038), ObservedGeneration |
 | `reconcile_trustflush_test.go` | CronJob creation, deletion, schedule/suspend/args, security context, volume mounts, condition contract, error propagation (CC-0057), ObservedGeneration |

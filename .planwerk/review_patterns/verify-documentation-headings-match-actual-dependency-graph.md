@@ -3,7 +3,7 @@
 **Review-Area**: documentation
 **Detection-Hint**: When CI workflow documentation groups jobs under a heading that implies a specific trigger mechanism (e.g., 'path-filtered'), cross-reference each listed job against the actual workflow YAML to confirm it truly uses that mechanism.
 **Severity**: WARNING
-**Occurrences**: 3
+**Occurrences**: 4
 
 ## What to check
 
@@ -29,3 +29,8 @@ Misleading DAG documentation causes engineers to misunderstand which jobs are ga
 - **Feedback**: The PR description states that individual sub-reconcilers are inconsistent — some set ObservedGeneration, others omit it. However, git diff main...HEAD -- '*.go' ':!*_test.go' produces no output — the production code on main already sets ObservedGeneration on all 49 SetCondition calls across all 13 reconciler files.
 - **What was missed**: Run the diff filtered to production files (exclude tests and docs). If the diff is empty but the description claims a production fix, the description is misleading about the current state of the codebase.
 - **Fix**: Updated the PR description to clarify that production code was already standardized in prior feature PRs and this ticket adds the missing test coverage and documents the convention.
+
+### CC-0074 — sourcery-ai[bot]
+- **Feedback**: The doc comment for `TestBuildKeystoneDeployment_StablePodTemplate` says it verifies stability across invocations with different Secret contents, but the test calls `buildKeystoneDeployment` twice with identical inputs.
+- **What was missed**: Verify that test names and doc comments accurately describe what the test does. Specifically check: do the test inputs actually differ in the way the comment claims? Does the test exercise the scenario it says it exercises?
+- **Fix**: Reworded the doc comment to clarify the test only verifies deterministic output for identical inputs, and noted that differing Secret contents must be covered by higher-level reconciliation tests.

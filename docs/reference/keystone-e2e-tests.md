@@ -115,7 +115,7 @@ Deployment rollout, bootstrap Job).
 | --- | --- | --- | --- |
 | [basic-deployment](#basic-deployment) | `keystone-basic` | Full happy-path reconciliation, all conditions, owned resources, API accessibility | REQ-001, REQ-002, REQ-003, REQ-012, REQ-013 |
 | [missing-secret](#missing-secret) | `keystone-missing-secret` | SecretsReady requeue on missing ESO Secrets, recovery on creation | REQ-004, REQ-012, REQ-013 |
-| [fernet-rotation](#fernet-rotation) | `keystone-fernet` | CronJob schedule, manual rotation trigger, Secret data change, Deployment annotation update | REQ-005, REQ-012, REQ-013 |
+| [fernet-rotation](#fernet-rotation) | `keystone-fernet` | CronJob schedule, manual rotation trigger, Secret data change, pod UID stability (no rollout), token validation (CC-0074) | REQ-005, REQ-012, REQ-013 |
 | [scale](#scale) | `keystone-scale` | Replica scaling up (3→5) and down (5→2) | REQ-006, REQ-012, REQ-013 |
 | [deletion-cleanup](#deletion-cleanup) | `keystone-cleanup` | Owner reference cascading deletion of all owned resources | REQ-007, REQ-012, REQ-013 |
 | [policy-overrides](#policy-overrides) | `keystone-policy` | oslo.policy integration via ConfigMap reference | REQ-008, REQ-012, REQ-013 |
@@ -187,7 +187,8 @@ resource. The ESO controller then syncs the actual Secret.
 **Purpose:** Validates the CronJob-based Fernet key rotation mechanism end-to-end.
 Deploys a Keystone CR, verifies the CronJob schedule matches `spec.fernet.rotationSchedule`,
 triggers a manual rotation via `kubectl create job --from=cronjob`, and verifies
-both the Secret data and Deployment annotation change.
+that Secret data changes, pod UIDs remain stable (no Deployment rollout), and a
+fernet token obtained before rotation still validates after rotation (CC-0074).
 
 **Steps:**
 
@@ -196,14 +197,16 @@ both the Secret data and Deployment annotation change.
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-fernet` |
 | 2 | Wait for Ready=True | `assert` (5m) | Ready=True with reason AllReady |
 | 3 | Assert CronJob schedule matches spec | `assert` (5m) | CronJob `keystone-fernet-fernet-rotate` schedule is `"0 0 * * 0"` |
-| 4 | Trigger rotation and verify changes | `script` (180s) | Records Secret hash before rotation, creates manual Job from CronJob, verifies Secret data hash changed, polls up to 120s for Deployment `keystone.c5c3.io/fernet-keys-hash` annotation change |
+| 4 | Trigger rotation, verify no rollout, validate token | `script` (180s) | Records pod UIDs and Secret hash before rotation, obtains a fernet token, creates manual Job from CronJob, verifies Secret data hash changed, asserts pod UIDs are unchanged (no rollout), validates the pre-rotation token still works (CC-0074) |
 | 5 | Assert Ready=True maintained | `assert` (5m) | Ready=True with reason AllReady after rotation |
 
 **Fixtures:** `00-keystone-cr.yaml`
 
-**Rotation verification approach:** The script step uses a hash-comparison approach
-(record before, compare after) rather than polling for specific values. This avoids
-timing issues with controller reconciliation delays.
+**Rotation verification approach:** The script step verifies in-place key delivery
+by asserting that pod UIDs remain unchanged after rotation (CC-0074). The Secret
+data hash comparison confirms the rotation actually occurred, while the token
+validation confirms that Keystone can still decrypt tokens issued with the
+previous key set.
 
 ---
 
@@ -469,8 +472,8 @@ Verifies that a resource does **not** exist. Used in `deletion-cleanup` and
 ### Script Assertion (`script`)
 
 Shell commands for assertions that cannot be expressed declaratively — ConfigMap name
-patterns (content-hash suffix), API endpoint connectivity, and hash-based rotation
-verification.
+patterns (content-hash suffix), API endpoint connectivity, and rotation verification
+(Secret data change, pod UID stability, token validation).
 
 ```yaml
 - name: Assert ConfigMap exists
@@ -543,13 +546,13 @@ tests/e2e/keystone/
 │   ├── 00-keystone-cr-a.yaml           Keystone CR fixture A (keystone-concurrent-a)
 │   └── 01-keystone-cr-b.yaml           Keystone CR fixture B (keystone-concurrent-b)
 ├── credential-rotation/
-│   ├── chainsaw-test.yaml              Credential key rotation (CC-0036)
+│   ├── chainsaw-test.yaml              Credential key rotation (CC-0036, CC-0074)
 │   └── 00-keystone-cr.yaml             Keystone CR with rotation schedule
 ├── deletion-cleanup/
 │   ├── chainsaw-test.yaml              Garbage collection (CC-0016)
 │   └── 00-keystone-cr.yaml             Keystone CR for cleanup test
 ├── fernet-rotation/
-│   ├── chainsaw-test.yaml              Fernet key rotation (CC-0016)
+│   ├── chainsaw-test.yaml              Fernet key rotation (CC-0016, CC-0074)
 │   └── 00-keystone-cr.yaml             Keystone CR with rotation schedule
 ├── image-upgrade/
 │   ├── chainsaw-test.yaml              Rolling image upgrade (CC-0016)

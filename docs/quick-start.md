@@ -479,7 +479,7 @@ Available test suites under `tests/e2e/keystone/`:
 |-------|-------------------|
 | `basic-deployment` | Full happy-path reconciliation, API accessibility |
 | `missing-secret` | Recovery when a referenced Secret is absent |
-| `fernet-rotation` | Manual key rotation triggers Deployment rolling restart |
+| `fernet-rotation` | Manual key rotation with in-place delivery (no rollout) |
 | `scale` | Replicas scale from 3 → 5 → 2 correctly |
 | `deletion-cleanup` | All owned resources are garbage-collected on CR deletion |
 | `policy-overrides` | `oslo.policy` ConfigMap integration |

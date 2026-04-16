@@ -32,3 +32,16 @@ spec:
     adminPasswordSecretRef:
       name: keystone-admin
     region: RegionOne
+  # Disable dogpile.cache for this fixture. The e2e-operator Chainsaw suite
+  # runs many Keystone CRs in parallel against a single shared
+  # `openstack-memcached`, and every instance caches `admin@default`
+  # identity-backend lookups under the same memcached keys. A concurrent
+  # instance's cache entry can therefore answer this instance's auth
+  # requests, producing a 401 even though the local bootstrap Job created
+  # the admin user with the correct password. Tempest does not hit this
+  # because it runs in an isolated kind cluster with a single Keystone.
+  # TODO(CC-0074 follow-up): namespace keystone cache keys per CR in the
+  # operator so shared memcached is safe.
+  extraConfig:
+    cache:
+      enabled: "false"

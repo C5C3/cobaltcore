@@ -2,14 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for credential key rotation (CC-0036).
+# Chainsaw E2E test for credential key rotation (CC-0036, CC-0074).
 # Verifies:
 #   - CronJob schedule matches spec.credentialKeys.rotationSchedule
 #   - Manual rotation via kubectl create job --from=cronjob changes Secret data
-#   - Deployment pod-template annotation keystone.c5c3.io/credential-keys-hash
-#     updates after rotation (triggering rolling restart)
+#   - Pod UIDs remain unchanged after rotation (no Deployment rollout) (CC-0074)
 #
-# REQ-001 through REQ-012 (CC-0036)
+# REQ-001 through REQ-012 (CC-0036), REQ-001, REQ-002, REQ-003 (CC-0074)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -75,26 +74,31 @@ spec:
             namespace: openstack
           spec:
             schedule: "0 0 * * 0"
-  # ── Step 4: Trigger rotation and verify Secret + Deployment changed ────
+  # ── Step 4: Trigger rotation, verify no rollout ─────────────────────────
   - try:
     - script:
         timeout: 180s
+        shell: bash
         content: |
-          set -eu
+          set -euo pipefail
 
-          # Record state before rotation
+          # Record pre-rotation state: pod UIDs and Secret data hash.
+          # The pod-template-hash label is set only on Deployment-owned pods by
+          # the ReplicaSet controller, so the selector excludes CronJob-managed
+          # rotation pods that share commonLabels with the API pods (CC-0074).
+          BEFORE_UIDS=$(kubectl get pods -n openstack \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-credential,pod-template-hash \
+            -o jsonpath='{range .items[*]}{.metadata.uid}{"\n"}{end}' | sort)
           BEFORE_HASH=$(kubectl get secret keystone-credential-credential-keys -n openstack \
             -o jsonpath='{.data}' | sha256sum | cut -d' ' -f1)
-          BEFORE_ANNOTATION=$(kubectl get deploy keystone-credential-api -n openstack \
-            -o jsonpath='{.spec.template.metadata.annotations.keystone\.c5c3\.io/credential-keys-hash}')
 
-          # Trigger manual credential key rotation
+          # Trigger manual credential key rotation.
           kubectl create job keystone-credential-manual-rotate \
             --from=cronjob/keystone-credential-credential-rotate -n openstack
           kubectl wait --for=condition=complete \
             job/keystone-credential-manual-rotate -n openstack --timeout=120s
 
-          # Verify Secret data changed
+          # Verify Secret data changed (rotation actually occurred).
           AFTER_HASH=$(kubectl get secret keystone-credential-credential-keys -n openstack \
             -o jsonpath='{.data}' | sha256sum | cut -d' ' -f1)
           if [ "$BEFORE_HASH" = "$AFTER_HASH" ]; then
@@ -103,24 +107,20 @@ spec:
           fi
           echo "OK: Credential Secret data changed"
 
-          # Wait for reconciler to detect the Secret change and update
-          # the Deployment annotation (poll every 5s, timeout 120s).
-          TIMEOUT=120
-          ELAPSED=0
-          while [ $ELAPSED -lt $TIMEOUT ]; do
-            AFTER_ANNOTATION=$(kubectl get deploy keystone-credential-api -n openstack \
-              -o jsonpath='{.spec.template.metadata.annotations.keystone\.c5c3\.io/credential-keys-hash}')
-            if [ "$BEFORE_ANNOTATION" != "$AFTER_ANNOTATION" ]; then
-              echo "OK: Deployment credential-keys-hash annotation changed"
-              break
-            fi
-            sleep 5
-            ELAPSED=$((ELAPSED + 5))
-          done
-          if [ "$BEFORE_ANNOTATION" = "$AFTER_ANNOTATION" ]; then
-            echo "ERROR: Deployment credential-keys-hash annotation did not change within ${TIMEOUT}s"
+          # No kubelet projection wait needed: pod UID stability is independent
+          # of kubelet Secret projection timing (CC-0074).
+
+          # Verify pod UIDs are unchanged (no Deployment rollout) (CC-0074).
+          AFTER_UIDS=$(kubectl get pods -n openstack \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-credential,pod-template-hash \
+            -o jsonpath='{range .items[*]}{.metadata.uid}{"\n"}{end}' | sort)
+          if [ "$BEFORE_UIDS" != "$AFTER_UIDS" ]; then
+            echo "ERROR: Pod UIDs changed after rotation — rollout occurred"
+            echo "Before: $BEFORE_UIDS"
+            echo "After:  $AFTER_UIDS"
             exit 1
           fi
+          echo "OK: Pod UIDs unchanged after credential rotation (no rollout)"
     catch:
     - script:
         content: |
@@ -134,6 +134,10 @@ spec:
             echo "--- $pod describe ---"
             kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
           done
+          echo "=== Keystone API pods ==="
+          kubectl get pods -n $NAMESPACE \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-credential \
+            -o wide 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -20 || true
   # ── Step 5: Assert Ready=True maintained after rotation ────────────────

@@ -1,0 +1,46 @@
+{
+  "feature_id": "CC-0074",
+  "title": "GitHub Review by gndrmnn",
+  "summary": "The reviewer wants two changes in `reconcile_deployment_test.go`: (1) delete the `TestBuildKeystoneDeployment_NoHashAnnotations` test entirely, as it's testing for the absence of something we intentionally removed and thus adds no value, and (2) trim the comment at line 483 by removing the phrase \"confirming the hash computation path is removed.\"",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "gndrmnn",
+  "date": "2026-04-15T09:38:32Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 3,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "This `TestBuildKeystoneDeployment_NoHashAnnotations` test is pointless. We created the `fernet-keys-hash` and `credential-keys-hash`  key mappings ourselves. We control what happens to the mapping. Now that we remove them again, there is no need to add a unit test which tests for their absence.\r\n\r\nRemove the test.",
+      "path": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "line": 431,
+      "author": "gndrmnn",
+      "created_at": "2026-04-15T09:18:35Z",
+      "id": null,
+      "resolution": "The entire TestBuildKeystoneDeployment_NoHashAnnotations test function (13 lines including its doc comment) was deleted from reconcile_deployment_test.go, starting at the original line 414."
+    },
+    {
+      "body": "The phrasing `confirming the hash computation path is removed` is superfluous and irritating for future readers. Remove this part of the comment.",
+      "path": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "line": 483,
+      "author": "gndrmnn",
+      "created_at": "2026-04-15T09:30:40Z",
+      "id": null,
+      "resolution": "The comment for TestReconcileDeployment_NoSecretReadRequired was shortened from 'Secrets do not exist, confirming the hash computation path is removed (CC-0074, REQ-001).' to 'Secrets do not exist (CC-0074, REQ-001).', removing the superfluous phrasing as requested."
+    }
+  ],
+  "resolution_summary": "Both review comments were addressed in the test file operators/keystone/internal/controller/reconcile_deployment_test.go. The TestBuildKeystoneDeployment_NoHashAnnotations test was fully removed as requested, and the superfluous phrase 'confirming the hash computation path is removed' was stripped from the TestReconcileDeployment_NoSecretReadRequired comment. No additional files were modified beyond the single test file mentioned in the review.",
+  "github_review_id": 4112333687
+}

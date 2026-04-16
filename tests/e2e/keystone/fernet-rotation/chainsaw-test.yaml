@@ -2,14 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for fernet key rotation (CC-0016).
+# Chainsaw E2E test for fernet key rotation (CC-0016, CC-0074).
 # Verifies:
 #   - CronJob schedule matches spec.fernet.rotationSchedule
 #   - Manual rotation via kubectl create job --from=cronjob changes Secret data
-#   - Deployment pod-template annotation keystone.c5c3.io/fernet-keys-hash
-#     updates after rotation (triggering rolling restart)
+#   - Pod UIDs remain unchanged after rotation (no Deployment rollout) (CC-0074)
+#   - A fernet token obtained before rotation validates after rotation (CC-0074)
 #
-# REQ-005, REQ-012, REQ-013 (CC-0016)
+# REQ-005, REQ-012, REQ-013 (CC-0016), REQ-001, REQ-002, REQ-003 (CC-0074)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -75,26 +75,58 @@ spec:
             namespace: openstack
           spec:
             schedule: "0 0 * * 0"
-  # ── Step 4: Trigger rotation and verify Secret + Deployment changed ────
+  # ── Step 4: Trigger rotation, verify no rollout, validate token ─────────
   - try:
     - script:
         timeout: 180s
+        shell: bash
         content: |
-          set -eu
+          set -euo pipefail
 
-          # Record state before rotation
+          # Record pre-rotation state: pod UIDs and Secret data hash.
+          # The pod-template-hash label is set only on Deployment-owned pods by
+          # the ReplicaSet controller, so the selector excludes CronJob-managed
+          # rotation pods that share commonLabels with the API pods (CC-0074).
+          BEFORE_UIDS=$(kubectl get pods -n openstack \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-fernet,pod-template-hash \
+            -o jsonpath='{range .items[*]}{.metadata.uid}{"\n"}{end}' | sort)
           BEFORE_HASH=$(kubectl get secret keystone-fernet-fernet-keys -n openstack \
             -o jsonpath='{.data}' | sha256sum | cut -d' ' -f1)
-          BEFORE_ANNOTATION=$(kubectl get deploy keystone-fernet-api -n openstack \
-            -o jsonpath='{.spec.template.metadata.annotations.keystone\.c5c3\.io/fernet-keys-hash}')
 
-          # Trigger manual fernet key rotation
+          # Obtain a fernet token before rotation for later validation.
+          ADMIN_PASS=$(kubectl get secret keystone-admin -n openstack \
+            -o jsonpath='{.data.password}' | base64 -d)
+          if [ -z "$ADMIN_PASS" ]; then
+            echo "ERROR: keystone-admin Secret has empty or missing password field"
+            exit 1
+          fi
+          POD=$(kubectl get pods -n openstack \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-fernet,pod-template-hash \
+            -o jsonpath='{.items[0].metadata.name}')
+          # The keystone image ships python3 but no curl; use urllib to issue
+          # the auth request. The admin password is passed as argv[1] (not
+          # stdin) because openbao generates a shell-safe 64-char hex string.
+          TOKEN=$(kubectl exec -n openstack "$POD" -- python3 -c '
+          import json, sys, urllib.request
+          pw = sys.argv[1]
+          body = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "admin", "domain": {"id": "default"}, "password": pw}}}}}).encode()
+          req = urllib.request.Request("http://localhost:5000/v3/auth/tokens", data=body, headers={"Content-Type": "application/json"})
+          with urllib.request.urlopen(req) as r:
+              sys.stdout.write(r.headers.get("X-Subject-Token", ""))
+          ' "$ADMIN_PASS")
+          if [ -z "$TOKEN" ]; then
+            echo "ERROR: Failed to obtain fernet token before rotation"
+            exit 1
+          fi
+          echo "OK: Obtained fernet token before rotation"
+
+          # Trigger manual fernet key rotation.
           kubectl create job keystone-fernet-manual-rotate \
             --from=cronjob/keystone-fernet-fernet-rotate -n openstack
           kubectl wait --for=condition=complete \
             job/keystone-fernet-manual-rotate -n openstack --timeout=120s
 
-          # Verify Secret data changed
+          # Verify Secret data changed (rotation actually occurred).
           AFTER_HASH=$(kubectl get secret keystone-fernet-fernet-keys -n openstack \
             -o jsonpath='{.data}' | sha256sum | cut -d' ' -f1)
           if [ "$BEFORE_HASH" = "$AFTER_HASH" ]; then
@@ -103,24 +135,39 @@ spec:
           fi
           echo "OK: Fernet Secret data changed"
 
-          # Wait for reconciler to detect the Secret change and update
-          # the Deployment annotation (poll every 5s, timeout 120s).
-          TIMEOUT=120
-          ELAPSED=0
-          while [ $ELAPSED -lt $TIMEOUT ]; do
-            AFTER_ANNOTATION=$(kubectl get deploy keystone-fernet-api -n openstack \
-              -o jsonpath='{.spec.template.metadata.annotations.keystone\.c5c3\.io/fernet-keys-hash}')
-            if [ "$BEFORE_ANNOTATION" != "$AFTER_ANNOTATION" ]; then
-              echo "OK: Deployment fernet-keys-hash annotation changed"
-              break
-            fi
-            sleep 5
-            ELAPSED=$((ELAPSED + 5))
-          done
-          if [ "$BEFORE_ANNOTATION" = "$AFTER_ANNOTATION" ]; then
-            echo "ERROR: Deployment fernet-keys-hash annotation did not change within ${TIMEOUT}s"
+          # No kubelet projection wait needed: the token validation below is the
+          # real semantic guarantee that rotated keys are functional (CC-0074).
+
+          # Verify pod UIDs are unchanged (no Deployment rollout) (CC-0074).
+          AFTER_UIDS=$(kubectl get pods -n openstack \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-fernet,pod-template-hash \
+            -o jsonpath='{range .items[*]}{.metadata.uid}{"\n"}{end}' | sort)
+          if [ "$BEFORE_UIDS" != "$AFTER_UIDS" ]; then
+            echo "ERROR: Pod UIDs changed after rotation — rollout occurred"
+            echo "Before: $BEFORE_UIDS"
+            echo "After:  $AFTER_UIDS"
             exit 1
           fi
+          echo "OK: Pod UIDs unchanged after fernet rotation (no rollout)"
+
+          # Validate the pre-rotation token still works (multi-key overlap) (CC-0074).
+          # Same python-over-stdin pattern: keystone image has no curl, and
+          # piping the token avoids embedding it in a quoted -c argument.
+          HTTP_CODE=$(printf '%s' "$TOKEN" | kubectl exec -i -n openstack "$POD" -- python3 -c '
+          import sys, urllib.request, urllib.error
+          tok = sys.stdin.read()
+          req = urllib.request.Request("http://localhost:5000/v3/auth/tokens", headers={"X-Auth-Token": tok, "X-Subject-Token": tok})
+          try:
+              with urllib.request.urlopen(req) as r:
+                  sys.stdout.write(str(r.status))
+          except urllib.error.HTTPError as e:
+              sys.stdout.write(str(e.code))
+          ')
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "ERROR: Pre-rotation token validation returned HTTP $HTTP_CODE (expected 200)"
+            exit 1
+          fi
+          echo "OK: Pre-rotation token validates post-rotation (HTTP 200)"
     catch:
     - script:
         content: |
@@ -134,6 +181,10 @@ spec:
             echo "--- $pod describe ---"
             kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
           done
+          echo "=== Keystone API pods ==="
+          kubectl get pods -n $NAMESPACE \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-fernet \
+            -o wide 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -20 || true
   # ── Step 5: Assert Ready=True maintained after rotation ────────────────
