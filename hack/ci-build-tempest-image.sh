@@ -41,9 +41,15 @@ echo "Building Tempest image (tempest=${TEMPEST_VERSION}, keystone-tempest-plugi
 # ---------------------------------------------------------------------------
 # 2. Build Tempest image
 # ---------------------------------------------------------------------------
+# Optional GHA cache flags — set by CI when buildx + type=gha is available.
+cache_args=()
+[[ -n "${DOCKER_BUILD_CACHE_FROM:-}" ]] && cache_args+=(--cache-from "${DOCKER_BUILD_CACHE_FROM}")
+[[ -n "${DOCKER_BUILD_CACHE_TO:-}" ]] && cache_args+=(--cache-to "${DOCKER_BUILD_CACHE_TO}")
+
 docker build \
   -t "${TEMPEST_IMAGE}" \
   -f "${REPO_ROOT}/images/tempest/Dockerfile" \
+  "${cache_args[@]}" \
   --build-arg "TEMPEST_VERSION=${TEMPEST_VERSION}" \
   --build-arg "KEYSTONE_TEMPEST_PLUGIN_VERSION=${KTP_VERSION}" \
   --build-context "upper-constraints=${REPO_ROOT}/releases/${RELEASE}/" \

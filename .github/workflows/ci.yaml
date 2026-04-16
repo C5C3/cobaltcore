@@ -20,6 +20,7 @@ env:
   # CC-0018: Pin tool versions for CI reproducibility (single source of truth).
   CONTROLLER_GEN_VERSION: v0.20.1
   GOFUMPT_VERSION: v0.9.2  # CC-0053
+  GOLANGCI_LINT_VERSION: v2.11.4
 
 concurrency:
   group: ${{ github.ref }}-${{ github.workflow }}
@@ -135,11 +136,22 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+        id: setup-go
         with:
           go-version-file: go.work
+      # Cache golangci-lint result cache — golangci-lint-action with install-only:true
+      # does not manage the analysis cache itself, so we persist it explicitly.
+      # Include Go and golangci-lint versions so upgrades automatically invalidate.
+      - uses: actions/cache@v4
+        with:
+          path: $HOME/.cache/golangci-lint
+          key: ${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}-golangci-${{ env.GOLANGCI_LINT_VERSION }}-${{ hashFiles('.golangci.yml', '**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}-golangci-${{ env.GOLANGCI_LINT_VERSION }}-
+            ${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}-golangci-
       - uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9
         with:
-          version: v2.11.4
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
           install-only: true
       - name: Run lint
         run: make lint
@@ -155,9 +167,16 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+        id: setup-go
         with:
           go-version-file: go.work
+      - uses: actions/cache@v4
+        id: gofumpt-cache
+        with:
+          path: $HOME/go/bin/gofumpt
+          key: ${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}-gofumpt-${{ env.GOFUMPT_VERSION }}
       - name: Install gofumpt
+        if: steps.gofumpt-cache.outputs.cache-hit != 'true'
         run: go install mvdan.cc/gofumpt@${{ env.GOFUMPT_VERSION }}
       # CC-0053: Only check git-tracked Go files to skip generated, vendored,
       # or tooling code that may not follow gofumpt conventions (review #1).
@@ -229,6 +248,16 @@ jobs:
       - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
         with:
           go-version-file: go.work
+      # Derive the envtest k8s version from the Makefile (single source of truth).
+      - name: Get envtest k8s version
+        id: envtest-ver
+        run: echo "version=$(awk '/ENVTEST_K8S_VERSION/ {print $NF; exit}' Makefile)" >> "$GITHUB_OUTPUT"
+      # Cache kubebuilder envtest assets (etcd, kube-apiserver binaries).
+      # Key on the k8s version — invalidates automatically when Makefile changes it.
+      - uses: actions/cache@v4
+        with:
+          path: $HOME/.local/share/kubebuilder-envtest
+          key: ${{ runner.os }}-envtest-${{ steps.envtest-ver.outputs.version }}
       - name: Install setup-envtest
         run: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.23
       - name: Run integration tests
@@ -295,9 +324,16 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+        id: setup-go
         with:
           go-version-file: go.work
+      - uses: actions/cache@v4
+        id: controller-gen-cache
+        with:
+          path: $HOME/go/bin/controller-gen
+          key: ${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}-controller-gen-${{ env.CONTROLLER_GEN_VERSION }}
       - name: Install controller-gen
+        if: steps.controller-gen-cache.outputs.cache-hit != 'true'
         run: go install sigs.k8s.io/controller-tools/cmd/controller-gen@${{ env.CONTROLLER_GEN_VERSION }}
       - name: Run code generation
         run: |
@@ -419,6 +455,9 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
+      # Enable BuildKit (required for type=gha cache) as the default builder.
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
+
       - name: Verify zstd is available
         run: |
           if ! command -v zstd &>/dev/null; then
@@ -444,19 +483,27 @@ jobs:
 
       # Build base images once — all subsequent service and tempest builds
       # reuse them via the skip-if-exists guard in ci-build-service-image.sh.
+      # GHA cache scopes are shared across branches; these images rarely change.
       - name: Build base images
         run: |
           docker build -t python-base \
+            --cache-from type=gha,scope=e2e-python-base \
+            --cache-to type=gha,mode=max,scope=e2e-python-base \
             --build-arg APT_MIRROR=http://azure.archive.ubuntu.com \
             images/python-base/
-          docker build -t venv-builder images/venv-builder/
+          docker build -t venv-builder \
+            --cache-from type=gha,scope=e2e-venv-builder \
+            --cache-to type=gha,mode=max,scope=e2e-venv-builder \
+            images/venv-builder/
 
       # Build operator images for all resolved operators (changed + keystone).
       - name: Build operator images
         run: |
           for op in $BUILD_OPERATORS; do
             echo "::group::Building ${op}-operator:dev"
-            make docker-build OPERATOR="${op}" IMG="${IMAGE_PREFIX}/${op}-operator:dev"
+            make docker-build OPERATOR="${op}" IMG="${IMAGE_PREFIX}/${op}-operator:dev" \
+              DOCKER_CACHE_FROM="type=gha,scope=e2e-${op}-operator" \
+              DOCKER_CACHE_TO="type=gha,mode=max,scope=e2e-${op}-operator"
             echo "::endgroup::"
           done
 
@@ -471,6 +518,8 @@ jobs:
               release="${release##*/}"
               echo "::group::Building ${op}:${release}"
               OPERATOR="${op}" IMAGE_PREFIX="${IMAGE_PREFIX}" RELEASE="${release}" \
+                DOCKER_BUILD_CACHE_FROM="type=gha,scope=e2e-${op}-${release}" \
+                DOCKER_BUILD_CACHE_TO="type=gha,mode=max,scope=e2e-${op}-${release}" \
                 hack/ci-build-service-image.sh
               echo "::endgroup::"
             done
@@ -484,6 +533,8 @@ jobs:
             release="${release##*/}"
             echo "::group::Building tempest:${release}"
             RELEASE="${release}" TEMPEST_IMAGE="c5c3/tempest:${release}" \
+              DOCKER_BUILD_CACHE_FROM="type=gha,scope=e2e-tempest-${release}" \
+              DOCKER_BUILD_CACHE_TO="type=gha,mode=max,scope=e2e-tempest-${release}" \
               hack/ci-build-tempest-image.sh
             echo "::endgroup::"
           done
@@ -614,22 +665,15 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
-        with:
-          go-version-file: go.work
       - name: Create kind cluster
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
         with:
           config: hack/kind-config.yaml
           cluster_name: forge-e2e
-      - name: Build operator image
-        run: make docker-build OPERATOR=keystone IMG=${{ env.IMAGE_PREFIX }}/keystone-operator:dev
-      # CC-0050: Use shared service image build script (REQ-002).
-      - name: Build service image
-        run: hack/ci-build-service-image.sh
-        env:
-          OPERATOR: keystone
-          IMAGE_PREFIX: ${{ env.IMAGE_PREFIX }}
+      # Load pre-built images from shared artifact instead of rebuilding
+      # (e2e-operator already waited on build-e2e-images, so the artifact is available).
+      - name: Load E2E images
+        uses: ./.github/actions/load-e2e-images
       - name: Load images into kind
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name forge-e2e

@@ -277,9 +277,15 @@ verify-crd-sync:
 # docker-build builds the operator Docker image from operators/$(OPERATOR)/Dockerfile.
 # Build context is the repository root (required by go.work) (CC-0018, REQ-010).
 # Usage: make docker-build OPERATOR=keystone [IMG=custom:tag]
+# Optional: DOCKER_CACHE_FROM=type=gha,scope=... DOCKER_CACHE_TO=type=gha,mode=max,scope=...
+DOCKER_CACHE_FROM ?=
+DOCKER_CACHE_TO ?=
 docker-build:
 	$(if $(OPERATOR),,$(error docker-build requires OPERATOR, e.g. make docker-build OPERATOR=keystone))
-	docker build -t $(IMG) -f operators/$(OPERATOR)/Dockerfile .
+	docker build -t $(IMG) -f operators/$(OPERATOR)/Dockerfile \
+		$(if $(DOCKER_CACHE_FROM),--cache-from $(DOCKER_CACHE_FROM)) \
+		$(if $(DOCKER_CACHE_TO),--cache-to $(DOCKER_CACHE_TO)) \
+		.
 
 .PHONY: helm-package
 # helm-package packages the operator Helm chart (CC-0018, REQ-011).

@@ -85,7 +85,13 @@ if ! docker image inspect venv-builder >/dev/null 2>&1; then
 else
   echo "Reusing existing venv-builder image"
 fi
+# Optional GHA cache flags — set by CI when buildx + type=gha is available.
+cache_args=()
+[[ -n "${DOCKER_BUILD_CACHE_FROM:-}" ]] && cache_args+=(--cache-from "${DOCKER_BUILD_CACHE_FROM}")
+[[ -n "${DOCKER_BUILD_CACHE_TO:-}" ]] && cache_args+=(--cache-to "${DOCKER_BUILD_CACHE_TO}")
+
 docker build -t "${IMAGE_PREFIX}/${OPERATOR}:${RELEASE}" \
+  "${cache_args[@]}" \
   --build-arg "PIP_EXTRAS=${PIP_EXTRAS}" \
   --build-arg "PIP_PACKAGES=${PIP_PACKAGES}" \
   --build-arg "EXTRA_APT_PACKAGES=${APT_PACKAGES}" \
