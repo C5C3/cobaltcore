@@ -1860,3 +1860,27 @@ func TestReconcileDatabase_ConditionObservedGeneration(t *testing.T) {
 	g.Expect(cond2).NotTo(BeNil())
 	g.Expect(cond2.ObservedGeneration).To(Equal(int64(12)))
 }
+
+// TestBuildDBSyncJob_PriorityClassNameSet verifies that when spec.PriorityClassName
+// is set, the db-sync Job PodSpec includes the configured priority class (CC-0075).
+func TestBuildDBSyncJob_PriorityClassNameSet(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := brownfieldKeystone()
+	pcn := "system-cluster-critical"
+	ks.Spec.PriorityClassName = &pcn
+
+	job := buildDBSyncJob(ks, "keystone-config-abc123")
+
+	g.Expect(job.Spec.Template.Spec.PriorityClassName).To(Equal("system-cluster-critical"))
+}
+
+// TestBuildDBSyncJob_PriorityClassNameNil verifies that when spec.PriorityClassName
+// is nil, the db-sync Job PodSpec has an empty priority class name (CC-0075).
+func TestBuildDBSyncJob_PriorityClassNameNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := brownfieldKeystone()
+
+	job := buildDBSyncJob(ks, "keystone-config-abc123")
+
+	g.Expect(job.Spec.Template.Spec.PriorityClassName).To(BeEmpty())
+}

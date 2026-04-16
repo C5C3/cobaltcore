@@ -113,7 +113,8 @@ exec keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap \
 			TTLSecondsAfterFinished: &ttl,
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyNever,
+					RestartPolicy:     corev1.RestartPolicyNever,
+					PriorityClassName: priorityClassName(keystone),
 					Containers: []corev1.Container{{
 						Name:  "bootstrap",
 						Image: fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag),

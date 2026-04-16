@@ -1,0 +1,131 @@
+{
+  "feature_id": "CC-0075",
+  "title": "Add topologySpreadConstraints and PriorityClass support",
+  "date": "2026-04-15",
+  "summary": "Adds optional spec.topologySpreadConstraints and spec.priorityClassName fields to KeystoneSpec, wires them into buildKeystoneDeployment with a default zone-spread TSC, adds webhook validation for PriorityClass existence and TSC label selector correctness, regenerates CRD manifests, and updates HA documentation. The implementation is clean and well-structured but has two blocking gaps: only one default TSC (zone) instead of the required two (zone + hostname), and missing RBAC permissions for the webhook's PriorityClass lookup.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Default TSC test exists and passes", "checked": true},
+    {"item": "Custom TSC override test exists and passes", "checked": true},
+    {"item": "Empty TSC disables defaults test exists", "checked": false},
+    {"item": "PriorityClassName set test exists and passes", "checked": true},
+    {"item": "PriorityClassName nil test exists and passes", "checked": true},
+    {"item": "Webhook: PriorityClass exists accepted", "checked": true},
+    {"item": "Webhook: PriorityClass not found rejected", "checked": true},
+    {"item": "Webhook: PriorityClass empty accepted", "checked": true},
+    {"item": "Webhook: TSC correct labels accepted", "checked": true},
+    {"item": "Webhook: TSC wrong labels rejected", "checked": true},
+    {"item": "Webhook: TSC nil selector rejected", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (helper functions, Gomega tests)", "checked": true},
+    {"item": "Functions are small and single-responsibility", "checked": true},
+    {"item": "No dead code or unused imports", "checked": true},
+    {"item": "Naming is clear and intention-revealing", "checked": true},
+    {"item": "Feature ID (CC-0075) referenced in all comments", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Webhook validates PriorityClass existence at admission", "checked": true},
+    {"item": "Webhook validates TSC label selector correctness", "checked": true},
+    {"item": "RBAC permissions cover all API calls", "checked": false},
+    {"item": "No hardcoded secrets", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is minimal and focused", "checked": true},
+    {"item": "Client injection follows existing webhook pattern", "checked": true},
+    {"item": "Helper functions follow existing containerResources/probes pattern", "checked": true},
+    {"item": "CRD manifests in sync between config/crd and helm/crds", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No unnecessary abstractions", "checked": true},
+    {"item": "No future-proofing beyond requirements", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Invalid PriorityClass rejected at admission time", "checked": true},
+    {"item": "Invalid TSC label selectors rejected at admission time", "checked": true},
+    {"item": "Non-API errors (Get failures) reported as InternalError", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Nil Client guard prevents panic in webhook", "checked": true},
+    {"item": "Nil PriorityClassName dereferenced safely via guard", "checked": true},
+    {"item": "Nil LabelSelector handled before accessing MatchLabels", "checked": true}
+  ],
+  "security_findings": [
+    {
+      "severity": "HIGH",
+      "description": "Missing RBAC permissions for scheduling.k8s.io/priorityclasses. The webhook's validate() calls w.Client.Get(ctx, ..., &schedulingv1.PriorityClass{}) at keystone_webhook.go:378, but no +kubebuilder:rbac marker exists for scheduling.k8s.io/priorityclasses, and the Helm ClusterRole template (_helpers.tpl) has no scheduling.k8s.io rule. At runtime, the webhook will receive 403 Forbidden errors when validating PriorityClass existence.",
+      "location": "operators/keystone/api/v1alpha1/keystone_webhook.go:378",
+      "fix": "Add '// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch' to keystone_controller.go (alongside existing markers). Add a scheduling.k8s.io/priorityclasses rule with get;list;watch verbs to the rbacRules template in operators/keystone/helm/keystone-operator/templates/_helpers.tpl. Regenerate CRD/RBAC manifests.",
+      "fix_classification": "ASK"
+    }
+  ],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "C2",
+      "severity": "BLOCKER",
+      "description": "Only 1 default TopologySpreadConstraint (zone) is generated instead of 2 (zone + hostname). The acceptance criteria state: 'sets default TopologySpreadConstraints of maxSkew: 1 over topology.kubernetes.io/zone and kubernetes.io/hostname, both whenUnsatisfiable: ScheduleAnyway'. The implementation only returns a single zone-level constraint.",
+      "location": "operators/keystone/internal/controller/reconcile_deployment.go:369-374",
+      "fix": "Add a second TopologySpreadConstraint with TopologyKey 'kubernetes.io/hostname', MaxSkew 1, WhenUnsatisfiable ScheduleAnyway, and the same LabelSelector. Update the default TSC test to assert HaveLen(2) and verify both constraints.",
+      "evidence": "return []corev1.TopologySpreadConstraint{{\n\tMaxSkew:           1,\n\tTopologyKey:       \"topology.kubernetes.io/zone\",\n\tWhenUnsatisfiable: corev1.ScheduleAnyway,\n\tLabelSelector:     &metav1.LabelSelector{MatchLabels: selectorLabels(keystone)},\n}}",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "S1",
+      "severity": "BLOCKER",
+      "description": "Missing RBAC for webhook PriorityClass lookup. The webhook calls w.Client.Get for schedulingv1.PriorityClass but no kubebuilder RBAC marker or Helm ClusterRole rule grants get on scheduling.k8s.io/priorityclasses. The operator's service account will receive 403 Forbidden at runtime.",
+      "location": "operators/keystone/api/v1alpha1/keystone_webhook.go:378 + operators/keystone/helm/keystone-operator/templates/_helpers.tpl (missing rule)",
+      "fix": "Add '// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch' marker to keystone_controller.go. Add scheduling.k8s.io/priorityclasses rule to the Helm rbacRules named template in _helpers.tpl.",
+      "evidence": "No match for 'scheduling|priorityclass' in kubebuilder markers or Helm ClusterRole templates. Webhook code: w.Client.Get(ctx, types.NamespacedName{Name: *k.Spec.PriorityClassName}, pc)",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "TE2",
+      "severity": "MAJOR",
+      "description": "Missing test: TestBuildKeystoneDeployment_EmptyTopologySpreadConstraintsDisablesDefaults. Task 1.2 item 3 requires a test that sets spec.TopologySpreadConstraints to an empty non-nil slice and verifies no TSCs are present. This test is absent. Additionally, the current code uses 'len(...) > 0' which returns defaults for an empty slice, so the behavior doesn't match the design intent of 'set means full replace'.",
+      "location": "operators/keystone/internal/controller/reconcile_deployment_test.go (missing test) + reconcile_deployment.go:366",
+      "fix": "Add the missing test. If empty-slice-disables-defaults is desired, change the guard from 'len(...) > 0' to a nil check ('keystone.Spec.TopologySpreadConstraints != nil'). If empty-slice-gets-defaults is intended, update the task description and add a test confirming that behavior.",
+      "evidence": "func topologySpreadConstraints(keystone *keystonev1alpha1.Keystone) []corev1.TopologySpreadConstraint {\n\tif len(keystone.Spec.TopologySpreadConstraints) > 0 {\n\t\treturn keystone.Spec.TopologySpreadConstraints\n\t}\n\treturn []corev1.TopologySpreadConstraint{{...}}",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "DA3",
+      "severity": "MAJOR",
+      "description": "HA documentation LabelSelector column is incorrect. The docs table states the default TSC uses labels 'app.kubernetes.io/name: keystone, app.kubernetes.io/component: api' but the actual selectorLabels() function returns 'app.kubernetes.io/name: keystone, app.kubernetes.io/instance: <name>'. The component label is wrong; it should be the instance label.",
+      "location": "architecture/docs/04-architecture/04-high-availability.md (TSC defaults table)",
+      "fix": "Change 'app.kubernetes.io/component: api' to 'app.kubernetes.io/instance: <name>' in the documentation table to match selectorLabels() at reconcile_deployment.go:146-151.",
+      "evidence": "selectorLabels returns: map[string]string{\n\t\"app.kubernetes.io/name\":     labels[\"app.kubernetes.io/name\"],\n\t\"app.kubernetes.io/instance\": labels[\"app.kubernetes.io/instance\"],\n}",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "FC1",
+      "severity": "MAJOR",
+      "description": "HA documentation is missing a recommended PriorityClass YAML definition. Acceptance criteria state: 'a recommended PriorityClass definition operators should ship alongside Keystone for production'. The docs only provide prose guidance, not a concrete YAML manifest.",
+      "location": "architecture/docs/04-architecture/04-high-availability.md (PriorityClass section)",
+      "fix": "Add a recommended PriorityClass YAML example (e.g., value: 1000000, globalDefault: false, description: ...) to the HA documentation.",
+      "evidence": "Acceptance criteria: 'including a recommended PriorityClass definition operators should ship alongside Keystone for production'. Docs provide only prose.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "FC1",
+      "severity": "MAJOR",
+      "description": "HA documentation is missing the updated component table with a Keystone row. Acceptance criteria state: 'Update the Component table to add a Keystone row with replicas=3, ScheduleAnyway topology spread + PDB, and PriorityClass support.'",
+      "location": "architecture/docs/04-architecture/04-high-availability.md (component table section)",
+      "fix": "Add a Keystone row to the existing HA component table with: replicas=3, topology spread (ScheduleAnyway, zone+hostname), PDB (minAvailable: 1), PriorityClass (optional).",
+      "evidence": "Acceptance criteria: 'Update the Component table to add a Keystone row'. The git diff shows only a new section was added; no existing table was modified.",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Replace custom labelsEqual() function at keystone_webhook.go:430 with maps.Equal() from the Go standard library (available since Go 1.21, project uses Go 1.25). This eliminates a trivially reimplemented stdlib function.",
+    "Consider adding a TestBuildKeystoneDeployment_DefaultTopologySpreadConstraints_LabelSelectorMatchesSelectorLabels test that explicitly verifies the default TSC LabelSelector equals selectorLabels(ks) — the current test does this but making it a named assertion strengthens intent."
+  ],
+  "next_steps": [
+    "Add the missing hostname TSC default to topologySpreadConstraints() and update the default TSC test to assert 2 constraints",
+    "Add +kubebuilder:rbac marker for scheduling.k8s.io/priorityclasses and add the rule to Helm rbacRules template in _helpers.tpl",
+    "Add TestBuildKeystoneDeployment_EmptyTopologySpreadConstraintsDisablesDefaults test and decide on nil-vs-len guard semantics",
+    "Fix HA docs: correct LabelSelector labels, add PriorityClass YAML example, add Keystone row to component table"
+  ],
+  "detected_patterns": []
+}

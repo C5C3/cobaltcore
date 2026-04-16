@@ -241,6 +241,7 @@ func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName st
 						Spec: corev1.PodSpec{
 							ServiceAccountName: saName,
 							RestartPolicy:      corev1.RestartPolicyOnFailure,
+							PriorityClassName:  priorityClassName(keystone),
 							InitContainers: []corev1.Container{{
 								Name:            "copy-keys",
 								Image:           image,

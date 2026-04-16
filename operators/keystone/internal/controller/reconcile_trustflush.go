@@ -87,7 +87,8 @@ func trustFlushCronJob(keystone *keystonev1alpha1.Keystone, configMapName string
 							Labels: commonLabels(keystone),
 						},
 						Spec: corev1.PodSpec{
-							RestartPolicy: corev1.RestartPolicyOnFailure,
+							PriorityClassName: priorityClassName(keystone),
+							RestartPolicy:     corev1.RestartPolicyOnFailure,
 							Containers: []corev1.Container{{
 								Name:            "trust-flush",
 								Image:           image,

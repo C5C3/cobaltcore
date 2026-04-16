@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PriorityClass fixture for the priority-class E2E test (CC-0075).
+# Created before the Keystone CR so the validating webhook can find it.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: openstack-control-plane
+globalDefault: false
+value: 1000000
+preemptionPolicy: PreemptLowerPriority
+description: >-
+  Priority class for OpenStack control-plane pods. Used in the CC-0075 E2E test.

@@ -7,15 +7,19 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	"github.com/robfig/cron/v3"
 	corev1 "k8s.io/api/core/v1"
+	schedulingv1 "k8s.io/api/scheduling/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
@@ -32,8 +36,11 @@ var (
 )
 
 // KeystoneWebhook implements defaulting and validation webhooks for the Keystone CRD (CC-0011).
+// Client is injected at startup for cluster-scoped resource lookups (e.g. PriorityClass validation, CC-0075 REQ-006).
 // +kubebuilder:object:generate=false
-type KeystoneWebhook struct{}
+type KeystoneWebhook struct {
+	Client client.Reader
+}
 
 // Compile-time interface checks.
 var (
@@ -111,13 +118,13 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 }
 
 // ValidateCreate implements admission.Validator[*Keystone] (CC-0011, REQ-005).
-func (w *KeystoneWebhook) ValidateCreate(_ context.Context, obj *Keystone) (admission.Warnings, error) {
-	return nil, w.validate(obj)
+func (w *KeystoneWebhook) ValidateCreate(ctx context.Context, obj *Keystone) (admission.Warnings, error) {
+	return nil, w.validate(ctx, obj)
 }
 
 // ValidateUpdate implements admission.Validator[*Keystone] (CC-0011, REQ-006).
-func (w *KeystoneWebhook) ValidateUpdate(_ context.Context, _, newObj *Keystone) (admission.Warnings, error) {
-	return nil, w.validate(newObj)
+func (w *KeystoneWebhook) ValidateUpdate(ctx context.Context, _, newObj *Keystone) (admission.Warnings, error) {
+	return nil, w.validate(ctx, newObj)
 }
 
 // ValidateDelete implements admission.Validator[*Keystone].
@@ -127,7 +134,8 @@ func (w *KeystoneWebhook) ValidateDelete(_ context.Context, _ *Keystone) (admiss
 }
 
 // validate runs all validation rules against the Keystone spec.
-func (w *KeystoneWebhook) validate(k *Keystone) error {
+// ctx is required for cluster-scoped lookups (PriorityClass validation, CC-0075 REQ-006).
+func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
 
@@ -359,6 +367,60 @@ func (w *KeystoneWebhook) validate(k *Keystone) error {
 					specPath.Child("resources", "requests", string(resourceName)),
 					request.String(),
 					fmt.Sprintf("%s request must not exceed limit (%s)", resourceName, limit.String()),
+				))
+			}
+		}
+	}
+
+	// REQ-004 (CC-0075): Validate that spec.priorityClassName references an existing
+	// scheduling.k8s.io/v1 PriorityClass. Catches typos at admission time.
+	if k.Spec.PriorityClassName != nil && *k.Spec.PriorityClassName != "" && w.Client != nil {
+		pc := &schedulingv1.PriorityClass{}
+		if err := w.Client.Get(ctx, types.NamespacedName{Name: *k.Spec.PriorityClassName}, pc); err != nil {
+			if apierrors.IsNotFound(err) {
+				allErrs = append(allErrs, field.NotFound(
+					specPath.Child("priorityClassName"),
+					*k.Spec.PriorityClassName,
+				))
+			} else {
+				allErrs = append(allErrs, field.InternalError(
+					specPath.Child("priorityClassName"),
+					fmt.Errorf("failed to look up PriorityClass: %w", err),
+				))
+			}
+		}
+	}
+
+	// REQ-005 (CC-0075): Validate that custom TopologySpreadConstraints use the correct
+	// LabelSelector matching the Deployment's selector labels.
+	if k.Spec.TopologySpreadConstraints != nil {
+		expectedLabels := map[string]string{
+			LabelKeyName:     AppName,
+			LabelKeyInstance: k.Name,
+		}
+		tscPath := specPath.Child("topologySpreadConstraints")
+		for i, tsc := range k.Spec.TopologySpreadConstraints {
+			if tsc.LabelSelector == nil {
+				allErrs = append(allErrs, field.Required(
+					tscPath.Index(i).Child("labelSelector"),
+					"labelSelector is required on each TopologySpreadConstraint",
+				))
+				continue
+			}
+			if !maps.Equal(tsc.LabelSelector.MatchLabels, expectedLabels) {
+				allErrs = append(allErrs, field.Invalid(
+					tscPath.Index(i).Child("labelSelector"),
+					tsc.LabelSelector.MatchLabels,
+					fmt.Sprintf("labelSelector.matchLabels must equal the Deployment selector labels %v", expectedLabels),
+				))
+			}
+			// REQ-005 (CC-0075): Reject MatchExpressions to prevent selectors that widen
+			// or narrow beyond the Deployment's intent. Only exact matchLabels are allowed.
+			if len(tsc.LabelSelector.MatchExpressions) > 0 {
+				allErrs = append(allErrs, field.Invalid(
+					tscPath.Index(i).Child("labelSelector", "matchExpressions"),
+					tsc.LabelSelector.MatchExpressions,
+					"matchExpressions are not allowed; labelSelector must use matchLabels only",
 				))
 			}
 		}

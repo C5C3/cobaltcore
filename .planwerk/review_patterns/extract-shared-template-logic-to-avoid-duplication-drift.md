@@ -3,7 +3,7 @@
 **Review-Area**: architecture
 **Detection-Hint**: When a PR adds a new template/config file whose rules or content are intentionally identical to an existing file, check whether the shared content is extracted into a reusable partial (e.g., Helm named templates, shared includes) rather than copy-pasted.
 **Severity**: WARNING
-**Occurrences**: 2
+**Occurrences**: 3
 
 ## What to check
 
@@ -24,3 +24,8 @@ Duplicated rule blocks (e.g., RBAC rules in both Role and ClusterRole) inevitabl
 - **Feedback**: The job construction logic between `buildDBSyncJob` and `buildUpgradeJob` is very similar; consider refactoring shared pieces (container spec, volume mounts, security context) into a common helper to avoid drift when these need to change in the future.
 - **What was missed**: Compare all functions that construct the same resource kind (e.g. batchv1.Job). If two or more share >50% of their struct fields verbatim, a shared helper should be extracted.
 - **Fix**: Extracted a shared `buildDBJob` helper that both `buildDBSyncJob` and `buildUpgradeJob` delegate to, eliminating duplicated container spec, volume mounts, and security context.
+
+### CC-0075 — berendt
+- **Feedback**: Extracting LabelKeyName, LabelKeyInstance, and AppName as exported constants in keystone_types.go, referenced by both the webhook and controller, eliminating hardcoded label duplication.
+- **What was missed**: When a PR references label keys, annotation names, or app identifiers in controller or webhook code, check whether those same strings already exist elsewhere. If so, they must be extracted into exported constants in the types file and referenced from both locations.
+- **Fix**: Extracted LabelKeyName, LabelKeyInstance, and AppName as exported constants in keystone_types.go; updated keystone_webhook.go and reconcile_deployment.go to reference them instead of duplicated string literals.

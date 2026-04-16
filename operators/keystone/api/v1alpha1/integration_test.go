@@ -36,7 +36,7 @@ import (
 func setupEnvTest(t testing.TB) (client.Client, context.Context, context.CancelFunc) {
 	t.Helper()
 	return testutil.SetupKeystoneEnvTest(t, AddToScheme, func(mgr ctrl.Manager) error {
-		return (&KeystoneWebhook{}).SetupWebhookWithManager(mgr)
+		return (&KeystoneWebhook{Client: mgr.GetClient()}).SetupWebhookWithManager(mgr)
 	})
 }
 

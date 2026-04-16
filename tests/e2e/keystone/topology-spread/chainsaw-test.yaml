@@ -1,0 +1,169 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for spec.topologySpreadConstraints (CC-0075).
+# Validates that:
+#   - A Keystone CR without explicit TSC gets 2 default constraints
+#     (zone-spread + hostname-spread, MaxSkew=1, ScheduleAnyway)
+#   - Patching with custom TSC performs verbatim pass-through
+#   - Patching with an empty slice disables all constraints
+#
+# REQ-005 (CC-0075)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-topology-spread
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR without explicit TSC ───────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert Ready and Deployment has 2 default constraints ────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-tsc
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-tsc-api
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                topologySpreadConstraints:
+                - maxSkew: 1
+                  topologyKey: topology.kubernetes.io/zone
+                  whenUnsatisfiable: ScheduleAnyway
+                  labelSelector:
+                    matchLabels:
+                      app.kubernetes.io/name: keystone
+                      app.kubernetes.io/instance: keystone-tsc
+                - maxSkew: 1
+                  topologyKey: kubernetes.io/hostname
+                  whenUnsatisfiable: ScheduleAnyway
+                  labelSelector:
+                    matchLabels:
+                      app.kubernetes.io/name: keystone
+                      app.kubernetes.io/instance: keystone-tsc
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
+          echo "=== Deployment TSC ==="
+          kubectl get deployment keystone-tsc-api -n $NAMESPACE -o jsonpath='{.spec.template.spec.topologySpreadConstraints}' 2>&1 || true
+          echo ""
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Patch with custom TSC ────────────────────────────────────────
+  - try:
+    - patch:
+        file: 01-patch-custom-tsc.yaml
+  # ── Step 4: Assert Deployment has custom TSC verbatim ────────────────────
+  # Note: We only assert the spec here, not rollout completion. The custom TSC
+  # uses `DoNotSchedule` with `topology.kubernetes.io/zone`, a label the single-
+  # node kind cluster does not carry — the rollout would stall. The test's goal
+  # is verbatim pass-through of the TSC into the Deployment spec, which the
+  # controller performs regardless of scheduling outcome.
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-tsc-api
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                topologySpreadConstraints:
+                - maxSkew: 2
+                  topologyKey: topology.kubernetes.io/zone
+                  whenUnsatisfiable: DoNotSchedule
+                  labelSelector:
+                    matchLabels:
+                      app.kubernetes.io/name: keystone
+                      app.kubernetes.io/instance: keystone-tsc
+    catch:
+    - podLogs:
+        selector: application=keystone
+        namespace: openstack
+        tail: 50
+    - command:
+        entrypoint: kubectl
+        args:
+        - get
+        - deployments
+        - -n
+        - openstack
+        - -o
+        - yaml
+    - events:
+        namespace: openstack
+  # ── Step 5: Patch with empty TSC to disable constraints ──────────────────
+  - try:
+    - patch:
+        file: 02-patch-empty-tsc.yaml
+  # ── Step 6: Assert Deployment has no TSC ─────────────────────────────────
+  - try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          # Wait for controller to reconcile the empty TSC patch (poll every 5s, timeout 120s).
+          TIMEOUT=120
+          ELAPSED=0
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            TSC=$(kubectl get deployment keystone-tsc-api -n openstack -o jsonpath='{.spec.template.spec.topologySpreadConstraints}')
+            if [ "$TSC" = "" ] || [ "$TSC" = "null" ] || [ "$TSC" = "[]" ]; then
+              echo "PASS: No topology spread constraints on Deployment"
+              exit 0
+            fi
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+          done
+          echo "FAIL: Expected no TSC within ${TIMEOUT}s, got: $TSC"
+          exit 1
+    catch:
+    - command:
+        entrypoint: kubectl
+        args:
+        - get
+        - deployment
+        - keystone-tsc-api
+        - -n
+        - openstack
+        - -o
+        - yaml
+    - events:
+        namespace: openstack

@@ -10,7 +10,12 @@ import (
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	schedulingv1 "k8s.io/api/scheduling/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
@@ -1101,7 +1106,7 @@ func TestValidate_NetworkPolicy_EmptyIngress_Rejected(t *testing.T) {
 
 func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g := NewGomegaWithT(t)
-	w := &KeystoneWebhook{}
+	w := &KeystoneWebhook{Client: newFakeClient().Build()}
 	k := validKeystone()
 	k.Spec.Replicas = 0
 	k.Spec.Fernet.MaxActiveKeys = 1
@@ -1143,6 +1148,23 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 		Processes: 0,
 		Threads:   0,
 	}
+	// REQ-004 (CC-0075): Break PriorityClassName — nonexistent class.
+	pcn := "nonexistent-class"
+	k.Spec.PriorityClassName = &pcn
+	// REQ-005 (CC-0075): Break TSC — wrong label selectors.
+	k.Spec.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
+		{
+			MaxSkew:           1,
+			TopologyKey:       "topology.kubernetes.io/zone",
+			WhenUnsatisfiable: corev1.ScheduleAnyway,
+			LabelSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app.kubernetes.io/name":     "wrong",
+					"app.kubernetes.io/instance": k.Name,
+				},
+			},
+		},
+	}
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
@@ -1159,6 +1181,8 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g.Expect(errMsg).To(ContainSubstring("networkPolicy"))
 	g.Expect(errMsg).To(ContainSubstring("resources"))
 	g.Expect(errMsg).To(ContainSubstring("uwsgi"))
+	g.Expect(errMsg).To(ContainSubstring("priorityClassName"))
+	g.Expect(errMsg).To(ContainSubstring("topologySpreadConstraints"))
 }
 
 func TestValidateUpdate_RunsSameValidation(t *testing.T) {
@@ -1471,6 +1495,167 @@ func TestValidate_TrustFlush_NilPassesValidation(t *testing.T) {
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// --- PriorityClass validation (CC-0075, REQ-004) ---
+
+// newFakeClient returns a controller-runtime fake client with the core scheduling
+// API types registered. Additional objects can be pre-populated.
+func newFakeClient(objs ...runtime.Object) *fake.ClientBuilder {
+	s := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(s)
+	b := fake.NewClientBuilder().WithScheme(s)
+	for _, o := range objs {
+		b = b.WithRuntimeObjects(o)
+	}
+	return b
+}
+
+func TestValidate_PriorityClassNameExistsAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	pc := &schedulingv1.PriorityClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "system-cluster-critical"},
+		Value:      1000000,
+	}
+	c := newFakeClient(pc).Build()
+	w := &KeystoneWebhook{Client: c}
+	k := validKeystone()
+	k.Name = "my-ks"
+	pcn := "system-cluster-critical"
+	k.Spec.PriorityClassName = &pcn
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_PriorityClassNameNotFoundRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	c := newFakeClient().Build()
+	w := &KeystoneWebhook{Client: c}
+	k := validKeystone()
+	k.Name = "my-ks"
+	pcn := "nonexistent-class"
+	k.Spec.PriorityClassName = &pcn
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("priorityClassName"))
+}
+
+// TestValidate_PriorityClassNameNilOrEmpty_SkipsValidation verifies that
+// PriorityClassName validation is skipped when the field is nil (unset) and
+// the webhook has no Client. Both the nil-PriorityClassName guard and the
+// nil-Client guard independently cause the validation to be bypassed.
+func TestValidate_PriorityClassNameNilOrEmpty_SkipsValidation(t *testing.T) {
+	g := NewGomegaWithT(t)
+	// Client is nil — even if PriorityClassName were set and non-empty,
+	// the nil-Client guard would skip the lookup. Here PriorityClassName
+	// is also nil (unset in validKeystone), so both guards apply.
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Name = "my-ks"
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// --- TopologySpreadConstraints label selector validation (CC-0075, REQ-005) ---
+
+func TestValidate_TopologySpreadConstraintCorrectLabelsAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Name = "my-ks"
+	k.Spec.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
+		{
+			MaxSkew:           1,
+			TopologyKey:       "topology.kubernetes.io/zone",
+			WhenUnsatisfiable: corev1.ScheduleAnyway,
+			LabelSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app.kubernetes.io/name":     "keystone",
+					"app.kubernetes.io/instance": "my-ks",
+				},
+			},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_TopologySpreadConstraintWrongLabelsRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Name = "my-ks"
+	k.Spec.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
+		{
+			MaxSkew:           1,
+			TopologyKey:       "topology.kubernetes.io/zone",
+			WhenUnsatisfiable: corev1.ScheduleAnyway,
+			LabelSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app.kubernetes.io/name":     "wrong-name",
+					"app.kubernetes.io/instance": "my-ks",
+				},
+			},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("topologySpreadConstraints"))
+	g.Expect(err.Error()).To(ContainSubstring("labelSelector"))
+}
+
+func TestValidate_TopologySpreadConstraintNilSelectorRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Name = "my-ks"
+	k.Spec.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
+		{
+			MaxSkew:           1,
+			TopologyKey:       "topology.kubernetes.io/zone",
+			WhenUnsatisfiable: corev1.ScheduleAnyway,
+			LabelSelector:     nil,
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("labelSelector"))
+}
+
+func TestValidate_TopologySpreadConstraintMatchExpressionsRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Name = "my-ks"
+	k.Spec.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
+		{
+			MaxSkew:           1,
+			TopologyKey:       "topology.kubernetes.io/zone",
+			WhenUnsatisfiable: corev1.ScheduleAnyway,
+			LabelSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app.kubernetes.io/name":     "keystone",
+					"app.kubernetes.io/instance": "my-ks",
+				},
+				MatchExpressions: []metav1.LabelSelectorRequirement{
+					{
+						Key:      "env",
+						Operator: metav1.LabelSelectorOpExists,
+					},
+				},
+			},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("matchExpressions"))
 }
 
 // --- Interface compliance (CC-0011) ---

@@ -12,6 +12,15 @@ import (
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
 
+// Selector label keys and values used by the Deployment pod selector, webhook
+// TSC validation, and commonLabels(). Exported so that both the webhook and
+// controller reference the same constants — prevents silent drift (CC-0075).
+const (
+	LabelKeyName     = "app.kubernetes.io/name"
+	LabelKeyInstance = "app.kubernetes.io/instance"
+	AppName          = "keystone"
+)
+
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
@@ -116,6 +125,23 @@ type KeystoneSpec struct {
 	// httpKeepAlive=true) are used.
 	// +optional
 	UWSGI *UWSGISpec `json:"uwsgi,omitempty"`
+
+	// TopologySpreadConstraints describes how pods should be spread across
+	// topology domains (zones, nodes) to achieve high availability (CC-0075).
+	// When nil (unset), the operator injects two default constraints:
+	// zone-spread (topology.kubernetes.io/zone) and hostname-spread
+	// (kubernetes.io/hostname), both MaxSkew=1 with ScheduleAnyway.
+	// When set to a non-nil value (including an empty slice), the user-provided
+	// constraints are used verbatim — an empty slice disables defaults.
+	// +optional
+	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
+
+	// PriorityClassName sets the priority class for Keystone API pods (CC-0075).
+	// When set, the operator passes the value through to the PodSpec, allowing
+	// cluster administrators to control scheduling priority and preemption.
+	// When unset, no priority class is configured and the cluster default applies.
+	// +optional
+	PriorityClassName *string `json:"priorityClassName,omitempty"`
 
 	// ExtraConfig provides free-form INI sections for configuration
 	// not covered by explicit CRD fields.

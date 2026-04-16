@@ -1,0 +1,60 @@
+{
+  "feature_id": "CC-0075",
+  "title": "Add topologySpreadConstraints and PriorityClass support",
+  "date": "2026-04-15",
+  "verdict": "APPROVED",
+  "summary": "Changes address all 7 warning findings from external review round 1 by berendt. E2E Chainsaw tests added for topology-spread and priority-class features (W-001). TestValidateCreate_RunsAllValidations updated with PriorityClassName and TSC violation paths plus fake Client injection (W-002). Label constants (LabelKeyName, LabelKeyInstance, AppName) extracted to keystone_types.go and referenced by both webhook and controller, eliminating hardcoded drift risk (W-003). MatchExpressions validation added to reject selectors that widen beyond the Deployment intent (W-004). TestValidate_PriorityClassNameEmptyAccepted renamed to TestValidate_PriorityClassNameNilOrEmpty_SkipsValidation with clarifying comments (W-005). PriorityClassName propagated to bootstrap, db-sync, fernet rotation, and credential rotation Job/CronJob PodSpecs with unit tests (W-006). New review pattern persisted for aggregate validation test maintenance (W-002). All unit tests pass (api/v1alpha1: 0.07s, internal/controller: 1.02s). go vet clean. golangci-lint clean.",
+  "tests_checklist": [
+    {"item": "All 8 webhook validation tests pass (6 original + 1 MatchExpressions + 1 updated aggregate)", "checked": true},
+    {"item": "All 10 PriorityClassName Job/CronJob tests pass (2 per builder x 5 builders)", "checked": true},
+    {"item": "TestValidateCreate_RunsAllValidations covers priorityClassName and topologySpreadConstraints paths", "checked": true},
+    {"item": "E2E topology-spread test covers: default 2-constraint injection, custom override, empty-slice disable", "checked": true},
+    {"item": "E2E priority-class test covers: unset (no PCN), set valid PCN, remove PCN", "checked": true},
+    {"item": "Edge cases covered: nil PriorityClassName, empty string, nonexistent class, nil LabelSelector, wrong MatchLabels, MatchExpressions present", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (Gomega assertions, builder functions, shared helpers)", "checked": true},
+    {"item": "Label constants extracted to single source of truth in keystone_types.go", "checked": true},
+    {"item": "priorityClassName() helper shared across all 5 PodSpec builders", "checked": true},
+    {"item": "Functions small and single-purpose (topologySpreadConstraints, priorityClassName each <10 lines)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "PriorityClassName validated via cluster lookup at admission time", "checked": true},
+    {"item": "TSC LabelSelector validated to match Deployment selector (prevents selector widening)", "checked": true},
+    {"item": "MatchExpressions rejected to prevent selector manipulation beyond matchLabels", "checked": true},
+    {"item": "No hardcoded secrets or sensitive data", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Constants in API types package shared by webhook and controller — single source of truth", "checked": true},
+    {"item": "E2E tests follow chainsaw pattern: SPDX header, REQ references, namespace, 5m assert timeout, numbered steps, catch blocks", "checked": true},
+    {"item": "Fixture files use 00-/01-/02- numeric prefix ordering", "checked": true},
+    {"item": "Unique CR names (keystone-tsc, keystone-pc) for parallel E2E execution", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated label strings between webhook and controller (constants extracted)", "checked": true},
+    {"item": "priorityClassName() helper reused across Deployment, bootstrap Job, db-sync Job, fernet CronJob, credential CronJob", "checked": true},
+    {"item": "No unnecessary abstractions or over-engineering", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Nonexistent PriorityClass rejected at admission (not deferred to scheduler)", "checked": true},
+    {"item": "Mismatched TSC label selectors rejected at admission with field-path errors", "checked": true},
+    {"item": "MatchExpressions rejected at admission with clear error message", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "nil Client guard prevents panic when webhook has no client (e.g., unit tests)", "checked": true},
+    {"item": "nil PriorityClassName guard returns empty string (cluster default)", "checked": true},
+    {"item": "nil TopologySpreadConstraints injects safe defaults (ScheduleAnyway)", "checked": true},
+    {"item": "API server errors during PriorityClass lookup surfaced as InternalError (not swallowed)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "PriorityClassName was propagated to 4 of 5 Job/CronJob builders (bootstrap, db-sync, fernet rotation, credential rotation) but not to trustFlushCronJob in reconcile_trustflush.go:90. While trustflush is out of the CC-0075 scope and not in the changed files, the inconsistency means trust-flush pods run without the configured PriorityClass while all other workloads use it. Consider adding PriorityClassName: priorityClassName(keystone) to the trustFlushCronJob PodSpec in a follow-up commit.",
+    "E2E test final script steps (topology-spread Step 6, priority-class Step 7) execute a single kubectl get without retry logic after patching the CR. If the controller has not reconciled the patch yet, the script checks stale Deployment state. Consider replacing these script blocks with a Chainsaw assert resource (which retries within the 5m timeout) or adding a polling loop in the script."
+  ],
+  "next_steps": [
+    "Propagate PriorityClassName to trustFlushCronJob in reconcile_trustflush.go with corresponding unit tests (follow-up to W-006)"
+  ],
+  "detected_patterns": []
+}

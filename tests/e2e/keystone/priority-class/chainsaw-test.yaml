@@ -1,0 +1,155 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for spec.priorityClassName (CC-0075).
+# Validates that:
+#   - A Keystone CR without priorityClassName has no priority class on the Deployment
+#   - Patching with a valid priorityClassName sets it on the Deployment
+#   - Patching with empty string removes it from the Deployment
+#
+# REQ-004 (CC-0075)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-priority-class
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Create PriorityClass (cluster-scoped) ────────────────────────
+  - try:
+    - apply:
+        file: 00-priority-class.yaml
+  # ── Step 2: Apply Keystone CR without priorityClassName ──────────────────
+  - try:
+    - apply:
+        file: 01-keystone-cr.yaml
+  # ── Step 3: Assert Ready and Deployment has no priority class ────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-pc
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        content: |
+          PCN=$(kubectl get deployment keystone-pc-api -n openstack -o jsonpath='{.spec.template.spec.priorityClassName}')
+          if [ "$PCN" = "" ] || [ "$PCN" = "null" ]; then
+            echo "PASS: No priorityClassName on Deployment (default)"
+            exit 0
+          else
+            echo "FAIL: Expected empty priorityClassName, got: $PCN"
+            exit 1
+          fi
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
+          echo "=== Deployment priorityClassName ==="
+          kubectl get deployment keystone-pc-api -n $NAMESPACE -o jsonpath='{.spec.template.spec.priorityClassName}' 2>&1 || true
+          echo ""
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Patch with custom priorityClassName ──────────────────────────
+  - try:
+    - patch:
+        file: 02-patch-priority-class.yaml
+  # ── Step 5: Assert Deployment has the configured priority class ──────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-pc-api
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                priorityClassName: openstack-control-plane
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-pc-api
+            namespace: openstack
+          status:
+            (updatedReplicas): 3
+            (availableReplicas): 3
+    catch:
+    - podLogs:
+        selector: application=keystone
+        namespace: openstack
+        tail: 50
+    - command:
+        entrypoint: kubectl
+        args:
+        - get
+        - deployments
+        - -n
+        - openstack
+        - -o
+        - yaml
+    - events:
+        namespace: openstack
+  # ── Step 6: Patch with empty priorityClassName ───────────────────────────
+  - try:
+    - patch:
+        file: 03-patch-empty-priority-class.yaml
+  # ── Step 7: Assert Deployment has no priority class again ────────────────
+  - try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          # Wait for controller to reconcile the empty priorityClassName patch (poll every 5s, timeout 120s).
+          TIMEOUT=120
+          ELAPSED=0
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            PCN=$(kubectl get deployment keystone-pc-api -n openstack -o jsonpath='{.spec.template.spec.priorityClassName}')
+            if [ "$PCN" = "" ] || [ "$PCN" = "null" ]; then
+              echo "PASS: priorityClassName removed from Deployment"
+              exit 0
+            fi
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+          done
+          echo "FAIL: Expected empty priorityClassName within ${TIMEOUT}s, got: $PCN"
+          exit 1
+    catch:
+    - command:
+        entrypoint: kubectl
+        args:
+        - get
+        - deployment
+        - keystone-pc-api
+        - -n
+        - openstack
+        - -o
+        - yaml
+    - events:
+        namespace: openstack

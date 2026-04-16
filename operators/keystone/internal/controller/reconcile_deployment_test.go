@@ -859,6 +859,124 @@ func TestUWSGICommand_FixedFlagsAlwaysPresent(t *testing.T) {
 	}
 }
 
+// Feature: CC-0075
+
+// TestBuildKeystoneDeployment_DefaultTopologySpreadConstraints verifies that when
+// spec.TopologySpreadConstraints is nil, the deployment builder injects two default
+// constraints: zone-spread and hostname-spread, both with ScheduleAnyway (CC-0075).
+func TestBuildKeystoneDeployment_DefaultTopologySpreadConstraints(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	tscs := deploy.Spec.Template.Spec.TopologySpreadConstraints
+	g.Expect(tscs).To(HaveLen(2))
+
+	// First default: zone-spread.
+	g.Expect(tscs[0].MaxSkew).To(Equal(int32(1)))
+	g.Expect(tscs[0].TopologyKey).To(Equal("topology.kubernetes.io/zone"))
+	g.Expect(tscs[0].WhenUnsatisfiable).To(Equal(corev1.ScheduleAnyway))
+	g.Expect(tscs[0].LabelSelector).NotTo(BeNil())
+	g.Expect(tscs[0].LabelSelector.MatchLabels).To(Equal(selectorLabels(ks)))
+
+	// Second default: hostname-spread.
+	g.Expect(tscs[1].MaxSkew).To(Equal(int32(1)))
+	g.Expect(tscs[1].TopologyKey).To(Equal("kubernetes.io/hostname"))
+	g.Expect(tscs[1].WhenUnsatisfiable).To(Equal(corev1.ScheduleAnyway))
+	g.Expect(tscs[1].LabelSelector).NotTo(BeNil())
+	g.Expect(tscs[1].LabelSelector.MatchLabels).To(Equal(selectorLabels(ks)))
+}
+
+// TestBuildKeystoneDeployment_EmptyTopologySpreadConstraintsDisablesDefaults verifies
+// that setting spec.TopologySpreadConstraints to an empty non-nil slice disables
+// default TSC injection, resulting in no constraints on the pod spec (CC-0075).
+func TestBuildKeystoneDeployment_EmptyTopologySpreadConstraintsDisablesDefaults(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+	ks.Spec.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{}
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	g.Expect(deploy.Spec.Template.Spec.TopologySpreadConstraints).To(BeEmpty())
+}
+
+// TestBuildKeystoneDeployment_DefaultTopologySpreadConstraints_LabelSelectorMatchesSelectorLabels
+// explicitly verifies that the default TSC LabelSelector equals selectorLabels(ks),
+// ensuring the TSC targets the correct pods (CC-0075).
+func TestBuildKeystoneDeployment_DefaultTopologySpreadConstraints_LabelSelectorMatchesSelectorLabels(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+	expected := selectorLabels(ks)
+
+	for i, tsc := range deploy.Spec.Template.Spec.TopologySpreadConstraints {
+		g.Expect(tsc.LabelSelector).NotTo(BeNil(), "TSC[%d] must have a LabelSelector", i)
+		g.Expect(tsc.LabelSelector.MatchLabels).To(Equal(expected),
+			"TSC[%d] LabelSelector.MatchLabels must equal selectorLabels()", i)
+	}
+}
+
+// TestBuildKeystoneDeployment_CustomTopologySpreadConstraints verifies that when
+// spec.TopologySpreadConstraints is set, the deployment uses those constraints
+// verbatim without merging with defaults (CC-0075).
+func TestBuildKeystoneDeployment_CustomTopologySpreadConstraints(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+	ks.Spec.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
+		{
+			MaxSkew:           2,
+			TopologyKey:       "kubernetes.io/hostname",
+			WhenUnsatisfiable: corev1.DoNotSchedule,
+			LabelSelector:     &metav1.LabelSelector{MatchLabels: map[string]string{"app": "keystone"}},
+		},
+		{
+			MaxSkew:           3,
+			TopologyKey:       "topology.kubernetes.io/zone",
+			WhenUnsatisfiable: corev1.ScheduleAnyway,
+			LabelSelector:     &metav1.LabelSelector{MatchLabels: map[string]string{"app": "keystone"}},
+		},
+	}
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	tscs := deploy.Spec.Template.Spec.TopologySpreadConstraints
+	g.Expect(tscs).To(HaveLen(2))
+	g.Expect(tscs[0].MaxSkew).To(Equal(int32(2)))
+	g.Expect(tscs[0].TopologyKey).To(Equal("kubernetes.io/hostname"))
+	g.Expect(tscs[0].WhenUnsatisfiable).To(Equal(corev1.DoNotSchedule))
+	g.Expect(tscs[1].MaxSkew).To(Equal(int32(3)))
+	g.Expect(tscs[1].TopologyKey).To(Equal("topology.kubernetes.io/zone"))
+	g.Expect(tscs[1].WhenUnsatisfiable).To(Equal(corev1.ScheduleAnyway))
+}
+
+// TestBuildKeystoneDeployment_PriorityClassNameSet verifies that when
+// spec.PriorityClassName is set, the deployment PodSpec includes the
+// configured priority class name (CC-0075).
+func TestBuildKeystoneDeployment_PriorityClassNameSet(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+	pcn := "system-cluster-critical"
+	ks.Spec.PriorityClassName = &pcn
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	g.Expect(deploy.Spec.Template.Spec.PriorityClassName).To(Equal("system-cluster-critical"))
+}
+
+// TestBuildKeystoneDeployment_PriorityClassNameNil verifies that when
+// spec.PriorityClassName is nil, the deployment PodSpec has an empty
+// priority class name, deferring to the cluster default (CC-0075).
+func TestBuildKeystoneDeployment_PriorityClassNameNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	g.Expect(deploy.Spec.Template.Spec.PriorityClassName).To(BeEmpty())
+}
+
 // Feature: CC-0056
 
 // TestReconcileDeployment_RollingUpdate_ReadyDeployment_TransitionsToContracting verifies that

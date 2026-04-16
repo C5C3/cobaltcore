@@ -687,3 +687,27 @@ func TestReconcileFernetKeys_ConditionObservedGeneration(t *testing.T) {
 	g.Expect(cond2).NotTo(BeNil())
 	g.Expect(cond2.ObservedGeneration).To(Equal(int64(12)))
 }
+
+// TestFernetRotationCronJob_PriorityClassNameSet verifies that when spec.PriorityClassName
+// is set, the fernet rotation CronJob PodSpec includes the configured priority class (CC-0075).
+func TestFernetRotationCronJob_PriorityClassNameSet(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := fernetTestKeystone()
+	pcn := "system-cluster-critical"
+	ks.Spec.PriorityClassName = &pcn
+
+	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123")
+
+	g.Expect(cronJob.Spec.JobTemplate.Spec.Template.Spec.PriorityClassName).To(Equal("system-cluster-critical"))
+}
+
+// TestFernetRotationCronJob_PriorityClassNameNil verifies that when spec.PriorityClassName
+// is nil, the fernet rotation CronJob PodSpec has an empty priority class name (CC-0075).
+func TestFernetRotationCronJob_PriorityClassNameNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := fernetTestKeystone()
+
+	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123")
+
+	g.Expect(cronJob.Spec.JobTemplate.Spec.Template.Spec.PriorityClassName).To(BeEmpty())
+}

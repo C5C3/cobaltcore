@@ -259,6 +259,17 @@ Extracted into a named template to prevent drift when rules change.
     - update
     - patch
     - delete
+# scheduling.k8s.io - priorityclasses (read-only, CC-0075)
+# Required for the webhook to validate that spec.priorityClassName references
+# an existing PriorityClass at admission time.
+- apiGroups:
+    - scheduling.k8s.io
+  resources:
+    - priorityclasses
+  verbs:
+    - get
+    - list
+    - watch
 # coordination.k8s.io - leases for leader election (CC-0018)
 - apiGroups:
     - coordination.k8s.io

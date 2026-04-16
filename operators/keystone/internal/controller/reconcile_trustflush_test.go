@@ -488,6 +488,36 @@ func TestTrustFlushCronJob_SecurityContext(t *testing.T) {
 	expectRestrictedSecurityContext(g, container)
 }
 
+// TestTrustFlushCronJob_PriorityClassNameSet verifies that when spec.PriorityClassName
+// is set, the trust flush CronJob PodSpec includes the configured priority class (CC-0075).
+func TestTrustFlushCronJob_PriorityClassNameSet(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := trustFlushTestKeystone()
+	pcn := "system-cluster-critical"
+	ks.Spec.PriorityClassName = &pcn
+	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
+		Schedule: "0 * * * *",
+	}
+
+	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
+
+	g.Expect(cronJob.Spec.JobTemplate.Spec.Template.Spec.PriorityClassName).To(Equal("system-cluster-critical"))
+}
+
+// TestTrustFlushCronJob_PriorityClassNameNil verifies that when spec.PriorityClassName
+// is nil, the trust flush CronJob PodSpec has an empty priority class name (CC-0075).
+func TestTrustFlushCronJob_PriorityClassNameNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := trustFlushTestKeystone()
+	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
+		Schedule: "0 * * * *",
+	}
+
+	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
+
+	g.Expect(cronJob.Spec.JobTemplate.Spec.Template.Spec.PriorityClassName).To(BeEmpty())
+}
+
 func TestTrustFlushCronJob_RestartPolicy(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := trustFlushTestKeystone()

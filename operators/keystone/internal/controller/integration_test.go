@@ -64,7 +64,7 @@ func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, c
 	return testutil.SetupKeystoneEnvTestWithController(t,
 		keystonev1alpha1.AddToScheme,
 		func(mgr ctrl.Manager) error {
-			return (&keystonev1alpha1.KeystoneWebhook{}).SetupWebhookWithManager(mgr)
+			return (&keystonev1alpha1.KeystoneWebhook{Client: mgr.GetClient()}).SetupWebhookWithManager(mgr)
 		},
 		func(mgr ctrl.Manager) error {
 			r := &KeystoneReconciler{

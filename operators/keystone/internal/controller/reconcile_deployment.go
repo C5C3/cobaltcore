@@ -95,20 +95,21 @@ func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *
 // owned by this Keystone instance.
 func commonLabels(keystone *keystonev1alpha1.Keystone) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":       "keystone",
-		"app.kubernetes.io/instance":   keystone.Name,
-		"app.kubernetes.io/managed-by": "keystone-operator",
+		keystonev1alpha1.LabelKeyName:     keystonev1alpha1.AppName,
+		keystonev1alpha1.LabelKeyInstance: keystone.Name,
+		"app.kubernetes.io/managed-by":    "keystone-operator",
 	}
 }
 
 // selectorLabels returns the minimal label set used as the Deployment pod
 // selector. It is a subset of commonLabels and must remain stable for the
 // lifetime of a Deployment (selectors are immutable after creation).
+// The label keys and app name are sourced from exported constants in the API
+// package (CC-0075) to stay in sync with webhook TSC validation.
 func selectorLabels(keystone *keystonev1alpha1.Keystone) map[string]string {
-	labels := commonLabels(keystone)
 	return map[string]string{
-		"app.kubernetes.io/name":     labels["app.kubernetes.io/name"],
-		"app.kubernetes.io/instance": labels["app.kubernetes.io/instance"],
+		keystonev1alpha1.LabelKeyName:     keystonev1alpha1.AppName,
+		keystonev1alpha1.LabelKeyInstance: keystone.Name,
 	}
 }
 
@@ -135,6 +136,8 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 				},
 				Spec: corev1.PodSpec{
 					TerminationGracePeriodSeconds: ptr.To(int64(30)),
+					TopologySpreadConstraints:     topologySpreadConstraints(keystone),
+					PriorityClassName:             priorityClassName(keystone),
 					Containers: []corev1.Container{{
 						Name:            "keystone-api",
 						Image:           fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag),
@@ -311,6 +314,42 @@ func containerResources(keystone *keystonev1alpha1.Keystone) corev1.ResourceRequ
 		return *keystone.Spec.Resources
 	}
 	return corev1.ResourceRequirements{}
+}
+
+// topologySpreadConstraints returns the topology spread constraints for the
+// Keystone API pods. If spec.TopologySpreadConstraints is non-nil, those are
+// used verbatim (an empty slice disables defaults). Otherwise, two default
+// constraints are injected: one zone-spread and one hostname-spread, both with
+// ScheduleAnyway to distribute pods across zones and nodes (CC-0075).
+func topologySpreadConstraints(keystone *keystonev1alpha1.Keystone) []corev1.TopologySpreadConstraint {
+	if keystone.Spec.TopologySpreadConstraints != nil {
+		return keystone.Spec.TopologySpreadConstraints
+	}
+	ls := &metav1.LabelSelector{MatchLabels: selectorLabels(keystone)}
+	return []corev1.TopologySpreadConstraint{
+		{
+			MaxSkew:           1,
+			TopologyKey:       "topology.kubernetes.io/zone",
+			WhenUnsatisfiable: corev1.ScheduleAnyway,
+			LabelSelector:     ls,
+		},
+		{
+			MaxSkew:           1,
+			TopologyKey:       "kubernetes.io/hostname",
+			WhenUnsatisfiable: corev1.ScheduleAnyway,
+			LabelSelector:     ls,
+		},
+	}
+}
+
+// priorityClassName returns the priority class name for the Keystone API pods.
+// If spec.PriorityClassName is set, that value is used. Otherwise, an empty
+// string is returned, leaving the cluster default in effect (CC-0075).
+func priorityClassName(keystone *keystonev1alpha1.Keystone) string {
+	if keystone.Spec.PriorityClassName != nil {
+		return *keystone.Spec.PriorityClassName
+	}
+	return ""
 }
 
 func buildKeystoneService(keystone *keystonev1alpha1.Keystone) *corev1.Service {

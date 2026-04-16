@@ -49,7 +49,7 @@ func main() {
 				return err
 			}
 			if webhooks {
-				if err := (&keystonev1alpha1.KeystoneWebhook{}).SetupWebhookWithManager(mgr); err != nil {
+				if err := (&keystonev1alpha1.KeystoneWebhook{Client: mgr.GetClient()}).SetupWebhookWithManager(mgr); err != nil {
 					return err
 				}
 			}

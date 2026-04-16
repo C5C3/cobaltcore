@@ -555,7 +555,8 @@ func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, imageTag, na
 			BackoffLimit: &backoffLimit,
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyNever,
+					RestartPolicy:     corev1.RestartPolicyNever,
+					PriorityClassName: priorityClassName(keystone),
 					Containers: []corev1.Container{{
 						Name:            nameSuffix,
 						Image:           fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, imageTag),

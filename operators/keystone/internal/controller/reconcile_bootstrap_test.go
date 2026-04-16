@@ -424,3 +424,27 @@ func TestReconcileBootstrap_ConditionObservedGeneration(t *testing.T) {
 	g.Expect(cond3).NotTo(BeNil())
 	g.Expect(cond3.ObservedGeneration).To(Equal(int64(12)))
 }
+
+// TestBuildBootstrapJob_PriorityClassNameSet verifies that when spec.PriorityClassName
+// is set, the bootstrap Job PodSpec includes the configured priority class (CC-0075).
+func TestBuildBootstrapJob_PriorityClassNameSet(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := bootstrapKeystone()
+	pcn := "system-cluster-critical"
+	ks.Spec.PriorityClassName = &pcn
+
+	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
+
+	g.Expect(job.Spec.Template.Spec.PriorityClassName).To(Equal("system-cluster-critical"))
+}
+
+// TestBuildBootstrapJob_PriorityClassNameNil verifies that when spec.PriorityClassName
+// is nil, the bootstrap Job PodSpec has an empty priority class name (CC-0075).
+func TestBuildBootstrapJob_PriorityClassNameNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := bootstrapKeystone()
+
+	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
+
+	g.Expect(job.Spec.Template.Spec.PriorityClassName).To(BeEmpty())
+}

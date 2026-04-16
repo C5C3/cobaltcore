@@ -41,7 +41,7 @@ tests:
       - hasDocuments:
           count: 0
 
-  - it: should have 17 rules matching ClusterRole
+  - it: should have 18 rules matching ClusterRole
     set:
       rbac:
         namespaceScoped: true
@@ -50,7 +50,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 17
+          count: 18
 
   - it: should grant full CRUD on keystones
     set:
@@ -398,6 +398,25 @@ tests:
               - update
               - patch
               - delete
+
+  - it: should grant read-only on priorityclasses for webhook validation (CC-0075)
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - scheduling.k8s.io
+            resources:
+              - priorityclasses
+            verbs:
+              - get
+              - list
+              - watch
 
   - it: should grant full CRUD on leases for leader election
     set:

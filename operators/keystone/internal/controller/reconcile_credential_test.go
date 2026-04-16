@@ -694,3 +694,27 @@ func TestReconcileCredentialKeys_ConditionObservedGeneration(t *testing.T) {
 	g.Expect(cond2).NotTo(BeNil())
 	g.Expect(cond2.ObservedGeneration).To(Equal(int64(12)))
 }
+
+// TestCredentialRotationCronJob_PriorityClassNameSet verifies that when spec.PriorityClassName
+// is set, the credential rotation CronJob PodSpec includes the configured priority class (CC-0075).
+func TestCredentialRotationCronJob_PriorityClassNameSet(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := credentialTestKeystone()
+	pcn := "system-cluster-critical"
+	ks.Spec.PriorityClassName = &pcn
+
+	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123")
+
+	g.Expect(cronJob.Spec.JobTemplate.Spec.Template.Spec.PriorityClassName).To(Equal("system-cluster-critical"))
+}
+
+// TestCredentialRotationCronJob_PriorityClassNameNil verifies that when spec.PriorityClassName
+// is nil, the credential rotation CronJob PodSpec has an empty priority class name (CC-0075).
+func TestCredentialRotationCronJob_PriorityClassNameNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := credentialTestKeystone()
+
+	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123")
+
+	g.Expect(cronJob.Spec.JobTemplate.Spec.Template.Spec.PriorityClassName).To(BeEmpty())
+}
