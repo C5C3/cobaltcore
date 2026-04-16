@@ -21,6 +21,9 @@ env:
   CONTROLLER_GEN_VERSION: v0.20.1
   GOFUMPT_VERSION: v0.9.2  # CC-0053
   GOLANGCI_LINT_VERSION: v2.11.4
+  # Pinned kind node image — shared cache key for all E2E jobs.
+  # To update: change tag + digest and run one E2E job to repopulate the cache.
+  KIND_NODE_IMAGE: kindest/node:v1.35.1@sha256:b08d1f9b5244fb2aae7bea9861c1d372a9535f259efed62a9e92e6b5ab500529
 
 concurrency:
   group: ${{ github.ref }}-${{ github.workflow }}
@@ -413,10 +416,9 @@ jobs:
         with:
           go-version-file: go.work
       - name: Create kind cluster
-        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        uses: ./.github/actions/create-kind-cluster
         with:
-          config: hack/kind-config.yaml
-          cluster_name: forge-e2e
+          node-image: ${{ env.KIND_NODE_IMAGE }}
       # CC-0050: Use composite action for shared Flux CLI + test deps + deploy-infra sequence (REQ-005).
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
@@ -596,10 +598,9 @@ jobs:
         with:
           go-version-file: go.work
       - name: Create kind cluster
-        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        uses: ./.github/actions/create-kind-cluster
         with:
-          config: hack/kind-config.yaml
-          cluster_name: forge-e2e
+          node-image: ${{ env.KIND_NODE_IMAGE }}
       # Load pre-built images from shared artifact instead of building.
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
@@ -608,10 +609,15 @@ jobs:
           # Tag the service image with the upgrade tag used by the image-upgrade E2E test.
           docker tag ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2025.2 \
             ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2025.2-upgraded
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator:dev --name forge-e2e
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2025.2 --name forge-e2e
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2025.2-upgraded --name forge-e2e
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2026.1 --name forge-e2e
+          # Load images in parallel; track each PID so any failure is surfaced.
+          pids=()
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator:dev --name forge-e2e & pids+=($!)
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2025.2 --name forge-e2e & pids+=($!)
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2025.2-upgraded --name forge-e2e & pids+=($!)
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2026.1 --name forge-e2e & pids+=($!)
+          failed=0
+          for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
+          exit "$failed"
       # CC-0050: Use composite action for shared Flux CLI + test deps + deploy-infra sequence (REQ-005).
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
@@ -666,18 +672,22 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Create kind cluster
-        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        uses: ./.github/actions/create-kind-cluster
         with:
-          config: hack/kind-config.yaml
-          cluster_name: forge-e2e
+          node-image: ${{ env.KIND_NODE_IMAGE }}
       # Load pre-built images from shared artifact instead of rebuilding
       # (e2e-operator already waited on build-e2e-images, so the artifact is available).
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
       - name: Load images into kind
         run: |
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name forge-e2e
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name forge-e2e
+          # Load images in parallel; track each PID so any failure is surfaced.
+          pids=()
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name forge-e2e & pids+=($!)
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name forge-e2e & pids+=($!)
+          failed=0
+          for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
+          exit "$failed"
       # CC-0050: Use composite action for shared Flux CLI + test deps + deploy-infra sequence (REQ-005).
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
@@ -729,18 +739,22 @@ jobs:
         with:
           go-version-file: go.work
       - name: Create kind cluster
-        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        uses: ./.github/actions/create-kind-cluster
         with:
-          config: hack/kind-config.yaml
-          cluster_name: forge-e2e
+          node-image: ${{ env.KIND_NODE_IMAGE }}
       # -- Keystone --------------------------------------------------------
       # Load pre-built images from shared artifact instead of building.
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
       - name: Load images into kind
         run: |
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name forge-e2e
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }} --name forge-e2e
+          # Load images in parallel; track each PID so any failure is surfaced.
+          pids=()
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name forge-e2e & pids+=($!)
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }} --name forge-e2e & pids+=($!)
+          failed=0
+          for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
+          exit "$failed"
       # CC-0050: Use composite action for shared Flux CLI + test deps + deploy-infra sequence (REQ-005).
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra

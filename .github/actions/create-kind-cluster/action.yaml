@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Composite action for kind cluster creation with node image caching.
+# Caches the kindest/node image tar between CI runs to avoid re-downloading
+# ~700 MB from Docker Hub on every E2E job.  On cache hit the image is
+# pre-loaded into Docker before kind create, so kind skips the pull entirely.
+# All four E2E jobs (e2e-infra, e2e-operator, e2e-chaos, tempest) use this
+# action so the cache is shared and only populated once per image version.
+
+name: Create kind cluster
+description: >
+  Creates a kind cluster with node image caching. Restores the kindest/node
+  image from cache before cluster creation and saves it after a cache miss.
+  Assumes the caller has already checked out the repository.
+
+inputs:
+  cluster-name:
+    description: Name of the kind cluster
+    required: false
+    default: forge-e2e
+  node-image:
+    description: >
+      Pinned kind node image (e.g. kindest/node:v1.32.2). Must match the
+      KIND_NODE_IMAGE workflow env var so the cache key is stable across jobs.
+    required: true
+  config:
+    description: Path to kind cluster config file
+    required: false
+    default: hack/kind-config.yaml
+
+runs:
+  using: composite
+  steps:
+    # Restore the kindest/node tar from the GHA cache.  On a hit the image is
+    # already in Docker's store before kind create runs, so kind skips the pull
+    # and saves the ~700 MB download.
+    - name: Restore kind node image cache
+      id: kind-image-cache
+      uses: actions/cache@v4
+      with:
+        path: /tmp/kind-node.tar
+        key: kind-node-${{ inputs.node-image }}
+
+    - name: Load kind node image from cache
+      if: steps.kind-image-cache.outputs.cache-hit == 'true'
+      shell: bash
+      run: docker load < /tmp/kind-node.tar
+
+    - name: Create kind cluster
+      uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+      with:
+        config: ${{ inputs.config }}
+        cluster_name: ${{ inputs.cluster-name }}
+        node_image: ${{ inputs.node-image }}
+
+    # Persist the image for subsequent runs.  Runs only on a cache miss so we
+    # do not re-write an unchanged tar on every run.
+    - name: Save kind node image to cache
+      if: steps.kind-image-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: docker save ${{ inputs.node-image }} > /tmp/kind-node.tar
