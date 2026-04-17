@@ -158,6 +158,16 @@ func TestReconcileBootstrap_JobCreated(t *testing.T) {
 	g.Expect(container.Env[1].ValueFrom.SecretKeyRef.LocalObjectReference.Name).To(Equal(ks.Name + "-db-connection"))
 	g.Expect(container.Env[1].ValueFrom.SecretKeyRef.Key).To(Equal("connection"))
 
+	// Verify the region pre-seed Python preamble reads the DSN from the
+	// OS_DATABASE__CONNECTION env var rather than from the ConfigMap
+	// (CC-0080, REQ-003). After CC-0080 the ConfigMap's [database]
+	// connection option is only a placeholder, so a configparser-based
+	// read would cause pymysql.connect to fail and abort the bootstrap
+	// script under `sh -eu` before keystone-manage ever runs.
+	g.Expect(container.Command[3]).To(ContainSubstring(`os.environ["OS_DATABASE__CONNECTION"]`))
+	g.Expect(container.Command[3]).NotTo(ContainSubstring("configparser"))
+	g.Expect(container.Command[3]).NotTo(ContainSubstring(`conf.get("database", "connection")`))
+
 	// Verify config volume mount is present (CC-0013: bootstrap needs keystone.conf for DB connection).
 	g.Expect(container.VolumeMounts).To(HaveLen(2))
 	g.Expect(container.VolumeMounts[0].Name).To(Equal("config"))

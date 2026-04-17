@@ -35,11 +35,8 @@ const conditionReasonDeploymentRolloutComplete = "DeploymentRolloutComplete"
 // reconcileDBConnectionSecret, so the ConfigMap never carries the DB password
 // (CC-0080, REQ-003).
 //
-// DECISION: the task spec called for `*corev1.EnvVar`, but every existing
-// pod-spec builder in this package uses `[]corev1.EnvVar{...}` (value slices),
-// so a pointer return would force `*buildDBConnectionEnvVar(ks)` at each
-// callsite. Returning the value matches the surrounding idiom and keeps the
-// callsites readable. Reviewer: please verify this diverges from intent.
+// Returns a value (not a pointer) to match the surrounding pod-spec builders
+// in this package, which assemble env slices via `[]corev1.EnvVar{...}`.
 func buildDBConnectionEnvVar(keystone *keystonev1alpha1.Keystone) corev1.EnvVar {
 	return corev1.EnvVar{
 		Name: "OS_DATABASE__CONNECTION",

@@ -2150,11 +2150,8 @@ func TestIntegration_RecreateDerivedSecretWhenDeleted(t *testing.T) {
 	// guarantee the reconciler re-runs. The Watch-based ownerRef enqueue from
 	// secretToKeystoneMapper is also wired in setupEnvTestWithController, but
 	// envtest watches can be flaky, so the annotation bump is the deterministic
-	// trigger (CC-0080, REQ-006).
-	// DECISION: prefer annotation-bump over relying solely on the Watch-based
-	// mapper because envtest watch delivery can be delayed; the annotation
-	// update produces a direct generation change and an immediate enqueue.
-	// Reviewer: please verify.
+	// trigger: it produces a direct generation change and an immediate enqueue
+	// (CC-0080, REQ-006).
 	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
 	g.Eventually(func() error {
 		current := &keystonev1alpha1.Keystone{}

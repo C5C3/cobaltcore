@@ -131,3 +131,19 @@ spec:
             namespace: openstack
           type: Opaque
           (data.connection != null): true
+  # ── Step 6: Assert bootstrap Job succeeded (CC-0080) ──────────────────
+  # Guards against runtime-only regressions where the bootstrap container
+  # script cannot read credentials (e.g. if the region pre-seed preamble
+  # reverts to reading from the ConfigMap). The unit tests only verify env
+  # ordering; this assertion is the only cluster-level check that the pod
+  # actually runs to completion against the placeholder-only ConfigMap.
+  - try:
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: keystone-no-secrets-bootstrap
+            namespace: openstack
+          status:
+            succeeded: 1

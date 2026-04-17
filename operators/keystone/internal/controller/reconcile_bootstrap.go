@@ -78,13 +78,16 @@ func buildBootstrapJob(keystone *keystonev1alpha1.Keystone, configMapName string
 		publicURL = keystone.Spec.Bootstrap.PublicEndpoint
 	}
 
+	// The region pre-seed reads the DB DSN from the OS_DATABASE__CONNECTION
+	// env var (wired via secretKeyRef below) rather than from keystone.conf,
+	// because after CC-0080 the [database] connection option in the
+	// ConfigMap is only the "mysql+pymysql://placeholder" sentinel and no
+	// longer carries credentials (REQ-001, REQ-003). The env var is the
+	// single source of truth for the real DSN at runtime.
 	bootstrapScript := fmt.Sprintf(`python3 -c '
-import configparser, glob, pymysql
+import os, pymysql
 from urllib.parse import urlparse, parse_qs
-conf = configparser.RawConfigParser()
-for f in sorted(glob.glob("/etc/keystone/keystone.conf.d/*.conf")):
-    conf.read(f)
-url = urlparse(conf.get("database", "connection"))
+url = urlparse(os.environ["OS_DATABASE__CONNECTION"])
 db = url.path.lstrip("/")
 qs = parse_qs(url.query)
 charset = qs.get("charset", ["utf8"])[0]
