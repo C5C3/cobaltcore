@@ -124,6 +124,7 @@ Deployment rollout, bootstrap Job).
 | [image-upgrade](#image-upgrade) | `keystone-upgrade` | Rolling image update without losing Ready status | REQ-011, REQ-012, REQ-013 |
 | [release-upgrade](#release-upgrade) | `keystone-release-upgrade` | Cross-release upgrade from 2025.2 to 2026.1 via expand-migrate-contract, API accessibility before/after | REQ-001–REQ-009 (CC-0060) |
 | [concurrent-cr-conflicts](#concurrent-cr-conflicts) | `keystone-concurrent-a`, `keystone-concurrent-b` | Concurrent CR reconciliation with shared secrets, sub-resource isolation, deletion without cross-CR impact | REQ-001, REQ-002, REQ-003, REQ-004, REQ-008 (CC-0066) |
+| [configmap-no-secrets](#configmap-no-secrets) | `keystone-no-secrets` | DB credentials excluded from ConfigMap; placeholder in `keystone.conf` and `OS_DATABASE__CONNECTION` env var sourced from derived Secret | REQ-001, REQ-002, REQ-003 (CC-0080) |
 
 ---
 
@@ -424,6 +425,41 @@ Service status, CronJob status, ConfigMap list, pod logs, and namespace events.
   to avoid MariaDB conflicts while sharing the same `clusterRef`.
 - Step 5 verifies isolation by checking that exactly 1 Deployment remains after CR-A
   deletion, confirming owner references correctly scope garbage collection.
+
+---
+
+### configmap-no-secrets
+
+**File:** `tests/e2e/keystone/configmap-no-secrets/chainsaw-test.yaml`
+
+**Purpose:** Validates that the DB password never leaks into the rendered `keystone.conf`
+ConfigMap (CC-0080). The operator injects only the `mysql+pymysql://placeholder` sentinel
+into `[database] connection`, and every pod container receives `OS_DATABASE__CONNECTION`
+through a `secretKeyRef` to the derived `<keystone-name>-db-connection` Secret. The test
+deploys a minimal managed-mode CR and asserts placeholder-only ConfigMap content,
+absence of the real DB password, the env-var wiring on the API Deployment, and the
+presence of the derived Secret.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-no-secrets` in managed mode (1 replica, `openstack-db` / `openstack-memcached` clusterRefs) |
+| 2 | Wait for Ready=True | `assert` (5m) | Ready=True with reason AllReady; catch block dumps pod/job logs, ConfigMap contents, and namespace events |
+| 3 | Assert placeholder in ConfigMap, password NOT present | `script` | Locates `keystone-no-secrets-config-*` ConfigMap, verifies `keystone.conf` contains `mysql+pymysql://placeholder`, reads the real password from the upstream `keystone-db` Secret and fails if it appears in the ConfigMap, and fails if any `mysql+pymysql://<user>:<pw>@` credentialed URL leaks |
+| 4 | Assert OS_DATABASE__CONNECTION on Deployment | `assert` (5m) | Deployment `keystone-no-secrets-api` container env includes `OS_DATABASE__CONNECTION` with `valueFrom.secretKeyRef.name == keystone-no-secrets-db-connection` and `key == connection` |
+| 5 | Assert derived db-connection Secret exists | `assert` (5m) | Opaque Secret `keystone-no-secrets-db-connection` exists with `data.connection` populated |
+
+**Fixtures:** `00-keystone-cr.yaml`
+
+**Design notes:**
+
+- Step 3 has three explicit-failure branches (missing ConfigMap, missing placeholder,
+  leaked password, leaked credentialed URL) per the repo's test-failure pattern — each
+  path prints a `FAIL: …` diagnostic and exits non-zero so CI attributes the failure
+  unambiguously.
+- The test relies on the shared `keystone-db` ExternalSecret already being synced in the
+  `openstack` namespace (see Prerequisites); no extra fixtures are required.
 
 ---
 

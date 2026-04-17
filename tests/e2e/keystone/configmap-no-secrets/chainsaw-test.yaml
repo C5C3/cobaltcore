@@ -1,0 +1,133 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test verifying DB credentials are excluded from the
+# rendered keystone.conf ConfigMap and instead delivered through a
+# derived Secret referenced via OS_DATABASE__CONNECTION env vars
+# (CC-0080).
+# Validates:
+#   - keystone.conf [database] connection contains only the
+#     'mysql+pymysql://placeholder' sentinel
+#   - The real DB password (from the upstream keystone-db Secret) is
+#     NOT present anywhere in the rendered ConfigMap
+#   - No credentialed PyMySQL URL of the form
+#     mysql+pymysql://<user>:<pw>@... leaks into the ConfigMap
+#   - The keystone-no-secrets-api Deployment container exposes
+#     OS_DATABASE__CONNECTION via secretKeyRef pointing at the
+#     derived keystone-no-secrets-db-connection Secret, key=connection
+#   - The derived Opaque Secret keystone-no-secrets-db-connection
+#     exists and has data.connection populated
+#
+# REQ-001, REQ-002, REQ-003 (CC-0080)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-configmap-no-secrets
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR ──────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Wait for Ready=True ────────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-no-secrets
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
+          echo "=== Terminated container statuses ==="
+          kubectl get pods -n $NAMESPACE -o json 2>/dev/null | jq -r '.items[] | select(.status.containerStatuses) | .metadata.name + ": " + (.status.containerStatuses[] | .state | tostring)' || true
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== ConfigMap content ==="
+          for cm in $(kubectl get cm -n $NAMESPACE -o name 2>/dev/null | grep config-); do
+            echo "--- $cm ---"
+            kubectl get -n $NAMESPACE "$cm" -o jsonpath='{.data}' 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Assert placeholder in ConfigMap, password NOT present ─────
+  - try:
+    - script:
+        content: |
+          set -euo pipefail
+          CM=$(kubectl get cm -n openstack -o name | grep keystone-no-secrets-config- | head -1)
+          test -n "$CM" || { echo "FAIL: No config ConfigMap found"; exit 1; }
+          DATA=$(kubectl get -n openstack "$CM" -o jsonpath='{.data.keystone\.conf}')
+          if ! echo "$DATA" | grep -Fq 'mysql+pymysql://placeholder'; then
+            echo "FAIL: placeholder missing from keystone.conf [database] connection"
+            exit 1
+          fi
+          echo "OK: keystone.conf carries the mysql+pymysql://placeholder sentinel"
+          # Pull real password from the ESO-synced upstream Secret and
+          # confirm it is NOT present anywhere in the rendered ConfigMap.
+          REAL_PW=$(kubectl get secret -n openstack keystone-db -o jsonpath='{.data.password}' | base64 -d)
+          if [ -z "$REAL_PW" ]; then
+            echo "FAIL: could not read upstream keystone-db password for leak check"
+            exit 1
+          fi
+          if echo "$DATA" | grep -Fq "$REAL_PW"; then
+            echo "FAIL: ConfigMap leaks the DB password"
+            exit 1
+          fi
+          echo "OK: upstream DB password is absent from the ConfigMap"
+          # Defence in depth: no credentialed PyMySQL URL beyond the placeholder.
+          if echo "$DATA" | grep -Eq 'mysql\+pymysql://[^@/ ]+:[^@/ ]+@'; then
+            echo "FAIL: ConfigMap leaks credentialed connection URL"
+            exit 1
+          fi
+          echo "OK: no user:password@host pattern present in the ConfigMap"
+  # ── Step 4: Assert OS_DATABASE__CONNECTION on Deployment ──────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-no-secrets-api
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                (containers[0].env[?name == 'OS_DATABASE__CONNECTION'] | [?valueFrom.secretKeyRef.name == 'keystone-no-secrets-db-connection' && valueFrom.secretKeyRef.key == 'connection']): [{}]
+  # ── Step 5: Assert derived db-connection Secret exists ────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: keystone-no-secrets-db-connection
+            namespace: openstack
+          type: Opaque
+          (data.connection != null): true
