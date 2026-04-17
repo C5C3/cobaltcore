@@ -1554,3 +1554,145 @@ func BenchmarkReconcile_FullReconcile_WithLatency(b *testing.B) {
 		_, _ = r.Reconcile(context.Background(), req)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// reconcileDBConnectionSecret wiring tests (CC-0080, REQ-005, REQ-006)
+// ---------------------------------------------------------------------------
+
+// TestReconcile_DerivedDBConnectionSecretCreatedBeforeConfigMap verifies that
+// when Reconcile runs from a clean state (no derived Secret, no ConfigMap),
+// the derived <name>-db-connection Secret is materialised and owned by the
+// Keystone CR, and the immutable ConfigMap is produced on the same pass. If
+// reconcileDBConnectionSecret had short-circuited the chain, reconcileConfig
+// would never run and no ConfigMap would exist — so the co-existence of both
+// artefacts proves the ordering reconcileSecrets → reconcileDBConnectionSecret
+// → reconcileConfig (CC-0080, REQ-005).
+func TestReconcile_DerivedDBConnectionSecretCreatedBeforeConfigMap(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	// Pre-seed only upstream secrets and the ClusterSecretStore; do NOT
+	// pre-create the derived Secret or the ConfigMap — Reconcile must
+	// produce both on this run.
+	objs := append(
+		[]runtime.Object{ks, testDBCredentialsSecret(), testAdminCredentialsSecret()},
+		testReadyExternalSecrets()...,
+	)
+	r := newTestReconciler(objs...)
+	r.HTTPClient = testHealthyHTTPClient()
+
+	ctx := context.Background()
+	_, err := r.Reconcile(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace},
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Derived Secret must exist after reconcile, owned by the Keystone CR.
+	derived := &corev1.Secret{}
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{
+		Name: fmt.Sprintf("%s-db-connection", ks.Name), Namespace: ks.Namespace,
+	}, derived)).To(Succeed(), "derived db-connection Secret must exist after reconcile")
+	g.Expect(derived.OwnerReferences).To(HaveLen(1),
+		"derived Secret must carry exactly one ownerReference to the Keystone CR")
+	g.Expect(derived.OwnerReferences[0].UID).To(Equal(ks.UID))
+	g.Expect(string(derived.Data["connection"])).To(ContainSubstring("mysql+pymysql://"))
+
+	// ConfigMap must also exist; its existence proves reconcileConfig ran
+	// AFTER reconcileDBConnectionSecret in the dependency chain (CC-0080).
+	var cmList corev1.ConfigMapList
+	g.Expect(r.Client.List(ctx, &cmList, client.InNamespace(ks.Namespace))).To(Succeed())
+	var foundCM bool
+	for _, cm := range cmList.Items {
+		if strings.HasPrefix(cm.Name, fmt.Sprintf("%s-config-", ks.Name)) {
+			foundCM = true
+			break
+		}
+	}
+	g.Expect(foundCM).To(BeTrue(), "immutable ConfigMap must be created after derived Secret")
+}
+
+// TestReconcile_SecretsReadyFalse_NoDerivedSecretWhenUpstreamMissing verifies
+// that when the upstream DB credentials Secret is absent (ESO reports the
+// store and ExternalSecrets ready but the materialised Kubernetes Secret has
+// not yet been committed to etcd), reconcileSecrets sets SecretsReady=False
+// and the reconcile chain short-circuits before reconcileDBConnectionSecret
+// runs. The derived <name>-db-connection Secret must NOT be created, and no
+// ConfigMap is produced either (CC-0080, REQ-005).
+func TestReconcile_SecretsReadyFalse_NoDerivedSecretWhenUpstreamMissing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	// ClusterSecretStore + ExternalSecrets report Ready, but neither the
+	// DB credentials Secret nor the admin Secret has been synced yet.
+	objs := append([]runtime.Object{ks}, testReadyExternalSecrets()...)
+	r := newTestReconciler(objs...)
+
+	ctx := context.Background()
+	result, err := r.Reconcile(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace},
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter > 0).To(BeTrue(),
+		"reconcile must requeue while waiting for upstream credentials")
+
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
+
+	// SecretsReady=False is set by reconcileSecrets because the materialised
+	// DB Secret is missing username/password keys (it does not exist at all).
+	secretsCond := meta.FindStatusCondition(updated.Status.Conditions, "SecretsReady")
+	g.Expect(secretsCond).NotTo(BeNil(), "SecretsReady condition must be set")
+	g.Expect(secretsCond.Status).To(Equal(metav1.ConditionFalse),
+		"SecretsReady must be False when upstream DB credentials Secret is missing")
+
+	// Derived Secret must NOT have been created — the chain must stop at
+	// reconcileSecrets before reaching reconcileDBConnectionSecret (CC-0080).
+	derived := &corev1.Secret{}
+	getErr := r.Get(ctx, types.NamespacedName{
+		Name: fmt.Sprintf("%s-db-connection", ks.Name), Namespace: ks.Namespace,
+	}, derived)
+	g.Expect(getErr).To(HaveOccurred(),
+		"derived db-connection Secret must not exist when upstream is missing")
+
+	// No ConfigMap either — reconcileConfig has not run.
+	var cmList corev1.ConfigMapList
+	g.Expect(r.Client.List(ctx, &cmList, client.InNamespace(ks.Namespace))).To(Succeed())
+	for _, cm := range cmList.Items {
+		g.Expect(cm.Name).NotTo(HavePrefix(fmt.Sprintf("%s-config-", ks.Name)),
+			"no ConfigMap must be created when SecretsReady is False")
+	}
+}
+
+// TestSecretToKeystoneMapper_DerivedDBConnectionSecretEnqueuesViaOwnerRef
+// verifies that the Watches mapping (secretToKeystoneMapper) enqueues a
+// reconcile request for the owning Keystone CR when the derived
+// <name>-db-connection Secret changes. This closes the self-healing loop:
+// if the derived Secret is accidentally deleted or mutated, ownerReference-
+// based enqueue ensures the operator materialises it again on the next
+// reconcile pass (CC-0080, REQ-005, REQ-006).
+func TestSecretToKeystoneMapper_DerivedDBConnectionSecretEnqueuesViaOwnerRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := testScheme()
+	ks := testKeystone()
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(ks).Build()
+	mapper := secretToKeystoneMapper(c)
+
+	// Construct a derived Secret carrying an ownerReference back to the
+	// Keystone CR, exactly as reconcileDBConnectionSecret produces it.
+	derivedSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-db-connection", ks.Name),
+			Namespace: ks.Namespace,
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "keystone.openstack.c5c3.io/v1alpha1",
+				Kind:       "Keystone",
+				Name:       ks.Name,
+				UID:        ks.UID,
+			}},
+		},
+	}
+	reqs := mapper(context.Background(), derivedSecret)
+	g.Expect(reqs).To(HaveLen(1),
+		"derived Secret must enqueue exactly one reconcile request via owner reference")
+	g.Expect(reqs[0].NamespacedName.Name).To(Equal(ks.Name))
+	g.Expect(reqs[0].NamespacedName.Namespace).To(Equal(ks.Namespace))
+}
