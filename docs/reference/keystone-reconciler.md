@@ -1,7 +1,7 @@
 ---
 title: Keystone Reconciler Architecture
 quadrant: operator
-feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0067, CC-0068, CC-0071, CC-0072, CC-0073, CC-0074, CC-0077
+feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0067, CC-0068, CC-0071, CC-0072, CC-0073, CC-0074, CC-0077, CC-0080
 ---
 
 # Keystone Reconciler Architecture
@@ -1469,6 +1469,142 @@ Keystone CR via `controllerutil.SetControllerReference()`. This enables:
 | Database | `keystone` | Keystone CR (managed mode only) |
 | User | `keystone` | Keystone CR (managed mode only) |
 | Grant | `keystone` | Keystone CR (managed mode only) |
+
+---
+
+## Database credentials and oslo.config env-var overrides (CC-0080)
+
+The `[database] connection` value rendered into the immutable
+`keystone-config-{hash}` ConfigMap is a non-secret placeholder
+(`mysql+pymysql://placeholder`). The real DSN — which contains the Keystone
+MySQL username and password — is materialized separately into a derived
+Kubernetes Secret and projected into every DB-accessing pod as an environment
+variable that supersedes the placeholder at runtime via oslo.config's
+`OS_<GROUP>__<OPTION>` override convention. This ensures that actors with
+`get configmap` RBAC cannot read the database password.
+
+### Why the password is removed from the ConfigMap
+
+Immutable ConfigMaps persist across rollouts and are visible to any principal
+with `get configmap` on the namespace. Prior to CC-0080 the rendered
+`keystone.conf` embedded the full PyMySQL DSN
+(`mysql+pymysql://USER:PASSWORD@HOST:PORT/DB?charset=utf8`), which leaked the
+live DB password to observers with read-only ConfigMap RBAC. CC-0080 replaces
+the resolved DSN with the package-level placeholder constant
+`dbConnectionPlaceholder` defined in `reconcile_config.go` and surfaces the
+real DSN only via Kubernetes Secrets and pod env vars.
+
+### Derived `<keystone-name>-db-connection` Secret
+
+`reconcileDBConnectionSecret`
+(`operators/keystone/internal/controller/reconcile_dbconnection_secret.go`)
+materializes the upstream `spec.database.secretRef` credentials together with
+`spec.database.host`/`clusterRef`/`port`/`database` into a single derived
+Secret in the Keystone namespace:
+
+| Field | Value |
+| --- | --- |
+| Name | `{keystone.Name}-db-connection` |
+| Type | `Opaque` |
+| Owner reference | Keystone CR (set via `controllerutil.SetControllerReference`) |
+| Data key | `connection` |
+| Data value | `mysql+pymysql://{username}:{password}@{host}:{port}/{database}?charset=utf8` |
+
+The sub-reconciler runs between `reconcileSecrets` and `reconcileConfig` in the
+main `Reconcile` loop so that the derived Secret always exists before any
+workload that references it is built. Username is taken from the MariaDB
+`User` CR name (= `keystone.Name`) in managed mode and from the upstream
+Secret's `username` key in brownfield mode; the password is always read from
+the upstream Secret's `password` key via `secrets.GetSecretValue`. Host/port
+are resolved with the same `resolveDatabaseHost` and `dbPort` helpers
+previously used in `reconcileConfig`. Reserved userinfo characters are
+percent-encoded via `url.UserPassword` per RFC 3986, so raw passwords
+containing `@`, `:`, or `/` never appear verbatim in the Secret data.
+
+The Secret is managed with a Get-then-Create-or-Update idiom:
+
+1. On not-found: create with an owner reference to the Keystone CR.
+2. On found: compare `data["connection"]`; if it differs, update in place so
+   `Name`/`UID`/owner reference remain stable when the upstream password is
+   rotated.
+3. On upstream Secret missing (or missing `username`/`password`): return
+   `ctrl.Result{RequeueAfter: RequeueSecretPolling}` with `nil` error and
+   leave the derived Secret absent. `reconcileSecrets` is responsible for the
+   `SecretsReady=False` condition; no new condition type is introduced.
+
+No `ExternalSecret` or `PushSecret` is created for the derived Secret — it is a
+pure materialization from existing ESO-synced inputs. Garbage collection is
+handled by Kubernetes via the owner reference, and the existing
+`secretToKeystoneMapper` enqueues the owning Keystone CR when the derived
+Secret is modified or deleted, so accidental deletion is self-healing on the
+next reconcile.
+
+### oslo.config `OS_<GROUP>__<OPTION>` env-var override
+
+oslo.config supports overriding any option in a loaded config file via a
+process environment variable whose name is derived from the INI section and
+option key:
+
+```
+OS_<GROUP>__<OPTION>
+```
+
+`<GROUP>` is the INI section name and `<OPTION>` is the option key, both
+uppercased, separated by a double underscore. For the `[database] connection`
+option this becomes `OS_DATABASE__CONNECTION`. When oslo.config reads the
+option, the env var (if set) takes precedence over the value in the file, so a
+pod that carries `OS_DATABASE__CONNECTION=<dsn>` sees `<dsn>` regardless of
+the placeholder rendered into `keystone.conf`.
+
+The upstream implementation is tracked in the oslo.config change
+[585850](https://review.opendev.org/c/openstack/oslo.config/+/585850).
+
+### Pod spec wiring
+
+Every pod spec that loads `keystone.conf` and requires DB access carries an
+`OS_DATABASE__CONNECTION` env var sourced from the derived Secret via
+`SecretKeyRef`. The wiring is produced by the shared helper
+`buildDBConnectionEnvVar(keystone)` in `reconcile_deployment.go` and appended
+to each container's `Env`:
+
+```go
+corev1.EnvVar{
+    Name: "OS_DATABASE__CONNECTION",
+    ValueFrom: &corev1.EnvVarSource{
+        SecretKeyRef: &corev1.SecretKeySelector{
+            LocalObjectReference: corev1.LocalObjectReference{
+                Name: fmt.Sprintf("%s-db-connection", keystone.Name),
+            },
+            Key: "connection",
+        },
+    },
+}
+```
+
+| Workload | Builder | Notes |
+| --- | --- | --- |
+| Deployment `keystone-api` | `buildKeystoneDeployment` | Keystone API process |
+| Job `keystone-bootstrap` | `buildBootstrapJob` | Appended alongside existing `BOOTSTRAP_PASSWORD` |
+| Jobs `keystone-db-sync` / `expand` / `migrate` / `contract` / schema-check | `buildDBJob` | Schema lifecycle (CC-0064) |
+| CronJob `{name}-trust-flush` | `trustFlushCronJob` | Trust flush (CC-0057) |
+| CronJob `{name}-fernet-rotate` | fernet-rotate builder | Appended alongside existing `OS_fernet_tokens__max_active_keys` |
+| CronJob `{name}-credential-rotate` | credential-rotate builder | Credential rotation |
+
+### Invariants
+
+- The rendered `keystone.conf` contains exactly one occurrence of
+  `dbConnectionPlaceholder` and no substring of the raw DB password (nor its
+  percent-encoded form).
+- The derived `<keystone-name>-db-connection` Secret carries exactly one data
+  key, `connection`.
+- The derived Secret is recreated automatically on the next reconcile if
+  deleted, because `secretToKeystoneMapper` enqueues the owning Keystone CR
+  via the owner reference.
+- Password rotation in the upstream Secret updates the derived Secret in place
+  (same `Name`/`UID`); the kubelet projects the new env var value into running
+  pods without a Deployment rollout.
+- No `ExternalSecret` or `PushSecret` exists for
+  `{keystone.Name}-db-connection` — it is purely operator-managed.
 
 ---
 
