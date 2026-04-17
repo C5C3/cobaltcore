@@ -7,7 +7,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"strings"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -15,7 +14,6 @@ import (
 	"github.com/c5c3/forge/internal/common/config"
 	"github.com/c5c3/forge/internal/common/plugins"
 	"github.com/c5c3/forge/internal/common/policy"
-	"github.com/c5c3/forge/internal/common/secrets"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
@@ -25,6 +23,13 @@ import (
 // to retain after pruning. Combined with the current active ConfigMap, this
 // allows rollback to 3 previous configurations (CC-0077).
 const defaultConfigMapRetainCount = 3
+
+// dbConnectionPlaceholder is the syntactically-valid PyMySQL URL injected into
+// the rendered keystone.conf in place of the real DB connection string. The
+// real credentials are sourced at runtime from the derived
+// <keystone-name>-db-connection Secret via oslo.config environment-variable
+// overrides, so they never land in the ConfigMap (CC-0080, REQ-001, REQ-008).
+const dbConnectionPlaceholder = "mysql+pymysql://placeholder"
 
 // reconcileConfig builds the Keystone configuration and creates an immutable
 // ConfigMap containing keystone.conf, api-paste.ini, and optionally policy.yaml.
@@ -78,45 +83,12 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 		"servers": serverList,
 	}
 
-	// Step 3: Resolve database connection string.
-	// In managed mode the MariaDB User CR name (= keystone.Name) is the MySQL
-	// username, so the connection string must use that same value.
-	// In brownfield mode no User CR exists; the secret's username is used.
-	var username string
-	if keystone.Spec.Database.ClusterRef != nil {
-		username = keystone.Name
-	} else {
-		u, err := secrets.GetSecretValue(ctx, r.Client, client.ObjectKey{
-			Namespace: keystone.Namespace,
-			Name:      keystone.Spec.Database.SecretRef.Name,
-		}, "username")
-		if err != nil {
-			return "", fmt.Errorf("reading database username: %w", err)
-		}
-		username = u
-	}
-
-	password, err := secrets.GetSecretValue(ctx, r.Client, client.ObjectKey{
-		Namespace: keystone.Namespace,
-		Name:      keystone.Spec.Database.SecretRef.Name,
-	}, "password")
-	if err != nil {
-		return "", fmt.Errorf("reading database password: %w", err)
-	}
-
-	// url.UserPassword is used instead of url.PathEscape because PathEscape does not escape '@' or ':',
-	// which are delimiters in the userinfo component per RFC 3986. url.UserPassword handles all
-	// reserved characters ('@', '/', '?', ':') correctly for database connection strings.
-	connURL := &url.URL{
-		Scheme:   "mysql+pymysql",
-		User:     url.UserPassword(username, password),
-		Host:     resolveDatabaseHost(keystone),
-		Path:     keystone.Spec.Database.Database,
-		RawQuery: "charset=utf8",
-	}
-
+	// Step 3: Inject the DB connection placeholder. The real connection string
+	// lives in the derived <keystone-name>-db-connection Secret and is applied
+	// at runtime via oslo.config env overrides, keeping credentials out of the
+	// ConfigMap (CC-0080, REQ-001, REQ-008).
 	defaults = config.InjectSecrets(defaults, map[string]string{
-		"DB_CONNECTION": connURL.String(),
+		"DB_CONNECTION": dbConnectionPlaceholder,
 	})
 
 	merged := defaults
@@ -138,10 +110,11 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 	// Step 6: Handle PolicyOverrides.
 	var policyYAML string
 	if keystone.Spec.PolicyOverrides != nil {
-		policyYAML, err = buildPolicyYAML(ctx, r.Client, keystone)
+		py, err := buildPolicyYAML(ctx, r.Client, keystone)
 		if err != nil {
 			return "", fmt.Errorf("building policy: %w", err)
 		}
+		policyYAML = py
 		if policyYAML != "" {
 			merged = config.InjectOsloPolicyConfig(merged, "/etc/keystone/keystone.conf.d/policy.yaml")
 		}
