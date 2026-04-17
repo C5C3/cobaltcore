@@ -1,7 +1,7 @@
 ---
 title: Keystone CRD API Reference
 quadrant: operator
-feature: CC-0011, CC-0012, CC-0016, CC-0038, CC-0040, CC-0042, CC-0057
+feature: CC-0011, CC-0012, CC-0013, CC-0016, CC-0036, CC-0038, CC-0039, CC-0040, CC-0042, CC-0056, CC-0057, CC-0075
 ---
 
 # Keystone CRD API Reference
@@ -62,12 +62,28 @@ spec:
   fernet:
     rotationSchedule: "0 0 * * 0"
     maxActiveKeys: 3
+  credentialKeys:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
   trustFlush:
     schedule: "0 * * * *"
   autoscaling:
     minReplicas: 2
     maxReplicas: 10
     targetCPUUtilization: 80
+  networkPolicy:
+    ingress:
+      - namespaceSelector:
+          kubernetes.io/metadata.name: openstack
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: keystone
+          app.kubernetes.io/instance: keystone
+  priorityClassName: system-cluster-critical
   resources:
     requests:
       memory: 256Mi
@@ -85,11 +101,12 @@ spec:
       name: keystone-admin
       key: password
     region: RegionOne
+    publicEndpoint: https://keystone.example.com/v3
 status:
   conditions:
     - type: Ready
       status: "True"
-      reason: AllSubResourcesReady
+      reason: AllReady
       message: All sub-resources are ready
       lastTransitionTime: "2026-03-09T00:00:00Z"
     - type: KeystoneAPIReady
@@ -97,7 +114,8 @@ status:
       reason: APIHealthy
       message: "Keystone API is responding at http://keystone-api.openstack.svc.cluster.local:5000/v3"
       lastTransitionTime: "2026-03-09T00:00:00Z"
-  endpoint: https://keystone.openstack.svc:5000/v3
+  endpoint: http://keystone-api.openstack.svc.cluster.local:5000/v3
+  installedRelease: "2025.2"
 ```
 
 ### Printer Columns
@@ -108,6 +126,7 @@ status:
 | --- | --- | --- |
 | Ready | `.status.conditions[?(@.type=='Ready')].status` | string |
 | Endpoint | `.status.endpoint` | string |
+| Release | `.status.installedRelease` | string |
 | Age | `.metadata.creationTimestamp` | date |
 
 ---
@@ -121,6 +140,7 @@ status:
 | `database` | [`DatabaseSpec`](#databasespec) | Yes | — | MariaDB connection configuration. |
 | `cache` | [`CacheSpec`](#cachespec) | Yes | — | Memcached cache configuration. |
 | `fernet` | [`FernetSpec`](#fernetspec) | No | See below | Fernet key rotation configuration. |
+| `credentialKeys` | [`CredentialKeysSpec`](#credentialkeysspec) | No | See below | Credential-key rotation configuration. Drives the per-CR CronJob that rotates and `credential_migrate`s the credential keys used for encrypting application credentials (CC-0036). |
 | `trustFlush` | [`*TrustFlushSpec`](#trustflushspec) | No | `nil` | Trust flush CronJob configuration. When set, the operator creates a CronJob running `keystone-manage trust_flush` on the specified schedule. When removed, the CronJob is deleted (CC-0057). |
 | `federation` | [`*FederationSpec`](#federationspec) | No | `nil` | Federation configuration (optional). |
 | `bootstrap` | [`BootstrapSpec`](#bootstrapspec) | Yes | — | Initial Keystone bootstrap parameters. |
@@ -128,8 +148,11 @@ status:
 | `plugins` | `[]PluginSpec` | No | `nil` | Service plugins/drivers to configure. |
 | `policyOverrides` | [`*PolicySpec`](#policyspec) | No | `nil` | Custom oslo.policy rules. |
 | `autoscaling` | [`*AutoscalingSpec`](#autoscalingspec) | No | `nil` | Horizontal pod autoscaling configuration. When set, an HPA is created targeting the `{name}-api` Deployment. When removed, the HPA is deleted (CC-0038). |
+| `networkPolicy` | [`*NetworkPolicySpec`](#networkpolicyspec) | No | `nil` | Network isolation for Keystone API pods. When set, a NetworkPolicy restricting ingress to TCP 5000 and auto-deriving egress rules for DNS, MariaDB, and Memcached is created. When `nil`, no NetworkPolicy is managed and traffic is unrestricted (CC-0039). |
 | `resources` | [`*corev1.ResourceRequirements`](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#resources) | No | See below | CPU and memory requests and limits for the Keystone API container. When unset, the defaulting webhook injects sensible defaults to ensure Burstable QoS class and enable HPA utilization calculations (CC-0042). |
 | `uwsgi` | [`*UWSGISpec`](#uwsgispec) | No | `nil` | uWSGI application server parameters. When set, the operator uses these values for the Deployment container command. When `nil`, hardcoded defaults (processes=2, threads=1, httpKeepAlive=true) are used in the reconciler (CC-0040). |
+| `topologySpreadConstraints` | [`[]corev1.TopologySpreadConstraint`](https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/) | No | See [below](#topologyspreadconstraints) | Scheduler hints for spreading pods across zones and nodes. `nil` injects two defaults (zone + hostname, MaxSkew=1, `ScheduleAnyway`); a non-nil value (including `[]`) is used verbatim (CC-0075). |
+| `priorityClassName` | `*string` | No | `nil` | PriorityClass attached to the Keystone API pod spec. When set, the webhook verifies the class exists; when unset, no priority class is configured (CC-0075). |
 | `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for additional configuration. |
 
 ### CEL Validation Rules
@@ -140,10 +163,18 @@ webhooks are invoked:
 | Field | Rule | Error Message |
 | --- | --- | --- |
 | `spec.database` | `has(self.clusterRef) != has(self.host)` | "exactly one of clusterRef or host must be set" |
-| `spec.policyOverrides` | `self.rules != null \|\| self.configMapRef != null` | "at least one of rules or configMapRef must be set" |
+| `spec.cache` | `has(self.clusterRef) != (has(self.servers) && size(self.servers) > 0)` | "exactly one of clusterRef or servers must be set" |
+| `spec.policyOverrides` | `(has(self.rules) && size(self.rules) > 0) \|\| self.configMapRef != null` | "at least one of rules or configMapRef must be set" |
+| `spec.policyOverrides.rules` | `!has(self.rules) \|\| self.rules.all(k, k != '')` | "policy rule name must not be empty" |
 | `spec.autoscaling` | `has(self.targetCPUUtilization) \|\| has(self.targetMemoryUtilization)` | "at least one of targetCPUUtilization or targetMemoryUtilization must be set" |
+| `spec.networkPolicy` | `size(self.ingress) > 0` | "at least one ingress source must be specified" |
 | `spec.replicas` | Minimum: 1 | — |
 | `spec.fernet.maxActiveKeys` | Minimum: 3 | — |
+| `spec.credentialKeys.maxActiveKeys` | Minimum: 3 | — |
+| `spec.autoscaling.maxReplicas` | Minimum: 1 | — |
+| `spec.autoscaling.minReplicas` | Minimum: 1 | — |
+| `spec.autoscaling.targetCPUUtilization` | Range: 1–100 | — |
+| `spec.autoscaling.targetMemoryUtilization` | Range: 1–100 | — |
 | `spec.uwsgi.processes` | Minimum: 1 | — |
 | `spec.uwsgi.threads` | Minimum: 1 | — |
 
@@ -303,6 +334,23 @@ Configures Fernet token key rotation.
 
 ---
 
+## CredentialKeysSpec
+
+Configures credential-key rotation (CC-0036). Credential keys encrypt the
+application-credential passwords stored in the database. Rotation uses the same
+32-byte base64url format as Fernet but runs `keystone-manage credential_migrate`
+after generating a new primary key so that existing rows stay readable after the
+old key is purged. Rotation is driven by a CronJob that pushes the regenerated
+key set back to the `{name}-credential-keys` Secret via a minimally-scoped
+ServiceAccount. The Secret is also mirrored to OpenBao through a `PushSecret`.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `rotationSchedule` | `string` | No | `"0 0 * * 0"` | Cron expression (5-field standard format). Validated by `robfig/cron/v3` `ParseStandard` in the webhook. |
+| `maxActiveKeys` | `int32` | No | `3` | Maximum number of active credential keys. Minimum: 3. Exposed to `keystone-manage` via the `OS_credential__max_active_keys` environment variable on the rotation CronJob. |
+
+---
+
 ## TrustFlushSpec
 
 Configures periodic purging of expired trust delegations (CC-0057). This is a
@@ -367,6 +415,129 @@ spec:
 
 ---
 
+## NetworkPolicySpec
+
+Configures network isolation for the Keystone API pods (CC-0039). This is a
+pointer field (`*NetworkPolicySpec`) on `KeystoneSpec` — when `nil`, no
+NetworkPolicy is managed and the `NetworkPolicyReady` condition is set to
+`True` with reason `NetworkPolicyNotRequired`. When set, the operator creates
+a NetworkPolicy that restricts ingress on TCP 5000 to the declared sources and
+auto-derives egress rules for DNS, MariaDB (when `database.clusterRef` is set),
+and Memcached (when `cache.clusterRef` is set). Removing the field deletes the
+NetworkPolicy on the next reconcile.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `ingress` | `[]NetworkPolicyIngressSource` | Yes | — | Sources allowed to reach Keystone API on TCP 5000. At least one entry required (enforced by CEL and webhook). |
+| `additionalEgress` | `[]networkingv1.NetworkPolicyEgressRule` | No | `nil` | Extra egress rules appended after the auto-derived rules. Use for brownfield backends or external integrations not covered by `ClusterRef` auto-derivation. |
+
+### NetworkPolicyIngressSource
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `namespaceSelector` | `map[string]string` | Yes | Label selector for source namespaces. All pods in matching namespaces may reach Keystone on TCP 5000 unless `podSelector` narrows the set. |
+| `podSelector` | `map[string]string` | No | Optional label selector restricting allowed pods within the selected namespaces (AND logic within a single peer). |
+
+### Auto-derived Egress
+
+The operator appends the following egress rules before `additionalEgress`:
+
+| Rule | Trigger | Notes |
+| --- | --- | --- |
+| DNS UDP+TCP 53 | Always | Destination is unrestricted because CoreDNS may run in any namespace (e.g. NodeLocal DNSCache). |
+| MariaDB TCP 3306 | `database.clusterRef` set | Port-only; destination unrestricted. |
+| Memcached TCP 11211 | `cache.clusterRef` set | Port-only; destination unrestricted. |
+
+A defensive guard in the reconciler refuses to create a NetworkPolicy with an
+empty `ingress` list, even if CEL validation was bypassed (stored objects,
+disabled webhooks, direct etcd writes) — the operator fails closed rather than
+open.
+
+### Example
+
+```yaml
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone
+  namespace: openstack
+spec:
+  # ... required fields ...
+  networkPolicy:
+    ingress:
+      - namespaceSelector:
+          kubernetes.io/metadata.name: openstack
+      - namespaceSelector:
+          kubernetes.io/metadata.name: ingress-gateway
+        podSelector:
+          app.kubernetes.io/name: envoy
+    additionalEgress:
+      - to:
+          - ipBlock:
+              cidr: 10.0.0.0/24
+        ports:
+          - protocol: TCP
+            port: 443
+```
+
+---
+
+## TopologySpreadConstraints
+
+`spec.topologySpreadConstraints` attaches scheduler spread hints to the
+Keystone API Deployment's pod template (CC-0075). Uses the upstream
+`corev1.TopologySpreadConstraint` type verbatim, except that the webhook
+restricts `labelSelector` to exact `matchLabels` matching the Deployment
+selector (see below).
+
+| `spec.topologySpreadConstraints` | Effect |
+| --- | --- |
+| `nil` (unset) | Operator injects two defaults: `topology.kubernetes.io/zone` and `kubernetes.io/hostname`, both `MaxSkew=1` with `ScheduleAnyway`, selecting pods via `app.kubernetes.io/name=keystone` + `app.kubernetes.io/instance={name}`. |
+| `[]` (empty slice) | Defaults disabled; no spread constraints configured. Explicit opt-out. |
+| Non-empty slice | User value is applied verbatim; no defaults merged. |
+
+### Webhook Constraint
+
+Each entry must set `labelSelector.matchLabels` equal to the Deployment
+selector (`app.kubernetes.io/name=keystone`, `app.kubernetes.io/instance={CR name}`).
+`matchExpressions` is rejected. This prevents constraints that widen or narrow
+beyond the Deployment's intent, which would otherwise silently produce wrong
+spread behavior.
+
+### Example
+
+```yaml
+spec:
+  # ... required fields ...
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: keystone
+          app.kubernetes.io/instance: keystone
+```
+
+---
+
+## PriorityClassName
+
+`spec.priorityClassName` (pointer, CC-0075) passes through to
+`pod.spec.priorityClassName` on the Keystone API pods. Uses the standard
+`scheduling.k8s.io/v1` `PriorityClass` resource model.
+
+| Value | Effect |
+| --- | --- |
+| `nil` | No priority class is configured; the cluster default applies. |
+| `""` (empty string) | No priority class — explicit opt-out, useful when clearing a previously set value via `kubectl patch`. |
+| Non-empty string | Value is written to the Deployment PodSpec. The webhook performs a cluster-scoped `Get` of the `PriorityClass` at admission time and rejects unknown names with `field.NotFound`. |
+
+The rotation CronJobs (Fernet, credential) reuse the same `priorityClassName`
+to stay co-scheduled with the API pods.
+
+---
+
 ## FederationSpec
 
 Configures Keystone federation support. This is a pointer field (`*FederationSpec`)
@@ -387,6 +558,7 @@ Configures the initial Keystone bootstrap.
 | `adminUser` | `string` | No | `"admin"` | Admin username for the bootstrap. |
 | `adminPasswordSecretRef` | [`SecretRefSpec`](#secretrefspec) | Yes | — | Secret containing the admin password. |
 | `region` | `string` | No | `"RegionOne"` | Keystone region name. |
+| `publicEndpoint` | `string` | No | Cluster-local service DNS | Externally routable Keystone endpoint URL. Used for the `--bootstrap-public-url` argument passed to `keystone-manage bootstrap`. Required by external clients (CLI users, Horizon, federation partners) that cannot resolve the cluster-local service DNS (CC-0013). |
 
 ---
 
@@ -395,9 +567,31 @@ Configures the initial Keystone bootstrap.
 | Field | Type | Description |
 | --- | --- | --- |
 | `conditions` | `[]metav1.Condition` | Latest available observations of the Keystone state. |
-| `endpoint` | `string` | Keystone API endpoint URL (set by the controller when ready). |
+| `endpoint` | `string` | Keystone API endpoint URL (set by the controller when ready). Defaults to `http://{name}-api.{namespace}.svc.cluster.local:5000/v3`. |
+| `installedRelease` | `string` | OpenStack release version currently deployed. Set by the controller after a successful `db_sync`; reflects the value extracted from `spec.image.tag` (CC-0056). |
+| `targetRelease` | `string` | Upgrade target release during an active upgrade. Set while `upgradePhase` is one of `Expanding`/`Migrating`/`RollingUpdate`/`Contracting`; cleared after `Contracting` completes (CC-0056). |
+| `upgradePhase` | [`UpgradePhase`](#upgradephase) | Current phase of an active database upgrade. Empty outside upgrades (CC-0056). |
 
 The status subresource is enabled via `+kubebuilder:subresource:status`.
+
+### UpgradePhase
+
+`UpgradePhase` is a string enum (`+kubebuilder:validation:Enum=Expanding;Migrating;RollingUpdate;Contracting`)
+representing the current phase of a sequential release upgrade driven by
+`reconcileDatabase` (CC-0056). Phase transitions follow the expand-migrate-contract
+pattern:
+
+| Value | Meaning |
+| --- | --- |
+| `Expanding` | Additive schema migrations running (new columns/tables). Old pods keep serving. |
+| `Migrating` | Backfill/data-migration jobs running against the expanded schema. |
+| `RollingUpdate` | New image is rolling out; old and new pods read the expanded schema side-by-side. |
+| `Contracting` | Destructive schema migrations running (drop old columns/tables) after the rollout completes. |
+
+`spec.image.tag` must be parseable by `ParseRelease` (`YYYY.N` or `YYYY.N-patch`).
+Sequential upgrades are limited to one minor step (`2025.1 → 2025.2`) or a
+year-boundary crossing (`2025.2 → 2026.1`); downgrades and skip-level upgrades
+are rejected by the reconciler.
 
 ---
 
@@ -497,6 +691,7 @@ Sets spec fields to their documented defaults when they carry zero values. Expli
 | --- | --- | --- |
 | `spec.replicas` | `== 0` | `3` |
 | `spec.fernet.maxActiveKeys` | `== 0` | `3` |
+| `spec.credentialKeys.maxActiveKeys` | `== 0` | `3` (CC-0036) |
 | `spec.cache.backend` | `== ""` | `"dogpile.cache.pymemcache"` |
 | `spec.bootstrap.adminUser` | `== ""` | `"admin"` |
 | `spec.bootstrap.region` | `== ""` | `"RegionOne"` |
@@ -504,6 +699,15 @@ Sets spec fields to their documented defaults when they carry zero values. Expli
 | `spec.uwsgi.threads` | `== 0` (when `spec.uwsgi` is non-nil) | `1` — same nil-pointer caveat as processes (CC-0040). |
 | `spec.uwsgi.httpKeepAlive` | Field absent from JSON payload | `true` — defaulted by the CRD schema (`+kubebuilder:default=true`), **not** by the webhook. The webhook cannot distinguish "not set" from "explicitly false" for a bool field. See [HTTPKeepAlive defaulting](#httpkeepalive-defaulting-caveat) (CC-0040). |
 | `spec.resources` | `== nil` or empty (`requests` and `limits` both unset) | `{requests: {memory: 256Mi, cpu: 100m}, limits: {memory: 512Mi, cpu: 500m}}` — ensures Burstable QoS class and enables HPA utilization calculations (CC-0042). |
+
+**Not defaulted by the webhook:**
+
+- `spec.fernet.rotationSchedule`, `spec.credentialKeys.rotationSchedule`,
+  `spec.trustFlush.schedule`, `spec.autoscaling.minReplicas`, `spec.topologySpreadConstraints`,
+  `spec.priorityClassName` — these rely on CRD schema defaults or reconciler-level
+  fallbacks. For `topologySpreadConstraints` the reconciler distinguishes `nil`
+  (inject zone+hostname defaults) from `[]` (opt out), so the webhook must not
+  materialise a struct (CC-0075).
 
 **Design note:** `spec.fernet.rotationSchedule` is NOT defaulted by the webhook — it
 relies solely on the Kubebuilder `+kubebuilder:default="0 0 * * 0"` marker (plan
@@ -533,19 +737,34 @@ single `apierrors.NewInvalid` error. It does **not** short-circuit on the first 
 | Rule | Field Path | Error Type | Condition |
 | --- | --- | --- | --- |
 | Replicas minimum | `spec.replicas` | `field.Invalid` | `replicas < 1`. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
-| Cron expression | `spec.fernet.rotationSchedule` | `field.Invalid` | `cron.ParseStandard()` fails. Error message includes the parse failure details. |
+| Cache mutual exclusivity | `spec.cache` | `field.Invalid` | Both `clusterRef` and `servers` set, or neither. Defense-in-depth alongside the CEL XValidation rule (CC-0011). |
+| Database mutual exclusivity | `spec.database` | `field.Invalid` | Both `clusterRef` and `host` set, or neither. Defense-in-depth alongside the CEL XValidation rule (CC-0011). |
+| Fernet maxActiveKeys minimum | `spec.fernet.maxActiveKeys` | `field.Invalid` | `maxActiveKeys < 3`. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=3` marker. |
+| Fernet schedule required | `spec.fernet.rotationSchedule` | `field.Required` | Empty after admission (bypass paths). |
+| Fernet cron expression | `spec.fernet.rotationSchedule` | `field.Invalid` | `cron.ParseStandard()` fails. Error message includes the parse failure details. |
+| CredentialKeys maxActiveKeys minimum | `spec.credentialKeys.maxActiveKeys` | `field.Invalid` | `maxActiveKeys < 3`. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=3` marker (CC-0036). |
+| CredentialKeys schedule required | `spec.credentialKeys.rotationSchedule` | `field.Required` | Empty after admission (bypass paths) (CC-0036). |
+| CredentialKeys cron expression | `spec.credentialKeys.rotationSchedule` | `field.Invalid` | `cron.ParseStandard()` fails (CC-0036). |
 | Duplicate plugin sections | `spec.plugins[i].configSection` | `field.Duplicate` | Two or more plugins share the same `configSection` value. |
 | Policy source required | `spec.policyOverrides` | `field.Required` | `policyOverrides` is set but both `rules` and `configMapRef` are nil/empty. |
 | Empty policy rule name | `spec.policyOverrides.rules` | `field.Invalid` | A key in `rules` map is the empty string. |
 | Autoscaling maxReplicas minimum | `spec.autoscaling.maxReplicas` | `field.Invalid` | `maxReplicas < 1`. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker (CC-0038). |
 | Autoscaling minReplicas minimum | `spec.autoscaling.minReplicas` | `field.Invalid` | `minReplicas < 1` when set. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker (CC-0038). |
 | Autoscaling min exceeds max | `spec.autoscaling.minReplicas` | `field.Invalid` | `minReplicas > maxReplicas` when set (CC-0038). |
+| Autoscaling maxReplicas vs replicas | `spec.autoscaling.maxReplicas` | `field.Invalid` | `minReplicas` is unset and `spec.replicas > autoscaling.maxReplicas`. Would otherwise produce an HPA the API server rejects, because `minReplicas` defaults to `spec.replicas` (CC-0038). |
+| Autoscaling CPU utilization range | `spec.autoscaling.targetCPUUtilization` | `field.Invalid` | Value outside `1..100` when set (CC-0038). |
+| Autoscaling memory utilization range | `spec.autoscaling.targetMemoryUtilization` | `field.Invalid` | Value outside `1..100` when set (CC-0038). |
 | Autoscaling no metric targets | `spec.autoscaling` | `field.Required` | Neither `targetCPUUtilization` nor `targetMemoryUtilization` is set. Defense-in-depth alongside the CEL XValidation rule (CC-0038). |
+| NetworkPolicy ingress required | `spec.networkPolicy.ingress` | `field.Required` | `networkPolicy` is set but `ingress` is empty. Defense-in-depth alongside the CEL XValidation rule (CC-0039). |
 | uWSGI processes minimum | `spec.uwsgi.processes` | `field.Invalid` | `processes < 1` when `spec.uwsgi` is non-nil. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker (CC-0040). |
 | uWSGI threads minimum | `spec.uwsgi.threads` | `field.Invalid` | `threads < 1` when `spec.uwsgi` is non-nil. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker (CC-0040). |
 | Resource request exceeds limit | `spec.resources.requests.<resource>` | `field.Invalid` | A resource request exceeds its corresponding limit (e.g., CPU request 1000m > limit 500m). Checked per resource type when both requests and limits are set (CC-0042). |
 | Trust flush schedule required | `spec.trustFlush.schedule` | `field.Required` | `trustFlush` is set but `schedule` is empty. Defense-in-depth — the `+kubebuilder:default` marker normally prevents this, but bypass paths (e.g., `kubectl patch`) may produce an empty string (CC-0057). |
 | Trust flush cron expression | `spec.trustFlush.schedule` | `field.Invalid` | `cron.ParseStandard()` fails on `trustFlush.schedule`. Error message includes the parse failure details (CC-0057). |
+| PriorityClass existence | `spec.priorityClassName` | `field.NotFound` / `field.InternalError` | The webhook performs a cluster-scoped `Get` of the referenced `scheduling.k8s.io/v1` `PriorityClass` when the field is non-empty. Missing classes produce `NotFound`; transient API errors produce `InternalError` (CC-0075). |
+| TopologySpread labelSelector required | `spec.topologySpreadConstraints[i].labelSelector` | `field.Required` | Entry has no `labelSelector` (CC-0075). |
+| TopologySpread matchLabels mismatch | `spec.topologySpreadConstraints[i].labelSelector` | `field.Invalid` | `matchLabels` does not exactly equal `{app.kubernetes.io/name: keystone, app.kubernetes.io/instance: {CR name}}` (CC-0075). |
+| TopologySpread matchExpressions forbidden | `spec.topologySpreadConstraints[i].labelSelector.matchExpressions` | `field.Invalid` | `matchExpressions` is non-empty. Only exact `matchLabels` are allowed (CC-0075). |
 
 **Error format:** All validation errors are returned as a structured
 `apierrors.StatusError` with `GroupKind{Group: "keystone.openstack.c5c3.io", Kind: "Keystone"}`,
@@ -659,9 +878,11 @@ exercise the CRD schema constraints.
 
 E2E tests live in `tests/e2e/keystone/` and use the Chainsaw framework
 (`chainsaw.kyverno.io/v1alpha2`). The `invalid-cr` suite below verifies webhook
-rejection in a real cluster with the operator deployed. For the 9 reconciler E2E test
-suites (basic-deployment, missing-secret, fernet-rotation, scale, deletion-cleanup,
-policy-overrides, middleware-config, brownfield-database, image-upgrade), see
+rejection in a real cluster with the operator deployed. For the full reconciler
+E2E test suite inventory (basic-deployment, scale, fernet-rotation,
+credential-rotation, network-policy, topology-spread, priority-class,
+release-upgrade, schema-drift-detection, events, healthcheck, graceful-shutdown,
+policy-validation, config-pruning, …), see
 [Keystone E2E Test Suites](./keystone-e2e-tests.md) (CC-0016).
 
 #### invalid-cr Suite
@@ -710,9 +931,12 @@ Both targets are parameterized by operator directory in the Makefile. Generated
 - `KeystoneSpec`
 - `KeystoneStatus`
 - `AutoscalingSpec`
+- `NetworkPolicySpec`
+- `NetworkPolicyIngressSource`
 - `UWSGISpec`
 - `TrustFlushSpec`
 - `FernetSpec`
+- `CredentialKeysSpec`
 - `FederationSpec`
 - `BootstrapSpec`
 

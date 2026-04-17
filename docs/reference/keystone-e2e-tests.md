@@ -33,29 +33,41 @@ namespace, enabling parallel execution.
 │  │                    │  │                   │  │  2026-1               │   │
 │  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
 │  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ brownfield-        │  │ credential-       │  │ deletion-cleanup      │   │
-│  │  database          │  │  rotation         │  │                       │   │
+│  │ brownfield-        │  │ concurrent-cr-    │  │ config-pruning        │   │
+│  │  database          │  │  conflicts        │  │                       │   │
 │  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
 │  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ fernet-rotation    │  │ image-upgrade     │  │ invalid-cr            │   │
+│  │ credential-        │  │ deletion-cleanup  │  │ events                │   │
+│  │  rotation          │  │                   │  │                       │   │
+│  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
+│  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
+│  │ fernet-rotation    │  │ graceful-shutdown │  │ healthcheck           │   │
 │  │                    │  │                   │  │                       │   │
 │  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
 │  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ middleware-config  │  │ missing-secret    │  │ namespace-scoped-     │   │
-│  │                    │  │                   │  │  rbac                 │   │
-│  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
-│  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ network-policy     │  │ policy-overrides  │  │ release-upgrade       │   │
+│  │ image-upgrade      │  │ invalid-cr        │  │ middleware-config     │   │
 │  │                    │  │                   │  │                       │   │
 │  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
 │  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ resources          │  │ scale             │  │ trust-flush           │   │
+│  │ missing-secret     │  │ namespace-scoped- │  │ network-policy        │   │
+│  │                    │  │  rbac             │  │                       │   │
+│  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
+│  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
+│  │ policy-overrides   │  │ policy-validation │  │ priority-class        │   │
 │  │                    │  │                   │  │                       │   │
 │  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
 │  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ upgrade-flow       │  │ uwsgi             │  │ concurrent-cr-        │   │
-│  │                    │  │                   │  │  conflicts            │   │
+│  │ release-upgrade    │  │ resources         │  │ scale                 │   │
+│  │                    │  │                   │  │                       │   │
 │  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
+│  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
+│  │ schema-drift-      │  │ topology-spread   │  │ trust-flush           │   │
+│  │  detection         │  │                   │  │                       │   │
+│  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
+│  ┌───────────────────┐  ┌───────────────────┐                              │
+│  │ upgrade-flow       │  │ uwsgi             │                              │
+│  │                    │  │                   │                              │
+│  └───────────────────┘  └───────────────────┘                              │
 │                                                                             │
 │  All tests run in: namespace openstack                                      │
 │  Infrastructure: MariaDB, Memcached, ESO, OpenBao (pre-deployed)           │
@@ -124,6 +136,14 @@ Deployment rollout, bootstrap Job).
 | [image-upgrade](#image-upgrade) | `keystone-upgrade` | Rolling image update without losing Ready status | REQ-011, REQ-012, REQ-013 |
 | [release-upgrade](#release-upgrade) | `keystone-release-upgrade` | Cross-release upgrade from 2025.2 to 2026.1 via expand-migrate-contract, API accessibility before/after | REQ-001–REQ-009 (CC-0060) |
 | [concurrent-cr-conflicts](#concurrent-cr-conflicts) | `keystone-concurrent-a`, `keystone-concurrent-b` | Concurrent CR reconciliation with shared secrets, sub-resource isolation, deletion without cross-CR impact | REQ-001, REQ-002, REQ-003, REQ-004, REQ-008 (CC-0066) |
+| [config-pruning](#config-pruning) | `keystone-pruning` | Immutable ConfigMap pruning — stale ConfigMaps removed after multiple config changes, retain+1 cap, Ready=True preserved | REQ-007 (CC-0077) |
+| [events](#events) | `keystone-events` | Kubernetes event emission for BootstrapComplete, DatabaseSynced, FernetKeysGenerated, CredentialKeysGenerated | REQ-001, REQ-002 (CC-0070) |
+| [graceful-shutdown](#graceful-shutdown) | `keystone-graceful-shutdown` | Deployment configured with `terminationGracePeriodSeconds=30`, preStop sleep hook, startup probe | REQ-001, REQ-002, REQ-003 (CC-0063) |
+| [healthcheck](#healthcheck) | `keystone-healthcheck` | Post-Deployment HTTP health check gates `KeystoneAPIReady=True` with reason `APIHealthy` before aggregate `Ready` flips | REQ-001, REQ-005 (CC-0067) |
+| [policy-validation](#policy-validation) | `keystone-policy-validation` | `PolicyValidReady` gates the Deployment; validation Job lifecycle on `policyOverrides` add/remove | REQ-001, REQ-002, REQ-003, REQ-005 (CC-0058) |
+| [priority-class](#priority-class) | `keystone-pc` | `spec.priorityClassName` propagation: unset → empty, set → applied, patched empty → removed | REQ-004 (CC-0075) |
+| [schema-drift-detection](#schema-drift-detection) | `keystone-schema-drift` | `DatabaseReady=True` with message "revision verified"; schema-check Job runs and completes | REQ-003, REQ-004 (CC-0064) |
+| [topology-spread](#topology-spread) | `keystone-tsc` | `spec.topologySpreadConstraints`: `nil` injects 2 defaults; non-empty slice passes through verbatim; `[]` disables all constraints | REQ-005 (CC-0075) |
 
 ---
 
@@ -427,6 +447,187 @@ Service status, CronJob status, ConfigMap list, pod logs, and namespace events.
 
 ---
 
+### config-pruning
+
+**File:** `tests/e2e/keystone/config-pruning/chainsaw-test.yaml`
+
+**Purpose:** Validates that the immutable ConfigMap pruning logic (CC-0077) caps
+the number of historical config ConfigMaps at `retain + 1` (current + 3
+historical = 4 max) across multiple config changes, while keeping
+`Ready=True` throughout the churn.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` | `00-keystone-cr.yaml` — Keystone CR `keystone-pruning` |
+| 2 | Assert Ready=True | `assert` (5m) | Ready condition reaches True/AllReady |
+| 3 | Trigger 4 config changes | `script` | Repeated `spec.extraConfig` patches to force new ConfigMap revisions |
+| 4 | Assert ConfigMap count ≤ 4 | `script` | Counts ConfigMaps matching the base prefix and asserts ≤ `retain + 1` |
+
+**Fixtures:** `00-keystone-cr.yaml`
+
+---
+
+### events
+
+**File:** `tests/e2e/keystone/events/chainsaw-test.yaml`
+
+**Purpose:** Verifies that the reconciler emits Kubernetes Events for key
+lifecycle transitions (CC-0070) that unit tests with `FakeRecorder` cannot
+observe: `BootstrapComplete`, `DatabaseSynced`, `FernetKeysGenerated`,
+`CredentialKeysGenerated`.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` | `00-keystone-cr.yaml` — Keystone CR `keystone-events` |
+| 2 | Assert DatabaseReady, BootstrapReady, Ready | `assert` (5m) | `DatabaseReady=True/DatabaseSynced`, `BootstrapReady=True/BootstrapComplete`, `Ready=True/AllReady` |
+| 3 | Assert events exist | `script` | `kubectl get events` filtered by reason — all four expected reasons present |
+
+**Fixtures:** `00-keystone-cr.yaml`
+
+---
+
+### graceful-shutdown
+
+**File:** `tests/e2e/keystone/graceful-shutdown/chainsaw-test.yaml`
+
+**Purpose:** Ensures the reconciler configures the Keystone API Deployment with
+the graceful-shutdown shape required by CC-0063:
+`terminationGracePeriodSeconds=30`, a `preStop` exec hook (`sleep 5`), and a
+startup probe (`HTTP GET /v3:5000`, `failureThreshold=30`).
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` | `00-keystone-cr.yaml` — Keystone CR `keystone-graceful-shutdown` |
+| 2 | Assert Ready=True | `assert` (5m) | Ready condition reaches True/AllReady |
+| 3 | Assert Deployment pod spec shape | `assert` | `terminationGracePeriodSeconds: 30`, preStop exec hook present, startupProbe shape |
+
+**Fixtures:** `00-keystone-cr.yaml`
+
+---
+
+### healthcheck
+
+**File:** `tests/e2e/keystone/healthcheck/chainsaw-test.yaml`
+
+**Purpose:** Validates the post-Deployment HTTP health check sub-reconciler
+(CC-0067). The aggregate `Ready` condition must not flip to `True` until the
+separate `KeystoneAPIReady` condition is `True` with reason `APIHealthy`,
+meaning the API genuinely responds after `DeploymentReady`.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` | `00-keystone-cr.yaml` — Keystone CR `keystone-healthcheck` |
+| 2 | Assert DeploymentReady=True | `assert` (5m) | Reason `DeploymentReady` |
+| 3 | Assert KeystoneAPIReady=True | `assert` (5m) | Reason `APIHealthy` |
+| 4 | Assert Ready=True | `assert` (5m) | Aggregate Ready after API healthcheck succeeds |
+
+**Fixtures:** `00-keystone-cr.yaml`
+
+---
+
+### policy-validation
+
+**File:** `tests/e2e/keystone/policy-validation/chainsaw-test.yaml`
+
+**Purpose:** Exercises the policy-validation gating sub-reconciler (CC-0058).
+When `policyOverrides` is set, a validation Job runs before the Deployment is
+reconciled; `PolicyValidReady` transitions `False/PolicyValidationInProgress →
+True/PolicyValidationPassed`. Removing `policyOverrides` flips the condition
+to `True/PolicyValidationNotRequired` and cleans up the Job.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply policy ConfigMap | `apply` | `00-policy-cm.yaml` |
+| 2 | Apply Keystone CR with policyOverrides | `apply` | `01-keystone-cr.yaml` — Keystone CR `keystone-policy-validation` |
+| 3 | Assert PolicyValidReady=True | `assert` (5m) | Reason `PolicyValidationPassed` |
+| 4 | Assert Ready=True | `assert` (5m) | Aggregate Ready with policyOverrides active |
+| 5 | Patch: disable policyOverrides | `patch` | `02-patch-disable-policy.yaml` |
+| 6 | Assert PolicyValidReady=True/NotRequired | `assert` (5m) | Validation Job garbage-collected |
+
+**Fixtures:** `00-policy-cm.yaml`, `01-keystone-cr.yaml`, `02-patch-disable-policy.yaml`
+
+---
+
+### priority-class
+
+**File:** `tests/e2e/keystone/priority-class/chainsaw-test.yaml`
+
+**Purpose:** Validates `spec.priorityClassName` propagation (CC-0075):
+a CR without the field yields an empty `priorityClassName` on the Deployment;
+patching with a valid class sets it; patching with empty string removes it.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Create PriorityClass | `apply` | `00-priority-class.yaml` (cluster-scoped) |
+| 2 | Apply Keystone CR without priorityClassName | `apply` | `01-keystone-cr.yaml` — Keystone CR `keystone-pc` |
+| 3 | Assert Ready and empty priorityClassName | `assert` + `script` | Deployment `keystone-pc-api` has empty `.spec.template.spec.priorityClassName` |
+| 4 | Patch: set priorityClassName | `patch` | `02-patch-priority-class.yaml` — sets a valid class |
+| 5 | Assert priorityClassName applied | `script` | Deployment carries the patched class |
+| 6 | Patch: clear priorityClassName | `patch` | `03-patch-empty-priority-class.yaml` |
+| 7 | Assert priorityClassName cleared | `script` | Deployment back to empty |
+
+**Fixtures:** `00-priority-class.yaml`, `01-keystone-cr.yaml`,
+`02-patch-priority-class.yaml`, `03-patch-empty-priority-class.yaml`
+
+---
+
+### schema-drift-detection
+
+**File:** `tests/e2e/keystone/schema-drift-detection/chainsaw-test.yaml`
+
+**Purpose:** Validates schema-drift detection after successful deployment
+(CC-0064). The reconciler runs a schema-check Job whose completion produces
+`DatabaseReady=True` with the message
+`"Database schema is up to date (revision verified)"`.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` | `00-keystone-cr.yaml` — Keystone CR `keystone-schema-drift` |
+| 2 | Assert DatabaseReady and revision message | `assert` (5m) | Condition message contains "revision verified" |
+| 3 | Assert schema-check Job | `assert` | Job exists and has `succeeded: 1` |
+
+**Fixtures:** `00-keystone-cr.yaml`
+
+---
+
+### topology-spread
+
+**File:** `tests/e2e/keystone/topology-spread/chainsaw-test.yaml`
+
+**Purpose:** Validates `spec.topologySpreadConstraints` behavior (CC-0075):
+`nil` (unset) injects the two default constraints (zone + hostname,
+`MaxSkew=1`, `ScheduleAnyway`); a non-empty slice passes through verbatim;
+an empty slice explicitly disables all constraints.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR without TSC | `apply` | `00-keystone-cr.yaml` — Keystone CR `keystone-tsc` |
+| 2 | Assert Ready + 2 default constraints | `assert` (5m) | Deployment `keystone-tsc-api` carries zone-spread and hostname-spread |
+| 3 | Patch: custom TSC | `patch` | `01-patch-custom-tsc.yaml` |
+| 4 | Assert custom TSC applied verbatim | `assert` | Deployment has the patched constraints exactly |
+| 5 | Patch: empty TSC | `patch` | `02-patch-empty-tsc.yaml` |
+| 6 | Assert TSC disabled | `assert` | Deployment has no constraints |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-patch-custom-tsc.yaml`, `02-patch-empty-tsc.yaml`
+
+---
+
 ## Assertion Patterns
 
 The test suites use three Chainsaw assertion patterns:
@@ -545,15 +746,27 @@ tests/e2e/keystone/
 │   ├── chainsaw-test.yaml              Concurrent CR conflict handling (CC-0066)
 │   ├── 00-keystone-cr-a.yaml           Keystone CR fixture A (keystone-concurrent-a)
 │   └── 01-keystone-cr-b.yaml           Keystone CR fixture B (keystone-concurrent-b)
+├── config-pruning/
+│   ├── chainsaw-test.yaml              Immutable ConfigMap pruning (CC-0077)
+│   └── 00-keystone-cr.yaml             Keystone CR for pruning test
 ├── credential-rotation/
 │   ├── chainsaw-test.yaml              Credential key rotation (CC-0036, CC-0074)
 │   └── 00-keystone-cr.yaml             Keystone CR with rotation schedule
 ├── deletion-cleanup/
 │   ├── chainsaw-test.yaml              Garbage collection (CC-0016)
 │   └── 00-keystone-cr.yaml             Keystone CR for cleanup test
+├── events/
+│   ├── chainsaw-test.yaml              Kubernetes event emission (CC-0070)
+│   └── 00-keystone-cr.yaml             Keystone CR for event test
 ├── fernet-rotation/
 │   ├── chainsaw-test.yaml              Fernet key rotation (CC-0016, CC-0074)
 │   └── 00-keystone-cr.yaml             Keystone CR with rotation schedule
+├── graceful-shutdown/
+│   ├── chainsaw-test.yaml              Graceful shutdown (CC-0063)
+│   └── 00-keystone-cr.yaml             Keystone CR for graceful shutdown
+├── healthcheck/
+│   ├── chainsaw-test.yaml              Post-Deployment API health check (CC-0067)
+│   └── 00-keystone-cr.yaml             Keystone CR for healthcheck test
 ├── image-upgrade/
 │   ├── chainsaw-test.yaml              Rolling image upgrade (CC-0016)
 │   ├── 00-keystone-cr.yaml             Keystone CR with initial image tag
@@ -581,6 +794,17 @@ tests/e2e/keystone/
 │   ├── chainsaw-test.yaml              oslo.policy integration (CC-0016)
 │   ├── 00-policy-cm.yaml               Policy source ConfigMap
 │   └── 01-keystone-cr.yaml             Keystone CR with policyOverrides
+├── policy-validation/
+│   ├── chainsaw-test.yaml              Policy validation gating (CC-0058)
+│   ├── 00-policy-cm.yaml               Policy source ConfigMap
+│   ├── 01-keystone-cr.yaml             Keystone CR with policyOverrides
+│   └── 02-patch-disable-policy.yaml    Patch to remove policyOverrides
+├── priority-class/
+│   ├── chainsaw-test.yaml              spec.priorityClassName propagation (CC-0075)
+│   ├── 00-priority-class.yaml          Cluster-scoped PriorityClass fixture
+│   ├── 01-keystone-cr.yaml             Keystone CR without priorityClassName
+│   ├── 02-patch-priority-class.yaml    Patch to set priorityClassName
+│   └── 03-patch-empty-priority-class.yaml Patch to clear priorityClassName
 ├── release-upgrade/
 │   ├── chainsaw-test.yaml              Cross-release upgrade 2025.2→2026.1 (CC-0060)
 │   ├── 00-keystone-cr.yaml             Keystone CR with initial tag 2025.2
@@ -595,6 +819,14 @@ tests/e2e/keystone/
 │   ├── 01-patch-scale-up.yaml          Patch replicas to 5
 │   ├── 02-patch-scale-down.yaml        Patch replicas to 2
 │   └── 03-patch-scale-to-one.yaml      Patch replicas to 1
+├── schema-drift-detection/
+│   ├── chainsaw-test.yaml              Schema drift detection (CC-0064)
+│   └── 00-keystone-cr.yaml             Keystone CR for schema drift test
+├── topology-spread/
+│   ├── chainsaw-test.yaml              spec.topologySpreadConstraints (CC-0075)
+│   ├── 00-keystone-cr.yaml             Keystone CR without explicit TSC
+│   ├── 01-patch-custom-tsc.yaml        Patch with custom TSC
+│   └── 02-patch-empty-tsc.yaml         Patch with empty TSC (disable)
 ├── trust-flush/
 │   ├── chainsaw-test.yaml              Trust flush CronJob (CC-0057)
 │   ├── 00-keystone-cr.yaml             Keystone CR with trustFlush config
