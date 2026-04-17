@@ -562,6 +562,7 @@ func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, imageTag, na
 						Image:           fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, imageTag),
 						Command:         command,
 						SecurityContext: restrictedSecurityContext(),
+						Env:             []corev1.EnvVar{buildDBConnectionEnvVar(keystone)},
 						VolumeMounts: []corev1.VolumeMount{{
 							Name:      "config",
 							MountPath: "/etc/keystone/keystone.conf.d/",

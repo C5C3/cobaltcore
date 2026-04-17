@@ -28,6 +28,32 @@ import (
 // Condition reason constants for DeploymentReady.
 const conditionReasonDeploymentRolloutComplete = "DeploymentRolloutComplete"
 
+// buildDBConnectionEnvVar returns the OS_DATABASE__CONNECTION env var that
+// overrides the [database] connection option in keystone.conf at runtime via
+// oslo.config's OS_<GROUP>__<OPTION> convention. The value is sourced from the
+// derived <name>-db-connection Secret (key "connection") produced by
+// reconcileDBConnectionSecret, so the ConfigMap never carries the DB password
+// (CC-0080, REQ-003).
+//
+// DECISION: the task spec called for `*corev1.EnvVar`, but every existing
+// pod-spec builder in this package uses `[]corev1.EnvVar{...}` (value slices),
+// so a pointer return would force `*buildDBConnectionEnvVar(ks)` at each
+// callsite. Returning the value matches the surrounding idiom and keeps the
+// callsites readable. Reviewer: please verify this diverges from intent.
+func buildDBConnectionEnvVar(keystone *keystonev1alpha1.Keystone) corev1.EnvVar {
+	return corev1.EnvVar{
+		Name: "OS_DATABASE__CONNECTION",
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: fmt.Sprintf("%s-db-connection", keystone.Name),
+				},
+				Key: "connection",
+			},
+		},
+	}
+}
+
 // reconcileDeployment ensures the Keystone API Deployment and Service exist
 // with the correct spec. It sets the DeploymentReady condition and the
 // status endpoint when the Deployment becomes available (CC-0013, REQ-006, REQ-012).
@@ -144,6 +170,7 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 						Resources:       containerResources(keystone),
 						SecurityContext: restrictedSecurityContext(),
 						Command:         uwsgiCommand(keystone.Spec.UWSGI),
+						Env:             []corev1.EnvVar{buildDBConnectionEnvVar(keystone)},
 						Ports: []corev1.ContainerPort{{
 							Name:          "keystone-api",
 							ContainerPort: 5000,

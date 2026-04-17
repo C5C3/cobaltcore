@@ -148,11 +148,15 @@ func TestReconcileBootstrap_JobCreated(t *testing.T) {
 	g.Expect(container.Command[3]).To(ContainSubstring("--bootstrap-region-id RegionOne"))
 	g.Expect(container.Args).To(BeNil())
 
-	// Verify env.
-	g.Expect(container.Env).To(HaveLen(1))
+	// Verify env ordering: BOOTSTRAP_PASSWORD first, then OS_DATABASE__CONNECTION
+	// (CC-0080, REQ-004, REQ-007, REQ-009).
+	g.Expect(container.Env).To(HaveLen(2))
 	g.Expect(container.Env[0].Name).To(Equal("BOOTSTRAP_PASSWORD"))
 	g.Expect(container.Env[0].ValueFrom.SecretKeyRef.LocalObjectReference.Name).To(Equal("keystone-admin"))
 	g.Expect(container.Env[0].ValueFrom.SecretKeyRef.Key).To(Equal("password"))
+	g.Expect(container.Env[1].Name).To(Equal("OS_DATABASE__CONNECTION"))
+	g.Expect(container.Env[1].ValueFrom.SecretKeyRef.LocalObjectReference.Name).To(Equal(ks.Name + "-db-connection"))
+	g.Expect(container.Env[1].ValueFrom.SecretKeyRef.Key).To(Equal("connection"))
 
 	// Verify config volume mount is present (CC-0013: bootstrap needs keystone.conf for DB connection).
 	g.Expect(container.VolumeMounts).To(HaveLen(2))

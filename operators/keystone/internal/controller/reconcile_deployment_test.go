@@ -1156,3 +1156,47 @@ func indexOf(slice []string, s string) int {
 	}
 	return -1
 }
+
+// Feature: CC-0080
+
+// TestBuildDBConnectionEnvVar verifies the helper returns the OS_DATABASE__CONNECTION
+// env var with a SecretKeyRef to <keystone-name>-db-connection, key "connection"
+// (CC-0080, REQ-003).
+func TestBuildDBConnectionEnvVar(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+
+	env := buildDBConnectionEnvVar(ks)
+
+	g.Expect(env.Name).To(Equal("OS_DATABASE__CONNECTION"))
+	g.Expect(env.Value).To(BeEmpty(), "value must come via ValueFrom, not a literal string")
+	g.Expect(env.ValueFrom).NotTo(BeNil())
+	g.Expect(env.ValueFrom.SecretKeyRef).NotTo(BeNil())
+	g.Expect(env.ValueFrom.SecretKeyRef.LocalObjectReference.Name).To(Equal(ks.Name + "-db-connection"))
+	g.Expect(env.ValueFrom.SecretKeyRef.Key).To(Equal("connection"))
+}
+
+// TestBuildKeystoneDeployment_DBConnectionEnvVar verifies the keystone-api
+// container receives the OS_DATABASE__CONNECTION env var sourced from the
+// derived <name>-db-connection Secret (CC-0080, REQ-003, REQ-007).
+func TestBuildKeystoneDeployment_DBConnectionEnvVar(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone-api")
+	g.Expect(container).NotTo(BeNil())
+
+	var found *corev1.EnvVar
+	for i := range container.Env {
+		if container.Env[i].Name == "OS_DATABASE__CONNECTION" {
+			found = &container.Env[i]
+			break
+		}
+	}
+	g.Expect(found).NotTo(BeNil(), "keystone-api must carry OS_DATABASE__CONNECTION (CC-0080)")
+	g.Expect(found.ValueFrom).NotTo(BeNil())
+	g.Expect(found.ValueFrom.SecretKeyRef.LocalObjectReference.Name).To(Equal(ks.Name + "-db-connection"))
+	g.Expect(found.ValueFrom.SecretKeyRef.Key).To(Equal("connection"))
+}

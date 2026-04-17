@@ -273,6 +273,7 @@ func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName st
 										Name:  "OS_fernet_tokens__max_active_keys",
 										Value: strconv.Itoa(normalizedFernetMaxActiveKeys(keystone)),
 									},
+									buildDBConnectionEnvVar(keystone),
 								},
 								VolumeMounts: []corev1.VolumeMount{
 									{Name: "fernet-keys", MountPath: "/etc/keystone/fernet-keys"},

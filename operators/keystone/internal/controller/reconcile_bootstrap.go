@@ -122,17 +122,20 @@ exec keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap \
 						// this container. Currently runs as BestEffort QoS. See reconcile_deployment.go
 						// containerResources() for the pattern used by the keystone-api container.
 						Command: []string{"/bin/sh", "-eu", "-c", bootstrapScript},
-						Env: []corev1.EnvVar{{
-							Name: "BOOTSTRAP_PASSWORD",
-							ValueFrom: &corev1.EnvVarSource{
-								SecretKeyRef: &corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: keystone.Spec.Bootstrap.AdminPasswordSecretRef.Name,
+						Env: []corev1.EnvVar{
+							{
+								Name: "BOOTSTRAP_PASSWORD",
+								ValueFrom: &corev1.EnvVarSource{
+									SecretKeyRef: &corev1.SecretKeySelector{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: keystone.Spec.Bootstrap.AdminPasswordSecretRef.Name,
+										},
+										Key: "password",
 									},
-									Key: "password",
 								},
 							},
-						}},
+							buildDBConnectionEnvVar(keystone),
+						},
 						SecurityContext: restrictedSecurityContext(),
 						VolumeMounts: []corev1.VolumeMount{
 							{

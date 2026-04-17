@@ -1884,3 +1884,40 @@ func TestBuildDBSyncJob_PriorityClassNameNil(t *testing.T) {
 
 	g.Expect(job.Spec.Template.Spec.PriorityClassName).To(BeEmpty())
 }
+
+// Feature: CC-0080
+
+// TestBuildDBJob_DBConnectionEnvVar verifies that every container produced by
+// buildDBJob (db_sync, expand, migrate, contract, schema-check) carries the
+// OS_DATABASE__CONNECTION env var sourced from the derived db-connection Secret
+// (CC-0080, REQ-004, REQ-009).
+func TestBuildDBJob_DBConnectionEnvVar(t *testing.T) {
+	cases := []struct {
+		name string
+		job  *batchv1.Job
+	}{
+		{"db-sync", buildDBSyncJob(brownfieldKeystone(), "cfg")},
+		{"expand", buildExpandJob(brownfieldKeystone(), "cfg", "2025.2")},
+		{"migrate", buildMigrateJob(brownfieldKeystone(), "cfg", "2025.2")},
+		{"contract", buildContractJob(brownfieldKeystone(), "cfg", "2025.2")},
+		{"schema-check", buildSchemaCheckJob(brownfieldKeystone(), "cfg")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			container := tc.job.Spec.Template.Spec.Containers[0]
+
+			var found *corev1.EnvVar
+			for i := range container.Env {
+				if container.Env[i].Name == "OS_DATABASE__CONNECTION" {
+					found = &container.Env[i]
+					break
+				}
+			}
+			g.Expect(found).NotTo(BeNil(), "%s job must carry OS_DATABASE__CONNECTION (CC-0080)", tc.name)
+			g.Expect(found.ValueFrom).NotTo(BeNil())
+			g.Expect(found.ValueFrom.SecretKeyRef.LocalObjectReference.Name).To(Equal("test-keystone-db-connection"))
+			g.Expect(found.ValueFrom.SecretKeyRef.Key).To(Equal("connection"))
+		})
+	}
+}

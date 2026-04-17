@@ -542,3 +542,33 @@ func TestTrustFlushCronJob_Name(t *testing.T) {
 	g.Expect(cronJob.Name).To(Equal("test-keystone-trust-flush"))
 	g.Expect(cronJob.Namespace).To(Equal("default"))
 }
+
+// Feature: CC-0080
+
+// TestTrustFlushCronJob_DBConnectionEnvVar verifies the trust-flush container
+// carries OS_DATABASE__CONNECTION sourced from the derived db-connection Secret
+// (CC-0080, REQ-004, REQ-009).
+func TestTrustFlushCronJob_DBConnectionEnvVar(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := trustFlushTestKeystone()
+	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
+		Schedule: "0 * * * *",
+	}
+
+	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
+
+	container := findContainerByName(cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers, "trust-flush")
+	g.Expect(container).NotTo(BeNil())
+
+	var found *corev1.EnvVar
+	for i := range container.Env {
+		if container.Env[i].Name == "OS_DATABASE__CONNECTION" {
+			found = &container.Env[i]
+			break
+		}
+	}
+	g.Expect(found).NotTo(BeNil(), "trust-flush must carry OS_DATABASE__CONNECTION (CC-0080)")
+	g.Expect(found.ValueFrom).NotTo(BeNil())
+	g.Expect(found.ValueFrom.SecretKeyRef.LocalObjectReference.Name).To(Equal("test-keystone-db-connection"))
+	g.Expect(found.ValueFrom.SecretKeyRef.Key).To(Equal("connection"))
+}

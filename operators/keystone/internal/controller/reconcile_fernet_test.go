@@ -535,13 +535,17 @@ func TestReconcileFernetKeys_CronJobSpec(t *testing.T) {
 	g.Expect(container.Image).To(Equal("ghcr.io/c5c3/keystone:2025.2"))
 	g.Expect(container.Command).To(Equal([]string{"/scripts/fernet_rotate.sh"}))
 
-	// Verify env vars for Secret update via K8s API and oslo.config override (CC-0013).
-	g.Expect(container.Env).To(HaveLen(3))
+	// Verify env vars for Secret update via K8s API and oslo.config overrides
+	// (CC-0013; CC-0080, REQ-004, REQ-009).
+	g.Expect(container.Env).To(HaveLen(4))
 	g.Expect(container.Env[0].Name).To(Equal("SECRET_NAME"))
 	g.Expect(container.Env[0].Value).To(Equal("test-keystone-fernet-keys"))
 	g.Expect(container.Env[1].Name).To(Equal("SECRET_NAMESPACE"))
 	g.Expect(container.Env[2].Name).To(Equal("OS_fernet_tokens__max_active_keys"))
 	g.Expect(container.Env[2].Value).To(Equal("3"))
+	g.Expect(container.Env[3].Name).To(Equal("OS_DATABASE__CONNECTION"))
+	g.Expect(container.Env[3].ValueFrom.SecretKeyRef.LocalObjectReference.Name).To(Equal("test-keystone-db-connection"))
+	g.Expect(container.Env[3].ValueFrom.SecretKeyRef.Key).To(Equal("connection"))
 
 	// Verify volume mounts on main container: fernet-keys + credential-keys (read-only) + config + scripts (CC-0073).
 	g.Expect(container.VolumeMounts).To(HaveLen(4))

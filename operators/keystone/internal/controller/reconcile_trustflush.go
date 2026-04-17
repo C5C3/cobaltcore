@@ -94,6 +94,7 @@ func trustFlushCronJob(keystone *keystonev1alpha1.Keystone, configMapName string
 								Image:           image,
 								Command:         cmd,
 								SecurityContext: restrictedSecurityContext(),
+								Env:             []corev1.EnvVar{buildDBConnectionEnvVar(keystone)},
 								VolumeMounts: []corev1.VolumeMount{
 									{Name: "config", MountPath: "/etc/keystone/keystone.conf.d/", ReadOnly: true},
 									{Name: "fernet-keys", MountPath: "/etc/keystone/fernet-keys", ReadOnly: true},

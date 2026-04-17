@@ -264,6 +264,7 @@ func credentialRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapNam
 										Name:  "OS_credential__max_active_keys",
 										Value: strconv.Itoa(normalizedCredentialMaxActiveKeys(keystone)),
 									},
+									buildDBConnectionEnvVar(keystone),
 								},
 								VolumeMounts: []corev1.VolumeMount{
 									{Name: "credential-keys", MountPath: "/etc/keystone/credential-keys"},
