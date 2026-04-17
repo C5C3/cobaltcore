@@ -1,0 +1,112 @@
+{
+  "summary": "CC-0049 adds two NetworkChaos E2E test suites (network-partition SC-CHAOS-006 and network-latency SC-CHAOS-007), updates diagnostics.sh to report NetworkChaos experiments, and modifies the CI e2e-chaos job (timeout=45m, removes e2e-operator dependency, adds run-chaos label trigger). Overall structure follows existing chaos test patterns well. However, three blocking issues were found: (1) the partition NetworkChaos CR is missing the required `target` field specified by the architecture doc and review criteria, (2) the network-latency restart count check queries the wrong namespace and wrong labels making the assertion vacuous, and (3) directory naming breaks the established `<target>-<fault-type>` convention used by all 7 existing chaos test directories.",
+  "verdict": "BLOCKED",
+  "tests_checklist": [
+    {"item": "Network-partition chainsaw test follows 6-step structure", "checked": true},
+    {"item": "Network-latency chainsaw test follows 6-step structure", "checked": true},
+    {"item": "Catch blocks call diagnostics.sh with correct parameters", "checked": true},
+    {"item": "Baseline assertions verify Ready=True before chaos injection", "checked": true},
+    {"item": "Partition test asserts DatabaseReady=False during partition", "checked": true},
+    {"item": "Partition test asserts full recovery (DatabaseReady=True, Ready=True/AllReady)", "checked": true},
+    {"item": "Latency test verifies operator pod restartCount=0", "checked": false},
+    {"item": "Latency test asserts Ready=True maintained under latency", "checked": true},
+    {"item": "NetworkChaos CRD specs match chaos-mesh.org/v1alpha1 schema", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing chaos E2E test patterns", "checked": true},
+    {"item": "SPDX Apache-2.0 headers on all new files", "checked": true},
+    {"item": "CC-0049 and scenario IDs referenced in comments", "checked": true},
+    {"item": "Unique CR names for parallel execution", "checked": true},
+    {"item": "Directory naming follows established convention", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "No secrets exposed in test manifests", "checked": true},
+    {"item": "No privilege escalation in test steps", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "NetworkChaos partition spec matches architecture doc", "checked": false},
+    {"item": "NetworkChaos delay spec matches architecture doc", "checked": false},
+    {"item": "CI job structure follows existing e2e-operator pattern", "checked": true},
+    {"item": "diagnostics.sh change is backward-compatible", "checked": true},
+    {"item": "Architecture doc scenario matrix updated", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated Keystone CR fixtures (unique names)", "checked": true},
+    {"item": "Reuses shared diagnostics.sh helper", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "NetworkChaos CRs have duration safety net", "checked": true},
+    {"item": "Chainsaw assert timeout overridden to 5m", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "diagnostics.sh preserves || true for clean exit", "checked": true},
+    {"item": "Restart count check handles empty kubectl output", "checked": false}
+  ],
+  "security_findings": [],
+  "architecture_findings": [
+    {
+      "severity": "HIGH",
+      "description": "NetworkChaos partition CR is missing the required `target` field. The architecture doc (10-chaos-e2e-testing.md:328-334) specifies selector targeting keystone pods with a `target` field targeting mariadb pods and `direction: to`. The implementation uses selector targeting mariadb with no target field and `direction: both`. The review criteria explicitly states 'partition action has direction+target fields'.",
+      "location": "tests/e2e-chaos/network-partition/01-networkchaos.yaml:14-23",
+      "fix": "Restructure the partition CR to match the architecture doc: selector targets keystone pods (app.kubernetes.io/name: keystone), add target field with mariadb selector, change direction from 'both' to 'to'.",
+      "fix_classification": "ASK"
+    },
+    {
+      "severity": "MEDIUM",
+      "description": "NetworkChaos delay CR deviates from architecture doc (10-chaos-e2e-testing.md:352-371). Architecture specifies selector targeting keystone with target field targeting mariadb and direction 'to'. Implementation targets mariadb directly without target field and uses direction 'both'. While functionally broader (delays all mariadb traffic not just keystone-mariadb), the documented approach is more surgical.",
+      "location": "tests/e2e-chaos/network-latency/01-networkchaos.yaml:14-28",
+      "fix": "Align with architecture doc: selector targets keystone pods, add target field with mariadb selector, change direction to 'to'.",
+      "fix_classification": "ASK"
+    }
+  ],
+  "issues_found": [
+    {
+      "check_id": "C2",
+      "severity": "BLOCKER",
+      "description": "NetworkChaos partition CR missing required `target` field. The review criteria states 'partition action has direction+target fields'. The architecture doc (10-chaos-e2e-testing.md:328-334) shows the partition action requires a `target` block specifying which pods to partition from. Without `target`, the partition either isolates mariadb from ALL traffic (broader than intended) or is rejected by Chaos Mesh validation. Additionally, the selector should target keystone (source) not mariadb, and direction should be 'to' not 'both'.",
+      "location": "tests/e2e-chaos/network-partition/01-networkchaos.yaml:14-23",
+      "fix": "Replace the spec section to match the architecture doc:\n```yaml\nspec:\n  action: partition\n  mode: all\n  selector:\n    namespaces:\n    - openstack\n    labelSelectors:\n      app.kubernetes.io/name: keystone\n  direction: to\n  target:\n    mode: all\n    selector:\n      namespaces:\n      - openstack\n      labelSelectors:\n        app.kubernetes.io/name: mariadb\n  duration: \"120s\"\n```",
+      "evidence": "Current spec (lines 14-23):\n```yaml\nspec:\n  action: partition\n  mode: all\n  selector:\n    namespaces:\n    - openstack\n    labelSelectors:\n      app.kubernetes.io/name: mariadb\n  direction: both\n  duration: \"120s\"\n```\n\nArchitecture doc (10-chaos-e2e-testing.md:320-335):\n```yaml\nspec:\n  action: partition\n  ...\n  selector:\n    ...\n    labelSelectors:\n      app.kubernetes.io/name: keystone\n  direction: to\n  target:\n    mode: all\n    selector:\n      ...\n      labelSelectors:\n        app.kubernetes.io/name: mariadb\n```",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "C2",
+      "severity": "BLOCKER",
+      "description": "Vacuous restart count assertion: the kubectl query uses wrong namespace and non-existent labels, causing the check to silently pass without actually verifying operator pod stability. The operator is deployed via `helm install` without `--namespace` (defaults to current context, not 'openstack'). The label `control-plane=controller-manager` does NOT exist in the Helm chart — the chart uses `app.kubernetes.io/name: keystone-operator` and `app.kubernetes.io/instance: <release-name>` (see templates/_helpers.tpl:46-49). When kubectl finds no matching pods, jsonpath returns empty, RESTARTS defaults to 0 via ${RESTARTS:-0}, and the test passes vacuously.",
+      "location": "tests/e2e-chaos/network-latency/chainsaw-test.yaml:57-63",
+      "fix": "Fix the namespace and label selector to match the actual operator deployment:\n1. Determine the operator's namespace (check `helm install` in ci-deploy-operator.sh — no --namespace means default kubectl context namespace)\n2. Use the correct labels from the Helm chart: `app.kubernetes.io/name=keystone-operator`\n3. Add a guard to fail if no pods are found:\n```bash\nPOD_COUNT=$(kubectl get pods -n <correct-namespace> \\\n  -l app.kubernetes.io/name=keystone-operator \\\n  -o name | wc -l)\nif [ \"$POD_COUNT\" -eq 0 ]; then\n  echo \"ERROR: no operator pods found\"\n  exit 1\nfi\n```",
+      "evidence": "Script at chainsaw-test.yaml:57-63:\n```bash\nRESTARTS=$(kubectl get pods -n $NAMESPACE \\\n  -l control-plane=controller-manager,app.kubernetes.io/name=keystone-operator \\\n  -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}')\nif [ \"${RESTARTS:-0}\" -ne 0 ]; then\n```\n\nHelm chart labels (templates/_helpers.tpl:46-49):\n```yaml\napp.kubernetes.io/name: {{ include \"keystone-operator.name\" . }}\napp.kubernetes.io/instance: {{ .Release.Name }}\n```\n\nNo `control-plane=controller-manager` label exists in the chart. Operator deployed without --namespace in hack/ci-deploy-operator.sh:50-55.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "PC3",
+      "severity": "BLOCKER",
+      "description": "Directory naming breaks the established `<target>-<fault-type>` convention used by all 7 existing chaos test directories. New directories use `network-partition/` and `network-latency/` (fault-type only) instead of `mariadb-network-partition/` and `mariadb-network-latency/` (target-fault-type). The architecture doc (10-chaos-e2e-testing.md:512) explicitly states: 'Test directories: `<target>-<fault-type>` (e.g., `mariadb-pod-kill`, `mariadb-network-latency`)'. Lines 124 and 128 of the same doc show `mariadb-network-partition/` and `mariadb-network-latency/` as the expected directory names.",
+      "location": "tests/e2e-chaos/network-partition/ and tests/e2e-chaos/network-latency/",
+      "fix": "Rename directories to follow the established convention:\n- `tests/e2e-chaos/network-partition/` → `tests/e2e-chaos/mariadb-network-partition/`\n- `tests/e2e-chaos/network-latency/` → `tests/e2e-chaos/mariadb-network-latency/`",
+      "evidence": "Existing directories all follow `<target>-<fault-type>`:\n- mariadb-pod-kill/\n- memcached-pod-kill/\n- openbao-pod-kill/\n- operator-pod-kill/\n- operator-pod-crash/\n- api-pod-kill-pdb/\n- cronjob-rotation-failure/\n\nNew directories break this pattern:\n- network-partition/ (missing target prefix)\n- network-latency/ (missing target prefix)\n\nArchitecture doc line 512: 'Test directories: `<target>-<fault-type>` (e.g., `mariadb-pod-kill`, `mariadb-network-latency`)'",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "DA1",
+      "severity": "MAJOR",
+      "description": "Both NetworkChaos CRD specs deviate from the architecture documentation. The architecture doc (10-chaos-e2e-testing.md:312-336 for partition, 344-372 for delay) specifies: (1) selector targeting keystone pods (source), (2) target field with mariadb selector (destination), (3) direction 'to' (unidirectional). Both implementations use: (1) selector targeting mariadb (destination), (2) no target field, (3) direction 'both'. The architecture doc is the authoritative reference per DA2.",
+      "location": "tests/e2e-chaos/network-partition/01-networkchaos.yaml and tests/e2e-chaos/network-latency/01-networkchaos.yaml",
+      "fix": "Align both CRDs with the architecture documentation. Add `target` field with mariadb selector, change `selector` to target keystone pods, change `direction` to `to`.",
+      "evidence": "Architecture doc partition spec (lines 320-335):\n```yaml\n  selector:\n    labelSelectors:\n      app.kubernetes.io/name: keystone\n  direction: to\n  target:\n    mode: all\n    selector:\n      labelSelectors:\n        app.kubernetes.io/name: mariadb\n```\n\nImplemented partition spec (01-networkchaos.yaml:14-23):\n```yaml\n  selector:\n    labelSelectors:\n      app.kubernetes.io/name: mariadb\n  direction: both\n```\n(No target field)",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "The `sleep 30` in network-latency Step 4 (chainsaw-test.yaml:54) could be replaced with a more robust approach — e.g., verify the NetworkChaos experiment is in 'Applied' status before checking restart count. However, for negative testing (asserting stability under load), a fixed wait is acceptable as there is no specific condition to wait for.",
+    "Consider adding a comment in the network-latency test explaining which namespace the operator pod is deployed in, to prevent future namespace confusion."
+  ],
+  "next_steps": [
+    "Fix BLOCKER: Add `target` field to partition NetworkChaos CR per architecture doc specification (10-chaos-e2e-testing.md:328-334)",
+    "Fix BLOCKER: Fix the restart count check in network-latency test — correct namespace and labels to match actual operator deployment, add guard for empty pod list",
+    "Fix BLOCKER: Rename directories from `network-partition/` to `mariadb-network-partition/` and `network-latency/` to `mariadb-network-latency/` per established naming convention",
+    "Fix MAJOR: Align delay NetworkChaos CR with architecture doc — add target field, change selector and direction",
+    "Re-request review after fixes are applied"
+  ],
+  "detected_patterns": []
+}

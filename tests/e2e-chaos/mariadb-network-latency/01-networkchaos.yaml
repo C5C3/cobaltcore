@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# NetworkChaos CR to inject latency on MariaDB traffic (CC-0049).
+# Injects 10s latency with 2s jitter at 100% correlation on traffic FROM
+# keystone pods TO mariadb pods (unidirectional), simulating degraded
+# network conditions without full outage.
+# Selector targets keystone (source), target specifies mariadb (destination),
+# direction 'to' makes the delay unidirectional per architecture doc
+# (10-chaos-e2e-testing.md:344-372).
+# Duration 180s acts as a safety net for auto-expiry if the test does not
+# explicitly delete the CR.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: latency-mariadb
+  namespace: openstack
+spec:
+  action: delay
+  mode: all
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      app.kubernetes.io/name: keystone
+  direction: to
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - openstack
+      labelSelectors:
+        app.kubernetes.io/name: mariadb
+  delay:
+    latency: "10s"
+    jitter: "2s"
+    correlation: "100"
+  duration: "180s"

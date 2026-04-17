@@ -1,0 +1,103 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for MariaDB network partition (CC-0049).
+# Verifies the Keystone operator detects a MariaDB network partition
+# (DatabaseReady=False) and recovers autonomously when the partition
+# is lifted by deleting the NetworkChaos CR.
+#
+# SC-CHAOS-006, REQ-001, REQ-002, REQ-008 (CC-0049)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-mariadb-network-partition
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR ──────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert baseline Ready=True before chaos injection ──────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-net-part
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-chaos-net-part --dep-label=app.kubernetes.io/name=mariadb
+  # ── Step 3: Inject NetworkChaos to partition MariaDB traffic ───────────
+  - try:
+    - apply:
+        file: 01-networkchaos.yaml
+  # ── Step 4: Assert NetworkChaos injection is active (CC-0049) ──────────
+  # Confirms the fault is actually applied before checking effects. Without
+  # this, a mis-targeted selector could allow the CR to be accepted but have
+  # no effect, causing the DatabaseReady check to pass vacuously.
+  # Uses `kubectl wait --for=condition=AllInjected` instead of a chainsaw
+  # resource assert because NetworkChaos.status.conditions is a fixed 4-item
+  # list (Selected/AllInjected/AllRecovered/Paused); chainsaw's list-merge
+  # rejects any shorter expected slice with "lengths of slices don't match".
+  - try:
+    - script:
+        timeout: 60s
+        content: |
+          set -eu
+          kubectl wait networkchaos/partition-mariadb -n openstack \
+            --for=condition=AllInjected --timeout=60s
+    catch:
+    - script:
+        content: kubectl get networkchaos/partition-mariadb -n openstack -o yaml 2>&1 || true
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-net-part --dep-label=app.kubernetes.io/name=mariadb --log-label=app.kubernetes.io/name=keystone-operator
+  # ── Step 5: Assert DatabaseReady=False after network partition ─────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-net-part
+            namespace: openstack
+          status:
+            (conditions[?type == 'DatabaseReady']):
+            - status: "False"
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-net-part --dep-label=app.kubernetes.io/name=mariadb --log-label=app.kubernetes.io/name=keystone-operator
+  # ── Step 6: Delete NetworkChaos to lift partition ──────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: NetworkChaos
+          name: partition-mariadb
+  # ── Step 7: Assert full recovery to Ready=True ─────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-net-part
+            namespace: openstack
+          status:
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-net-part --dep-label=app.kubernetes.io/name=mariadb --log-label=app.kubernetes.io/name=keystone-operator

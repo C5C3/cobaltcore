@@ -1,0 +1,147 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for MariaDB network latency (CC-0049).
+# Verifies the Keystone operator tolerates slow MariaDB responses
+# (10s latency, 2s jitter) without crash-looping or losing Ready
+# status, confirming adequate timeout configuration.
+#
+# SC-CHAOS-007, REQ-003, REQ-004, REQ-008 (CC-0049)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-mariadb-network-latency
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR ──────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert baseline Ready=True before chaos injection ──────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-net-lat
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-chaos-net-lat --dep-label=app.kubernetes.io/name=mariadb
+  # ── Step 3: Inject NetworkChaos to add latency on MariaDB traffic ──────
+  - try:
+    - apply:
+        file: 01-networkchaos.yaml
+  # ── Step 4: Assert operator tolerates latency — no crash-loop, Ready maintained ─
+  # Verify operator pod restartCount remains 0 (REQ-004) and Keystone CR
+  # maintains Ready=True under latency injection.
+  - try:
+    - script:
+        # Wait for NetworkChaos injection, then verify operator pod has
+        # not restarted under latency conditions.
+        timeout: 120s
+        content: |
+          # NOTE: pipefail is intentionally omitted — chainsaw executes
+          # script content via /usr/bin/sh (dash on Ubuntu), which does
+          # not support `set -o pipefail`. The script has no pipes, so
+          # set -eu alone is sufficient.
+          set -eu
+
+          # Wait for NetworkChaos to be fully injected before checking
+          # effects. Replaces a fixed sleep with a deterministic check
+          # that confirms the fault is active (CC-0049).
+          echo "Waiting for NetworkChaos latency-mariadb injection..."
+          kubectl wait networkchaos/latency-mariadb -n openstack \
+            --for=condition=AllInjected --timeout=60s
+          echo "NetworkChaos latency injection confirmed active"
+
+          # Allow one reconciliation cycle to complete under latency.
+          # Operator reconciles every ~10s; with 10s injected latency,
+          # one affected cycle needs ~20s. 15s after confirmed injection
+          # ensures at least one full cycle has run under latency.
+          sleep 15
+
+          # The operator is deployed to the 'default' namespace by
+          # hack/ci-deploy-operator.sh (Helm install without --namespace).
+          # Labels are set by the Helm chart _helpers.tpl selectorLabels
+          # template: app.kubernetes.io/name=keystone-operator.
+          OPERATOR_NS="default"
+          OPERATOR_LABEL="app.kubernetes.io/name=keystone-operator"
+
+          # Guard: ensure at least one operator pod exists before checking
+          # restartCount. Without this guard, an empty selector silently
+          # defaults RESTARTS to 0 and the assertion passes vacuously.
+          POD_NAMES=$(kubectl get pods -n "$OPERATOR_NS" \
+            -l "$OPERATOR_LABEL" \
+            -o jsonpath='{.items[*].metadata.name}')
+          if [ -z "${POD_NAMES}" ]; then
+            echo "ERROR: no operator pods found in namespace '$OPERATOR_NS' with label $OPERATOR_LABEL"
+            kubectl get pods --all-namespaces -l "$OPERATOR_LABEL" 2>&1 || true
+            exit 1
+          fi
+          echo "Found operator pod(s): ${POD_NAMES}"
+
+          # Verify restart count is 0 for ALL operator pods (CC-0049).
+          # Iterates every matched pod so scaled deployments cannot hide
+          # partial instability behind a healthy first replica.
+          FAILED=0
+          for POD in ${POD_NAMES}; do
+            RESTARTS=$(kubectl get pod -n "$OPERATOR_NS" "$POD" \
+              -o jsonpath='{.status.containerStatuses[?(@.name=="manager")].restartCount}')
+            if [ "${RESTARTS:-0}" -ne 0 ]; then
+              echo "ERROR: pod ${POD} restarted ${RESTARTS} times under latency"
+              FAILED=1
+            else
+              echo "Pod ${POD} restart count: 0 (stable)"
+            fi
+          done
+          if [ "${FAILED}" -ne 0 ]; then
+            exit 1
+          fi
+          echo "All operator pods stable under latency (0 restarts)"
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-net-lat
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-net-lat --dep-label=app.kubernetes.io/name=mariadb --log-label=app.kubernetes.io/name=keystone-operator
+  # ── Step 5: Delete NetworkChaos to remove latency ──────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: NetworkChaos
+          name: latency-mariadb
+  # ── Step 6: Assert Ready=True persists after latency removal ───────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-net-lat
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-net-lat --dep-label=app.kubernetes.io/name=mariadb --log-label=app.kubernetes.io/name=keystone-operator

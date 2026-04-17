@@ -76,8 +76,9 @@ case "$MODE" in
     fi
 
     # ── Chaos: Chaos Mesh experiment status ──────────────────────────────────
+    # CC-0049, REQ-005: Report both PodChaos and NetworkChaos experiments.
     echo "=== Chaos Mesh experiment status ==="
-    kubectl get podchaos -n "$NAMESPACE" -o wide 2>&1 || true
+    kubectl get podchaos,networkchaos -n "$NAMESPACE" -o wide 2>&1 || true
 
     # ── Chaos: ESO ExternalSecret conditions (optional) ──────────────────────
     if [ "$INCLUDE_ESO" = true ]; then

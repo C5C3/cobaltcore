@@ -328,6 +328,94 @@ preflight_checks() {
 }
 
 # ---------------------------------------------------------------------------
+# load_chaos_mesh_kernel_modules — Ensure NetworkChaos prerequisites on the host.
+#
+# chaos-mesh's NetworkChaos uses ipset/iptables/tc inside the target pod's
+# network namespace via nsenter. The underlying kernel modules must be loaded
+# on the host kernel (Kind nodes share it), otherwise chaos-daemon fails with
+# "unable to flush ip sets for pod …" and AllInjected stays False (CC-0049).
+#
+# Best-effort: skipped on non-Linux, and on Linux we warn but don't abort if
+# modprobe is unavailable or fails — PodChaos-only flows still work.
+# ---------------------------------------------------------------------------
+load_chaos_mesh_kernel_modules() {
+  if [[ "$(uname -s)" != "Linux" ]]; then
+    log "Non-Linux host — skipping kernel-module load (chaos-mesh NetworkChaos runs in the Linux VM kernel)."
+    return 0
+  fi
+
+  local sudo_cmd=()
+  if [[ "$(id -u)" -ne 0 ]]; then
+    if sudo -n true 2>/dev/null; then
+      sudo_cmd=(sudo -n)
+    else
+      log "WARNING: not root and no passwordless sudo — skipping kernel-module load; NetworkChaos may fail."
+      return 0
+    fi
+  fi
+
+  # ip_set_hash_ip is the on-disk module name for the ipset hash:ip type; loading
+  # it is enough — chaos-mesh only needs hash:net in practice, which is provided
+  # by the same linux-modules-extra package. Keep the list aligned with what
+  # chaos-daemon actually invokes via ipset/tc.
+  local modules=(ip_set ip_set_hash_ip ip_set_hash_net xt_set sch_netem sch_tbf)
+  log "Loading kernel modules for chaos-mesh NetworkChaos: ${modules[*]}"
+
+  local missing=()
+  local mod err
+  for mod in "${modules[@]}"; do
+    if [[ -d "/sys/module/${mod}" ]]; then
+      continue
+    fi
+    if err=$("${sudo_cmd[@]}" modprobe "${mod}" 2>&1); then
+      continue
+    fi
+    log "modprobe ${mod} failed: ${err}"
+    missing+=("${mod}")
+  done
+
+  if [[ ${#missing[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  # Ubuntu cloud images commonly omit linux-modules-extra, which ships ip_set,
+  # xt_set and friends. Install it on demand and retry the modules that failed.
+  if ! command -v apt-get &>/dev/null; then
+    log "WARNING: modules missing and apt-get unavailable — NetworkChaos tests may fail: ${missing[*]}"
+    return 0
+  fi
+
+  local kver extra_pkg
+  kver="$(uname -r)"
+  extra_pkg="linux-modules-extra-${kver}"
+  log "Installing ${extra_pkg} to provide missing modules: ${missing[*]}"
+  if ! "${sudo_cmd[@]}" apt-get update -qq; then
+    log "WARNING: apt-get update failed — NetworkChaos tests may fail."
+    return 0
+  fi
+  if ! "${sudo_cmd[@]}" apt-get install -y -qq "${extra_pkg}"; then
+    log "WARNING: apt-get install ${extra_pkg} failed — NetworkChaos tests may fail."
+    return 0
+  fi
+
+  local still_missing=()
+  for mod in "${missing[@]}"; do
+    if [[ -d "/sys/module/${mod}" ]]; then
+      continue
+    fi
+    if err=$("${sudo_cmd[@]}" modprobe "${mod}" 2>&1); then
+      continue
+    fi
+    log "modprobe ${mod} still failed after installing ${extra_pkg}: ${err}"
+    still_missing+=("${mod}")
+  done
+
+  if [[ ${#still_missing[@]} -ne 0 ]]; then
+    log "WARNING: kernel modules still missing after retry — NetworkChaos tests may fail: ${still_missing[*]}"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # openbao_kube_exec — Execute a command inside the openbao-0 pod.
 # Does NOT pass BAO_TOKEN (used for init/unseal before the token exists).
 # ---------------------------------------------------------------------------
@@ -487,6 +575,10 @@ main() {
 
   # Pre-flight checks
   preflight_checks
+
+  # Load chaos-mesh kernel modules on the host before creating the cluster.
+  # Kind nodes share the host kernel; NetworkChaos needs ipset/tc modules.
+  load_chaos_mesh_kernel_modules
 
   # Step 1: Create kind cluster
   log "=== Step 1/8: Create kind cluster ==="

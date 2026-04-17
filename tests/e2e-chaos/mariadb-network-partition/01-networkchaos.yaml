@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# NetworkChaos CR to partition MariaDB traffic (CC-0049).
+# Partitions keystone pods FROM mariadb pods (unidirectional), simulating a
+# network partition where keystone cannot reach the database.
+# Selector targets keystone (source), target specifies mariadb (destination),
+# direction 'to' makes the partition unidirectional per architecture doc
+# (10-chaos-e2e-testing.md:312-336).
+# Duration 300s acts as a safety net for auto-expiry if the test does not
+# explicitly delete the CR. Matches the Chainsaw assert timeout (5m/300s)
+# to ensure the partition persists through the full assertion window.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: partition-mariadb
+  namespace: openstack
+spec:
+  action: partition
+  mode: all
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      app.kubernetes.io/name: keystone
+  direction: to
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - openstack
+      labelSelectors:
+        app.kubernetes.io/name: mariadb
+  duration: "300s"

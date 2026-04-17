@@ -1,12 +1,12 @@
 ---
 title: Chaos E2E Test Suites
 quadrant: operator
-feature: CC-0047, CC-0048, CC-0054, CC-0066
+feature: CC-0047, CC-0048, CC-0049, CC-0054, CC-0066
 ---
 
 # Chaos E2E Test Suites
 
-Reference documentation for the chaos E2E test suites (CC-0047, CC-0048, CC-0066). These
+Reference documentation for the chaos E2E test suites (CC-0047, CC-0048, CC-0049, CC-0066). These
 tests verify that OpenStack operators correctly detect infrastructure dependency failures
 via status conditions and recover autonomously when dependencies return. Phase 2 (CC-0048)
 extends the suite with operator resilience and workload chaos scenarios. Phase 3 (CC-0066)
@@ -16,12 +16,13 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 7 chaos test suites validate operator behavior during and after fault injection.
+The 9 chaos test suites validate operator behavior during and after fault injection.
 Phase 1 (CC-0047) covers infrastructure dependency pod kills. Phase 2 (CC-0048) adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability guarantee
 scenarios. Phase 3 (CC-0066) adds an all-pod operator kill with leader re-election
-verification. Each suite deploys a Keystone CR, asserts a healthy baseline, injects a
-[Chaos Mesh](https://chaos-mesh.org/) `PodChaos` fault, asserts the expected degradation
+verification. Phase 4 (CC-0049) adds network chaos scenarios (partition and latency).
+Each suite deploys a Keystone CR, asserts a healthy baseline, injects a
+[Chaos Mesh](https://chaos-mesh.org/) `PodChaos` or `NetworkChaos` fault, asserts the expected degradation
 (or stability), removes the fault, and asserts full recovery. Tests use
 [Chainsaw](https://kyverno.github.io/chainsaw/) to orchestrate the assertion lifecycle.
 
@@ -63,15 +64,28 @@ verification. Each suite deploys a Keystone CR, asserts a healthy baseline, inje
 │  │ failover reconcile   │                                                     │
 │  └─────────────────────┘                                                     │
 │                                                                              │
+│  Phase 4 (CC-0049): Network Chaos                                            │
+│  ┌─────────────────────┐  ┌─────────────────────┐                            │
+│  │ mariadb-network-     │  │ mariadb-network-     │                            │
+│  │ partition            │  │ latency              │                            │
+│  │ SC-CHAOS-006         │  │ SC-CHAOS-007         │                            │
+│  │ (keystone-chaos-     │  │ (keystone-chaos-     │                            │
+│  │  net-part)           │  │  net-lat)            │                            │
+│  │                      │  │                      │                            │
+│  │ Pattern: degradation │  │ Pattern: latency     │                            │
+│  │ and recovery         │  │ tolerance            │                            │
+│  │ (NetworkChaos)       │  │ (no-regression)      │                            │
+│  └─────────────────────┘  └─────────────────────┘                            │
+│                                                                              │
 │  All tests run in: namespace openstack                                       │
-│  Fault injection: Chaos Mesh PodChaos CRDs                                   │
+│  Fault injection: Chaos Mesh PodChaos and NetworkChaos CRDs                  │
 │  Infrastructure: MariaDB, Memcached, ESO, OpenBao, Chaos Mesh (pre-deployed) │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Prerequisites
 
-All 7 test suites require the infrastructure stack and Chaos Mesh to be deployed and
+All 9 test suites require the infrastructure stack and Chaos Mesh to be deployed and
 healthy.
 
 | Prerequisite | Details |
@@ -130,19 +144,19 @@ active regardless of which files were touched.
 | Event | Runs when |
 | --- | --- |
 | Push to `main` | Path filter matches or Go code changed (always on `v*` tags) |
-| Pull request | Path filter matches or Go code changed |
+| Pull request | Path filter matches, Go code changed, **or `run-chaos` label present** (CC-0049 REQ-007) |
 
 **Dependencies:** The job depends on all gate jobs (`lint`, `shellcheck`, `test`,
-`test-integration`, `verify-codegen`) and `e2e-operator`. It only runs if no dependency
-failed or was cancelled. A skipped `e2e-operator` does not block the job.
+`test-integration`, `verify-codegen`). It only runs if no dependency failed or was
+cancelled.
 
 **Non-blocking (`continue-on-error: true`):** Chaos test failures are visible in the CI
 status but do not block merges or the publish pipeline (CC-0054 REQ-004). This is
 intentional while chaos test stability is being proven in CI. The setting will be revisited
 after 2–4 weeks of successful CI runs to consider making the job blocking.
 
-**Timeout:** 60 minutes (vs 45 minutes for `e2e-operator`) to accommodate serial test
-execution and longer recovery assertion windows.
+**Timeout:** 45 minutes to accommodate serial test execution and longer recovery
+assertion windows.
 
 ## Test Suite Inventory
 
@@ -153,6 +167,8 @@ execution and longer recovery assertion windows.
 | [openbao-pod-kill](#openbao-pod-kill) | SC-CHAOS-003 | `keystone-chaos-bao` | Degradation and recovery | `SecretsReady=False` → `SecretsReady=True`, `Ready=True` | REQ-006, REQ-007, REQ-008, REQ-009 |
 | [operator-pod-crash](#operator-pod-crash) | SC-CHAOS-004 | `keystone-chaos-op` | Operator self-recovery (no-regression) | Operator pod `Ready=false` → `Ready=true`, CR `Ready=True` maintained | REQ-001, REQ-005, REQ-006, REQ-008 (CC-0048) |
 | [cronjob-rotation-failure](#cronjob-rotation-failure) | SC-CHAOS-005 | `keystone-chaos-cron` | Workload fault tolerance | `FernetKeysReady=True` maintained, `Ready=True` maintained | REQ-002, REQ-006, REQ-008 (CC-0048) |
+| [mariadb-network-partition](#mariadb-network-partition) | SC-CHAOS-006 | `keystone-chaos-net-part` | Degradation and recovery (NetworkChaos) | `DatabaseReady=False` → `DatabaseReady=True`, `Ready=True` | REQ-001, REQ-002, REQ-008 (CC-0049) |
+| [mariadb-network-latency](#mariadb-network-latency) | SC-CHAOS-007 | `keystone-chaos-net-lat` | Latency tolerance (no-regression) | `Ready=True` maintained, operator `restartCount=0` | REQ-003, REQ-004, REQ-008 (CC-0049) |
 | [api-pod-kill-pdb](#api-pod-kill-pdb) | SC-CHAOS-008 | `keystone-chaos-api` | PDB availability guarantee | PDB `minAvailable: 1`, `DeploymentReady=True` maintained, `Ready=True` maintained | REQ-003, REQ-004, REQ-006, REQ-008 (CC-0048) |
 | [operator-pod-kill](#operator-pod-kill) | SC-CHAOS-009 | `keystone-chaos-opk` | Operator pod kill (all) with failover reconciliation | All 6 conditions `True` maintained, replica patch reconciled by new leader | REQ-005, REQ-006, REQ-007, REQ-008 (CC-0066) |
 
@@ -338,6 +354,88 @@ Step 5 catches with Job status, job pod logs (`job-name=chaos-cron-test`), and
 and 60s duration. This injects sustained failures into all pods matching `job-name=chaos-cron-test`,
 simulating a scenario where every rotation attempt fails for the full duration. The `mode: all`
 ensures every pod spawned by the targeted Job is affected.
+
+---
+
+### mariadb-network-partition
+
+**File:** `tests/e2e-chaos/mariadb-network-partition/chainsaw-test.yaml`
+
+**Scenario:** SC-CHAOS-006 (CC-0049)
+
+**Purpose:** Validates that the Keystone operator detects a MariaDB network partition
+(unidirectional traffic block from keystone to mariadb), transitions `DatabaseReady` to
+`False`, and recovers autonomously when the partition is lifted by deleting the
+NetworkChaos CR.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-chaos-net-part` with database `keystone_chaos_net_part` |
+| 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady — confirms healthy state before fault injection |
+| 3 | Inject NetworkChaos | `apply` | Applies `01-networkchaos.yaml` — NetworkChaos `partition-mariadb` partitioning keystone→mariadb traffic in `openstack` |
+| 4 | Assert NetworkChaos injection active | `assert` (5m) | NetworkChaos `partition-mariadb` has `AllInjected=True` — confirms fault is active before checking effects |
+| 5 | Assert degradation | `assert` (5m) | DatabaseReady=False — operator detects MariaDB is unreachable via network partition |
+| 6 | Delete NetworkChaos | `delete` | Removes NetworkChaos `partition-mariadb` to lift the partition |
+| 7 | Assert recovery | `assert` (5m) | DatabaseReady=True and Ready=True with reason AllReady |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-networkchaos.yaml`
+
+**Catch blocks:** Steps 2, 4, 5, and 7 include catch blocks. Step 4 dumps the NetworkChaos
+CR status for injection diagnosis. All catch blocks use `diagnostics.sh` with appropriate
+mode (`baseline`/`chaos`) and `--dep-label=app.kubernetes.io/name=mariadb`.
+
+**Design notes:**
+
+- Uses `NetworkChaos` with `action: partition` instead of `PodChaos` with `action: pod-kill`.
+  The partition is unidirectional (keystone→mariadb) via `direction: to`, simulating a
+  network failure without killing the MariaDB pod.
+- `duration: 300s` acts as a safety net for auto-expiry if the test does not explicitly
+  delete the CR. The duration matches the Chainsaw assert timeout (5m/300s) to ensure the
+  partition persists through the full assertion window.
+- Step 4 verifies `AllInjected=True` before checking `DatabaseReady=False` to prevent
+  vacuous test passes when the Chaos Mesh selector doesn't match.
+
+---
+
+### mariadb-network-latency
+
+**File:** `tests/e2e-chaos/mariadb-network-latency/chainsaw-test.yaml`
+
+**Scenario:** SC-CHAOS-007 (CC-0049)
+
+**Purpose:** Validates that the Keystone operator tolerates slow MariaDB responses (10s
+latency, 2s jitter) without crash-looping or losing Ready status, confirming adequate
+timeout configuration in the operator's database client.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-chaos-net-lat` with database `keystone_chaos_net_lat` |
+| 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady — confirms healthy state before fault injection |
+| 3 | Inject NetworkChaos | `apply` | Applies `01-networkchaos.yaml` — NetworkChaos `latency-mariadb` injecting 10s latency with 2s jitter on keystone→mariadb traffic |
+| 4 | Assert operator tolerates latency | `script` (120s) + `assert` (5m) | Waits for NetworkChaos `AllInjected=True` via `kubectl wait`, allows one reconciliation cycle (15s), then verifies operator pod `restartCount` remains 0 for all pods by container name (`manager`); asserts Ready=True maintained |
+| 5 | Delete NetworkChaos | `delete` | Removes NetworkChaos `latency-mariadb` to lift the latency |
+| 6 | Assert Ready=True persists | `assert` (5m) | Ready=True with reason AllReady — confirms no delayed degradation after latency removal |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-networkchaos.yaml`
+
+**Catch blocks:** Steps 2, 4, and 6 include catch blocks using `diagnostics.sh` with
+appropriate mode (`baseline`/`chaos`) and `--dep-label=app.kubernetes.io/name=mariadb`.
+
+**Design notes:**
+
+- Uses `NetworkChaos` with `action: delay` instead of `PodChaos`. Injects 10s latency with
+  2s jitter at 100% correlation, simulating degraded network conditions without full outage.
+- The test verifies no-regression (Ready=True maintained) rather than degradation-recovery,
+  because latency should be tolerated by the operator's database client timeouts.
+- `duration: 180s` acts as a safety net for auto-expiry.
+- Step 4 uses `kubectl wait --for=condition=AllInjected` to confirm injection is active
+  before checking operator stability, replacing a fixed sleep for determinism (CC-0049).
+- Restart count is checked by container name (`manager`) rather than by array index to
+  avoid false negatives if container ordering changes.
 
 ---
 
@@ -661,6 +759,8 @@ Each scenario uses a unique CR name and database name to enable parallel executi
 | SC-CHAOS-003 | `keystone-chaos-bao` | `keystone_chaos_bao` | 1 |
 | SC-CHAOS-004 | `keystone-chaos-op` | `keystone_chaos_op` | 1 |
 | SC-CHAOS-005 | `keystone-chaos-cron` | `keystone_chaos_cron` | 1 |
+| SC-CHAOS-006 | `keystone-chaos-net-part` | `keystone_chaos_net_part` | 1 |
+| SC-CHAOS-007 | `keystone-chaos-net-lat` | `keystone_chaos_net_lat` | 1 |
 | SC-CHAOS-008 | `keystone-chaos-api` | `keystone_chaos_api` | **3** |
 | SC-CHAOS-009 | `keystone-chaos-opk` | `keystone_chaos_opk` | 1 |
 
@@ -674,24 +774,27 @@ rotation `"0 0 * * 0"` with `maxActiveKeys: 3`, bootstrap `adminUser: admin`. Mo
 Every assert step includes a `catch:` block that collects diagnostic information when the
 assertion fails. The information collected varies by scenario:
 
-| Diagnostic | MariaDB (001) | Memcached (002) | OpenBao (003) | Operator (004) | CronJob (005) | API PDB (008) | Pod Kill (009) |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `diagnostics.sh` | Steps 2, 4, 6 | Steps 2, 4, 6 | Steps 2, 4, 6 | Steps 2, 4, 6 | Steps 2, 5, 7 | Steps 2, 5, 7 | Steps 2, 4, 6, 8 |
-| Target pod status | Steps 4, 6 | Steps 4, 6 | Steps 2, 4, 6 | — | — | — | — |
-| Chaos Mesh experiment status | Steps 4, 6 | Steps 4, 6 | Steps 4, 6 | — | — | — | — |
-| Operator logs (`--previous`) | Steps 4, 6 | — | Steps 4, 6 | — | — | — | — |
-| Target pod logs (`--previous`) | — | Steps 4, 6 | — | — | — | — | — |
-| ESO ExternalSecret conditions | — | — | Steps 4, 6 | — | — | — | — |
-| All pod logs | Step 2 | Step 2 | Step 2 | — | — | — | — |
-| Namespace events | Steps 2, 4, 6 | Steps 2, 4, 6 | Steps 2, 4, 6 | — | — | — | — |
-| CronJob/Job status | — | — | — | — | Steps 4, 5 | — | — |
-| Job pod logs | — | — | — | — | Step 5 | — | — |
-| PDB describe | — | — | — | — | — | Step 3 | — |
+| Diagnostic | MariaDB (001) | Memcached (002) | OpenBao (003) | Operator (004) | CronJob (005) | Net Partition (006) | Net Latency (007) | API PDB (008) | Pod Kill (009) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `diagnostics.sh` | Steps 2, 4, 6 | Steps 2, 4, 6 | Steps 2, 4, 6 | Steps 2, 4, 6 | Steps 2, 5, 7 | Steps 2, 4, 5, 7 | Steps 2, 4, 6 | Steps 2, 5, 7 | Steps 2, 4, 6, 8 |
+| Target pod status | Steps 4, 6 | Steps 4, 6 | Steps 2, 4, 6 | — | — | — | — | — | — |
+| Chaos Mesh experiment status | Steps 4, 6 | Steps 4, 6 | Steps 4, 6 | — | — | — | — | — | — |
+| NetworkChaos CR status | — | — | — | — | — | Step 4 | — | — | — |
+| Operator logs (`--previous`) | Steps 4, 6 | — | Steps 4, 6 | — | — | — | — | — | — |
+| Target pod logs (`--previous`) | — | Steps 4, 6 | — | — | — | — | — | — | — |
+| ESO ExternalSecret conditions | — | — | Steps 4, 6 | — | — | — | — | — | — |
+| All pod logs | Step 2 | Step 2 | Step 2 | — | — | — | — | — | — |
+| Namespace events | Steps 2, 4, 6 | Steps 2, 4, 6 | Steps 2, 4, 6 | — | — | — | — | — | — |
+| CronJob/Job status | — | — | — | — | Steps 4, 5 | — | — | — | — |
+| Job pod logs | — | — | — | — | Step 5 | — | — | — | — |
+| PDB describe | — | — | — | — | — | — | — | Step 3 | — |
 
 Phase 2 scenarios (004, 005, 008) and Phase 3 (009) use `diagnostics.sh` exclusively for catch diagnostics
 (which internally collects CR status, pod status, logs, and events). Phase 1 scenarios
-(001, 002, 003) use inline `kubectl` commands in catch blocks. SC-CHAOS-005 additionally
-collects CronJob/Job-specific diagnostics in Steps 4 and 5.
+(001, 002, 003) use inline `kubectl` commands in catch blocks. Phase 4 network chaos
+scenarios (006, 007) use `diagnostics.sh` for all catch blocks; SC-CHAOS-006 additionally
+dumps the NetworkChaos CR status in Step 4 to confirm fault injection state.
+SC-CHAOS-005 additionally collects CronJob/Job-specific diagnostics in Steps 4 and 5.
 
 ## File Layout
 
@@ -720,6 +823,14 @@ tests/e2e-chaos/
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-cron)
 │   ├── 01-podchaos.yaml              PodChaos pod-failure targeting job pods
 │   └── chainsaw-test.yaml            Test: FernetKeysReady=True maintained
+├── mariadb-network-partition/        SC-CHAOS-006: MariaDB network partition (CC-0049)
+│   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-net-part)
+│   ├── 01-networkchaos.yaml          NetworkChaos partitioning keystone→mariadb traffic
+│   └── chainsaw-test.yaml            Test: DatabaseReady=False → recovery
+├── mariadb-network-latency/          SC-CHAOS-007: MariaDB network latency (CC-0049)
+│   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-net-lat)
+│   ├── 01-networkchaos.yaml          NetworkChaos injecting 10s latency on keystone→mariadb
+│   └── chainsaw-test.yaml            Test: Ready=True maintained, no crash-loop
 ├── api-pod-kill-pdb/                 SC-CHAOS-008: PDB availability guarantee (CC-0048)
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-api, replicas: 3)
 │   ├── 01-podchaos.yaml              PodChaos targeting keystone API pods (multi-label)

@@ -36,7 +36,7 @@ The workflow triggers on three event types (CC-0003 REQ-008, CC-0018 REQ-001):
 | --- | --- | --- |
 | `push` | `branches: [main]` | Runs on every push to the main branch |
 | `push` | `tags: ["v*"]` | Runs on every v-prefixed tag push (triggers publish and release jobs) |
-| `pull_request` | `branches: [main]` | Runs on every pull request targeting main |
+| `pull_request` | `branches: [main]`, `types: [opened, synchronize, reopened, labeled]` | Runs on every pull request targeting main; includes `labeled` type to support on-demand chaos via `run-chaos` label (CC-0049 REQ-007) |
 
 Tag pushes (`v*`) enable the full release pipeline: gate jobs, E2E tests, image/chart
 publishing, and GitHub Release creation. Pull requests and main-branch pushes run only
@@ -108,7 +108,7 @@ Image Build (depends on gates):
 E2E Jobs (depends on build-e2e-images):
   e2e-infra ──────> needs: [changes], if: needs.changes.outputs.e2e-infra == 'true'
   e2e-operator ───> needs: [changes, build-e2e-images]
-  e2e-chaos ──────> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, e2e-operator]
+  e2e-chaos ──────> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]
   tempest ────────> needs: [changes, build-e2e-images]
 
 Publish Jobs (main/tags only, depends on E2E):
@@ -513,18 +513,17 @@ kind-loaded image is used instead of attempting a registry pull. Timeout: 45 min
 
 End-to-end chaos tests using kind cluster, Chaos Mesh, and Chainsaw (CC-0054). Builds the
 keystone operator image, deploys it alongside Chaos Mesh infrastructure, and runs the chaos
-test suites (MariaDB pod kill, Memcached pod kill, OpenBao pod kill). See
+test suites (MariaDB pod kill, Memcached pod kill, OpenBao pod kill, MariaDB network partition, MariaDB network latency). See
 [Chaos E2E Test Suites](./chaos-e2e-tests.md) for test suite details.
 
-**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, e2e-operator]`
-**Condition:** Runs only when `e2e-chaos == 'true'` and no dependency failed or was cancelled. A skipped `e2e-operator` does not block the job.
+**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]`
+**Condition:** Runs only when `e2e-chaos == 'true'` or the PR has a `run-chaos` label (CC-0049 REQ-007), and no dependency failed or was cancelled.
 
-The `e2e-chaos` job depends on `e2e-operator` in addition to the standard gate jobs. This
-ensures operator E2E tests pass before running the more expensive chaos tests (which require
-Chaos Mesh setup and serial test execution). The job uses `continue-on-error: true` while
-chaos test stability is being proven in CI — failures are visible but do not block merges or
-the publish pipeline (CC-0054 REQ-004). This will be revisited after 2–4 weeks of successful
-CI runs.
+The `e2e-chaos` job depends on the standard gate jobs. The `e2e-operator` dependency was
+removed (CC-0049 REQ-006) so chaos tests run in parallel with operator E2E tests, reducing
+overall CI wall time. The job uses `continue-on-error: true` while chaos test stability is
+being proven in CI — failures are visible but do not block merges or the publish pipeline
+(CC-0054 REQ-004). This will be revisited after 2–4 weeks of successful CI runs.
 
 | Step | Action | Details |
 | --- | --- | --- |
@@ -547,9 +546,9 @@ CI runs.
 | Matrix | Dynamic per-operator | Single job (keystone only) |
 | Test config | `tests/e2e/chainsaw-config.yaml` | `tests/e2e-chaos/chainsaw-config.yaml` |
 | Test directory | `tests/e2e/<operator>/` | `tests/e2e-chaos/` |
-| Timeout | 45 minutes | 60 minutes |
+| Timeout | 45 minutes | 45 minutes |
 | Blocking | Yes | No (`continue-on-error: true`) |
-| Dependencies | Gate jobs | Gate jobs + `e2e-operator` |
+| Dependencies | Gate jobs | Gate jobs |
 | Service images | 2025.2 + 2025.2-upgraded + 2026.1 | 2025.2 only |
 
 The chaos test Chainsaw config uses `parallel: 1` (serial execution) because chaos tests

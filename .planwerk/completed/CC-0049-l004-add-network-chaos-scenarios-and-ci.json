@@ -2,8 +2,8 @@
   "feature_id": "CC-0049",
   "title": "L004: Add network chaos scenarios and CI integration",
   "slug": "l004-add-network-chaos-scenarios-and-ci",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "**Size:** 📦 medium\n**Category:** infrastructure\n**Priority:** high\n**Source:** Proposed for '# GitHub Issue #132: Add negative and chaos E2E te'\n\nImplement the 2 NetworkChaos scenarios and add the `e2e-chaos` CI job to run the full suite.\n\n**Network Scenarios (NetworkChaos CRDs):**\n1. **SC-CHAOS-006: `tests/e2e-chaos/network-partition/`** — NetworkChaos with `partition` action between operator and MariaDB → assert `DatabaseReady=False` → delete NetworkChaos CR to heal → assert `DatabaseReady=True` and `Ready=True, reason=AllReady`\n2. **SC-CHAOS-007: `tests/e2e-chaos/network-latency/`** — NetworkChaos with `delay` action (latency + jitter injection) → assert operator tolerates slow responses without crash-looping → verify pod restart count remains 0 → assert `Ready=True` maintained\n\n**CI Integration:**\n3. **`.github/workflows/ci.yaml` job `e2e-chaos`** — Separate job with 45m timeout (matching `e2e-operator`), triggered on `main` push or `run-chaos` PR label, depends on `lint + shellcheck + test + test-integration + verify-codegen`. Follows same flow as `e2e-operator`: kind cluster setup → `hack/deploy-infra.sh` → build operator image → helm install → `chainsaw test`. Uses SHA-pinned action references per `github-actions-workflow-spdx-header-and-structure-convention` pattern. Uploads JUnit artifact as `e2e-chaos-junit-report`.\n4. Top-level permissions `contents: read`, `runs-on: ubuntu-latest`, concurrency group matching existing pattern.\n\n**Rationale:** Network faults are qualitatively different from pod kills — they test timeout handling, retry logic, and partial connectivity rather than full outage. The CI job is the final piece that makes the entire chaos test suite executable in automation, ensuring these tests actually run on every merge to main and on-demand for PRs. Without CI integration, chaos tests would only run locally.\n\n**Affected Areas:**\n- tests/e2e-chaos/network-partition/chainsaw-test.yaml\n- tests/e2e-chaos/network-partition/00-keystone-cr.yaml\n- tests/e2e-chaos/network-partition/01-networkchaos.yaml\n- tests/e2e-chaos/network-latency/chainsaw-test.yaml\n- tests/e2e-chaos/network-latency/00-keystone-cr.yaml\n- tests/e2e-chaos/network-latency/01-networkchaos.yaml\n- .github/workflows/ci.yaml",
   "stories": [
@@ -332,6 +332,7 @@
       "title": "Update diagnostics.sh to report NetworkChaos experiments alongside PodChaos in chaos mode — change `kubectl get podchaos` at line 80 to `kubectl get podchaos,networkchaos` so catch blocks in network chaos tests display experiment state. Verify `|| true` is preserved for clean exit when no experiments exist. (REQ-005, CC-0049)",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -341,6 +342,7 @@
       "title": "Create SC-CHAOS-006 network-partition test suite in tests/e2e-chaos/network-partition/: (1) 00-keystone-cr.yaml — Keystone CR with name keystone-chaos-net-part, database keystone_chaos_net_part, following existing fixture pattern from mariadb-pod-kill/00-keystone-cr.yaml; (2) 01-networkchaos.yaml — NetworkChaos CR with name partition-mariadb, action partition, targeting MariaDB pods, with duration 120s as safety net; (3) chainsaw-test.yaml — 6-step chainsaw test: apply CR → assert baseline Ready=True → apply NetworkChaos partition → assert DatabaseReady=False → delete NetworkChaos CR → assert DatabaseReady=True + Ready=True, reason=AllReady. Include catch blocks calling ../diagnostics.sh with --dep-label=app.kubernetes.io/name=mariadb. All files with SPDX headers and CC-0049/SC-CHAOS-006 references. (REQ-001, REQ-002, REQ-008, CC-0049)",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -352,6 +354,7 @@
       "title": "Create SC-CHAOS-007 network-latency test suite in tests/e2e-chaos/network-latency/: (1) 00-keystone-cr.yaml — Keystone CR with name keystone-chaos-net-lat, database keystone_chaos_net_lat; (2) 01-networkchaos.yaml — NetworkChaos CR with name latency-mariadb, action delay, delay config {latency: 10s, jitter: 2s, correlation: 100}, duration 180s; (3) chainsaw-test.yaml — 6-step chainsaw test: apply CR → assert baseline Ready=True → apply NetworkChaos delay → assert operator pod restartCount=0 AND Keystone CR Ready=True maintained → delete NetworkChaos CR → assert Ready=True persists. Use Chainsaw assert on Pod resource (label selector for operator pod) to verify restartCount. Include catch blocks with diagnostics.sh. All files with SPDX headers and CC-0049/SC-CHAOS-007 references. (REQ-003, REQ-004, REQ-008, CC-0049)",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-004",
@@ -363,6 +366,7 @@
       "title": "Update CI e2e-chaos job in .github/workflows/ci.yaml (lines 482-538): (1) Change timeout-minutes from 60 to 45; (2) Change needs from [changes, lint, shellcheck, test, test-integration, verify-codegen, e2e-operator] to [changes, lint, shellcheck, test, test-integration, verify-codegen]; (3) Update if condition to OR the run-chaos label trigger with existing change detection: (needs.changes.outputs.e2e-chaos == 'true' || contains(github.event.pull_request.labels.*.name, 'run-chaos')). Update the CC-0054 comment block to note CC-0049 modifications. (REQ-006, REQ-007, CC-0049)",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-007"
@@ -373,6 +377,7 @@
       "title": "Update architecture/docs/09-implementation/10-chaos-e2e-testing.md: mark SC-CHAOS-006 (MariaDB network partition) and SC-CHAOS-007 (MariaDB network latency) as implemented in the scenario matrix table (lines 490-504). Add CC-0049 reference alongside the existing CC-0046/CC-0047 references. (REQ-008, CC-0049)",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -524,8 +529,14 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-12T14:07:45.379469"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-15T11:10:53.003765"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/220",
+  "pr_number": 220,
   "execution_history": [
     {
       "run_id": "37244e0d-a3c7-43f4-97e4-1cc2b9f7f177",
@@ -537,6 +548,72 @@
           "name": "prepare",
           "duration": 877.8968408107758,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "df56de6d-5b1d-40df-ad0e-47c85b9f115a",
+      "timestamp": "2026-04-15T11:42:23.535751",
+      "total_duration": 1708.521032333374,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (4 tasks)",
+          "duration": 401.9815900325775,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (1 tasks)",
+          "duration": 467.6980094909668,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0049] Code Review",
+          "duration": 508.48510456085205,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0049] Improvements",
+          "duration": 282.462664604187,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0049] Simplify",
+          "duration": 47.89366364479065,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "cde4255d-5cb2-400b-8b38-4cb8df51c6f3",
+      "timestamp": "2026-04-15T16:39:58.573964",
+      "total_duration": 5.911381959915161,
+      "status": "failed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 5.911381959915161,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "58551c96-693f-4402-a374-5514afc7d161",
+      "timestamp": "2026-04-15T16:47:11.992867",
+      "total_duration": 380.76257586479187,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 380.76257586479187,
+          "type": "review_address",
           "status": "done"
         }
       ]

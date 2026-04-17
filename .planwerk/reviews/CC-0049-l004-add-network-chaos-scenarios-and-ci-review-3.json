@@ -1,0 +1,74 @@
+{
+  "feature_id": "CC-0049",
+  "title": "L004: Add network chaos scenarios and CI integration",
+  "date": "2026-04-15",
+  "verdict": "APPROVED",
+  "summary": "All 10 items from berendt's external review #2 (1 critical, 7 warnings, 2 infos) were correctly addressed. C-001 (run-chaos label trigger) fixed by adding `types: [opened, synchronize, reopened, labeled]` to pull_request trigger. W-005/W-006 (fault injection assertion) fixed by adding AllInjected gate steps. W-007 (duration budget) fixed by increasing partition duration to 300s. I-002 (container index) fixed by switching to name-based jsonpath. Documentation in ci-workflow.md and chaos-e2e-tests.md comprehensively updated for W-002/W-003/W-004. Review patterns captured for W-001 (submodule bumps) and C-001 (label trigger types). Three pre-existing stale paragraphs remain in chaos-e2e-tests.md (dependencies, timeout, trigger table) that were not part of berendt's explicit list but are noted as suggestions.",
+  "tests_checklist": [
+    {"item": "Tests exist and follow 6-step chaos pattern", "checked": true},
+    {"item": "Edge cases covered (AllInjected gate, pod-not-found guard, duration safety net)", "checked": true},
+    {"item": "Catch blocks present on all assert steps", "checked": true},
+    {"item": "Test structure consistent with sibling chaos suites", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing chaos test patterns", "checked": true},
+    {"item": "Clear comments with CC-0049 and scenario ID references", "checked": true},
+    {"item": "SPDX headers present on all files", "checked": true},
+    {"item": "No dead code or unnecessary complexity", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No secrets in test fixtures", "checked": true},
+    {"item": "No path traversal or injection risks", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "NetworkChaos CRD specs match chaos-mesh.org/v1alpha1 schema", "checked": true},
+    {"item": "CI job configuration matches documented behavior", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated logic", "checked": true},
+    {"item": "Uses shared diagnostics.sh for catch blocks", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "AllInjected assertion gates degradation check (prevents vacuous passes)", "checked": true},
+    {"item": "Pod existence guard before restart count check", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Duration 300s matches assert timeout (partition)", "checked": true},
+    {"item": "Container name-based jsonpath instead of index-based", "checked": true},
+    {"item": "kubectl wait replaces fixed sleep for injection confirmation", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "docs/reference/chaos-e2e-tests.md:149-151 — Pre-existing: Dependencies paragraph still references e2e-operator ('The job depends on all gate jobs ... and e2e-operator'). ci-workflow.md was correctly updated but this file was not. Consider updating to match: 'The job depends on all gate jobs (lint, shellcheck, test, test-integration, verify-codegen).'",
+    "docs/reference/chaos-e2e-tests.md:158-159 — Pre-existing: Timeout paragraph says '60 minutes' but actual is 45 minutes (changed in CC-0049 REQ-006). ci-workflow.md was correctly updated but this file was not.",
+    "docs/reference/chaos-e2e-tests.md:144-148 — Pre-existing: Trigger conditions table does not mention the run-chaos label trigger (CC-0049 REQ-007). ci-workflow.md correctly documents both triggers. Consider adding a row: '| Pull request | Path filter matches, Go code changed, **or `run-chaos` label present** |'",
+    "docs/reference/chaos-e2e-tests.md:777-789 — Pre-existing: Catch Block Diagnostics table has no columns for Network Partition (006) or Network Latency (007). Both scenarios use diagnostics.sh in their catch blocks and the partition test additionally dumps NetworkChaos CR status.",
+    ".planwerk/review_patterns/verify-hardcoded-paths-match-actual-repository-layout.md — The CC-0049 example (label trigger type configuration) is a workflow trigger issue, not a hardcoded path issue. Consider creating a dedicated review pattern (e.g., 'verify-github-actions-trigger-types-for-label-gated-jobs.md') or a more general 'verify-workflow-configuration-matches-feature-requirements.md' pattern."
+  ],
+  "next_steps": [
+    "Update the 3 pre-existing stale paragraphs in chaos-e2e-tests.md (dependencies, timeout, trigger table) to match the corrected ci-workflow.md — can be done in this PR or as a follow-up",
+    "Add Network Partition (006) and Network Latency (007) columns to the Catch Block Diagnostics table in chaos-e2e-tests.md"
+  ],
+  "detected_patterns": [
+    {
+      "name": "NetworkChaos AllInjected gate before effect assertion",
+      "component": "tests/e2e-chaos/*/",
+      "category": "testing",
+      "applies_when": "Adding a new NetworkChaos-based chaos E2E test that asserts degradation or stability after fault injection",
+      "description": "NetworkChaos tests must verify the fault is actually injected (AllInjected=True) before asserting its effects. Unlike PodChaos pod-kill which has immediate visible impact (pod deletion), NetworkChaos CRs can be accepted by the API server without effect if the selector doesn't match target pods. Without the AllInjected gate, a mis-targeted selector causes the degradation assertion (e.g., DatabaseReady=False) to pass vacuously if the condition briefly flickers for an unrelated reason. Two implementation variants exist: (1) a dedicated Chainsaw assert step for degradation-recovery tests where the gate and effect assertion are separate steps, and (2) a kubectl wait inside a script step for no-regression tests where the gate is bundled with stability verification.",
+      "examples": [
+        {
+          "location": "tests/e2e-chaos/mariadb-network-partition/chainsaw-test.yaml:48-59",
+          "code": "  - try:\n    - assert:\n        resource:\n          apiVersion: chaos-mesh.org/v1alpha1\n          kind: NetworkChaos\n          metadata:\n            name: partition-mariadb\n            namespace: openstack\n          status:\n            conditions:\n            - type: AllInjected\n              status: \"True\""
+        },
+        {
+          "location": "tests/e2e-chaos/mariadb-network-latency/chainsaw-test.yaml:58-61",
+          "code": "          echo \"Waiting for NetworkChaos latency-mariadb injection...\"\n          kubectl wait networkchaos/latency-mariadb -n openstack \\\n            --for=condition=AllInjected --timeout=60s\n          echo \"NetworkChaos latency injection confirmed active\""
+        }
+      ]
+    }
+  ]
+}
