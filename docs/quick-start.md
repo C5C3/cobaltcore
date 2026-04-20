@@ -336,16 +336,23 @@ kubectl apply -f keystone.yaml
 
 ## Step 8 — Wait for Keystone to become Ready
 
-The operator reconciles the CR through five sequential sub-conditions before the aggregate
-`Ready` condition is set:
+The operator reconciles the CR through eleven sub-conditions before the aggregate
+`Ready` condition is set — some are only reported when the matching optional spec
+field is configured:
 
 | Condition | What it waits for |
 |-----------|-------------------|
 | `SecretsReady` | `keystone-db` and `keystone-admin` Secrets are available |
 | `FernetKeysReady` | Fernet key Secret and CronJob created |
+| `CredentialKeysReady` | Credential key Secret and rotation CronJob exist (if `spec.credentialKeys` is set) |
 | `DatabaseReady` | `db_sync` Job completed successfully |
+| `PolicyValidReady` | `spec.policyOverrides` validated against `oslo.policy` |
 | `DeploymentReady` | Keystone API Deployment has available replicas |
+| `KeystoneAPIReady` | Keystone API is responding to `/v3` health probes |
+| `HPAReady` | HorizontalPodAutoscaler created (if `spec.autoscaling` is set) |
+| `NetworkPolicyReady` | NetworkPolicy created (if `spec.networkPolicy` is set) |
 | `BootstrapReady` | Bootstrap Job completed (admin user, region, endpoints) |
+| `TrustFlushReady` | Trust-flush CronJob created (if `spec.trustFlush` is set) |
 
 Watch the conditions with:
 
@@ -455,6 +462,22 @@ A successful `curl` response begins with `{"version": {"id": "v3", ...}}`. A suc
 > that authenticate directly against `OS_AUTH_URL` work via port-forward. Commands that resolve
 > other service endpoints from the catalog (Nova, Neutron, …) require additional port-forwards
 > for each service.
+
+---
+
+## Next steps
+
+Keystone is running, you can reach the API, and you have admin credentials. The three
+follow-up guides below cover everything you will actually do with the CR:
+
+| Guide | When to read it |
+|-------|-----------------|
+| [Observability & Diagnostics](./guides/observability.md) | First stop when something is not `Ready` — how to read conditions, events, and status fields |
+| [Day 2 Operations](./guides/day-2-operations.md) | Scale, upgrade the OpenStack release, rotate Fernet keys manually |
+| [Advanced Configuration](./guides/advanced-configuration.md) | Brownfield database, autoscaling, network policy, free-form INI, and pointers to every other `spec.*` option |
+
+For the full field reference of the Keystone CR, see
+[Keystone CRD API Reference](./reference/keystone-crd.md).
 
 ---
 

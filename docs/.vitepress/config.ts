@@ -19,6 +19,14 @@ export default defineConfig({
         ],
       },
       {
+        text: 'Guides',
+        items: [
+          { text: 'Observability & Diagnostics', link: '/guides/observability' },
+          { text: 'Day 2 Operations', link: '/guides/day-2-operations' },
+          { text: 'Advanced Configuration', link: '/guides/advanced-configuration' },
+        ],
+      },
+      {
         text: 'Reference',
         items: [
           { text: 'Keystone CRD', link: '/reference/keystone-crd' },
