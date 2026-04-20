@@ -39,7 +39,8 @@ patches:
             standalone:
               enabled: true
               config: |
-                ui = false
+                # CC-0082: kind-only — production keeps ui = false
+                ui = true
 
                 listener "tcp" {
                   tls_disable     = 0

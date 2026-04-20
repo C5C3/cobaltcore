@@ -127,7 +127,7 @@ cert-manager          cert-manager-*         Ready
 mariadb-system        mariadb-operator-*     Ready
 memcached-system      memcached-operator-*   Ready
 external-secrets      external-secrets-*     Ready
-openbao-system        openbao-0              Ready (unsealed)
+openbao-system        openbao-0              Ready (unsealed; kind overlay enables the UI on :8200 — see Step 4b)
 openstack             openstack-db-*         Ready (MariaDB cluster)
 openstack             openstack-memcached-*  Ready (Memcached cluster)
 headlamp-system       headlamp-*             Starting (kind-only demo UI, not waited on)
@@ -136,6 +136,10 @@ headlamp-system       headlamp-*             Starting (kind-only demo UI, not wa
 Headlamp is deployed asynchronously and is **not** part of the `deploy-infra` wait list — a
 broken upstream chart release must never block E2E runs. Step 4 below waits for it explicitly
 at the point you actually need the UI.
+
+The OpenBao UI is served by the same `openbao` Service that backs the bootstrap scripts; the
+kind overlay flips `ui = true` in the standalone Raft config, while the production
+flux-system overlay keeps it disabled.
 
 The `openstack` namespace also holds the synced secrets:
 
@@ -166,6 +170,42 @@ kubectl port-forward svc/headlamp -n headlamp-system 8080:80
 Open `http://localhost:8080`, paste the token. The sidebar shows **Flux → Helm Releases /
 Kustomizations / Sources** alongside the standard resources. The `headlamp` ServiceAccount is
 bound to a read-only ClusterRole covering Flux toolkit API groups and forge-stack CRDs.
+
+---
+
+## Step 4b — Open the OpenBao UI {#step-4b-openbao-ui}
+
+The kind overlay enables the OpenBao web UI as a demo surface. This is a
+kind-only convenience — the production flux-system overlay keeps `ui = false` in the HA
+Raft config. Forward the client port and log in with the root token that
+`make deploy-infra` already seeded into the cluster:
+
+```bash
+kubectl port-forward svc/openbao -n openbao-system 8200:8200
+```
+
+> **Service selection:** `kubectl get svc -n openbao-system` lists two services —
+> forward `svc/openbao` (the client `ClusterIP` service that also fronts the UI),
+> **not** `svc/openbao-internal` (the headless Service used for Raft peer
+> discovery between OpenBao pods).
+
+In a second terminal, extract the root token from the `openbao-init-keys` Secret:
+
+```bash
+export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n openbao-system \
+  -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
+echo "$BAO_TOKEN"
+```
+
+Open `https://localhost:8200/ui/` and paste the token to sign in.
+
+> **Note:** The OpenBao listener uses a self-signed certificate issued by the in-cluster
+> `selfsigned-cluster-issuer`. Your browser will warn that the certificate is not trusted —
+> this is expected for a kind cluster; accept the warning to reach the UI.
+
+For the full token lifecycle, secret engines, auth methods, and the bootstrap sequence that
+produced this token, see
+[OpenBao Bootstrap Procedure — Running the Full Bootstrap](./reference/infrastructure/openbao-bootstrap.md#running-the-full-bootstrap).
 
 ---
 

@@ -177,6 +177,11 @@ export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n openbao-system \
 ./write-bootstrap-secrets.sh
 ```
 
+> **Note:** For a kind-only walkthrough that uses the same `BAO_TOKEN` extraction to open
+> the OpenBao web UI, see
+> [Quick Start — Step 4b: Open the OpenBao UI](../../quick-start.md#step-4b-openbao-ui)
+> (CC-0082). The UI is disabled in the production flux-system overlay.
+
 ## Script Reference
 
 ### init-unseal.sh

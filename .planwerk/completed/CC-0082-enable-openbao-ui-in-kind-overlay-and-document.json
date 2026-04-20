@@ -2,8 +2,8 @@
   "feature_id": "CC-0082",
   "title": "Enable OpenBao UI in kind overlay and document access",
   "slug": "enable-openbao-ui-in-kind-overlay-and-document",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #246: Enable the OpenBao UI in the kind overlay and document access in the Quick Start\n\n**Category**: enhancement | **Scope**: Small\n\n**Description**: Flip `ui = true` in the standalone server config produced by the kind overlay patch (`deploy/kind/base/kustomization.yaml:42`) and add a Quick Start step analogous to \"Step 4 — Open the Headlamp UI\" (`docs/quick-start.md:150`) that walks through port-forwarding to the OpenBao service and logging in with the root token already stashed in the `openbao-init-keys` Secret. The listener is already TLS-terminated via cert-manager on `:8200` (`deploy/kind/base/kustomization.yaml:44-50`), so the UI is reachable at `https://localhost:8200/ui/` after `kubectl port-forward -n openbao-system svc/openbao 8200:8200`. Token retrieval is a one-liner that is already documented in `docs/reference/infrastructure/openbao-bootstrap.md:170-171`: `kubectl get secret openbao-init-keys -n openbao-system -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token'`. The production HelmRelease (`deploy/flux-system/releases/openbao.yaml:43`) keeps `ui = false` unchanged — the flip is intentionally scoped to the kind overlay only, mirroring the kind-only posture of Headlamp (see the header comment in `deploy/kind/base/headlamp.yaml:12-15`).\n\nUpstream docs for the toggle: https://openbao.org/docs/configuration/ui/. Requirements are minimal — a single `ui = true` top-level key plus at least one listener (which we already have).\n\n**Motivation**: The Quick Start already teaches users to open Headlamp so they can watch Keystone, MariaDB, Memcached, and ExternalSecret reconciliation live. But OpenBao is where the bootstrap secrets, KV paths, auth mounts, and policies written by `deploy/openbao/bootstrap/setup-*.sh` actually land — and without the UI there is no low-friction way to verify \"did `keystone-admin` really get written to `openstack/keystone-admin`?\", \"is the Kubernetes auth mount configured correctly?\", \"does the policy I just wrote grant the paths I expect?\". Today the only inspection path is `kubectl exec -it openbao-0 -- bao kv get ...`, which does not work for first-time users who do not yet know the path names. The UI collapses that discovery step into clicking through the tree. It also improves the story for the bootstrap walkthrough in `docs/reference/infrastructure/openbao-bootstrap.md`, because readers can click along with each step instead of copy-pasting `bao` CLI invocations. The change is a one-line config flip plus a Quick Start section — roughly the same shape and cost as Headlamp's \"Step 4\".\n\n**Affected Areas**:\n- `deploy/kind/base/kustomization.yaml` (flip to `ui = true` in the standalone server config patch at line 42)\n- `docs/quick-start.md` (new section \"Step 4b — Open the OpenBao UI\" or renumbered alongside Headlamp, covering port-forward + root-token login + the self-signed cert warning)\n- `docs/reference/infrastructure/openbao-bootstrap.md` (cross-link the new Quick Start UI step near the \"Running the Full Bootstrap\" / root-token export block at line 164-171)\n\n**Acceptance Criteria**:\n- [ ] `deploy/kind/base/kustomization.yaml` sets `ui = true` for the OpenBao standalone listener; production HelmRelease at `deploy/flux-system/releases/openbao.yaml:43` stays `ui = false`\n- [ ] `make deploy-infra` on a fresh kind cluster ends with an OpenBao pod that serves `GET /ui/` on `:8200` with HTTP 200 (or a 307 redirect to `/ui/vault/`)\n- [ ] The Quick Start gains a step analogous to \"Step 4 — Open the Headlamp UI\" containing (1) the `kubectl port-forward -n openbao-system svc/openbao 8200:8200` command (exact svc name verified against the rendered chart), (2) the root-token extraction one-liner from `openbao-init-keys`, (3) the `https://localhost:8200/ui/` URL, and (4) an explicit note that the browser will show a self-signed certificate warning because OpenBao's TLS is issued by the internal cert-manager CA\n- [ ] The Quick Start section points readers at `docs/reference/infrastructure/openbao-bootstrap.md` for deeper \"what does each KV path / auth mount / policy mean\" material rather than duplicating it\n- [ ] The \"Architecture snapshot\" pod/UI list in the Quick Start (around `docs/quick-start.md:131`) mentions the OpenBao UI the same way it already mentions Headlamp\n- [ ] No change to the OpenBao `HelmRepository` chart version pin (`deploy/flux-system/releases/openbao.yaml:23`) — the UI flip is a server-config change, not a chart upgrade\n- [ ] CI e2e in kind still passes: `make test-e2e` and the chaos job that depends on `tests/e2e-chaos/unseal-openbao.sh` must not regress because of the extra listener route\n\n**Non-Goals**:\n- Enabling the OpenBao UI in production clusters (`deploy/flux-system/releases/openbao.yaml`). That is a separate discussion about whether an authenticated UI fits the project's production posture, and should be preceded by a conversation about OIDC/SSO integration before flipping it on.\n- Exposing the UI through an Ingress or LoadBalancer in kind. Port-forward is consistent with how the Quick Start already reaches Headlamp and the Keystone API (`docs/quick-start.md:423`).\n- Replacing the `bao` CLI bootstrap scripts in `deploy/openbao/bootstrap/` with UI-driven steps. The scripts remain the source of truth for `make deploy-infra`; the UI is purely an inspection aid.\n\n**Labels:** enhancement\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/246",
   "stories": [
@@ -297,6 +297,7 @@
       "title": "Flip ui = false → ui = true in deploy/kind/base/kustomization.yaml (line 42) inside the openbao standalone HelmRelease patch, with an inline comment CC-0082 noting the flip is kind-only (REQ-001, REQ-007)",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-007"
@@ -307,6 +308,7 @@
       "title": "Run `kustomize build deploy/kind/base | yq 'select(.kind == \"HelmRelease\" and .metadata.name == \"openbao\") | .spec.values.server.standalone.config'` and confirm the rendered config contains `ui = true` and still contains the listener/storage/service_registration blocks untouched (REQ-001)",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-001"
       ]
@@ -316,6 +318,7 @@
       "title": "Render the production flux-system overlay (`kustomize build deploy/flux-system`) and confirm deploy/flux-system/releases/openbao.yaml is untouched — ui = false in ha.raft.config, chart version pin unchanged (REQ-007)",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -325,6 +328,7 @@
       "title": "Deploy the flipped overlay on a fresh kind cluster: `kind create cluster --config hack/kind-config.yaml` then `make deploy-infra`; confirm openbao-0 reaches Running and init/unseal succeeds with no new pod-log errors (REQ-002, REQ-008)",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-008"
@@ -335,6 +339,7 @@
       "title": "Smoke-check the UI endpoint: in one terminal `kubectl port-forward -n openbao-system svc/openbao 8200:8200`; in another `curl -k -I https://localhost:8200/ui/` returns 200 or 307, and `curl -k https://localhost:8200/v1/sys/health` returns 200 with initialized=true/sealed=false (REQ-002)",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -344,6 +349,7 @@
       "title": "Verify the exact Service name in the rendered openbao chart (`kubectl get svc -n openbao-system`) so the Quick Start command points at svc/openbao (client), not svc/openbao-internal (Raft peer discovery). Capture the svc name and port for use in the Quick Start (REQ-003)",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -353,6 +359,7 @@
       "title": "Verify the root-token login path end-to-end: extract token with the documented one-liner, POST to /v1/auth/token/lookup-self, confirm policies=['root'] and that `bao kv list openstack/` reports keystone-admin, keystone-db (REQ-002)",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -362,6 +369,7 @@
       "title": "Add a new numbered step to docs/quick-start.md (between current Step 4 Headlamp and Step 5 Deploy the Keystone operator) titled 'Step 4b — Open the OpenBao UI' (or a renumbered equivalent) containing: the svc/openbao port-forward command, the root-token one-liner, the https://localhost:8200/ui/ URL, the self-signed-cert warning, and a link to the bootstrap reference (REQ-003, REQ-004)",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-004"
@@ -372,6 +380,7 @@
       "title": "Update the 'Architecture snapshot' ::: details What gets deployed block around docs/quick-start.md:131 to list the OpenBao UI on svc/openbao :8200 in namespace openbao-system as a kind-only demo surface, matching Headlamp's phrasing (REQ-005)",
       "level": 3,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -381,6 +390,7 @@
       "title": "Add a short cross-link in docs/reference/infrastructure/openbao-bootstrap.md near the 'Running the Full Bootstrap' / root-token block (~lines 164-171) pointing back at the new Quick Start step; do NOT duplicate the port-forward/token/warning content (REQ-006)",
       "level": 3,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -390,6 +400,7 @@
       "title": "Proofread all doc changes in-browser/in-IDE rendering: verify callout syntax (::: tip / > **Note:**) matches existing Quick Start callouts, that the feature-ID CC-0082 is cited in each new doc section, and that link anchors into the bootstrap reference resolve (REQ-003, REQ-004, REQ-005, REQ-006)",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-004",
@@ -402,6 +413,7 @@
       "title": "Re-run `chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/infrastructure/infra-stack-health/` against the kind cluster from task 2.1 and confirm it still passes unmodified (OpenBao StatefulSet ready, ExternalSecrets SecretSynced, ClusterSecretStore Valid) (REQ-008)",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -411,6 +423,7 @@
       "title": "Exercise the chaos unseal flow: run `tests/e2e-chaos/unseal-openbao.sh` (or its equivalent chaos chainsaw suite) against the cluster and confirm it unseals with the existing 3-of-5 threshold and no new errors in pod logs (REQ-008)",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -420,6 +433,7 @@
       "title": "Capture the curl-based UI smoke-check (port-forward + `curl -k -I https://localhost:8200/ui/` + token lookup-self) as evidence in the PR description, so reviewers can reproduce the acceptance check without inventing commands (REQ-002)",
       "level": 4,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -570,8 +584,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-20T17:17:44.870340"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-20T17:18:44.690451"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-20T19:25:27.298849"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/248",
+  "pr_number": 248,
   "execution_history": [
     {
       "run_id": "867de9f1-e534-41bc-9e07-136efef8d819",
@@ -583,6 +607,70 @@
           "name": "prepare",
           "duration": 312.10354137420654,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "e0583d79-c027-42b9-879a-7600ce6a36ad",
+      "timestamp": "2026-04-20T17:39:19.750092",
+      "total_duration": 1053.2722101211548,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (3 tasks)",
+          "duration": 231.49321150779724,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (4 tasks)",
+          "duration": 231.7124102115631,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (4 tasks)",
+          "duration": 243.12370944023132,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (3 tasks)",
+          "duration": 118.68005561828613,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0082] Code Review",
+          "duration": 142.3488540649414,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0082] Improvements",
+          "duration": 47.007840394973755,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0082] Simplify",
+          "duration": 38.906128883361816,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "e2c43f95-424f-4164-8e86-601363dda26a",
+      "timestamp": "2026-04-20T17:55:47.093708",
+      "total_duration": 206.61625027656555,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 206.61625027656555,
+          "type": "review_address",
           "status": "done"
         }
       ]

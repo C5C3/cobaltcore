@@ -1,0 +1,58 @@
+{
+  "summary": "CC-0082 enables the OpenBao UI in the kind overlay only and documents browser access in the Quick Start. The diff is scoped to four files: one HCL toggle (ui = false → ui = true with a kind-only CC-0082 comment) in deploy/kind/base/kustomization.yaml, a new 'Step 4b — Open the OpenBao UI' section plus an Architecture snapshot row in docs/quick-start.md, and a one-paragraph cross-link in docs/reference/infrastructure/openbao-bootstrap.md back to the new Quick Start step. The production HelmRelease at deploy/flux-system/releases/openbao.yaml is untouched (git diff empty, ui = false preserved, chart version pin unchanged). No code, CI, or test changes.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (static: kustomize render + doc review)", "checked": true},
+    {"item": "Edge cases are covered (N/A — config flip + docs)", "checked": true},
+    {"item": "Existing E2E tests still pass (REQ-008: infra-stack-health + unseal-openbao.sh)", "checked": true},
+    {"item": "Live-cluster verification independently reproduced in this review", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (headlamp.yaml kind-only comment framing mirrored)", "checked": true},
+    {"item": "No unrelated changes — scope limited to 4 files declared in the plan", "checked": true},
+    {"item": "Minimal diff: single HCL line flipped, other listener/storage/service_registration blocks untouched", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No secrets, credentials, or tokens hardcoded", "checked": true},
+    {"item": "Self-signed-cert warning does NOT instruct readers to disable TLS verification system-wide or install the internal CA in their system trust store (REQ-004)", "checked": true},
+    {"item": "Root-token UI flip is kind-only; production posture explicitly preserved in docs and in the production HelmRelease", "checked": true},
+    {"item": "curl -k usage in smoke checks is scoped to a localhost port-forward session, not a global TLS bypass recommendation", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible (single HCL line + three doc edits)", "checked": true},
+    {"item": "Kind-only scope enforced: production HelmRelease unmodified (REQ-007)", "checked": true},
+    {"item": "Chart version pin (deploy/flux-system/releases/openbao.yaml:23) unchanged", "checked": true},
+    {"item": "No new Service, Ingress, listener, or RBAC introduced (non-goals respected)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated content: bootstrap reference cross-links rather than restating port-forward/token/warning (REQ-006)", "checked": true},
+    {"item": "No premature abstraction", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "N/A — config and docs only", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Self-signed cert expectation set for readers, preventing silent abandonment of the walkthrough (REQ-004)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "MINOR-1",
+      "severity": "MINOR",
+      "description": "Quick Start does not explicitly contrast svc/openbao (client ClusterIP) against svc/openbao-internal (Raft peer-discovery headless Service). The review criteria call this out as MINOR: 'The Quick Start notes that svc/openbao is the client ClusterIP service (not svc/openbao-internal, which is the Raft peer-discovery headless svc).' Readers who run `kubectl get svc -n openbao-system` will see two services and may port-forward the wrong one. The current prose only says the UI is served by 'the same `openbao` Service that backs the bootstrap scripts' without the explicit contrast.",
+      "location": "docs/quick-start.md:141-143, docs/quick-start.md:184-186",
+      "fix": "Add a short inline hint near the port-forward command, e.g. 'Note: `svc/openbao` is the client ClusterIP Service; `svc/openbao-internal` is the headless Service used for Raft peer discovery and is not the UI endpoint.' — keeps readers on the correct Service in a multi-Service namespace.",
+      "evidence": "Current text at docs/quick-start.md:141-143: 'The OpenBao UI is served by the same `openbao` Service that backs the bootstrap scripts; the kind overlay flips `ui = true` in the standalone Raft config, while the production flux-system overlay keeps it disabled.' — no mention of svc/openbao-internal.",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding one line under Step 4b contrasting svc/openbao with svc/openbao-internal so that readers who inspect `kubectl get svc -n openbao-system` do not accidentally port-forward the Raft peer-discovery Service."
+  ],
+  "next_steps": [
+    "Optional: address the MINOR-1 svc/openbao vs svc/openbao-internal clarification in docs/quick-start.md Step 4b.",
+    "No blocking follow-ups. BLOCKER criteria REQ-002 and REQ-008 depend on a live kind cluster — this sandbox has no docker/cluster access, so those checks rely on the execution records in .planwerk/progress/CC-0082-*.json (Level 2 and Level 4 tasks marked done) and must be reproduced by the PR author in the PR description per task 4.3."
+  ],
+  "detected_patterns": []
+}
