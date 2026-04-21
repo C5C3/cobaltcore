@@ -567,6 +567,7 @@
       "title": "Add terminationGracePeriodSeconds and preStopSleepSeconds *int64 fields to KeystoneSpec in operators/keystone/api/v1alpha1/keystone_types.go with kubebuilder markers (Minimum=10/default=30 and Minimum=0/default=5). Update zz_generated.deepcopy.go via controller-gen. Unit test TestKeystoneSpecTerminationGracePeriodSecondsField in keystone_types_test.go (REQ-001, REQ-002). Feature: CC-0084.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002"
@@ -577,6 +578,7 @@
       "title": "Add harakiri and httpKeepAliveTimeout *int32 fields to UWSGISpec in keystone_types.go with kubebuilder Minimum=1 markers (no defaults). Update zz_generated.deepcopy.go. Extend TestUWSGISpecFields to cover the new fields (REQ-003, REQ-004). Feature: CC-0084.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-004"
@@ -587,6 +589,7 @@
       "title": "Add strategy *appsv1.DeploymentStrategy optional field to KeystoneSpec in keystone_types.go with kubebuilder marker allowing full shape. Update imports (k8s.io/api/apps/v1). Regenerate deepcopy. Minimal unit test asserting field is settable (REQ-006). Feature: CC-0084.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -1010,6 +1013,76 @@
       "story": "Developer updates the keystone-crd reference after schema change",
       "expected": "[integration] doc linter verifies entries for the five new fields with types/defaults/minimums and CC-0084 references",
       "requirement_id": "REQ-016"
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_types_test.go",
+      "test_function": "TestGroupVersion",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_types_test.go",
+      "test_function": "TestSchemeBuilderRegistration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_types_test.go",
+      "test_function": "TestKeystoneImplementsRuntimeObject",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_types_test.go",
+      "test_function": "TestKeystoneSpecFields",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_types_test.go",
+      "test_function": "TestKeystoneSpecStrategyField",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_types_test.go",
+      "test_function": "TestUWSGISpecFields",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_types_test.go",
+      "test_function": "TestFernetSpecFields",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_types_test.go",
+      "test_function": "TestBootstrapSpecFields",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_types_test.go",
+      "test_function": "TestKeystoneStatusFields",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_types_test.go",
+      "test_function": "TestUpgradePhaseConstants",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],

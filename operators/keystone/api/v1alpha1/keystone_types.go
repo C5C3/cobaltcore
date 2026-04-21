@@ -5,6 +5,7 @@
 package v1alpha1
 
 import (
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -143,6 +144,33 @@ type KeystoneSpec struct {
 	// +optional
 	PriorityClassName *string `json:"priorityClassName,omitempty"`
 
+	// TerminationGracePeriodSeconds controls how long Kubernetes waits for a
+	// Keystone pod to shut down gracefully before sending SIGKILL (CC-0084).
+	// Operators extend this when slow LDAP/DB token validation may delay
+	// uWSGI's graceful drain. When unset, defaults to 30 seconds.
+	// +optional
+	// +kubebuilder:validation:Minimum=10
+	// +kubebuilder:default=30
+	TerminationGracePeriodSeconds *int64 `json:"terminationGracePeriodSeconds,omitempty"`
+
+	// PreStopSleepSeconds controls the duration of the preStop sleep hook
+	// that covers EndpointSlice propagation before SIGTERM (CC-0084).
+	// Tunable independently of the overall grace period. When unset,
+	// defaults to 5 seconds. A value of 0 keeps the hook block in place
+	// but issues an immediate sleep.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:default=5
+	PreStopSleepSeconds *int64 `json:"preStopSleepSeconds,omitempty"`
+
+	// Strategy overrides the Deployment rollout strategy (CC-0084).
+	// When nil, the reconciler applies the hardened default
+	// (RollingUpdate with maxUnavailable=0, maxSurge=1). When set, the
+	// value is propagated verbatim with no merging of defaults, allowing
+	// operators to switch to Recreate or customize surge/unavailability.
+	// +optional
+	Strategy *appsv1.DeploymentStrategy `json:"strategy,omitempty"`
+
 	// ExtraConfig provides free-form INI sections for configuration
 	// not covered by explicit CRD fields.
 	// +optional
@@ -228,6 +256,23 @@ type UWSGISpec struct {
 	// When false, the flag is omitted from the command.
 	// +kubebuilder:default=true
 	HTTPKeepAlive bool `json:"httpKeepAlive,omitempty"`
+
+	// Harakiri sets the uWSGI per-request timeout in seconds (CC-0084).
+	// A worker exceeding this value on a single request is terminated,
+	// preventing a single hung request from blocking graceful shutdown
+	// until SIGKILL. When nil, no --harakiri flag is emitted.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	Harakiri *int32 `json:"harakiri,omitempty"`
+
+	// HTTPKeepAliveTimeout bounds the idle keep-alive duration in seconds
+	// so that clients reconnect through the Service instead of reusing a
+	// socket to a terminating pod (CC-0084). Applies only when
+	// HTTPKeepAlive is true. When nil, no --http-keepalive-timeout flag
+	// is emitted.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	HTTPKeepAliveTimeout *int32 `json:"httpKeepAliveTimeout,omitempty"`
 }
 
 // FernetSpec defines Fernet key rotation configuration.
