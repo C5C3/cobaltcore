@@ -661,6 +661,7 @@
       "title": "Update buildKeystoneDeployment in operators/keystone/internal/controller/reconcile_deployment.go to derive PodSpec.TerminationGracePeriodSeconds from spec.terminationGracePeriodSeconds (fallback 30) and the preStop exec command from spec.preStopSleepSeconds (fallback 5, emit 'sleep <n>' via fmt.Sprintf). Tests TestBuildKeystoneDeployment_TerminationGracePeriod* and PreStopSleep* in reconcile_deployment_test.go (REQ-001, REQ-002, REQ-009, REQ-010). Feature: CC-0084.",
       "level": 3,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -673,6 +674,7 @@
       "title": "Update uwsgiCommand in reconcile_deployment.go to append '--harakiri <n>' when UWSGISpec.Harakiri is non-nil and '--http-keepalive-timeout <n>' when UWSGISpec.HTTPKeepAliveTimeout is non-nil AND httpKeepAlive is true. Update the doc comment. Tests TestUwsgiCommand_{Harakiri,KeepAliveTimeout}* and TestUwsgiCommand_FlagOrderDeterministic plus KeepAliveTimeoutIgnoredWhenKeepAliveDisabled (REQ-003, REQ-004, REQ-011). Feature: CC-0084.",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-004",
@@ -684,6 +686,7 @@
       "title": "Update buildKeystoneDeployment to set Deployment.Spec.Strategy: use spec.strategy verbatim when non-nil, otherwise inject RollingUpdate with MaxUnavailable=IntOrString(0) and MaxSurge=IntOrString(1). Extract helper deploymentStrategy(keystone) for clarity. Tests TestBuildKeystoneDeployment_DefaultRollingUpdateStrategy, StrategyStableAcrossReconciles, StrategyOverrideRollingCustomPercents, StrategyOverrideRecreate (REQ-005, REQ-006). Feature: CC-0084.",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-006"
@@ -694,6 +697,7 @@
       "title": "Verify EnsureDeployment in internal/common/deployment does not report drift when spec.Strategy is defaulted on a pre-existing Deployment that lacked one. If drift logic needs adjustment, update it; otherwise add a test note and a TestBuildKeystoneDeployment_StrategyStableAcrossReconciles assertion (REQ-005). Feature: CC-0084.",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -1786,6 +1790,321 @@
     {
       "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
       "test_function": "TestKeystoneWebhook_ImplementsInterfaces",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_DeploymentAndServiceCreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_NotReady_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_Ready_SetsEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_OwnerReferences",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_DeploymentSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_NotReady_ConditionMessageAndGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_Ready_ConditionMessageAndGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_ServiceCreatedAlongsideDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_StablePodTemplate",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_VolumesMaintained",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_NoSecretReadRequired",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBCreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBLabelsAndSelector",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBMinAvailableForMultipleReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBMaxUnavailableForSingleReplica",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBUpdatedOnReplicaChange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBSelectorMatchesDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildPodDisruptionBudget_BoundaryReplicas2",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildPodDisruptionBudget_ZeroReplicas",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_ContainerResources",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_CustomResources",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_NilResources",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBEnsureError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestUWSGICommand_NilUWSGI",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestUWSGICommand_CustomValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestUWSGICommand_KeepAliveDisabled",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestUWSGICommand_KeepAliveEnabled",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestUWSGICommand_FixedFlagsAlwaysPresent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_DefaultTopologySpreadConstraints",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_EmptyTopologySpreadConstraintsDisablesDefaults",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_DefaultTopologySpreadConstraints_LabelSelectorMatchesSelectorLabels",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_CustomTopologySpreadConstraints",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_PriorityClassNameSet",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_PriorityClassNameNil",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_RollingUpdate_ReadyDeployment_TransitionsToContracting",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_RollingUpdate_NotReady_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_NoUpgrade_Ready_SetsEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_OtherPhase_Ready_SetsEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_ConditionObservedGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestUwsgiCommand_HarakiriSet",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestUwsgiCommand_HarakiriNil",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestUwsgiCommand_KeepAliveTimeoutSet",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_StrategyDefaultedAndStable",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_TerminationGracePeriodCustom",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildKeystoneDeployment_PreStopSleepCustom",
       "story": "",
       "expected": "Discovered during implementation",
       "requirement_id": ""

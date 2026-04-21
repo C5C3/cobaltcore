@@ -130,12 +130,13 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 			Selector: &metav1.LabelSelector{
 				MatchLabels: selector,
 			},
+			Strategy: deploymentStrategy(keystone),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
-					TerminationGracePeriodSeconds: ptr.To(int64(30)),
+					TerminationGracePeriodSeconds: ptr.To(terminationGracePeriodSeconds(keystone)),
 					TopologySpreadConstraints:     topologySpreadConstraints(keystone),
 					PriorityClassName:             priorityClassName(keystone),
 					Containers: []corev1.Container{{
@@ -180,7 +181,7 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 						Lifecycle: &corev1.Lifecycle{
 							PreStop: &corev1.LifecycleHandler{
 								Exec: &corev1.ExecAction{
-									Command: []string{"/bin/sh", "-c", "sleep 5"},
+									Command: []string{"/bin/sh", "-c", fmt.Sprintf("sleep %d", preStopSleepSeconds(keystone))},
 								},
 							},
 						},
@@ -275,6 +276,20 @@ func buildPodDisruptionBudget(keystone *keystonev1alpha1.Keystone) *policyv1.Pod
 // httpKeepAlive=true) are used. Fixed flags (--http :5000, --wsgi-file,
 // --master, --lazy-apps, --need-app, --pyargv) are always included regardless
 // of configuration (CC-0040, REQ-004).
+//
+// Optional graceful-termination hardening flags (CC-0084):
+//   - --harakiri <n> is appended when uwsgi.Harakiri is set, bounding per-request
+//     wall-clock time so a hung request cannot block graceful drain.
+//   - --http-keepalive-timeout <n> is appended when uwsgi.HTTPKeepAlive is true
+//     AND uwsgi.HTTPKeepAliveTimeout is set, capping idle keep-alive duration
+//     so clients reconnect through the Service instead of pinning a socket to
+//     a terminating pod. When HTTPKeepAlive is false, HTTPKeepAliveTimeout is
+//     ignored entirely (webhook validation rejects that combination up front).
+//
+// Flag order is deterministic: both optional flags are appended after
+// --pyargv=..., with --harakiri before --http-keepalive-timeout, so existing
+// assertions on fixed flags remain unaffected and pod templates do not flap
+// across reconciles.
 func uwsgiCommand(uwsgi *keystonev1alpha1.UWSGISpec) []string {
 	processes := int32(2)
 	threads := int32(1)
@@ -302,6 +317,16 @@ func uwsgiCommand(uwsgi *keystonev1alpha1.UWSGISpec) []string {
 		"--threads", strconv.Itoa(int(threads)),
 		"--pyargv=--config-dir=/etc/keystone/keystone.conf.d/",
 	)
+
+	// Optional graceful-termination flags (CC-0084). Appended last so the
+	// fixed-flag prefix remains byte-for-byte stable.
+	if uwsgi != nil && uwsgi.Harakiri != nil {
+		cmd = append(cmd, "--harakiri", strconv.Itoa(int(*uwsgi.Harakiri)))
+	}
+	if uwsgi != nil && uwsgi.HTTPKeepAliveTimeout != nil && httpKeepAlive {
+		cmd = append(cmd, "--http-keepalive-timeout", strconv.Itoa(int(*uwsgi.HTTPKeepAliveTimeout)))
+	}
+
 	return cmd
 }
 
@@ -350,6 +375,55 @@ func priorityClassName(keystone *keystonev1alpha1.Keystone) string {
 		return *keystone.Spec.PriorityClassName
 	}
 	return ""
+}
+
+// terminationGracePeriodSeconds returns the effective
+// TerminationGracePeriodSeconds for the Keystone API pods. If
+// spec.TerminationGracePeriodSeconds is set, that value is used. Otherwise,
+// the hardened default of 30 seconds is returned, giving uWSGI time to drain
+// in-flight requests after the preStop sleep (CC-0084, REQ-002).
+func terminationGracePeriodSeconds(keystone *keystonev1alpha1.Keystone) int64 {
+	if keystone.Spec.TerminationGracePeriodSeconds != nil {
+		return *keystone.Spec.TerminationGracePeriodSeconds
+	}
+	return int64(30)
+}
+
+// preStopSleepSeconds returns the effective preStop sleep duration for the
+// Keystone API pods. If spec.PreStopSleepSeconds is set, that value is used
+// (including 0, which still emits `sleep 0` so the hook shape is preserved).
+// Otherwise, the hardened default of 5 seconds is returned, covering
+// EndpointSlice propagation before SIGTERM (CC-0084, REQ-001).
+func preStopSleepSeconds(keystone *keystonev1alpha1.Keystone) int64 {
+	if keystone.Spec.PreStopSleepSeconds != nil {
+		return *keystone.Spec.PreStopSleepSeconds
+	}
+	return int64(5)
+}
+
+// deploymentStrategy returns the effective Deployment rollout strategy for the
+// Keystone API. If spec.Strategy is non-nil, it is dereferenced and returned
+// verbatim (no merging of defaults) so operators can opt into Recreate or
+// customize surge/unavailability thresholds. Otherwise, the hardened default
+// is returned: RollingUpdate with maxUnavailable=0 and maxSurge=1, which
+// guarantees no capacity loss during rollouts (CC-0084, REQ-005, REQ-006).
+//
+// A fresh value is constructed on every call (including the *IntOrString
+// pointers inside RollingUpdate) so the result is safe to reuse across
+// reconciles without aliasing.
+func deploymentStrategy(keystone *keystonev1alpha1.Keystone) appsv1.DeploymentStrategy {
+	if keystone.Spec.Strategy != nil {
+		return *keystone.Spec.Strategy
+	}
+	maxUnavailable := intstr.FromInt32(0)
+	maxSurge := intstr.FromInt32(1)
+	return appsv1.DeploymentStrategy{
+		Type: appsv1.RollingUpdateDeploymentStrategyType,
+		RollingUpdate: &appsv1.RollingUpdateDeployment{
+			MaxUnavailable: &maxUnavailable,
+			MaxSurge:       &maxSurge,
+		},
+	}
 }
 
 func buildKeystoneService(keystone *keystonev1alpha1.Keystone) *corev1.Service {
