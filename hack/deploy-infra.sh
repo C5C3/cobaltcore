@@ -4,11 +4,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # hack/deploy-infra.sh — Deploy full infrastructure stack to a kind cluster.
-# Feature: CC-0010
+# Feature: CC-0010, CC-0085
 #
 # Implements the 8-step deployment sequence:
 #   1. Create kind cluster (using hack/kind-config.yaml)
-#   2. Install FluxCD
+#   2. Install flux-operator + apply FluxInstance (CC-0085) — applies the
+#      ControlPlane flux-operator release, then the bootstrap-scope
+#      namespaces.yaml + fluxinstance.yaml, then waits for FluxInstance/flux
+#      Ready so the Flux toolkit CRDs are registered before Step 3.
 #   3. Apply base kustomize overlay (namespaces, HelmRepositories, HelmReleases)
 #   4. Wait for HelmReleases to become Ready (cert-manager first, then TLS
 #      prerequisites for OpenBao, then remaining releases)
@@ -17,11 +20,18 @@
 #   7. Bootstrap OpenBao (init, unseal, configure)
 #   8. Wait for ExternalSecrets to sync
 #
-# REQ-001: Deploys full infrastructure stack to kind cluster.
-# REQ-004: Applies manifests in two phases with health waits between.
-# REQ-005: Invokes existing OpenBao bootstrap scripts from deploy/openbao/bootstrap/.
-# REQ-011: set -euo pipefail, SPDX Apache-2.0 header, CC-0010 reference.
-# REQ-012: Configurable timeouts via environment variables.
+# REQ-001 (CC-0085): Fresh-cluster bootstrap installs flux-operator and
+#   applies FluxInstance/flux without requiring the Flux CLI.
+# REQ-002 (CC-0085): wait_for_fluxinstance gates Step 3 on Ready=True.
+# REQ-003 (CC-0085): reconcile_helmrepository_sources replaces
+#   `flux reconcile source helm` with a kubectl annotate loop.
+# REQ-005 (CC-0085): preflight_checks drops `flux` from required commands.
+# REQ-001 (CC-0010): Deploys full infrastructure stack to kind cluster.
+# REQ-004 (CC-0010): Applies manifests in two phases with health waits between.
+# REQ-005 (CC-0010): Invokes existing OpenBao bootstrap scripts from
+#   deploy/openbao/bootstrap/.
+# REQ-011 (CC-0010): set -euo pipefail, SPDX Apache-2.0 header, feature ID.
+# REQ-012 (CC-0010): Configurable timeouts via environment variables.
 
 set -euo pipefail
 
@@ -41,6 +51,11 @@ EXTERNALSECRET_TIMEOUT="${EXTERNALSECRET_TIMEOUT:-120}"
 # Keep aligned with sigs.k8s.io/gateway-api in operators/keystone/go.mod.
 GATEWAY_API_VERSION="${GATEWAY_API_VERSION:-v1.1.0}"
 GATEWAY_API_CRDS_URL="${GATEWAY_API_CRDS_URL:-https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml}"
+
+# flux-operator release applied in Step 2 before the FluxInstance CR is created
+# (CC-0085, REQ-001). Kept as a script-local constant so Renovate can bump it
+# via renovate.json custom managers.
+FLUX_OPERATOR_VERSION="v0.47.0"
 
 # OpenBao init parameters (match deploy/openbao/bootstrap/init-unseal.sh)
 KEY_SHARES=5
@@ -124,6 +139,73 @@ wait_for_helmreleases() {
     fi
 
     sleep 10
+  done
+}
+
+# ---------------------------------------------------------------------------
+# wait_for_fluxinstance — Wait until FluxInstance/flux is Ready (CC-0085, REQ-002).
+#
+# Polls every 10s up to HELMRELEASE_TIMEOUT for
+# `.status.conditions[type=Ready].status == True` on FluxInstance/flux in
+# flux-system. On timeout, dumps `kubectl describe fluxinstance/flux` and
+# `kubectl get fluxreport/flux -o yaml` for diagnostics, then exits 1.
+# ---------------------------------------------------------------------------
+wait_for_fluxinstance() {
+  local timeout="${1:-${HELMRELEASE_TIMEOUT}}"
+  local deadline=$(( $(date +%s) + timeout ))
+
+  log "Waiting up to ${timeout}s for FluxInstance/flux to become Ready..."
+
+  while true; do
+    local ready_status
+    ready_status=$(kubectl get fluxinstance/flux -n flux-system -o json 2>/dev/null \
+      | jq -r '.status.conditions[]? | select(.type == "Ready") | .status' 2>/dev/null) || true
+
+    if [[ "${ready_status}" == "True" ]]; then
+      log "FluxInstance/flux is Ready."
+      return 0
+    fi
+
+    local reason message
+    reason=$(kubectl get fluxinstance/flux -n flux-system -o json 2>/dev/null \
+      | jq -r '.status.conditions[]? | select(.type == "Ready") | .reason // "Pending"' 2>/dev/null) || true
+    message=$(kubectl get fluxinstance/flux -n flux-system -o json 2>/dev/null \
+      | jq -r '.status.conditions[]? | select(.type == "Ready") | .message // ""' 2>/dev/null) || true
+    log "  FluxInstance/flux is not Ready yet (reason: ${reason:-Pending})."
+    if [[ -n "${message}" ]]; then
+      log "    ${message}"
+    fi
+
+    if [[ $(date +%s) -ge ${deadline} ]]; then
+      log "ERROR: Timed out waiting for FluxInstance/flux after ${timeout}s."
+      log "FluxInstance description:"
+      kubectl describe fluxinstance/flux -n flux-system 2>/dev/null || true
+      log "FluxReport:"
+      kubectl get fluxreport/flux -n flux-system -o yaml 2>/dev/null || true
+      exit 1
+    fi
+
+    sleep 10
+  done
+}
+
+# ---------------------------------------------------------------------------
+# reconcile_helmrepository_sources — Force a reconcile of every HelmRepository
+# in flux-system by annotating with reconcile.fluxcd.io/requestedAt — the
+# kubectl-only equivalent of `flux reconcile source helm` (CC-0085, REQ-003).
+#
+# A no-op when no HelmRepositories exist (the for-loop body simply does not
+# run). Each annotate failure is tolerated (`|| true`) so a transient API
+# error on one repo does not abort the whole bootstrap.
+# ---------------------------------------------------------------------------
+reconcile_helmrepository_sources() {
+  log "Reconciling HelmRepository sources..."
+  local repos
+  repos=$(kubectl get helmrepository -n flux-system -o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || true
+  for repo in ${repos}; do
+    kubectl annotate "helmrepository/${repo}" \
+      "reconcile.fluxcd.io/requestedAt=$(date +%s%N)" \
+      --overwrite -n flux-system || true
   done
 }
 
@@ -317,7 +399,10 @@ preflight_checks() {
   log "Running pre-flight checks..."
 
   # Check that required CLI tools are available.
-  for cmd in docker kind kubectl flux jq; do
+  # Flux CLI is intentionally omitted: bootstrap now installs flux-operator and
+  # applies a FluxInstance via kubectl, and source reconciles use kubectl
+  # annotate (CC-0085, REQ-005).
+  for cmd in docker kind kubectl jq; do
     if ! command -v "${cmd}" &>/dev/null; then
       log "ERROR: '${cmd}' is not installed or not in PATH."
       exit 1
@@ -600,10 +685,24 @@ main() {
     log "Kind cluster '${CLUSTER_NAME}' created."
   fi
 
-  # Step 2: Install FluxCD
-  log "=== Step 2/8: Install FluxCD ==="
-  flux install
-  log "FluxCD installed."
+  # Step 2: Install flux-operator and apply FluxInstance (CC-0085, REQ-001/REQ-002)
+  #
+  # Only the two bootstrap-scope manifests are applied here — the Namespace
+  # resources and the FluxInstance CR. HelmRepository/HelmRelease objects from
+  # deploy/flux-system/{sources,releases}/ intentionally come later (Step 3):
+  # flux-operator's install.yaml only registers the fluxcd.controlplane.io
+  # CRDs, and the source.toolkit.fluxcd.io / helm.toolkit.fluxcd.io CRDs
+  # consumed by those objects are materialised only after the flux-operator
+  # reconciles this FluxInstance. Applying them before wait_for_fluxinstance
+  # would abort the script under `set -euo pipefail` with 'no matches for kind
+  # "HelmRepository" in version "source.toolkit.fluxcd.io/v1"' (CC-0085).
+  log "=== Step 2/8: Install flux-operator + apply FluxInstance ==="
+  kubectl apply -f \
+    "https://github.com/controlplaneio-fluxcd/flux-operator/releases/download/${FLUX_OPERATOR_VERSION}/install.yaml"
+  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/namespaces.yaml"
+  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/fluxinstance.yaml"
+  wait_for_fluxinstance "${HELMRELEASE_TIMEOUT}"
+  log "flux-operator installed and FluxInstance/flux is Ready."
 
   # Gateway API CRDs (CC-0065). Installed before the base kustomize overlay so
   # the keystone-operator Pod (deployed via HelmRelease in Step 3/4) finds the
@@ -630,6 +729,11 @@ main() {
   log "Gateway API CRDs installed."
 
   # Step 3: Apply base kustomize overlay (namespaces, HelmRepos, HelmReleases)
+  #
+  # Safe to run only after Step 2's wait_for_fluxinstance succeeds — at that
+  # point flux-operator has materialised the Flux toolkit CRDs (source/helm
+  # /kustomize/notification), so HelmRepository and HelmRelease objects under
+  # deploy/flux-system/{sources,releases}/ resolve to known Kinds (CC-0085).
   log "=== Step 3/8: Apply base kustomize overlay ==="
   kubectl apply -k "${REPO_ROOT}/deploy/kind/base"
   log "Base kustomize overlay applied."
@@ -638,12 +742,7 @@ main() {
   # before HelmReleases attempt to resolve charts. Without this, the
   # helm-controller may see unindexed sources and wait until the next
   # reconcile interval (up to 1h) before retrying.
-  log "Reconciling HelmRepository sources..."
-  local repos
-  repos=$(kubectl get helmrepository -n flux-system -o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || true
-  for repo in ${repos}; do
-    flux reconcile source helm "${repo}" -n flux-system --timeout=60s || true
-  done
+  reconcile_helmrepository_sources
 
   # Step 4: Wait for HelmReleases to become Ready (two phases)
   log "=== Step 4/8: Wait for HelmReleases ==="
@@ -724,4 +823,8 @@ main() {
   log "To tear down: make teardown-infra"
 }
 
-main "$@"
+# Run main only when executed directly so unit tests (tests/unit/hack/) can
+# source this script and exercise individual functions (CC-0085, REQ-003/REQ-005).
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

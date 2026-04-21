@@ -15,6 +15,19 @@
       "datasourceTemplate": "git-tags",
       "packageNameTemplate": "https://opendev.org/openstack/{{{depName}}}",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/hack/deploy-infra\\.sh$/"
+      ],
+      "matchStrings": [
+        "FLUX_OPERATOR_VERSION=\"(?<currentValue>v\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "depNameTemplate": "controlplaneio-fluxcd/flux-operator",
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "controlplaneio-fluxcd/flux-operator",
+      "versioningTemplate": "semver"
     }
   ],
   "packageRules": [
@@ -31,6 +44,22 @@
       "automerge": true,
       "minimumReleaseAge": "3 days",
       "groupName": "OpenStack upstream tags"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["hack/deploy-infra.sh"],
+      "matchPackageNames": ["controlplaneio-fluxcd/flux-operator"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["hack/deploy-infra.sh"],
+      "matchPackageNames": ["controlplaneio-fluxcd/flux-operator"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "minimumReleaseAge": "3 days",
+      "groupName": "flux-operator"
     }
   ]
 }

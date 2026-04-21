@@ -2,8 +2,8 @@
   "feature_id": "CC-0085",
   "title": "Replace flux install with FluxInstance in kind Quick Start",
   "slug": "replace-flux-install-with-fluxinstance-in-kind",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #251: Replace imperative `flux install` bootstrap with flux-operator FluxInstance in kind Quick Start\n\n**Category**: enhancement | **Scope**: Medium\n\n**Description**: Today the kind bootstrap (`hack/deploy-infra.sh:597-600`) installs FluxCD imperatively with `flux install`, which pulls the `flux-system` manifest bundle and applies it directly to the API server. The Quick Start prerequisites table (`docs/quick-start.md:38`) therefore lists the Flux CLI as a hard requirement, and `hack/install-test-deps.sh:17,35-41` pins `FLUX_VERSION=\"2.5.1\"` with four per-platform SHA-256 hashes that have to be rotated on every Flux release. This contradicts the architecture target already documented in `architecture/docs/05-deployment/01-gitops-fluxcd/index.md:6,11-23` and `architecture/docs/05-deployment/01-gitops-fluxcd/04-bootstrap.md:18-33`, which both declare the [ControlPlane flux-operator](https://github.com/controlplaneio-fluxcd/flux-operator) (`fluxcd.controlplane.io/v1`) as the production deployment model for Flux itself and enumerate its advantages over `flux bootstrap`/`flux install` (declarative lifecycle, automatic SemVer upgrades via `distribution.version: \\\"2.x\\\"`, `FluxReport` status surface, no circular \\\"Flux deploys itself\\\" dependency).\n\nSwitch the kind bootstrap to the same mechanism: (1) replace Step 2 of `hack/deploy-infra.sh` with `kubectl apply -f https://github.com/controlplaneio-fluxcd/flux-operator/releases/download/v<pin>/install.yaml` followed by `kubectl apply -f deploy/flux-system/fluxinstance.yaml` and a wait on `FluxInstance/flux` `Ready`; (2) add `deploy/flux-system/fluxinstance.yaml` with a minimal `FluxInstance` spec (`distribution.version: \\\"2.x\\\"`, `distribution.registry: ghcr.io/fluxcd`, `components: [source-controller, kustomize-controller, helm-controller, notification-controller]`, `cluster.type: kubernetes`, `cluster.size: small`, `cluster.multitenant: false`, `cluster.networkPolicy: false`, no `sync` block — the Quick Start applies the kustomize overlay directly, matching today's behaviour); (3) replace the `flux reconcile source helm ...` loop (`hack/deploy-infra.sh:611-616`) with the operator-native annotation pattern `kubectl annotate helmrepository/<name> reconcile.fluxcd.io/requestedAt=\\\"$(date +%s)\\\" --overwrite`, which drops the last hard dependency on the Flux CLI; (4) demote the Flux CLI in `hack/install-test-deps.sh` and the Quick Start prerequisites (`docs/quick-start.md:38`) to an optional debug tool (`flux get helmreleases`, `flux logs` are still convenient but no longer required for bootstrap). Pin flux-operator's own version via a release tag embedded in the `install.yaml` URL (latest as of 2026-04-21 is `v0.47.0`, released 2026-04-15) and manage future bumps through renovate the same way `deploy/flux-system/sources/*.yaml` chart versions are already managed (see `renovate.json`).\n\n**Motivation**: The architecture docs have declared flux-operator the production-target pattern since the initial GitOps design (`architecture/docs/05-deployment/01-gitops-fluxcd/index.md`), but the kind Quick Start — which is the single on-ramp every new contributor touches first — still boots Flux the imperative way. Three concrete pain points fall out of this gap: (a) the pinned `FLUX_VERSION=\"2.5.1\"` plus four SHA-256 hashes in `hack/install-test-deps.sh` have to be rotated by hand on every Flux minor/patch release because the CLI is not in scope for any automation; with the operator, Flux itself is managed by a SemVer range (`2.x`) in the `FluxInstance` CRD and upgrades land without touching the repo; (b) contributors copy the Quick Start verbatim into their own laptops and then ask in review \\\"where do I see what Flux is doing?\\\" — the operator answers that with `kubectl get fluxreport -n flux-system flux -o yaml`, a first-class Kubernetes status surface, whereas `flux install` only exposes the standard Flux metrics; (c) the Quick Start claims the result is \\\"identical to what CI validates\\\" (`docs/quick-start.md:9-10`) and \\\"consistent with the production flux-system overlay\\\" (`docs/quick-start.md:141-142`), but that is only half true — the production overlay will use flux-operator while the kind path uses the native CLI, so the two diverge on exactly the layer the bootstrap teaches. Closing this gap also shrinks the toolchain surface (one less pinned binary to verify on every release), removes the circular \\\"flux installs itself\\\" story from the docs, and makes `docs/reference/infrastructure-manifests.md` materially shorter because the flux-system namespace is now managed by a CRD rather than a static manifest set.\n\n**Affected Areas**:\n- `deploy/flux-system/fluxinstance.yaml` (new — `FluxInstance` CR)\n- `deploy/flux-system/kustomization.yaml` (add `fluxinstance.yaml` to `resources`)\n- `deploy/flux-system/namespaces.yaml` (ensure `flux-system` namespace is present for the operator install, which it already is implicitly via `flux install` today)\n- `hack/deploy-infra.sh` (replace `flux install` block at lines 597-600; replace `flux reconcile source helm` loop at lines 611-616; add a wait on `FluxInstance/flux` `Ready` before Step 3 applies the overlay)\n- `hack/install-test-deps.sh` (drop `FLUX_VERSION` and `FLUX_SHA256_*` hard requirement; move Flux CLI to an optional install block with a clear \\\"used for debugging only\\\" note)\n- `hack/teardown-infra.sh` (no change if it only runs `kind delete cluster`; verify)\n- `docs/quick-start.md` (prerequisites table row for Flux CLI → optional; Step 3 internal-table row 2 rewrite; architecture-snapshot block adds `flux-system   flux-operator-* / source-controller-* / kustomize-controller-* / helm-controller-* / notification-controller-*`; add a tip pointing at `kubectl get fluxreport/flux -n flux-system`)\n- `docs/reference/infrastructure-manifests.md` (document `fluxinstance.yaml` alongside the existing `kustomization.yaml` / `namespaces.yaml` entries; explain that the `flux-system` namespace contents are now operator-managed)\n- `docs/reference/infrastructure/e2e-deployment.md` (Step 2 rename: \\\"Install flux-operator + apply FluxInstance\\\" instead of \\\"Install FluxCD (flux install)\\\"; line 99 and surrounding references)\n- `architecture/docs/05-deployment/01-gitops-fluxcd/04-bootstrap.md` (cross-link the kind overlay now matches the described bootstrap flow, remove the hedging wording)\n- `.github/workflows/*.yml` (audit every CI step that runs `flux ...` — only `flux reconcile` usage in `deploy-infra.sh` is in scope; adjust if any workflow calls `flux` directly)\n\n**Acceptance Criteria**:\n- [ ] `deploy/flux-system/fluxinstance.yaml` exists with `apiVersion: fluxcd.controlplane.io/v1`, `kind: FluxInstance`, `metadata.name: flux`, `metadata.namespace: flux-system`, and the spec outlined in the description (no `sync` block — the kind overlay applies Helm sources/releases directly via kustomize)\n- [ ] `hack/deploy-infra.sh` Step 2 installs flux-operator via `kubectl apply -f https://github.com/controlplaneio-fluxcd/flux-operator/releases/download/<pinned-tag>/install.yaml`, applies `deploy/flux-system/fluxinstance.yaml`, and waits for `FluxInstance/flux` `condition=Ready` with the existing `HELMRELEASE_TIMEOUT` envelope\n- [ ] The `<pinned-tag>` is configurable via a script-level variable (e.g. `FLUX_OPERATOR_VERSION=\\\"v0.47.0\\\"`) so renovate or a manual bump can update it in one place\n- [ ] The `flux reconcile source helm` loop in `hack/deploy-infra.sh` is replaced by `kubectl annotate helmrepository/<name> reconcile.fluxcd.io/requestedAt=\\\"$(date +%s%N)\\\" --overwrite` over the same list of sources\n- [ ] `hack/install-test-deps.sh` no longer fails when the Flux CLI is absent; if the user opts into installing it (e.g. `WITH_FLUX_CLI=true`), the pinned SHA-256 verification still applies\n- [ ] `make deploy-infra` on a fresh kind cluster ends with `FluxInstance/flux` `Ready=True`, a `FluxReport/flux` populated (`.status.distribution.entitlement` present), and the same set of HelmReleases Ready as today (cert-manager, openbao, mariadb-operator-crds, mariadb-operator, external-secrets, memcached-operator, chaos-mesh, keystone-operator)\n- [ ] `make teardown-infra` works unchanged\n- [ ] `docs/quick-start.md` prerequisites table marks Flux CLI as **Optional** (debugging only); Step 3 internal table row 2 reads \\\"**Install flux-operator** + apply `FluxInstance/flux`\\\"; the \\\"What gets deployed\\\" details block lists the flux-system pods\n- [ ] `docs/quick-start.md` gains a short tip near Step 3 showing `kubectl get fluxreport/flux -n flux-system -o yaml` as the first-stop diagnostic for Flux itself\n- [ ] `docs/reference/infrastructure-manifests.md` documents `deploy/flux-system/fluxinstance.yaml` in the same shape as the other manifest entries\n- [ ] E2E in CI still passes: the kind-based `make test-e2e` and the chaos job (which depends on `tests/e2e-chaos/unseal-openbao.sh`) complete without regression; the Tempest job (`hack/run-tempest.sh`) is unaffected because it only touches `keystone-api.openstack.svc`\n- [ ] The renovate config keeps working — the `FLUX_OPERATOR_VERSION` pin (either in `hack/deploy-infra.sh` or a dedicated `.version` file) is picked up by a renovate `customManagers` entry analogous to the existing `releases/*/source-refs.yaml` manager in `renovate.json`, so the tag bump happens automatically\n- [ ] `architecture/docs/05-deployment/01-gitops-fluxcd/04-bootstrap.md` no longer describes the kind path as a deviation — the \\\"Advantages over `flux bootstrap`\\\" table at `01-gitops-fluxcd/index.md:15-23` now applies to both production and kind\n\n**Non-Goals**:\n- Enabling a git `sync` source on the `FluxInstance`. The kind overlay is self-contained and the Quick Start should stay a zero-token, zero-SSH-key experience. The git-sync flow is described for the production Management Cluster in `architecture/docs/05-deployment/01-gitops-fluxcd/04-bootstrap.md` and will land in a separate change once the `c5c3-gitops` repository is in scope.\n- Migrating the image-automation / image-reflector controllers on. Today's `flux install` default does not include them either, so this is a strictly no-op alignment on components.\n- Enabling `cluster.multitenant: true` / `cluster.networkPolicy: true` on the kind overlay. The kind cluster is single-tenant demo scope and network policies would require additional plumbing around the existing Keystone `NetworkPolicy` sub-reconciler (issue #127); out of scope here.\n- Switching the production flux-system overlay to flux-operator. That is a separate, coordinated change on the actual Management Cluster with its own GitOps repo; this issue is scoped to the kind Quick Start and the manifests under `deploy/flux-system/` that kind shares with it.\n- Removing the Flux CLI from `hack/install-test-deps.sh` entirely. The CLI is still useful for contributors debugging `HelmRelease` reconcile loops (`flux logs`, `flux trace`), so it stays installable on request — it just stops being a hard prerequisite of `make deploy-infra`.\n\n**References**:\n- flux-operator repository: https://github.com/controlplaneio-fluxcd/flux-operator\n- Install guide: https://fluxoperator.dev/docs/guides/install/\n- FluxInstance CRD: https://fluxoperator.dev/docs/crd/fluxinstance.md\n- FluxReport CRD: https://fluxoperator.dev/docs/crd/fluxreport.md\n- Latest release at authoring time: `v0.47.0` (2026-04-15)\n\n**Labels:** enhancement\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/251",
   "stories": [
@@ -371,6 +371,7 @@
       "title": "Create deploy/flux-system/fluxinstance.yaml with FluxInstance/flux spec (apiVersion fluxcd.controlplane.io/v1, distribution.version `2.x`, registry ghcr.io/fluxcd, four controllers, cluster.size=small, no sync block, SPDX header) (CC-0085, REQ-006)",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -380,6 +381,7 @@
       "title": "Add `fluxinstance.yaml` to the resources list in deploy/flux-system/kustomization.yaml after `namespaces.yaml` and before sources/, and update the file header comment to mention the FluxInstance (CC-0085, REQ-006)",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -389,6 +391,7 @@
       "title": "Add tests/unit/deploy/flux_system_fluxinstance_test.sh that runs `kustomize build deploy/flux-system/` and `kustomize build deploy/kind/base/`, asserting the FluxInstance shape and SPDX header (CC-0085, REQ-006)",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -398,6 +401,7 @@
       "title": "In hack/deploy-infra.sh, add `FLUX_OPERATOR_VERSION=\"v0.47.0\"` to the Configuration block; replace `flux install` (lines 597-600) with `kubectl apply -f https://github.com/controlplaneio-fluxcd/flux-operator/releases/download/${FLUX_OPERATOR_VERSION}/install.yaml` followed by `kubectl apply -k deploy/flux-system/` (or apply the FluxInstance directly), and update the Step 2 banner text (CC-0085, REQ-001, REQ-002)",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002"
@@ -408,6 +412,7 @@
       "title": "Add a new `wait_for_fluxinstance` helper in hack/deploy-infra.sh that polls `kubectl get fluxinstance/flux -n flux-system` for `condition[type=Ready].status=True` with the same 10s cadence and HELMRELEASE_TIMEOUT envelope used by `wait_for_helmreleases`; on timeout, dump `kubectl describe fluxinstance/flux` and `kubectl get fluxreport/flux -o yaml` then exit 1 (CC-0085, REQ-002)",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -417,6 +422,7 @@
       "title": "Replace the `flux reconcile source helm ... ` loop in hack/deploy-infra.sh (lines 611-616) with `kubectl annotate helmrepository/<name> reconcile.fluxcd.io/requestedAt=\"$(date +%s%N)\" --overwrite -n flux-system` over the same `kubectl get helmrepository -n flux-system` list (CC-0085, REQ-003)",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -426,6 +432,7 @@
       "title": "Drop `flux` from the required-commands loop in `preflight_checks` in hack/deploy-infra.sh (line 314) so the script no longer aborts when the Flux CLI is absent (CC-0085, REQ-005)",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -435,6 +442,7 @@
       "title": "Add bats-style unit tests under tests/unit/hack/ for the new shell behaviour: deploy_infra_preflight_test.bats (preflight passes without flux, fails without kubectl) and deploy_infra_reconcile_sources_test.bats (annotate-loop happy path + empty-list no-op, with kubectl stubbed via PATH) — wire into `make shellcheck`/`make test-shell` if a test runner exists, otherwise add a new make target `test-shell` (CC-0085, REQ-003, REQ-005)",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-005"
@@ -445,6 +453,7 @@
       "title": "Make install_flux opt-in in hack/install-test-deps.sh: gate the `install_flux` call in `main()` behind `[[ \"${WITH_FLUX_CLI:-false}\" == \"true\" ]]`; keep the FLUX_VERSION + FLUX_SHA256_* constants and the install_flux function intact, and update the script's leading comment to describe the new behaviour (CC-0085, REQ-004)",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -454,6 +463,7 @@
       "title": "Add tests/unit/hack/install_test_deps_optional_flux_test.bats covering both gated paths (default skips install_flux; WITH_FLUX_CLI=true invokes install_flux and verify_sha256) using stubbed curl/install (CC-0085, REQ-004)",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -463,6 +473,7 @@
       "title": "Add a `customManagers` entry to renovate.json that matches the literal `FLUX_OPERATOR_VERSION=\"v<x.y.z>\"` in hack/deploy-infra.sh, with datasourceTemplate=github-releases, packageNameTemplate=controlplaneio-fluxcd/flux-operator, and versioningTemplate=semver; add a packageRules entry that disables major bumps and automerges minor/patch after a 3-day minimumReleaseAge (mirroring the OpenStack tags rule) (CC-0085, REQ-007)",
       "level": 4,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -472,6 +483,7 @@
       "title": "Add tests/unit/renovate/fluxoperator_custommanager_test.sh that runs `npx --yes --package renovate -- renovate-config-validator renovate.json` and a small grep-based smoke check that the regex captures the current FLUX_OPERATOR_VERSION value (CC-0085, REQ-007)",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -481,6 +493,7 @@
       "title": "Extend tests/e2e/infrastructure/infra-stack-health/chainsaw-test.yaml with a new step that asserts FluxInstance/flux is Ready, FluxReport/flux exists with .status.distribution.entitlement set, and the five flux-system controller Deployments (flux-operator, source-controller, kustomize-controller, helm-controller, notification-controller) have availableReplicas > 0 (CC-0085, REQ-008)",
       "level": 5,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -490,6 +503,7 @@
       "title": "Add `kubectl get fluxinstance,fluxreport -A -o yaml` to hack/ci-dump-diagnostics.sh (after the existing `flux logs` block, gated only on the kubectl resource being registered) so failed CI runs surface flux-operator state (CC-0085, REQ-008)",
       "level": 5,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -499,6 +513,7 @@
       "title": "Update docs/quick-start.md: prerequisites table marks Flux CLI Optional with `WITH_FLUX_CLI=true make install-test-deps` snippet; Step 3 internal table row 2 reads `**Install flux-operator** + apply FluxInstance/flux`; the `What gets deployed` details block lists the five flux-system pods; add a `::: tip` block near Step 3 with `kubectl get fluxreport/flux -n flux-system -o yaml` (CC-0085, REQ-009)",
       "level": 6,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -508,6 +523,7 @@
       "title": "Update docs/reference/infrastructure-manifests.md: add `fluxinstance.yaml` to the Directory Layout block, add a new `## FluxInstance` section documenting apiVersion, fields, and defaults in the same shape as the other manifest entries, and increment the resource counts in the Base Kustomization table (CC-0085, REQ-009)",
       "level": 6,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -517,6 +533,7 @@
       "title": "Update docs/reference/infrastructure/e2e-deployment.md: rename Step 2 of the deployment-sequence ASCII diagram to `Install flux-operator + apply FluxInstance`, mark the Flux CLI row in the Prerequisites table Optional, and add a one-line note explaining the `FLUX_OPERATOR_VERSION` variable in the Environment Variables table (CC-0085, REQ-009)",
       "level": 6,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -526,6 +543,7 @@
       "title": "Update architecture/docs/05-deployment/01-gitops-fluxcd/04-bootstrap.md: remove the hedging that the kind path uses a different bootstrap, cross-link the kind overlay (deploy/flux-system/fluxinstance.yaml) and explain that kind uses no `spec.sync` block while production carries the GitRepository sync (CC-0085, REQ-009)",
       "level": 6,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -674,8 +692,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-21T09:13:49.605204"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-21T10:27:55.713629"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-21T18:07:22.760448"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/254",
+  "pr_number": 254,
   "execution_history": [
     {
       "run_id": "aba6f477-4eb7-471a-aba2-3663cd1fa804",
@@ -687,6 +715,82 @@
           "name": "prepare",
           "duration": 1050.0140445232391,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "0cd64867-2cf2-4d55-aa85-7ed9ebf130f3",
+      "timestamp": "2026-04-21T11:22:11.935460",
+      "total_duration": 2966.947272539139,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (3 tasks)",
+          "duration": 200.5068221092224,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (5 tasks)",
+          "duration": 471.2683129310608,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (2 tasks)",
+          "duration": 325.13121700286865,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (2 tasks)",
+          "duration": 226.3023660182953,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 5 (2 tasks)",
+          "duration": 201.4725410938263,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 6 (4 tasks)",
+          "duration": 304.99357867240906,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0085] Code Review",
+          "duration": 717.6135737895966,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0085] Improvements",
+          "duration": 392.6847655773163,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0085] Simplify",
+          "duration": 126.97409534454346,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "9a807abd-b8ce-445f-8966-df14a201055d",
+      "timestamp": "2026-04-21T17:48:47.775914",
+      "total_duration": 624.0143549442291,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 624.0143549442291,
+          "type": "review_address",
           "status": "done"
         }
       ]

@@ -13,8 +13,10 @@
 #   - Infrastructure CRs: ClusterIssuer, MariaDB, Memcached
 #   - ESO resources: ClusterSecretStore (Valid), ExternalSecrets (SecretSynced)
 #   - Chaos Mesh: controller-manager Deployment, chaos-daemon DaemonSet (CC-0046)
+#   - flux-operator: FluxInstance Ready, FluxReport entitled, five flux-system
+#     controller Deployments available (CC-0085)
 #
-# REQ-008 (CC-0010)
+# REQ-008 (CC-0010, CC-0085)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -180,3 +182,88 @@ spec:
             namespace: chaos-mesh
           status:
             (numberReady >= `1`): true
+  # ── Step 6: flux-operator (CC-0085) ──────────────────────────────────
+  # Verify the flux-operator bootstrap is healthy:
+  #   - FluxInstance/flux has a Ready=True condition
+  #   - FluxReport/flux exists with a non-empty entitlement (operator has
+  #     evaluated the distribution)
+  #   - All five flux-system controller Deployments have available replicas
+  #     (flux-operator itself, source/kustomize/helm/notification controllers)
+  - try:
+    - assert:
+        resource:
+          apiVersion: fluxcd.controlplane.io/v1
+          kind: FluxInstance
+          metadata:
+            name: flux
+            namespace: flux-system
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: fluxcd.controlplane.io/v1
+          kind: FluxReport
+          metadata:
+            name: flux
+            namespace: flux-system
+          # In the upstream CRD the report payload (distribution, components,
+          # reconcilers, …) lives under `spec`; `status` only carries the
+          # reconciler conditions. See controlplaneio-fluxcd/flux-operator
+          # api/v1/fluxreport_types.go — `Distribution` is a field of
+          # FluxReportSpec, and `Entitlement string` is a plain string.
+          # Chainsaw asserts equality between the JMESPath result and the
+          # expected literal, not truthiness, so `(entitlement): true` would
+          # compare a string against a bool and fail with "types are not
+          # comparable". The two-part expression both rejects a missing field
+          # (`null != null` is false) and an empty string, without hard-coding
+          # a specific literal (e.g. "Verified" / "Issued") that could change
+          # across flux-operator releases (CC-0085, REQ-008).
+          spec:
+            distribution:
+              (entitlement != null && entitlement != ''): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: flux-operator
+            namespace: flux-system
+          status:
+            (availableReplicas > `0`): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: source-controller
+            namespace: flux-system
+          status:
+            (availableReplicas > `0`): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: kustomize-controller
+            namespace: flux-system
+          status:
+            (availableReplicas > `0`): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: helm-controller
+            namespace: flux-system
+          status:
+            (availableReplicas > `0`): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: notification-controller
+            namespace: flux-system
+          status:
+            (availableReplicas > `0`): true

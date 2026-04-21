@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# FluxInstance CR consumed by the ControlPlane flux-operator
+# (https://github.com/controlplaneio-fluxcd/flux-operator). Replaces the
+# imperative `flux install` bootstrap in hack/deploy-infra.sh with a
+# declarative, operator-managed Flux lifecycle shared between the kind
+# Quick Start and the production management cluster.
+#
+# No `spec.sync` block: the kind overlay applies Helm sources and releases
+# directly via `kubectl apply -k deploy/kind/base/`. A git-sync source is a
+# production-only concern and is tracked separately.
+# Feature: CC-0085, REQ-006
+---
+apiVersion: fluxcd.controlplane.io/v1
+kind: FluxInstance
+metadata:
+  name: flux
+  namespace: flux-system
+spec:
+  distribution:
+    version: "2.x"
+    registry: ghcr.io/fluxcd
+  components:
+    - source-controller
+    - kustomize-controller
+    - helm-controller
+    - notification-controller
+  cluster:
+    type: kubernetes
+    size: small
+    multitenant: false
+    networkPolicy: false

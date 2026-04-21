@@ -1,0 +1,196 @@
+{
+  "summary": "CC-0085 migrates the kind Quick Start bootstrap off the imperative `flux install` CLI onto ControlPlane's flux-operator + a declarative `FluxInstance/flux` CR (distribution.version '2.x', ghcr.io/fluxcd registry, four core controllers, size=small, multitenant=false, networkPolicy=false, no spec.sync). Changes: (1) new deploy/flux-system/fluxinstance.yaml added to the base kustomization; (2) hack/deploy-infra.sh Step 2 replaced — now applies flux-operator install.yaml from a pinned FLUX_OPERATOR_VERSION=v0.47.0, then `kubectl apply -k deploy/flux-system/`, then wait_for_fluxinstance (polls FluxInstance Ready with HELMRELEASE_TIMEOUT envelope, dumps describe+FluxReport on timeout); preflight drops `flux` from required commands; `flux reconcile source helm` loop replaced with `reconcile_helmrepository_sources` using `kubectl annotate helmrepository/<name> reconcile.fluxcd.io/requestedAt=$(date +%s%N) --overwrite`; `if [[ BASH_SOURCE == 0 ]]` guard lets tests source the script; (3) hack/install-test-deps.sh gates install_flux behind `WITH_FLUX_CLI=true` (FLUX_VERSION + SHA256 tables kept for opt-in path); (4) renovate.json adds customManagers regex for FLUX_OPERATOR_VERSION plus packageRules disabling major bumps and automerging minor/patch with 3-day minimumReleaseAge; (5) chainsaw infra-stack-health gains Step 6 asserting FluxInstance Ready=True, FluxReport.distribution.entitlement populated, and 5 flux-system controller Deployments availableReplicas>0; ci-dump-diagnostics.sh emits fluxinstance,fluxreport when the fluxcd.controlplane.io API group is present; (6) new unit tests under tests/unit/{deploy,hack,renovate}/ covering FluxInstance kustomize rendering, preflight without flux, reconcile annotate loop, optional-flux gating, and renovate config; (7) docs (quick-start.md, infrastructure-manifests.md, e2e-deployment.md) sync with new flow and add FluxReport tip. The core architectural direction is correct and matches the flux-operator-target already declared in architecture docs, but the Step 2 apply order assumes the source.toolkit.fluxcd.io / helm.toolkit.fluxcd.io CRDs are registered before HelmRepository/HelmRelease are applied — they are not. flux-operator's install.yaml only ships the fluxcd.controlplane.io CRDs (FluxInstance, FluxReport, ResourceSet, ResourceSetInputProvider); the Flux toolkit CRDs are materialised by the operator *after* FluxInstance reconciliation, which cannot happen before the kubectl apply -k aborts the script under `set -euo pipefail`.",
+  "verdict": "BLOCKED",
+  "tests_checklist": [
+    {"item": "Chainsaw infra-stack-health Step 6 asserts FluxInstance Ready=True, FluxReport entitlement populated, and five flux-system Deployments availableReplicas>0", "checked": true},
+    {"item": "tests/unit/deploy/flux_system_fluxinstance_test.sh validates SPDX header + kustomize build produces exactly one FluxInstance with the required spec in both deploy/flux-system/ and deploy/kind/base/", "checked": true},
+    {"item": "tests/unit/hack/deploy_infra_preflight_test.sh covers preflight passes without flux on PATH and fails without kubectl (REQ-005)", "checked": true},
+    {"item": "tests/unit/hack/deploy_infra_reconcile_sources_test.sh covers happy-path annotate loop and empty-list no-op (REQ-003)", "checked": true},
+    {"item": "tests/unit/hack/install_test_deps_optional_flux_test.sh covers WITH_FLUX_CLI unset skips install_flux and WITH_FLUX_CLI=true reaches verify_sha256 (REQ-004)", "checked": true},
+    {"item": "tests/unit/renovate/fluxoperator_custommanager_test.sh validates renovate.json via renovate-config-validator, confirms the matchStrings regex captures the FLUX_OPERATOR_VERSION value via perl, and asserts packageRules mirror the OpenStack pattern (REQ-007)", "checked": true},
+    {"item": "All unit test scripts follow shell-test-script-structure-with-passfail-counters pattern (PASS/FAIL/SKIP counters, tests/lib/assertions.sh sourced)", "checked": true},
+    {"item": "Tests gracefully SKIP when kustomize/yq/jq/perl/npx are unavailable — explicit skip counts prevent false green", "checked": true},
+    {"item": "Fresh-cluster bootstrap end-to-end validation (AC: 'make deploy-infra on a fresh kind cluster ends with FluxInstance/flux Ready=True') — NOT RUNNABLE in sandbox (no docker); also undermined by the Step 2 ordering blocker (I2) which would make this AC fail in CI unless the bootstrap happened to race-win", "checked": false},
+    {"item": "shellcheck on the modified shell scripts — sandbox does not have shellcheck; must be evidenced by CI output", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "SPDX-FileCopyrightText + SPDX-License-Identifier Apache-2.0 headers on every new/modified file (fluxinstance.yaml, new tests, renovate managers, chainsaw Step 6 comment)", "checked": true},
+    {"item": "CC-0085 feature-id references in new/changed files and in the requirement tags on each assertion", "checked": true},
+    {"item": "hack/deploy-infra.sh `set -euo pipefail` preserved; new functions follow the existing log/poll/deadline idiom used by wait_for_helmreleases and wait_for_pods", "checked": true},
+    {"item": "wait_for_fluxinstance dumps `kubectl describe fluxinstance/flux` and `kubectl get fluxreport/flux -o yaml` on timeout — matches the diagnostic-on-failure pattern used by sibling wait_* helpers", "checked": true},
+    {"item": "reconcile_helmrepository_sources tolerates transient annotate failures (`|| true`) per-repo, matching the 'force a reconcile' semantic of the old `flux reconcile source helm` loop", "checked": true},
+    {"item": "FLUX_OPERATOR_VERSION is a single script-level constant pinned to v0.47.0, located next to other configuration (REQ-001 AC: 'The <pinned-tag> is configurable via a script-level variable')", "checked": true},
+    {"item": "`if [[ BASH_SOURCE == 0 ]]; then main; fi` guard added so unit tests can source the script — required by the new tests/unit/hack/ preflight + reconcile tests", "checked": true},
+    {"item": "install-test-deps.sh keeps the FLUX_VERSION + four SHA256 pins for the opt-in debug path; only the invocation is gated", "checked": true},
+    {"item": "ci-dump-diagnostics.sh gates the fluxinstance/fluxreport dump on `kubectl api-resources --api-group=fluxcd.controlplane.io` — does not error on non-flux-operator clusters", "checked": true},
+    {"item": "Chainsaw Step 6 uses the same JMESPath (conditions[?type == 'Ready']) / (availableReplicas > `0`) idioms already present in Steps 1-5", "checked": true},
+    {"item": "Makefile `test-shell` target iterates over tests/unit/hack/*_test.sh, tests/unit/deploy/*_test.sh, tests/unit/renovate/*_test.sh — auto-registers future tests in the same dirs", "checked": true},
+    {"item": "Documentation touch-points (quick-start.md, infrastructure-manifests.md, e2e-deployment.md) all reflect the Flux-CLI=Optional change and the FluxReport diagnostic tip", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "flux-operator install.yaml pulled from a pinned release tag (FLUX_OPERATOR_VERSION) over HTTPS — supply-chain risk unchanged vs. `flux install` (also a GitHub-hosted bundle); acceptable given the existing pinned-binary model", "checked": true},
+    {"item": "No secrets introduced; FluxInstance/flux has no sync.git block so no repo tokens or SSH keys are required (Non-Goal honoured)", "checked": true},
+    {"item": "Flux CLI demotion does not weaken any in-pod secret hygiene — the CLI was never used for secret handling", "checked": true},
+    {"item": "WITH_FLUX_CLI=true path still enforces pinned SHA256 verification — no downgrade in supply-chain posture when opting in", "checked": true},
+    {"item": "renovate packageRules automerge=true on flux-operator minor/patch with minimumReleaseAge=3 days — mirrors the OpenStack tag pattern and gives a soak window before auto-landing", "checked": true},
+    {"item": "kubectl apply over HTTPS to github.com releases does not pin the install.yaml SHA256 — a compromised release asset could inject arbitrary manifests. Same risk as the old `flux install` flow (which also fetched unsigned manifests), so not a regression — but callable out as a latent hardening opportunity", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Aligns the kind on-ramp with the architecture-target flux-operator pattern already declared in architecture/docs/05-deployment/01-gitops-fluxcd/04-bootstrap.md", "checked": true},
+    {"item": "FluxInstance spec deliberately omits spec.sync (Non-Goal: no git-sync in kind) — keeps the Quick Start zero-token, zero-SSH-key", "checked": true},
+    {"item": "Shared flux-operator bootstrap between production and kind — no divergence on the very layer that bootstraps everything else", "checked": true},
+    {"item": "FluxReport surface documented in both quick-start.md and infrastructure-manifests.md — gives the 'is Flux itself broken?' first-stop diagnostic promised by the User Story #2 acceptance criteria", "checked": true},
+    {"item": "Step 2 apply-order assumption violates the documented two-phase-kustomization-for-crd-dependent-resources pattern on a fresh cluster — see I2 (BLOCKING)", "checked": false},
+    {"item": "Step 2 and Step 3 redundantly apply the deploy/flux-system kustomize (Step 3's deploy/kind/base references ../../flux-system) — see I5", "checked": false}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "Reuses the existing wait_* polling idiom for wait_for_fluxinstance — no new helper style invented", "checked": true},
+    {"item": "reconcile_helmrepository_sources reads the HelmRepository list from the API server instead of hardcoding — follows derive-expected-values-from-source-of-truth pattern", "checked": true},
+    {"item": "install-test-deps.sh retains the Flux download path behind an opt-in flag rather than deleting it — honoured the Non-Goal 'Removing the Flux CLI from hack/install-test-deps.sh entirely'", "checked": true},
+    {"item": "Step 2 applies deploy/flux-system/ AND Step 3 applies deploy/kind/base (which includes ../../flux-system as a base) — duplicate apply. See I5", "checked": false}
+  ],
+  "fail_fast_checklist": [
+    {"item": "wait_for_fluxinstance bails out on timeout with `exit 1` and dumps describe+FluxReport for post-mortem", "checked": true},
+    {"item": "preflight_checks still fails fast without kubectl (verified by deploy_infra_preflight_test.sh test 2)", "checked": true},
+    {"item": "install-test-deps.sh verify_sha256 still exits 1 on mismatch (unchanged)", "checked": true},
+    {"item": "Chainsaw Step 6 FluxReport assertion uses `(entitlement != null && entitlement != '')` — catches both missing-field and empty-string failure modes", "checked": true},
+    {"item": "Step 2 `kubectl apply -k deploy/flux-system/` will fail-fast under `set -e` on a fresh cluster because HelmRepository/HelmRelease CRDs are not yet registered — fail-fast is correct, but the failure surfaces at the worst possible place (no retry, no wait for the operator to catch up). See I2", "checked": false}
+  ],
+  "defensive_checklist": [
+    {"item": "reconcile_helmrepository_sources handles an empty HelmRepository list gracefully (for-loop body does not run) — verified by deploy_infra_reconcile_sources_test.sh test 2", "checked": true},
+    {"item": "ci-dump-diagnostics.sh api-resources guard prevents a noisy failure on clusters that have not been bootstrapped with flux-operator", "checked": true},
+    {"item": "BASH_SOURCE guard ensures `source hack/deploy-infra.sh` from a test does not trigger main() and its side effects", "checked": true},
+    {"item": "install-test-deps.sh unit test detects platform via uname mirror and SKIPs on unsupported OS/arch", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [
+    "deploy/flux-system/kustomization.yaml mixes fluxcd.controlplane.io/v1 (FluxInstance) and source.toolkit.fluxcd.io/v1 + helm.toolkit.fluxcd.io/v2 resources in a single kustomize unit that is applied by hack/deploy-infra.sh Step 2 immediately after flux-operator install.yaml. The latter two API groups are only registered after the flux-operator has reconciled the FluxInstance and installed the component controllers, so the single-shot `kubectl apply -k deploy/flux-system/` has a hard data-dependency violation on fresh clusters (see I2).",
+    "Step 2 and Step 3 both apply the deploy/flux-system kustomize on fresh clusters — Step 3 re-enters through deploy/kind/base/kustomization.yaml's `- ../../flux-system` resource reference. The second apply is idempotent on existing resources but wastes a round-trip and makes the step boundary fuzzy; it can also mask race conditions where Step 2 partially applied and Step 3 silently finishes the job (see I5)."
+  ],
+  "issues_found": [
+    {
+      "check_id": "AR1",
+      "severity": "BLOCKING",
+      "description": "hack/deploy-infra.sh Step 2 (lines 673-678) applies flux-operator install.yaml and then runs `kubectl apply -k ${REPO_ROOT}/deploy/flux-system/` in the very next statement, before wait_for_fluxinstance. flux-operator v0.47.0 install.yaml only declares four CRDs, all in the fluxcd.controlplane.io group (FluxInstance, FluxReport, ResourceSet, ResourceSetInputProvider). The source.toolkit.fluxcd.io and helm.toolkit.fluxcd.io CRDs consumed by deploy/flux-system/sources/*.yaml (HelmRepository) and deploy/flux-system/releases/*.yaml (HelmRelease) are materialised ONLY after the flux-operator has reconciled the FluxInstance and installed the Flux component controllers — which cannot happen before Step 2's second `kubectl apply -k` runs. Under `set -euo pipefail` (line 26), kubectl will exit non-zero with 'unable to recognize ... no matches for kind \"HelmRepository\" in version \"source.toolkit.fluxcd.io/v1\"' (and the same for HelmRelease), aborting the script before wait_for_fluxinstance is even called. This violates Acceptance Criterion 6 ('`make deploy-infra` on a fresh kind cluster ends with `FluxInstance/flux` `Ready=True` ...') and the requirement REQ-001 scenario 'Fresh cluster bootstrap'.",
+      "location": "hack/deploy-infra.sh:672-678",
+      "fix": "Split Step 2 into three apply phases with a wait between them, mirroring the two-phase-kustomization-for-crd-dependent-resources pattern: (a) `kubectl apply -f <flux-operator install.yaml URL>` — registers fluxcd.controlplane.io CRDs and starts the operator Deployment; (b) `kubectl apply -f ${REPO_ROOT}/deploy/flux-system/namespaces.yaml` and `kubectl apply -f ${REPO_ROOT}/deploy/flux-system/fluxinstance.yaml` — just the namespaces and the FluxInstance CR, which are the only resources whose CRDs exist at this point; (c) `wait_for_fluxinstance \"${HELMRELEASE_TIMEOUT}\"` — once Ready=True the operator has installed source-controller / helm-controller / kustomize-controller / notification-controller, so their CRDs are registered; (d) move the HelmRepository + HelmRelease apply into Step 3 (or a dedicated Step 2b) where `kubectl apply -k ${REPO_ROOT}/deploy/kind/base` already reaches them via the `- ../../flux-system` base reference. This also incidentally fixes I5 (the duplicate apply). Alternatively, add a `wait_for_crds \"${POD_TIMEOUT}\" helmrepositories.source.toolkit.fluxcd.io helmreleases.helm.toolkit.fluxcd.io` between the flux-operator apply and the deploy/flux-system apply, though that is a narrower patch that still leaves the doubles-apply of I5 in place.",
+      "evidence": "hack/deploy-infra.sh:672-678 shows `kubectl apply -f https://.../flux-operator/.../install.yaml` followed immediately by `kubectl apply -k ${REPO_ROOT}/deploy/flux-system/` and only then `wait_for_fluxinstance`. deploy/flux-system/kustomization.yaml:21-46 lists sources/*.yaml (HelmRepository, source.toolkit.fluxcd.io/v1) and releases/*.yaml (HelmRelease, helm.toolkit.fluxcd.io/v2). The flux-operator v0.47.0 install.yaml bundles only these CRDs (confirmed via the release asset): fluxcd.controlplane.io/FluxInstance, /FluxReport, /ResourceSet, /ResourceSetInputProvider. No source.toolkit.fluxcd.io or helm.toolkit.fluxcd.io CRDs are declared there. Architecture reference: .planwerk/patterns/two-phase-kustomization-for-crd-dependent-resources.md explicitly assumes HelmRepository/HelmRelease CRDs are pre-registered by the bootstrap step; that assumption is broken by the migration away from `flux install`.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "AR2",
+      "severity": "MINOR",
+      "description": "Even once the blocker I2 is addressed, Step 2 (`kubectl apply -k ${REPO_ROOT}/deploy/flux-system/`) and Step 3 (`kubectl apply -k ${REPO_ROOT}/deploy/kind/base`) both reach the same HelmRepository + HelmRelease resources because deploy/kind/base/kustomization.yaml:16 lists `- ../../flux-system` as a base. On a fresh cluster the first apply (Step 2) fails on the CRD ordering issue; on an already-bootstrapped cluster the first apply succeeds and the second is a redundant no-op. This wastes an API round-trip and blurs the boundary between 'bootstrap Flux itself' and 'apply the kind overlay' (the stated purpose of Steps 2 and 3). The cleanest fix folds into I2: Step 2 applies only the flux-operator install.yaml + namespaces.yaml + fluxinstance.yaml; Step 3 applies deploy/kind/base/ (which transitively applies sources and releases via the flux-system base).",
+      "location": "hack/deploy-infra.sh:676, 682; deploy/kind/base/kustomization.yaml:16",
+      "fix": "Roll into the I2 fix — drop the Step 2 `kubectl apply -k ${REPO_ROOT}/deploy/flux-system/` entirely and let Step 3's `kubectl apply -k ${REPO_ROOT}/deploy/kind/base` cover both the kind-specific resources AND (via `- ../../flux-system`) the HelmRepository + HelmRelease resources from deploy/flux-system/. Step 2 only needs the flux-operator install.yaml + the FluxInstance CR + its namespace.",
+      "evidence": "hack/deploy-infra.sh:676 (`kubectl apply -k \"${REPO_ROOT}/deploy/flux-system/\"`) and hack/deploy-infra.sh:682 (`kubectl apply -k \"${REPO_ROOT}/deploy/kind/base\"`). deploy/kind/base/kustomization.yaml:14-17 contains `resources:\\n  - ../../flux-system\\n  - headlamp.yaml`, so deploy/flux-system is a transitive base of deploy/kind/base.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "CQ1",
+      "severity": "MINOR",
+      "description": "deploy/flux-system/kustomization.yaml's header comment (line 10) claims feature IDs CC-0008, CC-0009, CC-0085, REQ-006, REQ-007, REQ-008 — but REQ-007 scopes the renovate config and REQ-008 is not an acceptance-criterion id explicitly listed in the progress JSON's requirements section for this feature (the progress file enumerates REQ-001 through REQ-007 by name in the stories/requirements blocks). REQ-007 and REQ-008 also don't touch kustomization.yaml — REQ-007 is about renovate.json, REQ-008 about e2e chainsaw assertions. The comment looks copied from a larger list rather than describing the actual requirement this file implements. The file only implements REQ-006 (FluxInstance CR spec).",
+      "location": "deploy/flux-system/kustomization.yaml:10",
+      "fix": "Reduce the header comment to the requirement this file actually implements: `# Feature: CC-0008, CC-0009, CC-0085, REQ-006`. Drop REQ-007 and REQ-008 from this file's header. (CC-0008 and CC-0009 are the pre-existing feature ids for the FluxCD integration that created this kustomization; keeping them is appropriate.)",
+      "evidence": "deploy/flux-system/kustomization.yaml:10 reads `# Feature: CC-0008, CC-0009, CC-0085, REQ-006, REQ-007, REQ-008`. The progress JSON (.planwerk/progress/CC-0085-replace-flux-install-with-fluxinstance-in-kind.json) enumerates requirements REQ-001 through REQ-007 (REQ-001=Step 2 install, REQ-002=wait_for_fluxinstance, REQ-003=reconcile_helmrepository_sources, REQ-004=optional flux CLI, REQ-005=preflight, REQ-006=FluxInstance manifest, REQ-007=renovate). REQ-008 is the e2e chainsaw requirement referenced only in tests/e2e/infrastructure/infra-stack-health/chainsaw-test.yaml's comment.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "CQ2",
+      "severity": "MINOR",
+      "description": "hack/deploy-infra.sh's top-of-file comment (lines 6-24) still describes the legacy `Install FluxCD` Step 2 — the docstring was not synchronised with the new `Install flux-operator + apply FluxInstance` flow. The script-level comment block (and the REQ-001..REQ-012 block) references CC-0010 only; the CC-0085 feature-id is correctly called out inline at the Step 2 log line and in the new wait_for_fluxinstance / reconcile_helmrepository_sources function docstrings, but a reader scanning the script header will still think the bootstrap goes through `flux install`.",
+      "location": "hack/deploy-infra.sh:6-24",
+      "fix": "Update the file-level comment: in the 8-step list (lines 9-18), rewrite step 2 from `Install FluxCD` to `Install flux-operator + apply FluxInstance (CC-0085)`. Optionally cross-reference REQ-001/REQ-002/REQ-003/REQ-005 in the REQ block at lines 20-24. Low-impact cleanup — does not change behaviour.",
+      "evidence": "hack/deploy-infra.sh:11 reads `#   2. Install FluxCD` and the REQ block at :20-24 names REQ-001..REQ-012 under CC-0010 only; compare to Step 2 body at :672-678 which carries the new `=== Step 2/8: Install flux-operator + apply FluxInstance ===` log line and the CC-0085/REQ-001/REQ-002 inline comments.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "TE1",
+      "severity": "MINOR",
+      "description": "tests/unit/hack/install_test_deps_optional_flux_test.sh test 2 cannot distinguish between 'install_flux ran end-to-end' and 'install_flux ran on a pre-populated binary and short-circuited on the version check'. The prepopulate_non_flux_tools() helper deliberately does NOT create a pre-populated `flux` binary, so the code path reaches the download+verify_sha256 branch. However, the test also asserts `assert_contains \"install_flux was invoked\" \"$output\" \"Installing flux 2.5.1\"` which would NOT appear if the target binary existed and the version matched — so the short-circuit branch is untested. That is minor because the short-circuit path is the trivial case, but a one-line complementary test (`prepopulate_flux_with_correct_version` + assert `flux 2.5.1 already installed — skipping.`) would fully cover REQ-004.",
+      "location": "tests/unit/hack/install_test_deps_optional_flux_test.sh:206-238",
+      "fix": "Add a third test case: pre-populate $tmp/install/flux with a stub that prints `v2.5.1 client-version …`, export WITH_FLUX_CLI=true, assert output contains `flux 2.5.1 already installed — skipping.` and the flux binary was not overwritten. Small addition; reuses the existing stub helpers.",
+      "evidence": "tests/unit/hack/install_test_deps_optional_flux_test.sh:128 prepopulate_non_flux_tools — comment explicitly says 'Flux is deliberately NOT populated: the test wants the full install_flux code path when WITH_FLUX_CLI=true'. The short-circuit branch (install-test-deps.sh:176-183, `if [[ -x \"${target}\" ]]; then ... if [[ \"${got}\" == \"${want}\" ]]; then return; fi; fi`) is therefore uncovered.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "TE2",
+      "severity": "MINOR",
+      "description": "The Chainsaw Step 6 FluxReport assertion `(entitlement != null && entitlement != '')` reads status.distribution.entitlement, but the progress JSON User Story #4 AC also calls for `.status.distribution.entitlement populated`. Chainsaw renders JMESPath inside parentheses for `(...)` expressions, and JMESPath's `!=` is well-defined, but if the entitlement field is a StructuredObject (e.g. `{type: OSS, status: Valid}`) rather than a string, `entitlement != ''` is trivially true and silently passes on any shape. The acceptance criteria mean 'the operator has evaluated the distribution', and any non-empty field is fine — so the assertion is functionally correct — but a tighter check would be `(entitlement)` (JMESPath truthiness) plus `(distribution.status || 'missing') != 'missing'`, or a Chainsaw resource assertion on a specific subfield. Not a correctness bug, just a tightness-of-assertion observation.",
+      "location": "tests/e2e/infrastructure/infra-stack-health/chainsaw-test.yaml:210-212",
+      "fix": "Optional tightening — replace with `(entitlement)` (JMESPath truthiness; fails on null/false/empty-string/empty-array) and optionally add an explicit check on .status.distribution.status if the operator exposes it. Do not block the PR on this; leave as-is unless you care about catching a shape-change regression.",
+      "evidence": "tests/e2e/infrastructure/infra-stack-health/chainsaw-test.yaml:210-212 reads `status:\\n  distribution:\\n    (entitlement != null && entitlement != ''): true`. The FluxReport CRD's status.distribution.entitlement field type is maintained by the flux-operator and documented at https://fluxoperator.dev/docs/crd/fluxreport.md — the current assertion is permissive against future shape changes.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "DO1",
+      "severity": "MINOR",
+      "description": "docs/quick-start.md Step 3 internal table row 3 reads: `Apply base kustomize overlay — namespaces, HelmRepository sources, HelmRelease objects`. After the Step 2 blocker (I2) is fixed, Step 3 will also be the step that first installs HelmRepository/HelmRelease. That is already what the table says — but the table does not describe Step 2's new 'Install flux-operator + apply FluxInstance' behaviour clearly enough for a reader to understand that Step 2 waits for FluxInstance Ready BEFORE Step 3 can succeed (otherwise the reader could legitimately ask: 'why does Step 3 not need a wait_for_crds first?'). A sentence clarifying that Step 2's wait_for_fluxinstance ensures Flux toolkit CRDs are registered would close the loop.",
+      "location": "docs/quick-start.md:109-113",
+      "fix": "Append one sentence to Step 2's row: 'Waits for FluxInstance Ready=True — this guarantees the Flux toolkit CRDs (HelmRepository, HelmRelease, Kustomization) are registered before Step 3 applies HelmRepository/HelmRelease resources.' Low-impact; sharpens the reader's mental model.",
+      "evidence": "docs/quick-start.md:109-113 table row 2: `2 | **Install flux-operator** + apply \\`FluxInstance/flux\\` (CC-0085) — flux-operator reconciles the Flux controller Deployments from the \\`FluxInstance\\` spec`. Does not mention that Step 2 also registers the source/helm/kustomize toolkit CRDs transitively via FluxInstance reconciliation.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "CQ3",
+      "severity": "MINOR",
+      "description": "renovate.json's customManagers entry for flux-operator (lines 19-31) uses `managerFilePatterns: [\"/^hack/deploy-infra\\\\.sh$/\"]` (a regex form delimited by slashes). That is the correct regex form per Renovate's customManager docs, but the sibling OpenStack entry two blocks above (lines 7-18) uses a slightly different delimiter style (`\"/releases/.*/source-refs\\\\.yaml$/\"` — regex without a leading `^`). Both work, but the two entries are not stylistically aligned: the sibling uses suffix-match, the new one uses full-line anchoring. It's also worth noting that `/^hack/...` is a REGEX anchor (not a glob), which is what Renovate expects once the pattern is wrapped in `/.../` — but a reviewer skimming renovate.json may mis-read it as glob-style. Consider aligning to the existing style for consistency.",
+      "location": "renovate.json:21",
+      "fix": "Either (a) drop the `^` and rely on the implicit full-string match Renovate applies for regex managerFilePatterns (`\"/hack/deploy-infra\\\\.sh$/\"`) to match the sibling OpenStack pattern's style, or (b) leave as-is — the regex is functionally correct and renovate-config-validator accepts it (verified by tests/unit/renovate/fluxoperator_custommanager_test.sh test 1). Style nit only.",
+      "evidence": "renovate.json:10 OpenStack entry: `\"/releases/.*/source-refs\\\\.yaml$/\"`. renovate.json:22 flux-operator entry: `\"/^hack/deploy-infra\\\\.sh$/\"`. Both are valid Renovate regex patterns but inconsistent in style (anchor vs no anchor).",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Fold the I2 and I5 fixes together: restructure Step 2 to (a) apply flux-operator install.yaml, (b) apply only namespaces.yaml + fluxinstance.yaml, (c) wait_for_fluxinstance; then let Step 3's `kubectl apply -k deploy/kind/base` cover the HelmRepository + HelmRelease resources in a single apply that no longer races with CRD registration and no longer duplicates work. This also makes the step semantics match the docs (Step 2 = bootstrap Flux itself; Step 3 = deploy workloads).",
+    "Update the file-level docstring at hack/deploy-infra.sh:6-24 to reflect Step 2's new behaviour (CC-0085) and cross-reference REQ-001/REQ-002/REQ-003/REQ-005.",
+    "Clean up deploy/flux-system/kustomization.yaml:10's Feature header to list only REQ-006 (the requirement this file implements).",
+    "Add a short sentence to docs/quick-start.md Step 3 table row 2 explaining that wait_for_fluxinstance Ready=True guarantees the Flux toolkit CRDs are registered before Step 3 applies them (sharpens the reader's mental model).",
+    "Optional: tighten the Chainsaw FluxReport assertion from `(entitlement != null && entitlement != '')` to `(entitlement)` for JMESPath truthiness.",
+    "Optional: add a complementary install_test_deps_optional_flux_test.sh test case for the 'flux already installed' short-circuit branch.",
+    "Optional: align renovate.json managerFilePatterns style between the two customManagers entries (anchor vs no anchor).",
+    "Follow-up (out of this PR's scope but worth flagging): the flux-operator install.yaml fetch is HTTPS-pinned to a release tag but the install.yaml bytes themselves are not SHA256-verified. The old `flux install` flow had the same gap, so this is not a regression — but the existing hack/install-test-deps.sh model of pinned per-artifact SHA256 could eventually be extended to the flux-operator install.yaml for supply-chain-hardening parity."
+  ],
+  "next_steps": [
+    "BLOCKER — restructure hack/deploy-infra.sh Step 2 so that HelmRepository/HelmRelease resources are applied only after wait_for_fluxinstance succeeds (see I2 fix).",
+    "Re-run `make deploy-infra` on a fresh kind cluster (CI or local) to evidence that FluxInstance/flux reaches Ready=True and all HelmReleases become Ready — AC 6 cannot be signed off without a live-cluster run and the current Step 2 ordering would fail that run.",
+    "Apply the AUTO_FIX items: deploy/flux-system/kustomization.yaml header trim (I4), hack/deploy-infra.sh top-of-file docstring update (CQ2), renovate.json managerFilePatterns style alignment (CQ3).",
+    "Decide on the ASK items: I5 (doubles-apply cleanup — naturally falls out of the I2 fix), TE1 (short-circuit branch coverage), TE2 (FluxReport assertion tightening), DO1 (Step 3 wait-clarification sentence).",
+    "Verify shellcheck passes on the modified shell scripts (hack/deploy-infra.sh, hack/install-test-deps.sh, hack/ci-dump-diagnostics.sh) in CI — sandbox cannot run shellcheck.",
+    "Run tests/unit/renovate/fluxoperator_custommanager_test.sh against a machine with `npx` + internet (sandbox skips) to confirm renovate-config-validator accepts renovate.json after any I8 style change."
+  ],
+  "detected_patterns": [
+    {
+      "pattern": "validate-reconcile-step-ordering-matches-data-dependencies",
+      "match": "I2 (AR1, BLOCKING) — Step 2 applies HelmRepository/HelmRelease CRs before the FluxInstance reconciliation has registered their CRDs. The review pattern explicitly flags this shape as BLOCKING when step B references a resource (kind) that step A is supposed to create but has not yet done so."
+    },
+    {
+      "pattern": "two-phase-kustomization-for-crd-dependent-resources",
+      "match": "The existing deploy/flux-system/ two-phase split (base = Namespaces + HelmRepository + HelmRelease; infrastructure = ClusterIssuer + MariaDB + Memcached) assumes HelmRepository/HelmRelease CRDs are pre-registered by whatever bootstraps Flux itself. CC-0085 replaces `flux install` (which did register those CRDs) with flux-operator + FluxInstance (which does not register them until reconciliation completes) — the existing pattern's assumption is now broken and must be re-established by a new 'wait for Flux toolkit CRDs' step between Step 2a (apply flux-operator) and Step 2b (apply HelmRepository/HelmRelease)."
+    },
+    {
+      "pattern": "shell-test-script-structure-with-passfail-counters",
+      "match": "All four new unit tests under tests/unit/{deploy,hack,renovate}/ follow the PASS/FAIL/SKIP counter pattern, source tests/lib/assertions.sh, and exit 1 on any FAIL — consistent with sibling shell tests in the repo."
+    },
+    {
+      "pattern": "binary-installation-with-version-skip-and-sha256-checksum-verification",
+      "match": "hack/install-test-deps.sh's install_flux function is kept intact (version check short-circuit + verify_sha256 against pinned FLUX_SHA256_<os>_<arch>) behind the WITH_FLUX_CLI gate; CC-0085 does not weaken the supply-chain posture of the opt-in debug path."
+    },
+    {
+      "pattern": "ci-script-extraction-with-env-var-interface",
+      "match": "WITH_FLUX_CLI is the env-var interface that gates install_flux — same style as SKIP_KIND_CREATE, HELMRELEASE_TIMEOUT, POD_TIMEOUT elsewhere in hack/deploy-infra.sh."
+    },
+    {
+      "pattern": "infrastructure-deployment-script-with-8-step-orchestration-and-configurable-timeouts",
+      "match": "hack/deploy-infra.sh keeps the 8-step orchestration with log/wait_* helpers and configurable timeouts; CC-0085 adds wait_for_fluxinstance and reconcile_helmrepository_sources in the same idiom."
+    },
+    {
+      "pattern": "chainsaw-e2e-test-suite-structure-with-jmespath-condition-assertions",
+      "match": "Chainsaw Step 6 uses the same JMESPath filter + `(availableReplicas > `0`)` and `(conditions[?type == 'Ready'])` assertion style as Steps 1-5 in the same file."
+    },
+    {
+      "pattern": "spdx-apache-20-header-on-infrastructure-files",
+      "match": "All new/modified files carry the SPDX-FileCopyrightText / SPDX-License-Identifier Apache-2.0 header; feature ids referenced on changed files."
+    }
+  ]
+}

@@ -28,24 +28,30 @@ identical to what CI validates.
 | CPU | 2 cores |
 | Disk | 10 GB free |
 
-### Required tools
+### Required and optional tools
 
 | Tool | Install |
 |------|---------|
 | [Docker](https://docs.docker.com/get-docker/) | platform installer |
 | [kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation) | see below |
 | [kubectl](https://kubernetes.io/docs/tasks/tools/) | see below |
-| [Flux CLI](https://fluxcd.io/flux/installation/#install-the-flux-cli) | see below |
 | [Helm](https://helm.sh/docs/intro/install/) | platform installer |
 | [jq](https://jqlang.org/download/) | platform installer |
+| [Flux CLI](https://fluxcd.io/flux/installation/) | **Optional — debugging only.** `make deploy-infra` bootstraps Flux via flux-operator + `FluxInstance` and does not require the CLI (CC-0085, REQ-004). Install it only to run ad-hoc `flux logs` or `flux get` commands against a live cluster. |
 
-The project ships a helper script that downloads and verifies kind, kubectl, and Flux CLI with
-pinned SHA256 checksums. The authoritative versions are declared at the top of
+The project ships a helper script that downloads and verifies kind and kubectl with pinned
+SHA256 checksums. The authoritative versions are declared at the top of
 `hack/install-test-deps.sh` — always use that script rather than installing these tools manually to
 stay in sync with what CI uses:
 
 ```bash
 make install-test-deps
+```
+
+To additionally install the optional Flux CLI (for diagnostics only), opt in explicitly:
+
+```bash
+WITH_FLUX_CLI=true make install-test-deps
 ```
 
 By default, binaries are installed to `~/.local/bin`. Make sure that directory is in your `PATH`:
@@ -98,9 +104,9 @@ Internally this performs the following steps:
 | Step | What happens |
 |------|-------------|
 | 1 | Kind cluster already exists — skipped (cluster was created in Step 2) |
-| 2 | **Install FluxCD** via `flux install` |
+| 2 | **Install flux-operator** + apply `FluxInstance/flux` — flux-operator reconciles the Flux controller Deployments from the `FluxInstance` spec, then the step blocks until `FluxInstance/flux` reports `Ready=True`. Reaching `Ready=True` guarantees the Flux toolkit CRDs (`source.toolkit.fluxcd.io`, `helm.toolkit.fluxcd.io`, `kustomize.toolkit.fluxcd.io`, `notification.toolkit.fluxcd.io`) are registered, so Step 3 can apply `HelmRepository` and `HelmRelease` objects without a separate `wait_for_crds` gate |
 | 2a | **Install Gateway API CRDs** — `kubectl apply --server-side` of the upstream `standard-install.yaml` for the version in `GATEWAY_API_VERSION` (default matches `sigs.k8s.io/gateway-api` in `operators/keystone/go.mod`). Required by the keystone-operator's HTTPRoute watch — without it the operator logs `no matches for kind HTTPRoute` at startup. |
-| 3 | Apply base kustomize overlay — namespaces, `HelmRepository` sources, `HelmRelease` objects |
+| 3 | Apply base kustomize overlay — namespaces, `HelmRepository` sources, `HelmRelease` objects (the Flux toolkit CRDs they depend on were registered by Step 2) |
 | 4 | Wait for HelmReleases to become `Ready`: cert-manager → OpenBao TLS prerequisites → prometheus-operator-crds, openbao, mariadb-operator, external-secrets, memcached-operator |
 | 5 | Apply infrastructure kustomize overlay — `ClusterSecretStore`, `ExternalSecret` objects, `MariaDB` and `Memcached` cluster CRs |
 | 6 | Wait for the OpenBao pod to reach `Running` phase |
@@ -120,10 +126,24 @@ HELMRELEASE_TIMEOUT=900 POD_TIMEOUT=600 make deploy-infra
 ```
 :::
 
+::: tip Inspect the Flux installation
+flux-operator publishes a `FluxReport/flux` that summarizes the state of every Flux
+controller, its version, and the entitlement status. Inspect it at any time:
+
+```bash
+kubectl get fluxreport/flux -n flux-system -o yaml
+```
+:::
+
 ::: details What gets deployed
 After `make deploy-infra` completes the following are running in the cluster:
 
 ```
+flux-system           flux-operator-*                Ready (reconciles FluxInstance/flux)
+flux-system           source-controller-*            Ready
+flux-system           kustomize-controller-*         Ready
+flux-system           helm-controller-*              Ready
+flux-system           notification-controller-*      Ready
 cert-manager          cert-manager-*         Ready
 mariadb-system        mariadb-operator-*     Ready
 memcached-system      memcached-operator-*   Ready
@@ -171,6 +191,26 @@ kubectl port-forward svc/headlamp -n headlamp-system 8080:80
 Open `http://localhost:8080`, paste the token. The sidebar shows **Flux → Helm Releases /
 Kustomizations / Sources** alongside the standard resources. The `headlamp` ServiceAccount is
 bound to a read-only ClusterRole covering Flux toolkit API groups and forge-stack CRDs.
+
+### Accessing the Flux UI
+
+The Headlamp Flux plugin is the Flux UI used by this project. The `flux-operator`
+itself also ships an embedded Flux Web UI ([fluxoperator.dev/web-ui](https://fluxoperator.dev/web-ui/));
+the Quick Start does not enable it — the `FluxInstance` in `deploy/flux-system/fluxinstance.yaml`
+has no web-UI configuration — so all Flux state is viewed through Headlamp here.
+Once Headlamp is open and you are authenticated, click **Flux** in the left sidebar
+to switch into the Flux views:
+
+| Pane | Shows |
+|------|-------|
+| **Helm Releases** | Every `HelmRelease` with reconciliation status, last applied revision, and the values that were rendered |
+| **Kustomizations** | `Kustomization` objects (empty in the kind Quick Start — the `FluxInstance` here has no `spec.sync` block) |
+| **Sources** | `HelmRepository` objects (and `GitRepository`/`OCIRepository` if present) with the last successful fetch and artifact revision |
+| **Flux Runtime** | The flux-operator's `FluxInstance/flux` and `FluxReport/flux` — controller versions, reconciliation state, entitlement status |
+
+Use this instead of the legacy `flux get` / `flux logs` CLI — all state the CLI would
+print is rendered live here, and every resource row links to the controller logs and
+Kubernetes events that produced it.
 
 ---
 

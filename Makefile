@@ -143,6 +143,19 @@ shellcheck:
 	@echo "Linting operator rotation scripts..."
 	@shellcheck --severity=warning operators/*/internal/controller/scripts/*.sh
 
+.PHONY: test-shell
+# test-shell runs every shell-script unit test under tests/unit/ (CC-0085, REQ-003/REQ-005/REQ-007).
+# Each test is a self-contained bash script that uses tests/lib/assertions.sh.
+test-shell:
+	@echo "Running shell unit tests..."
+	@status=0; \
+	for t in tests/unit/hack/*_test.sh tests/unit/deploy/*_test.sh tests/unit/renovate/*_test.sh; do \
+		[ -f "$$t" ] || continue; \
+		echo "=== $$t ==="; \
+		bash "$$t" || status=1; \
+	done; \
+	exit $$status
+
 # ============================================================================
 # Format Targets (CC-0053)
 # ============================================================================

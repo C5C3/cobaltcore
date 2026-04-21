@@ -1,0 +1,43 @@
+{
+  "summary": "Follow-up improvement cycle addressing all four WARNING findings from external review #1 (berendt). Changes: (1) chainsaw FluxReport assertion switched from `(entitlement != ''): true` to `(entitlement): true` truthiness check so a null field correctly fails; (2) docs/quick-start.md restores a Flux CLI row marked Optional - debugging only, renames the section to 'Required and optional tools', and adds the `WITH_FLUX_CLI=true make install-test-deps` opt-in snippet; (3) .github/actions/setup-e2e-infra/action.yaml description updated and a one-line comment documents that the Flux CLI install step is retained only for `flux logs` diagnostics after the FluxInstance migration; (4) docs/reference/infrastructure/e2e-deployment.md Step 2 diagram line corrected from 'Kustomize applies FluxInstance/flux' to the actual `kubectl apply -f deploy/flux-system/fluxinstance.yaml` performed by hack/deploy-infra.sh. hack/ci-dump-diagnostics.sh also gets an explanatory comment on the now-dormant `flux logs` block (INFO I-002 auto-fix). No source logic changes introduced and review scope is respected - only the files listed in the scope restriction are touched.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "FluxReport assertion change is semantically correct (truthiness fails on null/empty)", "checked": true},
+    {"item": "Chainsaw test comment explains the `(entitlement): true` vs `(entitlement != ''): true` decision", "checked": true},
+    {"item": "Tests exist and pass (not re-run in this scope; no test logic altered beyond the one assertion tightening)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (SPDX headers, feature-ID references, composite-action conventions)", "checked": true},
+    {"item": "No scope creep - changes limited to the files listed in review-scope-restriction", "checked": true},
+    {"item": "Every added comment carries the CC-0085 feature ID", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No new secret handling, command injection, or supply-chain changes introduced", "checked": true},
+    {"item": "flux-operator install.yaml still pinned by tag only (I-001 acknowledged as out-of-scope follow-up, confirmed consistent with external review decision)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Docs now consistently describe the flux-operator bootstrap path (Quick Start, e2e-deployment.md, composite action)", "checked": true},
+    {"item": "Quick Start prerequisites table stays consistent with docs/reference/infrastructure/e2e-deployment.md (both mark Flux CLI Optional with the same opt-in snippet)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated logic introduced; changes are minimal comment/doc/assertion edits", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Chainsaw assertion now fails fast on missing/null entitlement rather than silently passing", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "ci-dump-diagnostics.sh still guards on `command -v flux` and `kubectl api-resources` before emitting diagnostics", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Follow-up (already documented in external review I-001): introduce FLUX_OPERATOR_INSTALL_SHA256_<os>_<arch> constants to verify the downloaded flux-operator install.yaml before `kubectl apply`, mirroring the FLUX_SHA256_* pattern in hack/install-test-deps.sh. Out of scope here.",
+    "Follow-up (external review I-001 second): once a live flux-operator v0.47.0 cluster is reachable, confirm whether the FluxReport CRD actually places `distribution.entitlement` under `.spec` (as the comment claims and the assertion targets) or `.status` (as REQ-008 language implies). If the live CRD places it under `.status`, either move the chainsaw assertion under `status:` or update the planwerk spec path. Sandbox cannot verify."
+  ],
+  "next_steps": [
+    "Mark review improvement cycle #2 complete and hand the PR back to the external reviewer.",
+    "Optionally spot-check latest flux-operator release tag before merge (I-003); renovate will otherwise reconcile within the 3-day soak window."
+  ],
+  "detected_patterns": []
+}

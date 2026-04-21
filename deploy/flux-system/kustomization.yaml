@@ -3,10 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Kustomization for FluxCD base infrastructure manifests.
-# Includes Namespace resources, HelmRepository sources, and HelmRelease
+# Includes Namespace resources, the FluxInstance CR that drives the
+# ControlPlane flux-operator, HelmRepository sources, and HelmRelease
 # operators. CRD-dependent infrastructure custom resources are in a
 # separate kustomization at infrastructure/kustomization.yaml.
-# Feature: CC-0008, CC-0009, REQ-007, REQ-008
+# Feature: CC-0008, CC-0009, CC-0085
+# REQ-006 (CC-0085): FluxInstance CR spec consumed by the flux-operator.
 #
 # To add a new operator (e.g., OpenBao for CC-0009):
 #   1. Add a new source file in sources/ (e.g., sources/openbao.yaml)
@@ -20,6 +22,9 @@ kind: Kustomization
 resources:
   # Namespace resources (applied first by kustomize resource ordering)
   - namespaces.yaml
+
+  # FluxInstance CR consumed by the flux-operator (CC-0085, REQ-006)
+  - fluxinstance.yaml
 
   # HelmRepository sources (FluxCD chart registries)
   - sources/cert-manager.yaml

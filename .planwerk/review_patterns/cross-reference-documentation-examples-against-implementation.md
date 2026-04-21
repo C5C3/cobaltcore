@@ -3,7 +3,7 @@
 **Review-Area**: documentation
 **Detection-Hint**: When a PR modifies a Dockerfile, script, or configuration file, search the docs/ directory for code examples that reference or illustrate the same file. Compare the documented pattern against the actual changed code.
 **Severity**: WARNING
-**Occurrences**: 6
+**Occurrences**: 7
 
 ## What to check
 
@@ -44,3 +44,8 @@ Stale documentation examples mislead developers who follow the docs instead of r
 - **Feedback**: W-002 (wrong flag name) was fixed by replacing --log-label with --dep-label and adding --dep-ns=default in the Catch blocks sentence.
 - **What was missed**: Every CLI flag mentioned in documentation or inline comments must match the actual flag name accepted by the tool. Check for typos, outdated names from earlier revisions, and missing required companion flags.
 - **Fix**: Replaced `--log-label` with `--dep-label` and added the missing `--dep-ns=default` flag in the catch block documentation.
+
+### CC-0085 — berendt
+- **Feedback**: The Required tools table in Quick Start omits the Flux CLI entirely... REQ-009 requires the Flux CLI row to be annotated Optional — debugging only with the install snippet.
+- **What was missed**: If REQ or User Story ACs name specific documentation artifacts (rows, snippets, annotations), verify every doc that should contain them actually does — especially entry-point docs like Quick Start.
+- **Fix**: Added the missing Flux CLI row and `WITH_FLUX_CLI=true make install-test-deps` snippet to Quick Start to match the reference doc.

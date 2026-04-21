@@ -58,7 +58,7 @@ ExternalSecrets) into a local kind cluster and validate it with Chainsaw E2E tes
 | Docker | Running Docker daemon (kind uses Docker containers as nodes) |
 | kubectl | Kubernetes CLI for cluster interaction |
 | kind | Kubernetes IN Docker for local cluster creation |
-| flux | FluxCD CLI for installing flux controllers |
+| flux | **Optional** — the Flux CLI is no longer required by `make deploy-infra`; bootstrap uses flux-operator + FluxInstance (CC-0085). Opt in with `WITH_FLUX_CLI=true make install-test-deps` for ad-hoc `flux logs` debugging. |
 | chainsaw | Kyverno Chainsaw for E2E test execution |
 | jq | JSON processor used by deployment scripts |
 
@@ -96,7 +96,10 @@ Produces JUnit XML reports in `_output/reports/`.
 ```text
 Step 1 ── Create kind cluster (hack/kind-config.yaml)
      │
-Step 2 ── Install FluxCD (flux install)
+Step 2 ── Install flux-operator + apply FluxInstance (CC-0085)
+     │         kubectl apply -f flux-operator install.yaml
+     │         kubectl apply -f deploy/flux-system/fluxinstance.yaml
+     │         wait_for_fluxinstance polls Ready condition
      │
      ├── Install Gateway API standard CRDs
      │         kubectl apply --server-side -f <upstream standard-install.yaml>
@@ -185,7 +188,8 @@ The deployment script supports configurable timeouts via environment variables:
 | Variable | Default | Description |
 | --- | --- | --- |
 | `CLUSTER_NAME` | `forge-e2e` | Kind cluster name |
-| `HELMRELEASE_TIMEOUT` | `600` | Seconds to wait for HelmReleases Ready |
+| `FLUX_OPERATOR_VERSION` | _pinned in script_ | Tag of the flux-operator `install.yaml` release applied in Step 2 (CC-0085); kept in sync by Renovate via a `customManager` on `hack/deploy-infra.sh` |
+| `HELMRELEASE_TIMEOUT` | `600` | Seconds to wait for HelmReleases Ready (also bounds the `wait_for_fluxinstance` poll in Step 2) |
 | `POD_TIMEOUT` | `300` | Seconds to wait for OpenBao pods Ready |
 | `EXTERNALSECRET_TIMEOUT` | `120` | Seconds to wait for ExternalSecrets synced |
 | `SKIP_KIND_CREATE` | `false` | Skip kind cluster creation (CI mode where cluster is pre-created) |

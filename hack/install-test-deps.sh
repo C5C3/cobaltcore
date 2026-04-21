@@ -4,7 +4,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # hack/install-test-deps.sh — Install pinned E2E test dependencies.
-# Feature: CC-0010
+#
+# By default installs: chainsaw, kind, kubectl. The Flux CLI is optional after
+# the FluxInstance bootstrap migration (CC-0085, REQ-004) and is installed
+# only when WITH_FLUX_CLI=true is exported.
+# Feature: CC-0010, CC-0085
 
 set -euo pipefail
 
@@ -282,7 +286,12 @@ main() {
   detect_platform
   mkdir -p "${INSTALL_DIR}"
   install_chainsaw
-  install_flux
+  # Flux CLI is optional: the kind Quick Start bootstraps Flux via the
+  # flux-operator FluxInstance and no longer shells out to `flux`
+  # (CC-0085, REQ-004). Set WITH_FLUX_CLI=true to install it anyway.
+  if [[ "${WITH_FLUX_CLI:-false}" == "true" ]]; then
+    install_flux
+  fi
   install_kind
   install_kubectl
   log "=== Done ==="

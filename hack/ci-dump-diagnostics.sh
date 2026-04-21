@@ -41,9 +41,23 @@ kubectl describe daemonset -n chaos-mesh chaos-daemon 2>/dev/null || true
 echo "=== Events (last 50) ==="
 kubectl get events --all-namespaces --sort-by='.lastTimestamp' | tail -50 || true
 
+# Diagnostics-only Flux CLI block. After the FluxInstance migration
+# (CC-0085, REQ-004) the CLI is opt-in — `hack/install-test-deps.sh` only
+# installs it when `WITH_FLUX_CLI=true`, so on the default CI path this
+# branch is dormant. The `fluxinstance,fluxreport` dump below compensates.
 if command -v flux >/dev/null 2>&1; then
   echo "=== Flux logs ==="
   flux logs --all-namespaces || true
+fi
+
+# flux-operator state (CC-0085): emit FluxInstance and FluxReport only when
+# the flux-operator CRDs are registered on the cluster; otherwise a plain
+# `kubectl get` would error loudly on clusters that have not been bootstrapped
+# with flux-operator yet.
+if kubectl api-resources --api-group=fluxcd.controlplane.io 2>/dev/null \
+    | grep -q '^fluxinstances'; then
+  echo "=== FluxInstance / FluxReport ==="
+  kubectl get fluxinstance,fluxreport -A -o yaml || true
 fi
 
 # ---------------------------------------------------------------------------

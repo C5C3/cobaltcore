@@ -17,8 +17,9 @@ infrastructure resources (applied after operators install their CRDs).
 ```text
 deploy/
 └── flux-system/
-    ├── kustomization.yaml                Base kustomize overlay (namespaces, sources, releases)
+    ├── kustomization.yaml                Base kustomize overlay (namespaces, FluxInstance, sources, releases)
     ├── namespaces.yaml                   Namespace resources for all components
+    ├── fluxinstance.yaml                 FluxInstance CR driving the flux-operator (CC-0085)
     ├── sources/                          FluxCD HelmRepository CRs
     │   ├── cert-manager.yaml             Jetstack Helm chart registry
     │   ├── mariadb-operator.yaml         MariaDB Operator Helm chart registry
@@ -70,6 +71,46 @@ helm-controller to create namespaces when installing charts. However, this does 
 when applying HelmRelease CRs via `kubectl apply -k` — the target namespace must already
 exist for the API server to accept namespaced resources. The explicit `Namespace` resources
 solve this chicken-and-egg problem.
+
+## FluxInstance
+
+**File:** `deploy/flux-system/fluxinstance.yaml`
+
+A single `FluxInstance` CR drives the
+[flux-operator](https://github.com/controlplaneio-fluxcd/flux-operator), which replaces
+the imperative `flux install` / `flux bootstrap` path with a declarative,
+operator-managed Flux lifecycle (CC-0085). The flux-operator reconciles the Flux
+controller Deployments from this spec and publishes a `FluxReport/flux` summarizing the
+installation state.
+
+| Property | Value |
+| --- | --- |
+| API version | `fluxcd.controlplane.io/v1` |
+| Kind | `FluxInstance` |
+| Name | `flux` |
+| Namespace | `flux-system` |
+
+**Spec fields:**
+
+| Field | Value | Purpose |
+| --- | --- | --- |
+| `distribution.version` | `"2.x"` | Minor-version track pinned by the operator; picks the latest Flux 2.x release |
+| `distribution.registry` | `ghcr.io/fluxcd` | Controller image registry |
+| `components` | `source-controller`, `kustomize-controller`, `helm-controller`, `notification-controller` | Four Flux controllers installed — image-automation and image-reflector controllers are omitted (not used in this project) |
+| `cluster.type` | `kubernetes` | Generic Kubernetes distribution (not OpenShift/EKS-specific) |
+| `cluster.size` | `small` | Small resource profile suitable for single-node kind and low-traffic management clusters |
+| `cluster.multitenant` | `false` | Cross-namespace references allowed — simplifies the single-tenant management cluster model |
+| `cluster.networkPolicy` | `false` | No NetworkPolicies applied to flux-system (kind overlay assumes a permissive default; production overlays opt in) |
+
+**No `spec.sync` block.** The kind Quick Start applies Helm sources and releases
+directly via `kubectl apply -k deploy/kind/base/`, so the `FluxInstance` here does not
+carry a `GitRepository` sync. Production overlays that want continuous reconciliation
+from Git add a `spec.sync` block on top of this base.
+
+**Kustomize ordering.** Kustomize applies `Namespace` resources first by default, so
+`flux-system` exists before the `FluxInstance` is created. The flux-operator itself is
+installed out-of-band by `hack/deploy-infra.sh` (pinned `FLUX_OPERATOR_VERSION`,
+applied via `kubectl apply -f install.yaml`) before this kustomization is applied.
 
 ## HelmRepository Sources
 
@@ -425,17 +466,18 @@ CRD-dependent infrastructure resources:
 **File:** `deploy/flux-system/kustomization.yaml`
 
 The base kustomization uses `apiVersion: kustomize.config.k8s.io/v1beta1` and includes
-namespaces, HelmRepository sources, and HelmRelease operators. These resources do not
-depend on any custom CRDs.
+namespaces, the FluxInstance CR, HelmRepository sources, and HelmRelease operators.
+These resources do not depend on any custom CRDs.
 
-**Resource count:** 17 files producing 24 Kubernetes resources.
+**Resource count:** 18 files producing 25 Kubernetes resources.
 
 | Category | Count | Resources |
 | --- | --- | --- |
 | Namespace | 8 | cert-manager, mariadb-system, external-secrets, monitoring-system, memcached-system, openstack, openbao-system, chaos-mesh |
+| FluxInstance | 1 | flux (drives the flux-operator) |
 | HelmRepository | 7 | cert-manager, mariadb-operator, external-secrets, openbao, c5c3-charts, prometheus-community, chaos-mesh |
 | HelmRelease | 9 | cert-manager, prometheus-operator-crds, mariadb-operator-crds, mariadb-operator, external-secrets, memcached-operator, openbao, keystone-operator, chaos-mesh |
-| **Total** | **24** | |
+| **Total** | **25** | |
 
 ### Infrastructure Kustomization
 
@@ -462,10 +504,10 @@ kustomization and after operators have finished installing their CRDs.
 kubectl apply -k deploy/flux-system/
 ```
 
-This applies 24 resources: 8 namespaces, 7 HelmRepository sources, and 9 HelmRelease
-operators. FluxCD resolves the dependency graph between HelmReleases and installs
-operators in the correct order. Wait for all operators to finish installing before
-proceeding to step 2.
+This applies 25 resources: 8 namespaces, 1 FluxInstance, 7 HelmRepository
+sources, and 9 HelmRelease operators. FluxCD resolves the dependency graph between
+HelmReleases and installs operators in the correct order. Wait for all operators to
+finish installing before proceeding to step 2.
 
 ### Step 2: Apply infrastructure resources
 
