@@ -96,6 +96,7 @@ spec:
     try:
     - script:
         timeout: 300s
+        shell: bash
         content: |
           set -uo pipefail
           RESULTS_DIR=/tmp/cc-0084-rolling-update
@@ -299,6 +300,7 @@ spec:
   - name: keystone-rolling-update-zero-downtime
     try:
     - script:
+        shell: bash
         content: |
           # REQ-014 (CC-0084): the load generator must have sent at least 200
           # requests and observed zero 5xx responses and zero connection-reset
@@ -337,6 +339,7 @@ spec:
   - name: keystone-rolling-update-availability
     try:
     - script:
+        shell: bash
         content: |
           # REQ-014 (CC-0084): default RollingUpdate strategy (maxUnavailable=0,
           # maxSurge=1) must keep Deployment.status.availableReplicas >= 3
@@ -402,6 +405,7 @@ spec:
             (availableReplicas == `3`): true
             (updatedReplicas == replicas): true
     - script:
+        shell: bash
         content: |
           # Sanity-check the new tag made it to the pod spec.
           set -euo pipefail
