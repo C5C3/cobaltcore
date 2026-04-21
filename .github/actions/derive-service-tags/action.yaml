@@ -48,7 +48,7 @@ runs:
   steps:
     - name: Install yq
       if: ${{ inputs.install_yq != 'false' }}
-      uses: mikefarah/yq@b534aa9ee5d38001fba3cd8fe254a037e4847b37 # v4.45.4
+      uses: mikefarah/yq@751d8ad57b84f1794661bc70c0afb92a22ad7b3c # v4.53.2
 
     - name: Derive tags
       id: run
