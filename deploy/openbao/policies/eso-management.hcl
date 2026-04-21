@@ -24,6 +24,13 @@ path "kv-v2/data/infrastructure/*" {
 # on the management cluster's ESO role (CC-0009).
 # Scoped to keystone/* rather than openstack/* to maintain least-privilege —
 # other OpenStack service credentials (nova, neutron, etc.) are excluded.
+#
+# This policy stays READ-ONLY by design. Write access for the fernet-keys
+# and credential-keys backup PushSecrets is granted by a separate, narrowly-
+# scoped policy — see deploy/openbao/policies/push-keystone-keys.hcl — which
+# is bound alongside eso-management on the management cluster's auth role.
+# The separation preserves the audit invariant that a leaked management-cluster
+# ESO token on eso-management alone cannot write to OpenBao (CC-0083).
 path "kv-v2/data/openstack/keystone/*" {
   capabilities = ["read"]
 }

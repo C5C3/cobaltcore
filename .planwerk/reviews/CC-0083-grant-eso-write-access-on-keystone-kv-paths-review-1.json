@@ -1,0 +1,92 @@
+{
+  "summary": "CC-0083 introduces a dedicated push-keystone-keys OpenBao policy granting write capabilities (create, update, read) on exactly two literal KV paths used by the Keystone operator's PushSecret CRs (kv-v2/data/openstack/keystone/fernet-keys and .../credential-keys). The bootstrap script setup-auth.sh binds this new policy alongside the existing read-only eso-management policy on the management cluster's ESO Kubernetes auth role only; the other three cluster roles (control-plane, hypervisor, storage) are byte-for-byte unchanged. eso-management.hcl stays read-only with an updated DEVIATION comment explicitly pointing at push-keystone-keys for write access, preserving least-privilege separation. The architecture submodule documentation (architecture/docs/09-implementation/09-openbao-deployment.md) is updated with the new policy block, the read-only callout, and the Apply Policies loop. Chainsaw e2e (basic-deployment) is extended to assert PushSecret status.conditions[type=Ready].status='True' for both fernet-keys-backup and credential-keys-backup, with diagnostic catch blocks that capture `kubectl describe pushsecret` and external-secrets controller logs. All files carry SPDX Apache-2.0 headers and CC-0083 feature references.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Chainsaw e2e assertions added for both PushSecrets (Ready=True)", "checked": true},
+    {"item": "Catch blocks capture diagnostic output (describe + ESO logs) on regression", "checked": true},
+    {"item": "Existing PushSecret existence assertion preserved alongside new status assertion", "checked": true},
+    {"item": "JMESPath condition assertion syntax matches sibling tests in the suite", "checked": true},
+    {"item": "Step renumbering applied consistently after insertion of new Step 5", "checked": true},
+    {"item": "Manual regression validation (task 4.4) — cannot be verified in sandbox; must be evidenced in PR description", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Two literal path stanzas, no wildcards, no keystone/db, no keystone/* (REQ-001, REQ-006)", "checked": true},
+    {"item": "Capabilities exactly [\"create\", \"update\", \"read\"] on both paths (REQ-001)", "checked": true},
+    {"item": "eso-management.hcl capabilities lists remain [\"read\"] only (REQ-003)", "checked": true},
+    {"item": "DEVIATION comment in eso-management.hcl explicitly references push-keystone-keys.hcl (REQ-003)", "checked": true},
+    {"item": "Token policy binding for management cluster: eso-management,push-keystone-keys (REQ-002)", "checked": true},
+    {"item": "Other cluster roles (control-plane, hypervisor, storage) unchanged (REQ-002)", "checked": true},
+    {"item": "setup-policies.sh dynamic *.hcl glob picks up new file with no code change (REQ-001)", "checked": true},
+    {"item": "Architecture doc updated with HCL block, read-only callout, and Apply Policies loop entry (REQ-004)", "checked": true},
+    {"item": "Architecture doc capability verbs and path literals byte-for-byte match push-keystone-keys.hcl", "checked": true},
+    {"item": "SPDX header + CC-0083 feature reference present on all new/changed files", "checked": true},
+    {"item": "Loop refactor preserves existing log message tone and idempotence (bao write upsert)", "checked": true},
+    {"item": "shellcheck — not runnable in sandbox (binary unavailable)", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "Least-privilege: push-keystone-keys grants only create/update/read on two literal paths (no delete, no list, no wildcard)", "checked": true},
+    {"item": "Read/push policy separation maintained — leaked eso-management token alone cannot write", "checked": true},
+    {"item": "openstack/keystone/db (read-only MariaDB credentials) deliberately excluded from write scope — prevents ESO from overwriting db creds and locking Keystone out of its database", "checked": true},
+    {"item": "No wildcard widening of eso-management policy (would have violated separation of concerns)", "checked": true},
+    {"item": "Push policy bound only on management cluster — control-plane/hypervisor/storage ESO cannot write Keystone keys", "checked": true},
+    {"item": "No secrets handled in shell logic — token_policies binding is config-only, no in-pod secret exposure vector", "checked": true},
+    {"item": "Policy ordering in token_policies CSV is irrelevant (OpenBao unions grants across listed policies)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Mirrors established push-app-credentials.hcl / push-ceph-keys.hcl pattern (capabilities + scope discipline)", "checked": true},
+    {"item": "No scope creep — bootstrap loop kept; only the management-cluster branch differs", "checked": true},
+    {"item": "Cross-reference between eso-management.hcl and push-keystone-keys.hcl makes separation self-documenting", "checked": true},
+    {"item": "Architecture doc + HCL + bootstrap script all reference each other (single source of truth chain intact)", "checked": true},
+    {"item": "Operator PushSecret RemoteKey targets verified against policy literal paths (reconcile_fernet.go:352, reconcile_credential.go:343)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated policy logic across HCL files", "checked": true},
+    {"item": "Catch blocks in Step 4 and Step 5 of chainsaw test are byte-identical — minor duplication", "checked": false},
+    {"item": "No speculative future-proofing — only the two paths the operator actually pushes to are granted", "checked": true},
+    {"item": "Reuses dynamic *.hcl glob in setup-policies.sh; no new wiring code needed", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "PushSecret Ready=True assertion will detect the 403 regression at deploy time, not days later on rebuild", "checked": true},
+    {"item": "Diagnostic catch block surfaces the 403 reason from ESO controller logs in CI output", "checked": true},
+    {"item": "set -euo pipefail preserved in setup-auth.sh; if/else branch is local var assignment, no failure modes added", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Token policies binding uses literal cluster equality check ('management') — no fuzzy matching", "checked": true},
+    {"item": "bao write upsert idempotence preserved — re-running bootstrap is safe", "checked": true},
+    {"item": "DEVIATION comment in eso-management.hcl prevents future reviewers from silently merging the policies", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "Q3",
+      "severity": "MINOR",
+      "description": "Catch blocks in Step 4 (fernet) and Step 5 (credential) of tests/e2e/keystone/basic-deployment/chainsaw-test.yaml are byte-identical (lines 182-188 vs 201-207). Both run `kubectl describe pushsecret keystone-basic-fernet-keys-backup keystone-basic-credential-keys-backup` and `kubectl -n external-secrets logs --tail=200`. External review pattern `extract-duplicated-test-assertion-blocks-into-shared-helpers` flags this kind of copy-paste at WARNING severity. Chainsaw does not have native support for shared catch blocks across steps, so the duplication is structurally hard to avoid without merging the two assertions into a single Step (which would change the step numbering scheme already established in the file).",
+      "location": "tests/e2e/keystone/basic-deployment/chainsaw-test.yaml:182-188 and :201-207",
+      "fix": "Either (a) leave as-is — Chainsaw idiom and only ~7 lines of duplication, or (b) merge the two PushSecret Ready=True assertions into a single step with one shared catch block, since both diagnostics already cover both PushSecrets. Option (b) reduces duplication and consolidates a single \"PushSecrets sync\" assertion section.",
+      "evidence": "Step 4 catch (lines 182-188): `echo \"=== PushSecret describe ===\"; kubectl -n openstack describe pushsecret keystone-basic-fernet-keys-backup keystone-basic-credential-keys-backup ...; echo \"=== external-secrets controller logs ...\"; kubectl -n external-secrets logs -l app.kubernetes.io/name=external-secrets --tail=200 ...` is identical to Step 5 catch (lines 201-207).",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "TE10",
+      "severity": "MINOR",
+      "description": "Sibling Chainsaw test tests/e2e/keystone/basic-deployment-2026-1/chainsaw-test.yaml (lines 161-167) asserts only the existence of `keystone-basic-2026-1-fernet-keys-backup` PushSecret and does not assert any credential PushSecret at all. A regression that re-introduces the 403 (e.g. a future policy refactor that drops `push-keystone-keys`) would still pass the 2026-1 release variant of the basic-deployment test, defeating the regression-protection intent stated in the e2e-test-engineer user story (\"caught automatically in CI rather than discovered later on a rebuild\"). The plan explicitly scoped the change to the 2025.2 basic-deployment file, so this is out-of-scope tech debt rather than a defect of this PR — but worth flagging as a follow-up because the 2026.1 release suite will silently miss the same class of regression.",
+      "location": "tests/e2e/keystone/basic-deployment-2026-1/chainsaw-test.yaml:161-167",
+      "fix": "Open a follow-up issue to mirror the new Ready=True assertions (and credential-keys-backup PushSecret assertion) into the 2026-1 variant so the regression-protection covers all release branches. Do NOT bundle into this PR — keeps PR scope minimal per Rule 4/6.",
+      "evidence": "tests/e2e/keystone/basic-deployment-2026-1/chainsaw-test.yaml lines 161-167 contain only `kind: PushSecret\\nmetadata:\\n  name: keystone-basic-2026-1-fernet-keys-backup\\n  namespace: openstack` with no status.conditions assertion and no credential-keys-backup assertion.",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider merging the two PushSecret Ready=True assertions into one consolidated step with a single shared catch block — reduces duplication and reads as one logical \"OpenBao PushSecret sync gate\".",
+    "Open a follow-up to mirror the Ready=True assertions into tests/e2e/keystone/basic-deployment-2026-1/chainsaw-test.yaml so the 2026.1 release variant also catches push-keystone-keys regressions.",
+    "PR description must include the manual regression-validation evidence required by task 4.4 (log excerpt showing 403 from external-secrets when push-keystone-keys.hcl is removed). This cannot be verified from the worktree alone."
+  ],
+  "next_steps": [
+    "Confirm the PR description includes the task-4.4 manual regression-validation log excerpt (403 from external-secrets when push-keystone-keys.hcl is absent).",
+    "Run shellcheck on deploy/openbao/bootstrap/setup-auth.sh in CI (sandbox does not have shellcheck installed).",
+    "Optionally tighten the chainsaw test by merging Steps 4 catch and Step 5 catch into one consolidated PushSecret-sync step.",
+    "File a follow-up to apply the same Ready=True PushSecret assertions to tests/e2e/keystone/basic-deployment-2026-1/chainsaw-test.yaml."
+  ],
+  "detected_patterns": []
+}

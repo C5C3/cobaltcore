@@ -1,0 +1,62 @@
+{
+  "summary": "External-reviewer improvement cycle addressing berendt's review #1. Three changes: (1) push-keystone-keys.hcl gained a header comment explaining that `read` is retained for policy-portability and is redundant at the current binding (I-001); (2) setup-auth.sh loop refactored to initialise token_policies from the read-only baseline and conditionally append `push-keystone-keys`, guarding against future branch-addition mistakes under set -u (I-002); (3) chainsaw basic-deployment catch block now also dumps `kubectl -n openbao logs --tail=100` so 403 regressions can be diagnosed from a single CI run without a second pass (W-001). Metadata also updated: progress.json phase flipped to 'improving' and a CC-0083 entry appended to the require-explicit-failure-branch pattern file. The in-scope production files keep the BLOCKER guarantees from review #1 intact: two literal paths only, capabilities exactly [\"create\", \"update\", \"read\"], push-keystone-keys bound only on management, eso-management.hcl untouched by this diff.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Chainsaw assertion step covers both PushSecrets with Ready=True", "checked": true},
+    {"item": "Catch block captures ESO + OpenBao logs for single-run diagnosis", "checked": true},
+    {"item": "No new unit tests required — changes are declarative (HCL, shell config, chainsaw YAML)", "checked": true},
+    {"item": "Live-cluster run to confirm chainsaw passes", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing push-*.hcl policy file structure", "checked": true},
+    {"item": "Refactored loop preserves idempotence and log() tone", "checked": true},
+    {"item": "Consistent SPDX headers and CC-0083 feature references", "checked": true},
+    {"item": "No scope creep — only W-001/I-001/I-002 addressed", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Two literal paths, no wildcard (least privilege preserved)", "checked": true},
+    {"item": "Capabilities restricted to create/update/read — no delete, no list", "checked": true},
+    {"item": "push-keystone-keys bound only on management ESO role", "checked": true},
+    {"item": "eso-management.hcl stays read-only (not in this diff)", "checked": true},
+    {"item": "No secrets in added kubectl log commands (catch block reads controller logs, not secret contents)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Read/write separation of concerns preserved", "checked": true},
+    {"item": "Mirrors push-app-credentials / push-ceph-keys pattern", "checked": true},
+    {"item": "Loop refactor hardens for future cluster additions without over-engineering", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code introduced", "checked": true},
+    {"item": "I-003 (declarative map) explicitly deferred as premature — appropriate YAGNI call", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "set -euo pipefail preserved in setup-auth.sh", "checked": true},
+    {"item": "Baseline assignment eliminates silent state-leak failure mode flagged in I-002", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "token_policies initialised every iteration — no reliance on prior branch execution", "checked": true},
+    {"item": "Catch block uses `|| true` on every kubectl to avoid masking real failure with diagnostic failure", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "D4",
+      "severity": "MINOR",
+      "description": "The CC-0083 entry appended to .planwerk/review_patterns/require-explicit-failure-branch-in-test-passfail-logic.md (lines 33-36) is thematically different from the pattern it lives under. The pattern file is explicitly about `if ... PASS=$((PASS + 1)) ... fi` logic without a FAIL branch in shell tests; the new CC-0083 entry is about missing OpenBao logs in a chainsaw catch block (a diagnostics-in-failure-handlers concern, not a pass/fail counter concern). Detection-Hint on line 4 still describes only the PASS-counter case, so a future reviewer searching by detection-hint will not discover the CC-0083 guidance. Not code-correctness — a taxonomy nit on a review-pattern file — but it will erode the signal of the pattern index over time.",
+      "location": ".planwerk/review_patterns/require-explicit-failure-branch-in-test-passfail-logic.md:33-36",
+      "fix": "Either (a) move the CC-0083 entry into a new review_pattern file whose title/detection-hint actually matches the guidance (e.g., 'capture-authoritative-component-logs-in-test-catch-blocks.md'), or (b) broaden this pattern's Detection-Hint to explicitly include 'test failure handlers lacking logs from the authoritative component enforcing the policy' alongside the existing PASS/FAIL case.",
+      "evidence": "Line 4 reads: 'Look for if-blocks that increment PASS but have no corresponding else/elif that increments FAIL.' — unchanged. Line 33 adds a CC-0083 entry whose feedback is 'A 403 on PushSecret is most authoritatively diagnosed from OpenBao's audit log ... Without OpenBao logs in the catch block, operators need a second CI run.' — unrelated to PASS/FAIL counters.",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "Split the cross-cutting 'capture authoritative component logs in catch blocks' guidance into its own review_pattern file so future reviewers can discover it by detection-hint rather than by reading occurrences of an unrelated pattern.",
+    "When I-003 finally ships (e.g., a second push-* policy ever needs management-only binding), consider the declarative EXTRA_POLICIES map the external reviewer suggested — the current if/management branch is appropriate for one extra, but grows awkwardly with more."
+  ],
+  "next_steps": [
+    "Re-verify on a live kind cluster: apply deploy-infra, reconcile basic Keystone CR, confirm both PushSecrets reach Ready=True and `bao kv get .../fernet-keys` + `.../credential-keys` return non-empty data.",
+    "(Optional) Re-run the I-002 regression validation: remove push-keystone-keys.hcl locally, re-bootstrap, re-run chainsaw basic-deployment, confirm the OpenBao logs in the catch now surface the 403 path + policy denial (this is the value-add the W-001 fix was supposed to unlock)."
+  ],
+  "detected_patterns": []
+}

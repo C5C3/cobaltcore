@@ -340,7 +340,7 @@ func credentialKeysPushSecret(keystone *keystonev1alpha1.Keystone) *esov1alpha1.
 			Data: []esov1alpha1.PushSecretData{{
 				Match: esov1alpha1.PushSecretMatch{
 					RemoteRef: esov1alpha1.PushSecretRemoteRef{
-						RemoteKey: "kv-v2/data/openstack/keystone/credential-keys",
+						RemoteKey: "openstack/keystone/credential-keys",
 					},
 				},
 			}},

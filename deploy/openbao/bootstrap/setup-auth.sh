@@ -81,11 +81,24 @@ main() {
   # clusters come online — only `bao write auth/kubernetes/<cluster>/config`
   # is needed to activate them.
   for cluster in "${CLUSTERS[@]}"; do
+    # CC-0083: the management cluster's ESO instance runs the PushSecret that
+    # backs up Keystone fernet-keys and credential-keys into OpenBao, so its
+    # role additionally binds the push-keystone-keys policy. The other three
+    # clusters keep only their own read-only eso-<cluster> policy.
+    #
+    # Start each iteration from the read-only baseline and only append
+    # cluster-specific extras, so a future branch addition cannot silently
+    # inherit the previous iteration's `token_policies` under `set -u`.
+    local token_policies="eso-${cluster}"
+    if [[ "${cluster}" == "management" ]]; then
+      token_policies+=",push-keystone-keys"
+    fi
+
     log "Writing ESO role for cluster '${cluster}'..."
     bao_exec bao write "auth/kubernetes/${cluster}/role/eso-${cluster}" \
       bound_service_account_names=external-secrets \
       bound_service_account_namespaces=external-secrets \
-      "token_policies=eso-${cluster}" \
+      "token_policies=${token_policies}" \
       token_ttl=1h \
       token_max_ttl=4h
     log "ESO role 'eso-${cluster}' written."

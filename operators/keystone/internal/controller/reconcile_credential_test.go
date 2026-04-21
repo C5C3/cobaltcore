@@ -370,7 +370,7 @@ func TestReconcileCredentialKeys_PushSecretReferencesCorrectSecret(t *testing.T)
 	g.Expect(ps.Spec.SecretStoreRefs[0].Kind).To(Equal("ClusterSecretStore"))
 	g.Expect(ps.Spec.SecretStoreRefs[0].Name).To(Equal("openbao-cluster-store"))
 	g.Expect(ps.Spec.Data).To(HaveLen(1))
-	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal("kv-v2/data/openstack/keystone/credential-keys"))
+	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal("openstack/keystone/credential-keys"))
 }
 
 func TestCredentialKeyGeneration_Valid(t *testing.T) {

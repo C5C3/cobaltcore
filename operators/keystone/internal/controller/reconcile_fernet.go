@@ -349,7 +349,7 @@ func fernetKeysPushSecret(keystone *keystonev1alpha1.Keystone) *esov1alpha1.Push
 			Data: []esov1alpha1.PushSecretData{{
 				Match: esov1alpha1.PushSecretMatch{
 					RemoteRef: esov1alpha1.PushSecretRemoteRef{
-						RemoteKey: "kv-v2/data/openstack/keystone/fernet-keys",
+						RemoteKey: "openstack/keystone/fernet-keys",
 					},
 				},
 			}},

@@ -2,8 +2,8 @@
   "feature_id": "CC-0083",
   "title": "Grant ESO write access on Keystone KV paths",
   "slug": "grant-eso-write-access-on-keystone-kv-paths",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #249: Grant ESO write capabilities on Keystone KV paths so fernet/credential PushSecrets succeed\n\n**Category**: bug | **Scope**: Small\n\n**Description**: The Keystone operator creates `PushSecret` CRs to back up the `*-fernet-keys` and `*-credential-keys` Secrets to OpenBao under `kv-v2/openstack/keystone/fernet-keys` and `.../credential-keys` (`operators/keystone/internal/controller/reconcile_fernet.go:332-358`, `operators/keystone/internal/controller/reconcile_credential.go:323-349`). Both `PushSecret` CRs reference `ClusterSecretStore openbao-cluster-store` (`deploy/eso/clustersecretstore.yaml:17`), which authenticates via the `eso-management` Kubernetes auth role (`deploy/openbao/bootstrap/setup-auth.sh:85-91`, `token_policies=eso-management`). The bound policy `deploy/openbao/policies/eso-management.hcl:27-29` grants ONLY `read` on `kv-v2/data/openstack/keystone/*`, so every push fails with a 403 and the KV paths for fernet/credential keys remain empty. The only Keystone-related material actually present in OpenBao is what the bootstrap script writes directly with the root token (`deploy/openbao/bootstrap/write-bootstrap-secrets.sh:84-92`): `bootstrap/keystone-admin`, `infrastructure/mariadb`, `openstack/keystone/db`. Introduce a dedicated push-scope policy (mirroring `deploy/openbao/policies/push-app-credentials.hcl` and `push-ceph-keys.hcl`, which use `capabilities = [\\\"create\\\", \\\"update\\\", \\\"read\\\"]`) and bind it additionally to the `eso-management` role so the read-vs-write separation of concerns is preserved.\n\n**Motivation**: The `PushSecret` backup is the only mechanism that makes rotated fernet and credential keys recoverable from OpenBao. Without it, key material lives exclusively in the in-cluster Kubernetes Secret — a cluster rebuild, operator replay, or accidental Secret deletion permanently loses every fernet/credential key ever generated or rotated, invalidating all issued Fernet tokens and rendering every existing application credential in the DB undecryptable. The operator already builds the correct `PushSecret` CRs and the target KV paths are the right ones; the gap is purely on the OpenBao authorization side. Keeping the read-only `eso-management` policy untouched and adding a separate `push-keystone-keys` policy mirrors the pattern already established for Ceph keys and application credentials, and keeps least-privilege intact (the push role cannot read unrelated paths, the management role cannot write).\n\n**Affected Areas**:\n- `deploy/openbao/policies/push-keystone-keys.hcl` (new file — `create`, `update`, `read` on `kv-v2/data/openstack/keystone/fernet-keys` and `.../credential-keys`)\n- `deploy/openbao/bootstrap/setup-auth.sh` (bind additional policy to the `eso-management` role: `token_policies=eso-management,push-keystone-keys`)\n- `architecture/docs/09-implementation/09-openbao-deployment.md` (document the new policy alongside the existing `eso-management` / `push-*` policies)\n\n**Acceptance Criteria**:\n- [ ] New policy file `deploy/openbao/policies/push-keystone-keys.hcl` exists with two path blocks (`kv-v2/data/openstack/keystone/fernet-keys`, `kv-v2/data/openstack/keystone/credential-keys`) each granting `capabilities = [\\\"create\\\", \\\"update\\\", \\\"read\\\"]`; no wildcard path, no `delete`, no `list`\n- [ ] `deploy/openbao/bootstrap/setup-auth.sh` binds `token_policies=eso-management,push-keystone-keys` on the management cluster's `eso-management` role; other cluster roles (`control-plane`, `hypervisor`, `storage`) are unchanged\n- [ ] `deploy/openbao/bootstrap/setup-policies.sh` picks up the new `.hcl` automatically (no change needed; verified via `ls deploy/openbao/policies/*.hcl`)\n- [ ] `deploy/openbao/policies/eso-management.hcl` stays read-only — the existing DEVIATION comment (lines 19-26) is updated to point at the new push policy for write access\n- [ ] On a fresh kind cluster, after `make deploy-infra` plus a Keystone CR reconcile, `bao kv get kv-v2/openstack/keystone/fernet-keys` and `.../credential-keys` both return the current key set (not \\\"no value found\\\")\n- [ ] `kubectl -n openstack describe pushsecret <keystone>-fernet-keys-backup` reports `SecretSynced=True`; the same for `<keystone>-credential-keys-backup`\n- [ ] New Chainsaw e2e step (extending `tests/e2e/keystone/basic-deployment/` or a dedicated `openbao-pushsecret-sync` test) asserts both `PushSecret` CRs reach `Ready=True` within the existing timeout budget\n\n**Non-Goals**:\n- Changing the `PushSecret` target paths or the `ClusterSecretStore` wiring. The push targets (`kv-v2/data/openstack/keystone/{fernet,credential}-keys`) are correct and already match the naming used by the operator.\n- Widening the `eso-management` policy to include write verbs. The read/push separation is intentional and matches the pattern of `push-app-credentials` vs `eso-*` policies.\n- Cleaning up orphaned OpenBao paths after CR deletion — that is already tracked by #193 (finalizer for OpenBao PushSecret cleanup).\n- Re-scoping what the rotation CronJob is allowed to write — covered by #190 (restrict rotation CronJob SA to read-only).\n\n**Labels:** bug\n\n**Labels:** bug\n\n---\nSource: https://github.com/C5C3/forge/issues/249",
   "stories": [
@@ -265,6 +265,7 @@
       "title": "Create `deploy/openbao/policies/push-keystone-keys.hcl` with exactly two `path` stanzas (`kv-v2/data/openstack/keystone/fernet-keys`, `kv-v2/data/openstack/keystone/credential-keys`), each with `capabilities = [\"create\", \"update\", \"read\"]`, SPDX header, and a top comment citing CC-0083 and referencing `push-app-credentials.hcl` as the pattern source. No wildcard paths. (REQ-001, REQ-006)",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-006"
@@ -275,6 +276,7 @@
       "title": "Update the DEVIATION comment block in `deploy/openbao/policies/eso-management.hcl` (lines 19-26) to state that write access for `openstack/keystone/fernet-keys` and `openstack/keystone/credential-keys` is granted separately by `push-keystone-keys.hcl`; add a `CC-0083` feature reference alongside the existing `CC-0009`. Do NOT add or change any `capabilities` list in this file. (REQ-003)",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -284,6 +286,7 @@
       "title": "In `deploy/openbao/bootstrap/setup-auth.sh`, split the `for cluster in ...` ESO-role loop so the management cluster writes `token_policies=eso-management,push-keystone-keys` while the other three clusters keep `token_policies=eso-${cluster}`. Preserve idempotence (role write is already an upsert). Add a brief inline comment citing `CC-0083` that explains why the management role alone gets the extra policy. Run `shellcheck` to verify the script is clean. (REQ-002)",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -293,6 +296,7 @@
       "title": "Verify no change is needed to `deploy/openbao/bootstrap/setup-policies.sh`. Confirm by (a) running `ls deploy/openbao/policies/*.hcl` locally and visually checking `push-keystone-keys.hcl` is picked up by the existing `*.hcl` glob, and (b) adding a one-line comment in the PR description citing the verification — no code change. (REQ-001, REQ-002)",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002"
@@ -303,6 +307,7 @@
       "title": "Update `architecture/docs/09-implementation/09-openbao-deployment.md`: in the PushSecret Policies subsection (around lines 308-324) add an HCL code block for `push-keystone-keys.hcl` showing both exact paths and `capabilities = [\"create\", \"update\", \"read\"]`. In the ESO Management Policy subsection add a callout sentence noting that write access for Keystone fernet/credential paths lives in `push-keystone-keys`, not `eso-management`. Ensure the documented capability verbs match the actual HCL exactly. (REQ-004)",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -312,6 +317,7 @@
       "title": "Update the Apply Policies shell loop in `architecture/docs/09-implementation/09-openbao-deployment.md` (around lines 358-363) to include `push-keystone-keys` in the `for policy in ...` list, placed next to `push-ceph-keys` and `push-app-credentials` to keep push-* policies grouped. (REQ-004)",
       "level": 3,
       "estimate_minutes": 5,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -321,6 +327,7 @@
       "title": "Extend `tests/e2e/keystone/basic-deployment/chainsaw-test.yaml` Step 4 (Fernet resources) to assert `status.conditions[?type == 'Ready'].status == 'True'` on `PushSecret keystone-basic-fernet-keys-backup`. First inspect the installed `external-secrets.io/v1alpha1` PushSecret CRD to confirm the exact condition type name (`Ready` vs `SecretSynced`) by running `kubectl explain pushsecret.status.conditions.type` against a running cluster and choose the matching JMESPath. Keep the existing existence assertion; add the status assertion immediately after it. Do not change `timeouts.assert`. (REQ-005)",
       "level": 4,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -330,6 +337,7 @@
       "title": "Add an analogous assertion for `PushSecret keystone-basic-credential-keys-backup` in `tests/e2e/keystone/basic-deployment/chainsaw-test.yaml` — same condition path and timeout, placed in a Step 4-analogue section for credential resources (create one if none exists). (REQ-005)",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -339,6 +347,7 @@
       "title": "Extend the `catch` block of the new PushSecret assertion step(s) in `tests/e2e/keystone/basic-deployment/chainsaw-test.yaml` to run `kubectl -n openstack describe pushsecret keystone-basic-fernet-keys-backup keystone-basic-credential-keys-backup` and `kubectl -n external-secrets logs -l app.kubernetes.io/name=external-secrets --tail=200`, so a future 403 regression is diagnosable from CI output alone. Reuse the existing catch script pattern (shell heredoc with `echo '=== ... ==='` headers). (REQ-005)",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -348,19 +357,9 @@
       "title": "Perform one-time regression validation (NOT committed to CI): locally remove `push-keystone-keys.hcl`, re-run bootstrap, re-run the Chainsaw basic-deployment test, and confirm the new assertions fail with a catch block showing 403 from external-secrets. Record the evidence (log excerpt) in the PR description. Restore the file. (REQ-005)",
       "level": 4,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-005"
-      ]
-    },
-    {
-      "id": "4.5",
-      "title": "Final self-check before review: run the whole new Chainsaw assertion suite on a fresh kind cluster via `make deploy-infra && chainsaw test tests/e2e/keystone/basic-deployment`. Confirm both PushSecret CRs reach the synced condition within the existing 5m budget and that `bao kv get kv-v2/openstack/keystone/fernet-keys` and `.../credential-keys` return non-empty data (this is user-facing acceptance). (REQ-005, REQ-001, REQ-002)",
-      "level": 4,
-      "estimate_minutes": 30,
-      "requirements": [
-        "REQ-005",
-        "REQ-001",
-        "REQ-002"
       ]
     }
   ],
@@ -486,8 +485,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-20T19:31:52.974417"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-20T19:33:37.647961"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-20T20:14:29.536870"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/250",
+  "pr_number": 250,
   "execution_history": [
     {
       "run_id": "fbf325e8-ef51-477a-84cf-f6e74e88cff4",
@@ -499,6 +508,70 @@
           "name": "prepare",
           "duration": 354.57708644866943,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "3c2fcb72-9eb8-4ca0-a083-6cca02ae6dfa",
+      "timestamp": "2026-04-20T19:52:26.644294",
+      "total_duration": 922.550226688385,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (2 tasks)",
+          "duration": 99.5006811618805,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (2 tasks)",
+          "duration": 78.27457904815674,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (2 tasks)",
+          "duration": 63.37778449058533,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (4 tasks)",
+          "duration": 196.05093359947205,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0083] Code Review",
+          "duration": 313.469224691391,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0083] Improvements",
+          "duration": 94.34974336624146,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0083] Simplify",
+          "duration": 77.52728033065796,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "53b2dbec-4bcc-4c1c-8a85-0f90017ba504",
+      "timestamp": "2026-04-20T20:10:27.145378",
+      "total_duration": 489.4426829814911,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 489.4426829814911,
+          "type": "review_address",
           "status": "done"
         }
       ]

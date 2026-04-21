@@ -165,12 +165,54 @@ spec:
           metadata:
             name: keystone-basic-fernet-keys-backup
             namespace: openstack
-  # ── Step 5: Assert ConfigMap exists ────────────────────────────────────
+  # ── Step 5: Assert OpenBao PushSecret sync (CC-0083) ───────────────────
+  # CC-0083: assert both PushSecrets successfully synced to OpenBao. Catches 403
+  # regressions from the ESO token missing write capability on the Keystone KV
+  # paths. Condition type "Ready" is defined by external-secrets.io/v1alpha1
+  # PushSecretConditionType (pushsecret_types.go:213). Consolidating the fernet
+  # and credential assertions into one step keeps the diagnostic catch block
+  # defined once — both PushSecrets are driven by the same push-keystone-keys
+  # policy, so any regression affects both and is surfaced together.
+  - try:
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1alpha1
+          kind: PushSecret
+          metadata:
+            name: keystone-basic-fernet-keys-backup
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1alpha1
+          kind: PushSecret
+          metadata:
+            name: keystone-basic-credential-keys-backup
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    catch:
+    - script:
+        content: |
+          echo "=== PushSecret describe ==="
+          kubectl -n openstack describe pushsecret keystone-basic-fernet-keys-backup keystone-basic-credential-keys-backup 2>&1 || true
+          echo "=== external-secrets controller logs (last 200 lines) ==="
+          kubectl -n external-secrets logs -l app.kubernetes.io/name=external-secrets --tail=200 2>&1 || true
+          # CC-0083: OpenBao's audit/server log records the denied KV path and
+          # the bound policy on a 403, which the ESO controller log does not —
+          # dumping both lets a single CI run identify missing write capability
+          # vs. a mis-targeted path without a rerun.
+          echo "=== openbao logs (last 100 lines) ==="
+          kubectl -n openbao logs -l app.kubernetes.io/name=openbao --tail=100 2>&1 || true
+  # ── Step 6: Assert ConfigMap exists ────────────────────────────────────
   - try:
     - script:
         content: |
           kubectl get cm -n openstack -o name | grep keystone-basic-config-
-  # ── Step 6: Assert API accessibility ───────────────────────────────────
+  # ── Step 7: Assert API accessibility ───────────────────────────────────
   - try:
     - script:
         timeout: 30s
