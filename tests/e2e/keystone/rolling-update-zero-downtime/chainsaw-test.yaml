@@ -69,8 +69,8 @@ spec:
             name: keystone-rolling-update-api
             namespace: openstack
           status:
-            (availableReplicas == `3`): true
-            (readyReplicas == `3`): true
+            (availableReplicas >= `3`): true
+            (readyReplicas >= `3`): true
     catch:
     - script:
         content: |

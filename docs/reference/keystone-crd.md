@@ -554,13 +554,6 @@ the synchronous authentication path for every other OpenStack service, so a
 single dropped or 5xx response during a rollout cascades into authentication
 failures across Nova, Neutron, Glance, and the API gateway (CC-0084).
 
-For the full sequence diagram (EndpointSlice removal in parallel with the
-preStop sleep, then SIGTERM → uWSGI graceful drain → harakiri fallback →
-SIGKILL), the recommended production values, and the
-`httpKeepAliveTimeout ≤ preStopSleepSeconds` interaction, see
-[Architecture: Keystone Rolling Update](../../architecture/docs/04-architecture/04-high-availability.md#keystone-rolling-update-cc-0084)
-(CC-0084).
-
 ### Field Interactions Summary (CC-0084)
 
 | Constraint | Enforced By | Why |
