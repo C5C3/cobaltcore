@@ -20,14 +20,17 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -45,6 +48,7 @@ var subConditionTypes = []string{
 	conditionTypeKeystoneAPIReady,
 	"HPAReady",
 	"NetworkPolicyReady",
+	conditionTypeHTTPRouteReady,
 	"BootstrapReady",
 	"TrustFlushReady",
 }
@@ -55,6 +59,38 @@ type KeystoneReconciler struct {
 	Scheme     *runtime.Scheme
 	Recorder   record.EventRecorder
 	HTTPClient HTTPDoer
+
+	// gatewayAPIAvailable is set during SetupWithManager from the cluster's
+	// RESTMapper and indicates whether the gateway.networking.k8s.io/v1
+	// HTTPRoute CRD is installed. When false, the controller skips the
+	// HTTPRoute watch entirely so it does not crash on a missing kind, and
+	// reconcileHTTPRoute surfaces a clear HTTPRouteReady=False condition if
+	// the user nonetheless sets spec.gateway (CC-0065).
+	gatewayAPIAvailable bool
+}
+
+// httpRouteGVK identifies the HTTPRoute kind the operator would watch when
+// Gateway API is installed.
+var httpRouteGVK = schema.GroupVersionKind{
+	Group:   gatewayv1.GroupVersion.Group,
+	Version: gatewayv1.GroupVersion.Version,
+	Kind:    "HTTPRoute",
+}
+
+// isGatewayAPIAvailable probes the manager's RESTMapper for the HTTPRoute kind.
+// Returns false when the mapper has no mapping (CRD not installed) and true
+// when the mapping exists. Other mapper errors are treated as "unknown";
+// returning false in that case is conservative — the operator starts without
+// the HTTPRoute watch and a clear status condition replaces the cryptic
+// controller-runtime "no matches for kind" startup error (CC-0065).
+func isGatewayAPIAvailable(mapper meta.RESTMapper) bool {
+	if mapper == nil {
+		return false
+	}
+	if _, err := mapper.RESTMapping(httpRouteGVK.GroupKind(), httpRouteGVK.Version); err != nil {
+		return false
+	}
+	return true
 }
 
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones,verbs=get;list;watch;create;update;patch;delete
@@ -72,6 +108,8 @@ type KeystoneReconciler struct {
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes/status,verbs=get
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch
 
@@ -147,6 +185,13 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// (CC-0077, REQ-007).
 	if err := r.pruneStaleConfigMaps(ctx, &keystone, configMapName); err != nil {
 		return r.updateStatus(ctx, &keystone, ctrl.Result{}, err)
+	}
+
+	// HTTPRoute reconciliation runs after the Deployment/Service are ensured
+	// so that the backend Service is present before the Gateway controller
+	// resolves backendRefs (CC-0065, REQ-009, REQ-010).
+	if result, err := r.reconcileHTTPRoute(ctx, &keystone); !result.IsZero() || err != nil {
+		return r.updateStatus(ctx, &keystone, result, err)
 	}
 
 	// Health check runs after Deployment because it depends on
@@ -301,7 +346,21 @@ func (r *KeystoneReconciler) reconcileParallelGroup(
 
 // SetupWithManager registers the KeystoneReconciler with the controller manager.
 func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	// Detect whether the Gateway API CRD is installed. spec.gateway is
+	// optional (CC-0065), so the operator must run on clusters without
+	// Gateway API. Adding Owns(HTTPRoute) unconditionally would cause the
+	// controller to fail at Start with "no matches for kind HTTPRoute"
+	// when the CRD is missing, preventing every Keystone CR from being
+	// reconciled — including those that do not use spec.gateway.
+	r.gatewayAPIAvailable = isGatewayAPIAvailable(mgr.GetRESTMapper())
+	setupLog := ctrl.Log.WithName("keystone-setup")
+	if r.gatewayAPIAvailable {
+		setupLog.Info("Gateway API detected; enabling HTTPRoute watch and reconciliation")
+	} else {
+		setupLog.Info("Gateway API not installed; HTTPRoute watch disabled, spec.gateway will be rejected via HTTPRouteReady condition")
+	}
+
+	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&keystonev1alpha1.Keystone{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
@@ -310,7 +369,13 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&policyv1.PodDisruptionBudget{}).
 		Owns(&autoscalingv2.HorizontalPodAutoscaler{}).
 		Owns(&networkingv1.NetworkPolicy{}).
-		Owns(&batchv1.CronJob{}).
+		Owns(&batchv1.CronJob{})
+
+	if r.gatewayAPIAvailable {
+		builder = builder.Owns(&gatewayv1.HTTPRoute{})
+	}
+
+	return builder.
 		// Watch Secrets and map to the Keystone CRs that reference them.
 		// ESO-managed secrets (spec.database.secretRef, spec.bootstrap.adminPasswordSecretRef)
 		// are owned by the ExternalSecret controller, not by the Keystone CR, so

@@ -1,0 +1,170 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the optional HTTPRoute sub-reconciler (CC-0065).
+# Verifies the full lifecycle of spec.gateway driven by the Keystone CR:
+#   - Install the HTTPRoute CRD (no Gateway controller runs in the kind cluster).
+#   - Apply a Keystone CR with spec.gateway and assert the HTTPRoute is created
+#     with the expected ParentRef/Hostname/BackendRef/Path.
+#   - Before any Gateway controller reports Accepted, HTTPRouteReady is False
+#     with reason HTTPRouteNotAccepted.
+#   - Simulate a Gateway controller accepting the route by patching the parent
+#     status to include Accepted=True, then assert HTTPRouteReady flips True
+#     with reason HTTPRouteAccepted.
+#   - Unset spec.gateway and assert the HTTPRoute is deleted and HTTPRouteReady
+#     is True with reason HTTPRouteNotRequired.
+#
+# REQ-001, REQ-002, REQ-003, REQ-005, REQ-006 (CC-0065)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-httproute
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Install HTTPRoute CRD ──────────────────────────────────────
+  # The E2E cluster does not install a Gateway controller, so the upstream
+  # HTTPRoute CRD is absent. Apply a minimal CRD so the operator can create
+  # HTTPRoute objects and the test can patch their status.
+  - try:
+    - apply:
+        file: 00-httproute-crd.yaml
+  # ── Step 2: Apply Keystone CR with spec.gateway ────────────────────────
+  - try:
+    - apply:
+        file: 01-keystone-cr.yaml
+  # ── Step 3: Assert HTTPRoute created with the expected spec ────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: keystone-httproute-api
+            namespace: openstack
+            labels:
+              app.kubernetes.io/name: keystone
+              app.kubernetes.io/instance: keystone-httproute
+              app.kubernetes.io/managed-by: keystone-operator
+            annotations:
+              example.com/test-annotation: initial
+              keystone.openstack.c5c3.io/managed-annotations: example.com/test-annotation
+          spec:
+            parentRefs:
+            - name: openstack-gw
+            hostnames:
+            - keystone.e2e.example.com
+            rules:
+            - matches:
+              - path:
+                  type: PathPrefix
+                  value: /v3
+              backendRefs:
+              - name: keystone-httproute-api
+                port: 5000
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR status ==="
+          kubectl get keystone keystone-httproute -n $NAMESPACE -o jsonpath='{.status}' 2>&1 | jq . || true
+          echo "=== HTTPRoute ==="
+          kubectl get httproute -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          for pod in $(kubectl get pods -n keystone-operator -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n keystone-operator "$pod" --all-containers --tail=120 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Assert HTTPRouteReady=False/HTTPRouteNotAccepted ───────────
+  # No Gateway controller is running, so the parent status is empty until
+  # the test simulates acceptance in the next step.
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-httproute
+            namespace: openstack
+          status:
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "False"
+              reason: HTTPRouteNotAccepted
+  # ── Step 5: Simulate Gateway controller accepting the HTTPRoute ────────
+  # Write an Accepted=True condition on the route's parent status via the
+  # status subresource, mirroring what a real Gateway controller (Envoy
+  # Gateway, Kong, Istio, Cilium) would publish.
+  - try:
+    - script:
+        content: |
+          kubectl patch httproute keystone-httproute-api -n $NAMESPACE \
+            --subresource=status --type=merge -p '{
+              "status": {
+                "parents": [{
+                  "parentRef": {"name": "openstack-gw"},
+                  "controllerName": "e2e.example.com/fake-gateway-controller",
+                  "conditions": [{
+                    "type": "Accepted",
+                    "status": "True",
+                    "reason": "Accepted",
+                    "message": "Simulated Accepted condition for E2E test",
+                    "lastTransitionTime": "2026-04-17T00:00:00Z",
+                    "observedGeneration": 1
+                  }]
+                }]
+              }
+            }'
+  # ── Step 6: Assert HTTPRouteReady=True/HTTPRouteAccepted ───────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-httproute
+            namespace: openstack
+          status:
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteAccepted
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR status ==="
+          kubectl get keystone keystone-httproute -n $NAMESPACE -o jsonpath='{.status}' 2>&1 | jq . || true
+          echo "=== HTTPRoute with status ==="
+          kubectl get httproute keystone-httproute-api -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          for pod in $(kubectl get pods -n keystone-operator -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n keystone-operator "$pod" --all-containers --tail=120 2>&1 || true
+          done
+  # ── Step 7: Unset spec.gateway ─────────────────────────────────────────
+  - try:
+    - patch:
+        file: 02-patch-remove-gateway.yaml
+  # ── Step 8: Assert HTTPRoute deleted and HTTPRouteReady=True/NotRequired
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-httproute
+            namespace: openstack
+          status:
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+    - script:
+        content: |
+          # Verify HTTPRoute no longer exists (CC-0065, REQ-002).
+          if kubectl get httproute keystone-httproute-api -n $NAMESPACE 2>/dev/null; then
+            echo "FAIL: HTTPRoute should have been deleted"
+            exit 1
+          fi
+          echo "PASS: HTTPRoute correctly deleted"

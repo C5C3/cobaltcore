@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	commonenvtest "github.com/c5c3/forge/internal/common/testutil/envtest"
 )
@@ -240,6 +241,8 @@ func buildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8srunti
 	utilruntime.Must(esov1.AddToScheme(s))
 	utilruntime.Must(esov1alpha1.AddToScheme(s))
 	utilruntime.Must(certmanagerv1.AddToScheme(s))
+	// Gateway API types for HTTPRoute reconciliation (CC-0065, REQ-010).
+	utilruntime.Must(gatewayv1.Install(s))
 	// Keystone types.
 	utilruntime.Must(addToScheme(s))
 	return s

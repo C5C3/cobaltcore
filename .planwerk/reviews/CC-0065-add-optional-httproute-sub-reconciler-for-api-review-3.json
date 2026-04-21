@@ -1,0 +1,63 @@
+{
+  "feature_id": "CC-0065",
+  "title": "Add optional HTTPRoute sub-reconciler for API exposure",
+  "date": "2026-04-17",
+  "summary": "Third-round review after external reviewer berendt's review #2. All five external findings (C-001, W-001, W-002, W-003, I-001, I-002) are correctly addressed with regression coverage. Health check now probes the cluster-local Service URL via internalAPIURL regardless of spec.gateway, with two new capturingDoer tests asserting the exact internal URL target in both no-gateway and gateway-set cases. HTTPRoute metadata reconciliation now tracks operator-managed keys via sentinel annotations (managed-annotations, managed-labels) and removes keys that disappear from spec.gateway; two new tests cover key removal and user-added key preservation. gateway-api bumped v1.1.0 -> v1.5.1 in operators/keystone/go.mod. A complete Chainsaw E2E scenario under tests/e2e/keystone/httproute/ covers creation, NotAccepted->Accepted transition via simulated Gateway-controller status patch, and deletion on spec.gateway unset. All REVIEWER-DISAGREEMENT, 'Reviewer: please verify', and German 'Reviewer: bitte prueefen' scaffolding is gone from reconcile_networkpolicy.go. The r.Client.Get -> r.Get migration in reconcile_networkpolicy_test.go is complete (zero remaining r.Client.Get references in that file). No new bugs introduced.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Health check regression tests assert internal URL target independent of spec.gateway (TestReconcileHealthCheck_AlwaysTargetsInternalAPIURL_NoGateway/_GatewaySet)", "checked": true},
+    {"item": "Annotation removal tests cover both operator-managed key deletion and user-added key preservation (TestReconcileHTTPRoute_AnnotationRemoval_RemovesKeyFromLiveRoute/_PreservesUserAddedKey)", "checked": true},
+    {"item": "Chainsaw E2E covers full lifecycle: create, NotAccepted, simulated Accepted, deletion on gateway unset", "checked": true},
+    {"item": "Existing test suite still covers path normalization, parentRef forwarding, idempotent updates, hostname handling", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "reconcileHealthCheck comment explains WHY internal URL is always used (ingress/DNS/cert/Gateway health is not API health) at reconcile_healthcheck.go:52-57", "checked": true},
+    {"item": "internalAPIURL helper is well-documented and separated from keystoneStatusEndpoint (the public contract)", "checked": true},
+    {"item": "Sentinel-annotation pattern is documented at reconcile_httproute.go:42-51 with rationale for the removal path", "checked": true},
+    {"item": "All review-process scaffolding comments (REVIEWER-DISAGREEMENT, 'please verify', German phrasings) are removed; technical decision rationale preserved", "checked": true},
+    {"item": "r.Client.Get -> r.Get migration complete in reconcile_networkpolicy_test.go (zero remaining r.Client.Get references)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Health check no longer depends on external DNS/TLS/Gateway path; operator requires no Internet egress to validate API readiness", "checked": true},
+    {"item": "spec.networkPolicy.ingress empty-slice defensive guard preserved; fails closed rather than open", "checked": true},
+    {"item": "gateway-api bump v1.1.0 -> v1.5.1 picks up Accepted-condition semantics and BackendObjectReference.Port typing improvements", "checked": true},
+    {"item": "No new secrets, no new privileged RBAC, no path traversal surface added", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "internalAPIURL vs. keystoneStatusEndpoint split is the minimal correct separation: public Status.Endpoint contract preserved while internal probe target is decoupled", "checked": true},
+    {"item": "Sentinel-annotation tracking is additive to the existing merge strategy and does not break the commonLabels/reconcile-metadata pattern used by other sub-reconcilers", "checked": true},
+    {"item": "Chainsaw test fakes the Gateway controller via a kubectl status patch, matching the pattern of other CRD-only envtest/E2E fixtures (no actual Gateway impl required in kind)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated logic: sortedMapKeys and splitManagedKeys are small, single-purpose helpers", "checked": true},
+    {"item": "Sentinel annotations are introduced only because the additive merge has no removal path otherwise (real requirement, not speculative)", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Empty endpoint path returns EndpointNotReady with clear message; timeout, DNS, connection refused, and generic errors each get a distinct Reason", "checked": true},
+    {"item": "Gateway reachability failures no longer mask API readiness: a broken Gateway leaves HTTPRouteReady=False without affecting KeystoneAPIReady", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Defensive empty-ingress guard in reconcileNetworkPolicy preserved", "checked": true},
+    {"item": "ObservedGeneration is set on KeystoneAPIReady for both healthy and unhealthy branches (TestReconcileHealthCheck_ConditionObservedGeneration)", "checked": true},
+    {"item": "trackingReadCloser tests confirm response body is closed on both success and failure paths", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "detected_patterns": [
+    {
+      "pattern": "avoid-silent-fallbacks-on-invalid-post-admission-state",
+      "application": "reconcileHealthCheck now probes internalAPIURL unconditionally; keystoneStatusEndpoint retains the explicit decision to emit https:///v3 on empty hostname rather than silently falling back to the cluster-local URL when spec.gateway is set"
+    },
+    {
+      "pattern": "resolve-ambiguous-commented-out-alternatives-before-merge",
+      "application": "All REVIEWER-DISAGREEMENT and 'Reviewer: please verify' scaffolding in reconcile_networkpolicy.go has been converted to plain DECISION/NOTE comments that state the rationale without meta-framing"
+    },
+    {
+      "pattern": "document-or-enforce-resource-merge-strategy-explicitly",
+      "application": "ensureHTTPRoute now documents the tracked-key merge strategy (stampManagedMetadata/applyManagedMetadata) and enforces removal of disappeared operator-managed keys via sentinel annotations"
+    }
+  ]
+}

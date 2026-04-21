@@ -98,6 +98,11 @@ Step 1 ── Create kind cluster (hack/kind-config.yaml)
      │
 Step 2 ── Install FluxCD (flux install)
      │
+     ├── Install Gateway API standard CRDs
+     │         kubectl apply --server-side -f <upstream standard-install.yaml>
+     │         Required by the keystone-operator HTTPRoute watch; version
+     │         pinned via GATEWAY_API_VERSION, default matches go.mod.
+     │
 Step 3 ── Apply base kustomize overlay (deploy/kind/base/)
      │         Namespaces, HelmRepositories, HelmReleases
      │

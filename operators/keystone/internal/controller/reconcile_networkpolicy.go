@@ -102,6 +102,32 @@ func buildKeystoneNetworkPolicy(keystone *keystonev1alpha1.Keystone) *networking
 		peers = append(peers, peer)
 	}
 
+	// DECISION: When spec.gateway is also set, append an ingress peer targeting
+	// the Gateway's namespace (via kubernetes.io/metadata.name) on TCP 5000 so
+	// the Gateway's data-plane pods can reach the Keystone Service. The gateway
+	// data plane's pod labels are implementation-specific (Kong/Envoy/NGINX/…)
+	// and not known to this operator, so we select by the entire gateway
+	// namespace rather than by pod labels. When spec.gateway.parentRef.namespace
+	// is empty, the Keystone CR's own namespace is assumed, matching the
+	// ParentRef lookup semantics. When spec.networkPolicy is nil we take the
+	// delete path above — no extra rule is needed. REQ-008 requires Gateway
+	// reachability whenever both spec.gateway and spec.networkPolicy are set;
+	// the tradeoff is that shared Gateway namespaces grant namespace-wide
+	// ingress rather than pod-level scoping. (CC-0065, REQ-008)
+	if keystone.Spec.Gateway != nil {
+		gatewayNS := keystone.Spec.Gateway.ParentRef.Namespace
+		if gatewayNS == "" {
+			gatewayNS = keystone.Namespace
+		}
+		peers = append(peers, networkingv1.NetworkPolicyPeer{
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"kubernetes.io/metadata.name": gatewayNS,
+				},
+			},
+		})
+	}
+
 	port5000 := intstr.FromInt32(5000)
 	tcp := corev1.ProtocolTCP
 	ingressRules := []networkingv1.NetworkPolicyIngressRule{
@@ -149,7 +175,7 @@ func buildAutoEgressRules(keystone *keystonev1alpha1.Keystone) []networkingv1.Ne
 	// than restricting to kube-system — Chose broad rule because CoreDNS may
 	// run outside kube-system (e.g., NodeLocal DNSCache in each node's
 	// namespace). A namespace-restricted rule would silently break DNS
-	// resolution in such environments. Reviewer: please verify. (CC-0039)
+	// resolution in such environments. (CC-0039)
 
 	// DNS egress: always required (UDP+TCP 53) (CC-0039, REQ-005).
 	port53 := intstr.FromInt32(53)
@@ -196,7 +222,7 @@ func buildAutoEgressRules(keystone *keystonev1alpha1.Keystone) []networkingv1.Ne
 // package rather than internal/common/deployment/ — Chose to keep them here
 // because NetworkPolicy is Keystone-specific (no second consumer yet). Moving
 // to the common package is warranted when a second operator needs the same
-// create-or-update logic. Reviewer: please verify. (CC-0039)
+// create-or-update logic. (CC-0039)
 
 // ensureNetworkPolicy creates a NetworkPolicy if it does not exist or updates
 // its spec and metadata if it already exists. An owner reference is set on the

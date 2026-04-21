@@ -1134,6 +1134,11 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	k.Spec.NetworkPolicy = &NetworkPolicySpec{
 		Ingress: []NetworkPolicyIngressSource{},
 	}
+	// REQ-007 (CC-0065): Break gateway — empty hostname and empty parentRef.name.
+	k.Spec.Gateway = &GatewaySpec{
+		ParentRef: GatewayParentRefSpec{Name: ""},
+		Hostname:  "",
+	}
 	// REQ-004 (CC-0042): Break resources — CPU request exceeds limit.
 	k.Spec.Resources = &corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
@@ -1183,6 +1188,11 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g.Expect(errMsg).To(ContainSubstring("uwsgi"))
 	g.Expect(errMsg).To(ContainSubstring("priorityClassName"))
 	g.Expect(errMsg).To(ContainSubstring("topologySpreadConstraints"))
+	// REQ-007 (CC-0065): Verify gateway validation participates in error
+	// accumulation — both hostname and parentRef.name errors must surface.
+	g.Expect(errMsg).To(ContainSubstring("gateway"))
+	g.Expect(errMsg).To(ContainSubstring("hostname"))
+	g.Expect(errMsg).To(ContainSubstring("parentRef"))
 }
 
 func TestValidateUpdate_RunsSameValidation(t *testing.T) {
@@ -1492,6 +1502,81 @@ func TestValidate_TrustFlush_NilPassesValidation(t *testing.T) {
 	w := &KeystoneWebhook{}
 	k := validKeystone()
 	k.Spec.TrustFlush = nil
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// --- Gateway validation tests (CC-0065, REQ-007) ---
+
+func TestValidate_GatewayValid(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Gateway = &GatewaySpec{
+		ParentRef: GatewayParentRefSpec{Name: "openstack-gateway"},
+		Hostname:  "keystone.example.com",
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_GatewayValidWithOptionalFields(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Gateway = &GatewaySpec{
+		ParentRef: GatewayParentRefSpec{
+			Name:        "openstack-gateway",
+			Namespace:   "openstack-infra",
+			SectionName: "https",
+		},
+		Hostname:    "keystone.example.com",
+		Path:        "/identity",
+		Annotations: map[string]string{"gateway.envoyproxy.io/rate-limit": "10rps"},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_GatewayEmptyHostname(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Gateway = &GatewaySpec{
+		ParentRef: GatewayParentRefSpec{Name: "openstack-gateway"},
+		Hostname:  "",
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("gateway"))
+	g.Expect(err.Error()).To(ContainSubstring("hostname"))
+}
+
+func TestValidate_GatewayEmptyParentRefName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Gateway = &GatewaySpec{
+		ParentRef: GatewayParentRefSpec{Name: ""},
+		Hostname:  "keystone.example.com",
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("gateway"))
+	g.Expect(err.Error()).To(ContainSubstring("parentRef"))
+	g.Expect(err.Error()).To(ContainSubstring("name"))
+}
+
+func TestValidate_GatewayNil_Accepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Gateway = nil
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())

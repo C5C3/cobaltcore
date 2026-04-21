@@ -22,6 +22,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 var scheme = runtime.NewScheme()
@@ -32,6 +33,7 @@ func init() {
 	utilruntime.Must(esov1alpha1.SchemeBuilder.AddToScheme(scheme))
 	utilruntime.Must(esov1.SchemeBuilder.AddToScheme(scheme))
 	utilruntime.Must(mariadbv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(gatewayv1.Install(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 

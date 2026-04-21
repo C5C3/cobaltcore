@@ -269,6 +269,63 @@ spec:
                     description: RotationSchedule is a cron expression for key rotation.
                     type: string
                 type: object
+              gateway:
+                description: |-
+                  Gateway configures external exposure of the Keystone API via a Gateway API
+                  HTTPRoute (CC-0065). When set, the operator creates an HTTPRoute targeting
+                  the {name}-api Service on port 5000 and attaches it to the referenced
+                  pre-existing Gateway. When removed (nil), the HTTPRoute is deleted.
+                  The Gateway and GatewayClass are infrastructure concerns managed outside
+                  this operator.
+                properties:
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      Annotations are passed through to the HTTPRoute metadata verbatim,
+                      allowing implementation-specific configuration (rate limits, timeouts,
+                      CORS) without extending the CRD. Operator-managed labels are preserved.
+                    type: object
+                  hostname:
+                    description: |-
+                      Hostname is the externally reachable host (SNI / Host header) that the
+                      HTTPRoute matches. Required — used both for HTTPRoute hostname matching
+                      and for deriving status.endpoint as https://{hostname}/v3.
+                    minLength: 1
+                    type: string
+                  parentRef:
+                    description: ParentRef identifies the Gateway that the HTTPRoute
+                      attaches to.
+                    properties:
+                      name:
+                        description: Name is the Gateway resource name. Required.
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace is the namespace of the referenced Gateway. When empty, the
+                          Gateway is assumed to live in the Keystone CR's namespace. Cross-namespace
+                          references require a ReferenceGrant in the target namespace (out of scope
+                          for this operator).
+                        type: string
+                      sectionName:
+                        description: |-
+                          SectionName targets a specific listener on the Gateway (e.g. "https") when
+                          the Gateway defines multiple listeners. When empty, the HTTPRoute attaches
+                          to all compatible listeners.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  path:
+                    description: |-
+                      Path is the URL path prefix matched by the HTTPRoute. Defaults to "/".
+                      The reconciler applies the default when the field is empty.
+                    type: string
+                required:
+                - hostname
+                - parentRef
+                type: object
               image:
                 description: Image defines the Keystone container image reference.
                 properties:

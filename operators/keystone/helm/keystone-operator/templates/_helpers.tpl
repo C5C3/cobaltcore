@@ -259,6 +259,29 @@ Extracted into a named template to prevent drift when rules change.
     - update
     - patch
     - delete
+# gateway.networking.k8s.io - httproutes (CC-0065)
+# Required to create/update/delete HTTPRoutes that expose Keystone API externally.
+- apiGroups:
+    - gateway.networking.k8s.io
+  resources:
+    - httproutes
+  verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - patch
+    - delete
+# gateway.networking.k8s.io - httproutes/status (read-only, CC-0065)
+# Required so the operator can observe the Accepted condition set by the
+# upstream Gateway controller and reflect it in HTTPRouteReady.
+- apiGroups:
+    - gateway.networking.k8s.io
+  resources:
+    - httproutes/status
+  verbs:
+    - get
 # scheduling.k8s.io - priorityclasses (read-only, CC-0075)
 # Required for the webhook to validate that spec.priorityClassName references
 # an existing PriorityClass at admission time.

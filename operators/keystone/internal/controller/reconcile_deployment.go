@@ -80,7 +80,10 @@ func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	keystone.Status.Endpoint = fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", apiResourceName(keystone), keystone.Namespace)
+	// Status.Endpoint derivation is delegated to keystoneStatusEndpoint so that
+	// the gateway-aware public URL is used when spec.gateway is set, and the
+	// cluster-local URL otherwise (CC-0065, REQ-004).
+	keystone.Status.Endpoint = keystoneStatusEndpoint(keystone)
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 		Type:               "DeploymentReady",
 		Status:             metav1.ConditionTrue,

@@ -285,6 +285,145 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_BothManaged(t *testing.T) 
 	g.Expect(np.Spec.Egress[2].Ports[0].Port.IntValue()).To(Equal(11211))
 }
 
+// --- Gateway-aware ingress rules (CC-0065, REQ-008) ---
+
+// TestBuildKeystoneNetworkPolicy_GatewayNil_NoExtraIngressPeer verifies that
+// when spec.gateway is nil the ingress rules only contain the user-defined
+// peers, matching the pre-CC-0065 behavior (CC-0065, REQ-008).
+func TestBuildKeystoneNetworkPolicy_GatewayNil_NoExtraIngressPeer(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := npTestKeystone()
+	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
+		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
+			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+		},
+	}
+	// Gateway is nil — no extra peer should be appended.
+
+	np := buildKeystoneNetworkPolicy(ks)
+
+	g.Expect(np.Spec.Ingress).To(HaveLen(1),
+		"spec.gateway nil must not add a separate ingress rule")
+	g.Expect(np.Spec.Ingress[0].From).To(HaveLen(1),
+		"spec.gateway nil must not add an extra peer to the ingress rule")
+	g.Expect(np.Spec.Ingress[0].From[0].NamespaceSelector.MatchLabels).To(
+		HaveKeyWithValue("kubernetes.io/metadata.name", "openstack"),
+	)
+}
+
+// TestBuildKeystoneNetworkPolicy_GatewaySet_AppendsIngressPeerForGatewayNamespace
+// verifies that when both spec.gateway and spec.networkPolicy are set, an
+// additional ingress peer is appended targeting the Gateway's namespace on
+// TCP 5000, so the Gateway data-plane pods can reach the Keystone Service
+// (CC-0065, REQ-008).
+func TestBuildKeystoneNetworkPolicy_GatewaySet_AppendsIngressPeerForGatewayNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := npTestKeystone()
+	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
+		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
+			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+		},
+	}
+	ks.Spec.Gateway = &keystonev1alpha1.GatewaySpec{
+		ParentRef: keystonev1alpha1.GatewayParentRefSpec{
+			Name:      "public-gateway",
+			Namespace: "gateway-system",
+		},
+		Hostname: "keystone.example.com",
+	}
+
+	np := buildKeystoneNetworkPolicy(ks)
+
+	// All peers coexist in a single ingress rule targeting TCP 5000.
+	g.Expect(np.Spec.Ingress).To(HaveLen(1),
+		"gateway peer must be appended to the existing TCP 5000 ingress rule")
+	g.Expect(*np.Spec.Ingress[0].Ports[0].Protocol).To(Equal(corev1.ProtocolTCP))
+	g.Expect(np.Spec.Ingress[0].Ports[0].Port.IntValue()).To(Equal(5000))
+
+	g.Expect(np.Spec.Ingress[0].From).To(HaveLen(2),
+		"gateway-set + networkPolicy-set must add exactly one gateway peer")
+
+	// The first peer is the user-defined source.
+	g.Expect(np.Spec.Ingress[0].From[0].NamespaceSelector.MatchLabels).To(
+		HaveKeyWithValue("kubernetes.io/metadata.name", "openstack"),
+	)
+
+	// The appended peer targets the gateway's namespace by metadata.name.
+	gatewayPeer := np.Spec.Ingress[0].From[1]
+	g.Expect(gatewayPeer.NamespaceSelector).NotTo(BeNil())
+	g.Expect(gatewayPeer.NamespaceSelector.MatchLabels).To(
+		HaveKeyWithValue("kubernetes.io/metadata.name", "gateway-system"),
+	)
+	g.Expect(gatewayPeer.PodSelector).To(BeNil(),
+		"gateway peer must not restrict pods inside the gateway namespace (CC-0065, REQ-008)")
+}
+
+// TestBuildKeystoneNetworkPolicy_GatewaySet_EmptyParentNamespace_UsesKeystoneNamespace
+// verifies that when spec.gateway.parentRef.namespace is empty, the Keystone
+// CR's own namespace is used for the gateway ingress peer (CC-0065, REQ-008).
+func TestBuildKeystoneNetworkPolicy_GatewaySet_EmptyParentNamespace_UsesKeystoneNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := npTestKeystone()
+	ks.Namespace = "keystone-ns"
+	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
+		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
+			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+		},
+	}
+	ks.Spec.Gateway = &keystonev1alpha1.GatewaySpec{
+		ParentRef: keystonev1alpha1.GatewayParentRefSpec{
+			Name: "public-gateway",
+			// Namespace left empty.
+		},
+		Hostname: "keystone.example.com",
+	}
+
+	np := buildKeystoneNetworkPolicy(ks)
+
+	g.Expect(np.Spec.Ingress[0].From).To(HaveLen(2))
+	gatewayPeer := np.Spec.Ingress[0].From[1]
+	g.Expect(gatewayPeer.NamespaceSelector.MatchLabels).To(
+		HaveKeyWithValue("kubernetes.io/metadata.name", "keystone-ns"),
+		"empty parentRef.namespace must fall back to the Keystone CR's namespace")
+}
+
+// TestReconcileNetworkPolicy_GatewaySet_NetworkPolicyNil_NoNetworkPolicyCreated
+// verifies that when spec.gateway is set but spec.networkPolicy is nil, no
+// NetworkPolicy is created — the gateway-aware ingress peer is only appended
+// when network isolation is opted in (CC-0065, REQ-008).
+func TestReconcileNetworkPolicy_GatewaySet_NetworkPolicyNil_NoNetworkPolicyCreated(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := npTestScheme()
+	ks := npTestKeystone()
+	// networkPolicy nil — existing behavior must not change.
+	ks.Spec.Gateway = &keystonev1alpha1.GatewaySpec{
+		ParentRef: keystonev1alpha1.GatewayParentRefSpec{
+			Name:      "public-gateway",
+			Namespace: "gateway-system",
+		},
+		Hostname: "keystone.example.com",
+	}
+	r := newNPTestReconciler(s, ks)
+
+	result, err := r.reconcileNetworkPolicy(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(BeZero())
+
+	// Verify no NetworkPolicy was created (CC-0065, REQ-008).
+	var np networkingv1.NetworkPolicy
+	getErr := r.Get(context.Background(), types.NamespacedName{
+		Name: "test-keystone-api", Namespace: "default",
+	}, &np)
+	g.Expect(getErr).To(HaveOccurred())
+	g.Expect(client.IgnoreNotFound(getErr)).To(Succeed(),
+		"spec.gateway set without spec.networkPolicy must leave NetworkPolicy absent")
+
+	// Condition should still be NotRequired.
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "NetworkPolicyReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Reason).To(Equal("NetworkPolicyNotRequired"))
+}
+
 func TestBuildKeystoneNetworkPolicy_AdditionalEgress(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := npTestKeystone()
@@ -331,7 +470,7 @@ func TestReconcileNetworkPolicy_NetworkPolicySet_CreatesNetworkPolicy(t *testing
 	g.Expect(result.RequeueAfter).To(BeZero())
 
 	var np networkingv1.NetworkPolicy
-	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
 		Name: "test-keystone-api", Namespace: "default",
 	}, &np)).To(Succeed())
 
@@ -405,7 +544,7 @@ func TestReconcileNetworkPolicy_NetworkPolicyEnabled_NetworkPolicyUpdated(t *tes
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var np networkingv1.NetworkPolicy
-	g.Expect(r.Client.Get(ctx, types.NamespacedName{
+	g.Expect(r.Get(ctx, types.NamespacedName{
 		Name: "test-keystone-api", Namespace: "default",
 	}, &np)).To(Succeed())
 
@@ -497,7 +636,7 @@ func TestReconcileNetworkPolicy_NetworkPolicyNil_ExistingNP_DeletesNetworkPolicy
 
 	// Verify NetworkPolicy exists before reconcile.
 	var np networkingv1.NetworkPolicy
-	g.Expect(r.Client.Get(ctx, types.NamespacedName{
+	g.Expect(r.Get(ctx, types.NamespacedName{
 		Name: "test-keystone-api", Namespace: "default",
 	}, &np)).To(Succeed())
 
@@ -537,7 +676,7 @@ func TestReconcileNetworkPolicy_EmptyIngress_ReturnsError(t *testing.T) {
 
 	// Verify no NetworkPolicy was created (fail closed).
 	var np networkingv1.NetworkPolicy
-	getErr := r.Client.Get(context.Background(), types.NamespacedName{
+	getErr := r.Get(context.Background(), types.NamespacedName{
 		Name: "test-keystone-api", Namespace: "default",
 	}, &np)
 	g.Expect(getErr).To(HaveOccurred())

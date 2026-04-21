@@ -41,7 +41,7 @@ tests:
       - hasDocuments:
           count: 0
 
-  - it: should have 18 rules matching ClusterRole
+  - it: should have 20 rules matching ClusterRole
     set:
       rbac:
         namespaceScoped: true
@@ -50,7 +50,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 18
+          count: 20
 
   - it: should grant full CRUD on keystones
     set:
@@ -398,6 +398,46 @@ tests:
               - update
               - patch
               - delete
+
+  - it: should grant full CRUD on httproutes (CC-0065)
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - gateway.networking.k8s.io
+            resources:
+              - httproutes
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant read-only on httproutes/status (CC-0065)
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - gateway.networking.k8s.io
+            resources:
+              - httproutes/status
+            verbs:
+              - get
 
   - it: should grant read-only on priorityclasses for webhook validation (CC-0075)
     set:

@@ -71,6 +71,40 @@ func (m *mockHTTPDoer) Do(_ *http.Request) (*http.Response, error) {
 	return m.resp, m.err
 }
 
+// rewritingDoer forwards requests to a test server while preserving the
+// caller-constructed URL path. Production code targets the cluster-local
+// Service URL (internalAPIURL), which is unresolvable from unit tests; this
+// wrapper transparently routes the request to an httptest server without
+// changing what the caller built (CC-0065, CC-0067).
+type rewritingDoer struct {
+	inner  HTTPDoer
+	target string
+}
+
+func (r *rewritingDoer) Do(req *http.Request) (*http.Response, error) {
+	u, err := url.Parse(r.target)
+	if err != nil {
+		return nil, err
+	}
+	req.URL.Scheme = u.Scheme
+	req.URL.Host = u.Host
+	req.Host = u.Host
+	return r.inner.Do(req)
+}
+
+// capturingDoer records the URL of the last request it processed and delegates
+// to an inner doer. Used to assert that the health check targets
+// internalAPIURL regardless of Status.Endpoint (CC-0065, CC-0067).
+type capturingDoer struct {
+	inner HTTPDoer
+	url   string
+}
+
+func (c *capturingDoer) Do(req *http.Request) (*http.Response, error) {
+	c.url = req.URL.String()
+	return c.inner.Do(req)
+}
+
 // trackingReadCloser wraps an io.ReadCloser and records whether Close was called.
 type trackingReadCloser struct {
 	io.ReadCloser
@@ -111,7 +145,7 @@ func TestReconcileHealthCheck_Healthy200_SetsConditionTrue(t *testing.T) {
 	defer srv.Close()
 
 	r := newHealthcheckTestReconciler()
-	r.HTTPClient = srv.Client()
+	r.HTTPClient = &rewritingDoer{inner: srv.Client(), target: srv.URL}
 	ks := newTestKeystoneForHealthCheck(srv.URL+"/v3", 1)
 
 	result, err := r.reconcileHealthCheck(context.Background(), ks)
@@ -135,7 +169,7 @@ func TestReconcileHealthCheck_Unhealthy500_SetsConditionFalse(t *testing.T) {
 	defer srv.Close()
 
 	r := newHealthcheckTestReconciler()
-	r.HTTPClient = srv.Client()
+	r.HTTPClient = &rewritingDoer{inner: srv.Client(), target: srv.URL}
 	ks := newTestKeystoneForHealthCheck(srv.URL+"/v3", 1)
 
 	result, err := r.reconcileHealthCheck(context.Background(), ks)
@@ -159,7 +193,7 @@ func TestReconcileHealthCheck_Unhealthy503_SetsConditionFalse(t *testing.T) {
 	defer srv.Close()
 
 	r := newHealthcheckTestReconciler()
-	r.HTTPClient = srv.Client()
+	r.HTTPClient = &rewritingDoer{inner: srv.Client(), target: srv.URL}
 	ks := newTestKeystoneForHealthCheck(srv.URL+"/v3", 1)
 
 	result, err := r.reconcileHealthCheck(context.Background(), ks)
@@ -186,7 +220,7 @@ func TestReconcileHealthCheck_ConditionObservedGeneration(t *testing.T) {
 		defer srv.Close()
 
 		r := newHealthcheckTestReconciler()
-		r.HTTPClient = srv.Client()
+		r.HTTPClient = &rewritingDoer{inner: srv.Client(), target: srv.URL}
 		ks := newTestKeystoneForHealthCheck(srv.URL+"/v3", 7)
 
 		_, err := r.reconcileHealthCheck(context.Background(), ks)
@@ -203,7 +237,7 @@ func TestReconcileHealthCheck_ConditionObservedGeneration(t *testing.T) {
 		defer srv.Close()
 
 		r := newHealthcheckTestReconciler()
-		r.HTTPClient = srv.Client()
+		r.HTTPClient = &rewritingDoer{inner: srv.Client(), target: srv.URL}
 		ks := newTestKeystoneForHealthCheck(srv.URL+"/v3", 42)
 
 		_, err := r.reconcileHealthCheck(context.Background(), ks)
@@ -214,24 +248,45 @@ func TestReconcileHealthCheck_ConditionObservedGeneration(t *testing.T) {
 	})
 }
 
-// --- Uses Status.Endpoint as target URL (REQ-004) ---
+// --- Health check always targets the cluster-local internal URL,
+// independent of Status.Endpoint and spec.gateway (CC-0065, REQ-004). ---
 
-func TestReconcileHealthCheck_UsesStatusEndpoint(t *testing.T) {
+func TestReconcileHealthCheck_AlwaysTargetsInternalAPIURL_NoGateway(t *testing.T) {
 	g := NewGomegaWithT(t)
-	var requestedURL string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestedURL = r.URL.Path
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
+	capture := &capturingDoer{inner: &mockHTTPDoer{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("")),
+	}}}
 
 	r := newHealthcheckTestReconciler()
-	r.HTTPClient = srv.Client()
-	ks := newTestKeystoneForHealthCheck(srv.URL+"/v3", 1)
+	r.HTTPClient = capture
+	ks := newTestKeystoneForHealthCheck("https://public.example.com/v3", 1)
 
 	_, err := r.reconcileHealthCheck(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(requestedURL).To(Equal("/v3"))
+	g.Expect(capture.url).To(Equal("http://test-keystone-api.default.svc.cluster.local:5000/v3"),
+		"health check must probe the cluster-local Service URL regardless of Status.Endpoint (CC-0065)")
+}
+
+func TestReconcileHealthCheck_AlwaysTargetsInternalAPIURL_GatewaySet(t *testing.T) {
+	g := NewGomegaWithT(t)
+	capture := &capturingDoer{inner: &mockHTTPDoer{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("")),
+	}}}
+
+	r := newHealthcheckTestReconciler()
+	r.HTTPClient = capture
+	ks := newTestKeystoneForHealthCheck("https://keystone.example.com/v3", 1)
+	ks.Spec.Gateway = &keystonev1alpha1.GatewaySpec{
+		ParentRef: keystonev1alpha1.GatewayParentRefSpec{Name: "public-gateway"},
+		Hostname:  "keystone.example.com",
+	}
+
+	_, err := r.reconcileHealthCheck(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(capture.url).To(Equal("http://test-keystone-api.default.svc.cluster.local:5000/v3"),
+		"health check must not probe the public Gateway URL; conflating ingress/DNS/cert health with API readiness is a regression (CC-0065)")
 }
 
 // --- Empty endpoint → EndpointNotReady (REQ-004) ---

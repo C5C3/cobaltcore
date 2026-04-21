@@ -112,6 +112,15 @@ type KeystoneSpec struct {
 	// +optional
 	NetworkPolicy *NetworkPolicySpec `json:"networkPolicy,omitempty"`
 
+	// Gateway configures external exposure of the Keystone API via a Gateway API
+	// HTTPRoute (CC-0065). When set, the operator creates an HTTPRoute targeting
+	// the {name}-api Service on port 5000 and attaches it to the referenced
+	// pre-existing Gateway. When removed (nil), the HTTPRoute is deleted.
+	// The Gateway and GatewayClass are infrastructure concerns managed outside
+	// this operator.
+	// +optional
+	Gateway *GatewaySpec `json:"gateway,omitempty"`
+
 	// Resources defines the CPU and memory requests and limits for the Keystone API
 	// container. When unset, the defaulting webhook injects sensible defaults
 	// (256Mi/512Mi memory, 100m/500m CPU) to ensure Burstable QoS class and
@@ -297,6 +306,57 @@ type BootstrapSpec struct {
 	// require a routable address here (CC-0013).
 	// +optional
 	PublicEndpoint string `json:"publicEndpoint,omitempty"`
+}
+
+// GatewaySpec configures the Gateway API HTTPRoute used to expose the Keystone
+// API externally (CC-0065). Exposed as an optional pointer field on KeystoneSpec
+// so that existing CRs without spec.gateway continue to work — the reconciler
+// deletes any pre-existing HTTPRoute when the pointer is nil.
+//
+// The operator plays the application-developer role in the Gateway API model:
+// it only manages the HTTPRoute. The referenced Gateway (and GatewayClass) must
+// be pre-provisioned by the platform team.
+type GatewaySpec struct {
+	// ParentRef identifies the Gateway that the HTTPRoute attaches to.
+	ParentRef GatewayParentRefSpec `json:"parentRef"`
+
+	// Hostname is the externally reachable host (SNI / Host header) that the
+	// HTTPRoute matches. Required — used both for HTTPRoute hostname matching
+	// and for deriving status.endpoint as https://{hostname}/v3.
+	// +kubebuilder:validation:MinLength=1
+	Hostname string `json:"hostname"`
+
+	// Path is the URL path prefix matched by the HTTPRoute. Defaults to "/".
+	// The reconciler applies the default when the field is empty.
+	// +optional
+	Path string `json:"path,omitempty"`
+
+	// Annotations are passed through to the HTTPRoute metadata verbatim,
+	// allowing implementation-specific configuration (rate limits, timeouts,
+	// CORS) without extending the CRD. Operator-managed labels are preserved.
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
+// GatewayParentRefSpec references a pre-existing Gateway that the operator
+// attaches the HTTPRoute to (CC-0065).
+type GatewayParentRefSpec struct {
+	// Name is the Gateway resource name. Required.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Namespace is the namespace of the referenced Gateway. When empty, the
+	// Gateway is assumed to live in the Keystone CR's namespace. Cross-namespace
+	// references require a ReferenceGrant in the target namespace (out of scope
+	// for this operator).
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// SectionName targets a specific listener on the Gateway (e.g. "https") when
+	// the Gateway defines multiple listeners. When empty, the HTTPRoute attaches
+	// to all compatible listeners.
+	// +optional
+	SectionName string `json:"sectionName,omitempty"`
 }
 
 // UpgradePhase represents the current phase of a database upgrade (CC-0056).

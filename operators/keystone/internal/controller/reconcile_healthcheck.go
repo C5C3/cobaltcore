@@ -49,13 +49,14 @@ func (r *KeystoneReconciler) httpClient() HTTPDoer {
 	return http.DefaultClient
 }
 
-// reconcileHealthCheck performs an HTTP GET to the Keystone /v3 endpoint and
-// sets the KeystoneAPIReady condition based on the response. It uses the
-// endpoint URL from keystone.Status.Endpoint which is set by
-// reconcileDeployment (CC-0067, REQ-001, REQ-004).
+// reconcileHealthCheck performs an HTTP GET to the cluster-local Keystone /v3
+// endpoint and sets the KeystoneAPIReady condition based on the response.
+// The probe target is always the in-cluster Service URL returned by
+// internalAPIURL, independent of spec.gateway: we are verifying API readiness,
+// not the ingress/DNS/cert/Gateway path that keystone.Status.Endpoint may
+// advertise externally (CC-0065, CC-0067, REQ-001, REQ-004).
 func (r *KeystoneReconciler) reconcileHealthCheck(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
-	endpoint := keystone.Status.Endpoint
-	if endpoint == "" {
+	if keystone.Status.Endpoint == "" {
 		log.FromContext(ctx).Info("Keystone API endpoint not yet configured, requeuing")
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeKeystoneAPIReady,
@@ -66,6 +67,7 @@ func (r *KeystoneReconciler) reconcileHealthCheck(ctx context.Context, keystone 
 		})
 		return ctrl.Result{RequeueAfter: RequeueHealthCheck}, nil
 	}
+	endpoint := internalAPIURL(keystone)
 
 	checkCtx, cancel := context.WithTimeout(ctx, HealthCheckTimeout)
 	defer cancel()

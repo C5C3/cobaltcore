@@ -1,0 +1,68 @@
+{
+  "summary": "Second-round external-review follow-up for CC-0065 HTTPRoute sub-reconciler. Addresses two sourcery-ai findings: (1) removed silent hostname fallback in keystoneStatusEndpoint so misconfiguration surfaces as https:///v3 rather than being masked by the cluster-local URL; (2) added leading-slash normalization for spec.gateway.path with a dedicated unit test; (3) converted the REQ-008 NetworkPolicy gateway-peer block into an explicit REVIEWER-DISAGREEMENT explaining why the auto-appended peer is retained. Build, go vet, golangci-lint, and the full controller test suite all pass. However the refactored networkpolicy comment reintroduces the exact anti-pattern the external reviewer asked to remove (a trailing 'Reviewer: please verify' style note), and it is written in German — violating the blocking English-only language rule.",
+  "verdict": "BLOCKED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (go test ./internal/controller/... -count=1 = ok)", "checked": true},
+    {"item": "Edge cases are covered (empty path, leading-slash-missing path, custom path, gateway-nil endpoint, gateway-set endpoint, cross-namespace gateway peer, default-namespace gateway peer)", "checked": true},
+    {"item": "New behavior (path normalization) has a dedicated test TestBuildKeystoneHTTPRoute_PathWithoutLeadingSlash_Normalized", "checked": true},
+    {"item": "Endpoint-fallback removal has no explicit negative test (e.g. gateway set with empty hostname produces https:///v3) — acceptable because webhook+CRD MinLength=1 guarantees non-empty, and adding a test would lock in unreachable state", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (reconcileNetworkPolicy / reconcileHPA sub-reconciler contract, apiequality spec comparison, commonLabels helper)", "checked": true},
+    {"item": "Comments explain WHY not WHAT (good: hostname fallback rationale at reconcile_httproute.go:45-52; good: path normalization rationale at reconcile_httproute.go:147-150)", "checked": true},
+    {"item": "No dead code or commented-out alternatives", "checked": false},
+    {"item": "All comments in English", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "All user inputs validated (hostname MinLength=1, parentRef.name MinLength=1, webhook REQ-007 defense-in-depth)", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "No path traversal (spec.gateway.path is used only as an HTTPRoute PathPrefix match value, not a filesystem path)", "checked": true},
+    {"item": "REQ-008 auto-appended Gateway-namespace ingress peer widens the surface of spec.networkPolicy by a full namespace — documented tradeoff under REVIEWER-DISAGREEMENT, intentional per REQ-008", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible (path normalization is 3 lines; hostname fallback removal is 1 line)", "checked": true},
+    {"item": "REVIEWER-DISAGREEMENT block appropriately documents a deliberate deviation from external reviewer advice — consistent with the 'resolve-ambiguous-commented-out-alternatives-before-merge' pattern when a decision is made explicit", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No speculative generality introduced (normalization is the minimum needed to reject Gateway-controller-invalid paths)", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early — hostname fallback removal causes status.endpoint to emit visibly broken https:///v3 on post-admission misconfiguration instead of silently returning a cluster-local URL", "checked": true},
+    {"item": "Path normalization prevents Gateway controllers from silently rejecting the HTTPRoute", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs validated (hostname, parentRef.name by webhook+CRD)", "checked": true},
+    {"item": "Defense-in-depth preserved (empty hostname now produces observable broken URL rather than silent fallback)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "V1-LANGUAGE",
+      "severity": "BLOCKER",
+      "description": "Non-English comment introduced. Line 129 contains 'Reviewer: bitte prüfen.' ('bitte prüfen' is German for 'please verify'). This violates critical-rules rule #1 LANGUAGE ('All output in English (code, comments, commits, docs)') whose violation is explicitly 'Non-English output rejected'. The rule is blocking-priority.",
+      "location": "operators/keystone/internal/controller/reconcile_networkpolicy.go:129",
+      "fix": "Delete the trailing 'Reviewer: bitte prüfen.' sentence. The preceding sentence 'What we did instead: kept the behavior and documented the tradeoff.' already closes the block cleanly.",
+      "evidence": "\t// out of scope for this review round. — What we did instead: kept the\n\t// behavior and documented the tradeoff. Reviewer: bitte prüfen.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "PC3-PATTERN-REINTRODUCTION",
+      "severity": "BLOCKER",
+      "description": "The whole point of the second external-review round on CC-0065 was to eliminate the leftover 'Reviewer: please verify.' note from the CC-0065 NetworkPolicy block (documented in .planwerk/review_patterns/resolve-ambiguous-commented-out-alternatives-before-merge.md, occurrence #2). The new comment at line 129 literally reinstates the same anti-pattern, just translated to German ('Reviewer: bitte prüfen.'). Silently reintroducing the pattern defeats the external-review fix and will recur next review round.",
+      "location": "operators/keystone/internal/controller/reconcile_networkpolicy.go:129",
+      "fix": "Remove 'Reviewer: bitte prüfen.' The REVIEWER-DISAGREEMENT block already states the decision has been made and documented; any further verification request belongs in PR review comments, not in code.",
+      "evidence": "// behavior and documented the tradeoff. Reviewer: bitte prüfen.",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider shortening the REVIEWER-DISAGREEMENT block (reconcile_networkpolicy.go:115-129). At ~15 lines it mixes rationale, counter-argument, and meta ('out of scope for this review round') — once 'Reviewer: bitte prüfen.' is removed, the remaining content would still be clearer if tightened to (a) what the external reviewer suggested, (b) why REQ-008 makes that suggestion infeasible, (c) the tradeoff. Three sentences instead of twelve."
+  ],
+  "next_steps": [
+    "Remove the 'Reviewer: bitte prüfen.' sentence from operators/keystone/internal/controller/reconcile_networkpolicy.go:129 — single-line deletion, fully AUTO_FIX.",
+    "After the deletion, re-run `go test ./internal/controller/... -count=1` and `golangci-lint run ./internal/controller/...` (both are currently green) and re-request review."
+  ],
+  "detected_patterns": []
+}

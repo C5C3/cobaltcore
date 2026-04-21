@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
@@ -33,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/forge/internal/common/job"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -48,6 +50,8 @@ func testScheme() *runtime.Scheme {
 	_ = esov1alpha1.SchemeBuilder.AddToScheme(s)
 	_ = esov1.SchemeBuilder.AddToScheme(s)
 	_ = mariadbv1alpha1.AddToScheme(s)
+	// Gateway API types are needed for reconcileHTTPRoute lifecycle tests (CC-0065).
+	_ = gatewayv1.Install(s)
 	return s
 }
 
@@ -445,6 +449,7 @@ func TestAggregateReady_AllTrue(t *testing.T) {
 		{Type: "KeystoneAPIReady", Status: metav1.ConditionTrue},
 		{Type: "HPAReady", Status: metav1.ConditionTrue},
 		{Type: "NetworkPolicyReady", Status: metav1.ConditionTrue},
+		{Type: conditionTypeHTTPRouteReady, Status: metav1.ConditionTrue},
 		{Type: "BootstrapReady", Status: metav1.ConditionTrue},
 		{Type: "TrustFlushReady", Status: metav1.ConditionTrue},
 	}
@@ -1084,11 +1089,43 @@ func TestAggregateReadyAllTrueWithKeystoneAPIReady(t *testing.T) {
 		{Type: "KeystoneAPIReady", Status: metav1.ConditionTrue},
 		{Type: "HPAReady", Status: metav1.ConditionTrue},
 		{Type: "NetworkPolicyReady", Status: metav1.ConditionTrue},
+		{Type: conditionTypeHTTPRouteReady, Status: metav1.ConditionTrue},
 		{Type: "BootstrapReady", Status: metav1.ConditionTrue},
 		{Type: "TrustFlushReady", Status: metav1.ConditionTrue},
 	}
 	g.Expect(aggregateReady(conditions)).To(BeTrue(),
 		"aggregateReady should return true when all conditions including KeystoneAPIReady are True")
+}
+
+// TestSubConditionTypes_IncludesHTTPRouteReady verifies the HTTPRouteReady
+// condition participates in the aggregate Ready gating so that an HTTPRoute
+// rejected by the Gateway controller flips Ready to False (CC-0065, REQ-009).
+func TestSubConditionTypes_IncludesHTTPRouteReady(t *testing.T) {
+	g := NewGomegaWithT(t)
+	g.Expect(subConditionTypes).To(ContainElement(conditionTypeHTTPRouteReady))
+}
+
+// TestAggregateReady_MissingHTTPRouteReady_ReturnsFalse verifies that
+// aggregateReady returns false when the HTTPRouteReady condition is absent,
+// ensuring the Ready aggregate gates on HTTPRoute acceptance (CC-0065, REQ-009).
+func TestAggregateReady_MissingHTTPRouteReady_ReturnsFalse(t *testing.T) {
+	g := NewGomegaWithT(t)
+	// All expected sub-conditions True EXCEPT HTTPRouteReady is missing.
+	conditions := []metav1.Condition{
+		{Type: "SecretsReady", Status: metav1.ConditionTrue},
+		{Type: "FernetKeysReady", Status: metav1.ConditionTrue},
+		{Type: "CredentialKeysReady", Status: metav1.ConditionTrue},
+		{Type: "DatabaseReady", Status: metav1.ConditionTrue},
+		{Type: conditionTypePolicyValidReady, Status: metav1.ConditionTrue},
+		{Type: "DeploymentReady", Status: metav1.ConditionTrue},
+		{Type: "KeystoneAPIReady", Status: metav1.ConditionTrue},
+		{Type: "HPAReady", Status: metav1.ConditionTrue},
+		{Type: "NetworkPolicyReady", Status: metav1.ConditionTrue},
+		{Type: "BootstrapReady", Status: metav1.ConditionTrue},
+		{Type: "TrustFlushReady", Status: metav1.ConditionTrue},
+	}
+	g.Expect(aggregateReady(conditions)).To(BeFalse(),
+		"aggregateReady should return false when HTTPRouteReady condition is missing (CC-0065)")
 }
 
 // ---------------------------------------------------------------------------
@@ -1553,4 +1590,38 @@ func BenchmarkReconcile_FullReconcile_WithLatency(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_, _ = r.Reconcile(context.Background(), req)
 	}
+}
+
+// --- isGatewayAPIAvailable (CC-0065, production-hardening) ---
+
+// fakeRESTMapper implements meta.RESTMapper just far enough for the
+// RESTMapping call made by isGatewayAPIAvailable. Availability is driven by
+// the keys in the "available" set.
+type fakeRESTMapper struct {
+	meta.RESTMapper
+	available map[string]bool
+}
+
+func (f *fakeRESTMapper) RESTMapping(gk schema.GroupKind, versions ...string) (*meta.RESTMapping, error) {
+	if f.available[gk.String()] {
+		return &meta.RESTMapping{}, nil
+	}
+	return nil, &meta.NoKindMatchError{GroupKind: gk, SearchedVersions: versions}
+}
+
+func TestIsGatewayAPIAvailable_NilMapper_ReturnsFalse(t *testing.T) {
+	g := NewGomegaWithT(t)
+	g.Expect(isGatewayAPIAvailable(nil)).To(BeFalse())
+}
+
+func TestIsGatewayAPIAvailable_CRDPresent_ReturnsTrue(t *testing.T) {
+	g := NewGomegaWithT(t)
+	m := &fakeRESTMapper{available: map[string]bool{"HTTPRoute.gateway.networking.k8s.io": true}}
+	g.Expect(isGatewayAPIAvailable(m)).To(BeTrue())
+}
+
+func TestIsGatewayAPIAvailable_CRDMissing_ReturnsFalse(t *testing.T) {
+	g := NewGomegaWithT(t)
+	m := &fakeRESTMapper{available: map[string]bool{}}
+	g.Expect(isGatewayAPIAvailable(m)).To(BeFalse())
 }

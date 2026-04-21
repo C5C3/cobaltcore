@@ -1,0 +1,156 @@
+{
+  "feature_id": "CC-0065",
+  "title": "Add optional HTTPRoute sub-reconciler for API exposure",
+  "date": "2026-04-17",
+  "verdict": "NEEDS_CHANGES",
+  "summary": "Feature is well-implemented: the reconcileHTTPRoute sub-reconciler follows the established sub-reconciler-condition-contract pattern, uses typed condition constants, enforces owner references on update, guards updates with DeepEqual (plus an hrNormalizeMap helper mirroring npNormalizeMap to avoid nil-vs-empty spurious diffs), wires HTTPRouteReady into subConditionTypes, registers the Gateway API scheme in main.go/envtest/tests, keeps RBAC markers in sync with the Helm ClusterRole template (_helpers.tpl plus role_test/clusterrole_test updates), adds defense-in-depth webhook validation mirroring the MinLength CRD markers, and ships both unit tests (reconcile_httproute_test.go, 21 cases) and envtest integration tests (create/delete/update/endpoint + simulated Gateway-controller acceptance). One BLOCKING issue: the Helm CRD copy at operators/keystone/helm/keystone-operator/crds/keystone.openstack.c5c3.io_keystones.yaml was not regenerated and is missing the new spec.gateway schema — Helm-deployed users will have spec.gateway silently rejected or stripped. Two WARNING items: TestValidateCreate_RunsAllValidations was not updated with a broken gateway case to prove the validation path participates in accumulation, and no tests/e2e/keystone/gateway/ Chainsaw suite exists for end-to-end verification on a real cluster.",
+  "tests_checklist": [
+    {"item": "Unit tests cover buildKeystoneHTTPRoute (name, labels, parentRef, hostname, default/custom path, backendRef, annotations)", "checked": true},
+    {"item": "Unit tests cover reconcileHTTPRoute lifecycle (create, delete, NotRequired, update, idempotency)", "checked": true},
+    {"item": "Unit tests cover error propagation for ensure and delete paths via interceptor.Funcs", "checked": true},
+    {"item": "Unit tests cover Accepted condition handling (True sets HTTPRouteAccepted, False sets requeue)", "checked": true},
+    {"item": "ObservedGeneration is tracked on the HTTPRouteReady condition for all lifecycle paths", "checked": true},
+    {"item": "Webhook validation tests: valid, valid-with-optional-fields, empty-hostname, empty-parentRef-name, nil-accepted", "checked": true},
+    {"item": "TestValidateCreate_RunsAllValidations updated to include a broken gateway case for error accumulation", "checked": false},
+    {"item": "NetworkPolicy tests cover the new gateway-aware ingress peer (nil, set, empty-parentRef-namespace, networkPolicy-nil)", "checked": true},
+    {"item": "Envtest integration tests cover create, delete, update, and endpoint derivation", "checked": true},
+    {"item": "Simulated Gateway-controller acceptance covered (simulateHTTPRouteAccepted helper + assertion flip)", "checked": true},
+    {"item": "Chainsaw E2E test exists under tests/e2e/keystone/gateway/ for end-to-end verification on a real cluster", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Three-path lifecycle matches sub-reconciler-condition-contract-with-observedgeneration (set/nil/error)", "checked": true},
+    {"item": "Condition type and reason strings are typed constants (conditionTypeHTTPRouteReady, conditionReasonHTTPRouteAccepted/NotAccepted/NotRequired)", "checked": true},
+    {"item": "Error wrapping uses fmt.Errorf(\"verb context: %w\", err) convention", "checked": true},
+    {"item": "SPDX header and Feature: CC-0065 comment present", "checked": true},
+    {"item": "Functions have clear single responsibility (build/ensure/delete/isAccepted)", "checked": true},
+    {"item": "Naming mirrors sibling reconciler (hrNormalizeMap aligns with npNormalizeMap)", "checked": true},
+    {"item": "Helpers ensureHTTPRoute/deleteHTTPRoute follow manual-getcreateupdate-with-setcontrollerreference pattern", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "RBAC marker '+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes' present with least-privilege verbs", "checked": true},
+    {"item": "Separate read-only marker for httproutes/status subresource", "checked": true},
+    {"item": "Helm ClusterRole _helpers.tpl contains matching httproutes + httproutes/status rules", "checked": true},
+    {"item": "Helm ClusterRole and Role tests assert presence + rule count bump (18 -> 20)", "checked": true},
+    {"item": "SetControllerReference enforced on both create and update paths (re-set if removed out-of-band)", "checked": true},
+    {"item": "Webhook rejects empty hostname and empty parentRef.name with field-specific errors", "checked": true},
+    {"item": "No hardcoded secrets or credentials", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Reconcile ordering: reconcileHTTPRoute runs after Deployment/Service and before healthcheck (documented rationale)", "checked": true},
+    {"item": "Owns(&gatewayv1.HTTPRoute{}) registered in SetupWithManager AND integration_test.go controller", "checked": true},
+    {"item": "conditionTypeHTTPRouteReady added to subConditionTypes (aggregate Ready gating verified)", "checked": true},
+    {"item": "Gateway API scheme registered in main.go, operator envtest_setup.go, and controller testScheme()", "checked": true},
+    {"item": "Fake CRD added under internal/common/testutil/fake_crds/gateway-api/ for envtest", "checked": true},
+    {"item": "config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml regenerated with spec.gateway schema", "checked": true},
+    {"item": "helm/keystone-operator/crds/keystone.openstack.c5c3.io_keystones.yaml regenerated (make sync-crds)", "checked": false},
+    {"item": "zz_generated.deepcopy.go regenerated with GatewaySpec and GatewayParentRefSpec", "checked": true},
+    {"item": "status.endpoint derivation delegated to keystoneStatusEndpoint (single source of truth)", "checked": true},
+    {"item": "NetworkPolicy gateway namespace ingress peer only appended when both spec.gateway and spec.networkPolicy are set", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated logic beyond acknowledged hrNormalizeMap/npNormalizeMap pair (each lives with its consumer)", "checked": true},
+    {"item": "No speculative abstractions — build/ensure/delete mirror the NetworkPolicy reconciler one-for-one", "checked": true},
+    {"item": "defaultHTTPRoutePath and keystoneAPIPort constants used where referenced more than once", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "deleteHTTPRoute uses client.IgnoreNotFound for idempotency", "checked": true},
+    {"item": "isHTTPRouteAccepted treats empty Parents as not-yet-accepted (documented)", "checked": true},
+    {"item": "Errors are wrapped with resource namespace/name context", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Two-layer validation: CRD MinLength markers (hostname, parentRef.name) and webhook defense-in-depth", "checked": true},
+    {"item": "apiequality.Semantic.DeepEqual on Spec, normalized Labels/Annotations, and OwnerReferences before Update", "checked": true},
+    {"item": "Re-fetch of HTTPRoute after ensure to read Gateway-controller-written Parents status", "checked": true},
+    {"item": "NetworkPolicy falls back to Keystone CR namespace when spec.gateway.parentRef.namespace is empty (matches ParentRef lookup semantics)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [
+    {
+      "severity": "BLOCKING",
+      "description": "Helm CRD copy at operators/keystone/helm/keystone-operator/crds/keystone.openstack.c5c3.io_keystones.yaml does not contain the new spec.gateway schema. The source file at operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml was regenerated correctly (57 added lines including properties.gateway with parentRef/hostname/path/annotations and required fields), but the Helm copy was not updated via `make sync-crds`. The file's header comment explicitly warns: \"This file must be kept in sync with the source CRD generated by controller-gen. Run 'make verify-crd-sync' to check for drift, or 'make sync-crds' to update (CC-0017).\" When the operator is deployed via its Helm chart, the API server will validate against the stale schema and reject (or strip) any CR with spec.gateway set, silently breaking the entire feature for Helm-deployed clusters. Matches mandatory review pattern 'regenerate-auto-generated-files-after-api-type-changes' (CC-0038 precedent).",
+      "location": "operators/keystone/helm/keystone-operator/crds/keystone.openstack.c5c3.io_keystones.yaml",
+      "evidence": "grep -c 'gateway:' operators/keystone/helm/keystone-operator/crds/keystone.openstack.c5c3.io_keystones.yaml -> 0; diff against config/crd/bases/ shows the entire gateway property block missing.",
+      "fix": "Run `make sync-crds` from the repository root to copy operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml into operators/keystone/helm/keystone-operator/crds/ with the required source-reference header, then commit the regenerated Helm CRD.",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "issues_found": [
+    {
+      "check_id": "PC1",
+      "severity": "BLOCKING",
+      "description": "Helm CRD (operators/keystone/helm/keystone-operator/crds/keystone.openstack.c5c3.io_keystones.yaml) is out of sync with operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml — the new spec.gateway schema is missing from the Helm copy. Users installing the operator via the Helm chart will have spec.gateway silently rejected by kube-apiserver validation, making the entire feature inert for Helm-deployed clusters. See architecture_findings[0].",
+      "location": "operators/keystone/helm/keystone-operator/crds/keystone.openstack.c5c3.io_keystones.yaml",
+      "fix": "Run `make sync-crds` from the repository root and commit the regenerated Helm CRD.",
+      "evidence": "`diff operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml operators/keystone/helm/keystone-operator/crds/keystone.openstack.c5c3.io_keystones.yaml` shows the gateway property block (~57 lines) absent from the Helm copy.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "PC2",
+      "severity": "WARNING",
+      "description": "TestValidateCreate_RunsAllValidations in operators/keystone/api/v1alpha1/keystone_webhook_test.go (line 1107) exercises every validation rule simultaneously to prove error accumulation (no short-circuit), and the test was updated for every other recent validation (networkPolicy, resources, uwsgi, priorityClassName, topologySpreadConstraints), but it was NOT extended to cover the new gateway validation paths. A future change that accidentally short-circuits the gateway checks would go undetected. Matches review pattern 'update-aggregate-validation-tests-when-adding-new-validation-paths' (CC-0075 precedent).",
+      "location": "operators/keystone/api/v1alpha1/keystone_webhook_test.go:1107",
+      "fix": "Extend TestValidateCreate_RunsAllValidations with a Gateway block that sets both empty hostname and empty parentRef.name (e.g. `k.Spec.Gateway = &GatewaySpec{ParentRef: GatewayParentRefSpec{Name: \"\"}, Hostname: \"\"}`), and add two ContainSubstring assertions: `g.Expect(errMsg).To(ContainSubstring(\"hostname\"))` (already asserted indirectly via topologySpreadConstraints, but add a gateway-scoped assertion) and `g.Expect(errMsg).To(ContainSubstring(\"parentRef\"))`.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "PC3",
+      "severity": "WARNING",
+      "description": "No Chainsaw end-to-end test directory exists for the gateway feature under tests/e2e/keystone/ even though every other similarly-scoped feature (autoscaling, network-policy, priority-class, healthcheck, trust-flush, etc.) ships with a matching subdirectory. The envtest integration tests in internal/controller/integration_test.go exercise the full reconciler wiring including a simulated Gateway-controller Accepted=True transition, which covers most of the value; however, without a Chainsaw test, the HTTPRoute → Helm template → Kubernetes-admitted cycle (including CRD registration, RBAC grant, and real Gateway API CRD acceptance) is not exercised end-to-end on a real cluster. Matches review pattern 'require-tests-for-new-helm-template-resources' (CC-0067 precedent). Note: since the operator only ships the HTTPRoute (not a Helm-templated Gateway/GatewayClass), adding this test requires a Gateway controller in the e2e environment, which may warrant a follow-up ticket rather than blocking this PR.",
+      "location": "tests/e2e/keystone/",
+      "fix": "Option A: add tests/e2e/keystone/gateway/ with a Chainsaw test that installs a fake Gateway (or relies on a preinstalled one), applies a Keystone CR with spec.gateway, asserts the HTTPRoute resource exists with the expected parentRef/hostname/backendRef, and asserts HTTPRouteReady transitions. Option B: defer to a follow-up ticket and document the limitation in the progress file under implementation_notes.",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider deriving keystoneAPIPort from a single source that reconcileDeployment and reconcileHTTPRoute both read, rather than hard-coding 5000 in both the Service and the BackendRef — would prevent drift if the Keystone API port ever changes.",
+    "The DECISION comment in reconcile_networkpolicy.go at line 105-114 still carries the existing 'Reviewer: please verify.' suffix inherited from the CC-0039 codebase. This matches the established style in that file (lines 176, 223), so it is consistent and not blocking, but the whole pattern could be revisited in a follow-up to remove reviewer-directed language from production source.",
+    "status.endpoint is set by reconcileDeployment before reconcileHTTPRoute has observed Accepted=True from the Gateway controller. This means status.endpoint advertises https://{hostname}/v3 even when the HTTPRoute is not yet accepted. HTTPRouteReady=False signals the gap correctly, but consumers reading only status.endpoint may be misled. Consider documenting the precedence in godoc or, in a follow-up, gating the gateway-derived endpoint on HTTPRouteReady=True."
+  ],
+  "detected_patterns": [
+    {
+      "pattern": "sub-reconciler-condition-contract-with-observedgeneration",
+      "applied": true,
+      "note": "Three-path lifecycle (set/nil/error), conditions.SetCondition with all 5 fields, ObservedGeneration on every condition, reason HTTPRouteNotRequired on nil path."
+    },
+    {
+      "pattern": "manual-getcreateupdate-with-setcontrollerreference",
+      "applied": true,
+      "note": "ensureHTTPRoute: Get + IsNotFound branch (SetControllerReference + Create) / exists branch (re-set owner ref, additive label/annotation merge, spec overwrite, DeepEqual-guarded Update)."
+    },
+    {
+      "pattern": "normalize-nil-vs-empty-maps-before-deepequal-comparison",
+      "applied": true,
+      "note": "hrNormalizeMap mirrors npNormalizeMap; both sides of Labels/Annotations comparison are normalized to nil for empty before DeepEqual."
+    },
+    {
+      "pattern": "extract-repeated-condition-strings-into-typed-constants",
+      "applied": true,
+      "note": "Constants block at top of reconcile_httproute.go (conditionTypeHTTPRouteReady, conditionReasonHTTPRouteAccepted, conditionReasonHTTPRouteNotAccepted, conditionReasonHTTPRouteNotRequired, defaultHTTPRoutePath, keystoneAPIPort, requeueHTTPRouteAccepted)."
+    },
+    {
+      "pattern": "sync-rbac-markers-with-helm-clusterrole-templates",
+      "applied": true,
+      "note": "_helpers.tpl contains httproutes and httproutes/status rules; clusterrole_test.yaml and role_test.yaml updated with dedicated 'should grant full CRUD on httproutes' cases and rule-count bumps (18 -> 20)."
+    },
+    {
+      "pattern": "apply-defense-in-depth-checks-consistently-to-all-similarly-marked-fields",
+      "applied": true,
+      "note": "GatewaySpec.Hostname and GatewayParentRefSpec.Name carry +kubebuilder:validation:MinLength=1 and are also enforced in keystone_webhook.go validate() with field-specific errors."
+    },
+    {
+      "pattern": "regenerate-auto-generated-files-after-api-type-changes",
+      "applied": false,
+      "note": "Only partially applied: config/crd/bases/ and zz_generated.deepcopy.go were regenerated, but the Helm copy at helm/keystone-operator/crds/ was not. See issues_found[0]."
+    },
+    {
+      "pattern": "update-aggregate-validation-tests-when-adding-new-validation-paths",
+      "applied": false,
+      "note": "TestValidateCreate_RunsAllValidations was not extended for gateway. See issues_found[1]."
+    }
+  ],
+  "next_steps": [
+    "Run `make sync-crds` from the repository root and commit the regenerated operators/keystone/helm/keystone-operator/crds/keystone.openstack.c5c3.io_keystones.yaml (BLOCKING).",
+    "Add a broken spec.gateway block to TestValidateCreate_RunsAllValidations with ContainSubstring assertions for 'gateway', 'hostname', and 'parentRef' (WARNING).",
+    "Decide: either add a tests/e2e/keystone/gateway/ Chainsaw suite in this PR or file a follow-up ticket and document the gap in the CC-0065 progress file's implementation_notes (WARNING — ASK)."
+  ]
+}

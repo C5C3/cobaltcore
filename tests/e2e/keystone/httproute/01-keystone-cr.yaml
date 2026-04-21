@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR fixture for the httproute E2E test (CC-0065).
+# spec.gateway drives the optional HTTPRoute sub-reconciler: the operator
+# creates an HTTPRoute attached to a fictitious Gateway (openstack/openstack-gw).
+# No Gateway controller is running in the test cluster; the test simulates
+# Accepted=True on the route's parent status via a subsequent patch step.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-httproute
+  namespace: openstack
+spec:
+  replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_httproute
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
+  gateway:
+    parentRef:
+      name: openstack-gw
+    hostname: keystone.e2e.example.com
+    path: /v3
+    annotations:
+      example.com/test-annotation: initial

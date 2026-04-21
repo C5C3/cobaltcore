@@ -1,7 +1,7 @@
 ---
 title: Keystone Reconciler Architecture
 quadrant: operator
-feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0067, CC-0068, CC-0071, CC-0072, CC-0073, CC-0074, CC-0077
+feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0065, CC-0067, CC-0068, CC-0071, CC-0072, CC-0073, CC-0074, CC-0077
 ---
 
 # Keystone Reconciler Architecture
@@ -68,6 +68,7 @@ The controller watches the primary Keystone CR and all owned resources:
 | `PodDisruptionBudget` | `Owns()` | Triggers reconciliation when owned PDB changes |
 | `HorizontalPodAutoscaler` | `Owns()` | Triggers reconciliation when owned HPA changes |
 | `CronJob` | `Owns()` | Triggers reconciliation when owned CronJob changes |
+| `HTTPRoute` | `Owns()` (optional) | Registered only when the `gateway.networking.k8s.io/v1` CRD is installed; detected at startup via the manager's `RESTMapper`. Triggers reconciliation when owned HTTPRoute changes (only created when `spec.gateway` is set). |
 | `Secret` | `Watches()` | Triggers reconciliation for controller-owned Secrets only |
 | `MariaDB` | `Watches()` | Propagates upstream DB cluster health into `DatabaseReady` (CC-0047) |
 | `ClusterSecretStore` | `Watches()` | Propagates OpenBao-backend health into `SecretsReady` (CC-0047) |
@@ -118,6 +119,8 @@ RBAC markers on the reconciler generate the required ClusterRole:
 | `external-secrets.io` | `clustersecretstores` | get, list, watch |
 | `policy` | `poddisruptionbudgets` | get, list, watch, create, update, patch, delete |
 | `autoscaling` | `horizontalpodautoscalers` | get, list, watch, create, update, patch, delete |
+| `gateway.networking.k8s.io` | `httproutes` | get, list, watch, create, update, patch, delete (CC-0065) |
+| `gateway.networking.k8s.io` | `httproutes/status` | get (CC-0065) |
 
 ---
 
@@ -191,6 +194,13 @@ RBAC markers on the reconciler generate the required ClusterRole:
 │  │ pruneStaleConfigMaps    │  Delete old {name}-config-{hash} ConfigMaps     │
 │  │                         │  Retain 3 historical + current (CC-0077)        │
 │  └────────┬────────────────┘  No condition, no requeue                       │
+│           │                                                                  │
+│           ▼                                                                  │
+│  ┌─────────────────────────┐                                                 │
+│  │ reconcileHTTPRoute      │  Create/update/delete HTTPRoute based on        │
+│  │                         │  spec.gateway; reflect parent Accepted status   │
+│  │                         │  Sets: HTTPRouteReady                           │
+│  └────────┬────────────────┘  Requeue: 10s while not Accepted (CC-0065)      │
 │           │                                                                  │
 │           ▼                                                                  │
 │  ┌────────────────────────┐                                                  │
@@ -337,6 +347,7 @@ output (other than conditions merged after the group completes).
 | `reconcilePolicyValidation` | configMapName | `PolicyValidReady` | Config | no (gates Deployment) |
 | `reconcileDeployment` | configMapName | `DeploymentReady` | Database (implicit) | no |
 | `pruneStaleConfigMaps` | configMapName | *(none)* | Deployment (must be ready) | no |
+| `reconcileHTTPRoute` | CR spec | `HTTPRouteReady` | Deployment (ensures backend Service exists) | no |
 | `reconcileHealthCheck` | status.endpoint | `KeystoneAPIReady` | Deployment (sets endpoint) | no |
 | `reconcileHPA` | CR spec | `HPAReady` | Deployment (naming) | no |
 | `reconcileBootstrap` | configMapName | `BootstrapReady` | Deployment (API must be running) | no |
@@ -481,6 +492,7 @@ after a full reconcile loop, every condition in the status carries the correct
 | `PolicyValidReady` | `reconcilePolicyValidation` | Policy override validation passed or not required (CC-0058) |
 | `DeploymentReady` | `reconcileDeployment` | Deployment available and Service created |
 | `KeystoneAPIReady` | `reconcileHealthCheck` | Keystone API responding to HTTP health check (CC-0067) |
+| `HTTPRouteReady` | `reconcileHTTPRoute` | HTTPRoute accepted by Gateway, not required (no `spec.gateway`), or Gateway API CRD missing (reason `GatewayAPINotInstalled`) |
 | `HPAReady` | `reconcileHPA` | HPA configured or not required |
 | `BootstrapReady` | `reconcileBootstrap` | Bootstrap Job completed successfully |
 | `TrustFlushReady` | `reconcileTrustFlush` | Trust flush CronJob configured or not required (CC-0057) |
@@ -1038,11 +1050,19 @@ The liveness and readiness probes are intentionally separated (CC-0062). The liv
 
 **Status Endpoint:**
 
-When the Deployment becomes ready, `status.endpoint` is set to:
+When the Deployment becomes ready, `status.endpoint` is set via the
+`keystoneStatusEndpoint` helper (defined in `reconcile_httproute.go`, CC-0065,
+REQ-004):
 
-```
-http://keystone-api.{namespace}.svc.cluster.local:5000/v3
-```
+| `spec.gateway` | Resulting `status.endpoint` |
+| --- | --- |
+| nil | `http://{name}-api.{namespace}.svc.cluster.local:5000/v3` |
+| set (hostname `api.example.com`) | `https://api.example.com/v3` |
+
+The helper is owned by `reconcile_httproute.go` but invoked from
+`reconcileDeployment` because the endpoint must be populated before the
+`reconcileHealthCheck` step reads it. `reconcileHTTPRoute` runs later in the
+sequence and does not mutate `status.endpoint`.
 
 **PodDisruptionBudget (CC-0037):**
 
@@ -1143,6 +1163,136 @@ controller-runtime. All preceding steps (config creation, deployment) are idempo
 so requeue after a pruning error is safe.
 
 **Shared library calls:** `config.PruneImmutableConfigMaps()`
+
+---
+
+### reconcileHTTPRoute
+
+**File:** `operators/keystone/internal/controller/reconcile_httproute.go`
+
+**Signature:**
+
+```go
+func (r *KeystoneReconciler) reconcileHTTPRoute(ctx context.Context,
+    keystone *keystonev1alpha1.Keystone) (ctrl.Result, error)
+```
+
+**Purpose:** Manage the optional Gateway API `HTTPRoute` that exposes the
+Keystone API outside the cluster via a pre-existing `Gateway` (CC-0065). The
+Gateway is owned by the platform team; this sub-reconciler only ensures the
+route that attaches the Keystone Service to it. Four lifecycle paths
+(REQ-001, REQ-002, REQ-005):
+
+0. **Gateway API not installed** (`r.gatewayAPIAvailable` is false): The
+   CRD presence check in `SetupWithManager` found no mapping for
+   `HTTPRoute.gateway.networking.k8s.io/v1`, so the `Owns(HTTPRoute)` watch
+   was skipped. When `spec.gateway` is nil, set `HTTPRouteReady=True` with
+   reason `HTTPRouteNotRequired` (no delete attempt — `c.Delete` would fail
+   with `no matches for kind`). When `spec.gateway` is set, set
+   `HTTPRouteReady=False` with reason `GatewayAPINotInstalled` and a message
+   pointing the user at the missing CRD; the operator otherwise keeps
+   reconciling so that Keystone CRs without `spec.gateway` still become
+   Ready. Runtime installation of the CRD requires an operator restart for
+   the RESTMapper probe and the `Owns()` watch to pick it up.
+1. **Gateway disabled** (`spec.gateway` is nil, CRD present): Delete any
+   existing `{name}-api` HTTPRoute and set `HTTPRouteReady=True` with reason
+   `HTTPRouteNotRequired`.
+2. **Gateway enabled** (`spec.gateway` is set, CRD present): Build the
+   desired HTTPRoute via `buildKeystoneHTTPRoute()` and call
+   `ensureHTTPRoute()` to create or update it. Re-fetch to read the parent
+   `Accepted` condition written by the Gateway controller, then reflect
+   that status as `HTTPRouteReady`: `Accepted=True` → condition `True` with
+   reason `HTTPRouteAccepted`; otherwise condition `False` with reason
+   `HTTPRouteNotAccepted` and a 10s requeue.
+3. **Error**: Propagate errors from ensure/delete/get operations with
+   descriptive context.
+
+**Placement rationale:** Runs after `reconcileDeployment` + `pruneStaleConfigMaps`
+so the backend Service (`{name}-api`) is guaranteed to exist before the HTTPRoute
+references it, and before `reconcileHealthCheck` reads `status.endpoint`. The
+route is deliberately not part of `reconcileParallelGroup` because it has a
+transitive dependency on the Service created by `reconcileDeployment`.
+
+**HTTPRoute Construction (`buildKeystoneHTTPRoute`, REQ-001, REQ-003, REQ-006):**
+
+| HTTPRoute Field | Source |
+| --- | --- |
+| `metadata.name` | `{name}-api` (shared with the Keystone API Service) |
+| `metadata.namespace` | Keystone CR namespace |
+| `metadata.labels` | `commonLabels(keystone)` |
+| `metadata.annotations` | `spec.gateway.annotations` (copied; operator-managed keys stay authoritative on merge) |
+| `spec.parentRefs[0].name` | `spec.gateway.parentRef.name` |
+| `spec.parentRefs[0].namespace` | `spec.gateway.parentRef.namespace` (omitted when empty; defaults to CR namespace) |
+| `spec.parentRefs[0].sectionName` | `spec.gateway.parentRef.sectionName` (omitted when empty) |
+| `spec.hostnames[0]` | `spec.gateway.hostname` |
+| `spec.rules[0].matches[0].path.type` | `PathPrefix` |
+| `spec.rules[0].matches[0].path.value` | `spec.gateway.path` (defaults to `/` when empty, `defaultHTTPRoutePath`) |
+| `spec.rules[0].backendRefs[0].kind` | `Service` |
+| `spec.rules[0].backendRefs[0].name` | `{name}-api` |
+| `spec.rules[0].backendRefs[0].port` | `5000` (`keystoneAPIPort`) |
+| `metadata.ownerReferences` | Keystone CR (controller owner via `controllerutil.SetControllerReference`) |
+
+**Merge strategy (`ensureHTTPRoute`):** Mirrors `ensureNetworkPolicy`. On
+update, the `Spec` is overwritten with the desired state, `labels` and
+`annotations` are merged additively so user-added metadata is preserved while
+operator-managed keys remain authoritative, and the owner reference is
+re-asserted. `apiequality.Semantic.DeepEqual` guards against no-op writes —
+`client.Update` is called only when `Spec`, labels, annotations, or owner
+references actually changed. Empty maps are normalized to nil via
+`hrNormalizeMap` so nil-vs-empty does not trigger a spurious diff.
+
+**Acceptance Detection (`isHTTPRouteAccepted`, REQ-005):** Iterates
+`status.parents[*].conditions` and returns `true` as soon as any parent reports
+`Accepted=True`. An empty `Parents` slice (Gateway controller has not yet
+observed the route) is treated as "not yet accepted", yielding a `False`
+condition with a short requeue rather than a permanent error.
+
+**Condition Contract:**
+
+| Status | Reason | Message | RequeueAfter |
+| --- | --- | --- | --- |
+| `True` | `HTTPRouteNotRequired` | `"External API exposure via Gateway API is not configured"` | — |
+| `True` | `HTTPRouteAccepted` | `"HTTPRoute accepted by Gateway"` | — |
+| `False` | `HTTPRouteNotAccepted` | `"HTTPRoute not yet accepted by Gateway"` | 10s |
+
+**Requeue Constants:**
+
+| Constant | Value | Purpose |
+| --- | --- | --- |
+| `requeueHTTPRouteAccepted` | `RequeueDeploymentPolling` (10s) | Interval for requeuing while waiting for the Gateway controller to set `Accepted=True` on the route's parent status |
+| `keystoneAPIPort` | `gatewayv1.PortNumber(5000)` | Backend Service port targeted by the route |
+| `defaultHTTPRoutePath` | `"/"` | Path prefix applied when `spec.gateway.path` is empty |
+
+**`status.endpoint` Derivation (REQ-004):** The gateway-aware helper
+`keystoneStatusEndpoint()` is defined alongside this sub-reconciler but called
+from `reconcileDeployment`. When `spec.gateway.hostname` is set, the helper
+returns `https://{hostname}/v3`; otherwise it returns the cluster-local
+`http://{name}-api.{namespace}.svc.cluster.local:5000/v3`. The gateway path
+prefix from `spec.gateway.path` is used for HTTPRoute routing only; it is not
+appended to `status.endpoint`. The `https` scheme is emitted unconditionally
+when a gateway hostname is configured — gateways are the public-ingress hop
+and terminate TLS.
+
+**Interaction with `reconcileNetworkPolicy` (REQ-008):** When `spec.gateway`
+is set, `reconcileNetworkPolicy` appends an extra ingress peer that selects
+the gateway's namespace by the well-known label
+`kubernetes.io/metadata.name={parentRef.namespace or CR namespace}`. This lets
+Gateway data-plane pods reach the Keystone API Service on port 5000 without
+widening the base NetworkPolicy. The peer is added only while `spec.gateway`
+is non-nil and is removed automatically on the next reconcile after
+`spec.gateway` is cleared.
+
+**Error handling:** Errors from `ensureHTTPRoute()` are wrapped with
+"ensuring HTTPRoute" context; errors from `deleteHTTPRoute()` with "deleting
+HTTPRoute"; the post-ensure `Get` with "getting HTTPRoute {ns}/{name}". All
+are returned directly to controller-runtime for exponential backoff.
+Acceptance failures are **not** returned as errors — they set a False
+condition and requeue at a fixed interval.
+
+**Shared library calls:** none. All helpers (`ensureHTTPRoute`,
+`deleteHTTPRoute`, `buildKeystoneHTTPRoute`, `isHTTPRouteAccepted`,
+`hrNormalizeMap`, `keystoneStatusEndpoint`) are defined in
+`reconcile_httproute.go`.
 
 ---
 
@@ -1426,6 +1576,7 @@ controller-runtime for exponential backoff.
 | `reconcilePolicyValidation` | Job running | 15s | `ErrJobFailed` from validation → descriptive error |
 | `reconcileDeployment` | Deployment not available | 10s | API error → exponential backoff |
 | `pruneStaleConfigMaps` | — | — | List/delete failure → exponential backoff (CC-0077) |
+| `reconcileHTTPRoute` | Gateway has not yet set `Accepted=True` on parent status | 10s | API error on ensure/get/delete → exponential backoff (CC-0065) |
 | `reconcileHealthCheck` | Non-2xx, timeout, DNS, connection refused | 10s | Malformed URL → exponential backoff (CC-0067) |
 | `reconcileHPA` | — | — | API error → exponential backoff |
 | `reconcileBootstrap` | Job running | 60s | `ErrJobFailed` from bootstrap |
@@ -1462,6 +1613,7 @@ Keystone CR via `controllerutil.SetControllerReference()`. This enables:
 | Service | `keystone-api` | Keystone CR | <!-- TODO: align to {name}-* pattern (pre-existing, CC-0073 W-002) -->
 | PodDisruptionBudget | `{name}-api` | Keystone CR |
 | HorizontalPodAutoscaler | `{name}-api` | Keystone CR (only when `spec.autoscaling` is set) |
+| HTTPRoute | `{name}-api` | Keystone CR (only when `spec.gateway` is set, CC-0065) |
 | Job | `{name}-policy-validation` | Keystone CR (only when `spec.policyOverrides` is set) |
 | CronJob | `{name}-trust-flush` | Keystone CR (only when `spec.trustFlush` is set) |
 | ConfigMap | `{name}-fernet-rotate-script-{hash}` | Keystone CR (CC-0073) |
@@ -1509,6 +1661,7 @@ existing file (e.g. `reconcile_hpa_test.go`).
 | `reconcile_deployment_test.go` | Deployment spec, Service creation, readiness, endpoint, owner references, stable pod template (CC-0074), ObservedGeneration (CC-0072) |
 | `reconcile_healthcheck_test.go` | Health check happy/unhealthy paths, timeout, DNS, connection refused, empty endpoint, response body close, HTTPDoer injection (CC-0067), ObservedGeneration |
 | `reconcile_hpa_test.go` | HPA creation, update, deletion, metrics (CPU/memory), minReplicas defaulting, condition contract, error propagation (CC-0038), ObservedGeneration |
+| `reconcile_httproute_test.go` | HTTPRoute creation, update, deletion, gateway namespace defaulting, PathPrefix match, backend Service port 5000, parent Accepted reflection, status.endpoint derivation, condition contract (CC-0065), ObservedGeneration |
 | `reconcile_trustflush_test.go` | CronJob creation, deletion, schedule/suspend/args, security context, volume mounts, condition contract, error propagation (CC-0057), ObservedGeneration |
 | `reconcile_bootstrap_test.go` | Job creation, completion, failure, stale detection, TTL/backoff, ObservedGeneration (CC-0072) |
 | `integration_test.go` | Full reconciliation envtest: CronJob spec, bootstrap Job spec, brownfield mode, condition progression (CC-0015), ObservedGeneration (CC-0072, pre-existing) |
@@ -1537,6 +1690,7 @@ operators/keystone/
     │   ├── reconcile_deployment.go             reconcileDeployment sub-reconciler
     │   ├── reconcile_healthcheck.go           reconcileHealthCheck sub-reconciler (CC-0067)
     │   ├── reconcile_hpa.go                   reconcileHPA sub-reconciler (CC-0038)
+    │   ├── reconcile_httproute.go             reconcileHTTPRoute sub-reconciler + keystoneStatusEndpoint helper (CC-0065)
     │   ├── reconcile_trustflush.go            reconcileTrustFlush sub-reconciler (CC-0057)
     │   ├── reconcile_bootstrap.go              reconcileBootstrap sub-reconciler
     │   ├── scripts/
@@ -1553,6 +1707,7 @@ operators/keystone/
     │   ├── reconcile_deployment_test.go        Deployment tests
     │   ├── reconcile_healthcheck_test.go      Health check tests (CC-0067)
     │   ├── reconcile_hpa_test.go              HPA tests (CC-0038)
+    │   ├── reconcile_httproute_test.go        HTTPRoute tests (CC-0065)
     │   ├── reconcile_trustflush_test.go       Trust flush tests (CC-0057)
     │   ├── reconcile_bootstrap_test.go         Bootstrap tests
     │   └── integration_test.go                 Envtest integration tests (CC-0015)

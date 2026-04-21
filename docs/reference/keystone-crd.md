@@ -1,7 +1,7 @@
 ---
 title: Keystone CRD API Reference
 quadrant: operator
-feature: CC-0011, CC-0012, CC-0013, CC-0016, CC-0036, CC-0038, CC-0039, CC-0040, CC-0042, CC-0056, CC-0057, CC-0075
+feature: CC-0011, CC-0012, CC-0013, CC-0016, CC-0036, CC-0038, CC-0039, CC-0040, CC-0042, CC-0056, CC-0057, CC-0065, CC-0075
 ---
 
 # Keystone CRD API Reference
@@ -149,6 +149,7 @@ status:
 | `policyOverrides` | [`*PolicySpec`](#policyspec) | No | `nil` | Custom oslo.policy rules. |
 | `autoscaling` | [`*AutoscalingSpec`](#autoscalingspec) | No | `nil` | Horizontal pod autoscaling configuration. When set, an HPA is created targeting the `{name}-api` Deployment. When removed, the HPA is deleted (CC-0038). |
 | `networkPolicy` | [`*NetworkPolicySpec`](#networkpolicyspec) | No | `nil` | Network isolation for Keystone API pods. When set, a NetworkPolicy restricting ingress to TCP 5000 and auto-deriving egress rules for DNS, MariaDB, and Memcached is created. When `nil`, no NetworkPolicy is managed and traffic is unrestricted (CC-0039). |
+| `gateway` | [`*GatewaySpec`](#gatewayspec) | No | `nil` | Gateway API HTTPRoute configuration. When set, an HTTPRoute is created targeting the `{name}-api` Service on port 5000 and attached to the referenced pre-existing Gateway; `status.endpoint` is updated to `https://{hostname}/v3`. When removed, the HTTPRoute is deleted and `status.endpoint` reverts to the cluster-local Service URL (CC-0065). |
 | `resources` | [`*corev1.ResourceRequirements`](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#resources) | No | See below | CPU and memory requests and limits for the Keystone API container. When unset, the defaulting webhook injects sensible defaults to ensure Burstable QoS class and enable HPA utilization calculations (CC-0042). |
 | `uwsgi` | [`*UWSGISpec`](#uwsgispec) | No | `nil` | uWSGI application server parameters. When set, the operator uses these values for the Deployment container command. When `nil`, hardcoded defaults (processes=2, threads=1, httpKeepAlive=true) are used in the reconciler (CC-0040). |
 | `topologySpreadConstraints` | [`[]corev1.TopologySpreadConstraint`](https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/) | No | See [below](#topologyspreadconstraints) | Scheduler hints for spreading pods across zones and nodes. `nil` injects two defaults (zone + hostname, MaxSkew=1, `ScheduleAnyway`); a non-nil value (including `[]`) is used verbatim (CC-0075). |
@@ -177,6 +178,8 @@ webhooks are invoked:
 | `spec.autoscaling.targetMemoryUtilization` | Range: 1–100 | — |
 | `spec.uwsgi.processes` | Minimum: 1 | — |
 | `spec.uwsgi.threads` | Minimum: 1 | — |
+| `spec.gateway.hostname` | MinLength: 1 | (empty string rejected by API server) |
+| `spec.gateway.parentRef.name` | MinLength: 1 | (empty string rejected by API server) |
 
 > **Known limitation (CC-0040):** `spec.uwsgi.processes` and `spec.uwsgi.threads`
 > have no upper-bound validation. A user could set an extremely high value (e.g.,
@@ -479,6 +482,163 @@ spec:
           - protocol: TCP
             port: 443
 ```
+
+---
+
+## GatewaySpec
+
+Configures external exposure of the Keystone API via a Gateway API HTTPRoute
+(CC-0065). This is a pointer field (`*GatewaySpec`) on `KeystoneSpec` — when `nil`,
+no HTTPRoute is created and the `HTTPRouteReady` condition is set to `True` with
+reason `HTTPRouteNotRequired`. When set, an `HTTPRoute` (from
+`gateway.networking.k8s.io/v1`) is created in the Keystone CR's namespace, attached
+to the referenced pre-existing Gateway, and pointing to the `{name}-api` Service on
+port 5000. Removing the field deletes the existing HTTPRoute.
+
+The operator plays the **application-developer** role in the Gateway API model: it
+manages only the `HTTPRoute`. The referenced `Gateway` (and its `GatewayClass`) are
+**platform-team** concerns and must be pre-provisioned — this operator does not
+create or reconcile them. Cross-namespace `parentRef` references additionally
+require a `ReferenceGrant` in the target namespace, which is out of scope for this
+operator.
+
+**Gateway API CRD prerequisite:** the `gateway.networking.k8s.io/v1` `HTTPRoute`
+CRD must be installed in the cluster before the Keystone operator starts. The
+operator probes for the CRD at startup (via the manager `RESTMapper`); when the
+CRD is missing it disables the HTTPRoute watch so Keystone CRs without
+`spec.gateway` still reconcile, and reports `HTTPRouteReady=False` with reason
+`GatewayAPINotInstalled` for any CR that sets `spec.gateway`. Installing the
+CRD after the operator has started requires restarting the operator for the
+watch to become active. The quickstart stack (`make deploy-infra`) installs
+the upstream Gateway API standard CRDs for this reason; the pinned version is
+set via `GATEWAY_API_VERSION` in `hack/deploy-infra.sh` and tracks
+`sigs.k8s.io/gateway-api` in `operators/keystone/go.mod`.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `parentRef` | [`GatewayParentRefSpec`](#gatewayparentrefspec) | Yes | — | Gateway the HTTPRoute attaches to. |
+| `hostname` | `string` | Yes | — | Externally reachable hostname (SNI / `Host` header) matched by the HTTPRoute. Used for both route hostname matching and deriving `status.endpoint` (`https://{hostname}/v3`). Minimum length: 1. |
+| `path` | `string` | No | `"/"` | URL path prefix matched by the HTTPRoute. The reconciler applies the default when the field is empty. Uses `PathPrefix` match type. |
+| `annotations` | `map[string]string` | No | `nil` | Annotations passed through verbatim to the HTTPRoute `metadata.annotations`, allowing implementation-specific configuration (rate limits, timeouts, CORS). Operator-managed labels are preserved — user annotations do not shadow them. |
+
+### GatewayParentRefSpec
+
+References the pre-existing `Gateway` that the operator attaches the HTTPRoute to.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | Yes | — | Gateway resource name. Minimum length: 1. |
+| `namespace` | `string` | No | CR namespace | Namespace of the referenced Gateway. When empty, the Gateway is assumed to live in the Keystone CR's namespace. Cross-namespace references require a `ReferenceGrant`. |
+| `sectionName` | `string` | No | `""` | Targets a specific listener on the Gateway (e.g., `"https"`) when the Gateway defines multiple listeners. When empty, the HTTPRoute attaches to all compatible listeners. |
+
+### HTTPRoute Resource Mapping
+
+The HTTPRoute created from this spec has the following shape
+(`gateway.networking.k8s.io/v1`, `Kind: HTTPRoute`):
+
+| HTTPRoute Field | Value |
+| --- | --- |
+| `metadata.name` | `{name}-api` (matches the backend Service, Deployment, HPA, NetworkPolicy naming) |
+| `metadata.namespace` | Keystone CR namespace |
+| `metadata.labels` | `commonLabels` (same as Deployment) |
+| `metadata.annotations` | Merged from `spec.gateway.annotations` |
+| `spec.parentRefs[0].name` | `spec.gateway.parentRef.name` |
+| `spec.parentRefs[0].namespace` | `spec.gateway.parentRef.namespace` when non-empty; omitted otherwise |
+| `spec.parentRefs[0].sectionName` | `spec.gateway.parentRef.sectionName` when non-empty; omitted otherwise |
+| `spec.hostnames[0]` | `spec.gateway.hostname` |
+| `spec.rules[0].matches[0].path.type` | `PathPrefix` |
+| `spec.rules[0].matches[0].path.value` | `spec.gateway.path` (or `"/"` when empty) |
+| `spec.rules[0].backendRefs[0].kind` | `Service` |
+| `spec.rules[0].backendRefs[0].name` | `{name}-api` |
+| `spec.rules[0].backendRefs[0].port` | `5000` |
+| `ownerReferences` | Points to the Keystone CR (controller: true) — enables garbage collection |
+
+### status.endpoint Derivation
+
+`status.endpoint` reflects the externally reachable Keystone API URL and is
+recomputed on every reconcile:
+
+| `spec.gateway` | `status.endpoint` Value |
+| --- | --- |
+| `nil` | `http://{name}-api.{namespace}.svc.cluster.local:5000/v3` (cluster-local fallback) |
+| Set | `https://{hostname}/v3` — HTTPS is fixed because Gateways are the public-ingress hop and terminate TLS |
+
+`status.endpoint` does **not** include `spec.gateway.path`. The `/v3` suffix is
+appended unconditionally because Keystone API v3 is served at that fixed path; the
+`PathPrefix` match on the HTTPRoute routes any prefix under `spec.gateway.path` to
+the backend. `spec.publicEndpoint` (if set) still takes precedence over the
+gateway-derived URL for the `--bootstrap-public-url` argument passed to
+`keystone-manage bootstrap`; the precedence is unchanged from pre-CC-0065 behavior.
+
+### Interaction with NetworkPolicy
+
+When both `spec.gateway` and `spec.networkPolicy` are configured, the operator
+automatically appends an extra ingress peer to the managed NetworkPolicy so that
+the Gateway's data-plane pods can reach Keystone on TCP 5000 (CC-0065, REQ-008):
+
+- **Peer selector:** `namespaceSelector` matching
+  `kubernetes.io/metadata.name={gatewayNamespace}`. The gateway data plane's pod
+  labels are implementation-specific (Kong/Envoy/NGINX/…) and not known to this
+  operator, so selection is by entire gateway namespace rather than by pod labels.
+- **Namespace source:** `spec.gateway.parentRef.namespace` when set; otherwise the
+  Keystone CR's own namespace (mirroring the ParentRef lookup semantics).
+- **Removal:** Clearing `spec.gateway` removes the extra peer on the next reconcile.
+- **networkPolicy nil:** When `spec.networkPolicy` is `nil`, no NetworkPolicy is
+  managed at all and no extra peer is added (gateway-only deployments rely on
+  the namespace's default network policy or absence thereof).
+
+### Example — Basic Gateway Exposure
+
+```yaml
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone
+  namespace: openstack
+spec:
+  replicas: 3
+  image:
+    repository: c5c3/keystone
+    tag: "2025.1"
+  # ... other required fields ...
+  gateway:
+    parentRef:
+      name: public-gateway
+      namespace: istio-ingress
+      sectionName: https
+    hostname: keystone.example.com
+    path: /identity
+    annotations:
+      konghq.com/plugins: rate-limit-sha
+```
+
+Resulting `status.endpoint`: `https://keystone.example.com/v3`.
+
+### Example — Gateway with NetworkPolicy
+
+```yaml
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone
+  namespace: openstack
+spec:
+  # ... required fields ...
+  gateway:
+    parentRef:
+      name: public-gateway
+      namespace: istio-ingress
+    hostname: keystone.example.com
+  networkPolicy:
+    ingress:
+      - namespaceSelector:
+          kubernetes.io/metadata.name: openstack
+```
+
+The operator-managed NetworkPolicy allows ingress from:
+
+1. The `openstack` namespace (user-declared).
+2. The `istio-ingress` namespace (auto-added because `spec.gateway` is set).
 
 ---
 

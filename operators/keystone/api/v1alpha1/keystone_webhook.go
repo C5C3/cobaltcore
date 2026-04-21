@@ -359,6 +359,26 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		))
 	}
 
+	// REQ-007 (CC-0065): Defense-in-depth gateway validation alongside the
+	// +kubebuilder:validation:MinLength=1 markers on GatewaySpec.Hostname and
+	// GatewayParentRefSpec.Name. Missing required fields would produce an
+	// invalid HTTPRoute, so reject early with field-specific errors.
+	if k.Spec.Gateway != nil {
+		gatewayPath := specPath.Child("gateway")
+		if k.Spec.Gateway.Hostname == "" {
+			allErrs = append(allErrs, field.Required(
+				gatewayPath.Child("hostname"),
+				"hostname must be set when spec.gateway is configured",
+			))
+		}
+		if k.Spec.Gateway.ParentRef.Name == "" {
+			allErrs = append(allErrs, field.Required(
+				gatewayPath.Child("parentRef", "name"),
+				"parentRef.name must be set when spec.gateway is configured",
+			))
+		}
+	}
+
 	// REQ-004 (CC-0042): Validate that resource requests do not exceed limits.
 	if k.Spec.Resources != nil && k.Spec.Resources.Limits != nil {
 		for resourceName, request := range k.Spec.Resources.Requests {

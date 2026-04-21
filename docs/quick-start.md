@@ -99,6 +99,7 @@ Internally this performs the following steps:
 |------|-------------|
 | 1 | Kind cluster already exists — skipped (cluster was created in Step 2) |
 | 2 | **Install FluxCD** via `flux install` |
+| 2a | **Install Gateway API CRDs** — `kubectl apply --server-side` of the upstream `standard-install.yaml` for the version in `GATEWAY_API_VERSION` (default matches `sigs.k8s.io/gateway-api` in `operators/keystone/go.mod`). Required by the keystone-operator's HTTPRoute watch — without it the operator logs `no matches for kind HTTPRoute` at startup. |
 | 3 | Apply base kustomize overlay — namespaces, `HelmRepository` sources, `HelmRelease` objects |
 | 4 | Wait for HelmReleases to become `Ready`: cert-manager → OpenBao TLS prerequisites → prometheus-operator-crds, openbao, mariadb-operator, external-secrets, memcached-operator |
 | 5 | Apply infrastructure kustomize overlay — `ClusterSecretStore`, `ExternalSecret` objects, `MariaDB` and `Memcached` cluster CRs |

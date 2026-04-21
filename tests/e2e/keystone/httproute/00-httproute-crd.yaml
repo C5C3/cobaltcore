@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Minimal HTTPRoute CRD for the E2E test cluster (CC-0065, W-003).
+#
+# The E2E kind cluster does not install a Gateway controller, so the upstream
+# sigs.k8s.io/gateway-api CRDs are not present by default. This minimal CRD
+# lets the operator create an HTTPRoute and lets the test simulate an
+# "Accepted" parent status without pulling in the 6000-line upstream schema.
+# The spec and status sub-trees use x-kubernetes-preserve-unknown-fields so
+# the reconciler's full ParentRef/Hostnames/Rules structure round-trips.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: httproutes.gateway.networking.k8s.io
+  annotations:
+    # Required because gateway.networking.k8s.io is a Kubernetes-protected API
+    # group. Points to the upstream approval PR for the real CRD.
+    api-approved.kubernetes.io: https://github.com/kubernetes-sigs/gateway-api/pull/2997
+spec:
+  group: gateway.networking.k8s.io
+  names:
+    plural: httproutes
+    singular: httproute
+    kind: HTTPRoute
+    listKind: HTTPRouteList
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true

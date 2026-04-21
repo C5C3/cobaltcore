@@ -36,6 +36,12 @@ HELMRELEASE_TIMEOUT="${HELMRELEASE_TIMEOUT:-600}"
 POD_TIMEOUT="${POD_TIMEOUT:-300}"
 EXTERNALSECRET_TIMEOUT="${EXTERNALSECRET_TIMEOUT:-120}"
 
+# Gateway API CRD release installed before the keystone-operator HelmRelease so
+# the operator's HTTPRoute watch has a registered kind at startup (CC-0065).
+# Keep aligned with sigs.k8s.io/gateway-api in operators/keystone/go.mod.
+GATEWAY_API_VERSION="${GATEWAY_API_VERSION:-v1.1.0}"
+GATEWAY_API_CRDS_URL="${GATEWAY_API_CRDS_URL:-https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml}"
+
 # OpenBao init parameters (match deploy/openbao/bootstrap/init-unseal.sh)
 KEY_SHARES=5
 KEY_THRESHOLD=3
@@ -598,6 +604,30 @@ main() {
   log "=== Step 2/8: Install FluxCD ==="
   flux install
   log "FluxCD installed."
+
+  # Gateway API CRDs (CC-0065). Installed before the base kustomize overlay so
+  # the keystone-operator Pod (deployed via HelmRelease in Step 3/4) finds the
+  # gateway.networking.k8s.io/v1 HTTPRoute kind at startup. Without this, the
+  # operator logs 'no matches for kind HTTPRoute' and never becomes Ready.
+  # server-side apply avoids the 'metadata.annotations: Too long' error that
+  # client-side apply hits on the upstream CRD bundle.
+  log "=== Installing Gateway API CRDs (${GATEWAY_API_VERSION}) ==="
+  local gwapi_attempts=3
+  local gwapi_attempt=0
+  local gwapi_delay=5
+  while (( gwapi_attempt < gwapi_attempts )); do
+    gwapi_attempt=$((gwapi_attempt + 1))
+    if kubectl apply --server-side -f "${GATEWAY_API_CRDS_URL}"; then
+      break
+    fi
+    if (( gwapi_attempt >= gwapi_attempts )); then
+      log "ERROR: Failed to install Gateway API CRDs after ${gwapi_attempts} attempts from ${GATEWAY_API_CRDS_URL}"
+      exit 1
+    fi
+    log "  Gateway API CRD apply failed (attempt ${gwapi_attempt}/${gwapi_attempts}); retrying in ${gwapi_delay}s..."
+    sleep "${gwapi_delay}"
+  done
+  log "Gateway API CRDs installed."
 
   # Step 3: Apply base kustomize overlay (namespaces, HelmRepos, HelmReleases)
   log "=== Step 3/8: Apply base kustomize overlay ==="

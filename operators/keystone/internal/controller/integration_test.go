@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/forge/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -72,6 +73,11 @@ func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, c
 				Scheme:     mgr.GetScheme(),
 				Recorder:   mgr.GetEventRecorderFor("keystone-controller"),
 				HTTPClient: testHealthyHTTPClient(),
+				// envtest loads the fake HTTPRoute CRD from internal/common/testutil/fake_crds/gateway-api,
+				// so the Gateway API kind is available to the reconciler. Mirror
+				// what SetupWithManager would set from the RESTMapper at startup
+				// (CC-0065).
+				gatewayAPIAvailable: true,
 			}
 			return ctrl.NewControllerManagedBy(mgr).
 				For(&keystonev1alpha1.Keystone{}).
@@ -81,6 +87,7 @@ func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, c
 				Owns(&batchv1.Job{}).
 				Owns(&policyv1.PodDisruptionBudget{}).
 				Owns(&autoscalingv2.HorizontalPodAutoscaler{}).
+				Owns(&gatewayv1.HTTPRoute{}).
 				Owns(&batchv1.CronJob{}).
 				Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
 					secretToKeystoneMapper(mgr.GetClient()),
@@ -1958,4 +1965,302 @@ func TestIntegration_PolicyValidation_NotRequired(t *testing.T) {
 		return err != nil
 	}, 2*time.Second, pollInterval).Should(BeTrue(),
 		"policy-validation Job should not exist when policyOverrides is nil")
+}
+
+// --- Task CC-0065/4.2: HTTPRoute sub-reconciler lifecycle tests (REQ-001, REQ-002, REQ-005) ---
+
+// testGatewayParentName is the synthetic Gateway that integration HTTPRoutes
+// attach to. The real Gateway resource is not installed in envtest; only the
+// HTTPRoute is observed, so a name is sufficient (CC-0065, REQ-001).
+const testGatewayParentName = "openstack-gateway"
+
+// driveReconciliationToDeployment drives the reconciler through the secrets,
+// fernet, database, and deployment phases until DeploymentReady=True. This
+// leaves the controller positioned to run reconcileHTTPRoute on its next
+// reconcile iteration (CC-0065).
+func driveReconciliationToDeployment(t testing.TB, ctx context.Context, c client.Client, ksName, ns string) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	key := types.NamespacedName{Name: ksName, Namespace: ns}
+
+	waitForCondition(t, ctx, c, key, "SecretsReady", metav1.ConditionTrue, eventuallyTimeout)
+	waitForCondition(t, ctx, c, key, "FernetKeysReady", metav1.ConditionTrue, eventuallyTimeout)
+
+	dbSyncKey := client.ObjectKey{Namespace: ns, Name: fmt.Sprintf("%s-db-sync", ksName)}
+	g.Eventually(func() error {
+		return c.Get(ctx, dbSyncKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "db-sync Job should appear")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, dbSyncKey)).To(Succeed(), "simulate db-sync Job completion")
+
+	schemaCheckKey := client.ObjectKey{Namespace: ns, Name: fmt.Sprintf("%s-schema-check", ksName)}
+	g.Eventually(func() error {
+		return c.Get(ctx, schemaCheckKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "schema-check Job should appear")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, schemaCheckKey)).To(Succeed(), "simulate schema-check Job completion")
+
+	waitForCondition(t, ctx, c, key, "DatabaseReady", metav1.ConditionTrue, eventuallyTimeout)
+
+	deployKey := client.ObjectKey{Namespace: ns, Name: fmt.Sprintf("%s-api", ksName)}
+	deploy := &appsv1.Deployment{}
+	g.Eventually(func() error {
+		return c.Get(ctx, deployKey, deploy)
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "Deployment should appear")
+	g.Expect(simulators.SimulateDeploymentReady(ctx, c, deployKey, ptr.Deref(deploy.Spec.Replicas, 1))).
+		To(Succeed(), "simulate Deployment ready")
+
+	waitForCondition(t, ctx, c, key, "DeploymentReady", metav1.ConditionTrue, eventuallyTimeout)
+}
+
+// integrationKeystoneWithGateway returns a brownfield Keystone CR configured
+// with spec.gateway pointing at testGatewayParentName and the given hostname
+// (CC-0065, REQ-001).
+func integrationKeystoneWithGateway(name, namespace, hostname string) *keystonev1alpha1.Keystone {
+	ks := integrationBrownfieldKeystone(name, namespace)
+	ks.Spec.Gateway = &keystonev1alpha1.GatewaySpec{
+		ParentRef: keystonev1alpha1.GatewayParentRefSpec{Name: testGatewayParentName},
+		Hostname:  hostname,
+	}
+	return ks
+}
+
+// simulateHTTPRouteAccepted writes an Accepted=True condition onto the
+// HTTPRoute's status.parents list, emulating the Gateway controller that would
+// otherwise produce this transition. It is required for isHTTPRouteAccepted to
+// return true in envtest, where no Gateway controller is running
+// (CC-0065, REQ-005).
+func simulateHTTPRouteAccepted(t testing.TB, ctx context.Context, c client.Client, key client.ObjectKey) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	route := &gatewayv1.HTTPRoute{}
+	g.Expect(c.Get(ctx, key, route)).To(Succeed(), "get HTTPRoute to simulate acceptance")
+	g.Expect(route.Spec.ParentRefs).NotTo(BeEmpty(), "HTTPRoute must have at least one parentRef")
+
+	route.Status = gatewayv1.HTTPRouteStatus{
+		RouteStatus: gatewayv1.RouteStatus{
+			Parents: []gatewayv1.RouteParentStatus{
+				{
+					ParentRef:      route.Spec.ParentRefs[0],
+					ControllerName: gatewayv1.GatewayController("envtest.c5c3.io/fake-gateway-controller"),
+					Conditions: []metav1.Condition{
+						{
+							Type:               string(gatewayv1.RouteConditionAccepted),
+							Status:             metav1.ConditionTrue,
+							Reason:             "Accepted",
+							Message:            "simulated Accepted=True for envtest (CC-0065)",
+							LastTransitionTime: metav1.Now(),
+						},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(c.Status().Update(ctx, route)).To(Succeed(), "update HTTPRoute status with simulated acceptance")
+}
+
+// TestIntegration_HTTPRoute_CreatedWhenGatewaySet verifies that configuring
+// spec.gateway on a Keystone CR causes the operator to create an HTTPRoute
+// with the correct parentRef/hostname/backendRef, to set HTTPRouteReady
+// appropriately as acceptance is observed, and to own the HTTPRoute for
+// garbage collection (CC-0065, REQ-001, REQ-003, REQ-005).
+func TestIntegration_HTTPRoute_CreatedWhenGatewaySet(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-httproute-create-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	hostname := "keystone.example.com"
+	ks := integrationKeystoneWithGateway("test-keystone", ns.Name, hostname)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveReconciliationToDeployment(t, ctx, c, ks.Name, ns.Name)
+
+	// The HTTPRoute appears once reconcileHTTPRoute runs after DeploymentReady.
+	routeKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-api", ks.Name)}
+	route := &gatewayv1.HTTPRoute{}
+	g.Eventually(func() error {
+		return c.Get(ctx, routeKey, route)
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "HTTPRoute should be created when spec.gateway is set")
+
+	// Validate parentRef (REQ-001) — Gateway referenced by name only.
+	g.Expect(route.Spec.ParentRefs).To(HaveLen(1))
+	g.Expect(string(route.Spec.ParentRefs[0].Name)).To(Equal(testGatewayParentName))
+
+	// Validate hostname (REQ-001).
+	g.Expect(route.Spec.Hostnames).To(HaveLen(1))
+	g.Expect(string(route.Spec.Hostnames[0])).To(Equal(hostname))
+
+	// Validate backendRef targets the {name}-api Service on port 5000 (REQ-003).
+	g.Expect(route.Spec.Rules).To(HaveLen(1))
+	g.Expect(route.Spec.Rules[0].BackendRefs).To(HaveLen(1))
+	backend := route.Spec.Rules[0].BackendRefs[0]
+	g.Expect(string(backend.Name)).To(Equal(fmt.Sprintf("%s-api", ks.Name)))
+	g.Expect(backend.Port).NotTo(BeNil())
+	g.Expect(int32(*backend.Port)).To(Equal(int32(5000)))
+
+	// Validate owner reference points to the Keystone CR (garbage collection).
+	g.Expect(route.OwnerReferences).NotTo(BeEmpty())
+	g.Expect(route.OwnerReferences[0].Name).To(Equal(ks.Name))
+	g.Expect(route.OwnerReferences[0].Kind).To(Equal("Keystone"))
+
+	// Without a Gateway controller in envtest the route is not yet accepted,
+	// so HTTPRouteReady must be False/HTTPRouteNotAccepted (REQ-005).
+	crKey := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+	cond := waitForCondition(t, ctx, c, crKey, conditionTypeHTTPRouteReady, metav1.ConditionFalse, eventuallyTimeout)
+	g.Expect(cond.Reason).To(Equal(conditionReasonHTTPRouteNotAccepted),
+		"HTTPRouteReady reason should be HTTPRouteNotAccepted before the Gateway controller reports Accepted=True")
+
+	// Simulate the Gateway controller writing Accepted=True on the HTTPRoute
+	// status. The operator should pick this up on its next reconcile pass and
+	// flip HTTPRouteReady to True/HTTPRouteAccepted (REQ-005).
+	simulateHTTPRouteAccepted(t, ctx, c, routeKey)
+	cond = waitForCondition(t, ctx, c, crKey, conditionTypeHTTPRouteReady, metav1.ConditionTrue, eventuallyTimeout)
+	g.Expect(cond.Reason).To(Equal(conditionReasonHTTPRouteAccepted),
+		"HTTPRouteReady reason should be HTTPRouteAccepted once the Gateway controller accepts the route")
+}
+
+// TestIntegration_HTTPRoute_DeletedWhenGatewayRemoved verifies that removing
+// spec.gateway from a CR deletes the HTTPRoute and transitions HTTPRouteReady
+// to True/HTTPRouteNotRequired (CC-0065, REQ-002).
+func TestIntegration_HTTPRoute_DeletedWhenGatewayRemoved(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-httproute-delete-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationKeystoneWithGateway("test-keystone", ns.Name, "keystone.example.com")
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveReconciliationToDeployment(t, ctx, c, ks.Name, ns.Name)
+
+	routeKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-api", ks.Name)}
+	g.Eventually(func() error {
+		return c.Get(ctx, routeKey, &gatewayv1.HTTPRoute{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "HTTPRoute should be created initially")
+
+	// Remove spec.gateway via a spec patch to force the reconciler to delete
+	// the HTTPRoute (REQ-002). Use a retry-loop against optimistic concurrency
+	// rejections by re-reading and re-patching until the update sticks.
+	crKey := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+	g.Eventually(func() error {
+		current := &keystonev1alpha1.Keystone{}
+		if err := c.Get(ctx, crKey, current); err != nil {
+			return err
+		}
+		current.Spec.Gateway = nil
+		return c.Update(ctx, current)
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "clear spec.gateway on the CR")
+
+	// The HTTPRoute should be deleted.
+	g.Eventually(func() bool {
+		err := c.Get(ctx, routeKey, &gatewayv1.HTTPRoute{})
+		return apierrors.IsNotFound(err)
+	}, eventuallyTimeout, pollInterval).Should(BeTrue(), "HTTPRoute should be deleted after spec.gateway is removed")
+
+	// HTTPRouteReady should transition to True/HTTPRouteNotRequired (REQ-002).
+	cond := waitForCondition(t, ctx, c, crKey, conditionTypeHTTPRouteReady, metav1.ConditionTrue, eventuallyTimeout)
+	g.Expect(cond.Reason).To(Equal(conditionReasonHTTPRouteNotRequired),
+		"HTTPRouteReady reason should be HTTPRouteNotRequired when spec.gateway is nil")
+}
+
+// TestIntegration_HTTPRoute_UpdatedWhenGatewayChanged verifies that changing
+// spec.gateway.hostname on a CR updates the existing HTTPRoute in place
+// without creating a duplicate (CC-0065, REQ-001).
+func TestIntegration_HTTPRoute_UpdatedWhenGatewayChanged(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-httproute-update-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	originalHostname := "keystone.example.com"
+	ks := integrationKeystoneWithGateway("test-keystone", ns.Name, originalHostname)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveReconciliationToDeployment(t, ctx, c, ks.Name, ns.Name)
+
+	routeKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-api", ks.Name)}
+	g.Eventually(func() error {
+		return c.Get(ctx, routeKey, &gatewayv1.HTTPRoute{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "HTTPRoute should be created initially")
+
+	// Patch the hostname. The reconciler should update the existing HTTPRoute
+	// instead of creating a duplicate (REQ-001).
+	updatedHostname := "auth.example.com"
+	crKey := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+	g.Eventually(func() error {
+		current := &keystonev1alpha1.Keystone{}
+		if err := c.Get(ctx, crKey, current); err != nil {
+			return err
+		}
+		current.Spec.Gateway.Hostname = updatedHostname
+		return c.Update(ctx, current)
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "patch spec.gateway.hostname")
+
+	// The HTTPRoute hostname should reflect the new spec value.
+	g.Eventually(func() string {
+		route := &gatewayv1.HTTPRoute{}
+		if err := c.Get(ctx, routeKey, route); err != nil {
+			return ""
+		}
+		if len(route.Spec.Hostnames) == 0 {
+			return ""
+		}
+		return string(route.Spec.Hostnames[0])
+	}, eventuallyTimeout, pollInterval).Should(Equal(updatedHostname),
+		"HTTPRoute.Spec.Hostnames should reflect the new spec.gateway.hostname")
+
+	// No duplicate HTTPRoute should exist in the namespace.
+	routes := &gatewayv1.HTTPRouteList{}
+	g.Expect(c.List(ctx, routes, client.InNamespace(ns.Name))).To(Succeed())
+	g.Expect(routes.Items).To(HaveLen(1), "exactly one HTTPRoute should exist after update")
+}
+
+// TestIntegration_HTTPRoute_EndpointDerivedFromGateway verifies that when
+// spec.gateway is set, status.endpoint reflects the externally reachable URL
+// https://{hostname}/v3 instead of the cluster-local Service DNS name
+// (CC-0065, REQ-004).
+func TestIntegration_HTTPRoute_EndpointDerivedFromGateway(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-httproute-endpoint-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	hostname := "keystone.example.com"
+	ks := integrationKeystoneWithGateway("test-keystone", ns.Name, hostname)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveReconciliationToDeployment(t, ctx, c, ks.Name, ns.Name)
+
+	// status.endpoint is set by reconcileDeployment after DeploymentReady=True.
+	crKey := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+	expectedEndpoint := fmt.Sprintf("https://%s/v3", hostname)
+	g.Eventually(func() string {
+		updated := &keystonev1alpha1.Keystone{}
+		if err := c.Get(ctx, crKey, updated); err != nil {
+			return ""
+		}
+		return updated.Status.Endpoint
+	}, eventuallyTimeout, pollInterval).Should(Equal(expectedEndpoint),
+		"status.endpoint should reflect https://{hostname}/v3 when spec.gateway is set")
 }

@@ -3,7 +3,7 @@
 **Review-Area**: documentation
 **Detection-Hint**: Look for comments that present multiple options (e.g., 'v1alpha1 vs v1alpha2', 'TODO: pick one') without a clear resolution. These indicate unfinished design decisions left in the code.
 **Severity**: BLOCKING
-**Occurrences**: 1
+**Occurrences**: 2
 
 ## What to check
 
@@ -19,3 +19,8 @@ Ambiguous configuration shipped to main creates confusion for anyone who later n
 - **Feedback**: you currently leave the apiVersion choice (v1alpha2 vs v1alpha1) as an open decision in comments—please resolve this ambiguity and align it explicitly with what Chainsaw expects
 - **What was missed**: Scan configuration files and manifests for comments that frame a choice between alternatives without committing to one. Any 'or' / 'vs' / 'pick' / open question in a comment is a red flag that a decision was deferred rather than made.
 - **Fix**: Replaced the open-ended comment with an explicit rationale: 'Chainsaw v1alpha2 Configuration is paired with v1alpha1 Test manifests. This matches the upstream happy-path and is intentional.'
+
+### CC-0065 — sourcery-ai[bot]
+- **Feedback**: In buildKeystoneNetworkPolicy the inline comment still contains 'Reviewer: please verify.'; consider removing this leftover note now that the behavior is codified and covered by tests.
+- **What was missed**: Inline comments should not contain leftover review-process notes or placeholder prompts once the behavior is codified and tested
+- **Fix**: Removed the 'Reviewer: please verify.' note from the CC-0065 block in buildKeystoneNetworkPolicy
