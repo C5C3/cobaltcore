@@ -607,6 +607,17 @@ spec:
                     != null
                 - message: policy rule name must not be empty
                   rule: '!has(self.rules) || self.rules.all(k, k != '''')'
+              preStopSleepSeconds:
+                default: 5
+                description: |-
+                  PreStopSleepSeconds controls the duration of the preStop sleep hook
+                  that covers EndpointSlice propagation before SIGTERM (CC-0084).
+                  Tunable independently of the overall grace period. When unset,
+                  defaults to 5 seconds. A value of 0 keeps the hook block in place
+                  but issues an immediate sleep.
+                format: int64
+                minimum: 0
+                type: integer
               priorityClassName:
                 description: |-
                   PriorityClassName sets the priority class for Keystone API pods (CC-0075).
@@ -682,6 +693,68 @@ spec:
                       More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                     type: object
                 type: object
+              strategy:
+                description: |-
+                  Strategy overrides the Deployment rollout strategy (CC-0084).
+                  When nil, the reconciler applies the hardened default
+                  (RollingUpdate with maxUnavailable=0, maxSurge=1). When set, the
+                  value is propagated verbatim with no merging of defaults, allowing
+                  operators to switch to Recreate or customize surge/unavailability.
+                properties:
+                  rollingUpdate:
+                    description: |-
+                      Rolling update config params. Present only if DeploymentStrategyType =
+                      RollingUpdate.
+                    properties:
+                      maxSurge:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        description: |-
+                          The maximum number of pods that can be scheduled above the desired number of
+                          pods.
+                          Value can be an absolute number (ex: 5) or a percentage of desired pods (ex: 10%).
+                          This can not be 0 if MaxUnavailable is 0.
+                          Absolute number is calculated from percentage by rounding up.
+                          Defaults to 25%.
+                          Example: when this is set to 30%, the new ReplicaSet can be scaled up immediately when
+                          the rolling update starts, such that the total number of old and new pods do not exceed
+                          130% of desired pods. Once old pods have been killed,
+                          new ReplicaSet can be scaled up further, ensuring that total number of pods running
+                          at any time during the update is at most 130% of desired pods.
+                        x-kubernetes-int-or-string: true
+                      maxUnavailable:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        description: |-
+                          The maximum number of pods that can be unavailable during the update.
+                          Value can be an absolute number (ex: 5) or a percentage of desired pods (ex: 10%).
+                          Absolute number is calculated from percentage by rounding down.
+                          This can not be 0 if MaxSurge is 0.
+                          Defaults to 25%.
+                          Example: when this is set to 30%, the old ReplicaSet can be scaled down to 70% of desired pods
+                          immediately when the rolling update starts. Once new pods are ready, old ReplicaSet
+                          can be scaled down further, followed by scaling up the new ReplicaSet, ensuring
+                          that the total number of pods available at all times during the update is at
+                          least 70% of desired pods.
+                        x-kubernetes-int-or-string: true
+                    type: object
+                  type:
+                    description: Type of deployment. Can be "Recreate" or "RollingUpdate".
+                      Default is RollingUpdate.
+                    type: string
+                type: object
+              terminationGracePeriodSeconds:
+                default: 30
+                description: |-
+                  TerminationGracePeriodSeconds controls how long Kubernetes waits for a
+                  Keystone pod to shut down gracefully before sending SIGKILL (CC-0084).
+                  Operators extend this when slow LDAP/DB token validation may delay
+                  uWSGI's graceful drain. When unset, defaults to 30 seconds.
+                format: int64
+                minimum: 10
+                type: integer
               topologySpreadConstraints:
                 description: |-
                   TopologySpreadConstraints describes how pods should be spread across
@@ -892,12 +965,31 @@ spec:
                   Deployment. When nil, hardcoded defaults (processes=2, threads=1,
                   httpKeepAlive=true) are used.
                 properties:
+                  harakiri:
+                    description: |-
+                      Harakiri sets the uWSGI per-request timeout in seconds (CC-0084).
+                      A worker exceeding this value on a single request is terminated,
+                      preventing a single hung request from blocking graceful shutdown
+                      until SIGKILL. When nil, no --harakiri flag is emitted.
+                    format: int32
+                    minimum: 1
+                    type: integer
                   httpKeepAlive:
                     default: true
                     description: |-
                       HTTPKeepAlive enables the --http-keepalive flag on the uWSGI process.
                       When false, the flag is omitted from the command.
                     type: boolean
+                  httpKeepAliveTimeout:
+                    description: |-
+                      HTTPKeepAliveTimeout bounds the idle keep-alive duration in seconds
+                      so that clients reconnect through the Service instead of reusing a
+                      socket to a terminating pod (CC-0084). Applies only when
+                      HTTPKeepAlive is true. When nil, no --http-keepalive-timeout flag
+                      is emitted.
+                    format: int32
+                    minimum: 1
+                    type: integer
                   processes:
                     default: 2
                     description: Processes is the number of uWSGI worker processes.

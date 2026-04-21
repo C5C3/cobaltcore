@@ -707,6 +707,7 @@
       "title": "Add envtest integration tests TestIntegration_TerminationGracePeriodAppliedToDeployment, TestIntegration_DefaultStrategyAppliedToDeployment, TestIntegration_StrategyOverrideAppliedToDeployment in operators/keystone/internal/controller/integration_test.go (REQ-001, REQ-005, REQ-006). Feature: CC-0084.",
       "level": 4,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-005",
@@ -718,6 +719,7 @@
       "title": "Regenerate CRD manifests via 'make manifests' (or equivalent target). Commit operators/keystone/helm/keystone-operator/crds/keystone.openstack.c5c3.io_keystones.yaml and operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml. Verify new fields and minimums appear (REQ-013). Feature: CC-0084.",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-013"
       ]
@@ -2105,6 +2107,153 @@
     {
       "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
       "test_function": "TestBuildKeystoneDeployment_PreStopSleepCustom",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FullReconcile_Brownfield",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_ConditionProgression",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_ResourceCreation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_StatusEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_ObservedGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FullReconcile_Managed",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_CronJobDetailedSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_BootstrapJobDetailedSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PDBSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PDBUpdatedOnReplicaChange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HPASpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HPAUpdatedOnAutoscalingChange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HPADeletedWhenAutoscalingRemoved",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FreshDeployment_InstalledReleaseTracking",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_UpgradeCycle_ExpandMigrateContract",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_TrustFlush_CronJobCreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_TrustFlush_CronJobDeleted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_TrustFlush_OmittedDoesNotCreateCronJob",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_GracefulShutdownSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PolicyValidation_GatesDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PolicyValidation_NotRequired",
       "story": "",
       "expected": "Discovered during implementation",
       "requirement_id": ""
