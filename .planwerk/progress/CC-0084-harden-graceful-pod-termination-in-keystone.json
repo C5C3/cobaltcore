@@ -739,6 +739,7 @@
       "title": "Update architecture/docs/04-architecture/04-high-availability.md: add a 'Keystone rolling update' subsection with an ASCII sequence diagram (EndpointSlice removal ‖ preStop sleep → SIGTERM → uWSGI graceful shutdown with harakiri fallback → SIGKILL), a tunables table with recommended production values, and the httpKeepAliveTimeout ≤ preStopSleepSeconds interaction note. Reference CC-0084 on every addition (REQ-015). Feature: CC-0084.",
       "level": 6,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-015"
       ]
@@ -748,6 +749,7 @@
       "title": "Update docs/reference/keystone-crd.md with entries for spec.terminationGracePeriodSeconds, spec.preStopSleepSeconds, spec.strategy, spec.uwsgi.harakiri, spec.uwsgi.httpKeepAliveTimeout (type, default, minimum, effect). Cross-link to the HA rollout-flow section. Reference CC-0084 on every new entry (REQ-016). Feature: CC-0084.",
       "level": 6,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-016"
       ]
