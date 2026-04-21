@@ -381,6 +381,10 @@ spec:
           echo "OK: availableReplicas stayed >= 3 across $SAMPLES samples (min=$MIN)"
 
   # ── Step 6: Assert Ready=True after the rollout settles ────────────────
+  # Keystone Ready=AllReady already incorporates DeploymentReady, so the
+  # CR-level assertion is sufficient. A direct Deployment-status assert
+  # was observed racing transient `status: {}` snapshots under heavy
+  # parallel-test load in the operator lane.
   - name: assert-ready-after-rollout
     try:
     - assert:
@@ -394,21 +398,14 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
-    - assert:
-        resource:
-          apiVersion: apps/v1
-          kind: Deployment
-          metadata:
-            name: keystone-rolling-update-api
-            namespace: openstack
-          status:
-            (availableReplicas == `3`): true
-            (updatedReplicas == replicas): true
     - script:
         shell: bash
         content: |
-          # Sanity-check the new tag made it to the pod spec.
+          # Sanity-check the new tag made it to the pod spec, after the
+          # Deployment has fully settled.
           set -euo pipefail
+          kubectl rollout status deploy/keystone-rolling-update-api \
+            -n openstack --timeout=120s
           IMAGE=$(kubectl get deploy keystone-rolling-update-api -n openstack \
             -o jsonpath='{.spec.template.spec.containers[0].image}')
           echo "deployed image: $IMAGE"
