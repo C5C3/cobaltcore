@@ -2,11 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for garbage collection on Keystone CR deletion (CC-0016).
-# Deploys a Keystone CR, waits for Ready=True, deletes the CR, then asserts
-# all owned resources are garbage-collected (NotFound).
+# Chainsaw E2E test for garbage collection on Keystone CR deletion (CC-0016)
+# and finalizer-driven MariaDB CR cleanup (CC-0078). Deploys a Keystone CR,
+# waits for Ready=True, asserts the finalizer is present, deletes the CR,
+# then asserts all owned resources and MariaDB CRs are absent (NotFound)
+# within a bounded deletion window.
 #
 # REQ-007, REQ-012, REQ-013 (CC-0016)
+# REQ-008 (CC-0078)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -20,7 +23,10 @@ spec:
   - try:
     - apply:
         file: 00-keystone-cr.yaml
-  # ── Step 2: Wait for Ready=True ────────────────────────────────────────
+  # ── Step 2: Wait for Ready=True and assert finalizer present ───────────
+  # REQ-008 (CC-0078): The controller adds the finalizer on first reconcile
+  # so deletion can trigger MariaDB CR cleanup before the Keystone CR is
+  # removed from etcd.
   - try:
     - assert:
         resource:
@@ -29,6 +35,7 @@ spec:
           metadata:
             name: keystone-cleanup
             namespace: openstack
+            (contains(finalizers, 'keystone.openstack.c5c3.io/finalizer')): true
           status:
             (conditions[?type == 'Ready']):
             - status: "True"
@@ -62,8 +69,11 @@ spec:
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
   # ── Step 3: Delete the Keystone CR ─────────────────────────────────────
+  # REQ-008 (CC-0078): Bounded timeout (<= 2m) to keep deletion responsive;
+  # fails the test if the finalizer blocks removal for longer than this.
   - try:
     - delete:
+        timeout: 2m
         ref:
           apiVersion: keystone.openstack.c5c3.io/v1alpha1
           kind: Keystone

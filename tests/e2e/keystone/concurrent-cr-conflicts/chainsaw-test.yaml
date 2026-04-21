@@ -144,8 +144,12 @@ spec:
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
   # ── Step 5: Delete CR-A and assert cleanup ───────────────────────────────
+  # CC-0078: the Keystone finalizer blocks deletion until MariaDB
+  # Database/User/Grant CRs are fully gone; under parallel:4 this exceeds
+  # the global 30s delete timeout, so raise it to match deletion-cleanup.
   - try:
     - delete:
+        timeout: 2m
         ref:
           apiVersion: keystone.openstack.c5c3.io/v1alpha1
           kind: Keystone

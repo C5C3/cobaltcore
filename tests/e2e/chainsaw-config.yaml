@@ -18,7 +18,12 @@ spec:
   timeouts:
     apply: 30s
     assert: 120s
-    cleanup: 60s
+    # Finalizer-driven Keystone deletion (CC-0078) waits for MariaDB
+    # Database/User/Grant CRs to disappear before releasing the finalizer.
+    # Under parallel:4 the MariaDB operator can serialize those deletions past
+    # the previous 60s window, so allow up to 3m — above the 2m delete bound
+    # enforced by tests/e2e/keystone/deletion-cleanup/chainsaw-test.yaml.
+    cleanup: 3m
     delete: 30s
     error: 30s
     exec: 30s

@@ -14,6 +14,7 @@ import (
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -22,6 +23,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/c5c3/forge/internal/common/job"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -1883,4 +1885,223 @@ func TestBuildDBSyncJob_PriorityClassNameNil(t *testing.T) {
 	job := buildDBSyncJob(ks, "keystone-config-abc123")
 
 	g.Expect(job.Spec.Template.Spec.PriorityClassName).To(BeEmpty())
+}
+
+// --- Finalizer test helpers (CC-0078) ---
+
+// mariaDBResources returns Database, User, and Grant CRs matching the names
+// reconcileDatabase would create for the given Keystone CR. The namespace and
+// name follow the same convention (keystone.Name, keystone.Namespace) used by
+// buildDatabase/buildUser/buildGrant (CC-0078).
+func mariaDBResources(ks *keystonev1alpha1.Keystone) (*mariadbv1alpha1.Database, *mariadbv1alpha1.User, *mariadbv1alpha1.Grant) {
+	db := &mariadbv1alpha1.Database{
+		ObjectMeta: metav1.ObjectMeta{Name: ks.Name, Namespace: ks.Namespace},
+	}
+	user := &mariadbv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{Name: ks.Name, Namespace: ks.Namespace},
+	}
+	grant := &mariadbv1alpha1.Grant{
+		ObjectMeta: metav1.ObjectMeta{Name: ks.Name, Namespace: ks.Namespace},
+	}
+	return db, user, grant
+}
+
+// withPendingDeleteFinalizer adds a non-MariaDB finalizer to obj so that the
+// fake client's Delete transitions it to Terminating (sets DeletionTimestamp)
+// rather than removing it from the store. This simulates the real MariaDB
+// operator deferring actual deletion while it tears down external resources
+// (CC-0078).
+func withPendingDeleteFinalizer(obj client.Object) client.Object {
+	obj.SetFinalizers([]string{"test.c5c3.io/pending-delete"})
+	return obj
+}
+
+// TestFinalizeDatabaseResources_DeletesAllThreeCRs verifies that the handler
+// issues Delete for Database, User, and Grant. The fake client removes objects
+// synchronously when no finalizer is attached, so all three are absent after
+// the single call (CC-0078, REQ-002).
+func TestFinalizeDatabaseResources_DeletesAllThreeCRs(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := managedKeystone()
+	db, user, grant := mariaDBResources(ks)
+
+	r := newDBTestReconciler(s, ks, db, user, grant)
+
+	err := r.finalizeDatabaseResources(context.Background(), ks)
+
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Confirm the CRs no longer exist.
+	for _, obj := range []client.Object{
+		&mariadbv1alpha1.Database{},
+		&mariadbv1alpha1.User{},
+		&mariadbv1alpha1.Grant{},
+	} {
+		err := r.Get(context.Background(), client.ObjectKey{Name: ks.Name, Namespace: ks.Namespace}, obj)
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "%T should be NotFound after finalize", obj)
+	}
+}
+
+// TestFinalizeDatabaseResources_BrownfieldIsNoop verifies that a brownfield
+// Keystone CR (Host-only, no ClusterRef) returns without error because no
+// MariaDB CRs were ever created and every Delete returns NotFound (CC-0078,
+// REQ-002).
+func TestFinalizeDatabaseResources_BrownfieldIsNoop(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := brownfieldKeystone()
+
+	r := newDBTestReconciler(s, ks)
+
+	err := r.finalizeDatabaseResources(context.Background(), ks)
+
+	g.Expect(err).NotTo(HaveOccurred(), "brownfield finalize must not error on absent MariaDB CRs")
+}
+
+// TestFinalizeDatabaseResources_NotFoundIsTolerated verifies that having only a
+// subset of the three MariaDB CRs present does not cause an error. Delete
+// returning NotFound on absent resources is tolerated and the present CR is
+// still deleted (CC-0078, REQ-003).
+func TestFinalizeDatabaseResources_NotFoundIsTolerated(t *testing.T) {
+	testCases := []struct {
+		name    string
+		present func(ks *keystonev1alpha1.Keystone) []client.Object
+	}{
+		{
+			name: "only Database present",
+			present: func(ks *keystonev1alpha1.Keystone) []client.Object {
+				db, _, _ := mariaDBResources(ks)
+				return []client.Object{db}
+			},
+		},
+		{
+			name: "only User present",
+			present: func(ks *keystonev1alpha1.Keystone) []client.Object {
+				_, user, _ := mariaDBResources(ks)
+				return []client.Object{user}
+			},
+		},
+		{
+			name: "only Grant present",
+			present: func(ks *keystonev1alpha1.Keystone) []client.Object {
+				_, _, grant := mariaDBResources(ks)
+				return []client.Object{grant}
+			},
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			s := dbTestScheme()
+			ks := managedKeystone()
+			objs := append([]client.Object{ks}, tc.present(ks)...)
+			r := newDBTestReconciler(s, objs...)
+
+			err := r.finalizeDatabaseResources(context.Background(), ks)
+
+			g.Expect(err).NotTo(HaveOccurred())
+		})
+	}
+}
+
+// TestFinalizeDatabaseResources_IsIdempotent verifies that a second invocation
+// after a successful cleanup produces the same outcome without error, so
+// re-entering the finalizer (operator restart, retry, external deletion) never
+// blocks CR removal (CC-0078, REQ-003).
+func TestFinalizeDatabaseResources_IsIdempotent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := managedKeystone()
+
+	r := newDBTestReconciler(s, ks)
+
+	g.Expect(r.finalizeDatabaseResources(context.Background(), ks)).To(Succeed())
+	g.Expect(r.finalizeDatabaseResources(context.Background(), ks)).
+		To(Succeed(), "re-invocation after completion remains a no-op")
+}
+
+// TestFinalizeDatabaseResources_IssuesDeleteWhenTerminating verifies that when
+// a MariaDB CR is held in Terminating state by another finalizer, the handler
+// still returns success and marks it for deletion — it no longer blocks the
+// Keystone finalizer on the MariaDB operator completing its teardown
+// (CC-0078, REQ-002).
+func TestFinalizeDatabaseResources_IssuesDeleteWhenTerminating(t *testing.T) {
+	testCases := []struct {
+		name       string
+		terminates func(ks *keystonev1alpha1.Keystone) client.Object
+	}{
+		{
+			name: "Database terminates",
+			terminates: func(ks *keystonev1alpha1.Keystone) client.Object {
+				db, _, _ := mariaDBResources(ks)
+				return withPendingDeleteFinalizer(db)
+			},
+		},
+		{
+			name: "User terminates",
+			terminates: func(ks *keystonev1alpha1.Keystone) client.Object {
+				_, user, _ := mariaDBResources(ks)
+				return withPendingDeleteFinalizer(user)
+			},
+		},
+		{
+			name: "Grant terminates",
+			terminates: func(ks *keystonev1alpha1.Keystone) client.Object {
+				_, _, grant := mariaDBResources(ks)
+				return withPendingDeleteFinalizer(grant)
+			},
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			s := dbTestScheme()
+			ks := managedKeystone()
+			held := tc.terminates(ks)
+			r := newDBTestReconciler(s, ks, held)
+
+			g.Expect(r.finalizeDatabaseResources(context.Background(), ks)).To(Succeed())
+
+			// The held resource must now carry a DeletionTimestamp.
+			fresh := held.DeepCopyObject().(client.Object)
+			fresh.SetFinalizers(nil)
+			g.Expect(r.Get(context.Background(), client.ObjectKeyFromObject(held), fresh)).To(Succeed())
+			g.Expect(fresh.GetDeletionTimestamp().IsZero()).To(BeFalse(),
+				"held resource must be marked for deletion before the finalizer returns")
+		})
+	}
+}
+
+// TestFinalizeDatabaseResources_DeleteErrorIsPropagated verifies that a
+// non-NotFound error from Delete propagates as a reconciler error so
+// controller-runtime retries with backoff (CC-0078, REQ-002, REQ-003).
+func TestFinalizeDatabaseResources_DeleteErrorIsPropagated(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := managedKeystone()
+	db, _, _ := mariaDBResources(ks)
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks, db).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				if _, ok := obj.(*mariadbv1alpha1.Database); ok {
+					return fmt.Errorf("simulated API server error")
+				}
+				return cl.Delete(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	err := r.finalizeDatabaseResources(context.Background(), ks)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("simulated API server error"))
 }

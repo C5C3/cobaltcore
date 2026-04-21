@@ -22,6 +22,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -33,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
@@ -55,7 +57,10 @@ func testScheme() *runtime.Scheme {
 	return s
 }
 
-// testKeystone returns a minimal valid Keystone CR for tests.
+// testKeystone returns a minimal valid Keystone CR for tests. The finalizer is
+// pre-populated to match steady-state after Reconcile has persisted it, so
+// tests exercising the sub-reconciler chain are not forced to first observe
+// the one-shot AddFinalizer requeue (CC-0078).
 func testKeystone() *keystonev1alpha1.Keystone {
 	return &keystonev1alpha1.Keystone{
 		ObjectMeta: metav1.ObjectMeta{
@@ -63,6 +68,7 @@ func testKeystone() *keystonev1alpha1.Keystone {
 			Namespace:  "default",
 			UID:        "ks-uid",
 			Generation: 1,
+			Finalizers: []string{keystoneFinalizer},
 		},
 		Spec: keystonev1alpha1.KeystoneSpec{
 			Replicas: 3,
@@ -341,7 +347,7 @@ func TestReconcile_SetsAllSubConditionsTrue(t *testing.T) {
 
 	// Fetch the updated Keystone to inspect status conditions.
 	var updated keystonev1alpha1.Keystone
-	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
+	g.Expect(r.Get(context.Background(), types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
 
 	for _, condType := range []string{"SecretsReady", "FernetKeysReady", "CredentialKeysReady", "DatabaseReady", conditionTypePolicyValidReady, "DeploymentReady", conditionTypeKeystoneAPIReady, "HPAReady", "NetworkPolicyReady", "BootstrapReady", "TrustFlushReady"} {
 		cond := meta.FindStatusCondition(updated.Status.Conditions, condType)
@@ -364,7 +370,7 @@ func TestReconcile_AggregatesReadyCondition(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var updated keystonev1alpha1.Keystone
-	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
+	g.Expect(r.Get(context.Background(), types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
 
 	readyCond := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
 	g.Expect(readyCond).NotTo(BeNil(), "Ready condition should exist")
@@ -387,7 +393,7 @@ func TestReconcile_StatusUpdatePersisted(t *testing.T) {
 
 	// Verify that the status was persisted via the client.
 	var updated keystonev1alpha1.Keystone
-	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
+	g.Expect(r.Get(context.Background(), types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
 	g.Expect(updated.Status.Conditions).NotTo(BeEmpty(), "conditions should be persisted to status")
 }
 
@@ -413,7 +419,7 @@ func TestReconcile_Idempotent(t *testing.T) {
 	g.Expect(result2).To(Equal(result1))
 
 	var updated keystonev1alpha1.Keystone
-	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
+	g.Expect(r.Get(context.Background(), types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
 	readyCond := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
 	g.Expect(readyCond).NotTo(BeNil())
 	g.Expect(readyCond.Status).To(Equal(metav1.ConditionTrue))
@@ -519,7 +525,7 @@ func TestReconcile_EarlyReturnOnSecretsNotReady(t *testing.T) {
 	g.Expect(result.RequeueAfter > 0).To(BeTrue(), "should requeue when secrets are not ready")
 
 	var updated keystonev1alpha1.Keystone
-	g.Expect(r.Client.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
+	g.Expect(r.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
 
 	// SecretsReady should be set to False.
 	secretsCond := meta.FindStatusCondition(updated.Status.Conditions, "SecretsReady")
@@ -555,7 +561,7 @@ func TestReconcile_EarlyReturnOnDatabaseNotReady(t *testing.T) {
 	g.Expect(result.RequeueAfter > 0).To(BeTrue(), "should requeue when database is not ready")
 
 	var updated keystonev1alpha1.Keystone
-	g.Expect(r.Client.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
+	g.Expect(r.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
 
 	// SecretsReady should be True (secrets are available).
 	secretsCond := meta.FindStatusCondition(updated.Status.Conditions, "SecretsReady")
@@ -597,7 +603,7 @@ func TestReconcile_SequentialProgression(t *testing.T) {
 	g.Expect(result.RequeueAfter > 0).To(BeTrue(), "first reconcile should requeue")
 
 	var updated keystonev1alpha1.Keystone
-	g.Expect(r.Client.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
+	g.Expect(r.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
 
 	// Only SecretsReady should be set (False).
 	secretsCond := meta.FindStatusCondition(updated.Status.Conditions, "SecretsReady")
@@ -610,19 +616,19 @@ func TestReconcile_SequentialProgression(t *testing.T) {
 	// With the ordering secrets → fernetkeys → config → database, all three are needed
 	// to reach the database stage.
 	for _, obj := range testReadyExternalSecrets() {
-		g.Expect(r.Client.Create(ctx, obj.(client.Object))).To(Succeed())
+		g.Expect(r.Create(ctx, obj.(client.Object))).To(Succeed())
 	}
-	g.Expect(r.Client.Create(ctx, testFernetKeysSecret().(client.Object))).To(Succeed())
-	g.Expect(r.Client.Create(ctx, testCredentialKeysSecret().(client.Object))).To(Succeed())
-	g.Expect(r.Client.Create(ctx, testDBCredentialsSecret().(client.Object))).To(Succeed())
-	g.Expect(r.Client.Create(ctx, testAdminCredentialsSecret().(client.Object))).To(Succeed())
+	g.Expect(r.Create(ctx, testFernetKeysSecret().(client.Object))).To(Succeed())
+	g.Expect(r.Create(ctx, testCredentialKeysSecret().(client.Object))).To(Succeed())
+	g.Expect(r.Create(ctx, testDBCredentialsSecret().(client.Object))).To(Succeed())
+	g.Expect(r.Create(ctx, testAdminCredentialsSecret().(client.Object))).To(Succeed())
 
 	result, err = r.Reconcile(ctx, req)
 	g.Expect(err).NotTo(HaveOccurred())
 	// Should still requeue because db_sync hasn't completed.
 	g.Expect(result.RequeueAfter > 0).To(BeTrue(), "second reconcile should requeue for database")
 
-	g.Expect(r.Client.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
+	g.Expect(r.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
 
 	// SecretsReady should now be True.
 	secretsCond = meta.FindStatusCondition(updated.Status.Conditions, "SecretsReady")
@@ -652,7 +658,7 @@ func TestReconcile_ReadyFalseWhenDeploymentNotAvailable(t *testing.T) {
 	g.Expect(result.RequeueAfter > 0).To(BeTrue(), "should requeue when deployment is not available")
 
 	var updated keystonev1alpha1.Keystone
-	g.Expect(r.Client.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
+	g.Expect(r.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
 
 	// DeploymentReady should be False.
 	deployCond := meta.FindStatusCondition(updated.Status.Conditions, "DeploymentReady")
@@ -699,7 +705,7 @@ func TestReconcile_HealthCheckStopsChainOnFailure(t *testing.T) {
 	g.Expect(result.RequeueAfter).To(Equal(RequeueHealthCheck))
 
 	var updated keystonev1alpha1.Keystone
-	g.Expect(r.Client.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
+	g.Expect(r.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
 
 	// Conditions set BEFORE health check in the chain should be True.
 	for _, condType := range []string{"SecretsReady", "FernetKeysReady", "CredentialKeysReady", "DatabaseReady", "DeploymentReady", "NetworkPolicyReady"} {
@@ -742,7 +748,7 @@ func TestReconcile_ObservedGenerationTracked(t *testing.T) {
 	g.Expect(result).To(Equal(ctrl.Result{}))
 
 	var updated keystonev1alpha1.Keystone
-	g.Expect(r.Client.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
+	g.Expect(r.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
 
 	readyCond := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
 	g.Expect(readyCond).NotTo(BeNil(), "Ready condition should exist")
@@ -1442,7 +1448,7 @@ func TestReconcile_ParallelGroupSetsAllConditions(t *testing.T) {
 	g.Expect(result).To(Equal(ctrl.Result{}), "full reconcile should not requeue")
 
 	var updated keystonev1alpha1.Keystone
-	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
+	g.Expect(r.Get(context.Background(), types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
 
 	// Verify all three parallel-group conditions are True with correct ObservedGeneration.
 	for _, condType := range []string{"FernetKeysReady", "CredentialKeysReady", "NetworkPolicyReady"} {
@@ -1457,6 +1463,509 @@ func TestReconcile_ParallelGroupSetsAllConditions(t *testing.T) {
 	readyCond := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
 	g.Expect(readyCond).NotTo(BeNil(), "Ready condition must exist")
 	g.Expect(readyCond.Status).To(Equal(metav1.ConditionTrue), "Ready must be True when all sub-conditions are True")
+}
+
+// ---------------------------------------------------------------------------
+// Reconcile finalizer lifecycle tests (CC-0078, REQ-001, REQ-002, REQ-004,
+// REQ-006, REQ-007)
+// ---------------------------------------------------------------------------
+
+// keystoneGroupResource is the GroupResource used when synthesizing apierror
+// values for Keystone in finalizer tests (CC-0078).
+var keystoneGroupResource = schema.GroupResource{
+	Group:    "keystone.openstack.c5c3.io",
+	Resource: "keystones",
+}
+
+// markKeystoneTerminating issues Delete on the given Keystone CR via the fake
+// client so that DeletionTimestamp is set while at least one finalizer blocks
+// actual removal from the store. It returns the refreshed object so the caller
+// sees the current ResourceVersion and DeletionTimestamp (CC-0078).
+func markKeystoneTerminating(t *testing.T, c client.Client, ks *keystonev1alpha1.Keystone) *keystonev1alpha1.Keystone {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	g.Expect(c.Delete(context.Background(), ks)).To(Succeed())
+	refreshed := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(ks), refreshed)).To(Succeed())
+	g.Expect(refreshed.DeletionTimestamp.IsZero()).To(BeFalse(),
+		"DeletionTimestamp must be set after Delete to simulate a terminating CR")
+	return refreshed
+}
+
+// TestReconcile_AddsFinalizerOnFirstReconcile verifies that Reconcile installs
+// the Keystone finalizer on a live CR that lacks it and returns Requeue=true so
+// the next pass observes the persisted finalizer before any sub-reconciler
+// runs (CC-0078, REQ-001, REQ-006).
+func TestReconcile_AddsFinalizerOnFirstReconcile(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	ks.Finalizers = nil
+	r := newTestReconciler(ks)
+
+	ctx := context.Background()
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+
+	result, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}),
+		"first reconcile must return Requeue=true after persisting the finalizer")
+
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Get(ctx, req.NamespacedName, &updated)).To(Succeed())
+	g.Expect(controllerutil.ContainsFinalizer(&updated, keystoneFinalizer)).To(BeTrue(),
+		"finalizer must be persisted to etcd on the first reconcile")
+
+	// No sub-reconciler ran: SecretsReady (the first sub-reconciler's condition)
+	// must be absent because we short-circuited after the finalizer Update.
+	g.Expect(meta.FindStatusCondition(updated.Status.Conditions, "SecretsReady")).To(BeNil(),
+		"sub-reconcilers must not run on the finalizer-install pass")
+}
+
+// TestReconcile_FinalizerAlreadyPresent_NoExtraUpdate verifies that when the
+// Keystone CR already carries the finalizer, Reconcile does NOT call Update on
+// the Keystone object (status updates go through SubResourceUpdate, not
+// Update) — proving the AddFinalizer path is skipped (CC-0078, REQ-001,
+// REQ-006).
+func TestReconcile_FinalizerAlreadyPresent_NoExtraUpdate(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone() // testKeystone pre-populates the finalizer.
+
+	s := testScheme()
+	var keystoneUpdates int
+	cb := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks).
+		WithStatusSubresource(&keystonev1alpha1.Keystone{}, &esov1.ExternalSecret{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if _, ok := obj.(*keystonev1alpha1.Keystone); ok {
+					keystoneUpdates++
+				}
+				return cl.Update(ctx, obj, opts...)
+			},
+		})
+	r := &KeystoneReconciler{
+		Client:   cb.Build(),
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	ctx := context.Background()
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+
+	result, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).NotTo(Equal(ctrl.Result{Requeue: true}),
+		"must not return Requeue=true when the finalizer is already present")
+	g.Expect(keystoneUpdates).To(Equal(0),
+		"no r.Update on Keystone must occur when the finalizer is already installed")
+}
+
+// TestReconcile_FinalizerUpdateConflict_ReturnsError verifies that a Conflict
+// on the finalizer-installing Update is propagated as a reconciler error so
+// controller-runtime retries with backoff (CC-0078, REQ-001, REQ-006).
+func TestReconcile_FinalizerUpdateConflict_ReturnsError(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	ks.Finalizers = nil
+
+	s := testScheme()
+	conflictErr := apierrors.NewConflict(keystoneGroupResource, ks.Name,
+		fmt.Errorf("the object has been modified; please apply your changes to the latest version and try again"))
+
+	cb := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks).
+		WithStatusSubresource(&keystonev1alpha1.Keystone{}, &esov1.ExternalSecret{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(_ context.Context, _ client.WithWatch, obj client.Object, _ ...client.UpdateOption) error {
+				if _, ok := obj.(*keystonev1alpha1.Keystone); ok {
+					return conflictErr
+				}
+				return nil
+			},
+		})
+	r := &KeystoneReconciler{
+		Client:   cb.Build(),
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	ctx := context.Background()
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+
+	_, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).To(HaveOccurred(), "Conflict on AddFinalizer Update must surface as a reconciler error")
+	g.Expect(err.Error()).To(ContainSubstring("adding finalizer"),
+		"error must preserve the 'adding finalizer' wrapper from Reconcile")
+	g.Expect(apierrors.IsConflict(err)).To(BeTrue(),
+		"wrapped Conflict must remain recognizable via apierrors.IsConflict")
+}
+
+// TestReconcile_TerminatingCR_SkipsSubReconcilers verifies that when the CR is
+// terminating with the Keystone finalizer present, Reconcile delegates to
+// reconcileDelete and never invokes any sub-reconciler — proven by the absence
+// of any sub-reconciler condition (e.g. SecretsReady) on the CR after the
+// reconcile (CC-0078, REQ-002, REQ-006).
+func TestReconcile_TerminatingCR_SkipsSubReconcilers(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	// Attach a foreign finalizer so the CR stays in etcd after reconcileDelete
+	// releases the Keystone finalizer, letting the test inspect conditions on
+	// the terminating CR.
+	ks.Finalizers = append(ks.Finalizers, "foreign.example.com/keep-alive")
+	db, user, grant := mariaDBResources(ks)
+
+	r := newTestReconciler(ks, db, user, grant)
+	ctx := context.Background()
+	_ = markKeystoneTerminating(t, r.Client, ks)
+
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+	_, err := r.Reconcile(ctx, req)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Get(ctx, req.NamespacedName, &updated)).To(Succeed(),
+		"Keystone must remain while the foreign finalizer is attached")
+
+	// No sub-reconciler ran: each first-phase sub-condition must be absent.
+	for _, condType := range []string{"SecretsReady", "FernetKeysReady", "CredentialKeysReady", "DatabaseReady", "NetworkPolicyReady"} {
+		g.Expect(meta.FindStatusCondition(updated.Status.Conditions, condType)).To(BeNil(),
+			"condition %s must not be set on a terminating CR", condType)
+	}
+}
+
+// TestReconcile_TerminatingCR_IssuesDeleteAndReleasesFinalizer verifies that
+// Reconcile on a terminating CR issues Delete on every MariaDB CR and releases
+// the Keystone finalizer in a single pass, even while the MariaDB CRs are held
+// in Terminating state by another finalizer. Waiting for the MariaDB operator
+// to complete teardown created a deadlock under concurrent deletions (CC-0078,
+// REQ-002).
+func TestReconcile_TerminatingCR_IssuesDeleteAndReleasesFinalizer(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	db, user, grant := mariaDBResources(ks)
+	// Pending-delete finalizers hold the MariaDB CRs in Terminating state so
+	// the test can verify they were marked for deletion before the Keystone
+	// finalizer was released.
+	db.Finalizers = []string{"test.c5c3.io/pending-delete"}
+	user.Finalizers = []string{"test.c5c3.io/pending-delete"}
+	grant.Finalizers = []string{"test.c5c3.io/pending-delete"}
+
+	r := newTestReconciler(ks, db, user, grant)
+	ctx := context.Background()
+	_ = markKeystoneTerminating(t, r.Client, ks)
+
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+	result, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}),
+		"terminating CR must resolve in a single pass without requeue")
+
+	// The Keystone CR no longer has our finalizer (may be gone from etcd if
+	// the fake client collected it).
+	var updated keystonev1alpha1.Keystone
+	getErr := r.Get(ctx, req.NamespacedName, &updated)
+	if getErr == nil {
+		g.Expect(controllerutil.ContainsFinalizer(&updated, keystoneFinalizer)).To(BeFalse(),
+			"Keystone finalizer must be released in a single reconcile pass")
+	} else {
+		g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
+			"Keystone must either be finalizer-free or garbage-collected")
+	}
+
+	// Each MariaDB CR must now have DeletionTimestamp set — proof that
+	// finalizeDatabaseResources issued Delete before returning.
+	for name, obj := range map[string]client.Object{
+		"Database": &mariadbv1alpha1.Database{},
+		"User":     &mariadbv1alpha1.User{},
+		"Grant":    &mariadbv1alpha1.Grant{},
+	} {
+		g.Expect(r.Get(ctx, client.ObjectKey{Name: ks.Name, Namespace: ks.Namespace}, obj)).
+			To(Succeed(), "%s must still exist (held by pending-delete finalizer)", name)
+		g.Expect(obj.GetDeletionTimestamp().IsZero()).To(BeFalse(),
+			"%s must be marked for deletion after finalizeDatabaseResources runs", name)
+	}
+}
+
+// TestReconcile_TerminatingCR_WithoutFinalizer_NoOp verifies that a terminating
+// CR without the Keystone finalizer is a no-op: no events, no Updates, empty
+// result. This mirrors a CR created before this operator version, or one whose
+// finalizer was already released in a prior pass (CC-0078, REQ-002, REQ-006).
+func TestReconcile_TerminatingCR_WithoutFinalizer_NoOp(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	// Replace the Keystone finalizer with an unrelated one so the CR is held in
+	// Terminating state by someone else and reconcileDelete hits the
+	// no-finalizer fast path.
+	ks.Finalizers = []string{"foreign.example.com/finalizer"}
+
+	r := newTestReconciler(ks)
+	ctx := context.Background()
+	_ = markKeystoneTerminating(t, r.Client, ks)
+
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+	result, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}),
+		"no-finalizer terminating CR must produce an empty Result")
+	expectNoEvent(g, r)
+}
+
+// ---------------------------------------------------------------------------
+// Reconcile finalizer event-emission tests (CC-0078, REQ-007)
+// ---------------------------------------------------------------------------
+
+// TestReconcile_TerminatingCR_EmitsFinalizingDatabaseEvent verifies that a
+// terminating CR with live MariaDB CRs emits "FinalizingDatabase" to announce
+// cleanup work and "DatabaseFinalized" after issuing the Deletes, both in the
+// same reconcile pass (CC-0078, REQ-007).
+func TestReconcile_TerminatingCR_EmitsFinalizingDatabaseEvent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	db, user, grant := mariaDBResources(ks)
+
+	r := newTestReconciler(ks, db, user, grant)
+	ctx := context.Background()
+	_ = markKeystoneTerminating(t, r.Client, ks)
+
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+	_, err := r.Reconcile(ctx, req)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	fakeRecorder := r.Recorder.(*record.FakeRecorder)
+	var events []string
+drain:
+	for {
+		select {
+		case evt := <-fakeRecorder.Events:
+			events = append(events, evt)
+		default:
+			break drain
+		}
+	}
+	g.Expect(events).To(ContainElement(ContainSubstring("FinalizingDatabase")),
+		"FinalizingDatabase event must be emitted when live MariaDB CRs exist")
+	g.Expect(events).To(ContainElement(ContainSubstring("DatabaseFinalized")),
+		"DatabaseFinalized event must be emitted after Delete is issued")
+}
+
+// TestReconcile_TerminatingCR_EmitsFinalizingDatabaseEventOnlyOnce guards the
+// sentinel invariant documented at Reconcile (CC-0078) and in the Events
+// section of docs/reference/keystone-reconciler.md: "FinalizingDatabase" is
+// emitted exactly once per termination, suppressed on subsequent reconcile
+// passes while the MariaDB CRs remain Terminating. A regression that re-emits
+// the event on every requeue would still pass the single-pass tests but flood
+// the event stream in production — this test forces a second pass against the
+// same Keystone CR and asserts the event count stays at one (CC-0078,
+// REQ-007).
+func TestReconcile_TerminatingCR_EmitsFinalizingDatabaseEventOnlyOnce(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	// Foreign finalizer keeps the Keystone CR in etcd after the first pass
+	// releases the Keystone finalizer, so the second pass actually re-enters
+	// reconcileDelete and must apply its own suppression logic.
+	ks.Finalizers = append(ks.Finalizers, "foreign.example.com/keep-alive")
+	db, user, grant := mariaDBResources(ks)
+	// Pending-delete finalizers hold the MariaDB CRs in Terminating state
+	// between passes — matching a real MariaDB operator still tearing them
+	// down when Reconcile re-enters.
+	db.Finalizers = []string{"test.c5c3.io/pending-delete"}
+	user.Finalizers = []string{"test.c5c3.io/pending-delete"}
+	grant.Finalizers = []string{"test.c5c3.io/pending-delete"}
+
+	r := newTestReconciler(ks, db, user, grant)
+	ctx := context.Background()
+	_ = markKeystoneTerminating(t, r.Client, ks)
+
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+
+	_, err := r.Reconcile(ctx, req)
+	g.Expect(err).NotTo(HaveOccurred(), "first reconcile pass must succeed")
+	_, err = r.Reconcile(ctx, req)
+	g.Expect(err).NotTo(HaveOccurred(), "second reconcile pass must succeed")
+
+	fakeRecorder := r.Recorder.(*record.FakeRecorder)
+	var events []string
+drain:
+	for {
+		select {
+		case evt := <-fakeRecorder.Events:
+			events = append(events, evt)
+		default:
+			break drain
+		}
+	}
+
+	finalizingCount := 0
+	for _, evt := range events {
+		if strings.Contains(evt, "FinalizingDatabase") {
+			finalizingCount++
+		}
+	}
+	g.Expect(finalizingCount).To(Equal(1),
+		"FinalizingDatabase must be emitted exactly once across both reconcile passes; got events: %v", events)
+}
+
+// TestReconcile_TerminatingCR_SentinelSuppressesEventAfterUpdateConflict is a
+// sibling to TestReconcile_TerminatingCR_EmitsFinalizingDatabaseEventOnlyOnce
+// that specifically exercises the hasLiveMariaDBResources sentinel path with
+// the keystoneFinalizer retained across passes. In the foreign-finalizer
+// variant, the Keystone finalizer is removed on the first pass and the second
+// pass exits early via the ContainsFinalizer guard — so suppression is proven
+// end-to-end but the sentinel's DeletionTimestamp-aware branch is not directly
+// exercised. Here we inject a Conflict on the RemoveFinalizer Update so the
+// keystoneFinalizer persists, forcing the second pass to re-enter
+// reconcileDelete, observe the now-Terminating MariaDB CRs, and suppress the
+// FinalizingDatabase event via the sentinel rather than the guard
+// (CC-0078, REQ-007).
+func TestReconcile_TerminatingCR_SentinelSuppressesEventAfterUpdateConflict(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	db, user, grant := mariaDBResources(ks)
+	// Pending-delete finalizers hold the MariaDB CRs in Terminating state
+	// after the first pass's Delete so the sentinel observes
+	// DeletionTimestamp-set CRs on the second pass.
+	db.Finalizers = []string{"test.c5c3.io/pending-delete"}
+	user.Finalizers = []string{"test.c5c3.io/pending-delete"}
+	grant.Finalizers = []string{"test.c5c3.io/pending-delete"}
+
+	s := testScheme()
+	conflictErr := apierrors.NewConflict(keystoneGroupResource, ks.Name,
+		fmt.Errorf("the object has been modified; please apply your changes to the latest version and try again"))
+	var keystoneUpdates int
+	cb := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks, db, user, grant).
+		WithStatusSubresource(&keystonev1alpha1.Keystone{}, &esov1.ExternalSecret{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if _, ok := obj.(*keystonev1alpha1.Keystone); ok {
+					keystoneUpdates++
+					if keystoneUpdates == 1 {
+						return conflictErr
+					}
+				}
+				return cl.Update(ctx, obj, opts...)
+			},
+		})
+	r := &KeystoneReconciler{
+		Client:   cb.Build(),
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	ctx := context.Background()
+	_ = markKeystoneTerminating(t, r.Client, ks)
+
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+
+	// Pass 1: RemoveFinalizer Update fails with Conflict, so the keystone
+	// finalizer remains on the persisted CR. Delete has already been issued
+	// on the MariaDB CRs, transitioning them to Terminating.
+	_, err := r.Reconcile(ctx, req)
+	g.Expect(err).To(HaveOccurred(),
+		"first pass must surface the Conflict on the finalizer-removing Update")
+	g.Expect(err.Error()).To(ContainSubstring("removing finalizer"),
+		"error must preserve the 'removing finalizer' wrapper from reconcileDelete")
+	g.Expect(apierrors.IsConflict(err)).To(BeTrue(),
+		"wrapped Conflict must remain recognizable via apierrors.IsConflict")
+
+	// Verify both preconditions for the sentinel path on pass 2:
+	// (a) the keystone finalizer is still on the persisted CR, so pass 2
+	//     proceeds past the ContainsFinalizer guard into hasLiveMariaDBResources
+	// (b) the MariaDB CRs are Terminating, so the sentinel returns false and
+	//     suppresses FinalizingDatabase.
+	persisted := &keystonev1alpha1.Keystone{}
+	g.Expect(r.Get(ctx, req.NamespacedName, persisted)).To(Succeed())
+	g.Expect(controllerutil.ContainsFinalizer(persisted, keystoneFinalizer)).To(BeTrue(),
+		"keystoneFinalizer must remain on the CR after the Update conflict")
+	for _, obj := range []client.Object{
+		&mariadbv1alpha1.Database{},
+		&mariadbv1alpha1.User{},
+		&mariadbv1alpha1.Grant{},
+	} {
+		g.Expect(r.Get(ctx, client.ObjectKey{Name: ks.Name, Namespace: ks.Namespace}, obj)).To(Succeed(),
+			"MariaDB %T must still exist after pass 1 (held by pending-delete finalizer)", obj)
+		g.Expect(obj.GetDeletionTimestamp().IsZero()).To(BeFalse(),
+			"MariaDB %T must be Terminating after pass 1 so the sentinel suppresses on pass 2", obj)
+	}
+
+	// Pass 2: sentinel observes Terminating CRs and suppresses the event;
+	// the RemoveFinalizer Update now succeeds and the CR is released.
+	_, err = r.Reconcile(ctx, req)
+	g.Expect(err).NotTo(HaveOccurred(),
+		"second pass must succeed once the conflict is cleared")
+	getErr := r.Get(ctx, req.NamespacedName, &keystonev1alpha1.Keystone{})
+	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
+		"Keystone must be removed after the second pass releases the finalizer")
+
+	fakeRecorder := r.Recorder.(*record.FakeRecorder)
+	var events []string
+drain:
+	for {
+		select {
+		case evt := <-fakeRecorder.Events:
+			events = append(events, evt)
+		default:
+			break drain
+		}
+	}
+
+	finalizingCount := 0
+	for _, evt := range events {
+		if strings.Contains(evt, "FinalizingDatabase") {
+			finalizingCount++
+		}
+	}
+	g.Expect(finalizingCount).To(Equal(1),
+		"FinalizingDatabase must be emitted exactly once — by pass 1 when CRs were live, suppressed by the sentinel on pass 2; got events: %v", events)
+}
+
+// TestReconcile_TerminatingCR_EmitsDatabaseFinalizedEvent verifies that a
+// brownfield terminating CR (no MariaDB CRs ever created) emits only the
+// "DatabaseFinalized" Normal event before releasing the Keystone finalizer —
+// the FinalizingDatabase sentinel is false because there is no live cleanup
+// work to announce (CC-0078, REQ-007).
+func TestReconcile_TerminatingCR_EmitsDatabaseFinalizedEvent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+
+	r := newTestReconciler(ks)
+	ctx := context.Background()
+	_ = markKeystoneTerminating(t, r.Client, ks)
+
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+	result, err := r.Reconcile(ctx, req)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}),
+		"terminating brownfield CR must release the finalizer in a single pass")
+
+	fakeRecorder := r.Recorder.(*record.FakeRecorder)
+	var events []string
+drain:
+	for {
+		select {
+		case evt := <-fakeRecorder.Events:
+			events = append(events, evt)
+		default:
+			break drain
+		}
+	}
+	g.Expect(events).To(ContainElement(ContainSubstring("DatabaseFinalized")),
+		"DatabaseFinalized event must be emitted after finalizeDatabaseResources reports done")
+	g.Expect(events).NotTo(ContainElement(ContainSubstring("FinalizingDatabase")),
+		"FinalizingDatabase must not be emitted for a brownfield CR with no MariaDB CRs")
+
+	// Finalizer must have been released — the CR is gone from the store.
+	getErr := r.Get(ctx, req.NamespacedName, &keystonev1alpha1.Keystone{})
+	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
+		"Keystone must be removed after the finalizer is released")
 }
 
 // BenchmarkReconcile_FullReconcile measures ns/op for a full reconcile cycle

@@ -27,6 +27,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -35,6 +36,13 @@ import (
 	"github.com/c5c3/forge/internal/common/conditions"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
+
+// keystoneFinalizer is the name of the finalizer added to every Keystone CR so
+// that MariaDB Database, User, and Grant CRs are deterministically cleaned up
+// before the Keystone CR is removed from etcd. Defined once as the single
+// source of truth for Reconcile, the finalizer handler, tests, and docs
+// (CC-0078, REQ-005).
+const keystoneFinalizer = "keystone.openstack.c5c3.io/finalizer"
 
 // subConditionTypes lists the condition types set by individual sub-reconcilers.
 // The Ready condition is True only when all of these are True.
@@ -123,6 +131,26 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("fetching Keystone: %w", err)
+	}
+
+	// Handle CR deletion via finalizer: block removal from etcd until the
+	// MariaDB Database, User, and Grant CRs owned by this Keystone are cleaned
+	// up (CC-0078, REQ-002, REQ-006, REQ-007).
+	if !keystone.DeletionTimestamp.IsZero() {
+		return r.reconcileDelete(ctx, &keystone)
+	}
+
+	// Ensure the finalizer is installed before any sub-reconciler runs so that a
+	// deletion issued between now and the next pass still funnels through
+	// reconcileDelete (CC-0078, REQ-001, REQ-006). Returning Requeue=true after
+	// the Update guarantees the next reconcile observes the persisted finalizer
+	// rather than relying on the in-memory copy.
+	if !controllerutil.ContainsFinalizer(&keystone, keystoneFinalizer) {
+		controllerutil.AddFinalizer(&keystone, keystoneFinalizer)
+		if err := r.Update(ctx, &keystone); err != nil {
+			return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
+		}
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	// Run sub-reconcilers in dependency order; independent groups run concurrently.
@@ -216,6 +244,74 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	setReadyCondition(&keystone)
 
 	return r.updateStatus(ctx, &keystone, ctrl.Result{}, nil)
+}
+
+// reconcileDelete drives the finalizer cleanup when the Keystone CR is being
+// deleted. It is a no-op if the Keystone finalizer is absent (e.g. a CR created
+// before this operator version, or whose finalizer was already released).
+// Otherwise it emits FinalizingDatabase when there is real cleanup work to
+// announce, issues Delete on the MariaDB Database/User/Grant CRs, emits
+// DatabaseFinalized, and releases the finalizer in a single pass.
+//
+// The handler deliberately does not wait for the MariaDB CRs to disappear from
+// etcd: waiting created a deadlock where the Keystone finalizer kept the CR
+// alive, Kubernetes GC could not cascade-delete the keystone-api Deployment,
+// the Pod kept its connections open, and the MariaDB operator could not DROP
+// DATABASE. Owner references set by reconcileDatabase ensure the MariaDB CRs
+// are still reclaimed after the Keystone CR is gone — either via their own
+// finalizers or via GC (CC-0078, REQ-002, REQ-007).
+func (r *KeystoneReconciler) reconcileDelete(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(keystone, keystoneFinalizer) {
+		return ctrl.Result{}, nil
+	}
+
+	// Only emit FinalizingDatabase when at least one MariaDB CR is still live
+	// so brownfield CRs (no MariaDB CRs ever created) do not produce a
+	// misleading "cleaning up" event (CC-0078, REQ-007).
+	hasLiveCleanupWork, err := r.hasLiveMariaDBResources(ctx, keystone)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if hasLiveCleanupWork {
+		r.Recorder.Event(keystone, corev1.EventTypeNormal, "FinalizingDatabase",
+			"Cleaning up MariaDB Database, User, and Grant before removing Keystone")
+	}
+
+	if err := r.finalizeDatabaseResources(ctx, keystone); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	r.Recorder.Event(keystone, corev1.EventTypeNormal, "DatabaseFinalized",
+		"MariaDB Database, User, and Grant marked for deletion; releasing finalizer")
+
+	controllerutil.RemoveFinalizer(keystone, keystoneFinalizer)
+	if err := r.Update(ctx, keystone); err != nil {
+		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
+	}
+	return ctrl.Result{}, nil
+}
+
+// hasLiveMariaDBResources reports whether any of the three MariaDB CRs
+// (Database, User, Grant) owned by this Keystone still exists with
+// DeletionTimestamp unset — i.e., real cleanup work remains. Brownfield CRs
+// (no MariaDB CRs ever created) report false so the FinalizingDatabase event
+// is suppressed when there is nothing to announce (CC-0078, REQ-007).
+func (r *KeystoneReconciler) hasLiveMariaDBResources(ctx context.Context, keystone *keystonev1alpha1.Keystone) (bool, error) {
+	key := mariaDBResourceKey(keystone)
+	for _, ctor := range mariaDBResourceCtors {
+		obj := ctor()
+		err := r.Get(ctx, key, obj)
+		if apierrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return false, fmt.Errorf("checking %T %s: %w", obj, key, err)
+		}
+		if obj.GetDeletionTimestamp().IsZero() {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // updateStatus persists the current status conditions and returns the given result and error.

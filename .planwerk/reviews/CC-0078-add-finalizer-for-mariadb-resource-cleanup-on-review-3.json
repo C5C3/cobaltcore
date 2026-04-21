@@ -1,0 +1,52 @@
+{
+  "summary": "External-review cycle #2 addressing gndrmnn's two comments on operators/keystone/internal/controller/keystone_controller_test.go: (1) removed TestKeystoneFinalizerConstant_HasExpectedValue — a tautological test that only asserted a compile-time constant equals its own literal value, and (2) changed a single r.Client.Get call to r.Get per the linter's redundant-selector hint. Pattern files (reject-tautological-constant-tests.md, honor-linter-hints-on-embedded-client-access.md) were updated to record the recurrence and the new occurrence, respectively. The prior external-review record was persisted under .planwerk/reviews/, and the progress file was transitioned from awaiting_external_review to improving.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Tautological constant test removed as requested", "checked": true},
+    {"item": "No other tests broken by the removal", "checked": true},
+    {"item": "Code still compiles (go build ./... clean)", "checked": true},
+    {"item": "go vet passes on changed file", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Reviewer-flagged tautological test removed (REJECT-TAUTOLOGICAL-CONSTANT-TESTS pattern)", "checked": true},
+    {"item": "Reviewer-flagged .Client selector removed at line 1636 (HONOR-LINTER-HINTS pattern)", "checked": true},
+    {"item": "Refactor applied consistently to all equivalent call sites in the same file", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "No new inputs, auth paths, or secret handling introduced", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Change is scoped strictly to the two reviewer comments", "checked": true},
+    {"item": "No new abstractions, no scope creep into production code", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated logic introduced", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "No error-handling paths affected", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "No validation logic affected", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "PC3",
+      "severity": "MAJOR",
+      "description": "Partial refactoring creates inconsistent embedded-client access pattern in the same file. The reviewer's linter-hint fix (r.Client.Get -> r.Get) was applied to exactly one line (keystone_controller_test.go:1636) while 20 other equivalent r.Client.X call sites in the same file remain unchanged — including line 1652, which is in the SAME test function (TestReconcile_TerminatingCR_IssuesDeleteAndReleasesFinalizer). This is the exact anti-pattern documented in .planwerk/review_patterns/flag-global-config-changes-that-solve-localized-problems.md (BLOCKING, from CC-0059/berendt W-002): 'Partial refactoring creates inconsistent access pattern — r.Client.Get -> r.Get changes...'. Before this cycle the file was uniformly r.Client.* (consistent); after this cycle it mixes r.Get and r.Client.*, so the inconsistency was newly introduced by this change. KeystoneReconciler embeds client.Client (operators/keystone/internal/controller/keystone_controller.go:62), so every r.Client.X call is equivalently redundant and the linter would flag them all.",
+      "location": "operators/keystone/internal/controller/keystone_controller_test.go:1636 (vs. :347, :370, :393, :419, :524, :560, :602, :615, :617, :618, :619, :620, :627, :657, :704, :747, :1415, :1479, :1595, :1652)",
+      "fix": "Apply the same r.Client.X -> r.X transformation to all 20 remaining occurrences in this file so the file is uniform. At minimum, fix the call at line 1652 in the same test function to avoid an in-function inconsistency.",
+      "evidence": "Line 1636: getErr := r.Get(ctx, req.NamespacedName, &updated)  // fixed\nLine 1652 (same function, 16 lines later): g.Expect(r.Client.Get(ctx, client.ObjectKey{Name: ks.Name, Namespace: ks.Namespace}, obj)).  // NOT fixed\n`grep -c 'r\\.Client\\.' operators/keystone/internal/controller/keystone_controller_test.go` -> 20",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Run golangci-lint (or the repo's configured linter set) against keystone_controller_test.go and apply the redundant-selector fix everywhere it fires, not just at the line the external reviewer happened to cite. A file-wide pass avoids follow-up review cycles on the same pattern and matches the intent of the newly-recorded honor-linter-hints-on-embedded-client-access.md review pattern (which itself promises 'Usages of .Client.X ... are redundant and usually already flagged by the linter')."
+  ],
+  "next_steps": [
+    "Replace all remaining r.Client.Get/Create calls in operators/keystone/internal/controller/keystone_controller_test.go with r.Get/r.Create — 20 occurrences — so the file is internally consistent.",
+    "Re-run golangci-lint on the file to confirm no redundant-selector warnings remain."
+  ],
+  "detected_patterns": []
+}

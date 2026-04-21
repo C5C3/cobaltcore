@@ -1,0 +1,72 @@
+{
+  "feature_id": "CC-0078",
+  "title": "Add finalizer for MariaDB resource cleanup on Keystone CR deletion",
+  "date": "2026-04-17",
+  "verdict": "APPROVED",
+  "summary": "Finalizer (keystone.openstack.c5c3.io/finalizer) is correctly installed on first reconcile, routes deletion through reconcileDelete, and is released only after finalizeDatabaseResources confirms all three MariaDB CRs (Database, User, Grant) are NotFound. Reconcile branches on DeletionTimestamp before sub-reconcilers run, so terminating CRs skip reconcileSecrets/Config/etc. NotFound is tolerated on both Delete and Get, making cleanup idempotent for brownfield CRs and operator restarts. Events FinalizingDatabase/DatabaseFinalized are emitted once per termination via the isFirstFinalizingObservation sentinel. RBAC marker for keystones/finalizers is present. All 17 CC-0078 unit/integration tests pass, full controller suite passes (1.055s), go vet is clean. Docs updated with a comprehensive Finalizer section covering lifecycle, events, brownfield behavior, and upgrade path. E2E Chainsaw test asserts the finalizer is present on the CR and bounds the delete step at 2m.",
+  "tests_checklist": [
+    {"item": "Unit tests pass (go test ./internal/controller/...)", "checked": true},
+    {"item": "go vet clean", "checked": true},
+    {"item": "Finalizer constant value covered (TestKeystoneFinalizerConstant_HasExpectedValue)", "checked": true},
+    {"item": "AddFinalizer on first reconcile covered (TestReconcile_AddsFinalizerOnFirstReconcile)", "checked": true},
+    {"item": "Idempotent AddFinalizer covered with interceptor update counter (TestReconcile_FinalizerAlreadyPresent_NoExtraUpdate)", "checked": true},
+    {"item": "Update-conflict propagation covered (TestReconcile_FinalizerUpdateConflict_ReturnsError)", "checked": true},
+    {"item": "Terminating CR skips sub-reconcilers (TestReconcile_TerminatingCR_SkipsSubReconcilers)", "checked": true},
+    {"item": "RequeueAfter while MariaDB CRs exist (TestReconcile_TerminatingCR_RequeuesWhileMariaDBResourcesExist)", "checked": true},
+    {"item": "No-finalizer terminating CR is no-op (TestReconcile_TerminatingCR_WithoutFinalizer_NoOp)", "checked": true},
+    {"item": "FinalizingDatabase / DatabaseFinalized events asserted", "checked": true},
+    {"item": "finalizeDatabaseResources: delete-all / brownfield / NotFound / idempotent / requeue / delete-error / get-error all covered", "checked": true},
+    {"item": "envtest integration tests cover lifecycle and brownfield (TestIntegration_FinalizerLifecycle_AddAndRemove, TestIntegration_FinalizerBrownfieldDeletion)", "checked": true},
+    {"item": "Chainsaw E2E asserts finalizer on CR and bounds delete step", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Finalizer defined as a single constant (REQ-005)", "checked": true},
+    {"item": "Reconcile branches on DeletionTimestamp before sub-reconcilers (REQ-006)", "checked": true},
+    {"item": "AddFinalizer path Requeue=true to re-observe persisted finalizer", "checked": true},
+    {"item": "reconcileDelete is a no-op if finalizer absent (REQ-001)", "checked": true},
+    {"item": "RemoveFinalizer only after done=true (REQ-002, REQ-004)", "checked": true},
+    {"item": "CC-0078 tag in comments, log lines, events, and docs", "checked": true},
+    {"item": "Godoc explains sentinel and brownfield no-event trade-off", "checked": true},
+    {"item": "No unrelated refactoring in diff", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "RBAC marker keystones/finalizers verbs=update present (line 70)", "checked": true},
+    {"item": "NotFound tolerated to prevent deletion deadlocks", "checked": true},
+    {"item": "No hardcoded secrets introduced", "checked": true},
+    {"item": "Finalizer lookup uses keystone.Name + keystone.Namespace (matches buildDatabase/buildUser/buildGrant naming)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible — single finalizer, single cleanup function", "checked": true},
+    {"item": "done=true requires confirmed NotFound on all three CRs, not just successful Delete (REQ-003, REQ-004)", "checked": true},
+    {"item": "Brownfield path is implicit: NotFound-tolerance makes it a first-call no-op", "checked": true},
+    {"item": "FinalizingDatabase sentinel driven by live CR state, not a status field (no status-write coupling)", "checked": true},
+    {"item": "RequeueAfter uses RequeueDatabaseWait constant (no magic number, CC-0044)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No speculative abstractions", "checked": true},
+    {"item": "finalizeDatabaseResources and isFirstFinalizingObservation each have a single caller and a single responsibility", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Non-NotFound errors from Delete/Get/Update wrapped with context (fmt.Errorf)", "checked": true},
+    {"item": "Update conflict on AddFinalizer surfaces as error (returns to controller-runtime for backoff retry)", "checked": true},
+    {"item": "isFirstFinalizingObservation returns error on non-NotFound Get", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "NotFound tolerance on Delete and Get covers brownfield, external deletion, and garbage collection races", "checked": true},
+    {"item": "Missing finalizer on terminating CR is explicit no-op — does not panic or spuriously emit events", "checked": true},
+    {"item": "Requeue=true after AddFinalizer prevents acting on stale in-memory copy", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Consider Watch()ing mariadbv1alpha1.Database/User/Grant (or at least Database) with an EnqueueRequestsFromMapFunc to the owning Keystone, so reconcileDelete is event-driven rather than poll-driven via RequeueDatabaseWait. During deletion this would shorten finalizer release latency from up to one RequeueDatabaseWait interval to the next watch event. Not blocking — the current RequeueAfter behaviour is correct and matches the established sub-reconciler pattern.",
+    "isFirstFinalizingObservation probes the three MariaDB CRs with individual Gets on every reconcile pass during termination. For a single-resource probe this is fine, but if the resource set grows later a single List (or a status.conditions sentinel) would be cheaper. Flagging for future awareness only; the current cost (three cached Gets) is negligible.",
+    "The brownfield-terminating path emits DatabaseFinalized but not FinalizingDatabase (by design, documented in the godoc at keystone_controller.go:253). This asymmetry is intentional and correct, but an operator reading only FinalizingDatabase/DatabaseFinalized without context might find the single-event sequence surprising. Consider a follow-up to mention this in the Events reference table if operators flag the asymmetry."
+  ],
+  "next_steps": [
+    "Merge — all blocking, critical, and minor checks pass; tests green; docs updated; RBAC marker present"
+  ],
+  "detected_patterns": []
+}

@@ -1,0 +1,50 @@
+{
+  "summary": "Review cycle #4 addresses berendt external review #3 feedback (W-001, I-001, I-002) on the CC-0078 finalizer implementation. The MariaDB CR kind list is hoisted to a package-level mariaDBResourceCtors var in reconcile_database.go and iterated from both finalizeDatabaseResources and hasLiveMariaDBResources, eliminating the drift risk the original detect-duplicated-parallel-resource-lists pattern warned about. A mariaDBResourceKey(keystone) helper centralises the (Name, Namespace) derivation and is used from both the cleanup sites and buildDatabase/buildUser/buildGrant. A new multi-pass test, TestReconcile_TerminatingCR_EmitsFinalizingDatabaseEventOnlyOnce, exercises two consecutive Reconcile passes against a Keystone CR held in etcd by a foreign finalizer (MariaDB CRs kept Terminating by pending-delete finalizers) and asserts FinalizingDatabase is emitted exactly once, closing the gap flagged by I-001.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (go test ./internal/controller/ passes in 1.051s)", "checked": true},
+    {"item": "New multi-pass test verifies FinalizingDatabase emitted exactly once across two Reconcile passes (I-001)", "checked": true},
+    {"item": "Existing finalizer tests unchanged and still pass", "checked": true},
+    {"item": "Edge cases (brownfield, idempotency, NotFound tolerance) still covered by prior tests", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Single source of truth for MariaDB CR kinds (mariaDBResourceCtors)", "checked": true},
+    {"item": "Single source of truth for CR naming (mariaDBResourceKey)", "checked": true},
+    {"item": "Helper functions documented with CC-0078 + REQ references", "checked": true},
+    {"item": "No code duplication between cleanup and sentinel paths", "checked": true},
+    {"item": "Follows existing condition-constant / helper-hoisting style in reconcile_database.go", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No new user input surfaces introduced", "checked": true},
+    {"item": "No hardcoded secrets or credentials", "checked": true},
+    {"item": "gosec scan clean on changed files", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Addresses W-001 drift risk with a single package-level var", "checked": true},
+    {"item": "mariaDBResourceKey centralises the naming convention for both create and cleanup paths", "checked": true},
+    {"item": "Solution is as simple as possible — two small helpers, no new abstractions", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated MariaDB CR kind list", "checked": true},
+    {"item": "No duplicated (Name, Namespace) construction for CRs", "checked": true},
+    {"item": "No speculative generality — helpers used by every current call site", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors from Get/Delete wrapped with %T %s context", "checked": true},
+    {"item": "NotFound handled explicitly (skip vs early-return-true in sentinel)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Finalizer removal still only runs after Delete issued on all three kinds", "checked": true},
+    {"item": "Sentinel still gates FinalizingDatabase event on live-CR check", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "TestReconcile_TerminatingCR_EmitsFinalizingDatabaseEventOnlyOnce relies on the first pass removing the Keystone finalizer, so the second pass exits early via the ContainsFinalizer guard rather than actually exercising the hasLiveMariaDBResources sentinel on a retained finalizer. The test still catches the documented regression ('re-emit on every requeue would flood events'), but to also cover the sentinel path specifically — e.g. an Update-conflict retry where the keystoneFinalizer persists — consider a future variant that injects an Update conflict on the first pass and then asserts the second pass observes DeletionTimestamp-set MariaDB CRs and suppresses the event."
+  ],
+  "next_steps": [
+    "Merge this review cycle's changes."
+  ],
+  "detected_patterns": []
+}

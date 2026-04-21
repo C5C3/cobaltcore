@@ -1,7 +1,7 @@
 ---
 title: Keystone Reconciler Architecture
 quadrant: operator
-feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0065, CC-0067, CC-0068, CC-0071, CC-0072, CC-0073, CC-0074, CC-0077
+feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0065, CC-0067, CC-0068, CC-0071, CC-0072, CC-0073, CC-0074, CC-0077, CC-0078
 ---
 
 # Keystone Reconciler Architecture
@@ -438,6 +438,236 @@ func shortestRequeue(results ...ctrl.Result) ctrl.Result
 
 This ensures the reconcile loop runs at the pace of the most urgent sub-reconciler in
 the group.
+
+---
+
+## Finalizer
+
+The KeystoneReconciler installs a finalizer on every Keystone CR so that the
+MariaDB `Database`, `User`, and `Grant` CRs owned by the Keystone are
+deterministically torn down **before** the Keystone CR itself is removed from
+etcd (CC-0078). Without a finalizer, the Keystone CR would be deleted
+immediately on `kubectl delete keystone <name>` and the controller would have
+no opportunity to clean up the MariaDB resources it orchestrated — leaving them
+orphaned when redeploying or tearing down the service.
+
+### Finalizer Constant
+
+The finalizer name is declared once as a package-level constant in
+`operators/keystone/internal/controller/keystone_controller.go`:
+
+```go
+const keystoneFinalizer = "keystone.openstack.c5c3.io/finalizer"
+```
+
+The value uses the canonical CRD group prefix (`keystone.openstack.c5c3.io`) so
+that it is unambiguous under `kubectl get keystone -o yaml` and cannot collide
+with finalizers owned by other controllers. The constant is the single source
+of truth used by `Reconcile`, `reconcileDelete`, `finalizeDatabaseResources`,
+`hasLiveMariaDBResources`, the unit and integration tests, and this
+documentation.
+
+### Resources Cleaned Up
+
+When the Keystone CR is deleted, the finalizer cleanup deletes these MariaDB
+CRs (all matched by the Keystone CR's `metadata.name` in the same
+`metadata.namespace`):
+
+| Resource | API Group | Name | Namespace |
+| --- | --- | --- | --- |
+| `Database` | `k8s.mariadb.com` | `{keystone.Name}` | `{keystone.Namespace}` |
+| `User` | `k8s.mariadb.com` | `{keystone.Name}` | `{keystone.Namespace}` |
+| `Grant` | `k8s.mariadb.com` | `{keystone.Name}` | `{keystone.Namespace}` |
+
+These three CRs are the only resources the finalizer manages. Every other
+resource owned by the Keystone CR (Deployment, Service, ConfigMap, Secret,
+Job, CronJob, PDB, HPA, NetworkPolicy) is reclaimed by the built-in Kubernetes
+garbage collector via owner references — the finalizer does not touch them.
+See [Owned Resources](#owned-resources) for the full owner-reference list.
+
+### Reconcile Branching on DeletionTimestamp
+
+`Reconcile` inspects `metadata.deletionTimestamp` immediately after the CR
+`Get` and before any sub-reconciler executes:
+
+```text
+Fetch Keystone CR
+    │
+    ├─ DeletionTimestamp != zero ──► reconcileDelete ──► (no sub-reconcilers)
+    │
+    └─ DeletionTimestamp == zero ──► AddFinalizer if missing ──► sub-reconcilers
+```
+
+Running sub-reconcilers against a Terminating CR is not safe: sub-reconcilers
+such as `reconcileDatabase` would re-create the very MariaDB CRs the finalizer
+is deleting, producing an infinite reconcile loop. The early branch avoids
+this entirely — Terminating CRs only ever flow through `reconcileDelete`.
+
+On the live-CR path, `controllerutil.AddFinalizer` is called if the finalizer
+is missing and the CR is `Update`d, followed by an early `Requeue: true`
+return. This ensures the next reconcile pass observes the finalizer already
+persisted in etcd rather than a transient in-memory copy, and it makes the
+finalizer installation a single-pass, conflict-safe operation under
+controller-runtime's retry semantics.
+
+### reconcileDelete
+
+```go
+func (r *KeystoneReconciler) reconcileDelete(
+    ctx context.Context,
+    keystone *keystonev1alpha1.Keystone,
+) (ctrl.Result, error)
+```
+
+The deletion handler proceeds in four steps, all within a single reconcile
+pass:
+
+1. **No-op guard.** If the Keystone CR never carried the finalizer (e.g. a CR
+   created by an earlier operator version that did not install finalizers, or
+   one whose finalizer was already released on a prior pass), `reconcileDelete`
+   returns `(ctrl.Result{}, nil)` immediately. No Delete calls are issued, no
+   Events are emitted.
+2. **Cleanup-work announcement.** `hasLiveMariaDBResources` probes whether any
+   of the three MariaDB CRs is still live (i.e. exists *and* has
+   `DeletionTimestamp == 0`). If so, a single Normal Event with reason
+   `FinalizingDatabase` is emitted. Brownfield CRs skip the event because they
+   never created the MariaDB CRs and there is no cleanup work to announce.
+3. **Cleanup.** `finalizeDatabaseResources` issues `Delete` for each of
+   `Database`, `User`, `Grant` and returns as soon as every Delete is accepted
+   (or tolerated as NotFound). It does **not** block on the MariaDB operator
+   completing its own teardown — see
+   [Why the finalizer does not wait](#why-the-finalizer-does-not-wait).
+4. **Finalizer release.** A Normal Event with reason `DatabaseFinalized` is
+   emitted, the finalizer is removed via `controllerutil.RemoveFinalizer`, and
+   the CR is `Update`d. The API server then observes an empty finalizers list
+   and garbage-collects the Keystone CR from etcd.
+
+### Why the finalizer does not wait
+
+An earlier implementation re-`Get`d each MariaDB CR after `Delete` and only
+released the Keystone finalizer when all three were confirmed `NotFound`. Under
+concurrent Keystone deletions (chainsaw `parallel: 4`) this created a deadlock:
+
+1. The Keystone finalizer kept the Keystone CR in etcd.
+2. Kubernetes garbage collection therefore did **not** cascade-delete the owned
+   `Deployment`, so the `keystone-api` Pod kept its MariaDB connections open.
+3. The MariaDB operator could not run `DROP DATABASE` while connections were
+   live, so the `Database` CR stayed in Terminating state.
+4. Goto 1 — the finalizer never released, the 2 min `delete:` timeout in the
+   `deletion-cleanup` chainsaw test expired, and cascading test cleanups
+   stacked up behind the same block.
+
+Releasing the Keystone finalizer as soon as the `Delete` requests are issued
+breaks the cycle. GC cascade-deletes the `Deployment`, Pods terminate,
+connections close, and the MariaDB operator completes the drop asynchronously.
+The owner references set by `reconcileDatabase`
+(`controllerutil.SetControllerReference` in `EnsureDatabase` /
+`EnsureDatabaseUser`) guarantee that even if the explicit Delete is a no-op
+(e.g., the MariaDB operator has already started its own teardown), the CRs are
+still reclaimed.
+
+### NotFound Tolerance and Idempotency
+
+`Delete` on an absent MariaDB CR returns `NotFound`, which
+`finalizeDatabaseResources` logs at `V(1)` and treats as success — the CR was
+already garbage-collected, externally deleted, or never existed.
+
+This tolerance makes `finalizeDatabaseResources` **idempotent**: calling it
+twice in a row with no MariaDB CRs present returns `nil` both times, and no
+additional side effects are produced on the second call. Idempotency is
+essential because:
+
+- Controller-runtime retries `Reconcile` with exponential backoff on transient
+  errors, so any finalizer pass may be replayed.
+- The MariaDB operator may have already collected the CRs via its own
+  owner-reference chain before the finalizer runs.
+- An external actor (SRE, GitOps reconciliation) may have manually deleted the
+  CRs before the Keystone deletion.
+
+In all three cases the finalizer converges in a single reconcile pass without
+surfacing spurious errors or Events.
+
+### Brownfield No-Op Behaviour
+
+Brownfield deployments (`spec.database.host` set, `spec.database.clusterRef`
+nil) never create MariaDB CRs — the operator connects to a pre-existing
+external MariaDB cluster. The finalizer path is intentionally **branch-free**:
+brownfield CRs still receive the finalizer on first reconcile and still flow
+through `reconcileDelete` on deletion, but every `Delete` call is a no-op
+NotFound. Consequences:
+
+- The finalizer is removed in the same reconcile pass that observes deletion —
+  the same pass-count as managed mode after the wait was removed.
+- No `FinalizingDatabase` event is emitted (there is no real cleanup work to
+  announce — `hasLiveMariaDBResources` returns `false` because the probe
+  observes zero live MariaDB CRs).
+- A `DatabaseFinalized` event **is** emitted — it is the common signal that
+  the finalizer has released the CR.
+- No spurious NotFound errors reach the user.
+
+This keeps brownfield and managed-mode deletion paths symmetric in code while
+preserving the correct observable behaviour.
+
+### Upgrade Path
+
+Keystone CRs created by an earlier operator version that did not install
+finalizers gain the finalizer on their next reconcile under the new version:
+
+1. The live-CR branch sees `ContainsFinalizer == false`, calls
+   `AddFinalizer` + `Update`, and requeues.
+2. The next reconcile observes the persisted finalizer and proceeds through
+   the normal sub-reconciler pipeline — `Status` and existing conditions are
+   unchanged by the finalizer addition itself.
+3. On subsequent deletion, the full cleanup flow runs as described above.
+
+No manual migration of existing CRs is required.
+
+### Events
+
+Two Normal Events are emitted on the Keystone CR during finalizer-driven
+cleanup, captured via `record.EventRecorder`:
+
+| Reason | Type | Message | Emitted When |
+| --- | --- | --- | --- |
+| `FinalizingDatabase` | `Normal` | `"Cleaning up MariaDB Database, User, and Grant before removing Keystone"` | First terminating reconcile pass where at least one MariaDB CR is still live (not emitted for brownfield CRs or when all CRs are already gone) |
+| `DatabaseFinalized` | `Normal` | `"MariaDB Database, User, and Grant removed; releasing finalizer"` | Once per termination, immediately before `RemoveFinalizer` + `Update` |
+
+> **Note (CC-0078):** The two Events are intentionally asymmetric. A
+> brownfield-terminating CR (or a managed CR whose MariaDB resources were
+> already removed externally before deletion) emits only `DatabaseFinalized`,
+> **not** `FinalizingDatabase`, because there is no real cleanup work to
+> announce. `DatabaseFinalized` is therefore the common, authoritative signal
+> that the finalizer has released the CR; `FinalizingDatabase` is a
+> supplementary signal that real cleanup was observed at least once. See
+> [Brownfield No-Op Behaviour](#brownfield-no-op-behaviour) for the full
+> state-machine reasoning.
+
+No `Warning` Event is emitted on cleanup errors — controller-runtime retries
+the reconcile with exponential backoff and the underlying API error is logged
+via `log.FromContext(ctx)`. Error-level Events would only add noise to a retry
+loop that already has a structured-logging record.
+
+All finalizer-related log lines include the Keystone `name` and `namespace`
+via `log.FromContext(ctx).WithValues("keystone", ...)`, keeping log correlation
+consistent with the rest of the reconciler.
+
+### Owner References vs Finalizer
+
+Every MariaDB CR created by `reconcileDatabase` already carries an
+`ownerReference` to the Keystone CR (via
+`controllerutil.SetControllerReference` in `internal/common/database/database.go`).
+Kubernetes' built-in garbage collector would normally suffice to cascade the
+deletion. The finalizer is deliberately additive, not a replacement:
+
+| Mechanism | What it guarantees |
+| --- | --- |
+| Owner references | MariaDB CRs are eventually garbage-collected after Keystone CR removal |
+| Finalizer | Keystone CR is removed **only after** all three MariaDB CRs are confirmed NotFound; cleanup is observable via Events and logs |
+
+The two mechanisms do not conflict: `Delete` is idempotent under `NotFound`,
+so if GC removes a CR before the finalizer's `Delete` call, the finalizer
+simply observes `NotFound` and continues. The finalizer adds deterministic
+ordering and observability on top of GC's eventual-consistency guarantee.
 
 ---
 
@@ -1618,9 +1848,9 @@ Keystone CR via `controllerutil.SetControllerReference()`. This enables:
 | CronJob | `{name}-trust-flush` | Keystone CR (only when `spec.trustFlush` is set) |
 | ConfigMap | `{name}-fernet-rotate-script-{hash}` | Keystone CR (CC-0073) |
 | ConfigMap | `{name}-credential-rotate-script-{hash}` | Keystone CR (CC-0073) |
-| Database | `keystone` | Keystone CR (managed mode only) |
-| User | `keystone` | Keystone CR (managed mode only) |
-| Grant | `keystone` | Keystone CR (managed mode only) |
+| Database | `keystone` | Keystone CR (managed mode only; additionally cleaned up by the finalizer — CC-0078) |
+| User | `keystone` | Keystone CR (managed mode only; additionally cleaned up by the finalizer — CC-0078) |
+| Grant | `keystone` | Keystone CR (managed mode only; additionally cleaned up by the finalizer — CC-0078) |
 
 ---
 
@@ -1650,9 +1880,9 @@ existing file (e.g. `reconcile_hpa_test.go`).
 
 | File | Coverage |
 | --- | --- |
-| `keystone_controller_test.go` | Reconcile() orchestration, sequential execution, parallel group (CC-0071), early return, Ready aggregation, idempotency, benchmark |
+| `keystone_controller_test.go` | Reconcile() orchestration, sequential execution, parallel group (CC-0071), early return, Ready aggregation, idempotency, benchmark, finalizer install/remove and termination branching + Events (CC-0078) |
 | `reconcile_secrets_test.go` | DB/admin credential readiness, error propagation, condition messages, ObservedGeneration (CC-0072) |
-| `reconcile_database_test.go` | Managed/brownfield modes, MariaDB CRs, db_sync lifecycle, stale Job detection, ObservedGeneration (CC-0072) |
+| `reconcile_database_test.go` | Managed/brownfield modes, MariaDB CRs, db_sync lifecycle, stale Job detection, ObservedGeneration (CC-0072), finalizeDatabaseResources cleanup + idempotency (CC-0078) |
 | `reconcile_fernet_test.go` | Key generation, Secret idempotency, script ConfigMap creation, CronJob schedule/volumes, PushSecret, key validity (CC-0073), ObservedGeneration (CC-0072) |
 | `reconcile_credential_test.go` | Key generation, Secret idempotency, script ConfigMap creation, CronJob schedule/volumes, PushSecret, RBAC, key validity (CC-0036, CC-0073), ObservedGeneration (CC-0072) |
 | `reconcile_networkpolicy_test.go` | NetworkPolicy creation, update, deletion, ingress rules, condition contract (CC-0039) |

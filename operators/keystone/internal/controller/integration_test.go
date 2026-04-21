@@ -2264,3 +2264,157 @@ func TestIntegration_HTTPRoute_EndpointDerivedFromGateway(t *testing.T) {
 	}, eventuallyTimeout, pollInterval).Should(Equal(expectedEndpoint),
 		"status.endpoint should reflect https://{hostname}/v3 when spec.gateway is set")
 }
+
+// --- Task CC-0078/4.1: Finalizer lifecycle — managed mode (REQ-002, CC-0078) ---
+
+// TestIntegration_FinalizerLifecycle_AddAndRemove verifies that the Keystone
+// reconciler installs the finalizer on first observation of a managed-mode CR,
+// and that deleting the CR drives finalizeDatabaseResources to issue Delete on
+// every MariaDB Database, User, and Grant CR owned by the Keystone, followed
+// by release of the Keystone finalizer so the CR is reclaimed from etcd
+// (CC-0078, REQ-002).
+func TestIntegration_FinalizerLifecycle_AddAndRemove(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-finalizer-managed-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	// Create a ready MariaDB cluster CR so the reconciler's cluster health
+	// check passes (CC-0047).
+	mdbCluster := &mariadbv1alpha1.MariaDB{
+		ObjectMeta: metav1.ObjectMeta{Name: "mariadb", Namespace: ns.Name},
+	}
+	g.Expect(c.Create(ctx, mdbCluster)).To(Succeed(), "create MariaDB cluster CR")
+	g.Expect(simulators.SimulateMariaDBReady(ctx, c, client.ObjectKey{Namespace: ns.Name, Name: "mariadb"}, 1)).
+		To(Succeed(), "simulate MariaDB cluster ready")
+
+	// Create managed-mode Keystone CR.
+	ks := integrationManagedKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+
+	// Finalizer must be installed on first reconcile so a subsequent delete
+	// is trapped and routed through reconcileDelete (CC-0078, REQ-001).
+	g.Eventually(func() []string {
+		ksState := &keystonev1alpha1.Keystone{}
+		if err := c.Get(ctx, key, ksState); err != nil {
+			return nil
+		}
+		return ksState.Finalizers
+	}, eventuallyTimeout, pollInterval).Should(ContainElement(keystoneFinalizer),
+		"Keystone CR should carry the MariaDB finalizer after first reconcile")
+
+	// Drive the reconciler through the managed-mode database phase so that
+	// Database, User, and Grant CRs actually exist when the Keystone CR is
+	// deleted — otherwise finalizeDatabaseResources would have nothing to do.
+	dbKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name}
+	userKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name}
+	grantKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name}
+
+	g.Eventually(func() error {
+		return c.Get(ctx, dbKey, &mariadbv1alpha1.Database{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "MariaDB Database CR should be created")
+	g.Expect(simulators.SimulateDatabaseReady(ctx, c, dbKey)).To(Succeed())
+
+	g.Eventually(func() error {
+		return c.Get(ctx, userKey, &mariadbv1alpha1.User{})
+	}, eventuallyLongTimeout, pollInterval).Should(Succeed(), "MariaDB User CR should be created")
+	g.Expect(simulators.SimulateUserReady(ctx, c, userKey)).To(Succeed())
+
+	g.Eventually(func() error {
+		return c.Get(ctx, grantKey, &mariadbv1alpha1.Grant{})
+	}, eventuallyLongTimeout, pollInterval).Should(Succeed(), "MariaDB Grant CR should be created")
+
+	// Delete the Keystone CR; the API server sets DeletionTimestamp but blocks
+	// removal from etcd while the finalizer is present.
+	g.Expect(c.Delete(ctx, ks)).To(Succeed(), "delete Keystone CR")
+
+	// Every MariaDB CR must be reclaimed. In envtest there is no MariaDB
+	// operator, so Delete resolves synchronously; in production the MariaDB
+	// operator completes the teardown asynchronously after the Keystone CR is
+	// gone — but the finalizer has guaranteed a Delete was issued on each CR.
+	g.Eventually(func(ig Gomega) {
+		ig.Expect(apierrors.IsNotFound(c.Get(ctx, dbKey, &mariadbv1alpha1.Database{}))).
+			To(BeTrue(), "Database CR should be deleted")
+		ig.Expect(apierrors.IsNotFound(c.Get(ctx, userKey, &mariadbv1alpha1.User{}))).
+			To(BeTrue(), "User CR should be deleted")
+		ig.Expect(apierrors.IsNotFound(c.Get(ctx, grantKey, &mariadbv1alpha1.Grant{}))).
+			To(BeTrue(), "Grant CR should be deleted")
+	}, eventuallyLongTimeout, pollInterval).Should(Succeed())
+
+	// The reconciler releases the finalizer in the same pass that issued the
+	// Deletes, so the API server garbage-collects the Keystone CR without
+	// waiting on the MariaDB operator (CC-0078, REQ-002).
+	g.Eventually(func() bool {
+		return apierrors.IsNotFound(c.Get(ctx, key, &keystonev1alpha1.Keystone{}))
+	}, eventuallyLongTimeout, pollInterval).Should(BeTrue(),
+		"Keystone CR should be fully removed from etcd after finalizer release")
+}
+
+// --- Task CC-0078/4.2: Finalizer lifecycle — brownfield mode (REQ-002, CC-0078) ---
+
+// TestIntegration_FinalizerBrownfieldDeletion verifies that a brownfield
+// Keystone CR (Host-only, no ClusterRef) also carries the finalizer and that
+// deletion completes cleanly without any MariaDB CR operations — since none
+// were ever created (CC-0078, REQ-002).
+func TestIntegration_FinalizerBrownfieldDeletion(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-finalizer-brownfield-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+
+	// Finalizer must be installed even in brownfield mode so the Reconcile
+	// path is uniform across both modes (CC-0078, REQ-001).
+	g.Eventually(func() []string {
+		ksState := &keystonev1alpha1.Keystone{}
+		if err := c.Get(ctx, key, ksState); err != nil {
+			return nil
+		}
+		return ksState.Finalizers
+	}, eventuallyTimeout, pollInterval).Should(ContainElement(keystoneFinalizer),
+		"brownfield Keystone CR should carry the MariaDB finalizer")
+
+	// Brownfield mode never creates MariaDB CRs; assert they are absent before
+	// deletion so we can attribute post-deletion NotFound to "never existed"
+	// rather than "deleted by the finalizer."
+	mdbKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name}
+	g.Expect(apierrors.IsNotFound(c.Get(ctx, mdbKey, &mariadbv1alpha1.Database{}))).
+		To(BeTrue(), "brownfield should not create a Database CR")
+	g.Expect(apierrors.IsNotFound(c.Get(ctx, mdbKey, &mariadbv1alpha1.User{}))).
+		To(BeTrue(), "brownfield should not create a User CR")
+	g.Expect(apierrors.IsNotFound(c.Get(ctx, mdbKey, &mariadbv1alpha1.Grant{}))).
+		To(BeTrue(), "brownfield should not create a Grant CR")
+
+	g.Expect(c.Delete(ctx, ks)).To(Succeed(), "delete brownfield Keystone CR")
+
+	// finalizeDatabaseResources treats every NotFound Delete as success, so
+	// the first pass through reconcileDelete releases the finalizer and the
+	// API server removes the CR from etcd (CC-0078, REQ-002).
+	g.Eventually(func() bool {
+		return apierrors.IsNotFound(c.Get(ctx, key, &keystonev1alpha1.Keystone{}))
+	}, eventuallyTimeout, pollInterval).Should(BeTrue(),
+		"brownfield Keystone CR should be removed from etcd without MariaDB operations")
+
+	// Re-check that no MariaDB CRs were created at any point (i.e., the
+	// finalizer did not accidentally reify them).
+	g.Expect(apierrors.IsNotFound(c.Get(ctx, mdbKey, &mariadbv1alpha1.Database{}))).
+		To(BeTrue(), "no Database CR should exist after brownfield deletion")
+	g.Expect(apierrors.IsNotFound(c.Get(ctx, mdbKey, &mariadbv1alpha1.User{}))).
+		To(BeTrue(), "no User CR should exist after brownfield deletion")
+	g.Expect(apierrors.IsNotFound(c.Get(ctx, mdbKey, &mariadbv1alpha1.Grant{}))).
+		To(BeTrue(), "no Grant CR should exist after brownfield deletion")
+}
