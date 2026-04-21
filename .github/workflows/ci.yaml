@@ -431,7 +431,7 @@ jobs:
         run: hack/ci-dump-diagnostics.sh
       - name: Upload JUnit report
         if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-infra-junit-report
           path: _output/reports/
@@ -634,7 +634,7 @@ jobs:
           OPERATOR: ${{ matrix.operator }}
       - name: Upload JUnit report
         if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-${{ matrix.operator }}-junit-report
           path: _output/reports/
@@ -739,7 +739,7 @@ jobs:
           OPERATOR: keystone
       - name: Upload JUnit report
         if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-chaos-junit-report-${{ matrix.suite }}
           path: _output/reports/
@@ -804,7 +804,7 @@ jobs:
           SERVICE_K8S_NAME: ${{ matrix.service-k8s-name }}
       - name: Upload Tempest results
         if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tempest-${{ matrix.release }}-results
           path: _output/tempest/
@@ -883,7 +883,7 @@ jobs:
           digest="${{ steps.build.outputs.digest }}"
           touch "/tmp/digests/${digest#sha256:}"
 
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: digests-operator-${{ matrix.operator }}-${{ steps.platform-pair.outputs.value }}
           path: /tmp/digests/*
