@@ -1,0 +1,134 @@
+{
+  "feature_id": "CC-0084",
+  "review_number": 1,
+  "verdict": "APPROVED",
+  "summary": "Implementation cleanly exposes five new CRD fields (spec.terminationGracePeriodSeconds, spec.preStopSleepSeconds, spec.strategy, spec.uwsgi.harakiri, spec.uwsgi.httpKeepAliveTimeout), wires them through the reconciler with pure nil-safe helpers (terminationGracePeriodSeconds, preStopSleepSeconds, deploymentStrategy), and enforces all cross-field invariants (preStop<grace, harakiri<grace-preStop, keepAliveTimeout requires httpKeepAlive, Recreate excludes rollingUpdate block) in the validating webhook with defense-in-depth alongside kubebuilder markers. Nil pointers resolve to defaults (30/5) before the drain-window arithmetic — verified by TestValidate_PreStopEqualsDefaultGraceRejected and TestValidate_HarakiriAtDrainBoundaryRejected. uwsgiCommand strictly gates both new optional flags on non-nil pointers so no empty --flag '' is ever emitted; --http-keepalive-timeout is additionally gated on httpKeepAlive=true. buildKeystoneDeployment always writes Spec.Strategy via a value-returning helper (no zero-value code path). The helm/ and config/crd/bases/ CRD bodies are byte-identical (modulo the three-line CC-0017 header). Unit, envtest, and chainsaw E2E coverage is comprehensive and test naming exactly matches the REQ scenarios. Documentation (architecture HA doc + keystone-crd reference) is thorough and consistently carries CC-0084 identifiers. No blocking issues found; a handful of small tightening opportunities are offered as suggestions.",
+  "tests_checklist": {
+    "unit_tests_present": true,
+    "unit_tests_meaningful": true,
+    "integration_tests_present": true,
+    "integration_tests_meaningful": true,
+    "e2e_tests_present": true,
+    "e2e_tests_meaningful": true,
+    "edge_cases_covered": true,
+    "tests_follow_existing_patterns": true,
+    "tests_actually_fail_without_impl": true,
+    "notes": "keystone_types_test.go adds TestKeystoneSpecTerminationGracePeriodSecondsField, TestKeystoneSpecStrategyField, extended TestUWSGISpecFields for Harakiri/HTTPKeepAliveTimeout. keystone_webhook_test.go covers all CC-0084 webhook rules including the critical nil-resolves-to-default case (TestValidate_PreStopEqualsDefaultGraceRejected) and the drain-window boundary (TestValidate_HarakiriAtDrainBoundaryRejected, TestValidate_HarakiriAboveDrainRejected, TestValidate_HarakiriWithinDrainAccepted). reconcile_deployment_test.go exercises flag emission with indexOf helpers (not brittle full-array equality), FlagOrderDeterministic, StrategyDefaultedAndStable, TerminationGracePeriodDefault/Custom, PreStopSleepDefault/Custom/Zero, StrategyOverrideRollingCustomPercents, StrategyOverrideRecreate. integration_test.go adds three envtest cases that apply a real CR and assert the pod template. Chainsaw e2e test tests/e2e/keystone/rolling-update-zero-downtime/ asserts zero 5xx AND availableReplicas>=3 with >=200 requests and >=30 samples, with rich catch/diagnostic scripts."
+  },
+  "code_quality_checklist": {
+    "follows_existing_patterns": true,
+    "naming_conventions_consistent": true,
+    "comments_explain_why_not_what": true,
+    "no_dead_code": true,
+    "no_duplicate_code": true,
+    "appropriately_abstracted": true,
+    "feature_id_cited": true,
+    "go_vet_passes": true,
+    "notes": "Helper functions terminationGracePeriodSeconds(), preStopSleepSeconds(), deploymentStrategy() mirror the existing priorityClassName()/containerResources() pattern in reconcile_deployment.go. Comments on new helpers correctly document the CC-0084 rationale (why 30s default, why always emit the hook block, why a fresh value per call). uwsgiCommand has a comment block explaining append order and why --harakiri precedes --http-keepalive-timeout. go vet ./operators/keystone/... passes cleanly in the worktree. All new code and tests reference CC-0084 per the Feature-ID rule."
+  },
+  "security_checklist": {
+    "input_validation_present": true,
+    "authentication_authorization_correct": true,
+    "secrets_not_leaked": true,
+    "sql_injection_safe": true,
+    "xss_safe": true,
+    "no_unsafe_deserialization": true,
+    "dependencies_secure": true,
+    "notes": "Defense-in-depth bounds validation on all four new Minimum-marked fields in the webhook (terminationGracePeriodSeconds>=10, preStopSleepSeconds>=0, harakiri>=1, httpKeepAliveTimeout>=1) plus cross-field rules protects the operator from CRs submitted via reduced-schema paths. Load generator Job runs non-root uid 100, allowPrivilegeEscalation:false, seccompProfile:RuntimeDefault, drops ALL capabilities, automountServiceAccountToken:false. Load-gen stays inside the cluster via keystone-rolling-update-api.openstack.svc and hits the Keystone service only. No secret material is introduced. strconv.Itoa(int(*pointer)) is used to stringify CRD-validated integers — no injection vector."
+  },
+  "architecture_checklist": {
+    "single_responsibility": true,
+    "proper_layering": true,
+    "no_improper_coupling": true,
+    "interfaces_appropriate": true,
+    "follows_existing_patterns": true,
+    "notes": "New KeystoneSpec fields live alongside the existing PriorityClassName/TopologySpreadConstraints pattern. Strategy uses *appsv1.DeploymentStrategy so the upstream type is the source of truth — no leaky wrapper. Graceful-termination logic is concentrated in three pure helpers in reconcile_deployment.go; validation is concentrated in the existing validate() method; webhook does not grow new branches in Default(). Layering (types -> webhook -> reconciler) is respected; webhook never depends on reconciler code."
+  },
+  "dry_yagni_checklist": {
+    "no_premature_abstraction": true,
+    "no_unnecessary_generalization": true,
+    "minimal_changes_to_achieve_goal": true,
+    "notes": "Helpers are flat one-purpose functions; no interface/strategy pattern introduced for what is essentially value lookup with a default. deploymentStrategy constructs the default inline rather than via a global var, so operator intent is clear at the call site. No speculative flags beyond the four documented in the acceptance criteria."
+  },
+  "fail_fast_checklist": {
+    "errors_not_swallowed": true,
+    "validation_at_boundaries": true,
+    "fails_loudly_on_unexpected_state": true,
+    "notes": "Webhook rejects every invalid combination at admission time (the loudest possible boundary): below-min values, preStop>=grace, harakiri>=drain-window, keepAliveTimeout without keepAlive, Recreate+rollingUpdate-block. Reconciler uses defense-in-depth defaults rather than panicking on nil, consistent with the operator-upgrade compatibility requirement (REQ-015/REQ-016). Chainsaw E2E catch: blocks dump rich diagnostics (pod logs, events, rollout history) on failure so regressions surface with enough context to triage."
+  },
+  "defensive_checklist": {
+    "nil_pointer_safe": true,
+    "concurrent_access_safe": true,
+    "resource_leak_safe": true,
+    "context_cancellation_honored": true,
+    "notes": "uwsgiCommand strictly gates both new optional flags with `uwsgi != nil && uwsgi.Harakiri != nil` and `uwsgi != nil && uwsgi.HTTPKeepAliveTimeout != nil && httpKeepAlive`, eliminating the empty-flag risk. terminationGracePeriodSeconds / preStopSleepSeconds / deploymentStrategy all check the relevant pointer before dereferencing and otherwise return the documented default. Load-gen Job uses ttlSecondsAfterFinished:300 + backoffLimit:0 + activeDeadlineSeconds:180 to guarantee it is reaped; monitor subshell is killed and waited on explicitly in step 3g."
+  },
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    {
+      "category": "webhook",
+      "severity": "low",
+      "file": "operators/keystone/api/v1alpha1/keystone_webhook.go",
+      "lines": "279-309",
+      "suggestion": "When terminationGracePeriodSeconds is user-supplied and fails the min>=10 check, the cross-field `preStopSleep >= terminationGracePeriod` branch can also fire against the same user value, yielding two errors for what is logically one configuration mistake. Not incorrect (both messages are accurate) but a future micro-tightening could skip the cross-field check when the range check already rejected the input. Keep as-is unless user feedback complains about duplicated errors."
+    },
+    {
+      "category": "e2e",
+      "severity": "low",
+      "file": "tests/e2e/keystone/rolling-update-zero-downtime/chainsaw-test.yaml",
+      "lines": "107-195",
+      "suggestion": "The test reviewer-comment in 01-patch-image.yaml and chainsaw-test.yaml already flags the curlimages/curl:8.10.1 preload dependency. Worth capturing in the kind provisioning workflow (e.g. a short PR follow-up that adds the image to the preload list). Not a blocker — the test will surface the missing image with ImagePullBackOff + diagnostic dump if it is ever not preloaded."
+    },
+    {
+      "category": "docs",
+      "severity": "low",
+      "file": "docs/reference/keystone-crd.md",
+      "lines": "571",
+      "suggestion": "The `httpKeepAliveTimeout <= preStopSleepSeconds` row is documented as 'Operator policy (not enforced)'. Consider adding a webhook warning (not error) in a follow-up so operators get a soft nudge without breaking existing configurations. Not required for CC-0084 since the current design intentionally keeps this as a recommendation."
+    }
+  ],
+  "next_steps": [
+    "Merge CC-0084 to main once CI (including the chainsaw e2e lane) is green.",
+    "Schedule a follow-up micro-ticket to preload curlimages/curl:8.10.1 in the kind provisioning workflow so the new rolling-update-zero-downtime lane never hits ImagePullBackOff on fresh runners.",
+    "Optionally open a follow-up to deduplicate webhook errors when the min-check already rejected a field (see suggestion #1)."
+  ],
+  "detected_patterns": [
+    {
+      "pattern": "Defense-in-depth webhook validation alongside +kubebuilder:validation:Minimum markers",
+      "location": "operators/keystone/api/v1alpha1/keystone_webhook.go validate()",
+      "note": "Explicitly called out as REQ-007/REQ-003 (CC-0084) in the code. All four new Minimum-marked fields are re-validated in Go in addition to the CRD schema, matching the CC-0011/CC-0040 precedent in the same method."
+    },
+    {
+      "pattern": "Nil-safe defaulting helpers mirroring CC-0075 priorityClassName pattern",
+      "location": "operators/keystone/internal/controller/reconcile_deployment.go terminationGracePeriodSeconds(), preStopSleepSeconds(), deploymentStrategy()",
+      "note": "Each helper dereferences the *T spec field if non-nil, otherwise returns the documented default. Fresh value constructed per call (including intstr pointers inside DeploymentStrategy) so results are safe to reuse across reconciles without aliasing."
+    },
+    {
+      "pattern": "Strict nil-pointer gating for optional flag emission",
+      "location": "operators/keystone/internal/controller/reconcile_deployment.go uwsgiCommand()",
+      "note": "`if uwsgi != nil && uwsgi.Harakiri != nil` and `if uwsgi != nil && uwsgi.HTTPKeepAliveTimeout != nil && httpKeepAlive` prevents emitting --harakiri or --http-keepalive-timeout with an empty argument. The httpKeepAlive gate in the reconciler matches the webhook rejection rule so the two layers are consistent."
+    },
+    {
+      "pattern": "Unconditional Spec.Strategy assignment via value-returning helper",
+      "location": "operators/keystone/internal/controller/reconcile_deployment.go buildKeystoneDeployment() line 133",
+      "note": "`Strategy: deploymentStrategy(keystone)` always writes a concrete DeploymentStrategy — there is no zero-value / missing-field code path. Verified by TestBuildKeystoneDeployment_DefaultRollingUpdateStrategy and TestBuildKeystoneDeployment_StrategyStableAcrossReconciles."
+    },
+    {
+      "pattern": "CRD manifest sync between helm/ and config/crd/bases/",
+      "location": "operators/keystone/helm/keystone-operator/crds/keystone.openstack.c5c3.io_keystones.yaml vs operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml",
+      "note": "Bodies are byte-identical; the helm copy carries only the three-line CC-0017 SOURCE/sync-instructions header. `diff <(tail -n +4 helm-crd.yaml) config-crd.yaml` is empty."
+    },
+    {
+      "pattern": "Chainsaw E2E orchestration with in-cluster load generator + background monitor",
+      "location": "tests/e2e/keystone/rolling-update-zero-downtime/chainsaw-test.yaml step run-rolling-update-under-load",
+      "note": "Single orchestration script applies a Job, waits for it to start, launches a 1s-cadence availableReplicas poller, triggers the image-tag patch mid-load, waits for Job completion, then persists summaries to /tmp for downstream assertion steps. This isolates orchestration (needs background tasks) from assertion (chainsaw `assert:` friendly)."
+    },
+    {
+      "pattern": "Feature-ID citations in code, tests, CRDs, manifests, and docs",
+      "location": "package-wide",
+      "note": "Every new block of logic, test, YAML fixture, and doc section names CC-0084 (often alongside the specific REQ id). Matches repository convention."
+    }
+  ]
+}
