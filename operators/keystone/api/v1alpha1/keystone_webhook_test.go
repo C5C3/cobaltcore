@@ -9,11 +9,13 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -1656,6 +1658,292 @@ func TestValidate_TopologySpreadConstraintMatchExpressionsRejected(t *testing.T)
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("matchExpressions"))
+}
+
+// --- Graceful termination validation tests (CC-0084) ---
+
+// ptrInt64 returns a pointer to v for webhook termination-field tests (CC-0084).
+func ptrInt64(v int64) *int64 { return &v }
+
+// ptrInt32 returns a pointer to v for webhook uWSGI-field tests (CC-0084).
+func ptrInt32(v int32) *int32 { return &v }
+
+// REQ-001 (CC-0084): reject terminationGracePeriodSeconds below the 10-second floor.
+func TestValidate_TerminationGracePeriodBelowMinRejected(t *testing.T) {
+	w := &KeystoneWebhook{}
+	cases := []struct {
+		name string
+		val  int64
+	}{
+		{"zero", 0},
+		{"negative", -1},
+		{"below_floor", 9},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			k := validKeystone()
+			k.Spec.TerminationGracePeriodSeconds = ptrInt64(tc.val)
+			_, err := w.ValidateCreate(context.Background(), k)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("terminationGracePeriodSeconds"))
+			g.Expect(err.Error()).To(ContainSubstring("at least 10"))
+		})
+	}
+}
+
+// REQ-001 (CC-0084): boundary value 10 and higher values are accepted.
+func TestValidate_TerminationGracePeriodAtMinAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.TerminationGracePeriodSeconds = ptrInt64(10)
+	// Drop preStop below grace to satisfy the cross-field constraint.
+	k.Spec.PreStopSleepSeconds = ptrInt64(1)
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// REQ-002 (CC-0084): preStopSleepSeconds must not be negative.
+func TestValidate_PreStopSleepSecondsBelowMinRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.PreStopSleepSeconds = ptrInt64(-1)
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("preStopSleepSeconds"))
+	g.Expect(err.Error()).To(ContainSubstring("at least 0"))
+}
+
+// REQ-002 (CC-0084): preStopSleepSeconds=0 is explicitly allowed.
+func TestValidate_PreStopSleepSecondsZeroAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.PreStopSleepSeconds = ptrInt64(0)
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// REQ-007 (CC-0084): preStop equal to grace leaves no drain window.
+func TestValidate_PreStopEqualsGracePeriodRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.TerminationGracePeriodSeconds = ptrInt64(30)
+	k.Spec.PreStopSleepSeconds = ptrInt64(30)
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("preStopSleepSeconds"))
+	g.Expect(err.Error()).To(ContainSubstring("strictly less than"))
+}
+
+// REQ-007 (CC-0084): preStop greater than grace is rejected.
+func TestValidate_PreStopExceedsGracePeriodRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.TerminationGracePeriodSeconds = ptrInt64(30)
+	k.Spec.PreStopSleepSeconds = ptrInt64(45)
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("preStopSleepSeconds"))
+	g.Expect(err.Error()).To(ContainSubstring("strictly less than"))
+}
+
+// REQ-007 (CC-0084): preStop strictly less than grace is accepted.
+func TestValidate_PreStopStrictlyLessThanGracePeriodAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.TerminationGracePeriodSeconds = ptrInt64(60)
+	k.Spec.PreStopSleepSeconds = ptrInt64(10)
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// REQ-007 (CC-0084): resolved-default interaction — explicit preStop=30 with
+// default terminationGracePeriodSeconds=30 still fails because defaults apply.
+func TestValidate_PreStopEqualsDefaultGraceRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	// TerminationGracePeriodSeconds left nil — resolves to 30.
+	k.Spec.PreStopSleepSeconds = ptrInt64(30)
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("preStopSleepSeconds"))
+	g.Expect(err.Error()).To(ContainSubstring("strictly less than"))
+}
+
+// REQ-003 (CC-0084): harakiri=0 (below minimum) is rejected.
+func TestValidate_UWSGIHarakiriBelowMinRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes:     2,
+		Threads:       1,
+		HTTPKeepAlive: true,
+		Harakiri:      ptrInt32(0),
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("harakiri"))
+	g.Expect(err.Error()).To(ContainSubstring("at least 1"))
+}
+
+// REQ-004 (CC-0084): httpKeepAliveTimeout=0 (below minimum) is rejected.
+func TestValidate_UWSGIKeepAliveTimeoutBelowMinRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes:            2,
+		Threads:              1,
+		HTTPKeepAlive:        true,
+		HTTPKeepAliveTimeout: ptrInt32(0),
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("httpKeepAliveTimeout"))
+	g.Expect(err.Error()).To(ContainSubstring("at least 1"))
+}
+
+// REQ-008 (CC-0084): harakiri equal to the drain window is rejected.
+// With defaults (grace=30, preStop=5) the drain window is 25s.
+func TestValidate_HarakiriAtDrainBoundaryRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes:     2,
+		Threads:       1,
+		HTTPKeepAlive: true,
+		Harakiri:      ptrInt32(25),
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("harakiri"))
+	g.Expect(err.Error()).To(ContainSubstring("strictly less than"))
+}
+
+// REQ-008 (CC-0084): harakiri above the drain window is rejected.
+func TestValidate_HarakiriAboveDrainRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.TerminationGracePeriodSeconds = ptrInt64(60)
+	k.Spec.PreStopSleepSeconds = ptrInt64(10)
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes:     2,
+		Threads:       1,
+		HTTPKeepAlive: true,
+		Harakiri:      ptrInt32(60), // exceeds drain window of 50s
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("harakiri"))
+	g.Expect(err.Error()).To(ContainSubstring("strictly less than"))
+}
+
+// REQ-008 (CC-0084): harakiri within the drain window is accepted.
+func TestValidate_HarakiriWithinDrainAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.TerminationGracePeriodSeconds = ptrInt64(60)
+	k.Spec.PreStopSleepSeconds = ptrInt64(10)
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes:     2,
+		Threads:       1,
+		HTTPKeepAlive: true,
+		Harakiri:      ptrInt32(30), // well within drain window of 50s
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// REQ-012 (CC-0084): httpKeepAliveTimeout set while httpKeepAlive=false is rejected.
+func TestValidate_KeepAliveTimeoutWithoutKeepAliveRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes:            2,
+		Threads:              1,
+		HTTPKeepAlive:        false,
+		HTTPKeepAliveTimeout: ptrInt32(5),
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("httpKeepAliveTimeout"))
+	g.Expect(err.Error()).To(ContainSubstring("httpKeepAlive"))
+}
+
+// REQ-012 (CC-0084): httpKeepAliveTimeout set while httpKeepAlive=true is accepted.
+func TestValidate_KeepAliveTimeoutWithKeepAliveAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes:            2,
+		Threads:              1,
+		HTTPKeepAlive:        true,
+		HTTPKeepAliveTimeout: ptrInt32(5),
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// REQ-006 (CC-0084): Recreate strategy with a non-nil rollingUpdate block is rejected.
+func TestValidate_StrategyRecreateWithRollingUpdateBlockRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	maxUnavailable := intstr.FromInt32(0)
+	maxSurge := intstr.FromInt32(1)
+	k.Spec.Strategy = &appsv1.DeploymentStrategy{
+		Type: appsv1.RecreateDeploymentStrategyType,
+		RollingUpdate: &appsv1.RollingUpdateDeployment{
+			MaxUnavailable: &maxUnavailable,
+			MaxSurge:       &maxSurge,
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("strategy"))
+	g.Expect(err.Error()).To(ContainSubstring("rollingUpdate"))
+	g.Expect(err.Error()).To(ContainSubstring("Recreate"))
+}
+
+// REQ-006 (CC-0084): Recreate without a rollingUpdate block is accepted.
+func TestValidate_StrategyRecreateWithoutRollingUpdateAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Strategy = &appsv1.DeploymentStrategy{
+		Type: appsv1.RecreateDeploymentStrategyType,
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
 }
 
 // --- Interface compliance (CC-0011) ---

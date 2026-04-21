@@ -10,6 +10,7 @@ import (
 	"maps"
 
 	"github.com/robfig/cron/v3"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -271,6 +272,42 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		}
 	}
 
+	// REQ-001/REQ-002/REQ-007 (CC-0084): Defense-in-depth range and cross-field
+	// checks for graceful pod termination tunables. Nil pointers resolve to the
+	// documented defaults (30s grace / 5s preStop) so the drain-window arithmetic
+	// below behaves the same whether the fields are explicit or defaulted.
+	terminationGracePeriod := int64(30)
+	if k.Spec.TerminationGracePeriodSeconds != nil {
+		terminationGracePeriod = *k.Spec.TerminationGracePeriodSeconds
+		if terminationGracePeriod < 10 {
+			allErrs = append(allErrs, field.Invalid(
+				specPath.Child("terminationGracePeriodSeconds"),
+				terminationGracePeriod,
+				"terminationGracePeriodSeconds must be at least 10",
+			))
+		}
+	}
+	preStopSleep := int64(5)
+	if k.Spec.PreStopSleepSeconds != nil {
+		preStopSleep = *k.Spec.PreStopSleepSeconds
+		if preStopSleep < 0 {
+			allErrs = append(allErrs, field.Invalid(
+				specPath.Child("preStopSleepSeconds"),
+				preStopSleep,
+				"preStopSleepSeconds must be at least 0",
+			))
+		}
+	}
+	// REQ-007 (CC-0084): the preStop sleep must leave time for uWSGI to drain
+	// before SIGKILL; equality would produce a zero-length drain window.
+	if preStopSleep >= terminationGracePeriod {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("preStopSleepSeconds"),
+			preStopSleep,
+			fmt.Sprintf("preStopSleepSeconds (%d) must be strictly less than terminationGracePeriodSeconds (%d)", preStopSleep, terminationGracePeriod),
+		))
+	}
+
 	// REQ-003 (CC-0040): Defense-in-depth uWSGI validation alongside
 	// +kubebuilder:validation:Minimum=1 markers on UWSGISpec fields.
 	if k.Spec.UWSGI != nil {
@@ -289,6 +326,56 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 				"threads must be at least 1",
 			))
 		}
+		// REQ-003 (CC-0084): harakiri must be a positive timeout.
+		if k.Spec.UWSGI.Harakiri != nil && *k.Spec.UWSGI.Harakiri < 1 {
+			allErrs = append(allErrs, field.Invalid(
+				uwsgiPath.Child("harakiri"),
+				*k.Spec.UWSGI.Harakiri,
+				"harakiri must be at least 1",
+			))
+		}
+		// REQ-004 (CC-0084): HTTP keep-alive timeout must be a positive duration.
+		if k.Spec.UWSGI.HTTPKeepAliveTimeout != nil && *k.Spec.UWSGI.HTTPKeepAliveTimeout < 1 {
+			allErrs = append(allErrs, field.Invalid(
+				uwsgiPath.Child("httpKeepAliveTimeout"),
+				*k.Spec.UWSGI.HTTPKeepAliveTimeout,
+				"httpKeepAliveTimeout must be at least 1",
+			))
+		}
+		// REQ-008 (CC-0084): harakiri must fit within the drain window
+		// (terminationGracePeriodSeconds - preStopSleepSeconds); otherwise a
+		// hung request can outlive the grace period and be SIGKILLed.
+		if k.Spec.UWSGI.Harakiri != nil && *k.Spec.UWSGI.Harakiri >= 1 {
+			drainWindow := terminationGracePeriod - preStopSleep
+			if int64(*k.Spec.UWSGI.Harakiri) >= drainWindow {
+				allErrs = append(allErrs, field.Invalid(
+					uwsgiPath.Child("harakiri"),
+					*k.Spec.UWSGI.Harakiri,
+					fmt.Sprintf("harakiri (%d) must be strictly less than terminationGracePeriodSeconds - preStopSleepSeconds (%d)", *k.Spec.UWSGI.Harakiri, drainWindow),
+				))
+			}
+		}
+		// REQ-012 (CC-0084): httpKeepAliveTimeout only meaningful when
+		// httpKeepAlive is enabled — reject stale configuration.
+		if k.Spec.UWSGI.HTTPKeepAliveTimeout != nil && !k.Spec.UWSGI.HTTPKeepAlive {
+			allErrs = append(allErrs, field.Invalid(
+				uwsgiPath.Child("httpKeepAliveTimeout"),
+				*k.Spec.UWSGI.HTTPKeepAliveTimeout,
+				"httpKeepAliveTimeout must not be set when httpKeepAlive is false",
+			))
+		}
+	}
+
+	// REQ-006 (CC-0084): Deployment strategy Recreate is incompatible with a
+	// non-nil rollingUpdate block — the API server would reject the Deployment.
+	if k.Spec.Strategy != nil &&
+		k.Spec.Strategy.Type == appsv1.RecreateDeploymentStrategyType &&
+		k.Spec.Strategy.RollingUpdate != nil {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("strategy", "rollingUpdate"),
+			k.Spec.Strategy.RollingUpdate,
+			"rollingUpdate must be nil when strategy.type is Recreate",
+		))
 	}
 
 	// REQ-001 (CC-0038): Defense-in-depth autoscaling validation alongside
