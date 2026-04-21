@@ -729,6 +729,7 @@
       "title": "Create tests/e2e/keystone/rolling-update-zero-downtime/ with 00-keystone-cr.yaml (replicas=3, spec.strategy defaults), 01-patch-image.yaml, and chainsaw-test.yaml. The test: (a) waits for Ready, (b) runs a load-generator Job (curl in a shell loop or vegeta sidecar) at steady rate for 60 s while kubectl patch bumps image tag, (c) asserts zero 5xx/connection-reset from the load generator logs, (d) asserts Deployment.status.availableReplicas stays >= spec.replicas. Keep the test under the chainsaw e2e lane (REQ-014). Feature: CC-0084.",
       "level": 5,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-014"
       ]

@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR fixture for the rolling-update-zero-downtime E2E test (CC-0084).
+#
+# replicas: 3 — required so the reconciler provisions enough capacity for the
+# default RollingUpdate strategy (maxUnavailable=0, maxSurge=1) to roll pods
+# one at a time without dropping availability below the replica count.
+#
+# spec.strategy is intentionally omitted — the reconciler injects the default
+# RollingUpdate strategy with maxUnavailable=0 and maxSurge=1 (REQ-005).
+# spec.terminationGracePeriodSeconds and spec.preStopSleepSeconds are omitted
+# — the reconciler injects defaults (30s grace, 5s preStop sleep) sufficient
+# for EndpointSlice propagation plus uWSGI graceful shutdown (REQ-001, REQ-002).
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-rolling-update
+  namespace: openstack
+spec:
+  replicas: 3
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_rolling_update
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne

@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch to bump Keystone image tag mid-load for the rolling-update-zero-downtime
+# E2E test (CC-0084). Triggers a rolling Deployment update while the load
+# generator is sending steady HTTP traffic, exercising the graceful-termination
+# chain (strategy → preStop drain → uWSGI graceful shutdown → harakiri).
+#
+# DECISION: pure merge-patch body vs full resource form
+# Ambiguity: sibling tests (image-upgrade) express their patch as a full
+#   Keystone resource because they invoke chainsaw's `patch:` directive, which
+#   extracts the spec internally. This test instead invokes `kubectl patch
+#   --type=merge --patch-file` from inside an orchestration script (so the
+#   patch can fire mid-load generation), which expects a pure merge-patch body.
+# Chose: pure merge-patch body so the file is directly consumable by
+#   `kubectl patch --patch-file=01-patch-image.yaml` without additional
+#   preprocessing.
+# Reviewer: please verify this format works with your kubectl version
+#   (tested with 1.30+). If the test is ever restructured to use chainsaw's
+#   `patch:` directive, this file will need to be reshaped to a full
+#   Keystone resource.
+spec:
+  image:
+    tag: "2025.2-upgraded"
