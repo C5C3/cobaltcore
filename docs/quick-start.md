@@ -144,6 +144,7 @@ flux-system           source-controller-*            Ready
 flux-system           kustomize-controller-*         Ready
 flux-system           helm-controller-*              Ready
 flux-system           notification-controller-*      Ready
+flux-system           flux-web-*                     Ready (kind-only; see Step 4a)
 cert-manager          cert-manager-*         Ready
 mariadb-system        mariadb-operator-*     Ready
 memcached-system      memcached-operator-*   Ready
@@ -194,10 +195,10 @@ bound to a read-only ClusterRole covering Flux toolkit API groups and forge-stac
 
 ### Accessing the Flux UI
 
-The Headlamp Flux plugin is the Flux UI used by this project. The `flux-operator`
-itself also ships an embedded Flux Web UI ([fluxoperator.dev/web-ui](https://fluxoperator.dev/web-ui/));
-the Quick Start does not enable it — the `FluxInstance` in `deploy/flux-system/fluxinstance.yaml`
-has no web-UI configuration — so all Flux state is viewed through Headlamp here.
+The Headlamp Flux plugin is the primary Flux UI used by this project. The `flux-operator`
+also ships an embedded Flux Web UI ([fluxoperator.dev/web-ui](https://fluxoperator.dev/web-ui/))
+that the kind overlay turns on as a demo addon — see
+[Step 4a — Open the Flux Web UI](#step-4a-flux-web-ui) for how to reach it (CC-0086, REQ-006).
 Once Headlamp is open and you are authenticated, click **Flux** in the left sidebar
 to switch into the Flux views:
 
@@ -211,6 +212,29 @@ to switch into the Flux views:
 Use this instead of the legacy `flux get` / `flux logs` CLI — all state the CLI would
 print is rendered live here, and every resource row links to the controller logs and
 Kubernetes events that produced it.
+
+---
+
+## Step 4a — Open the Flux Web UI {#step-4a-flux-web-ui}
+
+The kind overlay also ships the flux-operator's own
+[Flux Web UI](https://fluxoperator.dev/web-ui/) as a demo surface (CC-0086, REQ-005).
+This is a kind-only convenience — the production `deploy/flux-system/` overlay keeps the
+Web UI disabled (no token, no TLS, no Ingress) until the upstream project ships token
+auth, TLS termination, and an Ingress story suitable for a shared cluster. Forward the
+service port and browse directly:
+
+```bash
+kubectl port-forward svc/flux-web -n flux-system 9080:9080
+```
+
+Then open <http://localhost:9080> — no login is required.
+
+The Web UI complements Headlamp (Step 4) by rendering the three flux-operator-specific
+Custom Resources that the generic Headlamp Flux plugin does not know about: `ResourceSet`
+and `ResourceSetInputProvider` (the operator's templating primitives) and `FluxReport`
+(the rolled-up installation status of every Flux controller). Standard `HelmRelease`,
+`Kustomization`, and `Source` views are still easier to read in Headlamp.
 
 ---
 

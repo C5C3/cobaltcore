@@ -98,9 +98,18 @@ spec:
           kubectl wait --for=condition=complete \
             job/keystone-credential-manual-rotate -n openstack --timeout=120s
 
-          # Verify Secret data changed (rotation actually occurred).
-          AFTER_HASH=$(kubectl get secret keystone-credential-credential-keys -n openstack \
-            -o jsonpath='{.data}' | sha256sum | cut -d' ' -f1)
+          # The CronJob writes new keys to the staging Secret only; the
+          # operator promotes them to the production Secret on the next
+          # reconcile triggered by the staging Secret watch (CC-0081). Poll
+          # for the production Secret hash to change rather than asserting
+          # immediately after Job completion.
+          AFTER_HASH="$BEFORE_HASH"
+          for _ in $(seq 1 60); do
+            AFTER_HASH=$(kubectl get secret keystone-credential-credential-keys -n openstack \
+              -o jsonpath='{.data}' | sha256sum | cut -d' ' -f1)
+            [ "$BEFORE_HASH" != "$AFTER_HASH" ] && break
+            sleep 1
+          done
           if [ "$BEFORE_HASH" = "$AFTER_HASH" ]; then
             echo "ERROR: Credential Secret data did not change after rotation"
             exit 1

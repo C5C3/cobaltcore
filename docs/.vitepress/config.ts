@@ -7,6 +7,9 @@ export default defineConfig({
   title: 'CobaltCore Forge',
   description: 'A Kubernetes-native OpenStack distribution — forge repository reference documentation',
   base: '/forge/',
+  // Port-forward URLs (e.g. http://localhost:9080 for Flux Web UI) are
+  // documented for reader use and never resolve during the build.
+  ignoreDeadLinks: [/^https?:\/\/localhost(:\d+)?/],
   themeConfig: {
     nav: [
       { text: 'Home', link: '/' },

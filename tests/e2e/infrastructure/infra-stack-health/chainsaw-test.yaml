@@ -16,6 +16,12 @@
 #   - flux-operator: FluxInstance Ready, FluxReport entitled, five flux-system
 #     controller Deployments available (CC-0085)
 #
+# The kind-only Flux Web UI demo addon (CC-0086) lives in a sibling test —
+# tests/e2e/infrastructure/flux-web-health/chainsaw-test.yaml — labelled
+# `overlay: kind` so non-kind runs can exclude it via
+# `chainsaw test --selector 'overlay!=kind'`. Splitting it out keeps this
+# overlay-agnostic test unconditional.
+#
 # REQ-008 (CC-0010, CC-0085)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -267,3 +273,6 @@ spec:
             namespace: flux-system
           status:
             (availableReplicas > `0`): true
+  # Flux Web UI health checks live in the sibling flux-web-health test
+  # (labelled `overlay: kind`) — see the header of this file for the
+  # rationale behind the split.

@@ -2,8 +2,8 @@
   "feature_id": "CC-0086",
   "title": "Enable flux-operator Web UI in kind overlay",
   "slug": "enable-flux-operator-web-ui-in-kind-overlay",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #257: Enable the flux-operator Web UI in the kind overlay and document access in the Quick Start\n\n**Category**: enhancement | **Scope**: Small\n\n**Description**: Enable the flux-operator's embedded Flux Web UI in the kind overlay as an additional demo surface alongside Headlamp (`deploy/kind/base/headlamp.yaml`) and the OpenBao UI (`deploy/kind/base/kustomization.yaml:42-57`), and add a Quick Start \"Step 4c\" section that covers port-forward + access. The Web UI is shipped by ControlPlane as part of the same `flux-operator` chart that CC-0085 already bootstraps (`hack/deploy-infra.sh:58,701` — `FLUX_OPERATOR_VERSION=\\\"v0.47.0\\\"`, installed via `kubectl apply -f .../install.yaml`), and since the operator is installed from `install.yaml` rather than Helm, its `web.enabled` Helm value stays at the default (off). That matches the documented prerequisite for the standalone install path (\\\"Flux Operator configured with web UI disabled (`web.enabled: false`)\\\" — [fluxoperator.dev/docs/web-ui/standalone-install](https://fluxoperator.dev/docs/web-ui/standalone-install/)), which deploys the UI as a separate `HelmRelease` driven by a `ResourceSet` that pulls the `flux-operator` chart from `oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator` with `web.serverOnly: true` and `installCRDs: false`.\n\nConcrete steps: (1) add a new manifest `deploy/kind/base/flux-web.yaml` containing the upstream `ResourceSet/flux-web` from the standalone-install docs page — `apiVersion: fluxcd.controlplane.io/v1`, `kind: ResourceSet`, `metadata.namespace: flux-system`, inputs pinning `version` (SemVer — `\\\"0.47.x\\\"` to track the same minor as `FLUX_OPERATOR_VERSION`), resources are the nested `OCIRepository` + `HelmRelease/flux-web` templated from those inputs, `spec.values.web.serverOnly: true`, `values.installCRDs: false`, `values.fullnameOverride: flux-web`; (2) reference the file from `deploy/kind/base/kustomization.yaml:15-18` (the same `resources` list that already adds `headlamp.yaml`); (3) add a new Quick Start \"Step 4c — Open the Flux Web UI\" section next to \"Step 4 — Open the Headlamp UI\" (`docs/quick-start.md:175-213`) and \"Step 4b — Open the OpenBao UI\" (`docs/quick-start.md:217`) documenting the exact `kubectl port-forward svc/flux-web -n flux-system 9080:9080` call and the `http://localhost:9080` URL; (4) update the text at `docs/quick-start.md:196-200` that currently says \\\"the Quick Start does not enable it\\\" to point at the new Step 4c; (5) extend the `tests/e2e/infrastructure/infra-stack-health/chainsaw-test.yaml` assertions from CC-0085 to also verify that `HelmRelease/flux-web` (or whichever final release name is chosen) reaches `Ready=True` in the kind cluster, and that `Deployment/flux-web` / `Service/flux-web` exist on port 9080 — same shape as the existing five flux-system controller deployment assertions. Pin the `ResourceSet` input `version` with a Renovate `customManager` entry analogous to the `FLUX_OPERATOR_VERSION` manager that CC-0085 added (`renovate.json` custom manager regex for `hack/deploy-infra.sh`), so the UI tracks the flux-operator minor automatically.\n\n**Motivation**: The Quick Start right now explicitly *names* the Web UI and then turns it off — `docs/quick-start.md:196-200` says \\\"The \\`flux-operator\\` itself also ships an embedded Flux Web UI ([fluxoperator.dev/web-ui](https://fluxoperator.dev/web-ui/)); the Quick Start does not enable it — the \\`FluxInstance\\` in \\`deploy/flux-system/fluxinstance.yaml\\` has no web-UI configuration — so all Flux state is viewed through Headlamp here.\\\" That framing was right when `flux-operator` had just landed in CC-0085 and adding a second Flux UI on top of Headlamp felt like scope creep, but it leaves two weaknesses in the on-ramp: (a) contributors reading the Quick Start get pointed at `fluxoperator.dev/web-ui/` but then have no local way to reach it, so the link is decorative — and the standalone-install docs page makes enabling it a 30-line ResourceSet, no FluxInstance surgery required; (b) Headlamp's Flux plugin covers \\\"Helm Releases / Kustomizations / Sources / Flux Runtime\\\" (`docs/quick-start.md:204-209`) but does *not* render `ResourceSet` / `ResourceSetInputProvider` / `FluxReport` as first-class panes with reconciliation triggers, and those are exactly the surfaces the flux-operator introduces on top of plain Flux — the native Web UI is the only UI that does. Enabling it in kind also gets ahead of the question that will show up the moment someone asks \\\"we're running flux-operator, where's the dashboard?\\\" — today the Quick Start answer is \\\"Headlamp, kind of\\\"; after this change it is \\\"both, and here is the difference\\\". Scope and shape are the same as CC-0082 (OpenBao UI flip, issue #246) and the Headlamp onboarding: kind-only, one manifest, one Quick Start section — production `deploy/flux-system/` stays untouched because exposing a Flux dashboard in production requires TLS + SSO per the upstream docs (\\\"External exposure requires configuring Ingress or Gateway API resources, with mandatory TLS encryption and Single Sign-On authentication\\\"), which is a much larger conversation tied to the existing HTTPRoute sub-reconciler (CC-0065) and OIDC plumbing.\n\n**Affected Areas**:\n- `deploy/kind/base/flux-web.yaml` (new — `ResourceSet/flux-web` in the `flux-system` namespace with inline inputs, `web.serverOnly: true`, `installCRDs: false`, chart version pin tracking `FLUX_OPERATOR_VERSION`)\n- `deploy/kind/base/kustomization.yaml` (add `flux-web.yaml` to `resources` at line 15-18 alongside `headlamp.yaml`; production overlay at `deploy/flux-system/kustomization.yaml` stays unchanged — kind-only flip, same posture as Headlamp)\n- `docs/quick-start.md` (new \\\"Step 4c — Open the Flux Web UI\\\" section between the existing Step 4 (Headlamp) and Step 4b (OpenBao UI); rewrite the \\\"Accessing the Flux UI\\\" paragraph at lines 196-200 to point at Step 4c instead of saying the UI is not enabled; extend the \\\"Architecture snapshot\\\" block (`docs/quick-start.md:141-155`) to list the `flux-web` Deployment the same way it lists Headlamp)\n- `docs/reference/infrastructure-manifests.md` (document the new `deploy/kind/base/flux-web.yaml` in the same shape as the kind-overlay entries for `headlamp.yaml` and the OpenBao UI patch; note the Renovate pin)\n- `tests/e2e/infrastructure/infra-stack-health/chainsaw-test.yaml` (extend the existing CC-0085 flux-system assertions so that on kind clusters the `flux-web` `HelmRelease` reports `Ready=True` and the `Deployment`/`Service` are healthy — gate on the kind overlay only if the assertion would otherwise run in a production overlay context)\n- `renovate.json` (add a `customManagers` entry for the `ResourceSet` `version` input or wire it into the existing `FLUX_OPERATOR_VERSION` manager so UI chart bumps follow operator bumps automatically)\n\n**Acceptance Criteria**:\n- [ ] `deploy/kind/base/flux-web.yaml` contains a `ResourceSet/flux-web` (namespace `flux-system`) matching the upstream standalone-install manifest at [fluxoperator.dev/docs/web-ui/standalone-install](https://fluxoperator.dev/docs/web-ui/standalone-install/), with `spec.inputs` pinning `version` to a SemVer range that tracks the same minor as `FLUX_OPERATOR_VERSION` (e.g. `0.47.x`), `installCRDs: false`, `web.serverOnly: true`, and `fullnameOverride: flux-web`\n- [ ] `deploy/kind/base/kustomization.yaml` references the new file; production `deploy/flux-system/kustomization.yaml` is **not** modified\n- [ ] `make deploy-infra` on a fresh kind cluster ends with `HelmRelease/flux-web` (namespace `flux-system`) `Ready=True` within the existing `HELMRELEASE_TIMEOUT` window and `Deployment/flux-web` reporting `Available=True`\n- [ ] `kubectl port-forward svc/flux-web -n flux-system 9080:9080` followed by `curl -sf http://localhost:9080/` returns HTTP 200 with a non-empty HTML body\n- [ ] `docs/quick-start.md` gains a \\\"Step 4c — Open the Flux Web UI\\\" section modelled on Step 4b, covering the port-forward command, the `http://localhost:9080` URL, a short note on what the UI adds on top of Headlamp (ResourceSet / FluxReport / InputProvider panes — the flux-operator-specific surfaces Headlamp's Flux plugin does not render), and a note that the production overlay keeps it disabled\n- [ ] `docs/quick-start.md:196-200` is updated to replace the \\\"the Quick Start does not enable it\\\" sentence with a pointer at the new Step 4c\n- [ ] The \\\"What gets deployed\\\" details block in `docs/quick-start.md` lists `flux-system   flux-web-*   Ready` alongside the existing controllers\n- [ ] `docs/reference/infrastructure-manifests.md` documents the new manifest in the same shape as the other kind-overlay entries\n- [ ] `tests/e2e/infrastructure/infra-stack-health/chainsaw-test.yaml` asserts `HelmRelease/flux-web` Ready and the backing `Deployment`/`Service` exist on port 9080 when running on the kind overlay; the assertion does not break when the chainsaw test is run against a cluster that does not carry the kind overlay\n- [ ] `renovate.json` has a `customManagers` entry that keeps the `ResourceSet` chart version pin in sync with flux-operator releases, with auto-merge for minor/patch bumps consistent with the `FLUX_OPERATOR_VERSION` manager added in CC-0085\n- [ ] `.github/workflows/*.yml` — no direct workflow changes expected; the existing e2e CI job picks the new HelmRelease up through the chainsaw extension above\n\n**Non-Goals**:\n- Enabling the Flux Web UI in production (`deploy/flux-system/`). External exposure requires TLS + SSO per upstream docs, which the project does not yet have a story for on the Flux control plane (the Keystone HTTPRoute sub-reconciler from CC-0065 is unrelated). A production UI is a separate conversation covering Ingress/Gateway API, OIDC integration, and RBAC hardening — out of scope here, same way the OpenBao UI flip (#246) explicitly stayed kind-only.\n- Enabling the UI inline via `FluxInstance.spec.web.enabled` (or the flux-operator Helm chart's `web.enabled` value). The operator today is installed via `kubectl apply -f install.yaml` (CC-0085, `hack/deploy-infra.sh:700-702`), so the Helm-values path is not available without switching the bootstrap to Helm — a much larger change. The standalone `ResourceSet` path described on the upstream docs page is exactly the supported alternative when the operator is managed this way.\n- Replacing Headlamp. The Headlamp Flux plugin remains the generic Kubernetes-resource browser; the Flux Web UI is a second, Flux-specific surface that renders flux-operator-native kinds (`ResourceSet`, `ResourceSetInputProvider`, `FluxReport`) that Headlamp does not. Both stay shipped in the kind overlay — deliberately, same as the OpenBao UI coexisting with `kubectl exec`-based access.\n- Exposing the Web UI through Ingress/LoadBalancer/Gateway API in kind. Port-forward is the convention every other UI in the Quick Start uses (Headlamp, OpenBao, Keystone API), and this follows it.\n- Wiring any authentication on the kind Web UI. The Quick Start cluster is single-user localhost-only, identical posture to Headlamp (`kubectl create token` + port-forward) and OpenBao (root token + port-forward).\n\n**References**:\n- Standalone install guide: https://fluxoperator.dev/docs/web-ui/standalone-install/\n- Flux Web UI overview: https://fluxoperator.dev/web-ui/\n- flux-operator chart (OCI): `oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator`\n- Prior art for kind-only UI additions: #246 (OpenBao UI, CC-0082)\n- Upstream bootstrap landed in: #254 (CC-0085 — flux-operator + `FluxInstance`)\n\n**Labels:** enhancement\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/257",
   "stories": [
@@ -416,6 +416,7 @@
       "title": "Create `deploy/kind/base/flux-web.yaml` with a `ResourceSet/flux-web` in `flux-system` — inputs pin `version: \"0.47.x\"`, nested resources template `OCIRepository` (url `oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator`) + `HelmRelease/flux-web` with `values.web.serverOnly: true`, `values.installCRDs: false`, `values.fullnameOverride: flux-web`. 3-line SPDX header + `# Feature: CC-0086, REQ-001` marker (CC-0086, REQ-001)",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001"
       ]
@@ -425,6 +426,7 @@
       "title": "Add `flux-web.yaml` to the `resources` list in `deploy/kind/base/kustomization.yaml` immediately after `headlamp.yaml`, with a one-line header comment pointing at the file's own docblock — do not touch the existing Headlamp / OpenBao / Memcached / Keystone / Chaos-Mesh patches (CC-0086, REQ-002)",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -434,6 +436,7 @@
       "title": "Write `tests/unit/deploy/kind_base_flux_web_test.sh` covering: SPDX header, kustomize build emits the ResourceSet, chart pin is a SemVer range matching `FLUX_OPERATOR_VERSION` minor, kustomization lists the file, production overlay emits zero flux-web references, production overlay files are byte-identical to `main`. Model on `tests/unit/deploy/flux_system_fluxinstance_test.sh` — run via `bash`; use `tests/lib/assertions.sh` (CC-0086, REQ-001, REQ-002)",
       "level": 1,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002"
@@ -444,6 +447,7 @@
       "title": "Extend `renovate.json` with a `customManagers` entry targeting `deploy/kind/base/flux-web.yaml` — `managerFilePatterns: ['/deploy/kind/base/flux-web\\\\.yaml$/']`, `matchStrings` regex that captures the chart `version` input as `currentValue`, `packageNameTemplate: 'controlplaneio-fluxcd/flux-operator'`, `datasourceTemplate: 'github-releases'`, `versioningTemplate: 'semver'` (CC-0086, REQ-004)",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -453,6 +457,7 @@
       "title": "Extend `renovate.json` `packageRules` so the new file is covered by the same two rules that already gate `hack/deploy-infra.sh`: disable major, automerge minor/patch with `minimumReleaseAge: '3 days'`. Scope via `matchFileNames` additions — do not duplicate the existing rules (CC-0086, REQ-004)",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -462,6 +467,7 @@
       "title": "Write `tests/unit/renovate/flux_web_chart_custommanager_test.sh` modelled on `tests/unit/renovate/fluxoperator_custommanager_test.sh`: renovate-config-validator passes, the matchStrings regex captures the chart pin currently declared in `deploy/kind/base/flux-web.yaml`, and the packageRules disable major + automerge minor/patch with the 3-day wait (CC-0086, REQ-004)",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -471,6 +477,7 @@
       "title": "Add a new `── Step 7: Flux Web UI (CC-0086) ──` block to `tests/e2e/infrastructure/infra-stack-health/chainsaw-test.yaml` asserting: `HelmRelease/flux-web` in `flux-system` has `Ready=True`, `Deployment/flux-web` has `availableReplicas > 0`, `Service/flux-web` has `spec.ports[*]` containing an entry with `port: 9080, protocol: TCP`. Step header comment references CC-0086 + REQ-009 + REQ-011 and declares kind-overlay scope (CC-0086, REQ-009, REQ-011)",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-009",
         "REQ-011"
@@ -481,6 +488,7 @@
       "title": "Add a chainsaw `script` step inside Step 7 (or a companion step) that runs `kubectl port-forward --address 127.0.0.1 svc/flux-web -n flux-system 9080:9080 &` plus `curl -sf -o /dev/null -w '%{http_code}' http://127.0.0.1:9080/` and asserts the response is `200`. Trap to kill the port-forward on exit so subsequent steps don't race. Cite CC-0086 + REQ-010 (CC-0086, REQ-010)",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-010"
       ]
@@ -490,6 +498,7 @@
       "title": "Insert `## Step 4c — Open the Flux Web UI {#step-4c-flux-web-ui}` into `docs/quick-start.md` between the existing Step 4 (ending at line 213) and Step 4b (starting at line 217). Content mirrors Step 4b: port-forward command `kubectl port-forward svc/flux-web -n flux-system 9080:9080`, URL `http://localhost:9080`, short note naming the three flux-operator-specific kinds the UI adds on top of Headlamp (`ResourceSet`, `ResourceSetInputProvider`, `FluxReport`), note that production keeps it disabled — no token, no TLS, no Ingress. Cite CC-0086 + REQ-005 (CC-0086, REQ-005)",
       "level": 4,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -499,6 +508,7 @@
       "title": "Rewrite the paragraph at `docs/quick-start.md:196-200`: drop the `the Quick Start does not enable it` clause, replace with a one-sentence statement that the native Web UI IS enabled in kind and link the `#step-4c-flux-web-ui` anchor; keep the pane table beneath it unchanged — it still describes Headlamp's Flux plugin (CC-0086, REQ-006)",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -508,6 +518,7 @@
       "title": "Add `flux-system           flux-web-*                     Ready (kind-only; see Step 4c)` to the `::: details What gets deployed` block in `docs/quick-start.md`, placed in the `flux-system` group adjacent to the five controller rows. Keep column alignment consistent with the existing rows (CC-0086, REQ-007)",
       "level": 4,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -517,6 +528,7 @@
       "title": "Extend `docs/reference/infrastructure-manifests.md` with a subsection describing `deploy/kind/base/flux-web.yaml` — API version `fluxcd.controlplane.io/v1`, kind `ResourceSet`, name `flux-web`, namespace `flux-system`, chart `oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator`, pinned version input (current value), `web.serverOnly: true`, `installCRDs: false`, Renovate customManager reference (REQ-004), and an explicit note that `deploy/flux-system/kustomization.yaml` does NOT reference this file (TLS + SSO prerequisites). Add or reuse a `Kind Overlay Demo Addons` heading so the reference captures the kind-only manifests coherently (CC-0086, REQ-008)",
       "level": 4,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -526,6 +538,7 @@
       "title": "Write `tests/unit/docs/quick_start_flux_web_test.sh` asserting: Step 4c heading + anchor exist, Step 4c contains the port-forward command + URL, the old `the Quick Start does not enable it` sentence no longer appears, the `What gets deployed` block lists `flux-web-*`. Model on the existing assertions.sh-based unit tests under `tests/unit/` (CC-0086, REQ-005, REQ-006, REQ-007)",
       "level": 4,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-006",
@@ -537,6 +550,7 @@
       "title": "Write `tests/unit/docs/infrastructure_manifests_flux_web_test.sh` asserting: the new subsection references `deploy/kind/base/flux-web.yaml`, the chart URL, and the Renovate customManager; the file continues to parse as valid Markdown headers (CC-0086, REQ-008)",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -546,6 +560,7 @@
       "title": "Local smoke: run `make deploy-infra` against a fresh kind cluster, wait for `kubectl wait helmrelease/flux-web -n flux-system --for=condition=Ready --timeout=300s`, port-forward `svc/flux-web 9080:9080`, run `curl -sf -o /dev/null -w '%{http_code}' http://localhost:9080/` and verify `200`. Capture output into the PR description; no code changes expected (CC-0086, REQ-003, REQ-010)",
       "level": 5,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-010"
@@ -556,6 +571,7 @@
       "title": "Run `kustomize build deploy/kind/base/ > /tmp/kind.yaml` and `kustomize build deploy/flux-system/ > /tmp/prod.yaml`, then assert: `grep -c 'kind: ResourceSet' /tmp/kind.yaml` equals 1, `grep -c 'flux-web' /tmp/prod.yaml` equals 0. Record the diff of `deploy/flux-system/` vs `main` — expected empty (CC-0086, REQ-002)",
       "level": 5,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -565,6 +581,7 @@
       "title": "Run the full `make e2e-infra-stack-health` (or equivalent chainsaw invocation against `tests/e2e/infrastructure/infra-stack-health/`) on kind and confirm the new Step 7 block passes; attach the JUnit to the PR description (CC-0086, REQ-009, REQ-010, REQ-011)",
       "level": 5,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-009",
         "REQ-010",
@@ -748,8 +765,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-21T21:04:56.371911"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-21T21:07:45.488309"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-22T17:54:19.329140"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/259",
+  "pr_number": 259,
   "execution_history": [
     {
       "run_id": "9a9dd794-7414-446a-9d01-946b7e3166cc",
@@ -761,6 +788,76 @@
           "name": "prepare",
           "duration": 454.3910071849823,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "da7ee882-128a-43f1-b875-c908dfc3b91e",
+      "timestamp": "2026-04-21T21:37:43.094072",
+      "total_duration": 1524.548719882965,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (3 tasks)",
+          "duration": 441.67700266838074,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (3 tasks)",
+          "duration": 206.55548763275146,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (2 tasks)",
+          "duration": 172.35953307151794,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (6 tasks)",
+          "duration": 275.8492169380188,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 5 (3 tasks)",
+          "duration": 117.49951171875,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0086] Code Review",
+          "duration": 226.20647859573364,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0086] Improvements",
+          "duration": 56.127596855163574,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0086] Simplify",
+          "duration": 28.273892402648926,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "610e4b5d-e2be-4f81-96e0-e347765456c2",
+      "timestamp": "2026-04-22T17:32:26.369638",
+      "total_duration": 559.3739695549011,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 559.3739695549011,
+          "type": "review_address",
           "status": "done"
         }
       ]

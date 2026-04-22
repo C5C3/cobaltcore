@@ -1,0 +1,50 @@
+{
+  "summary": "Review #3 covers the response to berendt's external review #2. Three findings were addressed in code: W-003 (catch-block selector bug: app.kubernetes.io/name=flux-web → app.kubernetes.io/instance=flux-web, correct given the chart sets name-label from Chart.Name while instance-label tracks Release.Name/releaseName which is pinned to flux-web), W-004 (Step 4c → Step 4a rename so document order reads naturally 4 → 4a → 4b and Headlamp/Flux-UI stay adjacent), and I-001 (added non-empty body assertion on curl response to guard against 200-with-empty-body regressions). Two review_patterns files were added to capture the scope-creep lessons from W-001/W-002 (those commits were not split, but the lesson was codified for future reviews). Unit tests (quick_start_flux_web_test.sh, infrastructure_manifests_flux_web_test.sh) pass cleanly after the 4c→4a renames. All cross-references (What-gets-deployed block, paragraph link, infra-manifests doc) were updated consistently.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Unit tests updated in lockstep with doc renames (4c→4a)", "checked": true},
+    {"item": "quick_start_flux_web_test.sh passes 11/11", "checked": true},
+    {"item": "infrastructure_manifests_flux_web_test.sh passes 13/13", "checked": true},
+    {"item": "test_step_4a_positioned_before_step_4b codifies ordering rationale", "checked": true},
+    {"item": "Empty-body edge case covered by new BODY_FILE assertion (flux-web-health chainsaw test)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing bash conventions (mktemp, -s test, exit 1 with context)", "checked": true},
+    {"item": "Comments explain why (cache invariants, label-vs-instance semantics) not what", "checked": true},
+    {"item": "Anchor/heading/prose-link/status-row cross-references all updated consistently", "checked": true},
+    {"item": "No dead references to step-4c-flux-web-ui remain in docs/sh/yaml", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No new external inputs introduced", "checked": true},
+    {"item": "mktemp used for body capture (secure temp file)", "checked": true},
+    {"item": "Port-forward still bound to 127.0.0.1 only", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Change is minimal and reversible", "checked": true},
+    {"item": "Selector fix aligns with Helm labelling semantics (instance = Release.Name)", "checked": true},
+    {"item": "Step numbering reordering is purely documentation, no kustomize/helm side effects", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplication introduced; all 4c→4a sites edited in one pass", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Empty body now fails fast with diagnostic message + port-forward log dump", "checked": true},
+    {"item": "HTTP non-200 branch still short-circuits before body check", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "catch block now selects pods by a label that actually exists on chart output", "checked": true},
+    {"item": "Comments document why instance= (not name=) is the right selector for fullnameOverride", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "W-001/W-002 from review #2 (scope-creep commits bb51416 and dc0c38d) were not split out of this branch — only captured as review_patterns. If the repo convention is strict ticket-commit alignment, a follow-up rebase could move those commits to dedicated CC-0076/CC-0078 PRs. The reviewer marked them ASK/mergeable-after-split, so this is a judgment call, not a blocker.",
+    "I-002 (Renovate currentValue format divergence: v0.47.0 full-tag vs 0.47.x range) remains unaddressed — acceptable per the reviewer's monitor-and-defer guidance; revisit after the first live Renovate bump to confirm both managers fire in lockstep."
+  ],
+  "next_steps": [
+    "Merge after CI green; run chainsaw flux-web-health locally or in CI to confirm the new body-non-empty assertion passes on a live kind cluster.",
+    "Verify on next Renovate cycle that both FLUX_OPERATOR_VERSION and the flux-web chart version pin bump together (I-002 follow-up)."
+  ],
+  "detected_patterns": []
+}

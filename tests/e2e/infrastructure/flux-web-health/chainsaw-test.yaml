@@ -1,0 +1,194 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the Flux Web UI kind-only demo addon (CC-0086).
+# Exercises the health invariants of the flux-web Helm release deployed
+# by deploy/kind/base/flux-web.yaml:
+#   - HelmRelease/flux-web in flux-system has Ready=True (REQ-009)
+#   - Deployment/flux-web has at least one available replica (REQ-009)
+#   - Service/flux-web exposes TCP port 9080 (REQ-011)
+#   - HTTP GET / via port-forward on 127.0.0.1:9080 returns 200 (REQ-010)
+#
+# Scope gating — two independent mechanisms, both addressing the CC-0086
+# sourcery review that Step 7 of infra-stack-health was unconditional:
+#
+#   1. Label selector (`metadata.labels.overlay: kind`): lets the
+#      chainsaw CLI filter this test out on non-kind invocations via
+#      `chainsaw test --selector 'overlay!=kind' tests/e2e/infrastructure/`.
+#      This is the preferred gate for pipelines that know they run
+#      against production clusters.
+#
+#   2. Runtime presence check (first line of the script): an early
+#      `kubectl get resourceset flux-web -n flux-system` probe. If the
+#      ResourceSet is absent, the script exits 0 with a SKIP log line.
+#      Production (deploy/flux-system/) never references flux-web.yaml,
+#      so the ResourceSet will not exist there — the test is therefore
+#      default-safe on any non-kind cluster even without a selector.
+#
+# The two gates are belt-and-braces: the label lets callers skip the
+# test without deploying *anything* (saves the chainsaw start-up cost),
+# while the runtime probe keeps the test default-safe for operators who
+# forget the selector. Either mechanism alone addresses the feedback;
+# both together make "runs against non-kind clusters don't fail on
+# missing flux-web resources" hold regardless of invocation.
+#
+# The full flux-web health check runs as a single `script` operation
+# rather than chainsaw declarative `assert`s because chainsaw has no
+# step-level skip: declarative asserts would time out and fail even
+# if an earlier guard script exited 0. Consolidating into one script
+# is the only way to keep the presence-check short-circuit
+# default-safe. Lost value vs. declarative asserts is bounded —
+# `kubectl wait` gives us the same retry+timeout semantics, and the
+# `catch` below still runs `describe`/`get` for post-mortem on failure.
+#
+# Feature: CC-0086, REQ-009, REQ-010, REQ-011
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: flux-web-health
+  labels:
+    # Overlay gate — see header. Non-kind runs must pass
+    # `--selector 'overlay!=kind'` to exclude this test.
+    overlay: kind
+spec:
+  # Extended assert window: the HelmRelease reconcile pulls the
+  # flux-operator OCI chart, materialises the Web UI sub-chart, and
+  # waits for the Deployment to become Available.
+  #
+  # Timeout budget (CC-0086): the script's sequential kubectl waits have
+  # per-call upper bounds of 4m (HelmRelease Ready) + 2m (Deployment
+  # Available) + ~15s (port-forward readiness poll) = ~6m15s worst case.
+  # In the realistic success path the Deployment wait returns in <1s
+  # because Flux marks HelmRelease Ready=True only after child resources
+  # are Available — but the algebra must fit the caps, otherwise chainsaw
+  # kills the script mid-execution before the Service/HTTP checks run
+  # and produces a confusing timeout failure instead of a useful signal.
+  # `timeouts.exec` and the matching script-level `timeout` are therefore
+  # 7m, leaving a safety margin above the 6m15s worst case.
+  timeouts:
+    assert: 7m
+    exec: 7m
+  steps:
+  - try:
+    - script:
+        # Matches spec.timeouts.exec above; kept explicit so the
+        # per-step bound is visible at the call site.
+        timeout: 7m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`
+        # with "Illegal option -o pipefail" (exit 2). All other infra/
+        # keystone e2e scripts pin bash for the same reason.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          # ── Presence guard (CC-0086) ──────────────────────────────
+          # The kind overlay alone deploys deploy/kind/base/flux-web.yaml,
+          # which materialises ResourceSet/flux-web in flux-system.
+          # Its absence unambiguously signals a non-kind cluster — exit
+          # 0 with a SKIP line so the test passes without failing on the
+          # missing HelmRelease / Deployment / Service downstream.
+          if ! kubectl get resourceset flux-web -n flux-system >/dev/null 2>&1; then
+            echo "SKIP: flux-web ResourceSet not present in flux-system namespace."
+            echo "      This is expected on non-kind overlays (deploy/flux-system/"
+            echo "      does not reference deploy/kind/base/flux-web.yaml)."
+            exit 0
+          fi
+          echo "OK: flux-web ResourceSet present — running health checks"
+
+          # ── REQ-009: HelmRelease Ready ─────────────────────────────
+          # kubectl wait retries until the condition is met or the
+          # timeout fires, giving us the same semantics as chainsaw's
+          # declarative assert + timeouts.assert.
+          kubectl wait --for=condition=Ready \
+            helmrelease/flux-web -n flux-system --timeout=4m
+          echo "OK: HelmRelease/flux-web is Ready (CC-0086, REQ-009)"
+
+          # ── REQ-009: Deployment Available ──────────────────────────
+          kubectl wait --for=condition=Available \
+            deployment/flux-web -n flux-system --timeout=2m
+          echo "OK: Deployment/flux-web is Available (CC-0086, REQ-009)"
+
+          # ── REQ-011: Service exposes TCP/9080 ──────────────────────
+          # jsonpath filter `.spec.ports[?(@.port==9080)].protocol`
+          # tolerates additional ports (e.g. metrics) the chart may
+          # add in future minor releases without re-pinning the test.
+          proto="$(kubectl get service flux-web -n flux-system \
+            -o jsonpath='{.spec.ports[?(@.port==9080)].protocol}')"
+          if [ "$proto" != "TCP" ]; then
+            echo "ERROR: Service/flux-web does not expose TCP/9080 (got protocol='$proto')"
+            exit 1
+          fi
+          echo "OK: Service/flux-web exposes TCP/9080 (CC-0086, REQ-011)"
+
+          # ── REQ-010: HTTP 200 via port-forward ────────────────────
+          # Bind explicitly to 127.0.0.1 so the forwarder never
+          # listens on an externally reachable interface, matching
+          # the quick-start instructions in docs/quick-start.md.
+          kubectl port-forward --address 127.0.0.1 \
+            svc/flux-web -n flux-system 9080:9080 >/tmp/flux-web-pf.log 2>&1 &
+          PF_PID=$!
+          # Trap guarantees the background port-forward is reaped even
+          # if curl fails, so subsequent test runs don't race on :9080.
+          trap 'kill "$PF_PID" 2>/dev/null || true; wait "$PF_PID" 2>/dev/null || true' EXIT
+
+          # Poll until the forwarder is actually listening (up to ~15s).
+          # kubectl port-forward exits 0 immediately but the listener
+          # takes a moment to bind, so a single curl can race startup.
+          for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+            if curl -sf -o /dev/null http://127.0.0.1:9080/; then
+              break
+            fi
+            sleep 1
+          done
+
+          # Capture the body so we can assert it is non-empty — a 200
+          # with an empty body would mean the UI Deployment is serving
+          # but the bundled static assets failed to mount (upstream chart
+          # regression or bad fullnameOverride). Feature: CC-0086, REQ-010
+          BODY_FILE="$(mktemp)"
+          HTTP_CODE="$(curl -s -o "$BODY_FILE" -w '%{http_code}' http://127.0.0.1:9080/)"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "ERROR: Flux Web UI returned HTTP $HTTP_CODE (expected 200)"
+            echo "--- port-forward log ---"
+            cat /tmp/flux-web-pf.log 2>/dev/null || true
+            exit 1
+          fi
+          if [ ! -s "$BODY_FILE" ]; then
+            echo "ERROR: Flux Web UI returned HTTP 200 with empty body"
+            exit 1
+          fi
+          echo "OK: Flux Web UI responded 200 on http://127.0.0.1:9080/ (CC-0086, REQ-010)"
+    catch:
+    # On failure, dump post-mortem state to help CI triage (mirrors the
+    # diagnostic pattern used by other infra tests). Each resource is
+    # individually scoped so a missing one doesn't short-circuit the
+    # remainder of the dump.
+    - describe:
+        apiVersion: helm.toolkit.fluxcd.io/v2
+        kind: HelmRelease
+        name: flux-web
+        namespace: flux-system
+    - describe:
+        apiVersion: apps/v1
+        kind: Deployment
+        name: flux-web
+        namespace: flux-system
+    - describe:
+        apiVersion: v1
+        kind: Service
+        name: flux-web
+        namespace: flux-system
+    # The flux-operator Helm chart sets `app.kubernetes.io/name` from
+    # `Chart.Name` (= `flux-operator`), and `fullnameOverride: flux-web`
+    # rewrites resource names but NOT the `name` label, so selecting by
+    # `app.kubernetes.io/name=flux-web` would match zero pods and
+    # silently produce an empty log dump on failure. Select by
+    # `app.kubernetes.io/instance=flux-web` instead — the `instance`
+    # label tracks the release name, which we pin via `releaseName:
+    # flux-web` in deploy/kind/base/flux-web.yaml. Feature: CC-0086
+    - podLogs:
+        namespace: flux-system
+        selector: app.kubernetes.io/instance=flux-web
+        tail: 200

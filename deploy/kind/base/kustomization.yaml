@@ -16,6 +16,8 @@ resources:
   - ../../flux-system
   # Headlamp UI — kind-only demo addon (see headlamp.yaml header).
   - headlamp.yaml
+  # Flux Web UI — kind-only demo addon (see flux-web.yaml header). Feature: CC-0086, REQ-002
+  - flux-web.yaml
 
 patches:
   - target:

@@ -28,6 +28,19 @@
       "datasourceTemplate": "github-releases",
       "packageNameTemplate": "controlplaneio-fluxcd/flux-operator",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/deploy/kind/base/flux-web\\.yaml$/"
+      ],
+      "matchStrings": [
+        "- version:\\s*\"(?<currentValue>[^\"]+)\""
+      ],
+      "depNameTemplate": "controlplaneio-fluxcd/flux-operator",
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "controlplaneio-fluxcd/flux-operator",
+      "versioningTemplate": "semver"
     }
   ],
   "packageRules": [
@@ -47,14 +60,14 @@
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["hack/deploy-infra.sh"],
+      "matchFileNames": ["hack/deploy-infra.sh", "deploy/kind/base/flux-web.yaml"],
       "matchPackageNames": ["controlplaneio-fluxcd/flux-operator"],
       "matchUpdateTypes": ["major"],
       "enabled": false
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["hack/deploy-infra.sh"],
+      "matchFileNames": ["hack/deploy-infra.sh", "deploy/kind/base/flux-web.yaml"],
       "matchPackageNames": ["controlplaneio-fluxcd/flux-operator"],
       "matchUpdateTypes": ["minor", "patch"],
       "automerge": true,

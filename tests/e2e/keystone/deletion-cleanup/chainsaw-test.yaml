@@ -35,7 +35,11 @@ spec:
           metadata:
             name: keystone-cleanup
             namespace: openstack
-            (contains(finalizers, 'keystone.openstack.c5c3.io/finalizer')): true
+            # Nil-safe: on the first poll after apply the controller may not
+            # have added the finalizer yet (`finalizers` is nil). Without the
+            # `|| `[]`` fallback, JMESPath's `contains()` raises a non-retryable
+            # type error and the 5m assert timeout never kicks in.
+            (contains(finalizers || `[]`, 'keystone.openstack.c5c3.io/finalizer')): true
           status:
             (conditions[?type == 'Ready']):
             - status: "True"

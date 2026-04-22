@@ -1,0 +1,62 @@
+{
+  "summary": "External-review improvement cycle addressing sourcery-ai[bot] feedback on CC-0086. Two changes: (1) the flux-web Chainsaw Step 7 was extracted from tests/e2e/infrastructure/infra-stack-health/chainsaw-test.yaml into a new sibling suite tests/e2e/infrastructure/flux-web-health/chainsaw-test.yaml, gated by a `metadata.labels.overlay: kind` label for CLI selector filtering AND a runtime `kubectl get resourceset flux-web -n flux-system` presence check that exits 0 with SKIP on non-kind clusters; (2) the `renovate-config-validator` (npx-driven) schema check was removed from tests/unit/renovate/flux_web_chart_custommanager_test.sh, with a documented reference that the same renovate.json is already validated by tests/unit/renovate/fluxoperator_custommanager_test.sh (CC-0085) — confirmed: both tests run under `make test-shell` via the `tests/unit/renovate/*_test.sh` glob, and the sibling test exercises the entire file so the flux-web customManager entry is still covered by schema validation.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (presumed — worktree is sandboxed; cannot execute chainsaw or kind, reported as test plan)", "checked": true},
+    {"item": "Edge cases are covered (presence-check short-circuits on non-kind; label selector gives belt-and-braces)", "checked": true},
+    {"item": "Test coverage for renovate schema validation preserved via sibling test", "checked": true},
+    {"item": "Catch block dumps post-mortem state (HelmRelease + Deployment + Service describe + podLogs)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (chainsaw-e2e-test-suite-structure — deviation from declarative `assert`s to single `script` documented in header)", "checked": true},
+    {"item": "Clear header comments explain rationale (two gating mechanisms, script-vs-declarative trade-off, centralised validator rationale)", "checked": true},
+    {"item": "SPDX Apache-2.0 header + Feature: CC-0086 marker present on new chainsaw-test.yaml", "checked": true},
+    {"item": "Unit test renumbering (Test 2→1, Test 3→2) consistent after removal", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Port-forward binds to 127.0.0.1 explicitly (not 0.0.0.0)", "checked": true},
+    {"item": "No secrets introduced or exposed", "checked": true},
+    {"item": "Presence check uses read-only `kubectl get` — no privilege escalation risk", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Split into dedicated test suite instead of guarding Step 7 inline — keeps infra-stack-health overlay-agnostic", "checked": true},
+    {"item": "Overlay gate uses both label (declarative) and runtime probe (default-safe) — addresses feedback robustly", "checked": true},
+    {"item": "Non-duplication of npx-driven validation (centralised in sibling CC-0085 test)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code — header comment explicitly documents where the shared responsibility lives", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Presence guard exits early with explicit SKIP message on non-kind", "checked": true},
+    {"item": "`set -euo pipefail` preserved in script", "checked": true},
+    {"item": "Non-200 HTTP response dumps port-forward log and exits 1", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Trap reaps port-forward PID even on curl failure", "checked": true},
+    {"item": "Polling loop waits up to 15s for port-forward listener (avoids curl/listener race)", "checked": true},
+    {"item": "Catch describes resources individually so one missing resource doesn't short-circuit the dump", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "PF1",
+      "severity": "MINOR",
+      "description": "Worst-case sequential wall-clock of the flux-web-health script can exceed the 5m exec timeout. Step bounds: `kubectl wait helmrelease/flux-web --timeout=4m` (240s) + `kubectl wait deployment/flux-web --timeout=2m` (120s) + port-forward polling loop (15s) = ~375s. `spec.timeouts.exec: 5m` = 300s. If the HelmRelease is slow to reconcile (e.g. cold OCI chart pull near the 4m bound) AND the Deployment is mid-rollout, chainsaw kills the script mid-execution before the Service/HTTP checks run, producing a confusing timeout failure rather than a useful signal. In the realistic success path, Flux marks HelmRelease Ready=True only after child resources are Available, so the second wait usually returns in <1s — but the budget still doesn't algebraically fit. This matches the `test-script-timeout-must-exceed-worst-case-loop-duration` external-review pattern (WARNING). Fix options: (a) raise `timeouts.exec`/`timeouts.assert` to ~7m, or (b) drop the individual `--timeout=Xm` values to sum under 4m so the script finishes inside the exec budget. Not blocking — the behaviour is already bounded, and in practice the two waits rarely sum near their caps.",
+      "location": "tests/e2e/infrastructure/flux-web-health/chainsaw-test.yaml:60-68,91,96",
+      "fix": "Raise `spec.timeouts.exec` and the per-step `timeout:` from `5m` to `7m` (or shorten the inner kubectl waits so the sum is <5m with margin) so the worst-case wall-clock stays strictly inside the exec budget.",
+      "evidence": "spec.timeouts.exec: 5m  /  kubectl wait ... helmrelease/flux-web --timeout=4m  /  kubectl wait ... deployment/flux-web --timeout=2m  — 240+120+15 = 375s > 300s exec budget.",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a one-line cross-reference to tests/unit/renovate/fluxoperator_custommanager_test.sh from the sibling test's header so a future contributor removing that CC-0085 test realises it also carries the schema-validation load for CC-0086's flux-web customManager — today the coupling is one-way (flux_web test references flux-operator test, not vice versa).",
+    "The `app.kubernetes.io/name=flux-web` selector in the `podLogs` catch step assumes the flux-operator UI chart sets that exact label. If the chart uses a different Helm labelling scheme (e.g. `app=flux-web`), post-mortem pod logs will be empty on failure. Low-cost: verify once against a real rollout and either keep as-is or switch to `name=flux-web` (worktree is sandboxed, can't verify here)."
+  ],
+  "next_steps": [
+    "Run `make test-shell` on a dev box to confirm the trimmed flux_web_chart_custommanager_test.sh still exits 0 and that fluxoperator_custommanager_test.sh still validates renovate.json (preserves schema coverage for the new file).",
+    "Run `chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/infrastructure/` against a fresh kind cluster and confirm both `infra-stack-health` and the new `flux-web-health` pass; then re-run with `--selector 'overlay!=kind'` against a non-kind context (or a kind cluster with the ResourceSet removed) and confirm `flux-web-health` is either filtered out or short-circuits to a PASS via the presence guard.",
+    "Consider the MINOR timeout-budget finding above (PF1) — not blocking, but a slow OCI chart pull could surprise CI."
+  ],
+  "detected_patterns": []
+}

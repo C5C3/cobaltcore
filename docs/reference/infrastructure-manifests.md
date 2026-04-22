@@ -601,3 +601,66 @@ The Memcached Operator chart is sourced from the shared `c5c3-charts` OCI regist
 rather than a dedicated HelmRepository. This follows the project convention of publishing
 internally-built charts to `oci://ghcr.io/c5c3/charts` (see
 `architecture/docs/09-implementation/07-ci-cd-and-packaging.md`).
+
+## Kind Overlay Demo Addons
+
+The kind overlay (`deploy/kind/base/kustomization.yaml`) layers a small set of
+kind-only demo manifests on top of the production base. These files live under
+`deploy/kind/base/` and are **not** referenced from `deploy/flux-system/kustomization.yaml`,
+so they never reach production clusters. The section below catalogues the addons that
+the `CC-0086` tranche introduced; earlier kind-only manifests (Headlamp, OpenBao UI
+patch) are documented in the Quick Start (CC-0086, REQ-008).
+
+### Flux Web UI ResourceSet
+
+**File:** `deploy/kind/base/flux-web.yaml`
+
+A single `ResourceSet` CR drives the flux-operator's bundled
+[Flux Web UI](https://fluxoperator.dev/web-ui/) as a demo surface for the kind
+Quick Start (Step 4a). The `ResourceSet` renders two sibling resources — an
+`OCIRepository` pointing at the official flux-operator Helm chart and a
+`HelmRelease` that installs that chart with only the Web UI sub-chart enabled.
+
+| Property | Value |
+| --- | --- |
+| API version | `fluxcd.controlplane.io/v1` |
+| Kind | `ResourceSet` |
+| Name | `flux-web` |
+| Namespace | `flux-system` |
+| Chart URL | `oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator` |
+| Version pin (input) | `0.47.x` — SemVer range locked to the minor track of `FLUX_OPERATOR_VERSION` in `hack/deploy-infra.sh` |
+
+**Helm values on the nested `HelmRelease`:**
+
+| Key | Value | Purpose |
+| --- | --- | --- |
+| `web.serverOnly` | `true` | Render only the Web UI Deployment + Service; skip the operator Deployment, CRDs, and RBAC that the original `install.yaml` bootstrap already owns |
+| `installCRDs` | `false` | The flux-operator CRDs (`FluxInstance`, `ResourceSet`, `ResourceSetInputProvider`, …) are already installed by the out-of-band `install.yaml` apply in `hack/deploy-infra.sh` — re-applying them here would fight the bootstrap on every reconcile |
+| `fullnameOverride` | `flux-web` | Give the Web UI Deployment / Service / ServiceAccount a distinct identity so they do not collide with the operator's own `flux-operator-*` workload names |
+
+**Version tracking.** The `spec.inputs[0].version` SemVer range is updated
+automatically by a Renovate `customManager` entry in `renovate.json` that
+targets `deploy/kind/base/flux-web.yaml` and pulls release metadata from
+`controlplaneio-fluxcd/flux-operator` GitHub releases. The customManager shares
+the same `packageRules` as `hack/deploy-infra.sh` — major upgrades are
+disabled, minor/patch upgrades auto-merge after a three-day `minimumReleaseAge`
+cooldown. See the Renovate subsection in CC-0086 (REQ-004) for the exact
+matcher regex.
+
+**Production opt-out.** `deploy/flux-system/kustomization.yaml` deliberately
+does **not** list `deploy/kind/base/flux-web.yaml`. The flux-operator Web UI
+ships without token authentication, without TLS termination, and without an
+Ingress story — it is safe as a localhost port-forward demo on a single-node
+kind cluster, not as a shared-cluster surface. Production overlays can opt
+back in explicitly once upstream adds those prerequisites.
+
+**Access (kind Quick Start, Step 4a):**
+
+```bash
+kubectl port-forward svc/flux-web -n flux-system 9080:9080
+```
+
+Browse <http://localhost:9080> — no login required. The Web UI complements
+Headlamp by rendering the three flux-operator-specific CRDs (`ResourceSet`,
+`ResourceSetInputProvider`, `FluxReport`) that the generic Headlamp Flux
+plugin does not know about.

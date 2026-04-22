@@ -63,11 +63,13 @@ test_custom_manager_regex_captures_version() {
   fi
 
   # Locate the flux-operator customManagers entry — identified by the
-  # controlplaneio-fluxcd/flux-operator packageNameTemplate so the assertions
-  # don't depend on array ordering relative to other custom managers.
+  # hack/deploy-infra.sh managerFilePatterns so the assertions don't
+  # collide with the deploy/kind/base/flux-web.yaml entry (CC-0086) that
+  # shares the controlplaneio-fluxcd/flux-operator packageNameTemplate.
   local entry
   entry="$(jq -c '.customManagers[]
-    | select(.packageNameTemplate == "controlplaneio-fluxcd/flux-operator")' \
+    | select(.packageNameTemplate == "controlplaneio-fluxcd/flux-operator")
+    | select((.managerFilePatterns // []) | join(",") | contains("hack/deploy-infra"))' \
     "$RENOVATE_FILE")"
 
   if [ -z "$entry" ]; then

@@ -1,0 +1,98 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Flux Operator Web UI (kind-only demo addon).
+#
+# This manifest declares a single ResourceSet (CRD from the
+# flux-operator) that materialises two sibling resources in the
+# flux-system namespace: an OCIRepository pointing at the official
+# flux-operator Helm chart, and a HelmRelease that installs the chart
+# with the bundled Web UI sub-chart enabled. The result is the
+# `flux-web` Service listening on :9080 inside the kind cluster.
+#
+# This manifest is deployed ONLY from the kind overlay
+# (deploy/kind/base/kustomization.yaml) and NEVER reaches
+# deploy/flux-system/ — an unauthenticated read-only dashboard is a
+# demo / quick-start affordance, not something we ship to production.
+#
+# Why a standalone Web UI install instead of `spec.web.enabled` on the
+# operator? The flux-operator itself is installed from the upstream
+# `install.yaml` (static manifest, see hack/deploy-infra.sh, CC-0085).
+# That bootstrap path does not expose the Helm-chart values that would
+# otherwise toggle the Web UI, so we run a second Helm release of the
+# same chart with `web.serverOnly: true`, `installCRDs: false` and
+# `fullnameOverride: flux-web` — each flag is load-bearing:
+#   * `web.serverOnly: true` — render only the Web UI Deployment +
+#     Service; skip the operator Deployment, CRDs, RBAC etc. that are
+#     already owned by the original install.yaml bootstrap.
+#   * `installCRDs: false` — the flux-operator CRDs (FluxInstance,
+#     ResourceSet, ResourceSetInputProvider, …) are already installed
+#     by install.yaml. Re-applying them here would fight the bootstrap
+#     on every reconcile and risk ownership conflicts.
+#   * `fullnameOverride: flux-web` — the chart's default fullname is
+#     derived from the release name and would collide with the
+#     operator's own `flux-operator` workload names. Forcing `flux-web`
+#     keeps the Web UI's Deployment / Service / ServiceAccount cleanly
+#     namespaced under a distinct identity.
+# Values validated against flux-operator Helm chart 0.47.x — when
+# bumping to 0.48.x or beyond, re-verify that each flag above still
+# carries the semantics documented here (chart maintainers may rename
+# or restructure `web.*` keys across minor versions). Feature: CC-0086.
+#
+# Access (kind quick-start):
+#   kubectl port-forward svc/flux-web -n flux-system 9080:9080
+# then browse http://localhost:9080
+#
+# Version pin: `spec.inputs[0].version` is a SemVer range locked to the
+# minor track of `FLUX_OPERATOR_VERSION` in hack/deploy-infra.sh (today
+# v0.47.0 → 0.47.x). Bump both together when upgrading the operator.
+#
+# Feature: CC-0086, REQ-001
+---
+apiVersion: fluxcd.controlplane.io/v1
+kind: ResourceSet
+metadata:
+  name: flux-web
+  namespace: flux-system
+spec:
+  # DECISION: the upstream Standalone Install doc uses
+  # `<< inputs.provider.name >>` templating, which presupposes a
+  # ResourceSetInputProvider fan-out. The kind overlay only needs one
+  # Web UI instance, so we inline the input with a single `version`
+  # entry and hard-code the nested resource names / namespaces below.
+  # This keeps the kind-only addon self-contained — no extra
+  # ResourceSetInputProvider CR to maintain. Feature: CC-0086, REQ-001
+  inputs:
+    - version: "0.47.x"
+  resources:
+    - apiVersion: source.toolkit.fluxcd.io/v1
+      kind: OCIRepository
+      metadata:
+        name: flux-web
+        namespace: flux-system
+      spec:
+        interval: 30m
+        url: oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator
+        layerSelector:
+          mediaType: "application/vnd.cncf.helm.chart.content.v1.tar+gzip"
+          operation: copy
+        ref:
+          semver: << inputs.version | quote >>
+    - apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: flux-web
+        namespace: flux-system
+      spec:
+        interval: 30m
+        releaseName: flux-web
+        serviceAccountName: flux-operator
+        chartRef:
+          kind: OCIRepository
+          name: flux-web
+        values:
+          fullnameOverride: flux-web
+          installCRDs: false
+          web:
+            serverOnly: true

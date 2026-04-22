@@ -1,0 +1,73 @@
+{
+  "summary": "CC-0086 lands a kind-only Flux Web UI demo addon via a new `deploy/kind/base/flux-web.yaml` ResourceSet that materialises an OCIRepository + HelmRelease pair using `web.serverOnly: true`, `installCRDs: false`, and `fullnameOverride: flux-web` against the upstream `oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator` chart pinned to the 0.47.x x-range. Wired into `deploy/kind/base/kustomization.yaml` as a sibling of `headlamp.yaml`; `deploy/flux-system/` is untouched (production stays opt-out). Renovate gets a third customManager + matching packageRules that scope `deploy/kind/base/flux-web.yaml` to `controlplaneio-fluxcd/flux-operator` (major disabled, minor/patch automerged after 3-day soak). Chainsaw gains a new Step 7 that asserts HelmRelease/flux-web Ready, Deployment available, Service exposes TCP/9080 via a JMESPath filter tolerant of future metrics ports, and (via a trapped port-forward + 15s readiness poll) HTTP 200 on /. Documentation is updated in `docs/quick-start.md` (new Step 4c with heading + anchor, rewritten 'Accessing the Flux UI' paragraph that links it, flux-web-* entry in 'What gets deployed') and `docs/reference/infrastructure-manifests.md` (new 'Kind Overlay Demo Addons' section that cites the manifest path, chart URL, API group, load-bearing values, the Renovate customManager cross-ref, and the production opt-out). Four new unit tests plus the updated `fluxoperator_custommanager_test.sh` (which now locates the existing flux-operator entry via managerFilePatterns to avoid colliding with the new flux-web one) cover every change. All BLOCKER, CRITICAL, and MINOR acceptance criteria in the task description are satisfied.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Unit tests cover all new/changed files (flux-web manifest, renovate customManager, both doc updates)", "checked": true},
+    {"item": "Chainsaw Step 7 added: HelmRelease Ready, Deployment availableReplicas>0, Service port 9080/TCP, HTTP 200 via port-forward", "checked": true},
+    {"item": "Port-forward script uses a trap to reap the background process and a 15s polling loop before the final curl (no port race)", "checked": true},
+    {"item": "Service port assertion uses JMESPath filter so future metrics ports won't break it", "checked": true},
+    {"item": "Production overlay assertion: kind_base_flux_web_test.sh confirms deploy/flux-system/ bytes match origin/main and contain no ResourceSet/flux-web string", "checked": true},
+    {"item": "fluxoperator_custommanager_test.sh updated to disambiguate by managerFilePatterns so both customManagers coexist", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "SPDX Apache-2.0 headers present on every new file", "checked": true},
+    {"item": "Every new artifact carries a CC-0086 / REQ-NNN feature-ID marker", "checked": true},
+    {"item": "flux-web.yaml docblock documents WHY each load-bearing value was chosen (serverOnly, installCRDs=false, fullnameOverride)", "checked": true},
+    {"item": "Quick Start Step 4c naming preserves alphabetical/ordinal placement before Step 4b (test enforces)", "checked": true},
+    {"item": "infrastructure-manifests.md section uses existing 'Kind Overlay Demo Addons' grouping convention and markdown heading depth is monotonic", "checked": true},
+    {"item": "No scope creep - only files in the expected allowlist modified (`git diff main --name-only` matches)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Chart pulled by OCI reference with SemVer range — no arbitrary tag / no unpinned `:latest`", "checked": true},
+    {"item": "HelmRelease reuses the existing `flux-operator` ServiceAccount (no new elevated RBAC introduced by the demo addon)", "checked": true},
+    {"item": "Port-forward in chainsaw binds explicitly to 127.0.0.1 (`--address 127.0.0.1`) so CI runners don't expose :9080 externally", "checked": true},
+    {"item": "Production overlay untouched - unauthenticated read-only dashboard never reaches deploy/flux-system/", "checked": true},
+    {"item": "Renovate packageRule enforces a 3-day minimumReleaseAge before automerging upstream chart bumps", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Kind-only vs production split respected: single reference to flux-web.yaml lives in deploy/kind/base/kustomization.yaml", "checked": true},
+    {"item": "ResourceSet templating idiom (`<< inputs.version | quote >>`) matches upstream flux-operator pattern", "checked": true},
+    {"item": "Chart version pin co-located with the manifest that consumes it; Renovate customManager follows the same 'custom regex + paired packageRules' idiom used by CC-0085's FLUX_OPERATOR_VERSION entry", "checked": true},
+    {"item": "Chainsaw Step 7 follows the existing section-per-subsystem layout and re-uses the `(availableReplicas > `0`): true` idiom", "checked": true},
+    {"item": "Docs cross-reference each other (infrastructure-manifests.md ↔ Quick Start Step 4c ↔ REQ-004 Renovate story)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "Single ResourceSet with inline `inputs:` rather than a ResourceSetInputProvider fan-out — kind only needs one Web UI instance, decision documented in the manifest", "checked": true},
+    {"item": "No duplicate version pins - Renovate will keep 0.47.x in sync with the FLUX_OPERATOR_VERSION track via the existing release cadence", "checked": true},
+    {"item": "Re-uses existing flux-operator ServiceAccount rather than minting a dedicated flux-web SA", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Chainsaw port-forward readiness poll caps at 15s and the final curl fails the step on non-200 while dumping the port-forward log for diagnostics", "checked": true},
+    {"item": "JMESPath Service filter `(ports[?port == `9080` && protocol == 'TCP'])` fails fast if the port is renamed/removed", "checked": true},
+    {"item": "Unit test verifies the Renovate regex actually captures the literal chart version line from flux-web.yaml via Perl (same PCRE engine Renovate uses) - catches regex drift immediately", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Port-forward script uses `set -euo pipefail` and a trap that survives curl failure to guarantee background reap", "checked": true},
+    {"item": "Chainsaw assert timeout of 5m is sufficient for HelmRelease reconcile + Deployment rollout on a cold kind cluster", "checked": true},
+    {"item": "renovate.json config is exercised by `renovate-config-validator` in flux_web_chart_custommanager_test.sh (skipped only if npx unavailable)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Optional (informational only): Renovate's x-range handling with versioning=semver keeps `0.47.x` stable across patch bumps inside the same minor track (no PR created for 0.47.5), and only promotes to `0.48.x` when a new minor is released. That is the intended contract here and matches the manifest docblock's 'bump both together when upgrading the operator' note; worth confirming once empirically after the first real upstream release so the docstring can be updated with a pointer to the observed Renovate behaviour.",
+    "Optional follow-up: when flux-operator 0.48.0 ships, verify that `web.serverOnly`, `installCRDs`, and `fullnameOverride` still carry the same semantics in the chart values. The flux-web.yaml docblock already flags these as load-bearing; a one-line comment noting the chart minor version against which each was validated would make future bumps easier to reason about (not a blocker)."
+  ],
+  "next_steps": [
+    "Merge the PR once CI is green. The infra-stack-health chainsaw job is the authoritative gate for the new Step 7 assertions (HelmRelease Ready + Service port + HTTP 200), so a green run in CI is required before landing.",
+    "After merge, the first Renovate cycle should produce an automerged minor/patch bump PR for controlplaneio-fluxcd/flux-operator covering both hack/deploy-infra.sh and deploy/kind/base/flux-web.yaml in a single grouped PR (groupName: \"flux-operator\") — confirm the group actually bundles both files as intended.",
+    "Optionally link CC-0086 to any follow-up ticket that migrates the Web UI to an authenticated ingress path if/when a non-demo deployment is needed (current scope is explicitly kind-only)."
+  ],
+  "detected_patterns": [
+    "SPDX-FileCopyrightText + Apache-2.0 header on every new file",
+    "Feature-ID + REQ-NNN markers in manifests, tests, and docs",
+    "Kind overlay kustomize pattern: deploy/kind/base/ layers kind-only demo addons on top of deploy/flux-system/, production overlay never references them",
+    "Renovate customManager + paired packageRules idiom (custom regex extracts version, packageRule disables major + automerges minor/patch after 3-day soak)",
+    "Chainsaw section-per-subsystem layout with `(availableReplicas > `0`): true` and `(conditions[?type == 'Ready']): [{status: \"True\"}]` idioms",
+    "JMESPath filter expression on Service ports for forward-compatible assertion",
+    "Port-forward script with trap-based cleanup and bounded readiness polling before the definitive assertion",
+    "ResourceSet templating with `<< inputs.FIELD | quote >>` Sprig-style rendering",
+    "Unit tests that exercise Renovate regexes through Perl (same PCRE engine) to catch regex drift against the live file content",
+    "Docstring-heavy kind-only manifest explaining WHY each load-bearing Helm value was chosen"
+  ]
+}
