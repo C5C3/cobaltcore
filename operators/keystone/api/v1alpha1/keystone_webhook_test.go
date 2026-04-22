@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -1146,9 +1147,29 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 		},
 	}
 	// REQ-001 (CC-0040): Break uWSGI — processes and threads below minimum.
+	// REQ-003/REQ-008 (CC-0084): Break uWSGI harakiri — below minimum.
+	// REQ-012 (CC-0084): Break uWSGI httpKeepAliveTimeout cross-field — set
+	// timeout while HTTPKeepAlive=false.
 	k.Spec.UWSGI = &UWSGISpec{
-		Processes: 0,
-		Threads:   0,
+		Processes:            0,
+		Threads:              0,
+		Harakiri:             ptr.To(int32(0)),
+		HTTPKeepAlive:        false,
+		HTTPKeepAliveTimeout: ptr.To(int32(5)),
+	}
+	// REQ-001/REQ-002/REQ-007 (CC-0084): Break graceful-termination cross-field —
+	// grace below 10s floor and preStop greater than grace so the drain window
+	// collapses.
+	k.Spec.TerminationGracePeriodSeconds = ptr.To(int64(5))
+	k.Spec.PreStopSleepSeconds = ptr.To(int64(30))
+	// REQ-006 (CC-0084): Break strategy — Recreate with a non-nil rollingUpdate
+	// block is rejected at admission.
+	k.Spec.Strategy = &appsv1.DeploymentStrategy{
+		Type: appsv1.RecreateDeploymentStrategyType,
+		RollingUpdate: &appsv1.RollingUpdateDeployment{
+			MaxUnavailable: ptr.To(intstr.FromInt32(0)),
+			MaxSurge:       ptr.To(intstr.FromInt32(1)),
+		},
 	}
 	// REQ-004 (CC-0075): Break PriorityClassName — nonexistent class.
 	pcn := "nonexistent-class"
@@ -1185,6 +1206,13 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g.Expect(errMsg).To(ContainSubstring("uwsgi"))
 	g.Expect(errMsg).To(ContainSubstring("priorityClassName"))
 	g.Expect(errMsg).To(ContainSubstring("topologySpreadConstraints"))
+	// CC-0084: every graceful-termination / uWSGI-drain / strategy axis must
+	// contribute to the aggregate error without short-circuiting.
+	g.Expect(errMsg).To(ContainSubstring("terminationGracePeriodSeconds"))
+	g.Expect(errMsg).To(ContainSubstring("preStopSleepSeconds"))
+	g.Expect(errMsg).To(ContainSubstring("harakiri"))
+	g.Expect(errMsg).To(ContainSubstring("httpKeepAliveTimeout"))
+	g.Expect(errMsg).To(ContainSubstring("strategy"))
 }
 
 func TestValidateUpdate_RunsSameValidation(t *testing.T) {
@@ -1662,12 +1690,6 @@ func TestValidate_TopologySpreadConstraintMatchExpressionsRejected(t *testing.T)
 
 // --- Graceful termination validation tests (CC-0084) ---
 
-// ptrInt64 returns a pointer to v for webhook termination-field tests (CC-0084).
-func ptrInt64(v int64) *int64 { return &v }
-
-// ptrInt32 returns a pointer to v for webhook uWSGI-field tests (CC-0084).
-func ptrInt32(v int32) *int32 { return &v }
-
 // REQ-001 (CC-0084): reject terminationGracePeriodSeconds below the 10-second floor.
 func TestValidate_TerminationGracePeriodBelowMinRejected(t *testing.T) {
 	w := &KeystoneWebhook{}
@@ -1683,7 +1705,7 @@ func TestValidate_TerminationGracePeriodBelowMinRejected(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			g := NewGomegaWithT(t)
 			k := validKeystone()
-			k.Spec.TerminationGracePeriodSeconds = ptrInt64(tc.val)
+			k.Spec.TerminationGracePeriodSeconds = ptr.To(tc.val)
 			_, err := w.ValidateCreate(context.Background(), k)
 			g.Expect(err).To(HaveOccurred())
 			g.Expect(err.Error()).To(ContainSubstring("terminationGracePeriodSeconds"))
@@ -1697,9 +1719,9 @@ func TestValidate_TerminationGracePeriodAtMinAccepted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.TerminationGracePeriodSeconds = ptrInt64(10)
+	k.Spec.TerminationGracePeriodSeconds = ptr.To(int64(10))
 	// Drop preStop below grace to satisfy the cross-field constraint.
-	k.Spec.PreStopSleepSeconds = ptrInt64(1)
+	k.Spec.PreStopSleepSeconds = ptr.To(int64(1))
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -1710,7 +1732,7 @@ func TestValidate_PreStopSleepSecondsBelowMinRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.PreStopSleepSeconds = ptrInt64(-1)
+	k.Spec.PreStopSleepSeconds = ptr.To(int64(-1))
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
@@ -1723,7 +1745,7 @@ func TestValidate_PreStopSleepSecondsZeroAccepted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.PreStopSleepSeconds = ptrInt64(0)
+	k.Spec.PreStopSleepSeconds = ptr.To(int64(0))
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -1734,8 +1756,8 @@ func TestValidate_PreStopEqualsGracePeriodRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.TerminationGracePeriodSeconds = ptrInt64(30)
-	k.Spec.PreStopSleepSeconds = ptrInt64(30)
+	k.Spec.TerminationGracePeriodSeconds = ptr.To(int64(30))
+	k.Spec.PreStopSleepSeconds = ptr.To(int64(30))
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
@@ -1748,8 +1770,8 @@ func TestValidate_PreStopExceedsGracePeriodRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.TerminationGracePeriodSeconds = ptrInt64(30)
-	k.Spec.PreStopSleepSeconds = ptrInt64(45)
+	k.Spec.TerminationGracePeriodSeconds = ptr.To(int64(30))
+	k.Spec.PreStopSleepSeconds = ptr.To(int64(45))
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
@@ -1762,8 +1784,8 @@ func TestValidate_PreStopStrictlyLessThanGracePeriodAccepted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.TerminationGracePeriodSeconds = ptrInt64(60)
-	k.Spec.PreStopSleepSeconds = ptrInt64(10)
+	k.Spec.TerminationGracePeriodSeconds = ptr.To(int64(60))
+	k.Spec.PreStopSleepSeconds = ptr.To(int64(10))
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -1776,7 +1798,7 @@ func TestValidate_PreStopEqualsDefaultGraceRejected(t *testing.T) {
 	w := &KeystoneWebhook{}
 	k := validKeystone()
 	// TerminationGracePeriodSeconds left nil — resolves to 30.
-	k.Spec.PreStopSleepSeconds = ptrInt64(30)
+	k.Spec.PreStopSleepSeconds = ptr.To(int64(30))
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
@@ -1793,7 +1815,7 @@ func TestValidate_UWSGIHarakiriBelowMinRejected(t *testing.T) {
 		Processes:     2,
 		Threads:       1,
 		HTTPKeepAlive: true,
-		Harakiri:      ptrInt32(0),
+		Harakiri:      ptr.To(int32(0)),
 	}
 
 	_, err := w.ValidateCreate(context.Background(), k)
@@ -1811,7 +1833,7 @@ func TestValidate_UWSGIKeepAliveTimeoutBelowMinRejected(t *testing.T) {
 		Processes:            2,
 		Threads:              1,
 		HTTPKeepAlive:        true,
-		HTTPKeepAliveTimeout: ptrInt32(0),
+		HTTPKeepAliveTimeout: ptr.To(int32(0)),
 	}
 
 	_, err := w.ValidateCreate(context.Background(), k)
@@ -1830,7 +1852,7 @@ func TestValidate_HarakiriAtDrainBoundaryRejected(t *testing.T) {
 		Processes:     2,
 		Threads:       1,
 		HTTPKeepAlive: true,
-		Harakiri:      ptrInt32(25),
+		Harakiri:      ptr.To(int32(25)),
 	}
 
 	_, err := w.ValidateCreate(context.Background(), k)
@@ -1844,13 +1866,13 @@ func TestValidate_HarakiriAboveDrainRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.TerminationGracePeriodSeconds = ptrInt64(60)
-	k.Spec.PreStopSleepSeconds = ptrInt64(10)
+	k.Spec.TerminationGracePeriodSeconds = ptr.To(int64(60))
+	k.Spec.PreStopSleepSeconds = ptr.To(int64(10))
 	k.Spec.UWSGI = &UWSGISpec{
 		Processes:     2,
 		Threads:       1,
 		HTTPKeepAlive: true,
-		Harakiri:      ptrInt32(60), // exceeds drain window of 50s
+		Harakiri:      ptr.To(int32(60)), // exceeds drain window of 50s
 	}
 
 	_, err := w.ValidateCreate(context.Background(), k)
@@ -1864,13 +1886,13 @@ func TestValidate_HarakiriWithinDrainAccepted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.TerminationGracePeriodSeconds = ptrInt64(60)
-	k.Spec.PreStopSleepSeconds = ptrInt64(10)
+	k.Spec.TerminationGracePeriodSeconds = ptr.To(int64(60))
+	k.Spec.PreStopSleepSeconds = ptr.To(int64(10))
 	k.Spec.UWSGI = &UWSGISpec{
 		Processes:     2,
 		Threads:       1,
 		HTTPKeepAlive: true,
-		Harakiri:      ptrInt32(30), // well within drain window of 50s
+		Harakiri:      ptr.To(int32(30)), // well within drain window of 50s
 	}
 
 	_, err := w.ValidateCreate(context.Background(), k)
@@ -1886,7 +1908,7 @@ func TestValidate_KeepAliveTimeoutWithoutKeepAliveRejected(t *testing.T) {
 		Processes:            2,
 		Threads:              1,
 		HTTPKeepAlive:        false,
-		HTTPKeepAliveTimeout: ptrInt32(5),
+		HTTPKeepAliveTimeout: ptr.To(int32(5)),
 	}
 
 	_, err := w.ValidateCreate(context.Background(), k)
@@ -1904,7 +1926,7 @@ func TestValidate_KeepAliveTimeoutWithKeepAliveAccepted(t *testing.T) {
 		Processes:            2,
 		Threads:              1,
 		HTTPKeepAlive:        true,
-		HTTPKeepAliveTimeout: ptrInt32(5),
+		HTTPKeepAliveTimeout: ptr.To(int32(5)),
 	}
 
 	_, err := w.ValidateCreate(context.Background(), k)

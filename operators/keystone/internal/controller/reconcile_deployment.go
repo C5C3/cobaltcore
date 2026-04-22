@@ -402,18 +402,20 @@ func preStopSleepSeconds(keystone *keystonev1alpha1.Keystone) int64 {
 }
 
 // deploymentStrategy returns the effective Deployment rollout strategy for the
-// Keystone API. If spec.Strategy is non-nil, it is dereferenced and returned
-// verbatim (no merging of defaults) so operators can opt into Recreate or
-// customize surge/unavailability thresholds. Otherwise, the hardened default
-// is returned: RollingUpdate with maxUnavailable=0 and maxSurge=1, which
-// guarantees no capacity loss during rollouts (CC-0084, REQ-005, REQ-006).
+// Keystone API. If spec.Strategy is non-nil, a DeepCopy of it is returned so
+// operators can opt into Recreate or customize surge/unavailability thresholds
+// without any aliasing of the RollingUpdate pointer or its nested
+// MaxUnavailable/MaxSurge pointers back to the CR. Otherwise, the hardened
+// default is returned: RollingUpdate with maxUnavailable=0 and maxSurge=1,
+// which guarantees no capacity loss during rollouts (CC-0084, REQ-005, REQ-006).
 //
-// A fresh value is constructed on every call (including the *IntOrString
-// pointers inside RollingUpdate) so the result is safe to reuse across
-// reconciles without aliasing.
+// DeepCopy on the override path — combined with fresh pointers constructed
+// on the default path — means every call yields a value that is safe to
+// mutate or reuse across reconciles without leaking writes back into
+// keystone.Spec.Strategy.
 func deploymentStrategy(keystone *keystonev1alpha1.Keystone) appsv1.DeploymentStrategy {
 	if keystone.Spec.Strategy != nil {
-		return *keystone.Spec.Strategy
+		return *keystone.Spec.Strategy.DeepCopy()
 	}
 	maxUnavailable := intstr.FromInt32(0)
 	maxSurge := intstr.FromInt32(1)

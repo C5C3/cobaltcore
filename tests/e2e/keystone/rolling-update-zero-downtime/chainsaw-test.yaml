@@ -116,6 +116,16 @@ spec:
           #   PSS), produces well-defined exit codes curl-side for resets.
           # Reviewer: if kind clusters do not preload this image, add it to
           #   the preload list in the kind provisioning workflow.
+          #
+          # The Job is created through a `script:` step rather than
+          # declaratively, so chainsaw does not track it for automatic
+          # cleanup. Under rapid CI retries the prior Job may still exist
+          # (TTL is 300s) and `kubectl apply` would fail on immutable Job
+          # spec fields. Pre-delete it idempotently before re-applying so
+          # retries are race-free — mirrors the CC-0048 pattern in
+          # tests/e2e-chaos/cronjob-rotation-failure/chainsaw-test.yaml.
+          kubectl delete job keystone-rolling-update-load-gen \
+            -n openstack --ignore-not-found --wait=true
           kubectl apply -n openstack -f - <<'JOB'
           apiVersion: batch/v1
           kind: Job
