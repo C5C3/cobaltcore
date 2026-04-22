@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-22T08:56:25.979687+00:00",
+  "feature_id": "CC-0081",
+  "task_type": "structure-review",
+  "session_key": "CC-0081",
+  "model": "claude-opus-4-7",
+  "prompt": "Convert this human code review feedback into a structured prompt for an AI coding agent.\n\nFeature: CC-0081 - Restrict rotation CronJob ServiceAccount to read-only\nReviewer: gndrmnn\n\nRaw feedback:\n\n\n## Inline Comments\n- `operators/keystone/internal/controller/reconcile_fernet_test.go:640` — \"The added tests in reconcile_fernet_test.go Line 630-640 are STILL too implementation specific. We are not going to add unit tests that check for certain substrings in the Python source code. Remove the tests that check for the substring `CC-0081`, remove the check for the substring `forge.c5c3.io/rotation-completed-at` as well as `datetime.datetime` etc.\n\nThe same applies for reconcile_credential_test.go Lines 637-647\n\nChecking the source code for the occurrence of substrings is very bad practice and very brittle. You can keep the check for `python3 << 'PYTHON'` as that will probably not change soon and validates that our script has been successfully deployed. But the others must go. \"\n\nIMPORTANT: Preserve the reviewer's original scope exactly.\nIf the reviewer commented on specific files/lines, the structured prompt must target ONLY those locations.\nDo NOT broaden or generalize the reviewer's intent to other files.\n\nOutput a structured prompt in this format:\n\nPlease address the comments from this code review:\n## Overall Comments\n- (list each overall concern)\n## Individual Comments\n### Comment N\n<location path=\"...\" line_range=\"...\" />\n(description of change needed)\n\nBe specific about file paths and line numbers where available.\nOnly output the structured prompt, nothing else.",
+  "prompt_length": 1589,
+  "caller": "run_claude_cli"
+}

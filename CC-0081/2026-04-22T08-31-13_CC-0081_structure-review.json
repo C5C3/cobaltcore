@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-22T08:31:13.153298+00:00",
+  "feature_id": "CC-0081",
+  "task_type": "structure-review",
+  "session_key": "CC-0081",
+  "model": "claude-opus-4-7",
+  "prompt": "Convert this human code review feedback into a structured prompt for an AI coding agent.\n\nFeature: CC-0081 - Restrict rotation CronJob ServiceAccount to read-only\nReviewer: gndrmnn\n\nRaw feedback:\n\n\n## Inline Comments\n- `operators/keystone/internal/controller/reconcile_credential_test.go:648` — \"That's too implementation specific. You can remove these checks\"\n- `operators/keystone/internal/controller/reconcile_credential_test.go:677` — \"Too implementation specific. You can remove these\"\n- `operators/keystone/internal/controller/reconcile_fernet_test.go:641` — \"Too implementation specific. Remove these\"\n\nIMPORTANT: Preserve the reviewer's original scope exactly.\nIf the reviewer commented on specific files/lines, the structured prompt must target ONLY those locations.\nDo NOT broaden or generalize the reviewer's intent to other files.\n\nOutput a structured prompt in this format:\n\nPlease address the comments from this code review:\n## Overall Comments\n- (list each overall concern)\n## Individual Comments\n### Comment N\n<location path=\"...\" line_range=\"...\" />\n(description of change needed)\n\nBe specific about file paths and line numbers where available.\nOnly output the structured prompt, nothing else.",
+  "prompt_length": 1210,
+  "caller": "run_claude_cli"
+}

@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-22T08:33:43.216663+00:00",
+  "feature_id": "CC-0081",
+  "task_type": "review",
+  "session_key": "CC-0081",
+  "model": "claude-opus-4-7",
+  "prompt": "Analyze the following external review that has been addressed.\nIdentify what our INTERNAL code review should have caught\nBEFORE the external reviewer found it.\n\n## External Review Feedback\n\n\n## Code Comments (with Resolutions)\n- [operators/keystone/internal/controller/reconcile_credential_test.go:648] That's too implementation specific. You can remove these checks\n- [operators/keystone/internal/controller/reconcile_credential_test.go:677] Too implementation specific. You can remove these\n- [operators/keystone/internal/controller/reconcile_fernet_test.go:641] Too implementation specific. Remove these\n\n## Resolution Summary\nAddressed all three reviewer comments by removing overly implementation-specific assertions from the embedded-script tests. In both `reconcile_credential_test.go` and `reconcile_fernet_test.go`, the `isoformat(timespec=\"seconds\")` substring check was deleted since it pins the tests to an exact Python idiom rather than observable behavior. Additionally, the `migrateIdx < patchIdx` ordering assertion was dropped from `TestCredentialRotateScript_MigrateBeforePatch` for the same reason. No other files or locations were changed.\n\nExtract 0-3 review improvement patterns. For each:\n- name: Short, action-oriented name IN ENGLISH\n- review_area: error-handling | security | testing | performance | type-safety | validation | architecture | naming | documentation\n- detection_hint: How should the reviewer detect this?\n- severity: BLOCKING | WARNING\n- what_to_check: What exactly to check\n- why_it_matters: Why it matters\n- example_feedback: Original quote from the reviewer\n- example_fix: What was changed\n\nQUALITY: Only real review blindspots. No subjective style opinions.\nNothing that only a domain expert could know.\nIf nothing extractable: empty array.\n\nLANGUAGE: ALL fields MUST be in English.\n\nResponse: ONLY JSON array.",
+  "prompt_length": 1855,
+  "caller": "run_claude_cli"
+}

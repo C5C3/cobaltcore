@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-18T21:07:33.214497+00:00",
+  "feature_id": "CC-0081",
+  "task_type": "commit",
+  "session_key": "CC-0081",
+  "model": "claude-opus-4-7",
+  "prompt": "Generate a detailed git commit body for this commit.\nSubject: fix(CC-0081): address review #1 feedback from berendt\n\nReview feedback is in: /worktrees/CC-0081/.planwerk/reviews/CC-0081-github-review-by-berendt-external-1.json\nUse `git diff --cached -- ':(exclude).planwerk'` to see the full staged diff.\n\nDiff stat:\ndocs/how-to/keystone-key-rotation.md               |  9 ++-\n docs/reference/keystone-reconciler.md              | 10 +++\n .../internal/controller/integration_test.go        | 76 +++++++++-------------\n .../internal/controller/reconcile_credential.go    |  4 +-\n .../controller/reconcile_credential_test.go        |  7 +-\n .../internal/controller/reconcile_fernet.go        |  4 +-\n .../internal/controller/reconcile_fernet_test.go   |  9 +++\n .../internal/controller/rotation_staging.go        | 13 +++-\n 8 files changed, 79 insertions(+), 53 deletions(-)\n\nWrite ONLY the body text, no subject line, no markdown.\nFor each changed file, write a bullet point: '- path/to/file: what was changed'\nDo NOT mention .planwerk directory changes.\nOutput ONLY plain text — no tool_call tags, no XML, no code blocks.",
+  "prompt_length": 1120,
+  "caller": "run_claude_cli"
+}
