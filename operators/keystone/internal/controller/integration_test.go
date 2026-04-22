@@ -9,6 +9,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -853,7 +854,9 @@ func TestIntegration_CronJobDetailedSpec(t *testing.T) {
 		envMap[env.Name] = env
 	}
 	g.Expect(envMap).To(HaveKey("SECRET_NAME"))
-	g.Expect(envMap["SECRET_NAME"].Value).To(Equal(fmt.Sprintf("%s-fernet-keys", ks.Name)))
+	// SECRET_NAME points at the staging Secret — CronJob SA cannot patch
+	// the production Secret (CC-0081).
+	g.Expect(envMap["SECRET_NAME"].Value).To(Equal(fmt.Sprintf("%s-fernet-keys-rotation", ks.Name)))
 
 	g.Expect(envMap).To(HaveKey("SECRET_NAMESPACE"))
 	g.Expect(envMap["SECRET_NAMESPACE"].ValueFrom).NotTo(BeNil(), "SECRET_NAMESPACE should use ValueFrom")
@@ -2417,4 +2420,280 @@ func TestIntegration_FinalizerBrownfieldDeletion(t *testing.T) {
 		To(BeTrue(), "no User CR should exist after brownfield deletion")
 	g.Expect(apierrors.IsNotFound(c.Get(ctx, mdbKey, &mariadbv1alpha1.Grant{}))).
 		To(BeTrue(), "no Grant CR should exist after brownfield deletion")
+}
+
+// --- Task 4.1 / 4.2: split-compute-write rotation integration tests (CC-0081) ---
+
+// eventuallyFindKeystoneEvent polls the Events API for an Event on the given
+// Keystone CR with the matching reason and type. Returns the first match or
+// fails the Eventually assertion (CC-0081).
+func eventuallyFindKeystoneEvent(t testing.TB, ctx context.Context, c client.Client, ks *keystonev1alpha1.Keystone, reason, eventType string) corev1.Event {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	var match corev1.Event
+	g.Eventually(func(ig Gomega) {
+		events := &corev1.EventList{}
+		ig.Expect(c.List(ctx, events, client.InNamespace(ks.Namespace))).To(Succeed())
+		for _, e := range events.Items {
+			if e.InvolvedObject.UID == ks.UID && e.Reason == reason && e.Type == eventType {
+				match = e
+				return
+			}
+		}
+		ig.Expect(fmt.Errorf("no %s %s event yet for %s/%s", eventType, reason, ks.Namespace, ks.Name)).NotTo(HaveOccurred())
+	}, eventuallyTimeout, pollInterval).Should(Succeed(),
+		fmt.Sprintf("CC-0081: expected %s/%s event on Keystone %s/%s", eventType, reason, ks.Namespace, ks.Name))
+	return match
+}
+
+// setupRotationEnvTest drives the envtest controller through its initial
+// reconciliation so the staging Secret, production Fernet Secret, and
+// Keystone CR are all live for rotation-apply scenarios (CC-0081, Task 4.1).
+// It skips the test when envtest is unavailable, creates a per-test Namespace
+// using nsGenerateName as the GenerateName prefix, seeds the namespace with
+// prerequisite Secrets, creates a brownfield Keystone named "test-keystone",
+// drives full reconciliation, and re-fetches the CR so the returned object
+// carries a fresh UID/ResourceVersion for subsequent Updates and event
+// lookups. Tests that need to vary the Keystone shape (managed mode, custom
+// spec) must not use this helper.
+func setupRotationEnvTest(t *testing.T, nsGenerateName string) (
+	client.Client, context.Context, *keystonev1alpha1.Keystone, *corev1.Namespace,
+) {
+	t.Helper()
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: nsGenerateName}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ns.Name}, ks)).
+		To(Succeed(), "re-fetch Keystone CR post-reconcile (CC-0081)")
+
+	return c, ctx, ks, ns
+}
+
+// TestRotationApplyEndToEnd_EnvTest drives the full split-compute-write Fernet
+// rotation flow in envtest (CC-0081, Task 4.1): the operator creates the empty
+// staging Secret, the test simulates the CronJob PATCH with valid keys and a
+// completion annotation, and the reconciler copies the keys onto the production
+// Secret, deletes the staging Secret, and emits a FernetKeysRotated event.
+func TestRotationApplyEndToEnd_EnvTest(t *testing.T) {
+	g := NewGomegaWithT(t)
+	c, ctx, ks, ns := setupRotationEnvTest(t, "test-rotation-apply-")
+
+	// Assert the staging Secret exists with empty Data, correct label, and
+	// an OwnerReference back to the Keystone CR (CC-0081, REQ-005).
+	stagingKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-fernet-keys-rotation", ks.Name)}
+	staging := &corev1.Secret{}
+	g.Expect(c.Get(ctx, stagingKey, staging)).To(Succeed(), "staging Secret should exist")
+	g.Expect(staging.Data).To(BeEmpty(), "staging Secret Data should start empty (CC-0081)")
+	g.Expect(staging.Labels).To(HaveKeyWithValue(StagingSecretLabelKey, "fernet-keys"))
+	var ownsKs bool
+	for _, or := range staging.OwnerReferences {
+		if or.UID == ks.UID {
+			ownsKs = true
+			break
+		}
+	}
+	g.Expect(ownsKs).To(BeTrue(), "staging Secret should be owned by the Keystone CR (CC-0081)")
+
+	// Capture the production Secret's pre-rotation Data for comparison below.
+	prodKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-fernet-keys", ks.Name)}
+	prodBefore := &corev1.Secret{}
+	g.Expect(c.Get(ctx, prodKey, prodBefore)).To(Succeed(), "production Fernet Secret should exist")
+	g.Expect(prodBefore.Data).NotTo(BeEmpty(), "production Secret should have been populated by the initial reconcile")
+
+	// Simulate the CronJob PATCH with the exact write shape emitted by
+	// fernet_rotate.sh: a strategic-merge PATCH carrying only the `data`
+	// and `metadata.annotations` subtrees (CC-0081, REQ-005, REQ-006, TE2).
+	// This exercises the real apply path end-to-end rather than masking it
+	// with a full-object Update.
+	stagedData := map[string][]byte{}
+	for i := 0; i < 3; i++ {
+		k, err := generateFernetKey()
+		g.Expect(err).NotTo(HaveOccurred())
+		stagedData[fmt.Sprintf("%d", i)] = []byte(k)
+	}
+	g.Expect(cronJobStrategicMergePatch(ctx, c, stagingKey, stagedData)).To(Succeed(),
+		"stage CronJob output onto staging Secret (CC-0081)")
+
+	// Eventually: production Secret Data == staged Data (CC-0081, REQ-005).
+	g.Eventually(func(ig Gomega) {
+		got := &corev1.Secret{}
+		ig.Expect(c.Get(ctx, prodKey, got)).To(Succeed())
+		ig.Expect(got.Data).To(HaveLen(len(stagedData)))
+		for k, v := range stagedData {
+			ig.Expect(got.Data).To(HaveKeyWithValue(k, v))
+		}
+	}, eventuallyTimeout, pollInterval).Should(Succeed(),
+		"production Secret Data should be replaced with staged keys (CC-0081)")
+
+	// Eventually: the staging Secret's staged data and completion annotation
+	// are gone. The operator deletes the staging Secret after applying and
+	// ensureFernetStagingSecret re-creates it empty on the next reconcile —
+	// so either NotFound OR a present-but-empty Secret without the
+	// completion annotation is the correct terminal state (CC-0081).
+	g.Eventually(func(ig Gomega) {
+		got := &corev1.Secret{}
+		err := c.Get(ctx, stagingKey, got)
+		if apierrors.IsNotFound(err) {
+			return
+		}
+		ig.Expect(err).NotTo(HaveOccurred())
+		ig.Expect(got.Data).To(BeEmpty(),
+			"staging Secret Data should be cleared after apply (CC-0081)")
+		ig.Expect(got.Annotations).NotTo(HaveKey(RotationCompletedAnnotation),
+			"staging Secret completion annotation should be gone after apply (CC-0081)")
+	}, eventuallyTimeout, pollInterval).Should(Succeed(),
+		"staging Secret should be deleted or reset after successful apply (CC-0081)")
+
+	// Eventually: a Normal FernetKeysRotated event is emitted on the Keystone CR.
+	eventuallyFindKeystoneEvent(t, ctx, c, ks, "FernetKeysRotated", corev1.EventTypeNormal)
+}
+
+// TestRotationApplyRejectsMalformedKeys_EnvTest verifies that a staging Secret
+// with malformed Fernet keys (32-byte raw strings instead of 44-byte base64url)
+// is rejected by the operator's validation step: production Secret is
+// untouched, staging Secret is retained for inspection, and a
+// RotationRejected Warning event is emitted (CC-0081, Task 4.2, REQ-006).
+func TestRotationApplyRejectsMalformedKeys_EnvTest(t *testing.T) {
+	g := NewGomegaWithT(t)
+	c, ctx, ks, ns := setupRotationEnvTest(t, "test-rotation-reject-")
+
+	// Snapshot production Secret Data before staging malformed keys (CC-0081).
+	prodKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-fernet-keys", ks.Name)}
+	prodBefore := &corev1.Secret{}
+	g.Expect(c.Get(ctx, prodKey, prodBefore)).To(Succeed())
+	g.Expect(prodBefore.Data).NotTo(BeEmpty())
+	dataBefore := map[string][]byte{}
+	for k, v := range prodBefore.Data {
+		dataBefore[k] = append([]byte(nil), v...)
+	}
+
+	// Stage malformed keys: 32-byte raw strings rather than 44-byte base64url
+	// (fails validateRotationOutput on length, CC-0081, REQ-006).
+	stagingKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-fernet-keys-rotation", ks.Name)}
+	malformed := map[string][]byte{
+		"0": []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0"),
+		"1": []byte("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb1"),
+		"2": []byte("ccccccccccccccccccccccccccccccc2"),
+	}
+	// Use the same strategic-merge PATCH shape the CronJob actually emits so
+	// the validation rejection is exercised against the real write path
+	// (CC-0081, TE2).
+	g.Expect(cronJobStrategicMergePatch(ctx, c, stagingKey, malformed)).To(Succeed(),
+		"stage malformed rotation output (CC-0081)")
+
+	// Eventually: Warning RotationRejected event appears on the Keystone CR.
+	eventuallyFindKeystoneEvent(t, ctx, c, ks, "RotationRejected", corev1.EventTypeWarning)
+
+	// Consistently: production Secret Data is unchanged (CC-0081, REQ-006).
+	g.Consistently(func(ig Gomega) {
+		got := &corev1.Secret{}
+		ig.Expect(c.Get(ctx, prodKey, got)).To(Succeed())
+		ig.Expect(got.Data).To(Equal(dataBefore),
+			"production Secret must not be mutated by a rejected rotation (CC-0081)")
+	}, 2*time.Second, pollInterval).Should(Succeed())
+
+	// Staging Secret is retained with the malformed data + annotation (CC-0081).
+	retained := &corev1.Secret{}
+	g.Expect(c.Get(ctx, stagingKey, retained)).To(Succeed(),
+		"staging Secret should be retained after a rejected apply (CC-0081)")
+	g.Expect(retained.Data).To(Equal(malformed))
+	g.Expect(retained.Annotations).To(HaveKey(RotationCompletedAnnotation))
+}
+
+// cronJobStrategicMergePatch emits the exact strategic-merge PATCH shape the
+// fernet_rotate.sh / credential_rotate.sh CronJob scripts send to the staging
+// Secret — `{"metadata":{"annotations":{"forge.c5c3.io/rotation-completed-at":"..."}}, "data":{...}}`
+// — and writes it via the controller-runtime client. Using this in envtest
+// (rather than c.Update) exercises the real write path so the operator's
+// apply semantics are covered end-to-end (CC-0081, TE2).
+func cronJobStrategicMergePatch(
+	ctx context.Context,
+	c client.Client,
+	key client.ObjectKey,
+	data map[string][]byte,
+) error {
+	payload := map[string]any{
+		"metadata": map[string]any{
+			"annotations": map[string]string{
+				RotationCompletedAnnotation: time.Now().UTC().Format(time.RFC3339),
+			},
+		},
+		// json.Marshal encodes []byte values as base64 strings, which matches
+		// the Secret.Data wire format.
+		"data": data,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshalling CronJob PATCH payload: %w", err)
+	}
+	target := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+	}
+	return c.Patch(ctx, target, client.RawPatch(types.StrategicMergePatchType, raw))
+}
+
+// TestRotationApplyReplacesDisjointIndices_EnvTest seeds the production
+// Fernet Secret with a key at an index the staging payload does NOT mention,
+// then simulates the CronJob PATCH with a 3-key staging payload at
+// `{"0","1","2"}`, and asserts the operator's apply path fully replaces the
+// production Data (length == staging length, stale disjoint index removed).
+// This is the envtest regression guard for the strategic-merge-vs-replace
+// bug (CC-0081, T1).
+func TestRotationApplyReplacesDisjointIndices_EnvTest(t *testing.T) {
+	g := NewGomegaWithT(t)
+	c, ctx, ks, ns := setupRotationEnvTest(t, "test-rotation-disjoint-")
+
+	// Seed production with a key at index "9" that the staging payload below
+	// does NOT mention. Under strategic-merge-by-key (the bug this test
+	// guards against) "9" would survive; under full-replacement Update it is
+	// removed (CC-0081).
+	prodKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-fernet-keys", ks.Name)}
+	prodBefore := &corev1.Secret{}
+	g.Expect(c.Get(ctx, prodKey, prodBefore)).To(Succeed())
+	prodBefore.Data["9"] = []byte("pre-existing-disjoint-stale-key")
+	g.Expect(c.Update(ctx, prodBefore)).To(Succeed(),
+		"seed production with a disjoint index (CC-0081, T1)")
+
+	// Stage a 3-key payload at indices {"0","1","2"} via the real CronJob
+	// strategic-merge PATCH shape.
+	stagingKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-fernet-keys-rotation", ks.Name)}
+	stagedData := map[string][]byte{}
+	for i := 0; i < 3; i++ {
+		k, err := generateFernetKey()
+		g.Expect(err).NotTo(HaveOccurred())
+		stagedData[fmt.Sprintf("%d", i)] = []byte(k)
+	}
+	g.Expect(cronJobStrategicMergePatch(ctx, c, stagingKey, stagedData)).To(Succeed(),
+		"stage CronJob output onto staging Secret (CC-0081, T1)")
+
+	// Eventually: production Data exactly equals staging — length, keys,
+	// and values. The disjoint stale index "9" must be gone.
+	g.Eventually(func(ig Gomega) {
+		got := &corev1.Secret{}
+		ig.Expect(c.Get(ctx, prodKey, got)).To(Succeed())
+		ig.Expect(got.Data).To(HaveLen(len(stagedData)),
+			"production Data length must equal staging length (CC-0081, REQ-006)")
+		ig.Expect(got.Data).NotTo(HaveKey("9"),
+			"stale disjoint index must be removed by full-replacement Update (CC-0081)")
+		for k, v := range stagedData {
+			ig.Expect(got.Data).To(HaveKeyWithValue(k, v))
+		}
+	}, eventuallyTimeout, pollInterval).Should(Succeed(),
+		"production Secret must fully replace to staging keys, not merge (CC-0081, T1)")
+
+	// A Normal FernetKeysRotated event is emitted on the Keystone CR.
+	eventuallyFindKeystoneEvent(t, ctx, c, ks, "FernetKeysRotated", corev1.EventTypeNormal)
 }

@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: In test code, look for direct slice indexing like `Containers[0]` or `InitContainers[0]` paired with `assert.Len(..., 1)`. These patterns break as soon as a sidecar or additional container is added.
 **Severity**: WARNING
-**Occurrences**: 3
+**Occurrences**: 4
 
 ## What to check
 
@@ -29,3 +29,8 @@ Index-based access couples tests to container ordering and count. Adding a sidec
 - **Feedback**: Brittle Containers[0] assertion
 - **What was missed**: Any test assertion that accesses a container by numeric index rather than by name. Check whether the target container could shift position due to sidecar injection, init container changes, or spec reordering.
 - **Fix**: Replaced the index-based access with a name-based loop that finds the 'keystone-api' container by iterating and matching on the container name.
+
+### CC-0081 — gndrmnn
+- **Feedback**: The added tests in reconcile_fernet_test.go Line 630-640 are STILL too implementation specific. We are not going to add unit tests that check for certain substrings in the Python source code... Checking the source code for the occurrence of substrings is very bad practice and very brittle.
+- **What was missed**: Flag tests that use Contains/substring matching on embedded script bodies (e.g., Python heredocs) to verify specific implementation details like identifiers, API call names, annotation keys, or library usage. Only allow minimal structural probes that validate deployment (e.g., shebang or heredoc delimiter).
+- **Fix**: Removed substring assertions for `CC-0081`, `forge.c5c3.io/rotation-completed-at`, `datetime.datetime`, `strategic-merge-patch+json`, and `Secret update failed` from both TestFernetRotateScript_EmbeddedContent and TestCredentialRotateScript_EmbeddedContent. Retained only the `python3 << 'PYTHON'` probe that validates the script is deployed.

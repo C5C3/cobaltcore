@@ -1,0 +1,37 @@
+{
+  "feature_id": "CC-0081",
+  "title": "GitHub Review by gndrmnn",
+  "summary": "The reviewer wants the substring-based assertions in `reconcile_fernet_test.go` (lines 630–640) and `reconcile_credential_test.go` (lines 637–647) removed — specifically checks for `CC-0081`, `forge.c5c3.io/rotation-completed-at`, and `datetime.datetime` — because they're too implementation-specific and brittle. The `python3 << 'PYTHON'` check may remain since it validates script deployment.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "gndrmnn",
+  "date": "2026-04-22T08:54:02Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 3,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "The added tests in reconcile_fernet_test.go Line 630-640 are STILL too implementation specific. We are not going to add unit tests that check for certain substrings in the Python source code. Remove the tests that check for the substring `CC-0081`, remove the check for the substring `forge.c5c3.io/rotation-completed-at` as well as `datetime.datetime` etc.\n\nThe same applies for reconcile_credential_test.go Lines 637-647\n\nChecking the source code for the occurrence of substrings is very bad practice and very brittle. You can keep the check for `python3 << 'PYTHON'` as that will probably not change soon and validates that our script has been successfully deployed. But the others must go. ",
+      "path": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "line": 640,
+      "author": "gndrmnn",
+      "created_at": "2026-04-22T08:51:14Z",
+      "id": null,
+      "resolution": "In both reconcile_fernet_test.go (TestFernetRotateScript_EmbeddedContent, ~lines 624-640) and reconcile_credential_test.go (TestCredentialRotateScript_EmbeddedContent, ~lines 631-647): removed the `CC-0081`, `forge.c5c3.io/rotation-completed-at`, and `datetime.datetime.now(datetime.timezone.utc)` substring assertions, plus the related `strategic-merge-patch+json` and `Secret update failed` checks that fall under the reviewer's `etc.`. Kept the `python3 << 'PYTHON'` assertion as explicitly requested, and added a short comment noting that deeper assertions on the embedded Python source are intentionally omitted because they are brittle against reformatting and are covered by integration tests."
+    }
+  ],
+  "resolution_summary": "Removed brittle substring assertions from both TestFernetRotateScript_EmbeddedContent and TestCredentialRotateScript_EmbeddedContent in line with the reviewer's guidance. Dropped the checks for `CC-0081`, `forge.c5c3.io/rotation-completed-at`, and `datetime.datetime.now(datetime.timezone.utc)` as requested, and also removed the remaining implementation-specific substring checks (`strategic-merge-patch+json`, `Secret update failed`) covered by the reviewer's `etc.` — behavior of the Python heredoc is left to higher-level integration tests. The `python3 << 'PYTHON'` probe is retained per the reviewer's explicit instruction, and an inline comment was added explaining why deeper script assertions are intentionally omitted. No changes were made outside the two files/locations the reviewer called out.",
+  "github_review_id": 4153293204
+}

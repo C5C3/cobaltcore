@@ -7,6 +7,7 @@ package controller
 import (
 	"context"
 	"encoding/base64"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -17,6 +18,8 @@ import (
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -542,9 +545,11 @@ func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 	g.Expect(container.Command).To(Equal([]string{"/scripts/credential_rotate.sh"}))
 
 	// Verify env vars for Secret update via K8s API and oslo.config override (CC-0036).
+	// SECRET_NAME points at the staging Secret — CronJob SA is forbidden from
+	// patching the production Secret (CC-0081).
 	g.Expect(container.Env).To(HaveLen(3))
 	g.Expect(container.Env[0].Name).To(Equal("SECRET_NAME"))
-	g.Expect(container.Env[0].Value).To(Equal("test-keystone-credential-keys"))
+	g.Expect(container.Env[0].Value).To(Equal("test-keystone-credential-keys-rotation"))
 	g.Expect(container.Env[1].Name).To(Equal("SECRET_NAMESPACE"))
 	g.Expect(container.Env[2].Name).To(Equal("OS_credential__max_active_keys"))
 	g.Expect(container.Env[2].Value).To(Equal("3"))
@@ -605,7 +610,7 @@ func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 // TestCredentialRotateScript_EmbeddedContent verifies that the go:embed directive
 // correctly loads scripts/credential_rotate.sh into the credentialRotateScript variable.
 // A broken or missing embed silently produces an empty string, which would cause
-// the rotation CronJob pod to fail at runtime (CC-0073, REQ-007).
+// the rotation CronJob pod to fail at runtime (CC-0073, CC-0081, REQ-007).
 func TestCredentialRotateScript_EmbeddedContent(t *testing.T) {
 	g := NewWithT(t)
 
@@ -626,11 +631,32 @@ func TestCredentialRotateScript_EmbeddedContent(t *testing.T) {
 	g.Expect(credentialRotateScript).To(ContainSubstring("credential_migrate"))
 
 	// Verify the Python heredoc for K8s API Secret patching is present.
+	// Deeper assertions on the embedded Python source are intentionally omitted:
+	// they are brittle against trivial reformatting of the script. The Python
+	// block's behavior is exercised by higher-level integration tests instead.
 	g.Expect(credentialRotateScript).To(ContainSubstring("python3 << 'PYTHON'"))
-	g.Expect(credentialRotateScript).To(ContainSubstring("strategic-merge-patch+json"))
+}
 
-	// Verify error handling: script must check HTTP response status.
-	g.Expect(credentialRotateScript).To(ContainSubstring("Secret update failed"))
+// TestCredentialRotateScript_RotateBeforeMigrate verifies that the credential
+// rotation script invokes keystone-manage credential_rotate before
+// credential_migrate, and that the Python K8s API PATCH block is present.
+// credential_rotate must precede credential_migrate so that the active keyset
+// is rotated first before existing credentials are re-encrypted under the
+// new keys (CC-0036, CC-0081, REQ-008).
+func TestCredentialRotateScript_RotateBeforeMigrate(t *testing.T) {
+	g := NewWithT(t)
+
+	g.Expect(credentialRotateScript).NotTo(BeEmpty(), "credentialRotateScript must not be empty — check go:embed directive")
+
+	rotateIdx := strings.Index(credentialRotateScript, "credential_rotate")
+	migrateIdx := strings.Index(credentialRotateScript, "credential_migrate")
+
+	g.Expect(rotateIdx).To(BeNumerically(">=", 0), "credential_rotate invocation must be present")
+	g.Expect(migrateIdx).To(BeNumerically(">=", 0), "credential_migrate invocation must be present")
+	g.Expect(strings.Index(credentialRotateScript, "python3 << 'PYTHON'")).To(BeNumerically(">=", 0), "python3 PATCH heredoc must be present")
+
+	g.Expect(rotateIdx).To(BeNumerically("<", migrateIdx),
+		"credential_rotate must run before credential_migrate so the active keyset is rotated first")
 }
 
 // TestReconcileCredentialKeys_ConditionObservedGeneration verifies that
@@ -717,4 +743,303 @@ func TestCredentialRotationCronJob_PriorityClassNameNil(t *testing.T) {
 	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123")
 
 	g.Expect(cronJob.Spec.JobTemplate.Spec.Template.Spec.PriorityClassName).To(BeEmpty())
+}
+
+// TestEnsureCredentialRotationRBAC_MainSecretIsReadOnly verifies that the Role
+// created by ensureCredentialRotationRBAC grants only `get` on the production
+// credential keys Secret — no patch, update, create, delete, list, watch, or
+// wildcard verbs (CC-0081 REQ-002).
+func TestEnsureCredentialRotationRBAC_MainSecretIsReadOnly(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := credentialTestScheme()
+	ks := credentialTestKeystone()
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks).
+		Build()
+
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	g.Expect(r.ensureCredentialRotationRBAC(context.Background(), ks, "test-keystone-credential-keys")).To(Succeed())
+
+	var role rbacv1.Role
+	g.Expect(c.Get(context.Background(), client.ObjectKey{
+		Namespace: "default",
+		Name:      "test-keystone-credential-rotate",
+	}, &role)).To(Succeed())
+
+	// Exactly one PolicyRule is scoped to the production Secret.
+	g.Expect(countRulesForResource(role.Rules, "test-keystone-credential-keys")).To(Equal(1))
+	mainRule := findRuleForResource(role.Rules, "test-keystone-credential-keys")
+	g.Expect(mainRule).NotTo(BeNil())
+
+	// Verbs on the production Secret are exactly {"get"} — no write verbs.
+	g.Expect(mainRule.Verbs).To(Equal([]string{"get"}))
+
+	// Defense-in-depth: scan every rule for forbidden verbs on the main Secret.
+	forbidden := []string{"patch", "update", "create", "delete", "deletecollection", "list", "watch", "*"}
+	for _, rule := range role.Rules {
+		if len(rule.ResourceNames) != 1 || rule.ResourceNames[0] != "test-keystone-credential-keys" {
+			continue
+		}
+		for _, v := range rule.Verbs {
+			for _, f := range forbidden {
+				g.Expect(v).NotTo(Equal(f), "main Secret rule must not grant verb %q", f)
+			}
+		}
+	}
+}
+
+// TestEnsureCredentialRotationRBAC_StagingSecretHasGetPatchOnly verifies that
+// the Role grants `get`+`patch` scoped to the staging Secret and nothing else
+// (no create/delete/list/watch/update/wildcard) (CC-0081 REQ-003).
+func TestEnsureCredentialRotationRBAC_StagingSecretHasGetPatchOnly(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := credentialTestScheme()
+	ks := credentialTestKeystone()
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks).
+		Build()
+
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	g.Expect(r.ensureCredentialRotationRBAC(context.Background(), ks, "test-keystone-credential-keys")).To(Succeed())
+
+	var role rbacv1.Role
+	g.Expect(c.Get(context.Background(), client.ObjectKey{
+		Namespace: "default",
+		Name:      "test-keystone-credential-rotate",
+	}, &role)).To(Succeed())
+
+	g.Expect(countRulesForResource(role.Rules, "test-keystone-credential-keys-rotation")).To(Equal(1))
+	stagingRule := findRuleForResource(role.Rules, "test-keystone-credential-keys-rotation")
+	g.Expect(stagingRule).NotTo(BeNil())
+
+	// Verbs order-independent comparison: exactly {"get", "patch"}.
+	verbs := append([]string{}, stagingRule.Verbs...)
+	sort.Strings(verbs)
+	g.Expect(verbs).To(Equal([]string{"get", "patch"}))
+
+	// APIGroups + Resources must match core/secrets.
+	g.Expect(stagingRule.APIGroups).To(Equal([]string{""}))
+	g.Expect(stagingRule.Resources).To(Equal([]string{"secrets"}))
+
+	// The staging rule must NOT grant create or delete (operator owns lifecycle).
+	forbidden := []string{"create", "delete", "deletecollection", "update", "list", "watch", "*"}
+	for _, v := range stagingRule.Verbs {
+		for _, f := range forbidden {
+			g.Expect(v).NotTo(Equal(f), "staging Secret rule must not grant verb %q", f)
+		}
+	}
+}
+
+// TestReconcileCredentialKeys_CreatesEmptyStagingSecret verifies that
+// reconcileCredentialKeys ensures a dedicated staging Secret exists for the
+// credential key rotation handoff. The Secret is created empty (no Data) so
+// that only the rotation CronJob populates it via PATCH (CC-0081 REQ-004).
+func TestReconcileCredentialKeys_CreatesEmptyStagingSecret(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := credentialTestScheme()
+	ks := credentialTestKeystone()
+
+	// Pre-create the production credential keys Secret so the flow reaches
+	// step 2+ (staging Secret + RBAC + CronJob + PushSecret).
+	credentialSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-keystone-credential-keys",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			"0": []byte("existing-key-0"),
+			"1": []byte("existing-key-1"),
+			"2": []byte("existing-key-2"),
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks, credentialSecret).
+		Build()
+
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Verify the staging Secret exists with the expected name (CC-0081).
+	var staging corev1.Secret
+	g.Expect(c.Get(context.Background(), client.ObjectKey{
+		Namespace: "default",
+		Name:      "test-keystone-credential-keys-rotation",
+	}, &staging)).To(Succeed())
+
+	// Data must be nil/empty; only the CronJob writes via PATCH.
+	g.Expect(staging.Data).To(BeEmpty())
+
+	// Labels include the rotation-target marker plus all three commonLabels.
+	g.Expect(staging.Labels).To(HaveKeyWithValue("forge.c5c3.io/rotation-target", "credential-keys"))
+	g.Expect(staging.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
+	g.Expect(staging.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+	g.Expect(staging.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "keystone-operator"))
+
+	// Exactly one OwnerReference pointing at the Keystone CR.
+	g.Expect(staging.OwnerReferences).To(HaveLen(1))
+	g.Expect(staging.OwnerReferences[0].Name).To(Equal("test-keystone"))
+	g.Expect(staging.OwnerReferences[0].Kind).To(Equal("Keystone"))
+}
+
+// TestEnsureCredentialRotationRBAC_IsIdempotent_CC0081 verifies that calling
+// ensureCredentialRotationRBAC twice produces the same Role Rules, matching the
+// manual-get/create/update pattern used throughout the package.
+func TestEnsureCredentialRotationRBAC_IsIdempotent_CC0081(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := credentialTestScheme()
+	ks := credentialTestKeystone()
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks).
+		Build()
+
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	g.Expect(r.ensureCredentialRotationRBAC(context.Background(), ks, "test-keystone-credential-keys")).To(Succeed())
+	var first rbacv1.Role
+	g.Expect(c.Get(context.Background(), client.ObjectKey{
+		Namespace: "default",
+		Name:      "test-keystone-credential-rotate",
+	}, &first)).To(Succeed())
+	rulesFirst := append([]rbacv1.PolicyRule{}, first.Rules...)
+
+	g.Expect(r.ensureCredentialRotationRBAC(context.Background(), ks, "test-keystone-credential-keys")).To(Succeed())
+	var second rbacv1.Role
+	g.Expect(c.Get(context.Background(), client.ObjectKey{
+		Namespace: "default",
+		Name:      "test-keystone-credential-rotate",
+	}, &second)).To(Succeed())
+
+	g.Expect(second.Rules).To(Equal(rulesFirst))
+}
+
+// TestReconcileCredentialKeys_AppliesStagedKeysWhenAnnotationPresent verifies
+// that reconcileCredentialKeys wires applyRotationOutput into step 3 so that a
+// completed staging Secret (RotationCompletedAnnotation set to a well-formed
+// RFC3339 timestamp, valid Data) is applied to the production Secret, the
+// staging Secret is deleted, a Normal "CredentialKeysRotated" event is
+// emitted, CredentialKeysReady flips to True, and the reconcile short-circuits
+// with Requeue: true (CC-0081 REQ-005, REQ-006).
+func TestReconcileCredentialKeys_AppliesStagedKeysWhenAnnotationPresent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := credentialTestScheme()
+	ks := credentialTestKeystone()
+
+	// Pre-create production credential keys Secret with 3 old keys.
+	prod := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-keystone-credential-keys",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			"0": []byte("old-key-0"),
+			"1": []byte("old-key-1"),
+			"2": []byte("old-key-2"),
+		},
+	}
+
+	// Build 3 valid Fernet-format keys for the staged payload.
+	stagedData := make(map[string][]byte, 3)
+	for i := 0; i < 3; i++ {
+		k, err := generateFernetKey()
+		g.Expect(err).NotTo(HaveOccurred())
+		stagedData[strconv.Itoa(i)] = []byte(k)
+	}
+
+	// Pre-create the staging Secret the operator normally ensures, with the
+	// RotationCompletedAnnotation already set (simulating the CronJob having
+	// finished its PATCH).
+	labels := commonLabels(ks)
+	labels[StagingSecretLabelKey] = "credential-keys"
+	staging := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-keystone-credential-keys-rotation",
+			Namespace: "default",
+			Labels:    labels,
+			Annotations: map[string]string{
+				RotationCompletedAnnotation: "2026-01-01T00:00:00Z",
+			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "keystone.c5c3.io/v1alpha1",
+				Kind:       "Keystone",
+				Name:       ks.Name,
+				UID:        ks.UID,
+			}},
+		},
+		Data: stagedData,
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks, prod, staging).
+		Build()
+
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	result, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.Requeue).To(BeTrue())
+
+	// Production Secret data was swapped for the staged data.
+	var gotProd corev1.Secret
+	g.Expect(c.Get(context.Background(), client.ObjectKey{
+		Namespace: "default",
+		Name:      "test-keystone-credential-keys",
+	}, &gotProd)).To(Succeed())
+	g.Expect(gotProd.Data).To(HaveLen(len(stagedData)))
+	for k, v := range stagedData {
+		g.Expect(gotProd.Data).To(HaveKeyWithValue(k, v))
+	}
+
+	// Staging Secret deleted.
+	var gotStaging corev1.Secret
+	getErr := c.Get(context.Background(), client.ObjectKey{
+		Namespace: "default",
+		Name:      "test-keystone-credential-keys-rotation",
+	}, &gotStaging)
+	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(), "staging Secret should be deleted after apply")
+
+	// Normal CredentialKeysRotated event emitted.
+	expectEvent(g, r, "Normal CredentialKeysRotated")
+
+	// CredentialKeysReady flipped to True with CredentialKeysRotated reason on
+	// the apply-success short-circuit path; the message reflects the just-
+	// applied rotation rather than the steady-state text (CC-0081).
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "CredentialKeysReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("CredentialKeysRotated"))
+	g.Expect(cond.Message).To(Equal("rotation applied; staging secret cleared"))
 }

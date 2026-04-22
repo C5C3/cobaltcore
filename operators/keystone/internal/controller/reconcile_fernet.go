@@ -70,12 +70,46 @@ func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
 		return ctrl.Result{}, fmt.Errorf("getting fernet keys secret: %w", err)
 	}
 
-	// 2. Ensure the RBAC resources for the rotation CronJob exist.
+	// 2. Ensure the staging Secret exists for the rotation CronJob to PATCH
+	//    into (CC-0081). The operator owns the lifecycle (labels, owner ref)
+	//    and the CronJob owns the Data — this is the split-compute-write
+	//    boundary that keeps token-forgery primitives out of the CronJob's
+	//    RBAC on the production Secret.
+	if err := r.ensureFernetStagingSecret(ctx, keystone); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// 3. Apply any completed rotation staged by the CronJob (CC-0081,
+	//    REQ-005, REQ-006). On a valid apply we short-circuit the rest of
+	//    the step chain and requeue so the next pass re-enters the happy
+	//    path with the production Secret already updated.
+	applied, err := r.applyRotationOutput(ctx, keystone,
+		fernetStagingSecretName(keystone),
+		secretName,
+		"FernetKeysRotated",
+		3,
+		normalizedFernetMaxActiveKeys(keystone)+1,
+	)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("applying fernet rotation output: %w", err)
+	}
+	if applied {
+		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+			Type:               "FernetKeysReady",
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: keystone.Generation,
+			Reason:             "FernetKeysRotated",
+			Message:            "rotation applied; staging secret cleared",
+		})
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// 4. Ensure the RBAC resources for the rotation CronJob exist.
 	if err := r.ensureFernetRotationRBAC(ctx, keystone, secretName); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring fernet rotation RBAC: %w", err)
 	}
 
-	// 3. Create the immutable ConfigMap containing the rotation script (CC-0073).
+	// 5. Create the immutable ConfigMap containing the rotation script (CC-0073).
 	scriptConfigMapName, err := config.CreateImmutableConfigMap(ctx, r.Client, r.Scheme, keystone,
 		fmt.Sprintf("%s-fernet-rotate-script", keystone.Name), keystone.Namespace,
 		map[string]string{"fernet_rotate.sh": fernetRotateScript})
@@ -83,19 +117,19 @@ func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
 		return ctrl.Result{}, fmt.Errorf("creating fernet rotate script ConfigMap: %w", err)
 	}
 
-	// 4. Ensure the rotation CronJob exists.
+	// 6. Ensure the rotation CronJob exists.
 	cronJob := fernetRotationCronJob(keystone, configMapName, scriptConfigMapName)
 	if err := job.EnsureCronJob(ctx, r.Client, r.Scheme, keystone, cronJob); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring fernet rotation cronjob: %w", err)
 	}
 
-	// 5. Ensure the PushSecret for OpenBao backup exists.
+	// 7. Ensure the PushSecret for OpenBao backup exists.
 	ps := fernetKeysPushSecret(keystone)
 	if err := secrets.EnsurePushSecret(ctx, r.Client, r.Scheme, keystone, ps); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring fernet keys pushsecret: %w", err)
 	}
 
-	// 6. Set the FernetKeysReady condition.
+	// 8. Set the FernetKeysReady condition.
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 		Type:               "FernetKeysReady",
 		Status:             metav1.ConditionTrue,
@@ -108,8 +142,11 @@ func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
 }
 
 // ensureFernetRotationRBAC creates the ServiceAccount, Role, and RoleBinding
-// needed by the Fernet rotation CronJob to update the fernet keys Secret via
-// the Kubernetes API (CC-0013).
+// needed by the Fernet rotation CronJob. The Role is split into two
+// PolicyRules (CC-0081): read-only `get` on the production fernet keys Secret
+// and `get`+`patch` scoped to the dedicated staging Secret. The operator, not
+// the CronJob, writes the production Secret — removing the token-forgery
+// primitive from the CronJob's attack surface.
 func (r *KeystoneReconciler) ensureFernetRotationRBAC(ctx context.Context, keystone *keystonev1alpha1.Keystone, secretName string) error {
 	saName := fmt.Sprintf("%s-fernet-rotate", keystone.Name)
 
@@ -121,15 +158,26 @@ func (r *KeystoneReconciler) ensureFernetRotationRBAC(ctx context.Context, keyst
 		return fmt.Errorf("ensuring ServiceAccount %s: %w", saName, err)
 	}
 
-	// Role with minimal permissions: get+patch on the specific fernet keys Secret.
+	// Role split into two PolicyRules (CC-0081):
+	//   1. `get` on the production fernet keys Secret (read-only; operator owns writes).
+	//   2. `get`+`patch` on the staging Secret only; no `create`/`delete` because
+	//      the operator manages the staging Secret's lifecycle.
 	role := &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: keystone.Namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, role, func() error {
-		role.Rules = []rbacv1.PolicyRule{{
-			APIGroups:     []string{""},
-			Resources:     []string{"secrets"},
-			Verbs:         []string{"get", "patch"},
-			ResourceNames: []string{secretName},
-		}}
+		role.Rules = []rbacv1.PolicyRule{
+			{
+				APIGroups:     []string{""},
+				Resources:     []string{"secrets"},
+				Verbs:         []string{"get"},
+				ResourceNames: []string{secretName},
+			},
+			{
+				APIGroups:     []string{""},
+				Resources:     []string{"secrets"},
+				Verbs:         []string{"get", "patch"},
+				ResourceNames: []string{fernetStagingSecretName(keystone)},
+			},
+		}
 		return controllerutil.SetControllerReference(keystone, role, r.Scheme)
 	}); err != nil {
 		return fmt.Errorf("ensuring Role %s: %w", saName, err)
@@ -157,6 +205,14 @@ func (r *KeystoneReconciler) ensureFernetRotationRBAC(ctx context.Context, keyst
 	}
 
 	return nil
+}
+
+// ensureFernetStagingSecret ensures the Fernet staging Secret exists with the
+// `fernet-keys` rotation-target label (CC-0081). Thin wrapper over the shared
+// ensureStagingSecret helper; see rotation_staging.go for the field-ownership
+// contract.
+func (r *KeystoneReconciler) ensureFernetStagingSecret(ctx context.Context, keystone *keystonev1alpha1.Keystone) error {
+	return r.ensureStagingSecret(ctx, keystone, fernetStagingSecretName(keystone), "fernet-keys")
 }
 
 // normalizedFernetMaxActiveKeys returns the effective maximum number of active
@@ -220,6 +276,7 @@ func generateFernetKey() (string, error) {
 //  5. Pushes the updated keys to the K8s API using the pod's ServiceAccount (CC-0013).
 func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName string, scriptConfigMapName string) *batchv1.CronJob {
 	secretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
+	stagingSecretName := fernetStagingSecretName(keystone)
 	credentialSecretName := fmt.Sprintf("%s-credential-keys", keystone.Name)
 	saName := fmt.Sprintf("%s-fernet-rotate", keystone.Name)
 	image := fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag)
@@ -261,7 +318,10 @@ func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName st
 								Command:         []string{"/scripts/fernet_rotate.sh"},
 								SecurityContext: restrictedSecurityContext(),
 								Env: []corev1.EnvVar{
-									{Name: "SECRET_NAME", Value: secretName},
+									// SECRET_NAME points at the staging Secret — the CronJob SA
+									// is only permitted to patch the staging Secret, never the
+									// production Secret (CC-0081).
+									{Name: "SECRET_NAME", Value: stagingSecretName},
 									{Name: "SECRET_NAMESPACE", ValueFrom: &corev1.EnvVarSource{
 										FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
 									}},

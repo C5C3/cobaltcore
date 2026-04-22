@@ -8,7 +8,7 @@
 #   - Manual rotation via kubectl create job --from=cronjob changes Secret data
 #   - Pod UIDs remain unchanged after rotation (no Deployment rollout) (CC-0074)
 #
-# REQ-001 through REQ-012 (CC-0036), REQ-001, REQ-002, REQ-003 (CC-0074)
+# REQ-001 through REQ-012 (CC-0036), REQ-001, REQ-002, REQ-003 (CC-0074), REQ-002, REQ-011 (CC-0081)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -140,6 +140,51 @@ spec:
             -o wide 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -20 || true
+  # ── Step 4.5: Assert rotation Role RBAC split (CC-0081) ─────────
+  # The Role `keystone-credential-credential-rotate` must be read-only on the
+  # production Secret (`keystone-credential-credential-keys`) and allow `patch`
+  # only on the staging Secret (`keystone-credential-credential-keys-rotation`).
+  # A compromised CronJob must not be able to overwrite production credential
+  # keys (REQ-002, REQ-011 CC-0081).
+  - try:
+    - script:
+        timeout: 60s
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          ROLE_JSON=$(kubectl get role keystone-credential-credential-rotate -n openstack -o json)
+
+          # Assertion 1: NO PolicyRule may grant `patch` scoped to the
+          # production Secret `keystone-credential-credential-keys` (CC-0081).
+          PROD_PATCH=$(echo "$ROLE_JSON" | jq '[.rules[] | select(.resourceNames // [] | index("keystone-credential-credential-keys")) | select(.verbs // [] | index("patch"))] | length')
+          if [ "$PROD_PATCH" != "0" ]; then
+            echo "ERROR: Role keystone-credential-credential-rotate grants 'patch' on production Secret keystone-credential-credential-keys (CC-0081 violation)"
+            echo "$ROLE_JSON" | jq '.rules'
+            exit 1
+          fi
+          echo "OK: Role has no 'patch' verb scoped to production Secret keystone-credential-credential-keys"
+
+          # Assertion 2: At least ONE PolicyRule must grant `patch` scoped to
+          # the staging Secret `keystone-credential-credential-keys-rotation` (CC-0081).
+          STAGING_PATCH=$(echo "$ROLE_JSON" | jq '[.rules[] | select(.resourceNames // [] | index("keystone-credential-credential-keys-rotation")) | select(.verbs // [] | index("patch"))] | length')
+          if [ "$STAGING_PATCH" -lt 1 ]; then
+            echo "ERROR: Role keystone-credential-credential-rotate is missing 'patch' verb on staging Secret keystone-credential-credential-keys-rotation (CC-0081 violation)"
+            echo "$ROLE_JSON" | jq '.rules'
+            exit 1
+          fi
+          echo "OK: Role has 'patch' verb scoped to staging Secret keystone-credential-credential-keys-rotation"
+
+          echo "OK: Rotation Role RBAC split verified (read-only on prod, patch only on staging)"
+    catch:
+    - script:
+        content: |
+          echo "=== Role keystone-credential-credential-rotate (yaml) ==="
+          kubectl get role keystone-credential-credential-rotate -n openstack -o yaml 2>&1 || true
+          echo "=== Role keystone-credential-credential-rotate (json rules) ==="
+          kubectl get role keystone-credential-credential-rotate -n openstack -o json 2>&1 | jq '.rules' || true
+          echo "=== All roles in namespace ==="
+          kubectl get roles -n $NAMESPACE -o wide 2>&1 || true
   # ── Step 5: Assert Ready=True maintained after rotation ────────────────
   - try:
     - assert:

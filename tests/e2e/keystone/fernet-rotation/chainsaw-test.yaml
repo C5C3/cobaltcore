@@ -9,7 +9,7 @@
 #   - Pod UIDs remain unchanged after rotation (no Deployment rollout) (CC-0074)
 #   - A fernet token obtained before rotation validates after rotation (CC-0074)
 #
-# REQ-005, REQ-012, REQ-013 (CC-0016), REQ-001, REQ-002, REQ-003 (CC-0074)
+# REQ-005, REQ-012, REQ-013 (CC-0016), REQ-001, REQ-002, REQ-003 (CC-0074), REQ-001, REQ-011 (CC-0081)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -187,6 +187,50 @@ spec:
             -o wide 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -20 || true
+  # ── Step 4.5: Assert rotation Role RBAC split (CC-0081) ─────────
+  # Verifies the `keystone-fernet-fernet-rotate` Role grants `patch` ONLY on
+  # the staging Secret (`keystone-fernet-fernet-keys-rotation`) and NEVER on
+  # the production Secret (`keystone-fernet-fernet-keys`). This is the
+  # regression guard for the split-compute-write architecture introduced by
+  # CC-0081 (REQ-001, REQ-011).
+  - try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          ROLE_JSON=$(kubectl get role keystone-fernet-fernet-rotate -n openstack -o json)
+
+          # Assertion 1: NO PolicyRule may grant `patch` scoped to the
+          # production Secret `keystone-fernet-fernet-keys` (CC-0081).
+          PROD_PATCH=$(echo "$ROLE_JSON" | jq '[.rules[] | select(.resourceNames // [] | index("keystone-fernet-fernet-keys")) | select(.verbs // [] | index("patch"))] | length')
+          if [ "$PROD_PATCH" != "0" ]; then
+            echo "ERROR: Role keystone-fernet-fernet-rotate grants 'patch' on production Secret keystone-fernet-fernet-keys (CC-0081 violation)"
+            echo "$ROLE_JSON" | jq '.rules'
+            exit 1
+          fi
+          echo "OK: Role has no 'patch' verb scoped to production Secret keystone-fernet-fernet-keys"
+
+          # Assertion 2: At least ONE PolicyRule must grant `patch` scoped to
+          # the staging Secret `keystone-fernet-fernet-keys-rotation` (CC-0081).
+          STAGING_PATCH=$(echo "$ROLE_JSON" | jq '[.rules[] | select(.resourceNames // [] | index("keystone-fernet-fernet-keys-rotation")) | select(.verbs // [] | index("patch"))] | length')
+          if [ "$STAGING_PATCH" -lt 1 ]; then
+            echo "ERROR: Role keystone-fernet-fernet-rotate is missing 'patch' verb on staging Secret keystone-fernet-fernet-keys-rotation (CC-0081 violation)"
+            echo "$ROLE_JSON" | jq '.rules'
+            exit 1
+          fi
+          echo "OK: Role has 'patch' verb scoped to staging Secret keystone-fernet-fernet-keys-rotation"
+
+          echo "OK: Rotation Role RBAC split verified (read-only on prod, patch only on staging)"
+    catch:
+    - script:
+        content: |
+          echo "=== Role keystone-fernet-fernet-rotate (yaml) ==="
+          kubectl get role keystone-fernet-fernet-rotate -n openstack -o yaml 2>&1 || true
+          echo "=== Role keystone-fernet-fernet-rotate (json rules) ==="
+          kubectl get role keystone-fernet-fernet-rotate -n openstack -o json 2>&1 | jq '.rules' || true
+          echo "=== All roles in namespace ==="
+          kubectl get roles -n $NAMESPACE -o wide 2>&1 || true
   # ── Step 5: Assert Ready=True maintained after rotation ────────────────
   - try:
     - assert:

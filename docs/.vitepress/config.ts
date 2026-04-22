@@ -41,6 +41,12 @@ export default defineConfig({
           { text: 'Multi-Tenant Deployment', link: '/reference/multi-tenant-deployment' },
         ],
       },
+      {
+        text: 'How-to',
+        items: [
+          { text: 'Rotate Keystone Keys', link: '/how-to/keystone-key-rotation' },
+        ],
+      },
     ],
     socialLinks: [
       { icon: 'github', link: 'https://github.com/c5c3/forge' },

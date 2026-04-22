@@ -1,7 +1,7 @@
 ---
 title: Keystone Reconciler Architecture
 quadrant: operator
-feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0065, CC-0067, CC-0068, CC-0071, CC-0072, CC-0073, CC-0074, CC-0077, CC-0078
+feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0065, CC-0067, CC-0068, CC-0071, CC-0072, CC-0073, CC-0074, CC-0077, CC-0078, CC-0081
 ---
 
 # Keystone Reconciler Architecture
@@ -121,6 +121,32 @@ RBAC markers on the reconciler generate the required ClusterRole:
 | `autoscaling` | `horizontalpodautoscalers` | get, list, watch, create, update, patch, delete |
 | `gateway.networking.k8s.io` | `httproutes` | get, list, watch, create, update, patch, delete (CC-0065) |
 | `gateway.networking.k8s.io` | `httproutes/status` | get (CC-0065) |
+
+---
+
+## Labels and Annotations
+
+The reconciler applies `commonLabels(keystone)` (`app.kubernetes.io/name`,
+`app.kubernetes.io/instance`, `app.kubernetes.io/managed-by`) to every owned
+resource. In addition, the following forge-specific metadata keys carry
+controller-observable semantics and are stable across releases — consumers
+(watch predicates, chainsaw tests, dashboards) may rely on them:
+
+| Key | Kind | Applied to | Value | Feature | Purpose |
+| --- | --- | --- | --- | --- | --- |
+| `forge.c5c3.io/rotation-target` | Label | Staging Secrets (`{name}-fernet-keys-rotation`, `{name}-credential-keys-rotation`) | `fernet-keys`, `credential-keys` | CC-0081 | Distinguishes rotation staging Secrets from production key Secrets so the operator's Secret→Keystone mapper can enqueue the owning Keystone on staging PATCHes. |
+| `forge.c5c3.io/rotation-completed-at` | Annotation | Staging Secrets (written by the rotation CronJob) | RFC3339 UTC timestamp (e.g. `2026-04-18T12:34:56Z`) | CC-0081 | Single-shot commit marker. The operator only applies a staging Secret's data to the production Secret when this annotation is present and parses cleanly; the annotation is removed implicitly when the staging Secret is deleted at the end of a successful apply. |
+
+The Go constants backing these keys are exported from
+`operators/keystone/internal/controller/rotation_staging.go`:
+
+```go
+const StagingSecretLabelKey       = "forge.c5c3.io/rotation-target"        // CC-0081
+const RotationCompletedAnnotation = "forge.c5c3.io/rotation-completed-at"  // CC-0081
+```
+
+See [Key Rotation RBAC Split](#key-rotation-rbac-split-cc-0081) under the
+Fernet and credential sub-reconciler sections for the full contract.
 
 ---
 
@@ -908,6 +934,7 @@ and disaster recovery backup to OpenBao.
 | Status | Reason | Message | RequeueAfter |
 | --- | --- | --- | --- |
 | `False` | `GeneratingKeys` | "Initial Fernet keys have been generated" | — |
+| `True` | `FernetKeysRotated` | "rotation applied; staging secret cleared" | — (transient: apply-success short-circuit at `reconcile_fernet.go:97-103`; operators see this immediately after a rotation apply via `kubectl describe`, before the next reconcile transitions to the steady-state Reason) |
 | `True` | `FernetKeysAvailable` | "Fernet keys Secret exists and rotation CronJob is configured" | — |
 
 **Versioned Script ConfigMap (CC-0073):**
@@ -931,6 +958,79 @@ creating a new one.
 
 **Shared library calls:** `config.CreateImmutableConfigMap()`, `job.EnsureCronJob()`,
 `secrets.EnsurePushSecret()`
+
+#### Key Rotation RBAC Split (CC-0081)
+
+The Fernet rotation path separates the **compute** of new keys (performed by
+the rotation CronJob) from the **write** onto the production Secret
+(performed by the operator). The CronJob ServiceAccount has no verb that can
+mutate the production `{name}-fernet-keys` Secret — eliminating the
+token-forgery primitive from the CronJob's attack surface.
+
+**Staging Secret naming.** Per `fernetStagingSecretName`, the staging Secret
+is `{keystone.Name}-fernet-keys-rotation`. It is created and owned by the
+operator via `ensureFernetStagingSecret`:
+
+- Empty `Data` on creation; the CronJob PATCHes `Data` on rotation.
+- Labels: `commonLabels(keystone)` + `forge.c5c3.io/rotation-target=fernet-keys`.
+- Owner reference: the Keystone CR (garbage-collected with the CR).
+
+**Completion annotation contract.** The CronJob's `fernet_rotate.sh` PATCH
+writes **both** the new `data` map and the
+`forge.c5c3.io/rotation-completed-at` annotation in a single atomic
+strategic-merge PATCH. Format: `datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds").replace("+00:00","Z")`
+— an RFC3339 UTC timestamp such as `2026-04-18T12:34:56Z`. The operator
+treats the annotation as the **single-shot commit marker**: it never rewrites
+the production Secret unless the annotation is present and parses cleanly.
+
+**Operator validation rules.** Before copying staged data to production,
+`applyRotationOutput` calls `validateRotationOutput` (see
+`operators/keystone/internal/controller/rotation_validation.go`) which
+enforces all of:
+
+- **Key count:** `minKeys=3`, `maxKeys=normalizedFernetMaxActiveKeys(keystone)+1`. The `+1` tolerates the brief window in which the newly staged primary coexists with the existing active set. Violations return `ErrKeyCountOutOfRange`.
+- **Key format:** each value is exactly 44 bytes and base64url-decodes to 32 bytes — the `generateFernetKey` output shape. Violations return `ErrInvalidKeyFormat`.
+- **Uniqueness:** no two values are byte-equal. Violations return `ErrDuplicateKeys`.
+
+On rejection the operator emits a Warning event `RotationRejected` on the
+Keystone CR and **retains the staging Secret** for human inspection. On a
+malformed `rotation-completed-at` value the operator emits
+`RotationAnnotationInvalid` and leaves staging in place, allowing the next
+CronJob run to overwrite with a valid payload.
+
+**Apply algorithm.** On a valid staging Secret, `applyRotationOutput` GETs the
+production Secret, replaces its `.data` map with the staging payload verbatim,
+issues an `Update`, deletes the staging Secret, and emits a Normal event
+`FernetKeysRotated`. UPDATE-then-DELETE ordering is deliberate: if DELETE
+fails the production Secret is already updated, and a subsequent reconcile
+will no-op until the next CronJob run writes a new annotation timestamp.
+
+**Production `Secret.Data` field ownership.** The production Fernet Secret's
+`.data` map is owned solely by the operator. Writes happen exclusively through
+the `applyRotationOutput` GET-then-`Update` round-trip under the
+controller-owned `ResourceVersion`, which guarantees optimistic concurrency
+(a concurrent writer triggers a 409 Conflict and the reconciler requeues).
+The Update fully replaces the map — stale key indices absent from the staging
+payload (e.g. those renumbered by `keystone-manage fernet_rotate` or trimmed
+by a reduction in `spec.fernet.maxActiveKeys`) are removed, which is the
+atomic-swap semantic REQ-006 requires. A strategic-merge PATCH on this field
+would merge by key and allow decommissioned keys to accumulate, so it is
+intentionally avoided.
+
+**RBAC verb matrix.** Two principals touch the production and staging
+Secrets, with strictly disjoint capabilities:
+
+| Principal | Resource | Verbs | Source |
+| --- | --- | --- | --- |
+| CronJob ServiceAccount (`{name}-fernet-rotate`) | Secret `{name}-fernet-keys` (production) | `get` | Role rule 1 in `ensureFernetRotationRBAC` |
+| CronJob ServiceAccount (`{name}-fernet-rotate`) | Secret `{name}-fernet-keys-rotation` (staging) | `get`, `patch` | Role rule 2 in `ensureFernetRotationRBAC` |
+| Operator ServiceAccount | Secret `{name}-fernet-keys` (production) | `get`, `patch`, `create`, `update`, `delete`, `list`, `watch` | Cluster-scoped core `secrets` verbs (see [RBAC Permissions](#rbac-permissions)) |
+| Operator ServiceAccount | Secret `{name}-fernet-keys-rotation` (staging) | `get`, `create`, `update`, `patch`, `delete`, `list`, `watch` | Cluster-scoped core `secrets` verbs |
+
+The CronJob ServiceAccount has **no `create`, `update`, or `delete`** on
+either Secret — only `get` (both) and `patch` (staging only). Chainsaw tests
+in `tests/e2e/keystone/fernet-rotation/chainsaw-test.yaml` assert this
+exact verb split.
 
 ---
 
@@ -1008,6 +1108,7 @@ with credential migration, and disaster recovery backup to OpenBao (CC-0036).
 | Status | Reason | Message | RequeueAfter |
 | --- | --- | --- | --- |
 | `False` | `GeneratingKeys` | "Initial credential keys have been generated" | — |
+| `True` | `CredentialKeysRotated` | "rotation applied; staging secret cleared" | — (transient: apply-success short-circuit at `reconcile_credential.go:107-113`; operators see this immediately after a rotation apply via `kubectl describe`, before the next reconcile transitions to the steady-state Reason) |
 | `True` | `CredentialKeysAvailable` | "Credential keys Secret exists and rotation CronJob is configured" | — |
 
 **Versioned Script ConfigMap (CC-0073):**
@@ -1024,6 +1125,81 @@ modified. This prevents overwriting keys that have been rotated by the CronJob.
 
 **Shared library calls:** `config.CreateImmutableConfigMap()`, `job.EnsureCronJob()`,
 `secrets.EnsurePushSecret()`
+
+#### Key Rotation RBAC Split (CC-0081)
+
+The credential rotation path mirrors the Fernet split exactly: the
+`{name}-credential-rotate` CronJob computes rotated keys, PATCHes them into
+a dedicated staging Secret, and the operator performs the final write onto
+the production `{name}-credential-keys` Secret.
+
+**Staging Secret naming.** Per `credentialStagingSecretName`, the staging
+Secret is `{keystone.Name}-credential-keys-rotation`. It is created and
+owned by the operator via `ensureCredentialStagingSecret`:
+
+- Empty `Data` on creation; the CronJob PATCHes `Data` on rotation.
+- Labels: `commonLabels(keystone)` + `forge.c5c3.io/rotation-target=credential-keys`.
+- Owner reference: the Keystone CR (garbage-collected with the CR).
+
+**Completion annotation contract.** `credential_rotate.sh` runs
+`keystone-manage credential_rotate` and then `keystone-manage credential_migrate`
+(in that order — migrate re-encrypts existing stored credentials with the new
+primary key) before emitting a single atomic PATCH that sets both `data`
+and the `forge.c5c3.io/rotation-completed-at` annotation (RFC3339 UTC, `Z`
+suffix). As with Fernet, the annotation is the single-shot commit marker;
+absence or malformed format blocks the operator's apply path.
+
+**Operator validation rules.** Identical to Fernet, with one parameter
+difference — `maxKeys=normalizedCredentialMaxActiveKeys(keystone)+1`:
+
+- **Key count:** `[3, normalizedCredentialMaxActiveKeys(keystone)+1]` inclusive. `ErrKeyCountOutOfRange` on violation.
+- **Key format:** 44-byte base64url decoding to 32 bytes. `ErrInvalidKeyFormat` on violation.
+- **Uniqueness:** byte-distinct values. `ErrDuplicateKeys` on violation.
+
+Rejection emits `RotationRejected` (Warning, on the CR) and retains the
+staging Secret. A malformed `rotation-completed-at` emits
+`RotationAnnotationInvalid` and leaves staging intact.
+
+**Apply algorithm.** On a valid staging Secret, `applyRotationOutput` GETs
+the production Secret, replaces its `.data` map with the staging payload
+verbatim, issues an `Update`, deletes the staging Secret, and emits a
+Normal event `CredentialKeysRotated`. Because the CronJob already ran
+`credential_migrate` before PATCHing staging, every credential row in the
+database is re-encrypted with the new primary by the time the operator
+commits the Secret swap — no data loss when old keys age out (CC-0036).
+
+> **Key-rollover window (pre-existing, not introduced by CC-0081).** There
+> is a ~60s window between `credential_migrate` completion and the kubelet
+> refreshing the in-place Secret projection (CC-0074). During that window,
+> running Keystone pods still have the old credential keyset mounted —
+> database rows are already encrypted under the new primary, but the pods
+> cannot decrypt them yet. This is a pre-existing property of the rotation
+> flow and is not a regression introduced by CC-0081; it is tracked
+> separately under CC-0074 and should be considered when sizing the
+> rotation schedule against request volume.
+
+**Production `Secret.Data` field ownership.** Same contract as Fernet: the
+operator owns the production `.data` map, writes are `Update`-based under
+the controller-owned `ResourceVersion`, and the Update fully replaces the
+map so stale indices are removed atomically (REQ-006). Strategic-merge PATCH
+is intentionally avoided here for the same merge-vs-replace reason
+documented in the Fernet section.
+
+**RBAC verb matrix.** The CronJob ServiceAccount and the operator
+ServiceAccount have strictly disjoint capabilities on the production and
+staging Secrets:
+
+| Principal | Resource | Verbs | Source |
+| --- | --- | --- | --- |
+| CronJob ServiceAccount (`{name}-credential-rotate`) | Secret `{name}-credential-keys` (production) | `get` | Role rule 1 in `ensureCredentialRotationRBAC` |
+| CronJob ServiceAccount (`{name}-credential-rotate`) | Secret `{name}-credential-keys-rotation` (staging) | `get`, `patch` | Role rule 2 in `ensureCredentialRotationRBAC` |
+| Operator ServiceAccount | Secret `{name}-credential-keys` (production) | `get`, `patch`, `create`, `update`, `delete`, `list`, `watch` | Cluster-scoped core `secrets` verbs (see [RBAC Permissions](#rbac-permissions)) |
+| Operator ServiceAccount | Secret `{name}-credential-keys-rotation` (staging) | `get`, `create`, `update`, `patch`, `delete`, `list`, `watch` | Cluster-scoped core `secrets` verbs |
+
+The CronJob ServiceAccount has **no `create`, `update`, or `delete`** on
+either Secret — only `get` (both) and `patch` (staging only). Chainsaw tests
+in `tests/e2e/keystone/credential-rotation/chainsaw-test.yaml` assert this
+exact verb split.
 
 ---
 
@@ -1831,9 +2007,11 @@ Keystone CR via `controllerutil.SetControllerReference()`. This enables:
 | Resource | Name | Owner |
 | --- | --- | --- |
 | Secret | `{name}-fernet-keys` | Keystone CR |
+| Secret | `{name}-fernet-keys-rotation` | Keystone CR (rotation staging, CC-0081) |
 | CronJob | `{name}-fernet-rotate` | Keystone CR |
 | PushSecret | `{name}-fernet-keys-backup` | Keystone CR |
 | Secret | `{name}-credential-keys` | Keystone CR |
+| Secret | `{name}-credential-keys-rotation` | Keystone CR (rotation staging, CC-0081) |
 | CronJob | `{name}-credential-rotate` | Keystone CR |
 | PushSecret | `{name}-credential-keys-backup` | Keystone CR |
 | ConfigMap | `{name}-config-{hash}` | Keystone CR |

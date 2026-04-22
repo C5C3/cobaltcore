@@ -1,0 +1,55 @@
+{
+  "feature_id": "CC-0081",
+  "title": "GitHub Review by gndrmnn",
+  "summary": "The reviewer wants implementation-specific assertions removed from the credential and fernet reconcile tests at the noted lines (reconcile_credential_test.go:648 and :677, reconcile_fernet_test.go:641).",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "gndrmnn",
+  "date": "2026-04-22T07:57:25Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 2,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "That's too implementation specific. You can remove these checks",
+      "path": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "line": 648,
+      "author": "gndrmnn",
+      "created_at": "2026-04-22T07:39:06Z",
+      "id": null,
+      "resolution": "Removed the `g.Expect(credentialRotateScript).To(ContainSubstring(\"isoformat(timespec=\\\"seconds\\\")\"))` assertion from TestCredentialRotateScript_EmbeddedContent."
+    },
+    {
+      "body": "Too implementation specific. You can remove these",
+      "path": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "line": 677,
+      "author": "gndrmnn",
+      "created_at": "2026-04-22T07:40:00Z",
+      "id": null,
+      "resolution": "Removed the `g.Expect(migrateIdx).To(BeNumerically(\"<\", patchIdx))` assertion from TestCredentialRotateScript_MigrateBeforePatch."
+    },
+    {
+      "body": "Too implementation specific. Remove these",
+      "path": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "line": 641,
+      "author": "gndrmnn",
+      "created_at": "2026-04-22T07:40:42Z",
+      "id": null,
+      "resolution": "Removed the `g.Expect(fernetRotateScript).To(ContainSubstring(\"isoformat(timespec=\\\"seconds\\\")\"))` assertion from TestFernetRotateScript_EmbeddedContent."
+    }
+  ],
+  "resolution_summary": "Addressed all three reviewer comments by removing overly implementation-specific assertions from the embedded-script tests. In both `reconcile_credential_test.go` and `reconcile_fernet_test.go`, the `isoformat(timespec=\"seconds\")` substring check was deleted since it pins the tests to an exact Python idiom rather than observable behavior. Additionally, the `migrateIdx < patchIdx` ordering assertion was dropped from `TestCredentialRotateScript_MigrateBeforePatch` for the same reason. No other files or locations were changed.",
+  "github_review_id": 4152848616
+}

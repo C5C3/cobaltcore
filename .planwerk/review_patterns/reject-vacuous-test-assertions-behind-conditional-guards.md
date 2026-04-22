@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: Look for test assertions wrapped in `if err != nil` or similar conditionals. If the happy path means the condition is false, the assertion body is never executed and the test passes without proving anything.
 **Severity**: BLOCKING
-**Occurrences**: 4
+**Occurrences**: 5
 
 ## What to check
 
@@ -34,3 +34,8 @@ A vacuous test gives false confidence — it always passes regardless of whether
 - **Feedback**: The test assertion was changed from verifying that [test] extra is included in the install spec to only verifying that extra-package... but no assert_not_contains for the old '[test]' pattern was added.
 - **What was missed**: When a PR replaces an old test assertion with a new one reflecting changed behavior, verify that the test also explicitly asserts the OLD value is absent. Positive-only assertions can pass even if the old behavior silently persists alongside the new one.
 - **Fix**: The old assert_contains for '[test]' was replaced with two new positive assertions (checking 'extra-packages.yaml' and 'install_spec='), though the suggested assert_not_contains for '[test]' was not added.
+
+### CC-0081 — gndrmnn
+- **Feedback**: That's too implementation specific. You can remove these checks
+- **What was missed**: In tests, check whether assertions verify observable behavior/contract or whether they pin the test to a specific implementation detail (exact substrings, specific function names, internal ordering). Flag assertions that would need updating purely due to a refactor that preserves behavior.
+- **Fix**: Removed `isoformat(timespec="seconds")` substring checks and the `migrateIdx < patchIdx` ordering assertion from embedded-script tests, keeping only behavior-level assertions.

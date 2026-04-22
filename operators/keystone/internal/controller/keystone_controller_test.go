@@ -889,6 +889,82 @@ func TestSecretToKeystoneMapper_OwnedSecrets(t *testing.T) {
 	g.Expect(reqs[0].NamespacedName.Name).To(Equal(ks.Name))
 }
 
+// TestSecretToKeystoneMapper_EnqueuesOnStagingSecretUpdate verifies that a
+// rotation staging Secret — labelled with StagingSecretLabelKey AND
+// owner-referenced to the Keystone CR — triggers reconcile when it changes.
+// Staging Secrets carry the Keystone as owner, so the existing isOwnedBy
+// branch of secretToKeystoneMapper is what enqueues them (CC-0081, REQ-009).
+func TestSecretToKeystoneMapper_EnqueuesOnStagingSecretUpdate(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := testScheme()
+	ks := testKeystone()
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(ks).Build()
+	mapper := secretToKeystoneMapper(c)
+
+	// Fernet staging Secret: label + ownerRef to the Keystone CR.
+	fernetStaging := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fernetStagingSecretName(ks),
+			Namespace: "default",
+			Labels: map[string]string{
+				StagingSecretLabelKey: "fernet-keys",
+			},
+			OwnerReferences: []metav1.OwnerReference{{
+				UID: ks.UID,
+			}},
+		},
+	}
+	reqs := mapper(context.Background(), fernetStaging)
+	g.Expect(reqs).To(HaveLen(1))
+	g.Expect(reqs[0].NamespacedName.Name).To(Equal(ks.Name))
+
+	// Credential staging Secret: same shape, different label value.
+	credStaging := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      credentialStagingSecretName(ks),
+			Namespace: "default",
+			Labels: map[string]string{
+				StagingSecretLabelKey: "credential-keys",
+			},
+			OwnerReferences: []metav1.OwnerReference{{
+				UID: ks.UID,
+			}},
+		},
+	}
+	reqs = mapper(context.Background(), credStaging)
+	g.Expect(reqs).To(HaveLen(1))
+	g.Expect(reqs[0].NamespacedName.Name).To(Equal(ks.Name))
+}
+
+// TestSecretToKeystoneMapper_OrphanStagingSecretNotEnqueued verifies that a
+// Secret carrying the rotation-target label but lacking both an owner
+// reference to any Keystone CR AND a matching referenced Secret name does
+// NOT enqueue a reconcile — defensive behavior to avoid reacting to stray
+// Secrets that happen to carry our label (CC-0081, REQ-009).
+func TestSecretToKeystoneMapper_OrphanStagingSecretNotEnqueued(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := testScheme()
+	ks := testKeystone()
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(ks).Build()
+	mapper := secretToKeystoneMapper(c)
+
+	orphan := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			// Name does NOT match any SecretRef on ks.
+			Name:      "someone-elses-rotation",
+			Namespace: "default",
+			Labels: map[string]string{
+				StagingSecretLabelKey: "fernet-keys",
+			},
+			// No owner references.
+		},
+	}
+	reqs := mapper(context.Background(), orphan)
+	g.Expect(reqs).To(BeEmpty())
+}
+
 // --- updateStatus unit tests (CC-0068) ---
 
 // newUpdateStatusReconciler builds a KeystoneReconciler with the given Keystone CR
