@@ -1,7 +1,7 @@
 ---
 title: Keystone Reconciler Architecture
 quadrant: operator
-feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0065, CC-0067, CC-0068, CC-0071, CC-0072, CC-0073, CC-0074, CC-0077, CC-0078, CC-0081
+feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0065, CC-0067, CC-0068, CC-0071, CC-0072, CC-0073, CC-0074, CC-0077, CC-0078, CC-0080, CC-0081
 ---
 
 # Keystone Reconciler Architecture
@@ -2029,6 +2029,130 @@ Keystone CR via `controllerutil.SetControllerReference()`. This enables:
 | Database | `keystone` | Keystone CR (managed mode only; additionally cleaned up by the finalizer — CC-0078) |
 | User | `keystone` | Keystone CR (managed mode only; additionally cleaned up by the finalizer — CC-0078) |
 | Grant | `keystone` | Keystone CR (managed mode only; additionally cleaned up by the finalizer — CC-0078) |
+
+---
+
+## Database credentials and oslo.config env-var overrides (CC-0080)
+
+Keystone's `[database] connection` URL embeds the MySQL username and password.
+Prior to CC-0080, the rendered URL was written directly into `keystone.conf`
+inside the operator-managed immutable ConfigMap. ConfigMaps lack encryption at
+rest and are routinely granted broad `get` RBAC for observability workflows,
+which caused production database credentials to be readable by any actor with
+`get configmap` on the Keystone namespace. CC-0080 replaces that design by (1)
+writing a non-secret placeholder into the ConfigMap and (2) materialising the
+real connection URL into a derived Kubernetes `Secret` which every pod consumes
+through the oslo.config `OS_<GROUP>__<OPTION>` environment-variable override
+mechanism.
+
+### Derived `<name>-db-connection` Secret
+
+The `reconcileDBConnectionSecret` sub-reconciler (in
+`operators/keystone/internal/controller/reconcile_dbconnection_secret.go`) runs
+between `reconcileSecrets` and `reconcileConfig`. On every reconcile it:
+
+1. Reads the upstream DB credentials `Secret` referenced by
+   `spec.database.secretRef`. In managed mode the username is the Keystone CR
+   name (matching the MariaDB `User` CR); in brownfield mode both `username`
+   and `password` keys are read from the upstream Secret.
+2. Builds the pymysql URL using `url.UserPassword()` for RFC 3986-compliant
+   percent-encoding of reserved characters in the userinfo component, the
+   shared `resolveDatabaseHost()` / `dbPort()` helpers for host resolution, and
+   `?charset=utf8` as the fixed query string. The URL scheme is
+   `mysql+pymysql`.
+3. Writes the URL to a derived `Secret` named `<keystone.Name>-db-connection`
+   in the Keystone namespace under the single data key `connection`. The
+   derived Secret carries a controller owner reference to the Keystone CR so
+   Kubernetes garbage collection deletes it when the Keystone CR is deleted.
+
+**Important contracts:**
+
+| Contract | Enforcement |
+| --- | --- |
+| Exactly one data key (`connection`) | `reconcileDBConnectionSecret` replaces `Data` wholesale on any drift (extra keys removed, stale values rewritten) |
+| Owner reference to the Keystone CR | Set on create via `controllerutil.SetControllerReference`; re-enqueues on change via the existing `secretToKeystoneMapper` |
+| Upstream Secret missing or missing `username`/`password` key | Sets `SecretsReady=False` with reason `WaitingForDBCredentials`, requeues after `RequeueSecretPolling`, does NOT create an invalid derived Secret |
+| Password rotation | Upstream password change triggers an in-place `Update` of the derived Secret — `Name`/`UID` remain stable so Pod env consumers pick up the new value without restart churn |
+| No ESO artefacts | The derived Secret is a plain `corev1.Secret`. No `ExternalSecret` or `PushSecret` is created for it — it is a pure materialization from the already-synced upstream Secret |
+
+The derived Secret is listed as an owned resource in the
+[Owned Resources](#owned-resources) table and triggers reconciliation through
+the existing `Watches(Secret)` filter using `handler.OnlyControllerOwner()`.
+
+### ConfigMap placeholder
+
+`reconcileConfig` sets `[database] connection` in `keystone.conf` to the
+package-level constant `dbConnectionPlaceholder = "mysql+pymysql://placeholder"`.
+The placeholder is intentionally a syntactically valid pymysql URL so that
+oslo.config can parse the file on startup before the environment override is
+applied — parsing errors in the file layer would prevent the process from
+reaching the override layer. All other keys in the `[database]` section
+(`max_retries`, `connection_recycle_time`) are unchanged.
+
+Tests guarantee that no credential byte (username, password, or their
+percent-encoded forms) ever appears in the rendered `keystone.conf`. See
+`TestReconcileConfig_BrownfieldDatabase_PlaceholderInsteadOfPassword`,
+`TestReconcileConfig_ManagedDatabase_NoCredentialsInConfigMap`, and
+`TestReconcileConfig_SpecialCharactersInCredentials_DoNotLeakToConfigMap` in
+`reconcile_config_test.go`.
+
+### `OS_<GROUP>__<OPTION>` environment-variable override
+
+Upstream oslo.config supports sourcing any option value from an environment
+variable whose name is derived from the option's group and key, overriding the
+value present in any configuration file. The encoding is:
+
+```text
+OS_<GROUP>__<OPTION>
+```
+
+- `<GROUP>` — the INI section name (e.g. `database`), uppercased.
+- `<OPTION>` — the INI key (e.g. `connection`), uppercased.
+- The separator between group and option is a **double underscore** (`__`).
+
+For Keystone's database URL this yields `OS_DATABASE__CONNECTION`. The
+operator wires this env var on every container that loads `keystone.conf` and
+needs database access, sourcing the value from the derived
+`<name>-db-connection` Secret via a `SecretKeyRef`:
+
+```yaml
+env:
+  - name: OS_DATABASE__CONNECTION
+    valueFrom:
+      secretKeyRef:
+        name: <keystone.Name>-db-connection
+        key: connection
+```
+
+The helper `buildDBConnectionEnvVar()` in `reconcile_deployment.go` constructs
+this `corev1.EnvVar` value and is invoked from every pod-spec builder in the
+operator. Containers that use the env var include:
+
+| Workload | Builder | Purpose |
+| --- | --- | --- |
+| `Deployment` | `buildKeystoneDeployment` (`reconcile_deployment.go`) | Keystone API pods |
+| `Job` `{name}-bootstrap` | `buildBootstrapJob` (`reconcile_bootstrap.go`) | Initial bootstrap of admin user/project/roles |
+| `Job` `keystone-db-sync` and variants (expand, migrate, contract, schema-check) | `buildDBJob` (`reconcile_database.go`) | Database schema provisioning and drift checks |
+| `CronJob` `{name}-trust-flush` | `trustFlushCronJob` (`reconcile_trustflush.go`) | Periodic expired trust cleanup |
+| `CronJob` `{name}-fernet-rotate` | `fernetRotationCronJob` (`reconcile_fernet.go`) | Fernet key rotation — appended alongside the pre-existing `OS_fernet_tokens__max_active_keys` override |
+| `CronJob` `{name}-credential-rotate` | `credentialRotationCronJob` (`reconcile_credential.go`) | Credential key rotation |
+
+At process start, oslo.config loads `keystone.conf` (seeing the placeholder),
+then walks its option registry for environment overrides. The
+`OS_DATABASE__CONNECTION` value replaces the placeholder before any option
+consumer (SQLAlchemy engine creation, migrations, etc.) reads it. This means
+the password never reaches the file layer on any Pod's filesystem and is not
+readable through the `get configmap` verb.
+
+### References
+
+- Upstream oslo.config change that introduced the
+  `OS_<GROUP>__<OPTION>` environment override mechanism:
+  [openstack/oslo.config change 585850](https://review.opendev.org/c/openstack/oslo.config/+/585850).
+- Related sub-reconciler contracts: [`reconcileSecrets`](#reconcilesecrets)
+  (gates DB credential readiness), [`reconcileConfig`](#reconcileconfig)
+  (renders the placeholder), [`reconcileDeployment`](#reconciledeployment)
+  (mounts the env var on Keystone API pods).
 
 ---
 

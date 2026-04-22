@@ -3,7 +3,7 @@
 **Review-Area**: architecture
 **Detection-Hint**: When reviewing new test code, check if the codebase already provides shared assertion helpers or utility functions (e.g., in a lib/ directory). If the new code uses raw if/grep/echo instead of existing helpers like assert_contains, flag it.
 **Severity**: WARNING
-**Occurrences**: 4
+**Occurrences**: 5
 
 ## What to check
 
@@ -34,3 +34,8 @@ Inline reimplementations bypass centralized error reporting and formatting, make
 - **Feedback**: Now that `gosec` is enabled, you've added several repeated `//nolint:gosec` (G101) annotations in test fixtures; consider configuring gosec (e.g., via rules or `nosec` patterns) to de-emphasize credential heuristics in `_test.go` files or shared helpers so you don't need to sprinkle identical suppressions across many tests.
 - **What was missed**: When a PR introduces a new linter or enables new lint rules, check whether the accompanying suppressions could be handled by linter configuration (e.g., excluding _test.go files or specific patterns) rather than per-line annotations.
 - **Fix**: Configure gosec to exclude G101 credential heuristics in test files via linter configuration rather than adding per-line //nolint:gosec annotations.
+
+### CC-0080 — gndrmnn
+- **Feedback**: Move this helper to the existing secrets.go module
+- **What was missed**: Look for utility/helper functions in feature-specific files that perform generic operations on shared primitives. Verify whether an existing shared module (e.g., internal/common/secrets) is the more appropriate home, and whether the helper should be exported for reuse.
+- **Fix**: The unexported isMissingSecretOrKey helper was moved from operators/keystone/internal/controller/reconcile_dbconnection_secret.go to internal/common/secrets/secrets.go and exported as IsMissingSecretOrKey, with call sites updated and the now-unused errors import dropped.

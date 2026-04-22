@@ -94,6 +94,10 @@ func trustFlushCronJob(keystone *keystonev1alpha1.Keystone, configMapName string
 								Image:           image,
 								Command:         cmd,
 								SecurityContext: restrictedSecurityContext(),
+								// Override [database].connection via oslo.config env-var so the
+								// trust-flush CronJob reads the DB URL from the derived Secret
+								// instead of the ConfigMap (CC-0080, REQ-004).
+								Env: []corev1.EnvVar{buildDBConnectionEnvVar(keystone)},
 								VolumeMounts: []corev1.VolumeMount{
 									{Name: "config", MountPath: "/etc/keystone/keystone.conf.d/", ReadOnly: true},
 									{Name: "fernet-keys", MountPath: "/etc/keystone/fernet-keys", ReadOnly: true},

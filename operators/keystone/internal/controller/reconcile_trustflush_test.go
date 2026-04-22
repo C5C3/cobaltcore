@@ -488,6 +488,27 @@ func TestTrustFlushCronJob_SecurityContext(t *testing.T) {
 	expectRestrictedSecurityContext(g, container)
 }
 
+// Feature: CC-0080
+
+// TestTrustFlushCronJob_DBConnectionEnv verifies that the trust-flush container
+// has the OS_DATABASE__CONNECTION env var wired to the derived
+// <name>-db-connection Secret so the CronJob reads the DB URL from a Secret
+// instead of the ConfigMap (CC-0080, REQ-004, REQ-009).
+func TestTrustFlushCronJob_DBConnectionEnv(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := trustFlushTestKeystone()
+	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
+		Schedule: "0 * * * *",
+	}
+
+	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
+
+	container := findContainerByName(cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers, "trust-flush")
+	g.Expect(container).NotTo(BeNil())
+	g.Expect(container.Env).To(ContainElement(buildDBConnectionEnvVar(ks)),
+		"trust-flush must consume DB connection via OS_DATABASE__CONNECTION (CC-0080, REQ-004)")
+}
+
 // TestTrustFlushCronJob_PriorityClassNameSet verifies that when spec.PriorityClassName
 // is set, the trust flush CronJob PodSpec includes the configured priority class (CC-0075).
 func TestTrustFlushCronJob_PriorityClassNameSet(t *testing.T) {

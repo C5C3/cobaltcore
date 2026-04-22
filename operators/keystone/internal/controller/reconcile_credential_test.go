@@ -544,15 +544,21 @@ func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 	g.Expect(container.Image).To(Equal("ghcr.io/c5c3/keystone:2025.2"))
 	g.Expect(container.Command).To(Equal([]string{"/scripts/credential_rotate.sh"}))
 
-	// Verify env vars for Secret update via K8s API and oslo.config override (CC-0036).
+	// Verify env vars for Secret update via K8s API and oslo.config overrides
+	// for [credential].max_active_keys (CC-0036) and [database].connection
+	// sourced from the derived Secret (CC-0080, REQ-004, REQ-009).
 	// SECRET_NAME points at the staging Secret — CronJob SA is forbidden from
 	// patching the production Secret (CC-0081).
-	g.Expect(container.Env).To(HaveLen(3))
+	g.Expect(container.Env).To(HaveLen(4))
 	g.Expect(container.Env[0].Name).To(Equal("SECRET_NAME"))
 	g.Expect(container.Env[0].Value).To(Equal("test-keystone-credential-keys-rotation"))
 	g.Expect(container.Env[1].Name).To(Equal("SECRET_NAMESPACE"))
 	g.Expect(container.Env[2].Name).To(Equal("OS_credential__max_active_keys"))
 	g.Expect(container.Env[2].Value).To(Equal("3"))
+	g.Expect(container.Env[3].Name).To(Equal("OS_DATABASE__CONNECTION"))
+	g.Expect(container.Env[3].ValueFrom).NotTo(BeNil())
+	g.Expect(container.Env[3].ValueFrom.SecretKeyRef.LocalObjectReference.Name).To(Equal("test-keystone-db-connection"))
+	g.Expect(container.Env[3].ValueFrom.SecretKeyRef.Key).To(Equal(dbConnectionSecretKey))
 
 	// Verify volume mounts on main container: credential-keys + fernet-keys (read-only) + config + scripts (CC-0073).
 	g.Expect(container.VolumeMounts).To(HaveLen(4))

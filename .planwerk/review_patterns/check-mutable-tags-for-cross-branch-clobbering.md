@@ -3,7 +3,7 @@
 **Review-Area**: architecture
 **Detection-Hint**: When a workflow pushes container images or artifacts with version-only tags (e.g., `keystone:28.0.0`) and triggers from multiple branches, check whether concurrent or sequential builds from different branches can silently overwrite the same tag.
 **Severity**: BLOCKING
-**Occurrences**: 3
+**Occurrences**: 4
 
 ## What to check
 
@@ -29,3 +29,8 @@ A deployment system referencing a version-only tag could silently receive an ima
 - **Feedback**: The ClusterRole grants permissions for external-secrets.io resources (ExternalSecrets, PushSecrets), and the controller creates these resources. If the Keystone operator starts before ESO is installed, reconciliation of Keystone CRs will fail.
 - **What was missed**: Every external CRD apiGroup referenced in RBAC rules must have its providing operator listed in the HelmRelease dependsOn. If the operator creates ExternalSecret resources, external-secrets must be a declared dependency.
 - **Fix**: Added `- name: external-secrets namespace: external-secrets` to the HelmRelease dependsOn list.
+
+### CC-0080 — berendt
+- **Feedback**: After CC-0080, the file contains only 'mysql+pymysql://placeholder'... the Job retries BackoffLimit=4 times and fails. BootstrapReady never goes True and the CR never reaches Ready, directly contradicting the PR's stated acceptance criterion
+- **What was missed**: When a refactor replaces real values with placeholders in mounted config files, enumerate every process that reads those files and confirm each has an alternate source for the real value
+- **Fix**: Identified the bootstrap Job's Python script as a consumer of the database connection string and wired it to the env-var source instead of the placeholder config file

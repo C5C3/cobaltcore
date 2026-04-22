@@ -7,7 +7,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"strings"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -15,7 +14,6 @@ import (
 	"github.com/c5c3/forge/internal/common/config"
 	"github.com/c5c3/forge/internal/common/plugins"
 	"github.com/c5c3/forge/internal/common/policy"
-	"github.com/c5c3/forge/internal/common/secrets"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
@@ -25,6 +23,15 @@ import (
 // to retain after pruning. Combined with the current active ConfigMap, this
 // allows rollback to 3 previous configurations (CC-0077).
 const defaultConfigMapRetainCount = 3
+
+// dbConnectionPlaceholder is the placeholder URL written to the [database]
+// connection key in keystone.conf (CC-0080, REQ-008). The real URL is injected
+// at runtime via the OS_DATABASE__CONNECTION env var sourced from the derived
+// <keystone.Name>-db-connection Secret, using oslo.config's
+// OS_<GROUP>__<OPTION> environment override. The placeholder MUST be a
+// syntactically valid pymysql URL so oslo.config can parse the file cleanly
+// before the env override is applied.
+const dbConnectionPlaceholder = "mysql+pymysql://placeholder"
 
 // reconcileConfig builds the Keystone configuration and creates an immutable
 // ConfigMap containing keystone.conf, api-paste.ini, and optionally policy.yaml.
@@ -67,7 +74,10 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 		"database": {
 			"max_retries":             "-1",
 			"connection_recycle_time": "600",
-			"connection":              "{{DB_CONNECTION}}",
+			// The real URL is materialized by reconcileDBConnectionSecret into a
+			// derived Secret and injected at runtime via OS_DATABASE__CONNECTION
+			// (oslo.config env override). CC-0080, REQ-001.
+			"connection": dbConnectionPlaceholder,
 		},
 	}
 
@@ -78,50 +88,9 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 		"servers": serverList,
 	}
 
-	// Step 3: Resolve database connection string.
-	// In managed mode the MariaDB User CR name (= keystone.Name) is the MySQL
-	// username, so the connection string must use that same value.
-	// In brownfield mode no User CR exists; the secret's username is used.
-	var username string
-	if keystone.Spec.Database.ClusterRef != nil {
-		username = keystone.Name
-	} else {
-		u, err := secrets.GetSecretValue(ctx, r.Client, client.ObjectKey{
-			Namespace: keystone.Namespace,
-			Name:      keystone.Spec.Database.SecretRef.Name,
-		}, "username")
-		if err != nil {
-			return "", fmt.Errorf("reading database username: %w", err)
-		}
-		username = u
-	}
-
-	password, err := secrets.GetSecretValue(ctx, r.Client, client.ObjectKey{
-		Namespace: keystone.Namespace,
-		Name:      keystone.Spec.Database.SecretRef.Name,
-	}, "password")
-	if err != nil {
-		return "", fmt.Errorf("reading database password: %w", err)
-	}
-
-	// url.UserPassword is used instead of url.PathEscape because PathEscape does not escape '@' or ':',
-	// which are delimiters in the userinfo component per RFC 3986. url.UserPassword handles all
-	// reserved characters ('@', '/', '?', ':') correctly for database connection strings.
-	connURL := &url.URL{
-		Scheme:   "mysql+pymysql",
-		User:     url.UserPassword(username, password),
-		Host:     resolveDatabaseHost(keystone),
-		Path:     keystone.Spec.Database.Database,
-		RawQuery: "charset=utf8",
-	}
-
-	defaults = config.InjectSecrets(defaults, map[string]string{
-		"DB_CONNECTION": connURL.String(),
-	})
-
 	merged := defaults
 
-	// Step 4: Merge plugin config.
+	// Step 3: Merge plugin config.
 	if len(keystone.Spec.Plugins) > 0 {
 		pluginConfig, err := plugins.RenderPluginConfig(keystone.Spec.Plugins)
 		if err != nil {
@@ -130,24 +99,25 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 		merged = config.MergeDefaults(pluginConfig, defaults)
 	}
 
-	// Step 5: Merge extraConfig (extraConfig overrides everything).
+	// Step 4: Merge extraConfig (extraConfig overrides everything).
 	if keystone.Spec.ExtraConfig != nil {
 		merged = config.MergeDefaults(keystone.Spec.ExtraConfig, merged)
 	}
 
-	// Step 6: Handle PolicyOverrides.
+	// Step 5: Handle PolicyOverrides.
 	var policyYAML string
 	if keystone.Spec.PolicyOverrides != nil {
-		policyYAML, err = buildPolicyYAML(ctx, r.Client, keystone)
+		yaml, err := buildPolicyYAML(ctx, r.Client, keystone)
 		if err != nil {
 			return "", fmt.Errorf("building policy: %w", err)
 		}
+		policyYAML = yaml
 		if policyYAML != "" {
 			merged = config.InjectOsloPolicyConfig(merged, "/etc/keystone/keystone.conf.d/policy.yaml")
 		}
 	}
 
-	// Step 7: Render api-paste.ini.
+	// Step 6: Render api-paste.ini.
 	apiPasteINI, err := plugins.RenderPastePipelineINI(plugins.PipelineSpec{
 		PipelineName: "public_api",
 		AppName:      "admin_service",
@@ -170,7 +140,7 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 		return "", fmt.Errorf("rendering api-paste.ini: %w", err)
 	}
 
-	// Step 8: Create immutable ConfigMap.
+	// Step 7: Create immutable ConfigMap.
 	data := map[string]string{
 		"keystone.conf": config.RenderINI(merged),
 		"api-paste.ini": apiPasteINI,

@@ -530,6 +530,41 @@ func TestBuildDBSyncJob_SecurityContext(t *testing.T) {
 	expectRestrictedSecurityContext(g, container)
 }
 
+// Feature: CC-0080
+
+// TestBuildDBJobVariants_DBConnectionEnv verifies that every variant produced
+// by buildDBJob (db-sync, expand, migrate, contract, schema-check) carries the
+// OS_DATABASE__CONNECTION env var sourced from the derived
+// <name>-db-connection Secret so the DB URL is read from a Secret rather than
+// the ConfigMap (CC-0080, REQ-004, REQ-009).
+func TestBuildDBJobVariants_DBConnectionEnv(t *testing.T) {
+	ks := brownfieldKeystone()
+	expectedEnv := buildDBConnectionEnvVar(ks)
+
+	cases := []struct {
+		name          string
+		job           *batchv1.Job
+		containerName string
+	}{
+		{"db-sync", buildDBSyncJob(ks, "keystone-config-abc123"), "db-sync"},
+		{"expand", buildExpandJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag), "db-expand"},
+		{"migrate", buildMigrateJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag), "db-migrate"},
+		{"contract", buildContractJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag), "db-contract"},
+		{"schema-check", buildSchemaCheckJob(ks, "keystone-config-abc123"), "schema-check"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			container := findContainerByName(tc.job.Spec.Template.Spec.Containers, tc.containerName)
+			g.Expect(container).NotTo(BeNil())
+			g.Expect(container.Env).To(ContainElement(expectedEnv),
+				"%s container must source [database].connection from the derived Secret (CC-0080, REQ-004)",
+				tc.containerName)
+		})
+	}
+}
+
 func TestReconcileDatabase_StaleDBSyncJob_Recreated(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()

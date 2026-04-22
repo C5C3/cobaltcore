@@ -6,6 +6,7 @@ package secrets
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
@@ -19,6 +20,22 @@ import (
 )
 
 // Feature: CC-0005
+
+// ErrKeyNotFound is returned (wrapped) by GetSecretValue when the requested
+// data key is absent from the Secret. Callers use errors.Is to distinguish
+// this recoverable condition (e.g. wait-for-credentials) from transport or
+// permission errors (CC-0080, W-001).
+var ErrKeyNotFound = errors.New("key not found in Secret")
+
+// IsMissingSecretOrKey reports whether err indicates either an absent upstream
+// Secret (apierrors.IsNotFound through the wrap chain) or a missing data key.
+// GetSecretValue wraps the IsNotFound from c.Get with %w so apierrors.IsNotFound
+// walks the chain, and wraps ErrKeyNotFound when the requested data key is
+// absent so errors.Is walks the chain for the missing-data-key case
+// (CC-0080, W-001).
+func IsMissingSecretOrKey(err error) bool {
+	return apierrors.IsNotFound(err) || errors.Is(err, ErrKeyNotFound)
+}
 
 // WaitForExternalSecret checks whether the ExternalSecret identified by key
 // has a Ready condition with status True. It returns (true, nil) when ready,
@@ -100,7 +117,7 @@ func GetSecretValue(ctx context.Context, c client.Client, key client.ObjectKey, 
 
 	val, ok := secret.Data[dataKey]
 	if !ok {
-		return "", fmt.Errorf("key %q not found in Secret %s/%s", dataKey, key.Namespace, key.Name)
+		return "", fmt.Errorf("%w: key %q in Secret %s/%s", ErrKeyNotFound, dataKey, key.Namespace, key.Name)
 	}
 	return string(val), nil
 }

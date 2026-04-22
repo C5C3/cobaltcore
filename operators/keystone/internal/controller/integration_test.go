@@ -1004,8 +1004,10 @@ func TestIntegration_BootstrapJobDetailedSpec(t *testing.T) {
 	g.Expect(container.Command[3]).To(ContainSubstring("--bootstrap-region-id " + ks.Spec.Bootstrap.Region))
 	g.Expect(container.Args).To(BeNil())
 
-	// Verify BOOTSTRAP_PASSWORD env from SecretKeyRef (REQ-007).
-	g.Expect(container.Env).To(HaveLen(1))
+	// Verify env: BOOTSTRAP_PASSWORD from admin Secret (REQ-007) and
+	// OS_DATABASE__CONNECTION from the derived db-connection Secret
+	// (CC-0080, REQ-004).
+	g.Expect(container.Env).To(HaveLen(2))
 	pwEnv := container.Env[0]
 	g.Expect(pwEnv.Name).To(Equal("BOOTSTRAP_PASSWORD"))
 	g.Expect(pwEnv.ValueFrom).NotTo(BeNil())
@@ -1013,6 +1015,14 @@ func TestIntegration_BootstrapJobDetailedSpec(t *testing.T) {
 	g.Expect(pwEnv.ValueFrom.SecretKeyRef.Name).To(Equal(ks.Spec.Bootstrap.AdminPasswordSecretRef.Name),
 		"BOOTSTRAP_PASSWORD should reference the admin password Secret")
 	g.Expect(pwEnv.ValueFrom.SecretKeyRef.Key).To(Equal("password"))
+
+	dbEnv := container.Env[1]
+	g.Expect(dbEnv.Name).To(Equal("OS_DATABASE__CONNECTION"))
+	g.Expect(dbEnv.ValueFrom).NotTo(BeNil())
+	g.Expect(dbEnv.ValueFrom.SecretKeyRef).NotTo(BeNil())
+	g.Expect(dbEnv.ValueFrom.SecretKeyRef.Name).To(Equal(ks.Name+"-db-connection"),
+		"OS_DATABASE__CONNECTION should reference the derived db-connection Secret")
+	g.Expect(dbEnv.ValueFrom.SecretKeyRef.Key).To(Equal(dbConnectionSecretKey))
 
 	// Verify config volume mount (REQ-007).
 	g.Expect(container.VolumeMounts).To(HaveLen(2))
@@ -2696,4 +2706,121 @@ func TestRotationApplyReplacesDisjointIndices_EnvTest(t *testing.T) {
 
 	// A Normal FernetKeysRotated event is emitted on the Keystone CR.
 	eventuallyFindKeystoneEvent(t, ctx, c, ks, "FernetKeysRotated", corev1.EventTypeNormal)
+}
+
+// --- CC-0080: ConfigMap/Secret separation via oslo.config env overrides ---
+
+// TestIntegration_KeystonePodReachesDatabaseViaEnvOverride verifies the
+// CC-0080 split: the keystone.conf ConfigMap must carry only the placeholder
+// URL (never the real DB password), while the real URL is materialised into
+// the derived <name>-db-connection Secret and injected into the Deployment
+// pod spec via the OS_DATABASE__CONNECTION env var (CC-0080, REQ-001,
+// REQ-002, REQ-003).
+func TestIntegration_KeystonePodReachesDatabaseViaEnvOverride(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cc0080-env-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	// REQ-001: the rendered keystone.conf ConfigMap carries the placeholder
+	// URL and MUST NOT contain the upstream DB password.
+	configMaps := &corev1.ConfigMapList{}
+	g.Expect(c.List(ctx, configMaps, client.InNamespace(ns.Name))).To(Succeed())
+	var conf string
+	for _, cm := range configMaps.Items {
+		if strings.HasPrefix(cm.Name, "test-keystone-config-") {
+			conf = cm.Data["keystone.conf"]
+			break
+		}
+	}
+	g.Expect(conf).NotTo(BeEmpty(), "keystone.conf should exist in a test-keystone-config-* ConfigMap")
+	g.Expect(conf).To(ContainSubstring(dbConnectionPlaceholder),
+		"keystone.conf [database] connection must be the placeholder (CC-0080, REQ-001)")
+	// Guard against the specific leakage pattern: the rendered DB URL fragment
+	// "<user>:<password>@" produced by url.UserPassword. createPrerequisites
+	// seeds username=keystone, password=secret (CC-0080, REQ-001).
+	g.Expect(conf).NotTo(ContainSubstring("keystone:secret@"),
+		"keystone.conf must not contain the upstream DB credentials (CC-0080, REQ-001)")
+
+	// REQ-002: derived Secret exists with a single "connection" key whose
+	// value is a valid pymysql URL carrying the real credentials.
+	derivedKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-db-connection", ks.Name)}
+	derived := &corev1.Secret{}
+	g.Expect(c.Get(ctx, derivedKey, derived)).To(Succeed(),
+		"derived db-connection Secret must exist (CC-0080, REQ-002)")
+	g.Expect(derived.Data).To(HaveLen(1), "derived Secret must contain exactly one key")
+	connStr := string(derived.Data[dbConnectionSecretKey])
+	g.Expect(connStr).To(HavePrefix("mysql+pymysql://"),
+		"derived connection must be a pymysql URL (CC-0080, REQ-002)")
+	g.Expect(connStr).To(ContainSubstring("keystone:secret@"),
+		"derived connection must carry the upstream username and password")
+	g.Expect(connStr).To(ContainSubstring("db.example.com"),
+		"derived connection must carry the database host")
+	g.Expect(derived.OwnerReferences).NotTo(BeEmpty(),
+		"derived Secret must be owner-referenced by the Keystone CR")
+
+	// REQ-003: the Deployment pod spec injects OS_DATABASE__CONNECTION sourced
+	// from the derived Secret.
+	deploy := &appsv1.Deployment{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-api", ks.Name)}, deploy)).
+		To(Succeed())
+	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone-api")
+	g.Expect(container).NotTo(BeNil(), "keystone-api container must exist")
+	g.Expect(container.Env).To(ContainElement(buildDBConnectionEnvVar(ks)),
+		"Deployment container must carry OS_DATABASE__CONNECTION from derived Secret (CC-0080, REQ-003)")
+}
+
+// TestIntegration_RecreateDerivedSecretWhenDeleted verifies that deleting the
+// derived <name>-db-connection Secret triggers the secretToKeystoneMapper
+// watch and causes reconciliation to re-create it (CC-0080, REQ-006).
+func TestIntegration_RecreateDerivedSecretWhenDeleted(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cc0080-recreate-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	derivedKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-db-connection", ks.Name)}
+	original := &corev1.Secret{}
+	g.Expect(c.Get(ctx, derivedKey, original)).To(Succeed(),
+		"derived db-connection Secret must exist before deletion")
+	originalUID := original.UID
+	originalConn := string(original.Data[dbConnectionSecretKey])
+	g.Expect(originalConn).NotTo(BeEmpty(), "derived Secret must carry a connection value")
+
+	// Delete the derived Secret out-of-band, then expect the watch-driven
+	// reconcile to recreate it with the same contents (CC-0080, REQ-006).
+	g.Expect(c.Delete(ctx, original)).To(Succeed())
+
+	g.Eventually(func(g Gomega) {
+		recreated := &corev1.Secret{}
+		g.Expect(c.Get(ctx, derivedKey, recreated)).To(Succeed())
+		// A fresh object: different UID from the deleted one.
+		g.Expect(recreated.UID).NotTo(Equal(originalUID),
+			"derived Secret must be a freshly created object after deletion")
+		g.Expect(recreated.Data[dbConnectionSecretKey]).To(Equal([]byte(originalConn)),
+			"recreated Secret must carry the same connection URL")
+		g.Expect(recreated.OwnerReferences).NotTo(BeEmpty(),
+			"recreated Secret must be owner-referenced by the Keystone CR")
+	}, eventuallyTimeout, pollInterval).Should(Succeed(),
+		"controller must recreate deleted db-connection Secret (CC-0080, REQ-006)")
 }

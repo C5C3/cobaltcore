@@ -6,6 +6,8 @@ package secrets
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -13,8 +15,10 @@ import (
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -36,6 +40,55 @@ func testOwner() *corev1.ConfigMap {
 			Namespace: "default",
 			UID:       "test-uid",
 		},
+	}
+}
+
+// --- IsMissingSecretOrKey ---
+
+// TestIsMissingSecretOrKey locks in the contract of the shared helper
+// independently of GetSecretValue's wrapping details so call sites in
+// reconcileDBConnectionSecret (operators/keystone) and any future consumers can
+// rely on a stable classification of "upstream Secret absent or required key
+// missing" (CC-0080, W-001).
+func TestIsMissingSecretOrKey(t *testing.T) {
+	notFound := apierrors.NewNotFound(
+		schema.GroupResource{Group: "", Resource: "secrets"},
+		"missing-secret",
+	)
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error is not missing",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "wrapped apierrors NotFound is missing",
+			err:  fmt.Errorf("getting Secret default/missing-secret: %w", notFound),
+			want: true,
+		},
+		{
+			name: "wrapped ErrKeyNotFound is missing",
+			err:  fmt.Errorf("%w: key %q in Secret default/test", ErrKeyNotFound, "password"),
+			want: true,
+		},
+		{
+			name: "arbitrary error is not missing",
+			err:  errors.New("boom"),
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			g.Expect(IsMissingSecretOrKey(tc.err)).To(Equal(tc.want))
+		})
 	}
 }
 
@@ -337,7 +390,13 @@ func TestGetSecretValue_keyNotPresent(t *testing.T) {
 
 	_, err := GetSecretValue(context.Background(), c, client.ObjectKeyFromObject(secret), "password")
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("not found"))
+	// The missing-data-key case must wrap the ErrKeyNotFound sentinel so
+	// callers can use errors.Is instead of fragile substring matching
+	// (CC-0080, W-001).
+	g.Expect(errors.Is(err, ErrKeyNotFound)).To(BeTrue(),
+		"missing-key error must wrap ErrKeyNotFound (CC-0080, W-001)")
+	g.Expect(err.Error()).To(ContainSubstring(`key "password"`))
+	g.Expect(err.Error()).To(ContainSubstring("Secret default/test-secret"))
 }
 
 // --- EnsurePushSecret ---

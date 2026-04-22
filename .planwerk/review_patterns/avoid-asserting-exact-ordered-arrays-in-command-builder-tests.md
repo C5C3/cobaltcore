@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: When reviewing tests for functions that build CLI argument lists, check whether the assertions verify the full ordered slice via deep-equal. If so, flag as brittle: adding, removing, or reordering any unrelated flag will break every test case.
 **Severity**: WARNING
-**Occurrences**: 3
+**Occurrences**: 4
 
 ## What to check
 
@@ -29,3 +29,8 @@ Full-array assertions couple every test to the exact ordering of all flags. Any 
 - **Feedback**: W-003 and W-004 (range assertions) were fixed by replacing >= and > comparisons with exact-match assertions in both tests/e2e-chaos/operator-pod-kill/chainsaw-test.yaml (availableReplicas: 2) and tests/e2e/keystone/concurrent-cr-conflicts/chainsaw-test.yaml (availableReplicas: 1, 3 occurrences).
 - **What was missed**: Test assertions on deterministic values like replica counts, pod counts, or status codes should use exact equality (e.g., `availableReplicas: 2`) rather than range checks (e.g., `availableReplicas >= 2`). A range assertion can silently pass when the system is in an unexpected state.
 - **Fix**: Replaced `availableReplicas >= 2` with `availableReplicas: 2` and `availableReplicas > 0` with `availableReplicas: 1` across both test files.
+
+### CC-0080 — berendt
+- **Feedback**: Also add a unit test that renders buildBootstrapJob and asserts the embedded sc[ript]...
+- **What was missed**: Controllers that generate Jobs with inline scripts should have tests that invoke the builder and assert the script references expected env vars, and that required env vars are present in the container spec
+- **Fix**: Added TestBuildBootstrapJob_PreInsertScriptReadsDBConnectionEnvVar asserting os.environ.get("OS_DATABASE__CONNECTION") appears before the configparser fallback, and extended TestReconcileBootstrap_JobCreated to assert env var ordering

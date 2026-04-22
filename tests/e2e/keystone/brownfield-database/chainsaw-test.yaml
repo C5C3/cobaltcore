@@ -6,10 +6,12 @@
 # Verifies:
 #   - No MariaDB CRs (Database, User, Grant) are created when using
 #     explicit database.host (no clusterRef)
-#   - keystone.conf [database].connection contains the explicit host
+#   - Derived <name>-db-connection Secret carries a pymysql URL pointing at
+#     the explicit host (since CC-0080 the host no longer appears in the
+#     ConfigMap — keystone.conf only holds the placeholder URL)
 #   - Reconciliation completes to Ready=True via the existing database
 #
-# REQ-010, REQ-012, REQ-013 (CC-0016)
+# REQ-010, REQ-012, REQ-013 (CC-0016), CC-0080
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -121,16 +123,22 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 4: Verify keystone.conf connection contains explicit host ─────
+  # ── Step 4: Verify derived db-connection Secret points at explicit host ─
+  # Since CC-0080 the real connection URL (and thus the brownfield host)
+  # lives in the derived <name>-db-connection Secret, not in keystone.conf
+  # (which carries the placeholder URL consumed via OS_DATABASE__CONNECTION).
   - try:
     - script:
         content: |
           set -eu
-          CM_NAME=$(kubectl get cm -n openstack -o name | grep keystone-brownfield-config-)
-          if [ -z "$CM_NAME" ]; then
-            echo "ERROR: No ConfigMap matching keystone-brownfield-config-* found"
+          CONN=$(kubectl get secret -n openstack keystone-brownfield-db-connection \
+            -o jsonpath='{.data.connection}' | base64 -d)
+          if [ -z "$CONN" ]; then
+            echo "ERROR: derived Secret keystone-brownfield-db-connection has no connection data"
             exit 1
           fi
-          kubectl get "$CM_NAME" -n openstack -o jsonpath='{.data.keystone\.conf}' \
-            | grep 'openstack-db.openstack.svc.cluster.local'
-          echo "OK: keystone.conf connection contains the explicit host"
+          if ! printf '%s' "$CONN" | grep -qF 'openstack-db.openstack.svc.cluster.local'; then
+            echo "FAIL: connection URL does not point at the explicit brownfield host: $CONN"
+            exit 1
+          fi
+          echo "OK: db-connection Secret points at the explicit brownfield host"

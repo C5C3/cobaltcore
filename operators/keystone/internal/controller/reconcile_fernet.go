@@ -333,6 +333,10 @@ func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName st
 										Name:  "OS_fernet_tokens__max_active_keys",
 										Value: strconv.Itoa(normalizedFernetMaxActiveKeys(keystone)),
 									},
+									// Override [database].connection via oslo.config env-var so the
+									// fernet-rotate CronJob reads the DB URL from the derived Secret
+									// instead of the ConfigMap (CC-0080, REQ-004).
+									buildDBConnectionEnvVar(keystone),
 								},
 								VolumeMounts: []corev1.VolumeMount{
 									{Name: "fernet-keys", MountPath: "/etc/keystone/fernet-keys"},

@@ -592,7 +592,7 @@ Retrieves and decodes the value of a specific data key from a Secret.
 | Condition | Error |
 | --- | --- |
 | Secret does not exist | Wrapped API server error |
-| Key not in `Secret.Data` | `key "<dataKey>" not found in Secret <namespace>/<name>` |
+| Key not in `Secret.Data` | Wraps `ErrKeyNotFound`: `key not found in Secret: key "<dataKey>" in Secret <namespace>/<name>` — test with `errors.Is(err, secrets.ErrKeyNotFound)` |
 
 ### EnsurePushSecret
 

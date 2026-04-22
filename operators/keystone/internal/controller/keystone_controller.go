@@ -158,6 +158,19 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return r.updateStatus(ctx, &keystone, result, err)
 	}
 
+	// reconcileDBConnectionSecret materialises the DB URL into the derived
+	// <keystone.Name>-db-connection Secret so that keystone.conf can reference
+	// the placeholder while the real credentials live in a Secret consumed via
+	// OS_DATABASE__CONNECTION. It must run after reconcileSecrets (upstream
+	// credentials must be synced) and before reconcileConfig (the derived
+	// Secret is consumed by downstream pods/Jobs that reference the ConfigMap).
+	// Failures set SecretsReady=False — the same condition used by
+	// reconcileSecrets — so no new subConditionTypes entry is required
+	// (CC-0080, REQ-005).
+	if result, err := r.reconcileDBConnectionSecret(ctx, &keystone); !result.IsZero() || err != nil {
+		return r.updateStatus(ctx, &keystone, result, err)
+	}
+
 	// reconcileConfig must run before reconcileFernetKeys and reconcileDatabase
 	// because both the fernet rotation CronJob and the db_sync Job require the
 	// keystone.conf ConfigMap.

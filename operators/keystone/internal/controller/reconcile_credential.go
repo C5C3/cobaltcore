@@ -338,6 +338,11 @@ func credentialRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapNam
 										Name:  "OS_credential__max_active_keys",
 										Value: strconv.Itoa(normalizedCredentialMaxActiveKeys(keystone)),
 									},
+									// Override [database].connection via oslo.config env-var so the
+									// credential-rotate CronJob (which runs credential_migrate against
+									// the DB) reads the DB URL from the derived Secret instead of the
+									// ConfigMap (CC-0080, REQ-004).
+									buildDBConnectionEnvVar(keystone),
 								},
 								VolumeMounts: []corev1.VolumeMount{
 									{Name: "credential-keys", MountPath: "/etc/keystone/credential-keys"},

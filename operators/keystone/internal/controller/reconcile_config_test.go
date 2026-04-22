@@ -112,7 +112,7 @@ func getCreatedConfigMap(ctx context.Context, c client.Client, namespace, name s
 	return cm, nil
 }
 
-func TestReconcileConfig_BasicManagedDatabaseAndCache(t *testing.T) {
+func TestReconcileConfig_ManagedDatabase_NoCredentialsInConfigMap(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := configTestScheme()
 
@@ -150,8 +150,12 @@ func TestReconcileConfig_BasicManagedDatabaseAndCache(t *testing.T) {
 	g.Expect(keystoneConf).To(ContainSubstring("[memcache]"))
 	g.Expect(keystoneConf).To(ContainSubstring("[credential]"))
 
-	// Managed database: connection uses CR name as MySQL username and service DNS.
-	g.Expect(keystoneConf).To(ContainSubstring("mysql+pymysql://test-keystone:secret123@mariadb-cluster.default.svc:3306/keystone?charset=utf8"))
+	// Managed database: credentials and host MUST NOT leak into the ConfigMap.
+	// The placeholder is what oslo.config parses before the OS_DATABASE__CONNECTION
+	// env override replaces it at runtime (CC-0080, REQ-001/REQ-008).
+	g.Expect(keystoneConf).NotTo(ContainSubstring("secret123"))
+	g.Expect(keystoneConf).NotTo(ContainSubstring("mariadb-cluster.default.svc"))
+	g.Expect(keystoneConf).To(ContainSubstring(dbConnectionPlaceholder))
 
 	// Managed cache: uses Service DNS name.
 	g.Expect(keystoneConf).To(ContainSubstring("memcached-cluster:11211"))
@@ -173,7 +177,7 @@ func TestReconcileConfig_BasicManagedDatabaseAndCache(t *testing.T) {
 	g.Expect(apiPaste).To(ContainSubstring("[filter:http_proxy_to_wsgi]"))
 }
 
-func TestReconcileConfig_BrownfieldDatabase(t *testing.T) {
+func TestReconcileConfig_BrownfieldDatabase_PlaceholderInsteadOfPassword(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := configTestScheme()
 
@@ -189,30 +193,47 @@ func TestReconcileConfig_BrownfieldDatabase(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	keystoneConf := cm.Data["keystone.conf"]
-	g.Expect(keystoneConf).To(ContainSubstring("mysql+pymysql://ks_user:ks_pass@db.example.com:3306/keystone?charset=utf8"))
+	// Brownfield credentials MUST NOT appear in the ConfigMap (CC-0080, REQ-001).
+	g.Expect(keystoneConf).NotTo(ContainSubstring("ks_pass"))
+	g.Expect(keystoneConf).To(ContainSubstring(dbConnectionPlaceholder))
+	// Placeholder appears exactly once — guards against accidental duplicate
+	// rendering or template injection.
+	g.Expect(strings.Count(keystoneConf, dbConnectionPlaceholder)).To(Equal(1))
+	// REQ-001 scenario 1 regression guard: [database] section keeps its other
+	// keys so the runtime config still tunes connection retries/recycling.
+	g.Expect(keystoneConf).To(ContainSubstring("[database]"))
+	g.Expect(keystoneConf).To(ContainSubstring("max_retries = -1"))
+	g.Expect(keystoneConf).To(ContainSubstring("connection_recycle_time = 600"))
 }
 
-func TestReconcileConfig_SpecialCharactersInCredentialsAreURLEncoded(t *testing.T) {
+func TestReconcileConfig_SpecialCharactersInCredentials_DoNotLeakToConfigMap(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := configTestScheme()
 
 	ks := configTestKeystone()
-	// Credentials with special characters that could break a PyMySQL URL.
+	// Credentials with special characters that previously had to be percent-encoded
+	// into the ConfigMap. With CC-0080 they live only in the derived Secret, so
+	// neither the raw nor the percent-encoded form should appear in keystone.conf.
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "user@domain", "p@ss:w/rd")
 	r := newConfigTestReconciler(s, ks, secret)
 
 	configMapName, err := r.reconcileConfig(context.Background(), ks)
-
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	keystoneConf := cm.Data["keystone.conf"]
-	// Special characters must be percent-encoded per RFC 3986 userinfo rules (CC-0013).
-	// url.UserPassword encodes '@', ':', and '/' in the password component.
-	g.Expect(keystoneConf).To(ContainSubstring("mysql+pymysql://user%40domain:p%40ss%3Aw%2Frd@db.example.com:3306/keystone?charset=utf8"),
-		"special characters (@, :, /) in credentials must be percent-encoded for PyMySQL")
+	for _, leaked := range []string{
+		"p@ss:w/rd",
+		"user@domain",
+		"p%40ss%3Aw%2Frd",
+		"user%40domain",
+	} {
+		g.Expect(keystoneConf).NotTo(ContainSubstring(leaked),
+			"credential fragment %q must not appear in keystone.conf (raw or percent-encoded)", leaked)
+	}
+	g.Expect(keystoneConf).To(ContainSubstring(dbConnectionPlaceholder))
 }
 
 func TestReconcileConfig_BrownfieldCache(t *testing.T) {

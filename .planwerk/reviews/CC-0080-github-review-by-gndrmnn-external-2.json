@@ -1,0 +1,37 @@
+{
+  "feature_id": "CC-0080",
+  "title": "GitHub Review by gndrmnn",
+  "summary": "The reviewer wants the helper function at `operators/keystone/internal/controller/reconcile_dbconnection_secret.go:177` moved into the existing `secrets.go` module.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "gndrmnn",
+  "date": "2026-04-22T09:36:41Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 2,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "Move this helper to the existing secrets.go module",
+      "path": "operators/keystone/internal/controller/reconcile_dbconnection_secret.go",
+      "line": 177,
+      "author": "gndrmnn",
+      "created_at": "2026-04-22T09:26:18Z",
+      "id": null,
+      "resolution": "Removed the local `isMissingSecretOrKey` function (previously at reconcile_dbconnection_secret.go:177) and added an exported `IsMissingSecretOrKey` in internal/common/secrets/secrets.go; updated both call sites in reconcile_dbconnection_secret.go to use `secrets.IsMissingSecretOrKey` and dropped the now-unused `errors` import."
+    }
+  ],
+  "resolution_summary": "The `isMissingSecretOrKey` helper was moved from `operators/keystone/internal/controller/reconcile_dbconnection_secret.go` into the shared `internal/common/secrets/secrets.go` module as an exported `IsMissingSecretOrKey` function, preserving the sentinel-based detection logic (apierrors.IsNotFound + errors.Is(ErrKeyNotFound)). The two call sites in the Keystone DB-connection reconciler were updated to invoke `secrets.IsMissingSecretOrKey(err)`, and the now-unused `errors` import was dropped from the controller file. No changes were made outside the locations named in the review.",
+  "github_review_id": 4153561065
+}

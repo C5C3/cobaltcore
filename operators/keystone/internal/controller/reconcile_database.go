@@ -636,6 +636,11 @@ func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, imageTag, na
 						Image:           fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, imageTag),
 						Command:         command,
 						SecurityContext: restrictedSecurityContext(),
+						// Override [database].connection via oslo.config env-var so every
+						// db_sync variant (db-sync, expand, migrate, contract, schema-check)
+						// reads the DB URL from the derived Secret instead of the ConfigMap
+						// (CC-0080, REQ-004).
+						Env: []corev1.EnvVar{buildDBConnectionEnvVar(keystone)},
 						VolumeMounts: []corev1.VolumeMount{{
 							Name:      "config",
 							MountPath: "/etc/keystone/keystone.conf.d/",

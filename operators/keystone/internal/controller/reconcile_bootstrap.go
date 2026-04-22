@@ -78,13 +78,24 @@ func buildBootstrapJob(keystone *keystonev1alpha1.Keystone, configMapName string
 		publicURL = keystone.Spec.Bootstrap.PublicEndpoint
 	}
 
+	// The pre-insert script seeds the admin region row before keystone-manage
+	// bootstrap runs. It must resolve the real DB URL the same way Keystone
+	// does at runtime: prefer the OS_DATABASE__CONNECTION env override (set by
+	// buildDBConnectionEnvVar from the derived <name>-db-connection Secret,
+	// CC-0080, REQ-004) and fall back to keystone.conf only when the env var
+	// is unset. Stdlib configparser has no knowledge of oslo.config env
+	// overrides, so reading the conf file alone would resolve to the
+	// placeholder host introduced by CC-0080 and fail DNS (CC-0080, C-001).
 	bootstrapScript := fmt.Sprintf(`python3 -c '
-import configparser, glob, pymysql
+import os, configparser, glob, pymysql
 from urllib.parse import urlparse, parse_qs
-conf = configparser.RawConfigParser()
-for f in sorted(glob.glob("/etc/keystone/keystone.conf.d/*.conf")):
-    conf.read(f)
-url = urlparse(conf.get("database", "connection"))
+conn_url = os.environ.get("OS_DATABASE__CONNECTION")
+if not conn_url:
+    conf = configparser.RawConfigParser()
+    for f in sorted(glob.glob("/etc/keystone/keystone.conf.d/*.conf")):
+        conf.read(f)
+    conn_url = conf.get("database", "connection")
+url = urlparse(conn_url)
 db = url.path.lstrip("/")
 qs = parse_qs(url.query)
 charset = qs.get("charset", ["utf8"])[0]
@@ -122,17 +133,23 @@ exec keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap \
 						// this container. Currently runs as BestEffort QoS. See reconcile_deployment.go
 						// containerResources() for the pattern used by the keystone-api container.
 						Command: []string{"/bin/sh", "-eu", "-c", bootstrapScript},
-						Env: []corev1.EnvVar{{
-							Name: "BOOTSTRAP_PASSWORD",
-							ValueFrom: &corev1.EnvVarSource{
-								SecretKeyRef: &corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: keystone.Spec.Bootstrap.AdminPasswordSecretRef.Name,
+						Env: []corev1.EnvVar{
+							{
+								Name: "BOOTSTRAP_PASSWORD",
+								ValueFrom: &corev1.EnvVarSource{
+									SecretKeyRef: &corev1.SecretKeySelector{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: keystone.Spec.Bootstrap.AdminPasswordSecretRef.Name,
+										},
+										Key: "password",
 									},
-									Key: "password",
 								},
 							},
-						}},
+							// Override [database].connection via oslo.config env-var so the
+							// bootstrap Job reads the DB URL from the derived Secret instead
+							// of the ConfigMap (CC-0080, REQ-004).
+							buildDBConnectionEnvVar(keystone),
+						},
 						SecurityContext: restrictedSecurityContext(),
 						VolumeMounts: []corev1.VolumeMount{
 							{

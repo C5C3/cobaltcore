@@ -466,6 +466,49 @@ func TestBuildKeystoneDeployment_VolumesMaintained(t *testing.T) {
 	g.Expect(mountPaths).To(HaveKeyWithValue("credential-keys", "/etc/keystone/credential-keys/"))
 }
 
+// Feature: CC-0080
+
+// TestBuildDBConnectionEnvVar verifies that the helper emits an EnvVar named
+// OS_DATABASE__CONNECTION sourcing its value from the derived
+// <keystone.Name>-db-connection Secret's "connection" key (CC-0080, REQ-003).
+func TestBuildDBConnectionEnvVar(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+
+	env := buildDBConnectionEnvVar(ks)
+
+	g.Expect(env.Name).To(Equal("OS_DATABASE__CONNECTION"))
+	g.Expect(env.Value).To(BeEmpty(),
+		"value must come from a SecretKeyRef, never an inline plaintext string")
+	g.Expect(env.ValueFrom).NotTo(BeNil())
+	g.Expect(env.ValueFrom.SecretKeyRef).NotTo(BeNil())
+	g.Expect(env.ValueFrom.SecretKeyRef.Name).To(Equal("test-keystone-db-connection"))
+	g.Expect(env.ValueFrom.SecretKeyRef.Key).To(Equal(dbConnectionSecretKey))
+}
+
+// TestBuildKeystoneDeployment_DBConnectionEnv verifies that the keystone-api
+// container has the OS_DATABASE__CONNECTION env var wired to the derived
+// connection Secret so oslo.config overrides the [database] connection value
+// (CC-0080, REQ-003, REQ-007). Volumes and mounts must remain unchanged.
+func TestBuildKeystoneDeployment_DBConnectionEnv(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone-api")
+	g.Expect(container).NotTo(BeNil())
+	g.Expect(container.Env).To(ContainElement(buildDBConnectionEnvVar(ks)),
+		"keystone-api must consume DB connection via OS_DATABASE__CONNECTION (CC-0080, REQ-003)")
+
+	// Volumes/mounts must remain unchanged (REQ-007).
+	volumeNames := make([]string, 0, len(deploy.Spec.Template.Spec.Volumes))
+	for _, v := range deploy.Spec.Template.Spec.Volumes {
+		volumeNames = append(volumeNames, v.Name)
+	}
+	g.Expect(volumeNames).To(ConsistOf("config", "fernet-keys", "credential-keys"))
+}
+
 // TestReconcileDeployment_NoSecretReadRequired verifies that reconcileDeployment
 // succeeds and creates a Deployment even when fernet-keys and credential-keys
 // Secrets do not exist (CC-0074, REQ-001).

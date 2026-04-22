@@ -148,11 +148,17 @@ func TestReconcileBootstrap_JobCreated(t *testing.T) {
 	g.Expect(container.Command[3]).To(ContainSubstring("--bootstrap-region-id RegionOne"))
 	g.Expect(container.Args).To(BeNil())
 
-	// Verify env.
-	g.Expect(container.Env).To(HaveLen(1))
+	// Verify env: BOOTSTRAP_PASSWORD first (from admin Secret), then
+	// OS_DATABASE__CONNECTION override sourced from the derived DB connection
+	// Secret (CC-0080, REQ-004, REQ-007, REQ-009). Ordering is asserted so
+	// future edits cannot reorder or drop either entry unnoticed.
+	g.Expect(container.Env).To(HaveLen(2))
 	g.Expect(container.Env[0].Name).To(Equal("BOOTSTRAP_PASSWORD"))
 	g.Expect(container.Env[0].ValueFrom.SecretKeyRef.LocalObjectReference.Name).To(Equal("keystone-admin"))
 	g.Expect(container.Env[0].ValueFrom.SecretKeyRef.Key).To(Equal("password"))
+	g.Expect(container.Env[1].Name).To(Equal("OS_DATABASE__CONNECTION"))
+	g.Expect(container.Env[1].ValueFrom.SecretKeyRef.LocalObjectReference.Name).To(Equal(ks.Name + "-db-connection"))
+	g.Expect(container.Env[1].ValueFrom.SecretKeyRef.Key).To(Equal(dbConnectionSecretKey))
 
 	// Verify config volume mount is present (CC-0013: bootstrap needs keystone.conf for DB connection).
 	g.Expect(container.VolumeMounts).To(HaveLen(2))
@@ -447,4 +453,35 @@ func TestBuildBootstrapJob_PriorityClassNameNil(t *testing.T) {
 	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
 
 	g.Expect(job.Spec.Template.Spec.PriorityClassName).To(BeEmpty())
+}
+
+// TestBuildBootstrapJob_PreInsertScriptReadsDBConnectionEnvVar asserts the
+// inline Python pre-insert script resolves the DB URL from the
+// OS_DATABASE__CONNECTION env var and only falls back to keystone.conf when
+// the env var is unset (CC-0080, C-001).
+//
+// Since CC-0080 the [database] connection key in keystone.conf is a
+// placeholder ("mysql+pymysql://placeholder") and the real URL is injected
+// via oslo.config's OS_<GROUP>__<OPTION> override. stdlib configparser has no
+// knowledge of this override, so a script that reads keystone.conf only would
+// dial the placeholder host and fail DNS, aborting before
+// `keystone-manage bootstrap` runs. Guard against regression by asserting the
+// script references the env var and falls back to configparser.
+func TestBuildBootstrapJob_PreInsertScriptReadsDBConnectionEnvVar(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := bootstrapKeystone()
+
+	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
+
+	container := findContainerByName(job.Spec.Template.Spec.Containers, "bootstrap")
+	g.Expect(container).NotTo(BeNil())
+	g.Expect(container.Command).To(HaveLen(4))
+	script := container.Command[3]
+
+	g.Expect(script).To(ContainSubstring(`os.environ.get("OS_DATABASE__CONNECTION")`),
+		"pre-insert script must read OS_DATABASE__CONNECTION from the environment first (CC-0080, C-001)")
+	g.Expect(script).To(ContainSubstring("configparser"),
+		"pre-insert script must still fall back to keystone.conf when the env var is unset (CC-0080, C-001)")
+	g.Expect(script).To(MatchRegexp(`(?s)os\.environ\.get\("OS_DATABASE__CONNECTION"\).*configparser`),
+		"env-var lookup must precede the configparser fallback (CC-0080, C-001)")
 }

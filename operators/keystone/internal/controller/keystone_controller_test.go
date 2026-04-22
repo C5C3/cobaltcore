@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2209,4 +2210,199 @@ func TestIsGatewayAPIAvailable_CRDMissing_ReturnsFalse(t *testing.T) {
 	g := NewGomegaWithT(t)
 	m := &fakeRESTMapper{available: map[string]bool{}}
 	g.Expect(isGatewayAPIAvailable(m)).To(BeFalse())
+}
+
+// ---------------------------------------------------------------------------
+// reconcileDBConnectionSecret wiring tests (CC-0080, REQ-005, REQ-006)
+// ---------------------------------------------------------------------------
+
+// TestReconcile_DBConnectionSecretCreatedBeforeConfigMap verifies that in a
+// full reconcile the derived <name>-db-connection Secret is created before any
+// ConfigMap. The derived Secret is consumed at runtime via the
+// OS_DATABASE__CONNECTION env var; if a ConfigMap referencing the placeholder
+// were rendered first, downstream pods could mount a ConfigMap whose companion
+// Secret does not yet exist (CC-0080, REQ-005).
+func TestReconcile_DBConnectionSecretCreatedBeforeConfigMap(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	derivedSecretName := ks.Name + "-db-connection"
+
+	s := testScheme()
+	objs := append(
+		[]runtime.Object{
+			ks,
+			testDBCredentialsSecret(),
+			testAdminCredentialsSecret(),
+			testFernetKeysSecret(),
+			testCredentialKeysSecret(),
+		},
+		testReadyExternalSecrets()...,
+	)
+	cb := fake.NewClientBuilder().WithScheme(s)
+	for _, obj := range objs {
+		cb = cb.WithRuntimeObjects(obj)
+	}
+	cb = cb.WithStatusSubresource(&keystonev1alpha1.Keystone{}, &esov1.ExternalSecret{})
+
+	type createEvent struct {
+		kind string
+		name string
+	}
+	var (
+		createsMu sync.Mutex
+		creates   []createEvent
+	)
+	cb = cb.WithInterceptorFuncs(interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			switch obj.(type) {
+			case *corev1.Secret:
+				createsMu.Lock()
+				creates = append(creates, createEvent{kind: "Secret", name: obj.GetName()})
+				createsMu.Unlock()
+			case *corev1.ConfigMap:
+				createsMu.Lock()
+				creates = append(creates, createEvent{kind: "ConfigMap", name: obj.GetName()})
+				createsMu.Unlock()
+			}
+			return c.Create(ctx, obj, opts...)
+		},
+	})
+
+	r := &KeystoneReconciler{
+		Client:   cb.Build(),
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace},
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	derivedIdx, firstConfigMapIdx := -1, -1
+	for i, ev := range creates {
+		if ev.kind == "Secret" && ev.name == derivedSecretName && derivedIdx == -1 {
+			derivedIdx = i
+		}
+		if ev.kind == "ConfigMap" && firstConfigMapIdx == -1 {
+			firstConfigMapIdx = i
+		}
+	}
+	g.Expect(derivedIdx).NotTo(Equal(-1),
+		"derived db-connection Secret must be created during reconcile")
+	g.Expect(firstConfigMapIdx).NotTo(Equal(-1),
+		"at least one ConfigMap must be created during reconcile")
+	g.Expect(derivedIdx < firstConfigMapIdx).To(BeTrue(),
+		"derived Secret must be created before any ConfigMap; got derived at %d, first ConfigMap at %d",
+		derivedIdx, firstConfigMapIdx)
+}
+
+// TestReconcile_DBConnectionSecret_SecretsReadyFalseWhenUpstreamMissing
+// verifies that when reconcileDBConnectionSecret observes the upstream DB
+// credentials Secret as missing, SecretsReady=False with reason
+// WaitingForDBCredentials is persisted on the Keystone CR status and the
+// reconcile chain short-circuits before ConfigMap creation (CC-0080, REQ-005).
+//
+// To isolate the reconcileDBConnectionSecret path from reconcileSecrets (which
+// also checks the upstream Secret), a Get interceptor lets the first Get on
+// the upstream Secret succeed (satisfying reconcileSecrets.IsSecretReady) and
+// returns NotFound for subsequent Gets (failing
+// reconcileDBConnectionSecret.GetSecretValue). This simulates a race where
+// the Secret disappears between the two sub-reconcilers.
+func TestReconcile_DBConnectionSecret_SecretsReadyFalseWhenUpstreamMissing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	upstreamKey := client.ObjectKey{Namespace: ks.Namespace, Name: ks.Spec.Database.SecretRef.Name}
+
+	s := testScheme()
+	objs := append(
+		[]runtime.Object{ks, testDBCredentialsSecret(), testAdminCredentialsSecret()},
+		testReadyExternalSecrets()...,
+	)
+	cb := fake.NewClientBuilder().WithScheme(s)
+	for _, obj := range objs {
+		cb = cb.WithRuntimeObjects(obj)
+	}
+	cb = cb.WithStatusSubresource(&keystonev1alpha1.Keystone{}, &esov1.ExternalSecret{})
+
+	var upstreamGets int
+	cb = cb.WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*corev1.Secret); ok && key == upstreamKey {
+				upstreamGets++
+				if upstreamGets > 1 {
+					return apierrors.NewNotFound(corev1.Resource("secrets"), key.Name)
+				}
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+
+	r := &KeystoneReconciler{
+		Client:   cb.Build(),
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	result, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace},
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling),
+		"missing upstream Secret must trigger the secret-polling requeue")
+
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
+
+	secretsCond := meta.FindStatusCondition(updated.Status.Conditions, "SecretsReady")
+	g.Expect(secretsCond).NotTo(BeNil(), "SecretsReady condition must be persisted to status")
+	g.Expect(secretsCond.Status).To(Equal(metav1.ConditionFalse),
+		"SecretsReady must be False when reconcileDBConnectionSecret sees the upstream Secret as missing")
+	g.Expect(secretsCond.Reason).To(Equal("WaitingForDBCredentials"),
+		"SecretsReady reason must be WaitingForDBCredentials (set by reconcileDBConnectionSecret)")
+
+	var cms corev1.ConfigMapList
+	g.Expect(r.Client.List(context.Background(), &cms, client.InNamespace(ks.Namespace))).To(Succeed())
+	for _, cm := range cms.Items {
+		g.Expect(cm.Name).NotTo(HavePrefix(ks.Name+"-config"),
+			"ConfigMap must not be created when reconcileDBConnectionSecret short-circuits")
+	}
+
+	derived := &corev1.Secret{}
+	getErr := r.Get(context.Background(), client.ObjectKey{Namespace: ks.Namespace, Name: ks.Name + "-db-connection"}, derived)
+	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
+		"derived db-connection Secret must not be created when upstream is missing")
+}
+
+// TestSecretToKeystoneMapper_DerivedDBConnectionSecret verifies that the
+// mapper enqueues a reconcile request for the owning Keystone when a change
+// event arrives on the derived <name>-db-connection Secret, via its
+// ownerReference (CC-0080, REQ-006). The name pattern is operator-chosen and
+// not referenced by spec.database.secretRef, so the enqueue path MUST be
+// ownership-based.
+func TestSecretToKeystoneMapper_DerivedDBConnectionSecret(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := testScheme()
+	ks := testKeystone()
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(ks).Build()
+	mapper := secretToKeystoneMapper(c)
+
+	derived := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ks.Name + "-db-connection",
+			Namespace: ks.Namespace,
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "keystone.openstack.c5c3.io/v1alpha1",
+				Kind:       "Keystone",
+				Name:       ks.Name,
+				UID:        ks.UID,
+			}},
+		},
+	}
+	reqs := mapper(context.Background(), derived)
+	g.Expect(reqs).To(HaveLen(1),
+		"derived db-connection Secret must enqueue exactly one reconcile request")
+	g.Expect(reqs[0].NamespacedName.Name).To(Equal(ks.Name))
+	g.Expect(reqs[0].NamespacedName.Namespace).To(Equal(ks.Namespace))
 }
