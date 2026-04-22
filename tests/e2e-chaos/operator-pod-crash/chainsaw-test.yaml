@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Chainsaw chaos E2E test for operator pod crash recovery (CC-0048).
-# Verifies the Keystone operator self-recovers after its own pod is killed
+# Verifies the Keystone operator self-recovers after one of its pods is killed
 # and maintains Ready=True throughout — the operator crash should be
 # invisible to the Keystone CR conditions since the Deployment controller
 # restarts the operator pod and reconciliation resumes.
@@ -85,8 +85,14 @@ spec:
 
           # Phase 1: wait until at least one pre-chaos UID is gone, proving
           # mode: one replaced a pod. 60 iterations × 2s = 120s max.
+          # Empty CURRENT_UIDS (transient kubectl failure) would spuriously
+          # match "no UIDs present" — skip those iterations instead.
           for i in $(seq 1 60); do
             CURRENT_UIDS=$(kubectl get pods -n default -l app.kubernetes.io/name=keystone-operator -o jsonpath='{.items[*].metadata.uid}')
+            if [ -z "$CURRENT_UIDS" ]; then
+              sleep 2
+              continue
+            fi
             REPLACED=0
             for uid in $OLD_UIDS; do
               case " $CURRENT_UIDS " in
