@@ -143,7 +143,7 @@ jobs:
       # Cache golangci-lint result cache — golangci-lint-action with install-only:true
       # does not manage the analysis cache itself, so we persist it explicitly.
       # Include Go and golangci-lint versions so upgrades automatically invalidate.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: $HOME/.cache/golangci-lint
           key: ${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}-golangci-${{ env.GOLANGCI_LINT_VERSION }}-${{ hashFiles('.golangci.yml', '**/go.sum') }}
@@ -171,7 +171,7 @@ jobs:
         id: setup-go
         with:
           go-version-file: go.work
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         id: gofumpt-cache
         with:
           path: $HOME/go/bin/gofumpt
@@ -255,7 +255,7 @@ jobs:
         run: echo "version=$(awk '/ENVTEST_K8S_VERSION/ {print $NF; exit}' Makefile)" >> "$GITHUB_OUTPUT"
       # Cache kubebuilder envtest assets (etcd, kube-apiserver binaries).
       # Key on the k8s version — invalidates automatically when Makefile changes it.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: $HOME/.local/share/kubebuilder-envtest
           key: ${{ runner.os }}-envtest-${{ steps.envtest-ver.outputs.version }}
@@ -328,7 +328,7 @@ jobs:
         id: setup-go
         with:
           go-version-file: go.work
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         id: controller-gen-cache
         with:
           path: $HOME/go/bin/controller-gen
