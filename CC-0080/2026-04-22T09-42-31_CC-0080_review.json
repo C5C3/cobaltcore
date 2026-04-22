@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-22T09:42:31.942077+00:00",
+  "feature_id": "CC-0080",
+  "task_type": "review",
+  "session_key": "CC-0080",
+  "model": "claude-opus-4-7",
+  "prompt": "Analyze the following external review that has been addressed.\nIdentify what our INTERNAL code review should have caught\nBEFORE the external reviewer found it.\n\n## External Review Feedback\n\n\n## Code Comments (with Resolutions)\n- [operators/keystone/internal/controller/reconcile_dbconnection_secret.go:177] Move this helper to the existing secrets.go module\n\n## Resolution Summary\nThe `isMissingSecretOrKey` helper was moved from `operators/keystone/internal/controller/reconcile_dbconnection_secret.go` into the shared `internal/common/secrets/secrets.go` module as an exported `IsMissingSecretOrKey` function, preserving the sentinel-based detection logic (apierrors.IsNotFound + errors.Is(ErrKeyNotFound)). The two call sites in the Keystone DB-connection reconciler were updated to invoke `secrets.IsMissingSecretOrKey(err)`, and the now-unused `errors` import was dropped from the controller file. No changes were made outside the locations named in the review.\n\nExtract 0-3 review improvement patterns. For each:\n- name: Short, action-oriented name IN ENGLISH\n- review_area: error-handling | security | testing | performance | type-safety | validation | architecture | naming | documentation\n- detection_hint: How should the reviewer detect this?\n- severity: BLOCKING | WARNING\n- what_to_check: What exactly to check\n- why_it_matters: Why it matters\n- example_feedback: Original quote from the reviewer\n- example_fix: What was changed\n\nQUALITY: Only real review blindspots. No subjective style opinions.\nNothing that only a domain expert could know.\nIf nothing extractable: empty array.\n\nLANGUAGE: ALL fields MUST be in English.\n\nResponse: ONLY JSON array.",
+  "prompt_length": 1662,
+  "caller": "run_claude_cli"
+}

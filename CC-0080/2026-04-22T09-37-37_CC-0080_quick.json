@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-22T09:37:37.781329+00:00",
+  "feature_id": "CC-0080",
+  "task_type": "quick",
+  "session_key": "CC-0080",
+  "model": "claude-opus-4-7",
+  "prompt": "Summarize this external code review in 1-3 concise sentences. Focus on WHAT the reviewer wants changed, not boilerplate. Strip tool share links, HTML tags, promotional text.\n\n## Inline Code Comments\n- operators/keystone/internal/controller/reconcile_dbconnection_secret.go:177: Move this helper to the existing secrets.go module\n\n",
+  "prompt_length": 330,
+  "caller": "run_claude_cli"
+}
