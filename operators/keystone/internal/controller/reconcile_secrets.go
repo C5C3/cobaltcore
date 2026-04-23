@@ -165,12 +165,21 @@ func openBaoBackupPushSecretNames(keystone *keystonev1alpha1.Keystone) []string 
 // credential-keys-backup PushSecrets and confirms they are gone from the API
 // server before allowing the Keystone CR's OpenBao finalizer to be released.
 //
-// Runs in two sequential passes over openBaoBackupPushSecretNames:
-//  1. Issue Delete on every backup PushSecret, tolerating NotFound. Firing all
-//     Deletes up-front lets ESO's cleanup finalizers run in parallel — a
-//     serialised Delete→Get loop doubles the worst-case deletion window when
-//     both objects are held Terminating by ESO (CC-0079, REQ-002).
-//  2. Get each PushSecret. On the first one still present (typically
+// Runs in three sequential passes over openBaoBackupPushSecretNames:
+//  1. Pass 0 (adoption gate): Get each PushSecret. NotFound or
+//     DeletionTimestamp already set counts as adopted-and-progressing. For
+//     every present, live PushSecret without the ESO cleanup finalizer
+//     installed, record SecretsReady=False/Reason=WaitingForESOAdoption and
+//     return done=false WITHOUT entering Pass 1. This closes the race where
+//     the operator would otherwise Delete a PushSecret before ESO's workqueue
+//     picks it up, bypassing Spec.DeletionPolicy=Delete and leaking the
+//     KV-v2 path in OpenBao (CC-0091, REQ-001, REQ-003).
+//  2. Pass 1: Issue Delete on every backup PushSecret, tolerating NotFound.
+//     Firing all Deletes up-front lets ESO's cleanup finalizers run in
+//     parallel — a serialised Delete→Get loop doubles the worst-case
+//     deletion window when both objects are held Terminating by ESO
+//     (CC-0079, REQ-002).
+//  3. Pass 2: Get each PushSecret. On the first one still present (typically
 //     Terminating behind ESO's cleanup finalizer) record the
 //     OpenBaoFinalizerBlocked condition and return done=false so the Keystone
 //     CR stays alive for the next reconcile. Return done=true only when every
@@ -179,7 +188,7 @@ func openBaoBackupPushSecretNames(keystone *keystonev1alpha1.Keystone) []string 
 // NotFound on either Delete or Get is tolerated as success for idempotency —
 // a repeated Delete against an already-terminating object is also a no-op.
 // Non-NotFound errors propagate so controller-runtime retries with backoff
-// (CC-0079, REQ-002, REQ-003, REQ-004).
+// (CC-0079, CC-0091, REQ-001, REQ-002, REQ-003, REQ-004).
 func (r *KeystoneReconciler) finalizeOpenBaoSecrets(
 	ctx context.Context,
 	keystone *keystonev1alpha1.Keystone,
@@ -189,6 +198,34 @@ func (r *KeystoneReconciler) finalizeOpenBaoSecrets(
 	)
 
 	names := openBaoBackupPushSecretNames(keystone)
+
+	// Pass 0: adoption gate. Block Pass 1 until every present, live
+	// PushSecret carries ESO's cleanup finalizer, so Delete is guaranteed
+	// to route through ESO's DeletionPolicy=Delete handler rather than
+	// removing the object outright (CC-0091, REQ-001, REQ-003).
+	for _, name := range names {
+		key := client.ObjectKey{Namespace: keystone.Namespace, Name: name}
+		ps := &esov1alpha1.PushSecret{}
+		getErr := r.Get(ctx, key, ps)
+		if apierrors.IsNotFound(getErr) {
+			continue
+		}
+		if getErr != nil {
+			return false, fmt.Errorf("getting PushSecret %s: %w", key, getErr)
+		}
+		// A PushSecret already Terminating counts as adopted — ESO has
+		// necessarily finished picking it up before its own controllers
+		// (or another actor) flipped DeletionTimestamp.
+		if !ps.GetDeletionTimestamp().IsZero() {
+			continue
+		}
+		if !hasESOFinalizer(ps) {
+			setOpenBaoWaitingForESOAdoptionCondition(keystone, name)
+			logger.V(1).Info("openbao finalizer waiting for ESO to adopt PushSecret",
+				"pushsecret", key)
+			return false, nil
+		}
+	}
 
 	// Pass 1: issue Delete on every backup PushSecret so ESO's cleanup
 	// finalizers fire in parallel (CC-0079, REQ-002).
@@ -209,7 +246,7 @@ func (r *KeystoneReconciler) finalizeOpenBaoSecrets(
 	// Pass 2: confirm each PushSecret is gone. Returning on the first
 	// still-present object is sufficient — the blocked condition is recorded
 	// once per pass and the subsequent requeue re-enters this function to
-	// re-check the remaining names (CC-0079, REQ-004).
+	// re-check the remaining names (CC-0079, CC-0091, REQ-004).
 	for _, name := range names {
 		key := client.ObjectKey{Namespace: keystone.Namespace, Name: name}
 		getErr := r.Get(ctx, key, &esov1alpha1.PushSecret{})
