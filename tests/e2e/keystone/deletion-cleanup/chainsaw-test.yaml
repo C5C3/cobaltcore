@@ -209,6 +209,14 @@ spec:
   # purge succeeded, so this step execs bao-cli inside the openbao-0 pod and
   # asserts both paths return a non-zero exit (path not found / no value).
   #
+  # REQ-004 (CC-0091): The check is wrapped in a bounded retry loop (30s
+  # budget, 3s interval) to tolerate the normal 1-3s gap between step-4
+  # (PushSecret NotFound) and ESO completing the remote DeleteSecret call.
+  # A single-shot check re-flaked under normal ESO workqueue latency even
+  # after the CC-0091 operator adoption-wait fix — the retry scopes only
+  # the remote-purge observability, not the PushSecret-absence assertion
+  # in step-4, which remains an immediate hard assertion.
+  #
   # Namespace note: the OpenBao server runs in openbao-system (see
   # deploy/flux-system/releases/openbao.yaml:14 and
   # deploy/openbao/bootstrap/common.sh:17). The task spec reference to
@@ -216,7 +224,7 @@ spec:
   # target used by the HelmRelease and bootstrap scripts.
   - try:
     - script:
-        timeout: 60s
+        timeout: 90s
         content: |
           set -u
           BAO_NS="openbao-system"
@@ -232,24 +240,39 @@ spec:
             exit 1
           fi
 
-          rc=0
-          for path in "kv-v2/openstack/keystone/fernet-keys" \
-                      "kv-v2/openstack/keystone/credential-keys"; do
-            echo "=== bao kv get ${path} (expect not-found) ==="
-            out=$(kubectl exec -n "${BAO_NS}" "${POD}" -- \
-              env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" \
-                  VAULT_CACERT="${VAULT_CACERT}" \
-                  bao kv get "${path}" 2>&1) && get_rc=0 || get_rc=$?
-            echo "${out}"
-            echo "exit=${get_rc}"
-            if [ "${get_rc}" -eq 0 ]; then
-              echo "ERROR: ${path} still exists in OpenBao after PushSecret deletion"
-              rc=1
-            else
-              echo "OK: ${path} is absent in OpenBao"
+          deadline=$((SECONDS + 30))
+          while :; do
+            rc=0
+            still_present=""
+            for path in "kv-v2/openstack/keystone/fernet-keys" \
+                        "kv-v2/openstack/keystone/credential-keys"; do
+              echo "=== bao kv get ${path} (expect not-found) ==="
+              out=$(kubectl exec -n "${BAO_NS}" "${POD}" -- \
+                env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" \
+                    VAULT_CACERT="${VAULT_CACERT}" \
+                    bao kv get "${path}" 2>&1) && get_rc=0 || get_rc=$?
+              echo "${out}"
+              echo "exit=${get_rc}"
+              if [ "${get_rc}" -eq 0 ]; then
+                echo "ERROR: ${path} still exists in OpenBao after PushSecret deletion"
+                still_present="${still_present}${path} "
+                rc=1
+              else
+                echo "OK: ${path} is absent in OpenBao"
+              fi
+            done
+            if [ "${rc}" -eq 0 ]; then
+              exit 0
             fi
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              # shellcheck disable=SC2086
+              for path in ${still_present}; do
+                echo "ERROR: ${path} still present after 30s" >&2
+              done
+              exit 1
+            fi
+            sleep 3
           done
-          exit "${rc}"
     catch:
     - script:
         content: |
