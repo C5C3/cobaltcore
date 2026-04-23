@@ -37,6 +37,16 @@ const openBaoClusterStoreName = "openbao-cluster-store"
 // REQ-005).
 const keystoneOpenBaoFinalizer = "keystone.openstack.c5c3.io/openbao-finalizer"
 
+// esoPushSecretFinalizer is the cleanup finalizer ESO installs on every
+// PushSecret it adopts. Its presence is how the operator confirms that ESO's
+// workqueue has picked up the PushSecret — without that confirmation a race
+// window exists where the operator could Delete the PushSecret object outright
+// before ESO gets a chance to honour Spec.DeletionPolicy=Delete and purge the
+// corresponding KV-v2 path, leaking Fernet or credential key material in
+// OpenBao. Declared as a single named constant so the handler and its tests
+// reference the same string (CC-0091, REQ-007).
+const esoPushSecretFinalizer = "pushsecret.externalsecrets.external-secrets.io/finalizer"
+
 // reconcileSecrets checks that ESO-provided Kubernetes Secrets exist before
 // proceeding. It verifies the DB credentials and admin credentials
 // ExternalSecrets are ready (CC-0013).
@@ -222,6 +232,20 @@ func (r *KeystoneReconciler) finalizeOpenBaoSecrets(
 	return true, nil
 }
 
+// hasESOFinalizer reports whether ps carries ESO's cleanup finalizer. Used by
+// the openbao-finalizer adoption check to confirm that ESO has picked up the
+// PushSecret before the operator issues Delete, closing the race that would
+// otherwise remove the object outright and leak the KV-v2 path in OpenBao
+// (CC-0091, REQ-001, REQ-007).
+func hasESOFinalizer(ps *esov1alpha1.PushSecret) bool {
+	for _, f := range ps.Finalizers {
+		if f == esoPushSecretFinalizer {
+			return true
+		}
+	}
+	return false
+}
+
 // setOpenBaoFinalizerBlockedCondition records that the openbao finalizer is
 // waiting on a backup PushSecret to finish garbage collection. Lifted into a
 // helper to keep finalizeOpenBaoSecrets narrow (CC-0079, REQ-004).
@@ -234,5 +258,23 @@ func setOpenBaoFinalizerBlockedCondition(keystone *keystonev1alpha1.Keystone, st
 		Message: fmt.Sprintf(
 			"Waiting for PushSecret %q to be garbage-collected before releasing openbao-finalizer",
 			stuckName),
+	})
+}
+
+// setOpenBaoWaitingForESOAdoptionCondition records that the openbao finalizer
+// is blocked BEFORE issuing Delete because ESO has not yet installed its
+// cleanup finalizer on the named PushSecret. Distinct from the post-Delete
+// OpenBaoFinalizerBlocked reason so an SRE reading `kubectl describe keystone`
+// can tell a pre-Delete ESO workqueue backlog apart from a post-Delete remote
+// DeleteSecret wait — the two have different remediations (CC-0091, REQ-002).
+func setOpenBaoWaitingForESOAdoptionCondition(keystone *keystonev1alpha1.Keystone, unadoptedName string) {
+	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+		Type:               "SecretsReady",
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: keystone.Generation,
+		Reason:             "WaitingForESOAdoption",
+		Message: fmt.Sprintf(
+			"Waiting for ESO to adopt PushSecret %q (cleanup finalizer not yet installed)",
+			unadoptedName),
 	})
 }

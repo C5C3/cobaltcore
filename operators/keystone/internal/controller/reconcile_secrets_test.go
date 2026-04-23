@@ -967,3 +967,85 @@ func TestFinalizeOpenBaoSecrets_SetsBlockedConditionOnStall(t *testing.T) {
 	g.Expect(cond.Message).To(ContainSubstring("test-keystone-fernet-keys-backup"))
 	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
 }
+
+// TestHasESOFinalizer covers the four finalizer-list shapes the openbao
+// adoption check must classify correctly: empty, wrong value only, exact
+// match, and exact match alongside unrelated finalizers (CC-0091, REQ-001,
+// REQ-007).
+func TestHasESOFinalizer(t *testing.T) {
+	testCases := []struct {
+		name       string
+		finalizers []string
+		want       bool
+	}{
+		{
+			name:       "empty finalizers",
+			finalizers: nil,
+			want:       false,
+		},
+		{
+			name:       "only unrelated finalizer",
+			finalizers: []string{"external-secrets.io/cleanup"},
+			want:       false,
+		},
+		{
+			name:       "only ESO finalizer",
+			finalizers: []string{esoPushSecretFinalizer},
+			want:       true,
+		},
+		{
+			name: "ESO finalizer alongside others",
+			finalizers: []string{
+				"external-secrets.io/cleanup",
+				esoPushSecretFinalizer,
+				"other.example.com/finalizer",
+			},
+			want: true,
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ps := &esov1alpha1.PushSecret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-keystone-fernet-keys-backup",
+					Namespace:  "default",
+					Finalizers: tc.finalizers,
+				},
+			}
+			g.Expect(hasESOFinalizer(ps)).To(Equal(tc.want))
+		})
+	}
+}
+
+// TestESOPushSecretFinalizerConstant pins the exact string value of the ESO
+// cleanup finalizer so a rename typo cannot silently slip through — the
+// adoption check compares against this value and a drift would re-open the
+// CC-0091 race (CC-0091, REQ-007).
+func TestESOPushSecretFinalizerConstant(t *testing.T) {
+	g := NewGomegaWithT(t)
+	g.Expect(esoPushSecretFinalizer).To(Equal(
+		"pushsecret.externalsecrets.external-secrets.io/finalizer"))
+}
+
+// TestSetOpenBaoWaitingForESOAdoptionCondition verifies that the pre-Delete
+// blocked-condition helper records SecretsReady=False with the
+// WaitingForESOAdoption reason, names the unadopted PushSecret in the
+// message, and mirrors the ObservedGeneration convention used by
+// setOpenBaoFinalizerBlockedCondition — the two reasons must co-exist under
+// one Condition Type so downstream consumers reading SecretsReady continue to
+// work (CC-0091, REQ-002).
+func TestSetOpenBaoWaitingForESOAdoptionCondition(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := secretsTestKeystone()
+
+	setOpenBaoWaitingForESOAdoptionCondition(ks, "test-keystone-credential-keys-backup")
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForESOAdoption"))
+	g.Expect(cond.Message).To(ContainSubstring("test-keystone-credential-keys-backup"))
+	g.Expect(cond.Message).To(ContainSubstring("cleanup finalizer not yet installed"))
+	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
+}
