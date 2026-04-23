@@ -25,6 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -44,6 +45,55 @@ import (
 // source of truth for Reconcile, the finalizer handler, tests, and docs
 // (CC-0078, REQ-005).
 const keystoneFinalizer = "keystone.openstack.c5c3.io/finalizer"
+
+// KeystoneSecretNameIndexKey is the field-indexer key under which Keystone
+// CRs are indexed by the union of their referenced Secret names
+// (spec.database.secretRef.name and spec.bootstrap.adminPasswordSecretRef.name).
+// Used by SetupWithManager to register the indexer and by
+// secretToKeystoneMapper to perform an O(1) reverse lookup, replacing the
+// prior unfiltered List of all Keystone CRs in the namespace (CC-0087, REQ-001, REQ-006).
+// #nosec G101 -- field-indexer key (a JSONPath-like field selector), not a credential.
+const KeystoneSecretNameIndexKey = "spec.secretRefs.name"
+
+// keystoneSecretNameExtractor is the controller-runtime IndexerFunc registered
+// under KeystoneSecretNameIndexKey. It returns the deduplicated, non-empty
+// union of Secret names referenced by a Keystone CR — currently
+// spec.database.secretRef.name and spec.bootstrap.adminPasswordSecretRef.name —
+// so the field indexer can resolve a Secret event to the referencing CR(s)
+// without listing every Keystone in the namespace (CC-0087, REQ-001).
+func keystoneSecretNameExtractor(obj client.Object) []string {
+	ks, ok := obj.(*keystonev1alpha1.Keystone)
+	if !ok {
+		// controller-runtime should never call us with the wrong type; a nil
+		// return is safer than a panic if it ever does.
+		return nil
+	}
+	dbName := ks.Spec.Database.SecretRef.Name
+	adminName := ks.Spec.Bootstrap.AdminPasswordSecretRef.Name
+
+	names := make([]string, 0, 2)
+	if dbName != "" {
+		names = append(names, dbName)
+	}
+	if adminName != "" && adminName != dbName {
+		names = append(names, adminName)
+	}
+	return names
+}
+
+// registerSecretNameIndex registers the Keystone field indexer under
+// KeystoneSecretNameIndexKey with the given FieldIndexer. SetupWithManager
+// calls this once against mgr.GetFieldIndexer() so that secretToKeystoneMapper
+// can resolve a Secret event to the referencing Keystone CRs via an O(1)
+// reverse lookup instead of an unfiltered namespace-scoped List. The returned
+// error is wrapped with the index key so the registration site is identifiable
+// in manager-startup failure logs (CC-0087, REQ-001, REQ-006).
+func registerSecretNameIndex(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &keystonev1alpha1.Keystone{}, KeystoneSecretNameIndexKey, keystoneSecretNameExtractor); err != nil {
+		return fmt.Errorf("registering field indexer %q: %w", KeystoneSecretNameIndexKey, err)
+	}
+	return nil
+}
 
 // subConditionTypes lists the condition types set by individual sub-reconcilers.
 // The Ready condition is True only when all of these are True.
@@ -576,6 +626,13 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		setupLog.Info("Gateway API not installed; HTTPRoute watch disabled, spec.gateway will be rejected via HTTPRouteReady condition")
 	}
 
+	// Register the Keystone field indexer before Watches so
+	// secretToKeystoneMapper can rely on it for its MatchingFields lookup
+	// (CC-0087, REQ-001, REQ-006).
+	if err := registerSecretNameIndex(context.Background(), mgr.GetFieldIndexer()); err != nil {
+		return err
+	}
+
 	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&keystonev1alpha1.Keystone{}).
 		Owns(&appsv1.Deployment{}).
@@ -624,26 +681,76 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // secretToKeystoneMapper returns a MapFunc that maps Secret events to reconcile
-// requests for Keystone CRs that reference the Secret by name or own it.
+// requests for Keystone CRs that either reference the Secret by name
+// (resolved via the KeystoneSecretNameIndexKey field indexer) or own it via
+// an OwnerReference with Kind=Keystone and APIVersion in the Keystone API
+// group (e.g. rotation staging Secrets) (CC-0087, REQ-001, REQ-002, REQ-003,
+// REQ-005).
+//
+// Owner-ref matching is evaluated directly on the event object's metadata and
+// is scoped to ref.Kind=="Keystone" and any version in
+// keystonev1alpha1.GroupVersion.Group, so Secrets persisted with an older
+// APIVersion continue to resolve correctly after a future API version bump.
+// For each matching ref, the mapper performs a cached Get to drop owner-refs
+// whose target Keystone no longer exists in the informer cache; any
+// non-NotFound error falls through to enqueue, so a transient cache blip
+// cannot swallow a legitimate event.
 func secretToKeystoneMapper(c client.Reader) handler.MapFunc {
 	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		namespace := obj.GetNamespace()
+		secretName := obj.GetName()
+		seen := make(map[types.NamespacedName]struct{})
+
 		var keystones keystonev1alpha1.KeystoneList
-		if err := c.List(ctx, &keystones, client.InNamespace(obj.GetNamespace())); err != nil {
+		if err := c.List(ctx, &keystones,
+			client.InNamespace(namespace),
+			client.MatchingFields{KeystoneSecretNameIndexKey: secretName},
+		); err != nil {
+			// Log and swallow: the owner-ref path below is independent of
+			// the index and must still run for rotation staging Secrets.
 			log.FromContext(ctx).Error(err, "listing Keystone CRs for secret watch")
-			return nil
+		} else {
+			for i := range keystones.Items {
+				seen[client.ObjectKeyFromObject(&keystones.Items[i])] = struct{}{}
+			}
 		}
 
-		secretName := obj.GetName()
-		var requests []reconcile.Request
-		for i := range keystones.Items {
-			ks := &keystones.Items[i]
-			if ks.Spec.Database.SecretRef.Name == secretName ||
-				ks.Spec.Bootstrap.AdminPasswordSecretRef.Name == secretName ||
-				isOwnedBy(obj, ks) {
-				requests = append(requests, reconcile.Request{
-					NamespacedName: client.ObjectKeyFromObject(ks),
-				})
+		expectedGroup := keystonev1alpha1.GroupVersion.Group
+		for _, ref := range obj.GetOwnerReferences() {
+			if ref.Kind != "Keystone" {
+				continue
 			}
+			gv, err := schema.ParseGroupVersion(ref.APIVersion)
+			if err != nil || gv.Group != expectedGroup {
+				continue
+			}
+			key := types.NamespacedName{Namespace: namespace, Name: ref.Name}
+			// Drop stale/spurious owner-refs whose target Keystone no longer
+			// exists. A cached Get is an in-memory lookup — no API server
+			// round-trip (CC-0087 review #1).
+			var ks keystonev1alpha1.Keystone
+			if err := c.Get(ctx, key, &ks); err != nil {
+				if apierrors.IsNotFound(err) {
+					continue
+				}
+				// Non-NotFound errors (cache mid-sync, disconnected informer,
+				// unregistered GVK) must not silently drop the event; log at
+				// V(1) and fall through to enqueue so reconcile can resolve
+				// authoritatively (CC-0087 review #3).
+				log.FromContext(ctx).V(1).Info("owner-ref Get returned non-NotFound error; enqueueing anyway",
+					"secret", client.ObjectKeyFromObject(obj),
+					"ownerRef", key,
+					"error", err)
+			}
+			seen[key] = struct{}{}
+		}
+
+		if len(seen) == 0 {
+			return nil
+		}
+		requests := make([]reconcile.Request, 0, len(seen))
+		for key := range seen {
+			requests = append(requests, reconcile.Request{NamespacedName: key})
 		}
 		return requests
 	}
@@ -699,14 +806,4 @@ func clusterSecretStoreToKeystoneMapper(c client.Reader) handler.MapFunc {
 		}
 		return requests
 	}
-}
-
-// isOwnedBy returns true if obj has an ownerReference pointing to owner.
-func isOwnedBy(obj client.Object, owner client.Object) bool {
-	for _, ref := range obj.GetOwnerReferences() {
-		if ref.UID == owner.GetUID() {
-			return true
-		}
-	}
-	return false
 }

@@ -1,0 +1,46 @@
+{
+  "feature_id": "CC-0087",
+  "title": "GitHub Review by gndrmnn",
+  "summary": "The reviewer wants two changes: remove the comment at `keystone_controller.go:577` that references prior implementation details (only document current behavior), and remove the test at `keystone_controller_test.go:2793` that asserts against constant value literals.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "gndrmnn",
+  "date": "2026-04-23T09:50:04Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 2,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "Do not reference prior implementation details in code comments. Nobody evaluating the new code will know or care about how it was once implemented. Only document current behavior and behavior that could look odd for someone looking at the code for the first time.",
+      "path": "operators/keystone/internal/controller/keystone_controller.go",
+      "line": 577,
+      "author": "gndrmnn",
+      "created_at": "2026-04-23T09:40:45Z",
+      "id": null,
+      "resolution": "Rewrote the `secretToKeystoneMapper` doc comment in keystone_controller.go to drop the paragraph referencing the prior unfiltered List implementation and the 'CC-0087 review #1' annotations; the remaining text documents only current behavior (index-backed name lookup, owner-ref fallback with cached Get)."
+    },
+    {
+      "body": "Do not test for constant value literals",
+      "path": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "line": 2793,
+      "author": "gndrmnn",
+      "created_at": "2026-04-23T09:45:26Z",
+      "id": null,
+      "resolution": "Removed the `g.Expect(reqs[0].NamespacedName.Name).To(Equal(ks.Name))` assertion at keystone_controller_test.go:2793 so the test no longer compares against the constant `ks.Name` literal, keeping only the `HaveLen(1)` behavioral assertion."
+    }
+  ],
+  "resolution_summary": "Both review comments were addressed directly at the cited locations. The doc comment on `secretToKeystoneMapper` was rewritten to document only current behavior — the paragraph describing how the new path 'replaces the prior unfiltered namespace-scoped List' and the 'review #1' parenthetical references were removed, while the still-relevant rationale (owner-ref scoping, cached Get for stale refs) was retained with REQ tags. In the owner-ref group-match test, the assertion against the `ks.Name` constant literal was dropped, leaving only the `HaveLen(1)` behavioral check. No changes were made outside the two locations called out in the review.",
+  "github_review_id": 4161329573
+}

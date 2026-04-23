@@ -759,12 +759,41 @@ func TestReconcile_ObservedGenerationTracked(t *testing.T) {
 		"Ready condition ObservedGeneration should match the Keystone CR's Generation")
 }
 
+// newMapperFakeClientBuilder returns a ClientBuilder pre-registered with the
+// KeystoneSecretNameIndexKey field indexer so the refactored
+// secretToKeystoneMapper can resolve MatchingFields lookups against the fake
+// client. Tests that need to inject interceptors can extend the returned
+// builder before calling Build (CC-0087, REQ-004).
+func newMapperFakeClientBuilder(objs ...client.Object) *fake.ClientBuilder {
+	return fake.NewClientBuilder().
+		WithScheme(testScheme()).
+		WithObjects(objs...).
+		WithIndex(&keystonev1alpha1.Keystone{}, KeystoneSecretNameIndexKey, keystoneSecretNameExtractor)
+}
+
+// newMapperFakeClient is the common-case shortcut for tests that only need a
+// pre-indexed fake client with the given objects seeded (CC-0087, REQ-004).
+func newMapperFakeClient(objs ...client.Object) client.Client {
+	return newMapperFakeClientBuilder(objs...).Build()
+}
+
+// keystoneOwnerRef returns a well-formed OwnerReference pointing at the given
+// Keystone CR — Kind and APIVersion are set so secretToKeystoneMapper's
+// owner-ref path recognises the reference (CC-0087, REQ-003).
+func keystoneOwnerRef(ks *keystonev1alpha1.Keystone) metav1.OwnerReference {
+	return metav1.OwnerReference{
+		APIVersion: keystonev1alpha1.GroupVersion.String(),
+		Kind:       "Keystone",
+		Name:       ks.Name,
+		UID:        ks.UID,
+	}
+}
+
 func TestSecretToKeystoneMapper_ReferencedSecrets(t *testing.T) {
 	g := NewGomegaWithT(t)
-	s := testScheme()
 	ks := testKeystone()
 
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(ks).Build()
+	c := newMapperFakeClient(ks)
 	mapper := secretToKeystoneMapper(c)
 
 	// A Secret matching spec.database.secretRef.name should trigger reconcile.
@@ -870,20 +899,17 @@ func TestSelectorLabels_SubsetOfCommonLabels(t *testing.T) {
 
 func TestSecretToKeystoneMapper_OwnedSecrets(t *testing.T) {
 	g := NewGomegaWithT(t)
-	s := testScheme()
 	ks := testKeystone()
 
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(ks).Build()
+	c := newMapperFakeClient(ks)
 	mapper := secretToKeystoneMapper(c)
 
-	// A Secret owned by the Keystone CR should trigger reconcile.
+	// A Secret carrying a Keystone OwnerReference should trigger reconcile.
 	ownedSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "some-owned-secret",
-			Namespace: "default",
-			OwnerReferences: []metav1.OwnerReference{{
-				UID: ks.UID,
-			}},
+			Name:            "some-owned-secret",
+			Namespace:       "default",
+			OwnerReferences: []metav1.OwnerReference{keystoneOwnerRef(ks)},
 		},
 	}
 	reqs := mapper(context.Background(), ownedSecret)
@@ -894,17 +920,17 @@ func TestSecretToKeystoneMapper_OwnedSecrets(t *testing.T) {
 // TestSecretToKeystoneMapper_EnqueuesOnStagingSecretUpdate verifies that a
 // rotation staging Secret — labelled with StagingSecretLabelKey AND
 // owner-referenced to the Keystone CR — triggers reconcile when it changes.
-// Staging Secrets carry the Keystone as owner, so the existing isOwnedBy
-// branch of secretToKeystoneMapper is what enqueues them (CC-0081, REQ-009).
+// Staging Secrets carry the Keystone as owner, so the owner-ref branch of
+// secretToKeystoneMapper is what enqueues them (CC-0081, REQ-009; CC-0087,
+// REQ-003).
 func TestSecretToKeystoneMapper_EnqueuesOnStagingSecretUpdate(t *testing.T) {
 	g := NewGomegaWithT(t)
-	s := testScheme()
 	ks := testKeystone()
 
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(ks).Build()
+	c := newMapperFakeClient(ks)
 	mapper := secretToKeystoneMapper(c)
 
-	// Fernet staging Secret: label + ownerRef to the Keystone CR.
+	// Fernet staging Secret: label + Keystone ownerRef.
 	fernetStaging := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fernetStagingSecretName(ks),
@@ -912,9 +938,7 @@ func TestSecretToKeystoneMapper_EnqueuesOnStagingSecretUpdate(t *testing.T) {
 			Labels: map[string]string{
 				StagingSecretLabelKey: "fernet-keys",
 			},
-			OwnerReferences: []metav1.OwnerReference{{
-				UID: ks.UID,
-			}},
+			OwnerReferences: []metav1.OwnerReference{keystoneOwnerRef(ks)},
 		},
 	}
 	reqs := mapper(context.Background(), fernetStaging)
@@ -929,9 +953,7 @@ func TestSecretToKeystoneMapper_EnqueuesOnStagingSecretUpdate(t *testing.T) {
 			Labels: map[string]string{
 				StagingSecretLabelKey: "credential-keys",
 			},
-			OwnerReferences: []metav1.OwnerReference{{
-				UID: ks.UID,
-			}},
+			OwnerReferences: []metav1.OwnerReference{keystoneOwnerRef(ks)},
 		},
 	}
 	reqs = mapper(context.Background(), credStaging)
@@ -946,10 +968,9 @@ func TestSecretToKeystoneMapper_EnqueuesOnStagingSecretUpdate(t *testing.T) {
 // Secrets that happen to carry our label (CC-0081, REQ-009).
 func TestSecretToKeystoneMapper_OrphanStagingSecretNotEnqueued(t *testing.T) {
 	g := NewGomegaWithT(t)
-	s := testScheme()
 	ks := testKeystone()
 
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(ks).Build()
+	c := newMapperFakeClient(ks)
 	mapper := secretToKeystoneMapper(c)
 
 	orphan := &corev1.Secret{
@@ -2723,22 +2744,16 @@ func TestReconcile_DBConnectionSecret_SecretsReadyFalseWhenUpstreamMissing(t *te
 // ownership-based.
 func TestSecretToKeystoneMapper_DerivedDBConnectionSecret(t *testing.T) {
 	g := NewGomegaWithT(t)
-	s := testScheme()
 	ks := testKeystone()
 
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(ks).Build()
+	c := newMapperFakeClient(ks)
 	mapper := secretToKeystoneMapper(c)
 
 	derived := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      ks.Name + "-db-connection",
-			Namespace: ks.Namespace,
-			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion: "keystone.openstack.c5c3.io/v1alpha1",
-				Kind:       "Keystone",
-				Name:       ks.Name,
-				UID:        ks.UID,
-			}},
+			Name:            ks.Name + "-db-connection",
+			Namespace:       ks.Namespace,
+			OwnerReferences: []metav1.OwnerReference{keystoneOwnerRef(ks)},
 		},
 	}
 	reqs := mapper(context.Background(), derived)
@@ -2746,4 +2761,551 @@ func TestSecretToKeystoneMapper_DerivedDBConnectionSecret(t *testing.T) {
 		"derived db-connection Secret must enqueue exactly one reconcile request")
 	g.Expect(reqs[0].NamespacedName.Name).To(Equal(ks.Name))
 	g.Expect(reqs[0].NamespacedName.Namespace).To(Equal(ks.Namespace))
+}
+
+// TestKeystoneSecretIndexer_ExtractsBothReferencedSecretNames verifies that
+// keystoneSecretNameExtractor returns both spec.database.secretRef.name and
+// spec.bootstrap.adminPasswordSecretRef.name when they hold distinct values,
+// so the field indexer registered under KeystoneSecretNameIndexKey contains
+// one entry per referenced Secret name (CC-0087, REQ-001).
+func TestKeystoneSecretIndexer_ExtractsBothReferencedSecretNames(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	ks.Spec.Database.SecretRef.Name = "keystone-db"
+	ks.Spec.Bootstrap.AdminPasswordSecretRef.Name = "keystone-admin"
+
+	got := keystoneSecretNameExtractor(ks)
+
+	g.Expect(got).To(ConsistOf("keystone-db", "keystone-admin"),
+		"extractor must return both referenced Secret names exactly once")
+}
+
+// TestKeystoneSecretIndexer_DeduplicatesIdenticalNames verifies that when both
+// SecretRef fields hold the same Secret name, the extractor returns it only
+// once so the field indexer does not store duplicate entries for the same CR
+// under the same key (CC-0087, REQ-001).
+func TestKeystoneSecretIndexer_DeduplicatesIdenticalNames(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	ks.Spec.Database.SecretRef.Name = "shared-secret"
+	ks.Spec.Bootstrap.AdminPasswordSecretRef.Name = "shared-secret"
+
+	got := keystoneSecretNameExtractor(ks)
+
+	g.Expect(got).To(Equal([]string{"shared-secret"}),
+		"extractor must deduplicate identical Secret names")
+}
+
+// TestKeystoneSecretIndexer_SkipsEmptyNames verifies that the extractor omits
+// empty SecretRef.Name values so unset/optional fields do not pollute the
+// field index with empty-string keys (CC-0087, REQ-001).
+func TestKeystoneSecretIndexer_SkipsEmptyNames(t *testing.T) {
+	t.Run("admin name empty", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ks := testKeystone()
+		ks.Spec.Database.SecretRef.Name = "keystone-db"
+		ks.Spec.Bootstrap.AdminPasswordSecretRef.Name = ""
+
+		got := keystoneSecretNameExtractor(ks)
+
+		g.Expect(got).To(Equal([]string{"keystone-db"}),
+			"empty admin name must be filtered out")
+	})
+
+	t.Run("database name empty", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ks := testKeystone()
+		ks.Spec.Database.SecretRef.Name = ""
+		ks.Spec.Bootstrap.AdminPasswordSecretRef.Name = "keystone-admin"
+
+		got := keystoneSecretNameExtractor(ks)
+
+		g.Expect(got).To(Equal([]string{"keystone-admin"}),
+			"empty database name must be filtered out")
+	})
+
+	t.Run("both empty", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ks := testKeystone()
+		ks.Spec.Database.SecretRef.Name = ""
+		ks.Spec.Bootstrap.AdminPasswordSecretRef.Name = ""
+
+		got := keystoneSecretNameExtractor(ks)
+
+		g.Expect(got).To(BeEmpty(),
+			"when both names are empty the extractor must return an empty result")
+	})
+}
+
+// --- secretToKeystoneMapper indexed-lookup behaviour (CC-0087) ---
+
+// listCall captures the shape of a single List invocation so tests can assert
+// on the ListOptions that secretToKeystoneMapper issued (CC-0087, REQ-002).
+type listCall struct {
+	options client.ListOptions
+}
+
+// recordingListInterceptor returns an interceptor.Funcs that records each
+// List call's ApplyToList view of the caller's ListOptions and delegates to
+// the wrapped client. A nil listErr lets the real List run; a non-nil listErr
+// is returned instead so the mapper's error branch can be exercised
+// (CC-0087, REQ-002, REQ-007).
+func recordingListInterceptor(listErr error) (*[]listCall, interceptor.Funcs) {
+	calls := &[]listCall{}
+	var mu sync.Mutex
+	return calls, interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			var lo client.ListOptions
+			for _, o := range opts {
+				o.ApplyToList(&lo)
+			}
+			mu.Lock()
+			*calls = append(*calls, listCall{options: lo})
+			mu.Unlock()
+			if listErr != nil {
+				return listErr
+			}
+			return c.List(ctx, list, opts...)
+		},
+	}
+}
+
+// TestSecretToKeystoneMapper_UsesIndexedLookup verifies that every List call
+// issued by the refactored mapper carries the KeystoneSecretNameIndexKey
+// field selector set to the Secret's name — i.e. the mapper no longer pulls
+// every Keystone in the namespace (CC-0087, REQ-002).
+func TestSecretToKeystoneMapper_UsesIndexedLookup(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+
+	calls, ifuncs := recordingListInterceptor(nil)
+	c := newMapperFakeClientBuilder(ks).WithInterceptorFuncs(ifuncs).Build()
+	mapper := secretToKeystoneMapper(c)
+
+	dbSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "keystone-db", Namespace: "default"},
+	}
+	reqs := mapper(context.Background(), dbSecret)
+
+	g.Expect(reqs).To(HaveLen(1),
+		"referenced Secret must enqueue its Keystone via the field indexer")
+	g.Expect(reqs[0].NamespacedName.Name).To(Equal(ks.Name))
+
+	g.Expect(*calls).To(HaveLen(1), "mapper must perform exactly one List call")
+	fs := (*calls)[0].options.FieldSelector
+	g.Expect(fs).ToNot(BeNil(), "List must use a FieldSelector (indexed lookup)")
+	g.Expect(fs.String()).To(ContainSubstring(KeystoneSecretNameIndexKey+"=keystone-db"),
+		"List must select on the KeystoneSecretNameIndexKey for the Secret's name")
+}
+
+// TestSecretToKeystoneMapper_IndexedLookupScopedToNamespace verifies that the
+// indexed List is scoped to the Secret's namespace so a Keystone referencing
+// the same Secret name in a different namespace is not enqueued and the List
+// does not fan out cluster-wide (CC-0087, REQ-002).
+func TestSecretToKeystoneMapper_IndexedLookupScopedToNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	// Two Keystones in different namespaces referencing a Secret of the
+	// same name. Only the one in the event's namespace must be enqueued.
+	ksA := testKeystone()
+	ksA.Name = "keystone-a"
+	ksA.UID = "uid-a"
+	ksA.Namespace = "ns-a"
+	ksA.Spec.Database.SecretRef.Name = "shared-secret"
+
+	ksB := testKeystone()
+	ksB.Name = "keystone-b"
+	ksB.UID = "uid-b"
+	ksB.Namespace = "ns-b"
+	ksB.Spec.Database.SecretRef.Name = "shared-secret"
+
+	calls, ifuncs := recordingListInterceptor(nil)
+	c := newMapperFakeClientBuilder(ksA, ksB).WithInterceptorFuncs(ifuncs).Build()
+	mapper := secretToKeystoneMapper(c)
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "shared-secret", Namespace: "ns-a"},
+	}
+	reqs := mapper(context.Background(), secret)
+
+	g.Expect(reqs).To(HaveLen(1),
+		"indexed lookup must not cross namespace boundaries")
+	g.Expect(reqs[0].NamespacedName).To(Equal(types.NamespacedName{
+		Namespace: "ns-a",
+		Name:      "keystone-a",
+	}))
+
+	g.Expect(*calls).To(HaveLen(1))
+	g.Expect((*calls)[0].options.Namespace).To(Equal("ns-a"),
+		"List must be scoped to the event's namespace")
+}
+
+// TestSecretToKeystoneMapper_IndexedLookupErrorLoggedAndSwallowed verifies
+// that an error from the indexed List is swallowed — the mapper does not
+// return the error and the owner-ref path still contributes results so that
+// rotation staging Secrets remain wired to their Keystone during a transient
+// indexer failure (CC-0087, REQ-002, REQ-005).
+func TestSecretToKeystoneMapper_IndexedLookupErrorLoggedAndSwallowed(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+
+	injected := errors.New("simulated indexer failure")
+	_, ifuncs := recordingListInterceptor(injected)
+	c := newMapperFakeClientBuilder(ks).WithInterceptorFuncs(ifuncs).Build()
+	mapper := secretToKeystoneMapper(c)
+
+	// Secret name does not match any SecretRef, but it owns a Keystone
+	// via OwnerReference — the owner-ref path must still fire.
+	staging := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "unrelated-name-for-indexer",
+			Namespace:       ks.Namespace,
+			OwnerReferences: []metav1.OwnerReference{keystoneOwnerRef(ks)},
+		},
+	}
+
+	// Must not panic, must not return the List error.
+	var reqs []reconcile.Request
+	g.Expect(func() { reqs = mapper(context.Background(), staging) }).ToNot(Panic())
+	g.Expect(reqs).To(HaveLen(1),
+		"owner-ref path must still enqueue the Keystone when the indexed List fails")
+	g.Expect(reqs[0].NamespacedName.Name).To(Equal(ks.Name))
+}
+
+// TestSecretToKeystoneMapper_NoUnfilteredListCall pins the invariant that
+// every List the mapper issues carries the KeystoneSecretNameIndexKey field
+// selector; a regression that dropped the MatchingFields option would revert
+// to the pre-CC-0087 unfiltered namespace-scoped List and re-introduce the
+// API server amplification this feature was designed to eliminate
+// (CC-0087, REQ-002, REQ-007).
+func TestSecretToKeystoneMapper_NoUnfilteredListCall(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+
+	calls, ifuncs := recordingListInterceptor(nil)
+	c := newMapperFakeClientBuilder(ks).WithInterceptorFuncs(ifuncs).Build()
+	mapper := secretToKeystoneMapper(c)
+
+	for _, name := range []string{"keystone-db", "keystone-admin", "unrelated"} {
+		_ = mapper(context.Background(), &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		})
+	}
+
+	g.Expect(*calls).ToNot(BeEmpty(), "mapper should issue at least one List")
+	for i, call := range *calls {
+		fs := call.options.FieldSelector
+		g.Expect(fs).ToNot(BeNil(),
+			"List #%d must carry a FieldSelector; unfiltered Lists are a regression", i)
+		g.Expect(fs.String()).To(ContainSubstring(KeystoneSecretNameIndexKey+"="),
+			"List #%d must select on %s", i, KeystoneSecretNameIndexKey)
+	}
+}
+
+// TestSecretToKeystoneMapper_OwnerRefPathDoesNotList verifies that the owner-
+// reference scan does not issue a List of its own: it operates on the
+// Secret's in-memory metadata. When the indexed List fails, the mapper still
+// emits requests for every Keystone ownerRef on the event — with zero
+// additional API calls (CC-0087, REQ-003, REQ-007).
+func TestSecretToKeystoneMapper_OwnerRefPathDoesNotList(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+
+	// Fail the indexed List so any List at all is undesirable.
+	calls, ifuncs := recordingListInterceptor(errors.New("boom"))
+	c := newMapperFakeClientBuilder(ks).WithInterceptorFuncs(ifuncs).Build()
+	mapper := secretToKeystoneMapper(c)
+
+	staging := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "rotation-staging",
+			Namespace:       ks.Namespace,
+			OwnerReferences: []metav1.OwnerReference{keystoneOwnerRef(ks)},
+		},
+	}
+	reqs := mapper(context.Background(), staging)
+
+	g.Expect(reqs).To(HaveLen(1),
+		"owner-ref path must enqueue the Keystone without needing a second List")
+	g.Expect(reqs[0].NamespacedName.Name).To(Equal(ks.Name))
+
+	// The indexed List is expected (and failed); the owner-ref path must
+	// not contribute its own List on top.
+	g.Expect(*calls).To(HaveLen(1),
+		"owner-ref path must not issue an additional List call")
+}
+
+// TestSecretToKeystoneMapper_DeduplicatesIndexAndOwnerPaths verifies that a
+// Secret simultaneously referenced by name (index hit) and owner-referenced
+// (owner-ref hit) enqueues the target Keystone exactly once — the dedup
+// invariant that keeps workqueue traffic proportional to the set of distinct
+// referencing CRs rather than to the number of relationships (CC-0087,
+// REQ-003, REQ-005).
+func TestSecretToKeystoneMapper_DeduplicatesIndexAndOwnerPaths(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+
+	c := newMapperFakeClient(ks)
+	mapper := secretToKeystoneMapper(c)
+
+	// Secret name matches ks.Spec.Database.SecretRef.Name AND carries an
+	// ownerRef pointing at ks. Both paths must resolve to the same request.
+	overlap := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "keystone-db",
+			Namespace:       ks.Namespace,
+			OwnerReferences: []metav1.OwnerReference{keystoneOwnerRef(ks)},
+		},
+	}
+	reqs := mapper(context.Background(), overlap)
+
+	g.Expect(reqs).To(HaveLen(1),
+		"index + owner-ref must dedupe to a single reconcile request")
+	g.Expect(reqs[0].NamespacedName).To(Equal(types.NamespacedName{
+		Namespace: ks.Namespace,
+		Name:      ks.Name,
+	}))
+}
+
+// TestSecretToKeystoneMapper_MultipleReferencingKeystonesAllEnqueued verifies
+// that when several Keystone CRs in the same namespace reference the same
+// Secret name, every one of them is enqueued on a single Secret event — the
+// field indexer returns the full set, not just the first match (CC-0087,
+// REQ-003).
+func TestSecretToKeystoneMapper_MultipleReferencingKeystonesAllEnqueued(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ks1 := testKeystone()
+	ks1.Name = "keystone-one"
+	ks1.UID = "uid-one"
+	ks1.Spec.Database.SecretRef.Name = "shared-secret"
+
+	ks2 := testKeystone()
+	ks2.Name = "keystone-two"
+	ks2.UID = "uid-two"
+	ks2.Spec.Database.SecretRef.Name = "shared-secret"
+
+	c := newMapperFakeClient(ks1, ks2)
+	mapper := secretToKeystoneMapper(c)
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "shared-secret", Namespace: "default"},
+	}
+	reqs := mapper(context.Background(), secret)
+
+	g.Expect(reqs).To(HaveLen(2),
+		"both referencing Keystones must be enqueued")
+	names := []string{reqs[0].Name, reqs[1].Name}
+	g.Expect(names).To(ConsistOf("keystone-one", "keystone-two"))
+}
+
+// TestSecretToKeystoneMapper_OwnerRefGroupMatchIgnoresVersion verifies that
+// the owner-ref fallback matches any version within
+// keystonev1alpha1.GroupVersion.Group, not just an exact APIVersion string.
+// Secrets persisted with an older APIVersion (e.g. v1alpha1) must continue to
+// resolve to their owning Keystone after a future API version bump
+// (e.g. v1beta1) — pinned per CC-0087 review #1.
+func TestSecretToKeystoneMapper_OwnerRefGroupMatchIgnoresVersion(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+
+	c := newMapperFakeClient(ks)
+	mapper := secretToKeystoneMapper(c)
+
+	// Owner-ref with a different (future) version in the same group.
+	// The mapper must still enqueue the owning Keystone.
+	futureVersionOwner := metav1.OwnerReference{
+		APIVersion: keystonev1alpha1.GroupVersion.Group + "/v1beta1",
+		Kind:       "Keystone",
+		Name:       ks.Name,
+		UID:        ks.UID,
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "rotation-staging",
+			Namespace:       ks.Namespace,
+			OwnerReferences: []metav1.OwnerReference{futureVersionOwner},
+		},
+	}
+
+	reqs := mapper(context.Background(), secret)
+	g.Expect(reqs).To(HaveLen(1),
+		"owner-ref with same group but different version must still match")
+}
+
+// TestSecretToKeystoneMapper_OwnerRefDifferentGroupIgnored verifies that the
+// owner-ref fallback ignores references with Kind=="Keystone" whose
+// APIVersion is in a different API group (e.g. a foreign Keystone CRD). Only
+// the keystone.openstack.c5c3.io group is considered (CC-0087 review #1).
+func TestSecretToKeystoneMapper_OwnerRefDifferentGroupIgnored(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+
+	c := newMapperFakeClient(ks)
+	mapper := secretToKeystoneMapper(c)
+
+	foreignOwner := metav1.OwnerReference{
+		APIVersion: "other.example.com/v1alpha1",
+		Kind:       "Keystone",
+		Name:       ks.Name,
+		UID:        ks.UID,
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "not-owned-by-us",
+			Namespace:       ks.Namespace,
+			OwnerReferences: []metav1.OwnerReference{foreignOwner},
+		},
+	}
+
+	reqs := mapper(context.Background(), secret)
+	g.Expect(reqs).To(BeEmpty(),
+		"owner-ref in a foreign API group must not enqueue our Keystone")
+}
+
+// TestSecretToKeystoneMapper_OwnerRefMalformedAPIVersionIgnored verifies that
+// an OwnerReference whose APIVersion cannot be parsed as GroupVersion is
+// silently skipped rather than panicking or enqueuing spuriously
+// (CC-0087 review #1).
+func TestSecretToKeystoneMapper_OwnerRefMalformedAPIVersionIgnored(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+
+	c := newMapperFakeClient(ks)
+	mapper := secretToKeystoneMapper(c)
+
+	malformedOwner := metav1.OwnerReference{
+		APIVersion: "a/b/c/d", // schema.ParseGroupVersion rejects more than one '/'
+		Kind:       "Keystone",
+		Name:       ks.Name,
+		UID:        ks.UID,
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "malformed-owner",
+			Namespace:       ks.Namespace,
+			OwnerReferences: []metav1.OwnerReference{malformedOwner},
+		},
+	}
+
+	reqs := mapper(context.Background(), secret)
+	g.Expect(reqs).To(BeEmpty(),
+		"malformed APIVersion must be skipped without panic or spurious enqueue")
+}
+
+// TestSecretToKeystoneMapper_OwnerRefStaleKeystoneSkipped verifies that an
+// OwnerReference pointing at a Keystone that no longer exists in the cache
+// is dropped from the enqueue set — the cached Get returning NotFound is the
+// signal that the owner-ref is stale or spurious. Prevents enqueuing reconcile
+// work for non-existent CRs (CC-0087 review #1).
+func TestSecretToKeystoneMapper_OwnerRefStaleKeystoneSkipped(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+
+	// Build the fake client WITHOUT seeding ks, so the cached Get returns
+	// NotFound for the owner-ref target.
+	c := newMapperFakeClient() // no objects seeded
+	mapper := secretToKeystoneMapper(c)
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "orphaned-staging",
+			Namespace:       ks.Namespace,
+			OwnerReferences: []metav1.OwnerReference{keystoneOwnerRef(ks)},
+		},
+	}
+
+	reqs := mapper(context.Background(), secret)
+	g.Expect(reqs).To(BeEmpty(),
+		"owner-ref pointing at a non-existent Keystone must be skipped")
+}
+
+// TestSecretToKeystoneMapper_OwnerRefTransientGetErrorEnqueues verifies that a
+// non-NotFound error from the cached Get during the owner-ref path does NOT
+// cause the mapper to drop the ref. The guard's purpose is to eliminate
+// clearly stale references (NotFound); every other outcome must fall through
+// to enqueue so a transient cache blip cannot swallow a legitimate event
+// (CC-0087 review #1).
+func TestSecretToKeystoneMapper_OwnerRefTransientGetErrorEnqueues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+
+	// Interceptor injects a non-NotFound error on Get so the fallback path
+	// is exercised. The Keystone is still seeded in the fake client, but the
+	// interceptor short-circuits Get before it reaches the store.
+	ifuncs := interceptor.Funcs{
+		Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+			return errors.New("simulated transient cache error")
+		},
+	}
+	c := newMapperFakeClientBuilder(ks).WithInterceptorFuncs(ifuncs).Build()
+	mapper := secretToKeystoneMapper(c)
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "rotation-staging",
+			Namespace:       ks.Namespace,
+			OwnerReferences: []metav1.OwnerReference{keystoneOwnerRef(ks)},
+		},
+	}
+
+	reqs := mapper(context.Background(), secret)
+	g.Expect(reqs).To(HaveLen(1),
+		"transient (non-NotFound) Get errors must not drop the owner-ref")
+	g.Expect(reqs[0].NamespacedName.Name).To(Equal(ks.Name))
+}
+
+// --- registerSecretNameIndex helper (CC-0087, REQ-001, REQ-006) ---
+
+// recordingFieldIndexer captures each IndexField invocation so tests can
+// assert the key passed to registerSecretNameIndex matches the exported
+// const — defending against literal drift and silent rename of the index key.
+type recordingFieldIndexer struct {
+	calls []recordedIndexFieldCall
+	err   error
+}
+
+type recordedIndexFieldCall struct {
+	obj   client.Object
+	field string
+	fn    client.IndexerFunc
+}
+
+func (r *recordingFieldIndexer) IndexField(_ context.Context, obj client.Object, field string, fn client.IndexerFunc) error {
+	r.calls = append(r.calls, recordedIndexFieldCall{obj: obj, field: field, fn: fn})
+	return r.err
+}
+
+// TestKeystoneSecretIndexerKey_IsDeclaredAsConst asserts that
+// registerSecretNameIndex sources its index key from the exported
+// KeystoneSecretNameIndexKey constant rather than a duplicated literal,
+// keeping registration and lookup sites in sync (CC-0087, REQ-006).
+func TestKeystoneSecretIndexerKey_IsDeclaredAsConst(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	rec := &recordingFieldIndexer{}
+	err := registerSecretNameIndex(context.Background(), rec)
+	g.Expect(err).ToNot(HaveOccurred())
+	g.Expect(rec.calls).To(HaveLen(1),
+		"registerSecretNameIndex must register exactly one field indexer")
+	g.Expect(rec.calls[0].field).To(Equal(KeystoneSecretNameIndexKey),
+		"registration key must be sourced from the exported const, not a literal")
+	g.Expect(rec.calls[0].obj).To(BeAssignableToTypeOf(&keystonev1alpha1.Keystone{}),
+		"indexer must be registered against the Keystone type")
+}
+
+// TestRegisterSecretNameIndex_WrapsErrorWithKey verifies that an IndexField
+// failure is returned wrapped with the index key so manager-startup logs
+// identify which indexer failed to register (CC-0087, REQ-001).
+func TestRegisterSecretNameIndex_WrapsErrorWithKey(t *testing.T) {
+	g := NewGomegaWithT(t)
+	rec := &recordingFieldIndexer{err: errors.New("boom")}
+
+	err := registerSecretNameIndex(context.Background(), rec)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(KeystoneSecretNameIndexKey),
+		"wrapped error must mention the index key for debuggability")
+	g.Expect(err.Error()).To(ContainSubstring("boom"),
+		"wrapped error must preserve the underlying IndexField error")
 }

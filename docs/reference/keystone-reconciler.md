@@ -1,7 +1,7 @@
 ---
 title: Keystone Reconciler Architecture
 quadrant: operator
-feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0065, CC-0067, CC-0068, CC-0071, CC-0072, CC-0073, CC-0074, CC-0077, CC-0078, CC-0079, CC-0080, CC-0081
+feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0065, CC-0067, CC-0068, CC-0071, CC-0072, CC-0073, CC-0074, CC-0077, CC-0078, CC-0079, CC-0080, CC-0081, CC-0087
 ---
 
 # Keystone Reconciler Architecture
@@ -69,15 +69,44 @@ The controller watches the primary Keystone CR and all owned resources:
 | `HorizontalPodAutoscaler` | `Owns()` | Triggers reconciliation when owned HPA changes |
 | `CronJob` | `Owns()` | Triggers reconciliation when owned CronJob changes |
 | `HTTPRoute` | `Owns()` (optional) | Registered only when the `gateway.networking.k8s.io/v1` CRD is installed; detected at startup via the manager's `RESTMapper`. Triggers reconciliation when owned HTTPRoute changes (only created when `spec.gateway` is set). |
-| `Secret` | `Watches()` | Triggers reconciliation for controller-owned Secrets only |
+| `Secret` | `Watches()` | Maps Secret events to referencing Keystone CRs via the `KeystoneSecretNameIndexKey` field indexer, with an owner-ref fallback for rotation staging Secrets (CC-0087) |
 | `MariaDB` | `Watches()` | Propagates upstream DB cluster health into `DatabaseReady` (CC-0047) |
 | `ClusterSecretStore` | `Watches()` | Propagates OpenBao-backend health into `SecretsReady` (CC-0047) |
 
-Secrets use `Watches()` with `handler.OnlyControllerOwner()` instead of `Owns()` because
-some Secrets (ESO-provided credentials) are not owned by the Keystone CR but still need
-to trigger reconciliation. The `MariaDB` and `ClusterSecretStore` watches exist so the
-operator reacts immediately to upstream dependency outages without waiting for the next
-periodic requeue (CC-0047).
+Secrets use `Watches()` with a `MapFunc` instead of `Owns()` because some Secrets
+(ESO-provided credentials in `spec.database.secretRef` and
+`spec.bootstrap.adminPasswordSecretRef`) are owned by the ExternalSecret controller,
+not by the Keystone CR, so an owner-reference filter would never match them. The
+mapper therefore combines an indexed reverse lookup with an owner-ref fallback for
+rotation staging Secrets — see [Secret Field Indexer](#secret-field-indexer-cc-0087)
+below. The `MariaDB` and `ClusterSecretStore` watches exist so the operator reacts
+immediately to upstream dependency outages without waiting for the next periodic
+requeue (CC-0047).
+
+#### Secret Field Indexer (CC-0087)
+
+The Keystone controller registers a controller-runtime field indexer on the
+`Keystone` kind so that a Secret event is resolved to the referencing Keystone
+CR(s) via an O(1) cache lookup instead of an unfiltered namespace-scoped List.
+Without the indexer, every Secret create/update/delete event in a namespace
+containing ESO-managed Secrets would force the mapper to List every Keystone CR
+in that namespace — producing API server load that scales linearly with the
+number of Secret events, not with the number of Keystone CRs (CC-0087, REQ-001).
+
+| Aspect | Value |
+| --- | --- |
+| Index key | `KeystoneSecretNameIndexKey = "spec.secretRefs.name"` (exported package-level constant in `operators/keystone/internal/controller/keystone_controller.go`) |
+| Indexed fields | `spec.database.secretRef.name` **and** `spec.bootstrap.adminPasswordSecretRef.name` — the deduplicated union of both is emitted by the extractor; empty strings are skipped so unset optional fields do not pollute the index. |
+| Registration site | `SetupWithManager` → `registerSecretNameIndex(ctx, mgr.GetFieldIndexer())`, invoked **before** the `Watches(Secret, …)` chain. Any error from `IndexField` is wrapped with the index key and propagated, so manager startup aborts loudly if registration fails (REQ-006). |
+| Lookup site | `secretToKeystoneMapper(mgr.GetClient())` — performs a namespace-scoped `client.List` with `client.MatchingFields{KeystoneSecretNameIndexKey: secret.Name}`. On List error, the error is logged and swallowed (the `handler.MapFunc` contract forbids returning errors) so the owner-ref fallback still runs. |
+| Owner-ref fallback | For each `ownerReference` on the Secret where `Kind == "Keystone"` and the parsed group of `APIVersion` equals `keystonev1alpha1.GroupVersion.Group` (`keystone.openstack.c5c3.io`, any version), the mapper enqueues `{Namespace: secret.Namespace, Name: ownerRef.Name}`. A cached `Get` against the informer cache drops owner-refs whose target Keystone no longer exists (stale or spurious refs); any non-`NotFound` error falls through and enqueues anyway so a transient cache blip cannot swallow a legitimate event. Group-only matching means existing Secrets continue to resolve after a future API version bump (CC-0087 review #1). This preserves the enqueue path for rotation staging Secrets (`{name}-fernet-keys-rotation`, `{name}-credential-keys-rotation`; see [Key Rotation RBAC Split](#key-rotation-rbac-split-cc-0081)) which are owned by the Keystone CR but not referenced by name from the spec (CC-0081). |
+| Deduplication | The indexed-lookup and owner-ref paths are unioned by `types.NamespacedName` before returning, so a Secret that is both name-referenced and owner-referenced to the same Keystone yields exactly one `reconcile.Request`. |
+
+**Adding new Secret references.** When a future change introduces another
+`SecretRef` field on `KeystoneSpec`, extend `keystoneSecretNameExtractor` to
+emit that field's name alongside the existing two, and add a corresponding
+unit-test case. The index key itself (`spec.secretRefs.name`) is intentionally
+named as a union key so new indexed fields do not require a new indexer.
 
 ---
 

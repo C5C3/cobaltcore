@@ -1,0 +1,37 @@
+{
+  "feature_id": "CC-0087",
+  "title": "GitHub Review by gndrmnn",
+  "summary": "The reviewer wants lines 3287-3290 removed from `operators/keystone/internal/controller/keystone_controller_test.go` because testing the value of a self-declared constant (`KeystoneSecretNameIndexKey`) provides no value.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "gndrmnn",
+  "date": "2026-04-23T13:04:33Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 4,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "Remove lines 3287-3290. We have no interest in testing the value of constants we declare ourselves. There is no good reason to test if `KeystoneSecretNameIndexKey` has the value we assign to it.",
+      "path": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "line": 3290,
+      "author": "gndrmnn",
+      "created_at": "2026-04-23T13:04:07Z",
+      "id": null,
+      "resolution": "Deleted the `g.Expect(KeystoneSecretNameIndexKey).To(Equal(\"spec.secretRefs.name\"), ...)` block (original lines 3287-3290) plus the preceding 'const value is a stable contract surface' comment; updated the test's doc comment to describe the remaining, narrower intent (verifying the constant is the source of the registration key, not its literal value)."
+    }
+  ],
+  "resolution_summary": "Removed the assertion that tested the literal value of the `KeystoneSecretNameIndexKey` constant in `TestKeystoneSecretIndexerKey_IsDeclaredAsConst` (operators/keystone/internal/controller/keystone_controller_test.go), along with its leading explanatory comment. The test's docstring was rewritten to reflect the narrower remaining scope: verifying that `registerSecretNameIndex` sources its key from the exported constant and registers against the Keystone type, rather than asserting the constant's literal value.",
+  "github_review_id": 4162566847
+}

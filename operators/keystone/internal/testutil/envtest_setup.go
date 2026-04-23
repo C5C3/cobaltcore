@@ -248,6 +248,64 @@ func buildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8srunti
 	return s
 }
 
+// SetupMinimalEnvTest starts a minimal envtest API server with the Keystone
+// CRD installed and returns a controller-runtime Manager whose scheme knows
+// the Keystone API type. No webhooks, no fake external CRDs, no reconciler.
+// The manager is NOT started — callers can invoke mgr.GetFieldIndexer() or
+// other pre-Start APIs without incurring a background goroutine.
+// Tear-down is wired via t.Cleanup.
+//
+// Intended for tests that need a real FieldIndexer against a live API server
+// without paying for the full controller-registration helper
+// (CC-0087, REQ-001).
+func SetupMinimalEnvTest(
+	t testing.TB,
+	addToScheme func(*k8sruntime.Scheme) error,
+) (ctrl.Manager, context.Context, context.CancelFunc) {
+	t.Helper()
+
+	// keystonePaths() returns (crdDir, webhookDir string) — no error. The
+	// blank identifier discards the webhook directory, which this minimal
+	// setup does not install. Fail-fast on a missing CRD directory is already
+	// covered by envtest's ErrorIfCRDPathMissing=true below.
+	crdDir, _ := keystonePaths()
+
+	env := &envtest.Environment{
+		CRDDirectoryPaths:     []string{crdDir},
+		ErrorIfCRDPathMissing: true,
+	}
+
+	cfg, err := env.Start()
+	if err != nil {
+		t.Fatalf("failed to start minimal Keystone envtest environment: %v", err)
+	}
+
+	s := buildScheme(addToScheme)
+
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Scheme:                 s,
+		Metrics:                metricsserver.Options{BindAddress: "0"},
+		HealthProbeBindAddress: "0",
+	})
+	if err != nil {
+		if stopErr := env.Stop(); stopErr != nil {
+			t.Logf("additionally failed to stop envtest environment: %v", stopErr)
+		}
+		t.Fatalf("failed to create minimal controller-runtime manager: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	t.Cleanup(func() {
+		cancel()
+		if err := env.Stop(); err != nil {
+			t.Errorf("failed to stop minimal Keystone envtest environment: %v", err)
+		}
+	})
+
+	return mgr, ctx, cancel
+}
+
 // SetupKeystoneEnvTestWithController starts an envtest API server with the
 // Keystone CRD, webhook configurations, fake CRDs for external operators
 // (MariaDB, ESO, cert-manager), and a controller-runtime Manager running the

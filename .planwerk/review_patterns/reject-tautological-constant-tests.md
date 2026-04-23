@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: A test file asserts that a const equals the same literal value used in its declaration. The test has no conditional logic, no computed values, and no external input — it can never fail unless someone intentionally changes the constant AND forgets to update the test, which the test itself does not guard against meaningfully.
 **Severity**: WARNING
-**Occurrences**: 2
+**Occurrences**: 3
 
 ## What to check
 
@@ -24,3 +24,8 @@ Tautological tests inflate coverage metrics without testing real behavior, creat
 - **Feedback**: Remove unnecessary test which only validates that a constant has a constant value
 - **What was missed**: Tests whose body is a single equality assertion between a package constant and a hardcoded literal, providing no behavioral coverage.
 - **Fix**: Deleted TestKeystoneFinalizerConstant_HasExpectedValue which only asserted the finalizer constant equals its literal string.
+
+### CC-0087 — gndrmnn
+- **Feedback**: Do not test for constant value literals
+- **What was missed**: Tests should assert behavioral outcomes (counts, presence, ordering) rather than re-checking constant literal values that were plugged in by the test itself
+- **Fix**: Dropped the assertion against ks.Name in the owner-ref group-match test, leaving only the HaveLen(1) behavioral check.
