@@ -1056,7 +1056,7 @@ func TestReconcileCredentialKeys_AppliesStagedKeysWhenAnnotationPresent(t *testi
 	result, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.Requeue).To(BeTrue())
+	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
 
 	// Production Secret data was swapped for the staged data.
 	var gotProd corev1.Secret

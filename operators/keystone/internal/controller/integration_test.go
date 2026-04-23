@@ -2344,6 +2344,20 @@ func TestIntegration_FinalizerLifecycle_AddAndRemove(t *testing.T) {
 		return c.Get(ctx, grantKey, &mariadbv1alpha1.Grant{})
 	}, eventuallyLongTimeout, pollInterval).Should(Succeed(), "MariaDB Grant CR should be created")
 
+	// Simulate ESO adoption of both backup PushSecrets so the CC-0091 Pass-0
+	// adoption gate in finalizeOpenBaoSecrets lets Pass-1 fire Delete. Without
+	// this the openbao-finalizer would block the CR's reclaim forever in
+	// envtest where no real ESO is running (CC-0091, REQ-001, REQ-007).
+	fernetKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-fernet-keys-backup", ks.Name)}
+	credKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-credential-keys-backup", ks.Name)}
+	for _, pkey := range []client.ObjectKey{fernetKey, credKey} {
+		g.Eventually(func() error {
+			return c.Get(ctx, pkey, &esov1alpha1.PushSecret{})
+		}, eventuallyTimeout, pollInterval).Should(Succeed(),
+			"backup PushSecret %s should be provisioned before ESO adoption", pkey)
+		addESOFinalizerToPushSecret(t, ctx, c, pkey)
+	}
+
 	// Delete the Keystone CR; the API server sets DeletionTimestamp but blocks
 	// removal from etcd while the finalizer is present.
 	g.Expect(c.Delete(ctx, ks)).To(Succeed(), "delete Keystone CR")
@@ -2360,6 +2374,27 @@ func TestIntegration_FinalizerLifecycle_AddAndRemove(t *testing.T) {
 		ig.Expect(apierrors.IsNotFound(c.Get(ctx, grantKey, &mariadbv1alpha1.Grant{}))).
 			To(BeTrue(), "Grant CR should be deleted")
 	}, eventuallyLongTimeout, pollInterval).Should(Succeed())
+
+	// Wait for Pass-1 to fire Delete on each adopted PushSecret — observed
+	// through the DeletionTimestamp the ESO finalizer holds Terminating.
+	// Clearing the finalizer before Pass-1 runs would un-adopt the object
+	// and trip Pass-0 back into WaitingForESOAdoption (CC-0091, REQ-001).
+	g.Eventually(func(ig Gomega) {
+		for _, pkey := range []client.ObjectKey{fernetKey, credKey} {
+			ps := &esov1alpha1.PushSecret{}
+			ig.Expect(c.Get(ctx, pkey, ps)).To(Succeed(),
+				"PushSecret %s should still exist while ESO finalizer is held", pkey)
+			ig.Expect(ps.GetDeletionTimestamp().IsZero()).To(BeFalse(),
+				"PushSecret %s should be Terminating after Pass-1 Delete", pkey)
+		}
+	}, eventuallyTimeout, pollInterval).Should(Succeed())
+
+	// Simulate ESO completing its kv-v2 purge by releasing the cleanup
+	// finalizer on both backup PushSecrets so the API server garbage-collects
+	// them and Pass-2 of finalizeOpenBaoSecrets flips to done=true (CC-0091,
+	// REQ-001, REQ-007).
+	clearESOFinalizerFromPushSecret(t, ctx, c, fernetKey)
+	clearESOFinalizerFromPushSecret(t, ctx, c, credKey)
 
 	// The reconciler releases the finalizer in the same pass that issued the
 	// Deletes, so the API server garbage-collects the Keystone CR without
@@ -2413,14 +2448,49 @@ func TestIntegration_FinalizerBrownfieldDeletion(t *testing.T) {
 	g.Expect(apierrors.IsNotFound(c.Get(ctx, mdbKey, &mariadbv1alpha1.Grant{}))).
 		To(BeTrue(), "brownfield should not create a Grant CR")
 
+	// Simulate ESO adoption of both backup PushSecrets so the CC-0091 Pass-0
+	// adoption gate in finalizeOpenBaoSecrets lets Pass-1 fire Delete. The
+	// openbao-finalizer applies uniformly across managed and brownfield modes,
+	// so without adoption the CR would never leave Terminating in envtest
+	// (CC-0091, REQ-001, REQ-007).
+	fernetKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-fernet-keys-backup", ks.Name)}
+	credKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-credential-keys-backup", ks.Name)}
+	for _, pkey := range []client.ObjectKey{fernetKey, credKey} {
+		g.Eventually(func() error {
+			return c.Get(ctx, pkey, &esov1alpha1.PushSecret{})
+		}, eventuallyTimeout, pollInterval).Should(Succeed(),
+			"backup PushSecret %s should be provisioned before ESO adoption", pkey)
+		addESOFinalizerToPushSecret(t, ctx, c, pkey)
+	}
+
 	g.Expect(c.Delete(ctx, ks)).To(Succeed(), "delete brownfield Keystone CR")
+
+	// Wait for Pass-1 to fire Delete on each adopted PushSecret — observed
+	// through the DeletionTimestamp the ESO finalizer holds Terminating.
+	// Clearing the finalizer before Pass-1 runs would un-adopt the object
+	// and trip Pass-0 back into WaitingForESOAdoption (CC-0091, REQ-001).
+	g.Eventually(func(ig Gomega) {
+		for _, pkey := range []client.ObjectKey{fernetKey, credKey} {
+			ps := &esov1alpha1.PushSecret{}
+			ig.Expect(c.Get(ctx, pkey, ps)).To(Succeed(),
+				"PushSecret %s should still exist while ESO finalizer is held", pkey)
+			ig.Expect(ps.GetDeletionTimestamp().IsZero()).To(BeFalse(),
+				"PushSecret %s should be Terminating after Pass-1 Delete", pkey)
+		}
+	}, eventuallyTimeout, pollInterval).Should(Succeed())
+
+	// Release the ESO cleanup finalizer on both backup PushSecrets so the API
+	// server garbage-collects them and Pass-2 of finalizeOpenBaoSecrets flips
+	// to done=true (CC-0091, REQ-001, REQ-007).
+	clearESOFinalizerFromPushSecret(t, ctx, c, fernetKey)
+	clearESOFinalizerFromPushSecret(t, ctx, c, credKey)
 
 	// finalizeDatabaseResources treats every NotFound Delete as success, so
 	// the first pass through reconcileDelete releases the finalizer and the
 	// API server removes the CR from etcd (CC-0078, REQ-002).
 	g.Eventually(func() bool {
 		return apierrors.IsNotFound(c.Get(ctx, key, &keystonev1alpha1.Keystone{}))
-	}, eventuallyTimeout, pollInterval).Should(BeTrue(),
+	}, eventuallyLongTimeout, pollInterval).Should(BeTrue(),
 		"brownfield Keystone CR should be removed from etcd without MariaDB operations")
 
 	// Re-check that no MariaDB CRs were created at any point (i.e., the
@@ -3015,19 +3085,20 @@ func TestIntegration_OpenBaoFinalizer_BlockedWhenPushSecretStuck(t *testing.T) {
 	ksKey := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
 
 	fernetKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-fernet-keys-backup", ks.Name)}
+	credKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-credential-keys-backup", ks.Name)}
 
-	// Wait for the fernet-keys-backup PushSecret to be provisioned before we
-	// attach the ESO finalizer — otherwise the Update below races the
-	// reconciler's create.
-	g.Eventually(func() error {
-		return c.Get(ctx, fernetKey, &esov1alpha1.PushSecret{})
-	}, eventuallyTimeout, pollInterval).Should(Succeed(),
-		"fernet-keys-backup PushSecret should be provisioned")
-
-	// Attach the ESO cleanup finalizer ONLY to fernet-keys-backup. The
-	// credential-keys-backup PushSecret will be removed cleanly on Delete and
-	// is not the stuck resource.
-	addESOFinalizerToPushSecret(t, ctx, c, fernetKey)
+	// Wait for both backup PushSecrets to be provisioned before attaching the
+	// ESO finalizer — otherwise the Update below races the reconciler's
+	// create. Both must be adopted so the CC-0091 Pass-0 gate falls through
+	// and we actually exercise the post-Delete OpenBaoFinalizerBlocked branch
+	// this test is verifying (CC-0091, REQ-001, REQ-007).
+	for _, key := range []client.ObjectKey{fernetKey, credKey} {
+		g.Eventually(func() error {
+			return c.Get(ctx, key, &esov1alpha1.PushSecret{})
+		}, eventuallyTimeout, pollInterval).Should(Succeed(),
+			"backup PushSecret %s should be provisioned", key)
+		addESOFinalizerToPushSecret(t, ctx, c, key)
+	}
 
 	g.Expect(c.Delete(ctx, ks)).To(Succeed(), "delete Keystone CR")
 
@@ -3055,10 +3126,12 @@ func TestIntegration_OpenBaoFinalizer_BlockedWhenPushSecretStuck(t *testing.T) {
 	g.Expect(controllerutil.ContainsFinalizer(ksState, keystoneOpenBaoFinalizer)).To(BeTrue(),
 		"openbao finalizer must still be present while blocked on stuck PushSecret")
 
-	// Simulate ESO finishing its kv-v2 purge. The API server garbage-collects
-	// the PushSecret, the next reconcile observes it NotFound, and the
-	// Keystone CR is reclaimed (CC-0079, REQ-002, REQ-004).
+	// Simulate ESO finishing its kv-v2 purge on both backups. The API server
+	// garbage-collects each Terminating PushSecret, the next reconcile
+	// observes them NotFound, and the Keystone CR is reclaimed (CC-0079,
+	// CC-0091, REQ-002, REQ-004).
 	clearESOFinalizerFromPushSecret(t, ctx, c, fernetKey)
+	clearESOFinalizerFromPushSecret(t, ctx, c, credKey)
 
 	g.Eventually(func() bool {
 		return apierrors.IsNotFound(c.Get(ctx, ksKey, &keystonev1alpha1.Keystone{}))

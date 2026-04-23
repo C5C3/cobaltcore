@@ -851,10 +851,10 @@ func TestFinalizeOpenBaoSecrets_DeletesBothPushSecrets(t *testing.T) {
 // remote purge (CC-0079, CC-0091, REQ-003).
 func TestFinalizeOpenBaoSecrets_NotFoundIsTolerated(t *testing.T) {
 	testCases := []struct {
-		name       string
-		present    []client.Object
-		wantDone   bool
-		stuckName  string
+		name      string
+		present   []client.Object
+		wantDone  bool
+		stuckName string
 	}{
 		{
 			name:     "no PushSecrets",
