@@ -2828,11 +2828,13 @@ func TestIntegration_RecreateDerivedSecretWhenDeleted(t *testing.T) {
 
 // --- Task CC-0079/4.1 and 4.2: OpenBao finalizer lifecycle tests ---
 
-// esoCleanupFinalizer matches the finalizer name that external-secrets adds to
-// PushSecret CRs while it purges the remote kv-v2 path. Using the real
-// finalizer string makes the tests exercise the same NotFound vs Terminating
-// semantics the production controller sees (CC-0079, REQ-002, REQ-004).
-const esoCleanupFinalizer = "external-secrets.io/cleanup"
+// esoCleanupFinalizer matches the finalizer name that external-secrets installs
+// on every PushSecret it adopts. Aliased to esoPushSecretFinalizer so the
+// Pass-0 adoption check in finalizeOpenBaoSecrets and the later Terminating vs
+// NotFound transitions in Pass-1/Pass-2 all pivot on the same finalizer string
+// — the single marker ESO also uses in production (CC-0079, CC-0091, REQ-001,
+// REQ-002, REQ-004, REQ-007).
+const esoCleanupFinalizer = esoPushSecretFinalizer
 
 // addESOFinalizerToPushSecret attaches esoCleanupFinalizer to the PushSecret so
 // that a subsequent client.Delete flips it into Terminating state instead of
@@ -3062,4 +3064,135 @@ func TestIntegration_OpenBaoFinalizer_BlockedWhenPushSecretStuck(t *testing.T) {
 		return apierrors.IsNotFound(c.Get(ctx, ksKey, &keystonev1alpha1.Keystone{}))
 	}, eventuallyLongTimeout, pollInterval).Should(BeTrue(),
 		"Keystone CR should be removed from etcd after the stuck PushSecret clears")
+}
+
+// TestIntegrationKeystone_DeleteRacingESOAdoption exercises the Pass-0
+// adoption gate added in CC-0091. It mirrors
+// TestIntegration_OpenBaoFinalizerLifecycle_AddAndRemove but intentionally
+// deletes the Keystone CR BEFORE ESO has had a chance to install its cleanup
+// finalizer on the backup PushSecrets — the exact race observed in CI run
+// 24842115250 where a loaded ESO workqueue left the PushSecret un-adopted
+// while the operator's finalizer fired. With the gate in place the operator
+// must NOT Delete the PushSecret, must surface
+// SecretsReady=False/Reason=WaitingForESOAdoption, and must leave the
+// Keystone CR alive until ESO catches up. Simulating ESO adoption via
+// addESOFinalizerToPushSecret then unblocks the gate, drives Pass-1 Delete,
+// and — after the cleanup finalizer is released — lets the Keystone CR be
+// reclaimed (CC-0091, REQ-001).
+func TestIntegrationKeystone_DeleteRacingESOAdoption(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-openbao-racing-adoption-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	// Match the lifecycle test's managed-mode setup so both MariaDB (CC-0078)
+	// and OpenBao (CC-0079/CC-0091) finalizers are in play on the same CR.
+	mdbCluster := &mariadbv1alpha1.MariaDB{
+		ObjectMeta: metav1.ObjectMeta{Name: "mariadb", Namespace: ns.Name},
+	}
+	g.Expect(c.Create(ctx, mdbCluster)).To(Succeed(), "create MariaDB cluster CR")
+	g.Expect(simulators.SimulateMariaDBReady(ctx, c, client.ObjectKey{Namespace: ns.Name, Name: "mariadb"}, 1)).
+		To(Succeed(), "simulate MariaDB cluster ready")
+
+	ks := integrationManagedKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+	ksKey := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+
+	fernetKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-fernet-keys-backup", ks.Name)}
+	credKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-credential-keys-backup", ks.Name)}
+
+	// Wait for both backup PushSecrets to be provisioned before deleting the
+	// Keystone — otherwise the Pass-0 gate would see NotFound and fall
+	// through, and the test would not exercise the adoption race (CC-0091,
+	// REQ-001).
+	for _, key := range []client.ObjectKey{fernetKey, credKey} {
+		g.Eventually(func() error {
+			return c.Get(ctx, key, &esov1alpha1.PushSecret{})
+		}, eventuallyTimeout, pollInterval).Should(Succeed(),
+			"PushSecret %s should be provisioned before racing delete", key)
+	}
+
+	// Crucially DO NOT install the ESO cleanup finalizer on either PushSecret
+	// before deleting the Keystone. In production this is the window where
+	// ESO's workqueue has not yet reconciled the PushSecret (CC-0091,
+	// REQ-001).
+	g.Expect(c.Delete(ctx, ks)).To(Succeed(), "delete Keystone CR before ESO adoption")
+
+	// Pass-0 must observe that neither PushSecret carries the ESO finalizer,
+	// record SecretsReady=False/Reason=WaitingForESOAdoption naming the first
+	// unadopted PushSecret, and return done=false WITHOUT calling Delete on
+	// any PushSecret (CC-0091, REQ-001, REQ-003).
+	g.Eventually(func(ig Gomega) {
+		ksState := &keystonev1alpha1.Keystone{}
+		ig.Expect(c.Get(ctx, ksKey, ksState)).To(Succeed())
+		cond := meta.FindStatusCondition(ksState.Status.Conditions, "SecretsReady")
+		ig.Expect(cond).NotTo(BeNil(),
+			"SecretsReady condition must be present while Pass-0 is blocked")
+		ig.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		ig.Expect(cond.Reason).To(Equal("WaitingForESOAdoption"))
+		ig.Expect(cond.Message).To(ContainSubstring(fernetKey.Name),
+			"WaitingForESOAdoption message should name the first unadopted PushSecret")
+	}, eventuallyLongTimeout, pollInterval).Should(Succeed())
+
+	// While Pass-0 is blocked, the operator MUST NOT have Deleted either
+	// PushSecret. Both objects must still be present with zero
+	// DeletionTimestamp — the race window the fix closes (CC-0091, REQ-001).
+	for _, key := range []client.ObjectKey{fernetKey, credKey} {
+		ps := &esov1alpha1.PushSecret{}
+		g.Expect(c.Get(ctx, key, ps)).To(Succeed(),
+			"PushSecret %s must still exist while Pass-0 blocks on adoption", key)
+		g.Expect(ps.GetDeletionTimestamp().IsZero()).To(BeTrue(),
+			"PushSecret %s must not be Terminating while Pass-0 blocks on adoption", key)
+	}
+
+	// Keystone CR must stay alive — the openbao finalizer is held while the
+	// adoption gate is waiting (CC-0091, REQ-001).
+	ksState := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, ksKey, ksState)).To(Succeed())
+	g.Expect(ksState.GetDeletionTimestamp().IsZero()).To(BeFalse(),
+		"Keystone CR should be Terminating while Pass-0 blocks on adoption")
+	g.Expect(controllerutil.ContainsFinalizer(ksState, keystoneOpenBaoFinalizer)).To(BeTrue(),
+		"openbao finalizer must still be present while Pass-0 blocks on adoption")
+
+	// Simulate ESO's workqueue catching up and adopting both PushSecrets.
+	// Pass-0 should clear, Pass-1 should issue Delete, and each PushSecret
+	// should transition to Terminating because its cleanup finalizer (the
+	// same string we just installed) keeps the API server from GC'ing it
+	// immediately (CC-0091, REQ-001).
+	addESOFinalizerToPushSecret(t, ctx, c, fernetKey)
+	addESOFinalizerToPushSecret(t, ctx, c, credKey)
+
+	g.Eventually(func(ig Gomega) {
+		for _, key := range []client.ObjectKey{fernetKey, credKey} {
+			ps := &esov1alpha1.PushSecret{}
+			ig.Expect(c.Get(ctx, key, ps)).To(Succeed(),
+				"PushSecret %s should still exist while ESO finalizer is held", key)
+			ig.Expect(ps.GetDeletionTimestamp().IsZero()).To(BeFalse(),
+				"PushSecret %s should be Terminating once Pass-1 Delete fires", key)
+		}
+	}, eventuallyTimeout, pollInterval).Should(Succeed())
+
+	// Clear the cleanup finalizer to let the API server reclaim each
+	// Terminating PushSecret, simulating ESO completing its kv-v2 purge.
+	clearESOFinalizerFromPushSecret(t, ctx, c, fernetKey)
+	clearESOFinalizerFromPushSecret(t, ctx, c, credKey)
+
+	g.Eventually(func(ig Gomega) {
+		ig.Expect(apierrors.IsNotFound(c.Get(ctx, fernetKey, &esov1alpha1.PushSecret{}))).
+			To(BeTrue(), "fernet-keys-backup PushSecret should be garbage-collected")
+		ig.Expect(apierrors.IsNotFound(c.Get(ctx, credKey, &esov1alpha1.PushSecret{}))).
+			To(BeTrue(), "credential-keys-backup PushSecret should be garbage-collected")
+	}, eventuallyLongTimeout, pollInterval).Should(Succeed())
+
+	// With both PushSecrets gone the openbao finalizer is released and the
+	// API server reclaims the Keystone CR from etcd (CC-0091, REQ-001).
+	g.Eventually(func() bool {
+		return apierrors.IsNotFound(c.Get(ctx, ksKey, &keystonev1alpha1.Keystone{}))
+	}, eventuallyLongTimeout, pollInterval).Should(BeTrue(),
+		"Keystone CR should be removed from etcd after ESO finishes adoption + purge")
 }
