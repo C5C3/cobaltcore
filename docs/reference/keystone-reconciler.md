@@ -979,7 +979,7 @@ let alone failed (CC-0091, REQ-002).
 | `Type` | `SecretsReady` |
 | `Status` | `False` |
 | `Reason` | `WaitingForESOAdoption` |
-| `Message` | `Waiting for ESO to adopt PushSecret "<name>" (cleanup finalizer not yet installed)` |
+| `Message` | `PushSecret "<name>": waiting for ESO adoption (cleanup finalizer not yet installed)` |
 | `ObservedGeneration` | `keystone.Generation` |
 
 The message names the first unadopted PushSecret (in
@@ -1011,7 +1011,7 @@ surface the blocked state:
 | `Type` | `SecretsReady` |
 | `Status` | `False` |
 | `Reason` | `OpenBaoFinalizerBlocked` |
-| `Message` | `Waiting for PushSecret "<name>" to be garbage-collected before releasing openbao-finalizer` |
+| `Message` | `PushSecret "<name>": waiting for ESO-driven garbage collection to release openbao-finalizer` |
 | `ObservedGeneration` | `keystone.Generation` |
 
 The message names the specific PushSecret (first stuck one encountered)

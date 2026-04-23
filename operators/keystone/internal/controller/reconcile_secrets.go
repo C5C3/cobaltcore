@@ -285,7 +285,10 @@ func hasESOFinalizer(ps *esov1alpha1.PushSecret) bool {
 
 // setOpenBaoFinalizerBlockedCondition records that the openbao finalizer is
 // waiting on a backup PushSecret to finish garbage collection. Lifted into a
-// helper to keep finalizeOpenBaoSecrets narrow (CC-0079, REQ-004).
+// helper to keep finalizeOpenBaoSecrets narrow (CC-0079, REQ-004). The message
+// follows the shared `PushSecret %q: <state>` template used across the two
+// openbao-finalizer wait reasons so operators can scan both reasons with a
+// single eye pattern (CC-0091).
 func setOpenBaoFinalizerBlockedCondition(keystone *keystonev1alpha1.Keystone, stuckName string) {
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 		Type:               "SecretsReady",
@@ -293,7 +296,7 @@ func setOpenBaoFinalizerBlockedCondition(keystone *keystonev1alpha1.Keystone, st
 		ObservedGeneration: keystone.Generation,
 		Reason:             "OpenBaoFinalizerBlocked",
 		Message: fmt.Sprintf(
-			"Waiting for PushSecret %q to be garbage-collected before releasing openbao-finalizer",
+			"PushSecret %q: waiting for ESO-driven garbage collection to release openbao-finalizer",
 			stuckName),
 	})
 }
@@ -304,6 +307,9 @@ func setOpenBaoFinalizerBlockedCondition(keystone *keystonev1alpha1.Keystone, st
 // OpenBaoFinalizerBlocked reason so an SRE reading `kubectl describe keystone`
 // can tell a pre-Delete ESO workqueue backlog apart from a post-Delete remote
 // DeleteSecret wait — the two have different remediations (CC-0091, REQ-002).
+// The message follows the shared `PushSecret %q: <state>` template used by
+// setOpenBaoFinalizerBlockedCondition so the two openbao-finalizer wait
+// reasons are visually aligned in logs and `kubectl describe` output.
 func setOpenBaoWaitingForESOAdoptionCondition(keystone *keystonev1alpha1.Keystone, unadoptedName string) {
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 		Type:               "SecretsReady",
@@ -311,7 +317,7 @@ func setOpenBaoWaitingForESOAdoptionCondition(keystone *keystonev1alpha1.Keyston
 		ObservedGeneration: keystone.Generation,
 		Reason:             "WaitingForESOAdoption",
 		Message: fmt.Sprintf(
-			"Waiting for ESO to adopt PushSecret %q (cleanup finalizer not yet installed)",
+			"PushSecret %q: waiting for ESO adoption (cleanup finalizer not yet installed)",
 			unadoptedName),
 	})
 }
