@@ -400,6 +400,12 @@ func credentialRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapNam
 }
 
 // credentialKeysPushSecret builds the PushSecret CR that backs up credential keys to OpenBao.
+//
+// DeletionPolicy=Delete wires the backup PushSecret into the OpenBao finalizer
+// flow: when the keystone.openstack.c5c3.io/openbao-finalizer handler deletes
+// this PushSecret, ESO purges the remote kv-v2/openstack/keystone/credential-keys
+// path before letting the PushSecret object be garbage-collected (CC-0079,
+// REQ-008).
 func credentialKeysPushSecret(keystone *keystonev1alpha1.Keystone) *esov1alpha1.PushSecret {
 	return &esov1alpha1.PushSecret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -407,6 +413,7 @@ func credentialKeysPushSecret(keystone *keystonev1alpha1.Keystone) *esov1alpha1.
 			Namespace: keystone.Namespace,
 		},
 		Spec: esov1alpha1.PushSecretSpec{
+			DeletionPolicy: esov1alpha1.PushSecretDeletionPolicyDelete,
 			SecretStoreRefs: []esov1alpha1.PushSecretStoreRef{{
 				Kind: "ClusterSecretStore",
 				Name: "openbao-cluster-store",

@@ -7,7 +7,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 20
+          count: 21
 
   - it: should grant full CRUD on keystones
     asserts:
@@ -171,7 +171,7 @@ tests:
               - list
               - watch
 
-  - it: should grant read/write without delete on external-secrets resources
+  - it: should grant CRUD without delete on externalsecrets (CC-0079)
     asserts:
       - contains:
           path: rules
@@ -180,6 +180,22 @@ tests:
               - external-secrets.io
             resources:
               - externalsecrets
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+
+  - it: should grant full CRUD on pushsecrets (CC-0079)
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - external-secrets.io
+            resources:
               - pushsecrets
             verbs:
               - get
@@ -188,6 +204,7 @@ tests:
               - create
               - update
               - patch
+              - delete
 
   - it: should grant read-only on clustersecretstores
     asserts:

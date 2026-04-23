@@ -34,19 +34,25 @@
 # well — the data-only grant leads to a 403 on the metadata PUT and the
 # PushSecret never reaches Ready.
 # Feature: CC-0083
-
+#
+# `delete` is required on both the data and metadata paths because the
+# openbao-finalizer drives PushSecret deletion with DeletionPolicy=Delete
+# (CC-0079). ESO's DeleteSecret for KV v2 issues DELETE on the data path
+# (soft-delete) followed by DELETE on the metadata path (hard-delete);
+# without both grants ESO loops on 403 and never clears its cleanup
+# finalizer, which would stall the Keystone CR in Terminating forever.
 path "kv-v2/data/openstack/keystone/fernet-keys" {
-  capabilities = ["create", "update", "read"]
+  capabilities = ["create", "update", "read", "delete"]
 }
 
 path "kv-v2/metadata/openstack/keystone/fernet-keys" {
-  capabilities = ["create", "update", "read"]
+  capabilities = ["create", "update", "read", "delete"]
 }
 
 path "kv-v2/data/openstack/keystone/credential-keys" {
-  capabilities = ["create", "update", "read"]
+  capabilities = ["create", "update", "read", "delete"]
 }
 
 path "kv-v2/metadata/openstack/keystone/credential-keys" {
-  capabilities = ["create", "update", "read"]
+  capabilities = ["create", "update", "read", "delete"]
 }

@@ -333,6 +333,46 @@ func TestReconcileFernetKeys_CronJobScheduleMatchesSpec(t *testing.T) {
 	g.Expect(cronJob.Spec.Schedule).To(Equal("30 2 * * 1"))
 }
 
+// TestReconcileFernetKeys_PushSecretDeletionPolicyDelete runs the sub-reconciler
+// end-to-end, fetches the persisted PushSecret from the fake client, and
+// asserts that Spec.DeletionPolicy=Delete. The builder-level test is
+// complemented by this reconciler-level test to catch regressions where a
+// future rewrite of reconcileFernetKeys bypasses the builder or drops the
+// field during an Update path (CC-0079, REQ-008).
+func TestReconcileFernetKeys_PushSecretDeletionPolicyDelete(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := fernetTestScheme()
+	ks := fernetTestKeystone()
+
+	fernetSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone-fernet-keys", Namespace: "default"},
+		Data:       map[string][]byte{"0": []byte("key")},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks, fernetSecret).
+		Build()
+
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var ps esov1alpha1.PushSecret
+	g.Expect(c.Get(context.Background(), client.ObjectKey{
+		Namespace: "default",
+		Name:      "test-keystone-fernet-keys-backup",
+	}, &ps)).To(Succeed())
+
+	g.Expect(ps.Spec.DeletionPolicy).To(Equal(esov1alpha1.PushSecretDeletionPolicyDelete),
+		"reconcileFernetKeys must persist DeletionPolicy=Delete on fernet-keys-backup so ESO purges OpenBao when the PushSecret is deleted")
+}
+
 func TestReconcileFernetKeys_PushSecretReferencesCorrectSecret(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := fernetTestScheme()

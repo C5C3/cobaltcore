@@ -3,7 +3,7 @@
 **Review-Area**: documentation
 **Detection-Hint**: When CI workflow documentation groups jobs under a heading that implies a specific trigger mechanism (e.g., 'path-filtered'), cross-reference each listed job against the actual workflow YAML to confirm it truly uses that mechanism.
 **Severity**: WARNING
-**Occurrences**: 4
+**Occurrences**: 5
 
 ## What to check
 
@@ -34,3 +34,8 @@ Misleading DAG documentation causes engineers to misunderstand which jobs are ga
 - **Feedback**: The doc comment for `TestBuildKeystoneDeployment_StablePodTemplate` says it verifies stability across invocations with different Secret contents, but the test calls `buildKeystoneDeployment` twice with identical inputs.
 - **What was missed**: Verify that test names and doc comments accurately describe what the test does. Specifically check: do the test inputs actually differ in the way the comment claims? Does the test exercise the scenario it says it exercises?
 - **Fix**: Reworded the doc comment to clarify the test only verifies deterministic output for identical inputs, and noted that differing Secret contents must be covered by higher-level reconciliation tests.
+
+### CC-0079 — berendt
+- **Feedback**: The documentation describes a three-value return shape for finalizeOpenBaoSecrets that does not exist in the code. The actual signature is (done bool, err error) only; the stuck object's name is recorded as a side effect on keystone.Status.Conditions via setOpenBaoFinalizerBlockedCondition, not returned as a third value.
+- **What was missed**: Every function signature, return tuple, and parameter list mentioned in prose or code blocks in docs must match the current implementation. Watch for stale extra return values and side effects described as return values.
+- **Fix**: Rewrote the docs to describe the real (done bool, err error) signature and documented the stuck-name recording as a side effect on keystone.Status.Conditions via setOpenBaoFinalizerBlockedCondition.

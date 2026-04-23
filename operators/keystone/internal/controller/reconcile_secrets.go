@@ -8,9 +8,12 @@ import (
 	"context"
 	"fmt"
 
+	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/secrets"
@@ -24,6 +27,15 @@ import (
 // themselves use a 1h refreshInterval and would otherwise mask short outages
 // (CC-0047).
 const openBaoClusterStoreName = "openbao-cluster-store"
+
+// keystoneOpenBaoFinalizer is the finalizer added to every Keystone CR so that
+// the fernet-keys-backup and credential-keys-backup PushSecret CRs are deleted
+// before the Keystone CR disappears from etcd. Deletion of those PushSecrets
+// drives ESO to purge the corresponding KV-v2 paths in OpenBao via their
+// Spec.DeletionPolicy=Delete setting. Defined once as the single source of
+// truth for Reconcile, the finalizer handler, tests, and docs (CC-0079,
+// REQ-005).
+const keystoneOpenBaoFinalizer = "keystone.openstack.c5c3.io/openbao-finalizer"
 
 // reconcileSecrets checks that ESO-provided Kubernetes Secrets exist before
 // proceeding. It verifies the DB credentials and admin credentials
@@ -126,4 +138,101 @@ func (r *KeystoneReconciler) reconcileSecrets(ctx context.Context,
 		Reason:             "SecretsAvailable",
 	})
 	return ctrl.Result{}, nil
+}
+
+// openBaoBackupPushSecretNames returns the names of the backup PushSecrets
+// the openbao-finalizer must delete before releasing the Keystone CR. Kept as
+// a single source of truth so adding a third backup is a one-line change, in
+// the spirit of mariaDBResourceCtors (CC-0079, REQ-002).
+func openBaoBackupPushSecretNames(keystone *keystonev1alpha1.Keystone) []string {
+	return []string{
+		fmt.Sprintf("%s-fernet-keys-backup", keystone.Name),
+		fmt.Sprintf("%s-credential-keys-backup", keystone.Name),
+	}
+}
+
+// finalizeOpenBaoSecrets deletes the fernet-keys-backup and
+// credential-keys-backup PushSecrets and confirms they are gone from the API
+// server before allowing the Keystone CR's OpenBao finalizer to be released.
+//
+// Runs in two sequential passes over openBaoBackupPushSecretNames:
+//  1. Issue Delete on every backup PushSecret, tolerating NotFound. Firing all
+//     Deletes up-front lets ESO's cleanup finalizers run in parallel — a
+//     serialised Delete→Get loop doubles the worst-case deletion window when
+//     both objects are held Terminating by ESO (CC-0079, REQ-002).
+//  2. Get each PushSecret. On the first one still present (typically
+//     Terminating behind ESO's cleanup finalizer) record the
+//     OpenBaoFinalizerBlocked condition and return done=false so the Keystone
+//     CR stays alive for the next reconcile. Return done=true only when every
+//     Get returns NotFound.
+//
+// NotFound on either Delete or Get is tolerated as success for idempotency —
+// a repeated Delete against an already-terminating object is also a no-op.
+// Non-NotFound errors propagate so controller-runtime retries with backoff
+// (CC-0079, REQ-002, REQ-003, REQ-004).
+func (r *KeystoneReconciler) finalizeOpenBaoSecrets(
+	ctx context.Context,
+	keystone *keystonev1alpha1.Keystone,
+) (done bool, err error) {
+	logger := log.FromContext(ctx).WithValues(
+		"keystone", client.ObjectKeyFromObject(keystone),
+	)
+
+	names := openBaoBackupPushSecretNames(keystone)
+
+	// Pass 1: issue Delete on every backup PushSecret so ESO's cleanup
+	// finalizers fire in parallel (CC-0079, REQ-002).
+	for _, name := range names {
+		key := client.ObjectKey{Namespace: keystone.Namespace, Name: name}
+		ps := &esov1alpha1.PushSecret{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: keystone.Namespace},
+		}
+		if delErr := r.Delete(ctx, ps); delErr != nil {
+			if !apierrors.IsNotFound(delErr) {
+				return false, fmt.Errorf("deleting PushSecret %s: %w", key, delErr)
+			}
+			logger.V(1).Info("openbao backup PushSecret already absent, skipping delete",
+				"pushsecret", key)
+		}
+	}
+
+	// Pass 2: confirm each PushSecret is gone. Returning on the first
+	// still-present object is sufficient — the blocked condition is recorded
+	// once per pass and the subsequent requeue re-enters this function to
+	// re-check the remaining names (CC-0079, REQ-004).
+	for _, name := range names {
+		key := client.ObjectKey{Namespace: keystone.Namespace, Name: name}
+		getErr := r.Get(ctx, key, &esov1alpha1.PushSecret{})
+		if apierrors.IsNotFound(getErr) {
+			continue
+		}
+		if getErr != nil {
+			return false, fmt.Errorf("getting PushSecret %s: %w", key, getErr)
+		}
+
+		// PushSecret still present — likely Terminating behind ESO's cleanup
+		// finalizer. Record the blocked condition, log which PushSecret is
+		// holding up release, and requeue (REQ-004).
+		setOpenBaoFinalizerBlockedCondition(keystone, name)
+		logger.V(1).Info("openbao finalizer blocked on PushSecret garbage collection",
+			"pushsecret", name)
+		return false, nil
+	}
+
+	return true, nil
+}
+
+// setOpenBaoFinalizerBlockedCondition records that the openbao finalizer is
+// waiting on a backup PushSecret to finish garbage collection. Lifted into a
+// helper to keep finalizeOpenBaoSecrets narrow (CC-0079, REQ-004).
+func setOpenBaoFinalizerBlockedCondition(keystone *keystonev1alpha1.Keystone, stuckName string) {
+	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+		Type:               "SecretsReady",
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: keystone.Generation,
+		Reason:             "OpenBaoFinalizerBlocked",
+		Message: fmt.Sprintf(
+			"Waiting for PushSecret %q to be garbage-collected before releasing openbao-finalizer",
+			stuckName),
+	})
 }

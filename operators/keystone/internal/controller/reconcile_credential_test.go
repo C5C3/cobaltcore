@@ -337,6 +337,46 @@ func TestReconcileCredentialKeys_CronJobScheduleMatchesSpec(t *testing.T) {
 	g.Expect(cronJob.Spec.Schedule).To(Equal("30 2 * * 1"))
 }
 
+// TestReconcileCredentialKeys_PushSecretDeletionPolicyDelete runs the
+// sub-reconciler end-to-end, fetches the persisted PushSecret from the fake
+// client, and asserts that Spec.DeletionPolicy=Delete. The builder-level test
+// is complemented by this reconciler-level test to catch regressions where a
+// future rewrite of reconcileCredentialKeys bypasses the builder or drops the
+// field during an Update path (CC-0079, REQ-008).
+func TestReconcileCredentialKeys_PushSecretDeletionPolicyDelete(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := credentialTestScheme()
+	ks := credentialTestKeystone()
+
+	credentialSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone-credential-keys", Namespace: "default"},
+		Data:       map[string][]byte{"0": []byte("key")},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks, credentialSecret).
+		Build()
+
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var ps esov1alpha1.PushSecret
+	g.Expect(c.Get(context.Background(), client.ObjectKey{
+		Namespace: "default",
+		Name:      "test-keystone-credential-keys-backup",
+	}, &ps)).To(Succeed())
+
+	g.Expect(ps.Spec.DeletionPolicy).To(Equal(esov1alpha1.PushSecretDeletionPolicyDelete),
+		"reconcileCredentialKeys must persist DeletionPolicy=Delete on credential-keys-backup so ESO purges OpenBao when the PushSecret is deleted")
+}
+
 func TestReconcileCredentialKeys_PushSecretReferencesCorrectSecret(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := credentialTestScheme()

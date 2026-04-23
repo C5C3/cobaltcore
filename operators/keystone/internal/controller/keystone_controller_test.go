@@ -58,10 +58,11 @@ func testScheme() *runtime.Scheme {
 	return s
 }
 
-// testKeystone returns a minimal valid Keystone CR for tests. The finalizer is
-// pre-populated to match steady-state after Reconcile has persisted it, so
-// tests exercising the sub-reconciler chain are not forced to first observe
-// the one-shot AddFinalizer requeue (CC-0078).
+// testKeystone returns a minimal valid Keystone CR for tests. Both finalizers
+// are pre-populated to match steady-state after Reconcile has persisted them,
+// so tests exercising the sub-reconciler chain are not forced to first observe
+// the one-shot AddFinalizer requeues for the MariaDB (CC-0078) and OpenBao
+// (CC-0079) finalizers.
 func testKeystone() *keystonev1alpha1.Keystone {
 	return &keystonev1alpha1.Keystone{
 		ObjectMeta: metav1.ObjectMeta{
@@ -69,7 +70,7 @@ func testKeystone() *keystonev1alpha1.Keystone {
 			Namespace:  "default",
 			UID:        "ks-uid",
 			Generation: 1,
-			Finalizers: []string{keystoneFinalizer},
+			Finalizers: []string{keystoneFinalizer, keystoneOpenBaoFinalizer},
 		},
 		Spec: keystonev1alpha1.KeystoneSpec{
 			Replicas: 3,
@@ -2043,6 +2044,346 @@ drain:
 	getErr := r.Get(ctx, req.NamespacedName, &keystonev1alpha1.Keystone{})
 	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
 		"Keystone must be removed after the finalizer is released")
+}
+
+// ---------------------------------------------------------------------------
+// Reconcile openbao-finalizer lifecycle tests (CC-0079, REQ-001, REQ-002,
+// REQ-004, REQ-006, REQ-007)
+// ---------------------------------------------------------------------------
+
+// TestReconcile_AddsOpenBaoFinalizerOnFirstReconcile verifies that Reconcile
+// installs the OpenBao finalizer on a live CR that lacks it and returns
+// Requeue=true so the next pass observes the persisted finalizer before any
+// sub-reconciler runs (CC-0079, REQ-001, REQ-006).
+func TestReconcile_AddsOpenBaoFinalizerOnFirstReconcile(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	// Leave the MariaDB finalizer installed so the first pass skips straight
+	// to the OpenBao AddFinalizer block instead of requeueing on MariaDB.
+	ks.Finalizers = []string{keystoneFinalizer}
+	r := newTestReconciler(ks)
+
+	ctx := context.Background()
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+
+	result, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}),
+		"first reconcile must return Requeue=true after persisting the openbao finalizer")
+
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Get(ctx, req.NamespacedName, &updated)).To(Succeed())
+	g.Expect(controllerutil.ContainsFinalizer(&updated, keystoneOpenBaoFinalizer)).To(BeTrue(),
+		"openbao finalizer must be persisted to etcd on the first reconcile")
+
+	// No sub-reconciler ran: SecretsReady (the first sub-reconciler's condition)
+	// must be absent because we short-circuited after the openbao AddFinalizer
+	// Update.
+	g.Expect(meta.FindStatusCondition(updated.Status.Conditions, "SecretsReady")).To(BeNil(),
+		"sub-reconcilers must not run on the openbao-finalizer install pass")
+}
+
+// TestReconcile_OpenBaoFinalizerAlreadyPresent_NoExtraUpdate verifies that
+// when the Keystone CR already carries both finalizers, Reconcile does NOT
+// call Update on the Keystone object — proving the openbao AddFinalizer path
+// is skipped in steady state (CC-0079, REQ-001, REQ-006).
+func TestReconcile_OpenBaoFinalizerAlreadyPresent_NoExtraUpdate(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone() // testKeystone pre-populates BOTH finalizers.
+
+	s := testScheme()
+	var keystoneUpdates int
+	cb := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks).
+		WithStatusSubresource(&keystonev1alpha1.Keystone{}, &esov1.ExternalSecret{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if _, ok := obj.(*keystonev1alpha1.Keystone); ok {
+					keystoneUpdates++
+				}
+				return cl.Update(ctx, obj, opts...)
+			},
+		})
+	r := &KeystoneReconciler{
+		Client:   cb.Build(),
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	ctx := context.Background()
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+
+	result, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).NotTo(Equal(ctrl.Result{Requeue: true}),
+		"must not return Requeue=true when both finalizers are already present")
+	g.Expect(keystoneUpdates).To(Equal(0),
+		"no r.Update on Keystone must occur when both finalizers are already installed")
+}
+
+// TestReconcile_OpenBaoFinalizerUpdateConflict_ReturnsError verifies that a
+// Conflict on the openbao-finalizer-installing Update is propagated as a
+// reconciler error so controller-runtime retries with backoff (CC-0079,
+// REQ-001, REQ-006).
+func TestReconcile_OpenBaoFinalizerUpdateConflict_ReturnsError(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	// MariaDB finalizer already installed so the conflict fires on the
+	// openbao AddFinalizer Update, not the MariaDB one.
+	ks.Finalizers = []string{keystoneFinalizer}
+
+	s := testScheme()
+	conflictErr := apierrors.NewConflict(keystoneGroupResource, ks.Name,
+		fmt.Errorf("the object has been modified; please apply your changes to the latest version and try again"))
+
+	cb := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks).
+		WithStatusSubresource(&keystonev1alpha1.Keystone{}, &esov1.ExternalSecret{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(_ context.Context, _ client.WithWatch, obj client.Object, _ ...client.UpdateOption) error {
+				if _, ok := obj.(*keystonev1alpha1.Keystone); ok {
+					return conflictErr
+				}
+				return nil
+			},
+		})
+	r := &KeystoneReconciler{
+		Client:   cb.Build(),
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	ctx := context.Background()
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+
+	_, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).To(HaveOccurred(), "Conflict on openbao AddFinalizer Update must surface as a reconciler error")
+	g.Expect(err.Error()).To(ContainSubstring("adding openbao finalizer"),
+		"error must preserve the 'adding openbao finalizer' wrapper from Reconcile")
+	g.Expect(apierrors.IsConflict(err)).To(BeTrue(),
+		"wrapped Conflict must remain recognizable via apierrors.IsConflict")
+}
+
+// TestReconcile_TerminatingCR_RequeuesWhilePushSecretsExist verifies that a
+// terminating CR carrying the openbao finalizer with a PushSecret held in
+// Terminating state by ESO's cleanup finalizer returns
+// ctrl.Result{RequeueAfter: RequeueSecretPolling} and records the
+// OpenBaoFinalizerBlocked condition via updateStatus — keeping the CR alive
+// until ESO has purged the kv-v2 path (CC-0079, REQ-002, REQ-004).
+func TestReconcile_TerminatingCR_RequeuesWhilePushSecretsExist(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	// Drop the MariaDB finalizer so reconcileDelete short-circuits and the
+	// test isolates the openbao-blocked path.
+	ks.Finalizers = []string{keystoneOpenBaoFinalizer}
+
+	fernet := pushSecretWithPendingDelete("test-keystone-fernet-keys-backup")
+
+	r := newTestReconciler(ks, fernet)
+	ctx := context.Background()
+	_ = markKeystoneTerminating(t, r.Client, ks)
+
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+	result, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling),
+		"terminating CR with a stuck PushSecret must requeue after RequeueSecretPolling")
+
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Get(ctx, req.NamespacedName, &updated)).To(Succeed(),
+		"Keystone must remain while the openbao finalizer is blocked")
+	g.Expect(controllerutil.ContainsFinalizer(&updated, keystoneOpenBaoFinalizer)).To(BeTrue(),
+		"openbao finalizer must remain until the PushSecret is garbage-collected")
+
+	cond := meta.FindStatusCondition(updated.Status.Conditions, "SecretsReady")
+	g.Expect(cond).NotTo(BeNil(),
+		"SecretsReady condition must be set when the openbao finalizer is blocked")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("OpenBaoFinalizerBlocked"))
+	g.Expect(cond.Message).To(ContainSubstring("test-keystone-fernet-keys-backup"),
+		"OpenBaoFinalizerBlocked message must name the stuck PushSecret")
+}
+
+// TestReconcile_TerminatingCR_WithoutOpenBaoFinalizer_NoOp verifies that a
+// terminating CR without the openbao finalizer does not emit any openbao
+// event and does not call finalizeOpenBaoSecrets. This mirrors a brownfield
+// Keystone CR created before this operator version (CC-0079, REQ-002,
+// REQ-006).
+func TestReconcile_TerminatingCR_WithoutOpenBaoFinalizer_NoOp(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	// Keep the MariaDB finalizer so the MariaDB cleanup runs, but drop the
+	// openbao finalizer so reconcileDeleteOpenBao fast-paths.
+	ks.Finalizers = []string{keystoneFinalizer}
+
+	r := newTestReconciler(ks)
+	ctx := context.Background()
+	_ = markKeystoneTerminating(t, r.Client, ks)
+
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+	result, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}),
+		"terminating CR without openbao finalizer must resolve without requeue")
+
+	fakeRecorder := r.Recorder.(*record.FakeRecorder)
+	var events []string
+drain:
+	for {
+		select {
+		case evt := <-fakeRecorder.Events:
+			events = append(events, evt)
+		default:
+			break drain
+		}
+	}
+	for _, evt := range events {
+		g.Expect(evt).NotTo(ContainSubstring("OpenBao"),
+			"no OpenBao-related event must be emitted when the openbao finalizer is absent; got: %v", events)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Reconcile openbao-finalizer event-emission tests (CC-0079, REQ-007)
+// ---------------------------------------------------------------------------
+
+// TestReconcile_TerminatingCR_EmitsFinalizingOpenBaoSecretsEvent verifies that
+// a terminating CR with a live backup PushSecret emits
+// "FinalizingOpenBaoSecrets" to announce cleanup before issuing Delete
+// (CC-0079, REQ-007).
+func TestReconcile_TerminatingCR_EmitsFinalizingOpenBaoSecretsEvent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	// Isolate the openbao path — no MariaDB finalizer means no MariaDB events.
+	ks.Finalizers = []string{keystoneOpenBaoFinalizer}
+
+	fernet := backupPushSecret("test-keystone-fernet-keys-backup")
+	credential := backupPushSecret("test-keystone-credential-keys-backup")
+
+	r := newTestReconciler(ks, fernet, credential)
+	ctx := context.Background()
+	_ = markKeystoneTerminating(t, r.Client, ks)
+
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+	_, err := r.Reconcile(ctx, req)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	fakeRecorder := r.Recorder.(*record.FakeRecorder)
+	var events []string
+drain:
+	for {
+		select {
+		case evt := <-fakeRecorder.Events:
+			events = append(events, evt)
+		default:
+			break drain
+		}
+	}
+	g.Expect(events).To(ContainElement(ContainSubstring("FinalizingOpenBaoSecrets")),
+		"FinalizingOpenBaoSecrets event must be emitted when live backup PushSecrets exist; got: %v", events)
+}
+
+// TestReconcile_TerminatingCR_EmitsOpenBaoSecretsFinalizedEvent verifies that
+// a brownfield terminating CR (no backup PushSecrets) emits only
+// "OpenBaoSecretsFinalized" before releasing the openbao finalizer — the
+// FinalizingOpenBaoSecrets sentinel is false because there is no live
+// cleanup work to announce (CC-0079, REQ-007).
+func TestReconcile_TerminatingCR_EmitsOpenBaoSecretsFinalizedEvent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	// Isolate the openbao path — no MariaDB finalizer means no MariaDB events.
+	ks.Finalizers = []string{keystoneOpenBaoFinalizer}
+
+	r := newTestReconciler(ks)
+	ctx := context.Background()
+	_ = markKeystoneTerminating(t, r.Client, ks)
+
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+	result, err := r.Reconcile(ctx, req)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}),
+		"brownfield terminating CR must release the openbao finalizer in a single pass")
+
+	fakeRecorder := r.Recorder.(*record.FakeRecorder)
+	var events []string
+drain:
+	for {
+		select {
+		case evt := <-fakeRecorder.Events:
+			events = append(events, evt)
+		default:
+			break drain
+		}
+	}
+	g.Expect(events).To(ContainElement(ContainSubstring("OpenBaoSecretsFinalized")),
+		"OpenBaoSecretsFinalized event must be emitted after finalizeOpenBaoSecrets reports done; got: %v", events)
+	g.Expect(events).NotTo(ContainElement(ContainSubstring("FinalizingOpenBaoSecrets")),
+		"FinalizingOpenBaoSecrets must not be emitted for a brownfield CR with no backup PushSecrets")
+
+	// Openbao finalizer must have been released — the CR is gone from the store.
+	getErr := r.Get(ctx, req.NamespacedName, &keystonev1alpha1.Keystone{})
+	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
+		"Keystone must be removed after the openbao finalizer is released")
+}
+
+// TestReconcile_TerminatingCR_NoDuplicateStartEventOnRequeue guards the
+// hasLiveOpenBaoBackupPushSecrets sentinel: FinalizingOpenBaoSecrets is
+// emitted exactly once per termination, suppressed on subsequent reconcile
+// passes while the PushSecret is Terminating. A regression that re-emits the
+// event on every requeue would flood the event stream in production
+// (CC-0079, REQ-007).
+func TestReconcile_TerminatingCR_NoDuplicateStartEventOnRequeue(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	// Only the openbao finalizer so the CR stays alive across passes.
+	ks.Finalizers = []string{keystoneOpenBaoFinalizer}
+
+	// Pending-delete finalizer holds the PushSecret Terminating between
+	// passes — matching ESO still purging the kv-v2 path when Reconcile
+	// re-enters.
+	fernet := pushSecretWithPendingDelete("test-keystone-fernet-keys-backup")
+
+	r := newTestReconciler(ks, fernet)
+	ctx := context.Background()
+	_ = markKeystoneTerminating(t, r.Client, ks)
+
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+
+	_, err := r.Reconcile(ctx, req)
+	g.Expect(err).NotTo(HaveOccurred(), "first reconcile pass must succeed")
+	_, err = r.Reconcile(ctx, req)
+	g.Expect(err).NotTo(HaveOccurred(), "second reconcile pass must succeed")
+
+	fakeRecorder := r.Recorder.(*record.FakeRecorder)
+	var events []string
+drain:
+	for {
+		select {
+		case evt := <-fakeRecorder.Events:
+			events = append(events, evt)
+		default:
+			break drain
+		}
+	}
+
+	finalizingCount := 0
+	for _, evt := range events {
+		if strings.Contains(evt, "FinalizingOpenBaoSecrets") {
+			finalizingCount++
+		}
+	}
+	g.Expect(finalizingCount).To(Equal(1),
+		"FinalizingOpenBaoSecrets must be emitted exactly once across both reconcile passes; got events: %v", events)
+	g.Expect(events).NotTo(ContainElement(ContainSubstring("OpenBaoSecretsFinalized")),
+		"OpenBaoSecretsFinalized must not be emitted while the PushSecret is still Terminating "+
+			"(the finalizer has not been released yet); got events: %v", events)
 }
 
 // BenchmarkReconcile_FullReconcile measures ns/op for a full reconcile cycle

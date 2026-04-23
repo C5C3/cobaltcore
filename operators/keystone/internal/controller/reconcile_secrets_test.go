@@ -12,7 +12,9 @@ import (
 	. "github.com/onsi/gomega"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
+	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -34,6 +36,9 @@ func secretsTestScheme() *runtime.Scheme {
 	_ = clientgoscheme.AddToScheme(s)
 	_ = keystonev1alpha1.AddToScheme(s)
 	_ = esov1.SchemeBuilder.AddToScheme(s)
+	// esov1alpha1 provides the PushSecret kind consumed by the openbao
+	// finalizer tests (CC-0079, REQ-002).
+	_ = esov1alpha1.SchemeBuilder.AddToScheme(s)
 	return s
 }
 
@@ -714,4 +719,251 @@ func TestReconcileSecrets_ConditionObservedGeneration(t *testing.T) {
 	cond2 := meta.FindStatusCondition(ks2.Status.Conditions, "SecretsReady")
 	g.Expect(cond2).NotTo(BeNil())
 	g.Expect(cond2.ObservedGeneration).To(Equal(int64(12)))
+}
+
+// TestFernetKeysPushSecret_HasDeletionPolicyDelete verifies that the PushSecret
+// builder for the Fernet backup sets Spec.DeletionPolicy=Delete so that
+// deleting the PushSecret triggers ESO to purge the kv-v2 path in OpenBao —
+// the cleanup path that the openbao finalizer depends on (CC-0079, REQ-008).
+func TestFernetKeysPushSecret_HasDeletionPolicyDelete(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ks := &keystonev1alpha1.Keystone{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone", Namespace: "default"},
+	}
+
+	ps := fernetKeysPushSecret(ks)
+
+	g.Expect(ps.Spec.DeletionPolicy).To(Equal(esov1alpha1.PushSecretDeletionPolicyDelete),
+		"fernet-keys-backup PushSecret must use DeletionPolicy=Delete so ESO purges the remote kv-v2 path on deletion")
+}
+
+// TestCredentialKeysPushSecret_HasDeletionPolicyDelete verifies that the
+// PushSecret builder for the credential backup sets Spec.DeletionPolicy=Delete
+// so that deleting the PushSecret triggers ESO to purge the kv-v2 path in
+// OpenBao — the cleanup path that the openbao finalizer depends on (CC-0079,
+// REQ-008).
+func TestCredentialKeysPushSecret_HasDeletionPolicyDelete(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ks := &keystonev1alpha1.Keystone{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone", Namespace: "default"},
+	}
+
+	ps := credentialKeysPushSecret(ks)
+
+	g.Expect(ps.Spec.DeletionPolicy).To(Equal(esov1alpha1.PushSecretDeletionPolicyDelete),
+		"credential-keys-backup PushSecret must use DeletionPolicy=Delete so ESO purges the remote kv-v2 path on deletion")
+}
+
+// backupPushSecret builds a minimal PushSecret object with the given name in
+// the default namespace. Used to seed the fake client for openbao finalizer
+// tests (CC-0079, REQ-002).
+func backupPushSecret(name string) *esov1alpha1.PushSecret {
+	return &esov1alpha1.PushSecret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+	}
+}
+
+// pushSecretWithPendingDelete returns a PushSecret that will transition to
+// Terminating (DeletionTimestamp set, object kept in store) when the fake
+// client processes a Delete, because the non-controller finalizer prevents
+// actual removal. This mirrors ESO holding its cleanup finalizer while it
+// purges the kv-v2 path (CC-0079, REQ-004).
+func pushSecretWithPendingDelete(name string) *esov1alpha1.PushSecret {
+	ps := backupPushSecret(name)
+	ps.Finalizers = []string{"external-secrets.io/cleanup"}
+	return ps
+}
+
+// TestFinalizeOpenBaoSecrets_DeletesBothPushSecrets verifies that the handler
+// deletes both the fernet-keys-backup and credential-keys-backup PushSecrets
+// and reports done=true once both are absent (CC-0079, REQ-002).
+func TestFinalizeOpenBaoSecrets_DeletesBothPushSecrets(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := secretsTestScheme()
+	ks := secretsTestKeystone()
+
+	fernet := backupPushSecret("test-keystone-fernet-keys-backup")
+	credential := backupPushSecret("test-keystone-credential-keys-backup")
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(fernet, credential).
+		Build()
+
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	done, err := r.finalizeOpenBaoSecrets(context.Background(), ks)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeTrue())
+
+	for _, name := range []string{
+		"test-keystone-fernet-keys-backup",
+		"test-keystone-credential-keys-backup",
+	} {
+		err := c.Get(context.Background(),
+			client.ObjectKey{Name: name, Namespace: "default"},
+			&esov1alpha1.PushSecret{})
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+			"PushSecret %s should be NotFound after finalize", name)
+	}
+}
+
+// TestFinalizeOpenBaoSecrets_NotFoundIsTolerated verifies that partial or
+// fully-absent PushSecret state produces done=true with no error —
+// idempotency for operator restarts and prior cleanups (CC-0079, REQ-003).
+func TestFinalizeOpenBaoSecrets_NotFoundIsTolerated(t *testing.T) {
+	testCases := []struct {
+		name    string
+		present []client.Object
+	}{
+		{
+			name:    "no PushSecrets",
+			present: nil,
+		},
+		{
+			name:    "only fernet present",
+			present: []client.Object{backupPushSecret("test-keystone-fernet-keys-backup")},
+		},
+		{
+			name:    "only credential present",
+			present: []client.Object{backupPushSecret("test-keystone-credential-keys-backup")},
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			s := secretsTestScheme()
+			ks := secretsTestKeystone()
+
+			c := fake.NewClientBuilder().
+				WithScheme(s).
+				WithObjects(tc.present...).
+				Build()
+
+			r := &KeystoneReconciler{
+				Client:   c,
+				Scheme:   s,
+				Recorder: record.NewFakeRecorder(10),
+			}
+
+			done, err := r.finalizeOpenBaoSecrets(context.Background(), ks)
+
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(done).To(BeTrue())
+
+			for _, obj := range tc.present {
+				err := c.Get(context.Background(),
+					client.ObjectKeyFromObject(obj),
+					&esov1alpha1.PushSecret{})
+				g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+					"PushSecret %s should be NotFound after finalize", obj.GetName())
+			}
+		})
+	}
+}
+
+// TestFinalizeOpenBaoSecrets_IsIdempotent verifies that a second invocation
+// against a clean client produces the same outcome so operator restarts or
+// retries never block CR removal (CC-0079, REQ-003).
+func TestFinalizeOpenBaoSecrets_IsIdempotent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := secretsTestScheme()
+	ks := secretsTestKeystone()
+
+	c := fake.NewClientBuilder().WithScheme(s).Build()
+
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	done, err := r.finalizeOpenBaoSecrets(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeTrue())
+
+	done, err = r.finalizeOpenBaoSecrets(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeTrue())
+}
+
+// TestFinalizeOpenBaoSecrets_RequeuesWhilePushSecretTerminating verifies that
+// a PushSecret held in Terminating state by ESO's cleanup finalizer keeps the
+// handler returning done=false so the Keystone CR finalizer is not released
+// before ESO has purged the kv-v2 path. The blocked-condition message (asserted
+// separately by TestFinalizeOpenBaoSecrets_SetsBlockedConditionOnStall) names
+// the stuck PushSecret (CC-0079, REQ-004).
+func TestFinalizeOpenBaoSecrets_RequeuesWhilePushSecretTerminating(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := secretsTestScheme()
+	ks := secretsTestKeystone()
+
+	fernet := pushSecretWithPendingDelete("test-keystone-fernet-keys-backup")
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(fernet).
+		Build()
+
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	done, err := r.finalizeOpenBaoSecrets(context.Background(), ks)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeFalse())
+
+	// The held PushSecret must now carry a DeletionTimestamp — the fake
+	// client flips it because the cleanup finalizer blocks actual removal.
+	fresh := &esov1alpha1.PushSecret{}
+	g.Expect(c.Get(context.Background(),
+		client.ObjectKey{Name: "test-keystone-fernet-keys-backup", Namespace: "default"},
+		fresh)).To(Succeed())
+	g.Expect(fresh.GetDeletionTimestamp().IsZero()).To(BeFalse(),
+		"held PushSecret must be marked for deletion before the finalizer returns")
+}
+
+// TestFinalizeOpenBaoSecrets_SetsBlockedConditionOnStall verifies that when a
+// PushSecret is stuck Terminating, the handler records
+// SecretsReady=False with reason OpenBaoFinalizerBlocked so operators can see
+// why the Keystone CR has not finished deleting (CC-0079, REQ-004).
+func TestFinalizeOpenBaoSecrets_SetsBlockedConditionOnStall(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := secretsTestScheme()
+	ks := secretsTestKeystone()
+
+	fernet := pushSecretWithPendingDelete("test-keystone-fernet-keys-backup")
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(fernet).
+		Build()
+
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	done, err := r.finalizeOpenBaoSecrets(context.Background(), ks)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeFalse())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("OpenBaoFinalizerBlocked"))
+	g.Expect(cond.Message).To(ContainSubstring("test-keystone-fernet-keys-backup"))
+	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
 }

@@ -11,6 +11,7 @@ import (
 	"fmt"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
+	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	"golang.org/x/sync/errgroup"
 	appsv1 "k8s.io/api/apps/v1"
@@ -111,7 +112,8 @@ func isGatewayAPIAvailable(mapper meta.RESTMapper) bool {
 // +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=databases;users;grants,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=mariadbs,verbs=get;list;watch
-// +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets;pushsecrets,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=external-secrets.io,resources=pushsecrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores,verbs=get;list;watch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
@@ -133,22 +135,44 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, fmt.Errorf("fetching Keystone: %w", err)
 	}
 
-	// Handle CR deletion via finalizer: block removal from etcd until the
-	// MariaDB Database, User, and Grant CRs owned by this Keystone are cleaned
-	// up (CC-0078, REQ-002, REQ-006, REQ-007).
+	// Handle CR deletion via finalizers: block removal from etcd until the
+	// MariaDB Database/User/Grant CRs (CC-0078) and the OpenBao backup
+	// PushSecrets (CC-0079) owned by this Keystone are cleaned up. Both
+	// finalizers run in the same pass; reconcileDeleteOpenBao may requeue while
+	// a PushSecret is still Terminating, in which case updateStatus persists
+	// the OpenBaoFinalizerBlocked condition (CC-0079, REQ-002, REQ-004,
+	// REQ-006, REQ-007).
 	if !keystone.DeletionTimestamp.IsZero() {
-		return r.reconcileDelete(ctx, &keystone)
+		if result, err := r.reconcileDelete(ctx, &keystone); !result.IsZero() || err != nil {
+			return result, err
+		}
+		if result, err := r.reconcileDeleteOpenBao(ctx, &keystone); !result.IsZero() || err != nil {
+			return r.updateStatus(ctx, &keystone, result, err)
+		}
+		return ctrl.Result{}, nil
 	}
 
-	// Ensure the finalizer is installed before any sub-reconciler runs so that a
-	// deletion issued between now and the next pass still funnels through
-	// reconcileDelete (CC-0078, REQ-001, REQ-006). Returning Requeue=true after
-	// the Update guarantees the next reconcile observes the persisted finalizer
-	// rather than relying on the in-memory copy.
+	// Ensure the MariaDB finalizer is installed before any sub-reconciler runs
+	// so that a deletion issued between now and the next pass still funnels
+	// through reconcileDelete (CC-0078, REQ-001, REQ-006). Returning
+	// Requeue=true after the Update guarantees the next reconcile observes the
+	// persisted finalizer rather than relying on the in-memory copy.
 	if !controllerutil.ContainsFinalizer(&keystone, keystoneFinalizer) {
 		controllerutil.AddFinalizer(&keystone, keystoneFinalizer)
 		if err := r.Update(ctx, &keystone); err != nil {
 			return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// Ensure the OpenBao finalizer is installed so that deleting the Keystone
+	// CR blocks on cleanup of the fernet-keys-backup and credential-keys-backup
+	// PushSecrets, which ESO then uses to purge the kv-v2 paths in OpenBao
+	// (CC-0079, REQ-001, REQ-006).
+	if !controllerutil.ContainsFinalizer(&keystone, keystoneOpenBaoFinalizer) {
+		controllerutil.AddFinalizer(&keystone, keystoneOpenBaoFinalizer)
+		if err := r.Update(ctx, &keystone); err != nil {
+			return ctrl.Result{}, fmt.Errorf("adding openbao finalizer: %w", err)
 		}
 		return ctrl.Result{Requeue: true}, nil
 	}
@@ -321,6 +345,77 @@ func (r *KeystoneReconciler) hasLiveMariaDBResources(ctx context.Context, keysto
 			return false, fmt.Errorf("checking %T %s: %w", obj, key, err)
 		}
 		if obj.GetDeletionTimestamp().IsZero() {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// reconcileDeleteOpenBao drives the openbao-finalizer cleanup when the Keystone
+// CR is being deleted. It is a no-op if the openbao finalizer is absent.
+// Otherwise it emits FinalizingOpenBaoSecrets when at least one backup
+// PushSecret still exists (dedupes the event across requeues because subsequent
+// passes observe the PushSecrets gone or Terminating and suppress the emit),
+// calls finalizeOpenBaoSecrets, and on done=true emits OpenBaoSecretsFinalized
+// and releases the finalizer. A PushSecret held Terminating by ESO's cleanup
+// finalizer surfaces as ctrl.Result{RequeueAfter: RequeueSecretPolling} so the
+// Keystone CR stays live until ESO has purged the kv-v2 path (CC-0079,
+// REQ-002, REQ-004, REQ-006, REQ-007).
+func (r *KeystoneReconciler) reconcileDeleteOpenBao(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(keystone, keystoneOpenBaoFinalizer) {
+		return ctrl.Result{}, nil
+	}
+
+	// Only emit FinalizingOpenBaoSecrets when a backup PushSecret is still
+	// present and not yet Terminating — subsequent requeues observe the same
+	// PushSecret Terminating (DeletionTimestamp set) or absent and suppress
+	// the emit, giving exactly-once semantics per termination (CC-0079,
+	// REQ-007).
+	hasLiveCleanupWork, err := r.hasLiveOpenBaoBackupPushSecrets(ctx, keystone)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if hasLiveCleanupWork {
+		r.Recorder.Event(keystone, corev1.EventTypeNormal, "FinalizingOpenBaoSecrets",
+			"Cleaning up OpenBao backup PushSecrets before removing Keystone")
+	}
+
+	done, err := r.finalizeOpenBaoSecrets(ctx, keystone)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !done {
+		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
+	}
+
+	r.Recorder.Event(keystone, corev1.EventTypeNormal, "OpenBaoSecretsFinalized",
+		"OpenBao backup PushSecrets deleted; releasing openbao-finalizer")
+
+	controllerutil.RemoveFinalizer(keystone, keystoneOpenBaoFinalizer)
+	if err := r.Update(ctx, keystone); err != nil {
+		return ctrl.Result{}, fmt.Errorf("removing openbao finalizer: %w", err)
+	}
+	return ctrl.Result{}, nil
+}
+
+// hasLiveOpenBaoBackupPushSecrets reports whether any backup PushSecret still
+// exists with DeletionTimestamp unset — i.e., real cleanup work remains. A
+// PushSecret that is Terminating (held by ESO's cleanup finalizer) is not
+// considered live because its deletion has already been announced — counting
+// it would double-emit FinalizingOpenBaoSecrets on every requeue (CC-0079,
+// REQ-007).
+func (r *KeystoneReconciler) hasLiveOpenBaoBackupPushSecrets(ctx context.Context, keystone *keystonev1alpha1.Keystone) (bool, error) {
+	for _, name := range openBaoBackupPushSecretNames(keystone) {
+		key := client.ObjectKey{Namespace: keystone.Namespace, Name: name}
+		ps := &esov1alpha1.PushSecret{}
+		err := r.Get(ctx, key, ps)
+		if apierrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return false, fmt.Errorf("checking PushSecret %s: %w", key, err)
+		}
+		if ps.GetDeletionTimestamp().IsZero() {
 			return true, nil
 		}
 	}

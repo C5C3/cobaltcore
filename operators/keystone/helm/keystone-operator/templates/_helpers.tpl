@@ -180,11 +180,27 @@ Extracted into a named template to prevent drift when rules change.
     - get
     - list
     - watch
-# external-secrets.io - externalsecrets, pushsecrets (CC-0017)
+# external-secrets.io - externalsecrets (CC-0017)
+# delete is intentionally NOT granted: the operator only manages externalsecret
+# lifecycles via owner-references, it never calls r.Delete on them directly.
 - apiGroups:
     - external-secrets.io
   resources:
     - externalsecrets
+  verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - patch
+# external-secrets.io - pushsecrets (CC-0017, CC-0079)
+# delete is required so the openbao-finalizer can tear down the fernet-keys
+# and credential-keys backup PushSecrets on Keystone CR deletion and rely on
+# ESO DeletionPolicy=Delete to purge the kv-v2 paths.
+- apiGroups:
+    - external-secrets.io
+  resources:
     - pushsecrets
   verbs:
     - get
@@ -193,6 +209,7 @@ Extracted into a named template to prevent drift when rules change.
     - create
     - update
     - patch
+    - delete
 # external-secrets.io - clustersecretstores (read-only, CC-0047)
 # Required so the operator can observe the ClusterSecretStore's Ready
 # condition and reflect upstream secret-backend (OpenBao) outages in

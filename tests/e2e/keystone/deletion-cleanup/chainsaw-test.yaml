@@ -2,14 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for garbage collection on Keystone CR deletion (CC-0016)
-# and finalizer-driven MariaDB CR cleanup (CC-0078). Deploys a Keystone CR,
-# waits for Ready=True, asserts the finalizer is present, deletes the CR,
-# then asserts all owned resources and MariaDB CRs are absent (NotFound)
-# within a bounded deletion window.
+# Chainsaw E2E test for garbage collection on Keystone CR deletion (CC-0016),
+# finalizer-driven MariaDB CR cleanup (CC-0078), and OpenBao PushSecret
+# finalizer cleanup (CC-0079). Deploys a Keystone CR, waits for Ready=True,
+# asserts both finalizers (cleanup + openbao) are present, deletes the CR,
+# then asserts all owned resources, MariaDB CRs, and backup PushSecrets are
+# absent (NotFound), and that the remote OpenBao KV-v2 paths backing those
+# PushSecrets have been purged, within a bounded deletion window.
 #
 # REQ-007, REQ-012, REQ-013 (CC-0016)
 # REQ-008 (CC-0078)
+# REQ-010 (CC-0079)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -23,10 +26,14 @@ spec:
   - try:
     - apply:
         file: 00-keystone-cr.yaml
-  # ── Step 2: Wait for Ready=True and assert finalizer present ───────────
-  # REQ-008 (CC-0078): The controller adds the finalizer on first reconcile
-  # so deletion can trigger MariaDB CR cleanup before the Keystone CR is
-  # removed from etcd.
+  # ── Step 2: Wait for Ready=True and assert finalizers present ──────────
+  # REQ-008 (CC-0078): The cleanup finalizer is added on first reconcile so
+  # deletion can trigger MariaDB CR cleanup before the Keystone CR is removed
+  # from etcd.
+  # REQ-010 (CC-0079): The openbao-finalizer is also added on first reconcile
+  # so that the two backup PushSecrets (fernet-keys-backup, credential-keys-
+  # backup) can be deleted — which drives ESO to purge the remote KV-v2 paths
+  # — before the Keystone CR is removed from etcd.
   - try:
     - assert:
         resource:
@@ -40,6 +47,7 @@ spec:
             # `|| `[]`` fallback, JMESPath's `contains()` raises a non-retryable
             # type error and the 5m assert timeout never kicks in.
             (contains(finalizers || `[]`, 'keystone.openstack.c5c3.io/finalizer')): true
+            (contains(finalizers || `[]`, 'keystone.openstack.c5c3.io/openbao-finalizer')): true
           status:
             (conditions[?type == 'Ready']):
             - status: "True"
@@ -134,12 +142,21 @@ spec:
           metadata:
             name: keystone-cleanup-fernet-rotate
             namespace: openstack
+    # Both backup PushSecrets are deleted by the openbao-finalizer handler so
+    # ESO can purge the corresponding kv-v2 paths (REQ-010, CC-0079).
     - error:
         resource:
           apiVersion: external-secrets.io/v1alpha1
           kind: PushSecret
           metadata:
             name: keystone-cleanup-fernet-keys-backup
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: external-secrets.io/v1alpha1
+          kind: PushSecret
+          metadata:
+            name: keystone-cleanup-credential-keys-backup
             namespace: openstack
     - error:
         resource:
@@ -185,3 +202,60 @@ spec:
             exit 1
           fi
           echo "OK: No ConfigMap matching keystone-cleanup-config-* found"
+  # ── Step 6: Assert OpenBao KV-v2 paths are absent ──────────────────────
+  # REQ-010 (CC-0079): PushSecret deletion with DeletionPolicy=Delete drives
+  # ESO to purge the remote kv-v2/openstack/keystone/{fernet-keys,credential-
+  # keys} paths. PushSecret NotFound alone does not guarantee the remote
+  # purge succeeded, so this step execs bao-cli inside the openbao-0 pod and
+  # asserts both paths return a non-zero exit (path not found / no value).
+  #
+  # Namespace note: the OpenBao server runs in openbao-system (see
+  # deploy/flux-system/releases/openbao.yaml:14 and
+  # deploy/openbao/bootstrap/common.sh:17). The task spec reference to
+  # "namespace openbao" is stale — openbao-system is the authoritative
+  # target used by the HelmRelease and bootstrap scripts.
+  - try:
+    - script:
+        timeout: 60s
+        content: |
+          set -u
+          BAO_NS="openbao-system"
+          POD="openbao-0"
+          SECRET="openbao-init-keys"
+          BAO_ADDR="https://127.0.0.1:8200"
+          VAULT_CACERT="/openbao/tls/ca.crt"
+
+          BAO_TOKEN=$(kubectl get secret "${SECRET}" -n "${BAO_NS}" \
+            -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
+          if [ -z "${BAO_TOKEN}" ] || [ "${BAO_TOKEN}" = "null" ]; then
+            echo "ERROR: could not extract root token from ${BAO_NS}/${SECRET}"
+            exit 1
+          fi
+
+          rc=0
+          for path in "kv-v2/openstack/keystone/fernet-keys" \
+                      "kv-v2/openstack/keystone/credential-keys"; do
+            echo "=== bao kv get ${path} (expect not-found) ==="
+            out=$(kubectl exec -n "${BAO_NS}" "${POD}" -- \
+              env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" \
+                  VAULT_CACERT="${VAULT_CACERT}" \
+                  bao kv get "${path}" 2>&1) && get_rc=0 || get_rc=$?
+            echo "${out}"
+            echo "exit=${get_rc}"
+            if [ "${get_rc}" -eq 0 ]; then
+              echo "ERROR: ${path} still exists in OpenBao after PushSecret deletion"
+              rc=1
+            else
+              echo "OK: ${path} is absent in OpenBao"
+            fi
+          done
+          exit "${rc}"
+    catch:
+    - script:
+        content: |
+          echo "=== openbao pods ==="
+          kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao 2>&1 || true
+          echo "=== openbao logs (last 100 lines) ==="
+          kubectl logs -n openbao-system -l app.kubernetes.io/name=openbao --tail=100 2>&1 || true
+          echo "=== external-secrets controller logs (last 200 lines) ==="
+          kubectl logs -n external-secrets -l app.kubernetes.io/name=external-secrets --tail=200 2>&1 || true

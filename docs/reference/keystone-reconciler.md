@@ -1,7 +1,7 @@
 ---
 title: Keystone Reconciler Architecture
 quadrant: operator
-feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0065, CC-0067, CC-0068, CC-0071, CC-0072, CC-0073, CC-0074, CC-0077, CC-0078, CC-0080, CC-0081
+feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0065, CC-0067, CC-0068, CC-0071, CC-0072, CC-0073, CC-0074, CC-0077, CC-0078, CC-0079, CC-0080, CC-0081
 ---
 
 # Keystone Reconciler Architecture
@@ -115,7 +115,7 @@ RBAC markers on the reconciler generate the required ClusterRole:
 | `batch` | `jobs`, `cronjobs` | get, list, watch, create, update, patch, delete |
 | `k8s.mariadb.com` | `databases`, `users`, `grants` | get, list, watch, create, update, patch, delete |
 | `k8s.mariadb.com` | `mariadbs` | get, list, watch |
-| `external-secrets.io` | `externalsecrets`, `pushsecrets` | get, list, watch, create, update, patch |
+| `external-secrets.io` | `externalsecrets`, `pushsecrets` | get, list, watch, create, update, patch, delete (CC-0079) |
 | `external-secrets.io` | `clustersecretstores` | get, list, watch |
 | `policy` | `poddisruptionbudgets` | get, list, watch, create, update, patch, delete |
 | `autoscaling` | `horizontalpodautoscalers` | get, list, watch, create, update, patch, delete |
@@ -694,6 +694,314 @@ The two mechanisms do not conflict: `Delete` is idempotent under `NotFound`,
 so if GC removes a CR before the finalizer's `Delete` call, the finalizer
 simply observes `NotFound` and continues. The finalizer adds deterministic
 ordering and observability on top of GC's eventual-consistency guarantee.
+
+---
+
+## OpenBao Finalizer
+
+In addition to the MariaDB finalizer, every Keystone CR carries a dedicated
+finalizer that drives cleanup of the backup PushSecrets ESO uses to persist
+the Fernet and credential signing keys to OpenBao (CC-0079). Without this
+finalizer, deleting a Keystone CR would garbage-collect the PushSecret CRs
+via owner references **without** triggering the remote delete on the KV-v2
+path — leaving stale cryptographic material in OpenBao after the Keystone
+CR is gone. The two finalizers are independent: each is installed, tracked,
+and released by its own handler, and they can complete in either order.
+
+### Finalizer Constant
+
+The finalizer name is declared once as a package-level constant in
+`operators/keystone/internal/controller/reconcile_secrets.go`:
+
+```go
+const keystoneOpenBaoFinalizer = "keystone.openstack.c5c3.io/openbao-finalizer"
+```
+
+The `-finalizer` suffix differentiates it from the MariaDB finalizer
+(`keystone.openstack.c5c3.io/finalizer`) so that `kubectl get keystone -o yaml`
+shows both entries unambiguously under `metadata.finalizers`. The constant
+is the single source of truth used by `Reconcile`, `reconcileDeleteOpenBao`,
+`finalizeOpenBaoSecrets`, `hasLiveOpenBaoBackupPushSecrets`, all unit and
+integration tests, and this documentation.
+
+### Resources Cleaned Up
+
+When the Keystone CR is deleted, the finalizer cleanup deletes these backup
+PushSecret CRs (both in the Keystone's namespace):
+
+| PushSecret | API Group | KV-v2 Path (OpenBao) |
+| --- | --- | --- |
+| `{keystone.Name}-fernet-keys-backup` | `external-secrets.io` | `kv-v2/data/openstack/keystone/fernet-keys` |
+| `{keystone.Name}-credential-keys-backup` | `external-secrets.io` | `kv-v2/data/openstack/keystone/credential-keys` |
+
+The names are produced by `openBaoBackupPushSecretNames(keystone)` so that
+adding a third backup target in the future is a one-line change. Both
+PushSecrets share a single builder convention in `reconcile_fernet.go` and
+`reconcile_credential.go` respectively; neither carries secret material of
+its own — the live `Secret` referenced by `Spec.Selector.Secret.Name` is the
+source of truth, and the PushSecret is the control-plane object that tells
+ESO what to push (and, on deletion, what to purge).
+
+The finalizer does **not** touch any other Keystone-owned resource
+(Deployment, ConfigMap, Service, CronJob, etc.). Those are reclaimed by the
+built-in Kubernetes garbage collector via owner references — see
+[Owned Resources](#owned-resources).
+
+> **Known limitation:** Both KV-v2 paths are cluster-global
+> (`openstack/keystone/fernet-keys`, `openstack/keystone/credential-keys`)
+> rather than `{name}`-scoped. The current deploy model is
+> single-Keystone-per-cluster for the `openstack` namespace, so this is not
+> observable in practice. Multi-Keystone-per-namespace support would require
+> per-CR-scoped paths and is tracked as deferred scope.
+
+### DeletionPolicy=Delete Wiring Through ESO
+
+The Keystone operator has no OpenBao credentials and does not talk to the
+OpenBao API directly. Remote purge of the KV-v2 path is delegated to ESO
+via the PushSecret field `Spec.DeletionPolicy`:
+
+```go
+Spec: esov1alpha1.PushSecretSpec{
+    DeletionPolicy: esov1alpha1.PushSecretDeletionPolicyDelete,
+    SecretStoreRefs: []esov1alpha1.PushSecretStoreRef{{
+        Kind: "ClusterSecretStore",
+        Name: "openbao-cluster-store",
+    }},
+    // ...
+    Data: []esov1alpha1.PushSecretData{{
+        Match: esov1alpha1.PushSecretMatch{
+            RemoteRef: esov1alpha1.PushSecretRemoteRef{
+                RemoteKey: "openstack/keystone/fernet-keys",
+            },
+        },
+    }},
+}
+```
+
+`DeletionPolicy=Delete` instructs ESO to issue an OpenBao `DELETE` against
+the configured `RemoteKey` as part of the PushSecret's own teardown. ESO
+installs a cleanup finalizer on the PushSecret, holds the object in
+Terminating state until the remote delete succeeds, then releases its
+finalizer so the API server garbage-collects the PushSecret.
+
+This means the Keystone finalizer does not need OpenBao credentials — the
+single component that talks to OpenBao is still ESO, and the abstraction
+boundary (ClusterSecretStore, policy, auth) stays in one place. The
+Keystone finalizer's responsibility is purely ordering: ensure the Delete
+happens **before** the Keystone CR leaves etcd.
+
+### Reconcile Branching on DeletionTimestamp
+
+`Reconcile` dispatches terminating CRs to both finalizer handlers
+immediately after the CR `Get` and before any sub-reconciler executes:
+
+```text
+Fetch Keystone CR
+    │
+    ├─ DeletionTimestamp != zero ──► reconcileDelete (MariaDB finalizer)
+    │                                reconcileDeleteOpenBao (OpenBao finalizer)
+    │                                (no sub-reconcilers)
+    │
+    └─ DeletionTimestamp == zero ──► AddFinalizer(keystoneFinalizer) if missing
+                                     AddFinalizer(keystoneOpenBaoFinalizer) if missing
+                                     sub-reconcilers
+```
+
+Running sub-reconcilers against a Terminating CR would be unsafe:
+`reconcileFernetKeys` and `reconcileCredentialKeys` build the live `Secret`
+and the backup `PushSecret` on every pass, and would therefore re-create
+the PushSecrets the finalizer just deleted — classic infinite reconcile
+loop. The early branch avoids this entirely.
+
+On the live-CR path, `controllerutil.AddFinalizer(keystone, keystoneOpenBaoFinalizer)`
+is called if the finalizer is missing, the CR is `Update`d, and an early
+`Requeue: true` return ensures the next reconcile pass observes the
+finalizer already persisted in etcd. The MariaDB and OpenBao finalizer
+additions are independent `Update`+`Requeue` steps; both converge within
+two requeues on a fresh CR and within a single pass on subsequent
+reconciles.
+
+### reconcileDeleteOpenBao
+
+```go
+func (r *KeystoneReconciler) reconcileDeleteOpenBao(
+    ctx context.Context,
+    keystone *keystonev1alpha1.Keystone,
+) (ctrl.Result, error)
+```
+
+The deletion handler proceeds as follows:
+
+1. **No-op guard.** If the Keystone CR does not carry
+   `keystoneOpenBaoFinalizer` (e.g. a CR that pre-dates CC-0079, or whose
+   finalizer was already released on a prior pass), `reconcileDeleteOpenBao`
+   returns `(ctrl.Result{}, nil)` immediately — no Delete calls, no Events.
+2. **Cleanup-work announcement.** `hasLiveOpenBaoBackupPushSecrets` probes
+   whether any backup PushSecret is still live (exists *and*
+   `DeletionTimestamp == 0`). If so, a single Normal Event with reason
+   `FinalizingOpenBaoSecrets` is emitted. Once the PushSecret transitions
+   to Terminating (DeletionTimestamp set) or disappears, subsequent
+   requeues observe no live PushSecret and suppress the emit, giving
+   exactly-once semantics per termination across requeue loops.
+3. **Cleanup.** `finalizeOpenBaoSecrets` runs in two sequential passes
+   over the backup PushSecret names. The first pass issues `Delete` on
+   every name (tolerating `NotFound`), so ESO's cleanup finalizer fires
+   on all of them in parallel. The second pass re-`Get`s each name;
+   `done` is `true` only when **every** PushSecret returns `NotFound`.
+   On the first still-present PushSecret (typically Terminating behind
+   ESO's cleanup finalizer) the handler sets `done=false` and records
+   the blocked state as a side effect on `keystone.Status.Conditions`
+   via `setOpenBaoFinalizerBlockedCondition`, so the stuck object's name
+   surfaces on `kubectl get keystone` rather than being returned by the
+   function (the signature is `(done bool, err error)` only).
+4. **Requeue while blocked.** If `done=false`, the handler records the
+   `SecretsReady=False / OpenBaoFinalizerBlocked` condition (see
+   [SecretsReady=False / OpenBaoFinalizerBlocked](#secretsreadyfalse--openbaofinalizerblocked)),
+   returns `ctrl.Result{RequeueAfter: RequeueSecretPolling}` (15s), and
+   leaves the finalizer in place so the Keystone CR stays alive until ESO
+   finishes.
+5. **Finalizer release.** When `done=true`, a Normal Event with reason
+   `OpenBaoSecretsFinalized` is emitted, the finalizer is removed via
+   `controllerutil.RemoveFinalizer`, and the CR is `Update`d. The API
+   server then observes the emptied finalizers list and, if no other
+   finalizers remain, garbage-collects the Keystone CR.
+
+### Why the finalizer waits
+
+Unlike the MariaDB finalizer (which deliberately does **not** wait for the
+MariaDB CRs to disappear from etcd — see
+[Why the finalizer does not wait](#why-the-finalizer-does-not-wait)), the
+OpenBao finalizer **must** wait for the PushSecrets to be fully
+garbage-collected. The asymmetry is driven by the cleanup mechanism:
+
+- MariaDB: the `Database` CR owns the actual remote resource (the
+  database) via its own finalizer; releasing the Keystone finalizer early
+  does not orphan the database because owner references and the MariaDB
+  operator both handle the cascade.
+- OpenBao: the remote resource (the KV-v2 path) is purged **only as a
+  side-effect of the PushSecret's Delete**. If the Keystone finalizer is
+  released before ESO has finished its own teardown, and if ESO then fails
+  for any reason (auth revoked, OpenBao unreachable, operator crashed), the
+  PushSecret may be garbage-collected by the API server while the remote
+  path still exists — leaking cryptographic material.
+
+Waiting on the re-`Get` therefore provides the critical guarantee:
+"Keystone CR gone" implies "remote KV-v2 path purged (or ESO has surfaced
+the failure via its own status)".
+
+### NotFound Tolerance and Idempotency
+
+`finalizeOpenBaoSecrets` treats `NotFound` as success on **both** the
+`Delete` call and the follow-up `Get`:
+
+- `Delete` returning `NotFound` → the PushSecret was already removed by GC,
+  a prior finalizer pass, or an external actor; log at `V(1)` and continue.
+- `Get` returning `NotFound` → the PushSecret (and, via ESO's
+  `DeletionPolicy=Delete`, the remote KV-v2 path) is fully gone; count
+  this object as done.
+
+This tolerance makes `finalizeOpenBaoSecrets` **idempotent**: calling it
+twice in a row with no PushSecrets present returns `(true, nil)` both
+times and issues a second batch of Delete calls that are all no-op
+NotFounds. The reconcile pass that first observes `done=true` is the only
+one that emits `OpenBaoSecretsFinalized` and calls `RemoveFinalizer` — no
+duplicate Events are produced under requeue loops. Idempotency matters
+because:
+
+- Controller-runtime retries `Reconcile` with exponential backoff on
+  transient errors; any finalizer pass may be replayed.
+- ESO may have completed the PushSecret deletion before the Keystone
+  finalizer's next reconcile observes it.
+- An SRE may have manually deleted the PushSecrets before the Keystone
+  deletion.
+
+In all three cases the finalizer converges without surfacing spurious
+errors.
+
+### SecretsReady=False / OpenBaoFinalizerBlocked
+
+While the finalizer is waiting for ESO to finish garbage-collecting a
+backup PushSecret, the existing `SecretsReady` condition is re-used to
+surface the blocked state:
+
+| Field | Value |
+| --- | --- |
+| `Type` | `SecretsReady` |
+| `Status` | `False` |
+| `Reason` | `OpenBaoFinalizerBlocked` |
+| `Message` | `Waiting for PushSecret "<name>" to be garbage-collected before releasing openbao-finalizer` |
+| `ObservedGeneration` | `keystone.Generation` |
+
+The message names the specific PushSecret (first stuck one encountered)
+so `kubectl get keystone -o yaml` surfaces which backup is wedged without
+attaching a debugger. Reusing `SecretsReady` (instead of introducing a new
+condition type) keeps the status surface coherent — any secret-store
+lifecycle concern appears under the same condition type
+(CC-0013 for initial ExternalSecret sync, CC-0047 for ClusterSecretStore
+health, CC-0079 for finalizer teardown). The condition is persisted through
+the existing `updateStatus` path so the message stays fresh across
+requeues at the `RequeueSecretPolling` (15s) interval.
+
+The condition clears together with the Keystone CR itself: once both
+PushSecrets are `NotFound`, `reconcileDeleteOpenBao` removes the finalizer
+and the CR is garbage-collected. There is no explicit "clearing" write —
+the condition disappears when its owning object is reaped.
+
+No `Warning` Event is emitted for the blocked state. Controller-runtime
+retries at `RequeueSecretPolling`, the structured log line
+`openbao finalizer blocked on PushSecret garbage collection` is produced
+at `V(1)` with `pushsecret=<name>`, and the `SecretsReady=False`
+condition is the primary observability signal.
+
+### Events
+
+Two Normal Events are emitted on the Keystone CR during OpenBao
+finalizer-driven cleanup:
+
+| Reason | Type | Message | Emitted When |
+| --- | --- | --- | --- |
+| `FinalizingOpenBaoSecrets` | `Normal` | `"Cleaning up OpenBao backup PushSecrets before removing Keystone"` | First terminating reconcile pass where at least one backup PushSecret is still live (not Terminating). Subsequent requeues observe the PushSecret Terminating (DeletionTimestamp set) or absent and suppress the emit, giving exactly-once semantics. |
+| `OpenBaoSecretsFinalized` | `Normal` | `"OpenBao backup PushSecrets deleted; releasing openbao-finalizer"` | Once per termination, immediately before `RemoveFinalizer` + `Update`. |
+
+If both PushSecrets are already `NotFound` on the first terminating
+reconcile (re-runs, pre-deleted PushSecrets), the start Event is skipped
+and only the completion Event fires.
+
+All OpenBao-finalizer log lines include the Keystone `name` and
+`namespace` via
+`log.FromContext(ctx).WithValues("keystone", client.ObjectKeyFromObject(keystone))`,
+keeping log correlation consistent with the rest of the reconciler.
+
+### Upgrade Path
+
+Keystone CRs created by an earlier operator version that did not install
+the OpenBao finalizer gain it on their next reconcile under the new
+version: the live-CR branch sees
+`ContainsFinalizer(keystone, keystoneOpenBaoFinalizer) == false`, calls
+`AddFinalizer` + `Update`, and requeues. The CR's `status` and `spec` are
+otherwise unchanged by the finalizer addition, and subsequent deletions
+flow through the full cleanup path. No manual migration of existing CRs is
+required.
+
+### Owner References vs OpenBao Finalizer
+
+Both backup PushSecrets carry an `ownerReference` to the Keystone CR
+(set by `reconcileFernetKeys` and `reconcileCredentialKeys` via
+`controllerutil.SetControllerReference`). Kubernetes' built-in garbage
+collector would normally cascade the deletion of the PushSecret objects,
+but GC alone is insufficient here:
+
+| Mechanism | What it guarantees |
+| --- | --- |
+| Owner references | PushSecret CRs are eventually garbage-collected after Keystone CR removal |
+| `Spec.DeletionPolicy=Delete` | ESO purges the remote KV-v2 path when the PushSecret's own `Delete` is processed |
+| OpenBao finalizer | Keystone CR is removed **only after** both PushSecrets are confirmed `NotFound`, guaranteeing the remote purge has actually run |
+
+Without the finalizer, cascade-deletion of the PushSecret would race
+against ESO's own reconciliation — the PushSecret object could be
+garbage-collected by the API server before ESO has had a chance to run its
+`DeletionPolicy=Delete` path. The finalizer's `Delete` + re-`Get` loop
+forces the ordering to be deterministic and observable.
 
 ---
 
