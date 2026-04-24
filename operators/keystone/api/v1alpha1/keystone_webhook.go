@@ -10,6 +10,7 @@ import (
 	"maps"
 
 	"github.com/robfig/cron/v3"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -21,6 +22,18 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+)
+
+// Graceful-termination effective defaults (CC-0084).
+// These constants are the single source of truth used by both the validating
+// webhook (for cross-field arithmetic when pointer fields are nil) and the
+// reconciler (task 3.x, which applies them when rendering the Deployment).
+// Keeping them here ensures the webhook and reconciler cannot drift apart.
+const (
+	// DefaultTerminationGracePeriodSeconds is applied when KeystoneSpec.TerminationGracePeriodSeconds is nil.
+	DefaultTerminationGracePeriodSeconds int64 = 30
+	// DefaultPreStopSleepSeconds is applied when KeystoneSpec.PreStopSleepSeconds is nil.
+	DefaultPreStopSleepSeconds int64 = 5
 )
 
 // Default resource requests and limits for the Keystone API container (CC-0042).
@@ -287,6 +300,109 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 				uwsgiPath.Child("threads"),
 				k.Spec.UWSGI.Threads,
 				"threads must be at least 1",
+			))
+		}
+		// REQ-003 (CC-0084): Defense-in-depth harakiri range check alongside the
+		// +kubebuilder:validation:Minimum=1 marker on UWSGISpec.Harakiri.
+		if k.Spec.UWSGI.Harakiri != nil && *k.Spec.UWSGI.Harakiri < 1 {
+			allErrs = append(allErrs, field.Invalid(
+				uwsgiPath.Child("harakiri"),
+				*k.Spec.UWSGI.Harakiri,
+				"harakiri must be at least 1",
+			))
+		}
+		// REQ-004 (CC-0084): Defense-in-depth httpKeepAliveTimeout range check
+		// alongside the +kubebuilder:validation:Minimum=1 marker. A zero value
+		// would otherwise be interpreted by uWSGI as "unbounded timeout", which
+		// defeats the graceful-termination contract (CC-0084).
+		if k.Spec.UWSGI.HTTPKeepAliveTimeout != nil && *k.Spec.UWSGI.HTTPKeepAliveTimeout < 1 {
+			allErrs = append(allErrs, field.Invalid(
+				uwsgiPath.Child("httpKeepAliveTimeout"),
+				*k.Spec.UWSGI.HTTPKeepAliveTimeout,
+				"httpKeepAliveTimeout must be at least 1",
+			))
+		}
+		// REQ-012 (CC-0084): httpKeepAliveTimeout is only meaningful when
+		// httpKeepAlive is true — otherwise the --http-keepalive-timeout flag
+		// is never emitted. Reject the nonsensical combination early so users
+		// do not silently lose the timeout they configured.
+		if k.Spec.UWSGI.HTTPKeepAliveTimeout != nil && !k.Spec.UWSGI.HTTPKeepAlive {
+			allErrs = append(allErrs, field.Invalid(
+				uwsgiPath.Child("httpKeepAliveTimeout"),
+				*k.Spec.UWSGI.HTTPKeepAliveTimeout,
+				"httpKeepAliveTimeout may only be set when httpKeepAlive is true",
+			))
+		}
+	}
+
+	// REQ-001 (CC-0084): Defense-in-depth range check on
+	// spec.terminationGracePeriodSeconds alongside the
+	// +kubebuilder:validation:Minimum=10 marker on KeystoneSpec.
+	if k.Spec.TerminationGracePeriodSeconds != nil && *k.Spec.TerminationGracePeriodSeconds < 10 {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("terminationGracePeriodSeconds"),
+			*k.Spec.TerminationGracePeriodSeconds,
+			"terminationGracePeriodSeconds must be at least 10",
+		))
+	}
+	// REQ-002 (CC-0084): Defense-in-depth range check on
+	// spec.preStopSleepSeconds alongside the
+	// +kubebuilder:validation:Minimum=0 marker on KeystoneSpec. Negative
+	// durations are meaningless for the preStop sleep and are rejected.
+	if k.Spec.PreStopSleepSeconds != nil && *k.Spec.PreStopSleepSeconds < 0 {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("preStopSleepSeconds"),
+			*k.Spec.PreStopSleepSeconds,
+			"preStopSleepSeconds must be non-negative",
+		))
+	}
+
+	// REQ-007 (CC-0084): preStopSleepSeconds must be strictly less than
+	// terminationGracePeriodSeconds so there is a non-zero drain window
+	// between the end of the preStop sleep and the forced kubelet kill.
+	// Resolve nil pointers to the reconciler's effective defaults so the
+	// cross-field rule holds even when one or both pointers are omitted.
+	resolvedGrace := DefaultTerminationGracePeriodSeconds
+	if k.Spec.TerminationGracePeriodSeconds != nil {
+		resolvedGrace = *k.Spec.TerminationGracePeriodSeconds
+	}
+	resolvedPreStop := DefaultPreStopSleepSeconds
+	if k.Spec.PreStopSleepSeconds != nil {
+		resolvedPreStop = *k.Spec.PreStopSleepSeconds
+	}
+	if resolvedPreStop >= resolvedGrace {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("preStopSleepSeconds"),
+			resolvedPreStop,
+			fmt.Sprintf("preStopSleepSeconds (%d) must be strictly less than terminationGracePeriodSeconds (%d)", resolvedPreStop, resolvedGrace),
+		))
+	}
+
+	// REQ-008 (CC-0084): harakiri must be strictly less than the drain window
+	// (terminationGracePeriodSeconds - preStopSleepSeconds) so the worst-case
+	// uWSGI per-request kill fits inside the envelope between preStop sleep
+	// completion and SIGKILL. Only applied when spec.uwsgi.harakiri is set.
+	if k.Spec.UWSGI != nil && k.Spec.UWSGI.Harakiri != nil {
+		drain := resolvedGrace - resolvedPreStop
+		harakiri := int64(*k.Spec.UWSGI.Harakiri)
+		if harakiri >= drain {
+			allErrs = append(allErrs, field.Invalid(
+				specPath.Child("uwsgi", "harakiri"),
+				*k.Spec.UWSGI.Harakiri,
+				fmt.Sprintf("harakiri (%d) must be strictly less than terminationGracePeriodSeconds - preStopSleepSeconds (%d)", harakiri, drain),
+			))
+		}
+	}
+
+	// REQ-006 (CC-0084): spec.strategy sanity check — a Recreate strategy must
+	// not carry a RollingUpdate block because the Deployment controller would
+	// reject the object at apply time. Catch the misconfiguration up-front.
+	if k.Spec.Strategy != nil {
+		if k.Spec.Strategy.Type == appsv1.RecreateDeploymentStrategyType && k.Spec.Strategy.RollingUpdate != nil {
+			allErrs = append(allErrs, field.Invalid(
+				specPath.Child("strategy", "rollingUpdate"),
+				k.Spec.Strategy.RollingUpdate,
+				"rollingUpdate must not be set when strategy.type is Recreate",
 			))
 		}
 	}

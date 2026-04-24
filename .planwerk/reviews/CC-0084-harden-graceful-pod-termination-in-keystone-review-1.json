@@ -1,0 +1,183 @@
+{
+  "feature_id": "CC-0084",
+  "title": "Harden graceful pod termination in Keystone rolling updates",
+  "date": "2026-04-22",
+  "verdict": "NEEDS_CHANGES",
+  "summary": "The implementation is substantively complete: new KeystoneSpec fields (TerminationGracePeriodSeconds, PreStopSleepSeconds, Strategy) and UWSGISpec fields (Harakiri, HTTPKeepAliveTimeout) are added with correct kubebuilder minimums (10, 0, 1, 1) and nil-pointer semantics that preserve existing CRs on upgrade (REQ-001). The validating webhook enforces REQ-001/002/003/004/006/007/008/012 with clear field-scoped errors, resolves nil pointers against shared Default* constants before cross-field arithmetic, and accumulates errors (no short-circuit). The reconciler wires all five fields into the rendered Deployment (uwsgi flags, preStop exec, terminationGracePeriodSeconds, spec.Strategy with a safe RollingUpdate{MaxUnavailable=0,MaxSurge=1} default; DeepCopy on the user-provided strategy prevents CR mutation). Both CRD copies (config/crd/bases/ and helm/keystone-operator/crds/) were regenerated and are byte-identical modulo the SOURCE header. Unit coverage is strong (16 new reconcile tests, ~20 new webhook tests including a TestIntegration_DefaultStrategyAppliedToDeployment that asserts convergence from the server-assigned default back to the operator's intent), envtest integration tests all honor the SkipIfEnvTestUnavailable sandbox guard, and a 7-step Chainsaw E2E at tests/e2e/keystone/rolling-update-zero-downtime/ asserts zero 5xx and zero connection resets under a continuous load generator while the image tag is rolled. Two blocking issues prevent approval: (1) a leftover 'Reviewer: please verify this matches intent.' plea in KeystoneSpec godoc has been materialized into the user-facing CRD description in BOTH generated CRD YAMLs, directly matching the external-feedback pattern 'resolve-ambiguous-commented-out-alternatives-before-merge' that is explicitly flagged as BLOCKING; and (2) the reconciler hardcodes literal 30 and 5 for the termination-grace and preStop-sleep defaults while keystone_webhook.go declares DefaultTerminationGracePeriodSeconds/DefaultPreStopSleepSeconds constants whose godoc advertises them as 'single source of truth used by both the validating webhook ... and the reconciler' — this is exactly the drift hazard that the external-feedback pattern 'eliminate-duplicated-source-of-truth' describes, and the webhook's cross-field arithmetic (preStop < grace) would silently diverge from the reconciler if either literal were changed in isolation.",
+  "tests_checklist": [
+    {"item": "Unit tests cover terminationGracePeriodSeconds helper (nil -> 30 default, custom value passthrough)", "checked": true},
+    {"item": "Unit tests cover preStopSleepCommand helper (nil -> 5, custom, zero opt-out)", "checked": true},
+    {"item": "Unit tests cover uwsgi flag emission for Harakiri and HTTPKeepAliveTimeout (present when set, absent when nil)", "checked": true},
+    {"item": "Unit tests cover deploymentStrategy default (RollingUpdate MaxUnavailable=0, MaxSurge=1) and user-override passthrough", "checked": true},
+    {"item": "Regression test asserts DeepCopy independence — mutating the rendered Deployment strategy does not mutate the CR", "checked": true},
+    {"item": "Strategy convergence test: reconciler restores the configured strategy after kube-apiserver fills in server-side defaults (TestEnsureDeployment_StrategyConvergesFromServerDefault)", "checked": true},
+    {"item": "Webhook tests cover REQ-001 (grace < 10 rejected) and REQ-002 (preStop < 0 rejected via CRD schema)", "checked": true},
+    {"item": "Webhook tests cover REQ-003/004 (uwsgi harakiri/keepAliveTimeout minimums)", "checked": true},
+    {"item": "Webhook tests cover REQ-007 (preStopSleepSeconds < terminationGracePeriodSeconds cross-field check, including the nil-defaulting case)", "checked": true},
+    {"item": "Webhook tests cover REQ-008 (harakiri must fit within the drain window)", "checked": true},
+    {"item": "Webhook tests cover REQ-012 (keepAliveTimeout requires HTTPKeepAlive=true)", "checked": true},
+    {"item": "Webhook tests cover REQ-006 (Recreate type + RollingUpdate block rejection)", "checked": true},
+    {"item": "Envtest integration tests cover terminationGracePeriodSeconds end-to-end", "checked": true},
+    {"item": "Envtest integration tests cover default and override deployment strategy", "checked": true},
+    {"item": "Envtest tests call testutil.SkipIfEnvTestUnavailable (mandatory sandbox guard)", "checked": true},
+    {"item": "Chainsaw E2E asserts zero 5xx and zero connection resets over a rolling-update image patch", "checked": true},
+    {"item": "Chainsaw E2E asserts availableReplicas >= spec.replicas continuously during the rollout (no capacity dip)", "checked": true},
+    {"item": "Chainsaw catch blocks capture pod logs, events, deployment YAML, and load-generator output", "checked": true},
+    {"item": "Unit tests assert DeepCopy of new pointer fields produces independent values (no shared pointer leak)", "checked": true},
+    {"item": "Backward compatibility exercised: default-value tests prove existing CRs render unchanged when all new fields are nil", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "SPDX header and Feature: CC-0084 comments present on touched files", "checked": true},
+    {"item": "DECISION comments explain why kubebuilder:default was omitted on pointer fields (REQ-001 upgrade-safety)", "checked": true},
+    {"item": "Leftover 'Reviewer: please verify this matches intent.' line removed from keystone_types.go and generated CRDs", "checked": false},
+    {"item": "Helper functions have single responsibility (terminationGracePeriodSeconds, preStopSleepCommand, deploymentStrategy)", "checked": true},
+    {"item": "uWSGI flag arguments use fmt.Sprintf and append to the existing command builder — consistent with sibling flags", "checked": true},
+    {"item": "No speculative abstractions — helpers are inlined only where a nil-vs-custom branch is needed", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No new RBAC verbs required (feature touches Keystone Deployment rendering only)", "checked": true},
+    {"item": "No hardcoded secrets, tokens, or credentials introduced", "checked": true},
+    {"item": "CRD validation minimums prevent negative or zero durations that could cause kubelet misbehavior", "checked": true},
+    {"item": "restrictedSecurityContext pattern preserved on the Deployment PodSpec — no regressions from the strategy/terminationGracePeriod changes", "checked": true},
+    {"item": "preStop sleep command uses a static shell literal (no user input interpolated into the exec argv)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml regenerated with new fields and minimums", "checked": true},
+    {"item": "helm/keystone-operator/crds/keystone.openstack.c5c3.io_keystones.yaml regenerated and in sync (make sync-crds)", "checked": true},
+    {"item": "zz_generated.deepcopy.go regenerated for the new pointer fields and DeploymentStrategy embed", "checked": true},
+    {"item": "Strategy embed uses appsv1.DeploymentStrategy directly (no shadow type) — keeps API-server validation authoritative", "checked": true},
+    {"item": "Reconciler and webhook share Default* constants as single source of truth (no drift risk)", "checked": false},
+    {"item": "Cross-field webhook validation runs BEFORE defaults are applied to avoid admitting mutated CRs", "checked": true},
+    {"item": "Deployment strategy deep-copied before being placed in the rendered Deployment — CR cannot be mutated by reconciler", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "Default values for grace and preStop sleep exist in exactly one place (webhook constants), referenced by reconciler", "checked": false},
+    {"item": "No duplicated cross-field arithmetic — REQ-007 nil-defaulting handled once in the webhook", "checked": true},
+    {"item": "No speculative config knobs — every new field is backed by a REQ in the spec", "checked": true},
+    {"item": "deploymentStrategy default synthesis is not pulled into a package-level var (inlined where used)", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Webhook returns all accumulated errors (no short-circuit) — REQ-007 and REQ-008 both fire when both are violated", "checked": true},
+    {"item": "Invalid strategy (Recreate with non-nil RollingUpdate block) is rejected at admission, not silently reconciled", "checked": true},
+    {"item": "preStopSleepSeconds == terminationGracePeriodSeconds is rejected (strict <, not <=) to guarantee a non-zero drain window", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Two-layer validation: CRD minimums (kubebuilder markers) and webhook defense-in-depth for cross-field rules", "checked": true},
+    {"item": "DeepCopy of user-supplied Strategy before placement in Deployment spec (prevents CR mutation)", "checked": true},
+    {"item": "Nil-pointer fallbacks in reconciler preserve pre-CC-0084 behavior for un-upgraded CRs", "checked": true},
+    {"item": "Chainsaw test captures diagnostics (logs, events, deployment YAML, load-generator output) on failure for fast triage", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [
+    {
+      "severity": "BLOCKING",
+      "description": "Defaults for terminationGracePeriodSeconds (30) and preStopSleepSeconds (5) are duplicated between the webhook and the reconciler. operators/keystone/api/v1alpha1/keystone_webhook.go:34 declares `DefaultTerminationGracePeriodSeconds int64 = 30` and :36 declares `DefaultPreStopSleepSeconds int64 = 5`, with godoc that explicitly names both constants as the 'single source of truth used by both the validating webhook (for cross-field arithmetic when pointer fields are nil) and the reconciler (task 3.x, which applies them when rendering the Deployment). Keeping them here ensures the webhook and reconciler cannot drift apart.' But the reconciler's helpers ignore those constants: operators/keystone/internal/controller/reconcile_deployment.go:408 returns the literal `30` and :416 sets `seconds := int64(5)`. The webhook's REQ-007 cross-field check uses the constants to resolve nil preStop/grace before comparing preStop < grace; the reconciler uses literals. Today both values agree, but the whole point of the constant is that the reviewer's comment in keystone_webhook.go:32-37 says the reconciler was supposed to import them. A future bump to the webhook constant without also editing the reconciler literals would silently admit CRs whose effective preStop (e.g. 25s resolved via constant) exceeds the reconciler's hardcoded grace (30s) — the exact drain-window violation REQ-007 is supposed to prevent. Matches the external-feedback pattern 'eliminate-duplicated-source-of-truth-when-both-sides-must-agree' (BLOCKING severity per .planwerk/review_patterns/).",
+      "location": "operators/keystone/internal/controller/reconcile_deployment.go:408,416",
+      "evidence": "keystone_webhook.go:34 `DefaultTerminationGracePeriodSeconds int64 = 30`; keystone_webhook.go:36 `DefaultPreStopSleepSeconds int64 = 5`; webhook godoc at keystone_webhook.go:31-37 names these as the single source of truth; reconcile_deployment.go:408 `return 30`; reconcile_deployment.go:416 `seconds := int64(5)`.",
+      "fix": "In reconcile_deployment.go, reference the exported webhook constants: `return keystonev1alpha1.DefaultTerminationGracePeriodSeconds` on line 408 and `seconds := keystonev1alpha1.DefaultPreStopSleepSeconds` on line 416. The v1alpha1 package is already imported as `keystonev1alpha1`. Then delete the two literal numerics and (optionally) add a one-line test that asserts the reconciler's nil-default output equals the constant, so a future change to either side breaks a test.",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "issues_found": [
+    {
+      "check_id": "PQ1",
+      "severity": "BLOCKING",
+      "description": "A reviewer-directed plea — `// Reviewer: please verify this matches intent.` — remains on operators/keystone/api/v1alpha1/keystone_types.go:154 at the end of the DECISION comment on TerminationGracePeriodSeconds. Because the comment is attached to an exported API field, controller-gen has materialized it into the generated CRD description in BOTH CRD copies: operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml:822 and operators/keystone/helm/keystone-operator/crds/keystone.openstack.c5c3.io_keystones.yaml:825. End users doing `kubectl explain keystone.spec.terminationGracePeriodSeconds` will see a review plea in the field description. This is the exact scenario flagged by the external-feedback pattern 'resolve-ambiguous-commented-out-alternatives-before-merge' (.planwerk/review_patterns/), which is explicitly listed as BLOCKING and has precedent in CC-0065 (buildKeystoneNetworkPolicy) and CC-0039 (the source of the pattern). The DECISION explanation itself is fine — it documents why kubebuilder:default was omitted for upgrade-safety — but the reviewer-plea suffix must be removed.",
+      "location": "operators/keystone/api/v1alpha1/keystone_types.go:154",
+      "fix": "Delete line 154 (`// Reviewer: please verify this matches intent.`) from keystone_types.go, then regenerate both CRDs via `make manifests && make sync-crds` so the description in config/crd/bases/ and helm/keystone-operator/crds/ no longer contains the plea. Keep the rest of the DECISION rationale (lines 146-153) intact.",
+      "evidence": "grep output: operators/keystone/api/v1alpha1/keystone_types.go:154, operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml:822, operators/keystone/helm/keystone-operator/crds/keystone.openstack.c5c3.io_keystones.yaml:825 all contain 'Reviewer: please verify this matches intent.'",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "PQ2",
+      "severity": "BLOCKING",
+      "description": "Reconciler hardcodes 30 and 5 for grace and preStop defaults while the webhook declares DefaultTerminationGracePeriodSeconds/DefaultPreStopSleepSeconds as the single source of truth for both sides. Drift risk: a future change to the webhook constant without also editing the reconciler literal would silently violate REQ-007's drain-window invariant. See architecture_findings[0].",
+      "location": "operators/keystone/internal/controller/reconcile_deployment.go:408,416",
+      "fix": "Replace `return 30` with `return keystonev1alpha1.DefaultTerminationGracePeriodSeconds`; replace `seconds := int64(5)` with `seconds := keystonev1alpha1.DefaultPreStopSleepSeconds`. The v1alpha1 import alias is already in scope.",
+      "evidence": "operators/keystone/api/v1alpha1/keystone_webhook.go:32-37 declares constants and advertises them as shared SoT; operators/keystone/internal/controller/reconcile_deployment.go:400-421 uses literals.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "PQ3",
+      "severity": "MINOR",
+      "description": "reconcile_deployment.go's uwsgiCommand appends `--http-keepalive-timeout` when keystone.Spec.UWSGI.HTTPKeepAliveTimeout != nil regardless of whether HTTPKeepAlive is true. The webhook's REQ-012 rejects `HTTPKeepAliveTimeout set && !HTTPKeepAlive` at admission, so in practice the reconciler never sees this invalid combination for freshly admitted CRs — but the webhook is a ValidatingWebhook (not a MutatingWebhook), so pre-existing CRs written directly via the API before the webhook was installed could still slip through. In that edge case, uwsgi would receive --http-keepalive-timeout without --http-keepalive=true, which uwsgi silently ignores. Not security-affecting; low-confidence but worth a defensive guard.",
+      "location": "operators/keystone/internal/controller/reconcile_deployment.go (uwsgiCommand flag-append branch)",
+      "fix": "Guard the keep-alive-timeout append: `if uwsgi.HTTPKeepAlive && uwsgi.HTTPKeepAliveTimeout != nil { ... }`. Alternatively, add a one-line comment noting that REQ-012 enforces this at admission and leave the code as-is if the maintainers prefer webhook-trust.",
+      "evidence": "keystone_webhook.go REQ-012 check; reconcile_deployment.go uwsgiCommand only gates on `HTTPKeepAliveTimeout != nil`.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "PQ4",
+      "severity": "MINOR",
+      "description": "The chainsaw availability assertion polls `availableReplicas >= spec.replicas` for 75 seconds. That window comfortably exceeds the default 30s terminationGracePeriodSeconds but leaves very little headroom if a future progress-file change bumps the test's grace to 60s or larger, which would cause pod-deletion latency plus preStop sleep to approach the 75s budget. Not a bug today, but a test that can silently become flaky when its inputs scale.",
+      "location": "tests/e2e/keystone/rolling-update-zero-downtime/chainsaw-test.yaml (availability poll step)",
+      "fix": "Either (a) derive the poll budget from the test's configured terminationGracePeriodSeconds (e.g. `(grace + preStop) * 2`) if chainsaw supports it, or (b) add a note in the test's inline comments documenting that the 75s budget assumes default grace/preStop and must be bumped if those defaults change. Prefer (b) — chainsaw expression support is limited.",
+      "evidence": "tests/e2e/keystone/rolling-update-zero-downtime/chainsaw-test.yaml availability step (75s timeout) + default grace 30s + preStop 5s.",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "Add a one-line test: `TestReconcileAndWebhookDefaultsAgree` asserting that the reconciler's nil-default output for terminationGracePeriodSeconds equals keystonev1alpha1.DefaultTerminationGracePeriodSeconds and likewise for preStop. This guards the shared-constant invariant even if a future refactor re-introduces a literal.",
+    "Consider exporting the reconciler's fallback RollingUpdate strategy (MaxUnavailable=0, MaxSurge=1) as a package-level constructor function or a unit-level var so that a future healthcheck or readiness change that touches deployment rendering can reference the same default without re-deriving it. Low priority — only one call site today.",
+    "The DECISION comment block on TerminationGracePeriodSeconds (keystone_types.go:146-153) is excellent rationale but would be more valuable in a design note (docs/decisions/ or the progress file) than inline, since it will be rendered into the CRD description for every user of `kubectl explain`. Consider moving the multi-line rationale to a design doc and keeping a one-line 'see docs/decisions/CC-0084-grace-defaults.md' in the godoc.",
+    "Chainsaw catch block captures pod logs but does not capture `kubectl describe pod` output — that often reveals preStop hook failures more directly than the container logs (which for uwsgi can be noisy). Consider adding a `kubectl describe pod -l app=keystone` catch step."
+  ],
+  "next_steps": [
+    "Remove the `// Reviewer: please verify this matches intent.` line from operators/keystone/api/v1alpha1/keystone_types.go:154 and regenerate both CRD copies via `make manifests && make sync-crds` (BLOCKING — issue PQ1).",
+    "Replace the literal 30 in reconcile_deployment.go:408 with `keystonev1alpha1.DefaultTerminationGracePeriodSeconds` and the literal 5 in :416 with `keystonev1alpha1.DefaultPreStopSleepSeconds`; optionally add a unit test pinning the two sides together (BLOCKING — issue PQ2).",
+    "Optionally guard the uwsgi --http-keepalive-timeout flag emission on HTTPKeepAlive=true for defense-in-depth against pre-webhook CRs (MINOR — issue PQ3, ASK).",
+    "Optionally add a comment to the chainsaw availability poll noting the 75s budget's dependence on default grace/preStop values (MINOR — issue PQ4, ASK)."
+  ],
+  "detected_patterns": [
+    {
+      "pattern": "resolve-ambiguous-commented-out-alternatives-before-merge",
+      "applied": false,
+      "note": "Leftover 'Reviewer: please verify this matches intent.' on keystone_types.go:154 materialized into both generated CRDs' field description. See issues_found[0]."
+    },
+    {
+      "pattern": "eliminate-duplicated-source-of-truth-when-both-sides-must-agree",
+      "applied": false,
+      "note": "Webhook declares Default* constants as shared SoT but reconciler uses literal 30 and 5. See architecture_findings[0] and issues_found[1]."
+    },
+    {
+      "pattern": "regenerate-auto-generated-files-after-api-type-changes",
+      "applied": true,
+      "note": "config/crd/bases/ and helm/keystone-operator/crds/ are byte-identical modulo the SOURCE header; zz_generated.deepcopy.go was regenerated for the new pointer fields and Strategy embed."
+    },
+    {
+      "pattern": "deep-copy-user-supplied-spec-before-embedding-in-reconciled-resource",
+      "applied": true,
+      "note": "deploymentStrategy() returns *keystone.Spec.Strategy.DeepCopy() when non-nil; regression test asserts CR immutability across reconciles."
+    },
+    {
+      "pattern": "defense-in-depth-crd-markers-plus-webhook-cross-field",
+      "applied": true,
+      "note": "CRD Minimum markers (10, 0, 1, 1) plus webhook cross-field checks (REQ-007 preStop < grace, REQ-008 harakiri ≤ drain window, REQ-012 keepAliveTimeout requires keepAlive, REQ-006 Recreate vs RollingUpdate)."
+    },
+    {
+      "pattern": "pointer-field-nil-default-for-upgrade-safety",
+      "applied": true,
+      "note": "All new optional fields are pointer types with no kubebuilder:default marker; DECISION comment explains why (REQ-001 forbids mutating pre-existing CRs on operator upgrade)."
+    },
+    {
+      "pattern": "envtest-sandbox-skip-guard",
+      "applied": true,
+      "note": "All new integration tests call testutil.SkipIfEnvTestUnavailable(t) so the suite passes in a sandbox without envtest assets."
+    },
+    {
+      "pattern": "gomega-assertions-in-new-tests",
+      "applied": true,
+      "note": "New webhook and reconcile tests use gomega.NewGomegaWithT with Expect(...).To(...) — consistent with the existing test style in this package."
+    },
+    {
+      "pattern": "chainsaw-zero-downtime-load-generator-with-diagnostic-catch-blocks",
+      "applied": true,
+      "note": "tests/e2e/keystone/rolling-update-zero-downtime/ asserts zero 5xx and zero connection resets during image-tag patch; catch blocks capture pod logs, events, deployment YAML, and load-generator output."
+    },
+    {
+      "pattern": "aggregate-validation-test-error-accumulation",
+      "applied": true,
+      "note": "Webhook tests demonstrate that REQ-007 and REQ-008 both fire when both are violated (no short-circuit); TestValidateCreate_RunsAllValidations in keystone_webhook_test.go was extended with the new validation paths."
+    }
+  ]
+}

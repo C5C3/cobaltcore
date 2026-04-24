@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR fixture for the rolling-update-zero-downtime E2E test (CC-0084).
+#
+# Intent: three replicas with default rolling-update strategy (operator-injected
+# maxUnavailable=0 / maxSurge=1) so that a subsequent spec.image.tag patch
+# produces a true surge-and-drain rollout — one extra pod is created before an
+# old pod terminates, and availableReplicas must never dip below spec.replicas.
+#
+# The graceful-termination tunables (terminationGracePeriodSeconds,
+# preStopSleepSeconds, uwsgi.harakiri, uwsgi.httpKeepAliveTimeout) are left at
+# their defaults. This test exercises the defaults end-to-end — operators
+# overriding them get coverage via unit tests in operators/keystone/internal/
+# controller/reconcile_deployment_test.go (CC-0084).
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-rolling-update
+  namespace: openstack
+spec:
+  replicas: 3
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_rolling_update
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne

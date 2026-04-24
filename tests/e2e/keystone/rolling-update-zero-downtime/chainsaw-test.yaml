@@ -1,0 +1,367 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for zero-downtime rolling update (CC-0084).
+#
+# Validates the full graceful-termination chain end-to-end during an image-tag
+# rolling update:
+#
+#   - Default RollingUpdate strategy (maxUnavailable=0, maxSurge=1) injected by
+#     the reconciler keeps capacity above the replica count throughout rollout.
+#   - preStop sleep (default 5 s) gives EndpointSlice removal time to propagate
+#     through kube-proxy before uWSGI receives SIGTERM.
+#   - uWSGI drains in-flight requests gracefully — clients observe zero 5xx
+#     and zero connection resets from the load generator.
+#
+# Two acceptance criteria are enforced via named steps:
+#
+#   keystone-rolling-update-zero-downtime — load generator records zero 5xx and
+#                                           zero connection resets over 60 s.
+#   keystone-rolling-update-availability  — Deployment.status.availableReplicas
+#                                           never drops below spec.replicas
+#                                           during the rollout.
+#
+# REQ-014 (CC-0084)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-rolling-update-zero-downtime
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+    exec: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR with replicas=3 (default strategy) ─────────
+  - name: apply-cr
+    try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert Keystone Ready before injecting load ──────────────────
+  - name: assert-ready
+    try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-rolling-update
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-rolling-update-api
+            namespace: openstack
+          spec:
+            replicas: 3
+          status:
+            # Steady-state checkpoint pre-rollout: exact equality is deterministic.
+            # Restores the CC-0066 exact-match pattern (CC-0084, review #2 W-003).
+            availableReplicas: 3
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -40 || true
+  # ── Step 3: Launch load-generator Job (60 s, ≥200 reqs against Service) ──
+  # The Job runs for 60 s independently of chainsaw's sequential step
+  # execution, so by the time Step 4 patches the image tag the load is
+  # already flowing and will continue through the entire rollout window.
+  - name: start-load-generator
+    cleanup:
+    - delete:
+        ref:
+          apiVersion: batch/v1
+          kind: Job
+          name: keystone-rolling-update-loadgen
+          namespace: openstack
+    try:
+    - script:
+        timeout: 60s
+        content: |
+          set -eu
+          kubectl apply -f - <<'EOF'
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: keystone-rolling-update-loadgen
+            namespace: openstack
+            labels:
+              app.kubernetes.io/name: keystone-rolling-update-loadgen
+              test.c5c3.io/feature: CC-0084
+          spec:
+            backoffLimit: 0
+            activeDeadlineSeconds: 180
+            ttlSecondsAfterFinished: 300
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/name: keystone-rolling-update-loadgen
+              spec:
+                restartPolicy: Never
+                containers:
+                - name: loadgen
+                  image: ghcr.io/c5c3/keystone:2025.2
+                  imagePullPolicy: IfNotPresent
+                  command: ["python3"]
+                  args:
+                  - "-c"
+                  - |
+                    # CC-0084: Steady HTTP load against the Keystone Service
+                    # during an image-tag rolling update. Records any 5xx or
+                    # connection-reset response as a failure.
+                    import sys, time, urllib.request, urllib.error
+                    TARGET = "http://keystone-rolling-update-api.openstack.svc:5000/v3"
+                    DURATION = 60
+                    INTERVAL = 0.25
+                    TIMEOUT = 3.0
+                    ok = 0
+                    fail_5xx = 0
+                    conn_reset = 0
+                    other_err = 0
+                    total = 0
+                    deadline = time.monotonic() + DURATION
+                    while time.monotonic() < deadline:
+                        total += 1
+                        try:
+                            resp = urllib.request.urlopen(TARGET, timeout=TIMEOUT)
+                            if resp.status >= 500:
+                                fail_5xx += 1
+                                print(f"FAIL: 5xx status={resp.status} iter={total}", flush=True)
+                            else:
+                                ok += 1
+                        except urllib.error.HTTPError as e:
+                            # Keystone /v3 returns 300 Multiple Choices — a
+                            # non-5xx HTTPError is a healthy response here.
+                            if e.code >= 500:
+                                fail_5xx += 1
+                                print(f"FAIL: 5xx status={e.code} iter={total}", flush=True)
+                            else:
+                                ok += 1
+                        except (ConnectionResetError, ConnectionRefusedError, ConnectionAbortedError, BrokenPipeError) as e:
+                            conn_reset += 1
+                            print(f"FAIL: conn_reset err={type(e).__name__}:{e} iter={total}", flush=True)
+                        except urllib.error.URLError as e:
+                            msg = str(e).lower()
+                            if any(tok in msg for tok in ("reset", "refused", "aborted", "broken pipe")):
+                                conn_reset += 1
+                                print(f"FAIL: conn_reset err={e} iter={total}", flush=True)
+                            else:
+                                other_err += 1
+                                print(f"WARN: url_error err={e} iter={total}", flush=True)
+                        except Exception as e:
+                            other_err += 1
+                            print(f"WARN: other err={type(e).__name__}:{e} iter={total}", flush=True)
+                        time.sleep(INTERVAL)
+                    print(
+                        f"RESULT: total={total} ok={ok} "
+                        f"fail_5xx={fail_5xx} conn_reset={conn_reset} "
+                        f"other_err={other_err}",
+                        flush=True,
+                    )
+                    # REQ-014: zero 5xx, zero connection resets, and at least
+                    # 200 requests completed (≈240 at 0.25 s interval).
+                    if fail_5xx != 0 or conn_reset != 0:
+                        sys.exit(1)
+                    if total < 200:
+                        print(f"FAIL: only {total} requests completed (< 200)", flush=True)
+                        sys.exit(2)
+                    sys.exit(0)
+          EOF
+          # Wait for the load-generator pod to reach Running before kicking off
+          # the rollout, so the full 60 s window spans the rollout (and not a
+          # pod-pull delay).
+          kubectl -n openstack wait --for=condition=Ready pod \
+            -l app.kubernetes.io/name=keystone-rolling-update-loadgen \
+            --timeout=45s
+  # ── Step 4: Patch image tag to trigger the rolling update ────────────────
+  - name: patch-image-tag
+    try:
+    - patch:
+        file: 01-patch-image.yaml
+  # ── Step 5 (keystone-rolling-update-availability): ───────────────────────
+  # Poll Deployment.status.availableReplicas every 2 s for 75 s and record the
+  # minimum. The default strategy (maxUnavailable=0, maxSurge=1) must keep
+  # availableReplicas >= spec.replicas at every sampling point.
+  #
+  # BUDGET NOTE (CC-0084): The 75 s sampling window is sized against the default
+  # terminationGracePeriodSeconds=30 s + default preStopSleepSeconds=5 s (see
+  # keystonev1alpha1.DefaultTerminationGracePeriodSeconds and
+  # DefaultPreStopSleepSeconds). In practice a surge-then-drain cycle for an
+  # idle Keystone pod completes well before the 30 s grace ceiling — empirically
+  # ~20–25 s per cycle — so three cycles (maxSurge=1 over 3 replicas) land in
+  # roughly 60–75 s. If either default is raised in a future change (or this
+  # test's CR overrides them), revisit this budget: a grace of 60 s pushes the
+  # per-cycle worst case to ~65 s, so three cycles would need ~195 s and this
+  # loop would become silently flaky unless the window is widened accordingly.
+  - name: keystone-rolling-update-availability
+    try:
+    - script:
+        timeout: 120s
+        content: |
+          set -eu
+          # Derive the expected replica count from the Deployment's
+          # .spec.replicas so the test remains valid if the CR changes
+          # replicas in the future. Precedent:
+          # tests/e2e-chaos/memcached-pod-kill/chainsaw-test.yaml:64,
+          # tests/e2e-chaos/operator-pod-kill/chainsaw-test.yaml:74
+          # (CC-0084, review #2 W-002).
+          EXPECTED_REPLICAS=$(kubectl -n openstack get deploy keystone-rolling-update-api \
+            -o jsonpath='{.spec.replicas}')
+          if [ -z "$EXPECTED_REPLICAS" ]; then
+            echo "FAIL: could not read .spec.replicas from deployment"
+            exit 1
+          fi
+          DEADLINE=$(( $(date +%s) + 75 ))
+          MIN=999
+          SAMPLES=0
+          while [ $(date +%s) -lt $DEADLINE ]; do
+            AVAIL=$(kubectl -n openstack get deploy keystone-rolling-update-api \
+              -o jsonpath='{.status.availableReplicas}' 2>/dev/null || echo 0)
+            AVAIL="${AVAIL:-0}"
+            UPDATED=$(kubectl -n openstack get deploy keystone-rolling-update-api \
+              -o jsonpath='{.status.updatedReplicas}' 2>/dev/null || echo 0)
+            UPDATED="${UPDATED:-0}"
+            SAMPLES=$((SAMPLES + 1))
+            if [ "$AVAIL" -lt "$MIN" ]; then
+              MIN=$AVAIL
+            fi
+            echo "t=$(date +%s) sample=$SAMPLES availableReplicas=$AVAIL updatedReplicas=$UPDATED min=$MIN"
+            if [ "$AVAIL" -lt "$EXPECTED_REPLICAS" ]; then
+              echo "FAIL: availableReplicas=$AVAIL dropped below spec.replicas=$EXPECTED_REPLICAS"
+              kubectl -n openstack get deploy keystone-rolling-update-api -o yaml || true
+              kubectl -n openstack get pods -l app.kubernetes.io/instance=keystone-rolling-update -o wide || true
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "RESULT: samples=$SAMPLES min_available_replicas=$MIN"
+          if [ "$MIN" -lt "$EXPECTED_REPLICAS" ]; then
+            echo "FAIL: observed min availableReplicas=$MIN < spec.replicas=$EXPECTED_REPLICAS"
+            exit 1
+          fi
+    catch:
+    - script:
+        content: |
+          echo "=== Deployment status ==="
+          kubectl -n $NAMESPACE get deploy keystone-rolling-update-api -o yaml 2>&1 || true
+          echo "=== Deployment pods ==="
+          kubectl -n $NAMESPACE get pods -l app.kubernetes.io/instance=keystone-rolling-update -o wide 2>&1 || true
+          echo "=== Events ==="
+          kubectl -n $NAMESPACE get events --sort-by='.lastTimestamp' 2>&1 | tail -60 || true
+  # ── Step 6 (keystone-rolling-update-zero-downtime): ──────────────────────
+  # Wait for the load-generator Job to finish, then assert zero 5xx and zero
+  # connection resets from its stdout.
+  - name: keystone-rolling-update-zero-downtime
+    try:
+    - script:
+        timeout: 120s
+        content: |
+          set -eu
+          kubectl -n openstack wait --for=condition=complete --timeout=90s \
+            job/keystone-rolling-update-loadgen
+          echo "=== Load generator logs ==="
+          LOGS=$(kubectl -n openstack logs job/keystone-rolling-update-loadgen --tail=-1)
+          echo "$LOGS"
+          # Extract RESULT line and verify counts.
+          RESULT_LINE=$(echo "$LOGS" | grep '^RESULT:' | tail -1)
+          if [ -z "$RESULT_LINE" ]; then
+            echo "FAIL: load generator did not print RESULT line"
+            exit 1
+          fi
+          echo "PARSED: $RESULT_LINE"
+          FAIL_5XX=$(echo "$RESULT_LINE" | sed -n 's/.*fail_5xx=\([0-9]*\).*/\1/p')
+          CONN_RESET=$(echo "$RESULT_LINE" | sed -n 's/.*conn_reset=\([0-9]*\).*/\1/p')
+          TOTAL=$(echo "$RESULT_LINE" | sed -n 's/.*total=\([0-9]*\).*/\1/p')
+          : "${FAIL_5XX:=x}"
+          : "${CONN_RESET:=x}"
+          : "${TOTAL:=0}"
+          if [ "$FAIL_5XX" != "0" ]; then
+            echo "FAIL: load generator recorded $FAIL_5XX 5xx responses"
+            exit 1
+          fi
+          if [ "$CONN_RESET" != "0" ]; then
+            echo "FAIL: load generator recorded $CONN_RESET connection resets"
+            exit 1
+          fi
+          if [ "$TOTAL" -lt 200 ]; then
+            echo "FAIL: load generator only completed $TOTAL requests (< 200)"
+            exit 1
+          fi
+          echo "OK: total=$TOTAL fail_5xx=0 conn_reset=0"
+    catch:
+    - script:
+        content: |
+          echo "=== Load generator Job ==="
+          kubectl -n $NAMESPACE get job keystone-rolling-update-loadgen -o yaml 2>&1 || true
+          echo "=== Load generator pods ==="
+          kubectl -n $NAMESPACE get pods -l app.kubernetes.io/name=keystone-rolling-update-loadgen -o wide 2>&1 || true
+          echo "=== Load generator logs ==="
+          kubectl -n $NAMESPACE logs job/keystone-rolling-update-loadgen --tail=-1 2>&1 || true
+          echo "=== Keystone pods ==="
+          kubectl -n $NAMESPACE get pods -l app.kubernetes.io/instance=keystone-rolling-update -o wide 2>&1 || true
+          echo "=== Keystone pod logs ==="
+          for pod in $(kubectl -n $NAMESPACE get pods -l app.kubernetes.io/instance=keystone-rolling-update -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl -n $NAMESPACE logs "$pod" --all-containers --tail=80 2>&1 || true
+            kubectl -n $NAMESPACE logs "$pod" --all-containers --tail=80 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl -n $NAMESPACE get events --sort-by='.lastTimestamp' 2>&1 | tail -40 || true
+  # ── Step 7: Assert rollout converged with new image and Ready restored ──
+  - name: assert-rollout-complete
+    try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-rolling-update-api
+            namespace: openstack
+          spec:
+            replicas: 3
+          status:
+            # Steady-state checkpoint post-rollout: exact equality is deterministic.
+            # Restores the CC-0066 exact-match pattern (CC-0084, review #2 W-003).
+            availableReplicas: 3
+            (updatedReplicas == replicas): true
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-rolling-update
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        content: |
+          IMAGE=$(kubectl -n $NAMESPACE get deploy keystone-rolling-update-api \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')
+          echo "Deployment image: $IMAGE"
+          echo "$IMAGE" | grep -q '2025.2-upgraded'

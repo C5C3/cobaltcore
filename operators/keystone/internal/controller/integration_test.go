@@ -3548,3 +3548,113 @@ func TestIntegration_IndexerRegistrationFailsManagerStartCleanly(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring(KeystoneSecretNameIndexKey),
 		"error message must mention the index key so manager-startup logs identify the conflict (CC-0087, REQ-001)")
 }
+
+// --- CC-0084: graceful pod termination / rolling update ---
+
+// TestIntegration_TerminationGracePeriodAppliedToDeployment verifies that user-
+// supplied spec.terminationGracePeriodSeconds and spec.preStopSleepSeconds are
+// propagated verbatim to the Deployment pod template and keystone-api
+// container's preStop hook (CC-0084, REQ-001).
+func TestIntegration_TerminationGracePeriodAppliedToDeployment(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-tgps-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	ks.Spec.TerminationGracePeriodSeconds = ptr.To(int64(60))
+	ks.Spec.PreStopSleepSeconds = ptr.To(int64(10))
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	deploy := &appsv1.Deployment{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-api"}, deploy)).
+		To(Succeed(), "Deployment test-keystone-api should exist")
+
+	g.Expect(deploy.Spec.Template.Spec.TerminationGracePeriodSeconds).NotTo(BeNil(),
+		"terminationGracePeriodSeconds must be set")
+	g.Expect(*deploy.Spec.Template.Spec.TerminationGracePeriodSeconds).To(Equal(int64(60)))
+
+	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone-api")
+	g.Expect(container).NotTo(BeNil(), "keystone-api container must exist")
+	g.Expect(container.Lifecycle).NotTo(BeNil(), "Lifecycle must be set")
+	g.Expect(container.Lifecycle.PreStop).NotTo(BeNil(), "PreStop hook must be set")
+	g.Expect(container.Lifecycle.PreStop.Exec).NotTo(BeNil(), "PreStop must use exec")
+	g.Expect(container.Lifecycle.PreStop.Exec.Command).To(Equal([]string{"/bin/sh", "-c", "sleep 10"}))
+}
+
+// TestIntegration_DefaultStrategyAppliedToDeployment verifies that when
+// spec.strategy is nil the reconciler applies the default RollingUpdate
+// strategy with MaxUnavailable=0 and MaxSurge=1 (CC-0084, REQ-005).
+func TestIntegration_DefaultStrategyAppliedToDeployment(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-strategy-default-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(ks.Spec.Strategy).To(BeNil(), "strategy must be left nil for default test")
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	deploy := &appsv1.Deployment{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-api"}, deploy)).
+		To(Succeed(), "Deployment test-keystone-api should exist")
+
+	g.Expect(deploy.Spec.Strategy.Type).To(Equal(appsv1.RollingUpdateDeploymentStrategyType))
+	g.Expect(deploy.Spec.Strategy.RollingUpdate).NotTo(BeNil(), "RollingUpdate must be set")
+	g.Expect(deploy.Spec.Strategy.RollingUpdate.MaxUnavailable).NotTo(BeNil())
+	g.Expect(*deploy.Spec.Strategy.RollingUpdate.MaxUnavailable).To(Equal(intstr.FromInt(0)))
+	g.Expect(deploy.Spec.Strategy.RollingUpdate.MaxSurge).NotTo(BeNil())
+	g.Expect(*deploy.Spec.Strategy.RollingUpdate.MaxSurge).To(Equal(intstr.FromInt(1)))
+}
+
+// TestIntegration_StrategyOverrideAppliedToDeployment verifies that a user-
+// supplied spec.strategy is propagated verbatim to the Deployment
+// (CC-0084, REQ-006).
+func TestIntegration_StrategyOverrideAppliedToDeployment(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-strategy-override-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	ks.Spec.Strategy = &appsv1.DeploymentStrategy{
+		Type: appsv1.RollingUpdateDeploymentStrategyType,
+		RollingUpdate: &appsv1.RollingUpdateDeployment{
+			MaxUnavailable: ptr.To(intstr.FromString("25%")),
+			MaxSurge:       ptr.To(intstr.FromString("25%")),
+		},
+	}
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	deploy := &appsv1.Deployment{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-api"}, deploy)).
+		To(Succeed(), "Deployment test-keystone-api should exist")
+
+	g.Expect(deploy.Spec.Strategy.Type).To(Equal(appsv1.RollingUpdateDeploymentStrategyType))
+	g.Expect(deploy.Spec.Strategy.RollingUpdate).NotTo(BeNil(), "RollingUpdate must be set")
+	g.Expect(deploy.Spec.Strategy.RollingUpdate.MaxUnavailable).NotTo(BeNil())
+	g.Expect(*deploy.Spec.Strategy.RollingUpdate.MaxUnavailable).To(Equal(intstr.FromString("25%")))
+	g.Expect(deploy.Spec.Strategy.RollingUpdate.MaxSurge).NotTo(BeNil())
+	g.Expect(*deploy.Spec.Strategy.RollingUpdate.MaxSurge).To(Equal(intstr.FromString("25%")))
+}

@@ -5,6 +5,7 @@
 package v1alpha1
 
 import (
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -135,6 +136,50 @@ type KeystoneSpec struct {
 	// +optional
 	UWSGI *UWSGISpec `json:"uwsgi,omitempty"`
 
+	// Note (CC-0084, internal design decision — kept out of the user-facing
+	// CRD description): Task 1.1 title mentions "default=30" but REQ-001's
+	// scenario explicitly requires "webhook Default() leaves the pointer nil
+	// so an upgrade does not mutate existing CRs". A +kubebuilder:default=30
+	// marker on a pointer field would cause the API server to materialize the
+	// value at admission, mutating pre-existing CRs on operator upgrade —
+	// exactly what REQ-001 forbids. The marker is therefore omitted and the
+	// effective "default 30" is applied by the reconciler (task 3.x) when the
+	// pointer is nil, mirroring the existing AutoscalingSpec.MinReplicas
+	// pattern. This comment group is separated from the field's godoc by a
+	// blank line so controller-gen excludes it from `kubectl explain` output
+	// (CC-0084, review #2 I-004).
+
+	// TerminationGracePeriodSeconds is the grace period (seconds) granted to
+	// Keystone API pods between SIGTERM and SIGKILL during rolling updates
+	// (CC-0084). Extend this to cover slow upstream token validation (LDAP/DB)
+	// so in-flight requests finish before the kubelet forcibly kills uWSGI.
+	// When nil, the reconciler omits the field from the pod template and the
+	// Kubernetes default of 30s applies. Must be at least 10s when set.
+	// +optional
+	// +kubebuilder:validation:Minimum=10
+	TerminationGracePeriodSeconds *int64 `json:"terminationGracePeriodSeconds,omitempty"`
+
+	// PreStopSleepSeconds is the sleep duration (seconds) of the preStop
+	// lifecycle hook, configured independently of the overall grace period
+	// (CC-0084). This covers the window between EndpointSlice removal and
+	// kube-proxy/ingress-controller propagation so new requests stop arriving
+	// before SIGTERM reaches uWSGI. When nil, the reconciler applies a default
+	// of 5s. Zero is permitted to disable the sleep. The cross-field rule
+	// preStopSleepSeconds < terminationGracePeriodSeconds is enforced by the
+	// validating webhook to guarantee a non-zero drain window.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	PreStopSleepSeconds *int64 `json:"preStopSleepSeconds,omitempty"`
+
+	// Strategy overrides the Deployment rollout strategy for the Keystone API
+	// Deployment (CC-0084). When nil, the reconciler applies RollingUpdate
+	// with MaxUnavailable=0 and MaxSurge=1 to guarantee surge-before-remove
+	// behavior — available capacity never dips below spec.replicas during an
+	// image-tag patch. Set this to customize maxSurge/maxUnavailable, or to
+	// switch the type to Recreate for site-specific rollout policies.
+	// +optional
+	Strategy *appsv1.DeploymentStrategy `json:"strategy,omitempty"`
+
 	// TopologySpreadConstraints describes how pods should be spread across
 	// topology domains (zones, nodes) to achieve high availability (CC-0075).
 	// When nil (unset), the operator injects two default constraints:
@@ -237,6 +282,30 @@ type UWSGISpec struct {
 	// When false, the flag is omitted from the command.
 	// +kubebuilder:default=true
 	HTTPKeepAlive bool `json:"httpKeepAlive,omitempty"`
+
+	// Harakiri caps the per-request worker lifetime (seconds) via the uWSGI
+	// --harakiri flag (CC-0084). A request blocked longer than this bound is
+	// killed so a single stuck LDAP/DB lookup cannot prevent other in-flight
+	// requests from completing cleanly before graceful shutdown ends. When
+	// nil, the --harakiri flag is omitted from the uWSGI command entirely
+	// (no hidden default is injected). The webhook additionally requires
+	// harakiri < terminationGracePeriodSeconds - preStopSleepSeconds so the
+	// shutdown envelope is consistent.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	Harakiri *int32 `json:"harakiri,omitempty"`
+
+	// HTTPKeepAliveTimeout bounds the idle timeout (seconds) of keep-alive
+	// connections via the uWSGI --http-keepalive-timeout flag (CC-0084).
+	// A bounded timeout forces clients to reconnect through the Service so
+	// they never reuse a socket to a removed pod. When nil, the flag is
+	// omitted from the uWSGI command. Zero is rejected to avoid the
+	// unbounded-timeout interpretation. A value at or below
+	// preStopSleepSeconds is recommended so idle sockets have closed before
+	// SIGTERM reaches uWSGI.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	HTTPKeepAliveTimeout *int32 `json:"httpKeepAliveTimeout,omitempty"`
 }
 
 // FernetSpec defines Fernet key rotation configuration.

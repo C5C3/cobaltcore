@@ -1,0 +1,39 @@
+{
+  "summary": "Review 3 addresses external feedback from gndrmnn (review 2): the comment in tests/e2e/keystone/rolling-update-zero-downtime/01-patch-image.yaml previously referenced `ci.yaml:611-614`, a brittle line-number pointer. The fix replaces it with a reference to the named step 'Load images into kind' in .github/workflows/ci.yaml. A new review-pattern doc captures the lesson (.planwerk/review_patterns/avoid-brittle-line-number-references-in-comments.md), and the external review JSON is marked ADDRESSED with a resolution note. Scope is strictly cosmetic/documentation — no functional, test, or API-surface changes.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (not applicable — comment-only change)", "checked": true},
+    {"item": "No test behavior modified by this changeset", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Comment now references a stable anchor (step name) instead of line numbers", "checked": true},
+    {"item": "Step name 'Load images into kind' verified to exist at .github/workflows/ci.yaml:607 and loads the 2025.2-upgraded tag", "checked": true},
+    {"item": "Change is minimal — no scope creep beyond the reviewer's request", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No security-sensitive surface touched", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "No architectural implications — doc/comment change only", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplication introduced", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Not applicable to comment-only change", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Not applicable to comment-only change", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "The step name 'Load images into kind' appears three times in .github/workflows/ci.yaml (lines 607, 716, 780). Only the line-607 occurrence loads the '2025.2-upgraded' tag. The comment's phrase 'alongside 2025.2, enabling the image-tag patch' implicitly disambiguates, but a slightly stronger anchor such as 'the E2E job's `Load images into kind` step' would be unambiguous without reintroducing line numbers. Optional polish, not a defect.",
+    "The resolution note inside .planwerk/reviews/CC-0084-github-review-by-gndrmnn-external-2.json (code_comments[0].resolution) itself references `lines 12-14` of the patched file. Because review JSONs are archival snapshots of a point-in-time fix, this is acceptable — but consumers who re-open the artifact later may find that reference stale. Consider phrasing such resolution notes by anchor (e.g. 'the DECISION block at the top of 01-patch-image.yaml') to model the new pattern consistently."
+  ],
+  "next_steps": [
+    "None — external review 2 is addressed. Merge gate depends on the outer feature review, not this cycle."
+  ],
+  "detected_patterns": []
+}

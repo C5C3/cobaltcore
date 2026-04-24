@@ -7,8 +7,10 @@ package v1alpha1
 import (
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 func TestGroupVersion(t *testing.T) {
@@ -81,6 +83,84 @@ func TestKeystoneSpecFields(t *testing.T) {
 	if spec.UWSGI != nil {
 		t.Errorf("expected nil UWSGI, got %v", spec.UWSGI)
 	}
+	if spec.TerminationGracePeriodSeconds != nil {
+		t.Errorf("expected nil TerminationGracePeriodSeconds, got %v", spec.TerminationGracePeriodSeconds)
+	}
+	if spec.PreStopSleepSeconds != nil {
+		t.Errorf("expected nil PreStopSleepSeconds, got %v", spec.PreStopSleepSeconds)
+	}
+	if spec.Strategy != nil {
+		t.Errorf("expected nil Strategy, got %v", spec.Strategy)
+	}
+}
+
+// TestKeystoneSpecTerminationGracePeriodSecondsField verifies that the optional
+// *int64 fields added for CC-0084 are settable and round-trip through a
+// DeepCopy unchanged. Backs REQ-001 and REQ-002 at the type-level — webhook
+// range enforcement is covered separately in keystone_webhook_test.go.
+func TestKeystoneSpecTerminationGracePeriodSecondsField(t *testing.T) {
+	grace := int64(120)
+	preStop := int64(15)
+	spec := KeystoneSpec{
+		TerminationGracePeriodSeconds: &grace,
+		PreStopSleepSeconds:           &preStop,
+	}
+
+	if spec.TerminationGracePeriodSeconds == nil || *spec.TerminationGracePeriodSeconds != 120 {
+		t.Errorf("expected TerminationGracePeriodSeconds=120, got %v", spec.TerminationGracePeriodSeconds)
+	}
+	if spec.PreStopSleepSeconds == nil || *spec.PreStopSleepSeconds != 15 {
+		t.Errorf("expected PreStopSleepSeconds=15, got %v", spec.PreStopSleepSeconds)
+	}
+
+	clone := spec.DeepCopy()
+	if clone.TerminationGracePeriodSeconds == spec.TerminationGracePeriodSeconds {
+		t.Errorf("DeepCopy did not allocate a new *int64 for TerminationGracePeriodSeconds")
+	}
+	if clone.PreStopSleepSeconds == spec.PreStopSleepSeconds {
+		t.Errorf("DeepCopy did not allocate a new *int64 for PreStopSleepSeconds")
+	}
+	if *clone.TerminationGracePeriodSeconds != 120 || *clone.PreStopSleepSeconds != 15 {
+		t.Errorf("DeepCopy altered values: grace=%d preStop=%d",
+			*clone.TerminationGracePeriodSeconds, *clone.PreStopSleepSeconds)
+	}
+}
+
+// TestKeystoneSpecStrategyField verifies the optional *appsv1.DeploymentStrategy
+// field added for CC-0084 round-trips through DeepCopy with independent memory
+// for the pointer and nested RollingUpdate block. Backs REQ-006 at the
+// type-level.
+func TestKeystoneSpecStrategyField(t *testing.T) {
+	maxUnavailable := intstr.FromInt(0)
+	maxSurge := intstr.FromInt(1)
+	spec := KeystoneSpec{
+		Strategy: &appsv1.DeploymentStrategy{
+			Type: appsv1.RollingUpdateDeploymentStrategyType,
+			RollingUpdate: &appsv1.RollingUpdateDeployment{
+				MaxUnavailable: &maxUnavailable,
+				MaxSurge:       &maxSurge,
+			},
+		},
+	}
+
+	if spec.Strategy == nil {
+		t.Fatal("expected non-nil Strategy")
+	}
+	if spec.Strategy.Type != appsv1.RollingUpdateDeploymentStrategyType {
+		t.Errorf("expected RollingUpdate type, got %q", spec.Strategy.Type)
+	}
+
+	clone := spec.DeepCopy()
+	if clone.Strategy == spec.Strategy {
+		t.Errorf("DeepCopy did not allocate a new *DeploymentStrategy")
+	}
+	if clone.Strategy.RollingUpdate == spec.Strategy.RollingUpdate {
+		t.Errorf("DeepCopy did not allocate a new *RollingUpdateDeployment")
+	}
+	if clone.Strategy.RollingUpdate.MaxUnavailable.IntVal != 0 ||
+		clone.Strategy.RollingUpdate.MaxSurge.IntVal != 1 {
+		t.Errorf("DeepCopy altered RollingUpdate values: %+v", clone.Strategy.RollingUpdate)
+	}
 }
 
 func TestUWSGISpecFields(t *testing.T) {
@@ -93,6 +173,43 @@ func TestUWSGISpecFields(t *testing.T) {
 	}
 	if uwsgi.HTTPKeepAlive {
 		t.Errorf("expected false for HTTPKeepAlive, got %v", uwsgi.HTTPKeepAlive)
+	}
+	if uwsgi.Harakiri != nil {
+		t.Errorf("expected nil Harakiri, got %v", uwsgi.Harakiri)
+	}
+	if uwsgi.HTTPKeepAliveTimeout != nil {
+		t.Errorf("expected nil HTTPKeepAliveTimeout, got %v", uwsgi.HTTPKeepAliveTimeout)
+	}
+}
+
+// TestUWSGISpecOptionalTimeoutFields verifies that CC-0084 adds Harakiri and
+// HTTPKeepAliveTimeout as settable optional *int32 pointers with DeepCopy
+// allocating independent storage. Backs REQ-003 and REQ-004 at the type-level.
+func TestUWSGISpecOptionalTimeoutFields(t *testing.T) {
+	harakiri := int32(20)
+	keepAlive := int32(5)
+	uwsgi := UWSGISpec{
+		Harakiri:             &harakiri,
+		HTTPKeepAliveTimeout: &keepAlive,
+	}
+
+	if uwsgi.Harakiri == nil || *uwsgi.Harakiri != 20 {
+		t.Errorf("expected Harakiri=20, got %v", uwsgi.Harakiri)
+	}
+	if uwsgi.HTTPKeepAliveTimeout == nil || *uwsgi.HTTPKeepAliveTimeout != 5 {
+		t.Errorf("expected HTTPKeepAliveTimeout=5, got %v", uwsgi.HTTPKeepAliveTimeout)
+	}
+
+	clone := uwsgi.DeepCopy()
+	if clone.Harakiri == uwsgi.Harakiri {
+		t.Errorf("DeepCopy did not allocate a new *int32 for Harakiri")
+	}
+	if clone.HTTPKeepAliveTimeout == uwsgi.HTTPKeepAliveTimeout {
+		t.Errorf("DeepCopy did not allocate a new *int32 for HTTPKeepAliveTimeout")
+	}
+	if *clone.Harakiri != 20 || *clone.HTTPKeepAliveTimeout != 5 {
+		t.Errorf("DeepCopy altered values: harakiri=%d keepAlive=%d",
+			*clone.Harakiri, *clone.HTTPKeepAliveTimeout)
 	}
 }
 

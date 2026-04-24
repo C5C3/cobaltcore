@@ -9,11 +9,13 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -1148,10 +1150,34 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 			corev1.ResourceCPU: resource.MustParse("500m"),
 		},
 	}
-	// REQ-001 (CC-0040): Break uWSGI — processes and threads below minimum.
+	// REQ-001 (CC-0040) + REQ-003/REQ-004/REQ-008/REQ-012 (CC-0084): Break uWSGI —
+	// processes/threads below minimum, harakiri exceeds the drain window, and
+	// httpKeepAliveTimeout is set while httpKeepAlive is false (which also
+	// breaches REQ-004's minimum=1 check since the value is 0). This ensures
+	// the aggregate test catches regressions in every new CC-0084 uWSGI hook,
+	// guarding against the CC-0075-style omission flagged in review #1.
+	breakingHarakiri := int32(50)
+	breakingKeepAliveTimeout := int32(0)
 	k.Spec.UWSGI = &UWSGISpec{
-		Processes: 0,
-		Threads:   0,
+		Processes:            0,
+		Threads:              0,
+		Harakiri:             &breakingHarakiri,
+		HTTPKeepAlive:        false,
+		HTTPKeepAliveTimeout: &breakingKeepAliveTimeout,
+	}
+	// REQ-001/REQ-002/REQ-007 (CC-0084): Break graceful-termination fields —
+	// preStopSleepSeconds (30) is not strictly less than terminationGracePeriodSeconds
+	// (10), so the cross-field rule fires with an error message mentioning both
+	// terminationGracePeriodSeconds and preStopSleepSeconds.
+	grace := int64(10)
+	preStop := int64(30)
+	k.Spec.TerminationGracePeriodSeconds = &grace
+	k.Spec.PreStopSleepSeconds = &preStop
+	// REQ-006 (CC-0084): Break deployment strategy — Recreate with a RollingUpdate
+	// block is rejected by the Deployment controller and must be caught early.
+	k.Spec.Strategy = &appsv1.DeploymentStrategy{
+		Type:          appsv1.RecreateDeploymentStrategyType,
+		RollingUpdate: &appsv1.RollingUpdateDeployment{},
 	}
 	// REQ-004 (CC-0075): Break PriorityClassName — nonexistent class.
 	pcn := "nonexistent-class"
@@ -1193,6 +1219,15 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g.Expect(errMsg).To(ContainSubstring("gateway"))
 	g.Expect(errMsg).To(ContainSubstring("hostname"))
 	g.Expect(errMsg).To(ContainSubstring("parentRef"))
+	// REQ-001/REQ-002/REQ-003/REQ-004/REQ-006/REQ-007/REQ-008/REQ-012 (CC-0084):
+	// Every new graceful-termination validation hook must participate in the
+	// aggregated error, matching the CC-0075-style regression guard for
+	// priorityClassName/topologySpreadConstraints above.
+	g.Expect(errMsg).To(ContainSubstring("terminationGracePeriodSeconds"))
+	g.Expect(errMsg).To(ContainSubstring("preStopSleepSeconds"))
+	g.Expect(errMsg).To(ContainSubstring("harakiri"))
+	g.Expect(errMsg).To(ContainSubstring("httpKeepAliveTimeout"))
+	g.Expect(errMsg).To(ContainSubstring("strategy"))
 }
 
 func TestValidateUpdate_RunsSameValidation(t *testing.T) {
@@ -1741,6 +1776,361 @@ func TestValidate_TopologySpreadConstraintMatchExpressionsRejected(t *testing.T)
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("matchExpressions"))
+}
+
+// --- Graceful termination: termination grace / preStop sleep range checks (Task 2.1, CC-0084) ---
+// REQ-001, REQ-002 (CC-0084)
+
+func TestValidate_TerminationGracePeriodBelowMinRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	grace := int64(9)
+	k.Spec.TerminationGracePeriodSeconds = &grace
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("terminationGracePeriodSeconds"))
+	g.Expect(err.Error()).To(ContainSubstring("at least 10"))
+}
+
+func TestValidate_TerminationGracePeriodAtMinAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	grace := int64(10)
+	k.Spec.TerminationGracePeriodSeconds = &grace
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_TerminationGracePeriodNilAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.TerminationGracePeriodSeconds = nil
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_PreStopSleepSecondsNegativeRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	preStop := int64(-1)
+	k.Spec.PreStopSleepSeconds = &preStop
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("preStopSleepSeconds"))
+}
+
+func TestValidate_PreStopSleepSecondsZeroAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	preStop := int64(0)
+	k.Spec.PreStopSleepSeconds = &preStop
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_PreStopSleepSecondsNilAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.PreStopSleepSeconds = nil
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// --- Graceful termination: preStop vs grace ordering (Task 2.2, CC-0084) ---
+// REQ-007 (CC-0084)
+
+func TestValidate_PreStopEqualsTerminationGraceRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	grace := int64(30)
+	preStop := int64(30)
+	k.Spec.TerminationGracePeriodSeconds = &grace
+	k.Spec.PreStopSleepSeconds = &preStop
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("preStopSleepSeconds"))
+	g.Expect(err.Error()).To(ContainSubstring("terminationGracePeriodSeconds"))
+}
+
+func TestValidate_PreStopExceedsTerminationGraceRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	grace := int64(30)
+	preStop := int64(45)
+	k.Spec.TerminationGracePeriodSeconds = &grace
+	k.Spec.PreStopSleepSeconds = &preStop
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("preStopSleepSeconds"))
+}
+
+func TestValidate_PreStopStrictlyLessAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	grace := int64(60)
+	preStop := int64(5)
+	k.Spec.TerminationGracePeriodSeconds = &grace
+	k.Spec.PreStopSleepSeconds = &preStop
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_PreStopAndGraceNilAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.TerminationGracePeriodSeconds = nil
+	k.Spec.PreStopSleepSeconds = nil
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// --- Graceful termination: UWSGI harakiri / keepAliveTimeout range checks (Task 2.3, CC-0084) ---
+// REQ-003, REQ-004 (CC-0084)
+
+func TestValidate_UWSGIHarakiriBelowMinRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	harakiri := int32(0)
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes: 2,
+		Threads:   1,
+		Harakiri:  &harakiri,
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("harakiri"))
+	g.Expect(err.Error()).To(ContainSubstring("at least 1"))
+}
+
+func TestValidate_UWSGIHarakiriAtMinAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	harakiri := int32(1)
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes: 2,
+		Threads:   1,
+		Harakiri:  &harakiri,
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_UWSGIKeepAliveTimeoutBelowMinRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	timeout := int32(0)
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes:            2,
+		Threads:              1,
+		HTTPKeepAlive:        true,
+		HTTPKeepAliveTimeout: &timeout,
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("httpKeepAliveTimeout"))
+	g.Expect(err.Error()).To(ContainSubstring("at least 1"))
+}
+
+func TestValidate_UWSGIKeepAliveTimeoutAtMinAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	timeout := int32(1)
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes:            2,
+		Threads:              1,
+		HTTPKeepAlive:        true,
+		HTTPKeepAliveTimeout: &timeout,
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// --- Graceful termination: harakiri within drain window (Task 2.4, CC-0084) ---
+// REQ-008 (CC-0084)
+
+func TestValidate_HarakiriAtDrainBoundaryRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	grace := int64(30)
+	preStop := int64(5)
+	// drain = 30 - 5 = 25; harakiri == drain must be rejected.
+	harakiri := int32(25)
+	k.Spec.TerminationGracePeriodSeconds = &grace
+	k.Spec.PreStopSleepSeconds = &preStop
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes: 2,
+		Threads:   1,
+		Harakiri:  &harakiri,
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("harakiri"))
+}
+
+func TestValidate_HarakiriAboveDrainRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	grace := int64(30)
+	preStop := int64(5)
+	harakiri := int32(40)
+	k.Spec.TerminationGracePeriodSeconds = &grace
+	k.Spec.PreStopSleepSeconds = &preStop
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes: 2,
+		Threads:   1,
+		Harakiri:  &harakiri,
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("harakiri"))
+}
+
+func TestValidate_HarakiriWithinDrainAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	// Defaults resolved: grace=30, preStop=5, drain=25; harakiri=20 < 25.
+	harakiri := int32(20)
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes: 2,
+		Threads:   1,
+		Harakiri:  &harakiri,
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// --- Graceful termination: keepAliveTimeout requires keepAlive (Task 2.5, CC-0084) ---
+// REQ-012 (CC-0084)
+
+func TestValidate_KeepAliveTimeoutWithoutKeepAliveRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	timeout := int32(5)
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes:            2,
+		Threads:              1,
+		HTTPKeepAlive:        false,
+		HTTPKeepAliveTimeout: &timeout,
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("httpKeepAliveTimeout"))
+	g.Expect(err.Error()).To(ContainSubstring("httpKeepAlive"))
+}
+
+func TestValidate_KeepAliveTimeoutWithKeepAliveAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	timeout := int32(5)
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes:            2,
+		Threads:              1,
+		HTTPKeepAlive:        true,
+		HTTPKeepAliveTimeout: &timeout,
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// --- Graceful termination: deployment strategy sanity (Task 2.6, CC-0084) ---
+// REQ-006 (CC-0084)
+
+func TestValidate_StrategyRecreateWithRollingUpdateBlockRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	maxSurge := intstr.FromInt(1)
+	maxUnavailable := intstr.FromInt(0)
+	k.Spec.Strategy = &appsv1.DeploymentStrategy{
+		Type: appsv1.RecreateDeploymentStrategyType,
+		RollingUpdate: &appsv1.RollingUpdateDeployment{
+			MaxSurge:       &maxSurge,
+			MaxUnavailable: &maxUnavailable,
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("strategy"))
+	g.Expect(err.Error()).To(ContainSubstring("rollingUpdate"))
+}
+
+func TestValidate_StrategyRecreateWithoutRollingUpdateAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Strategy = &appsv1.DeploymentStrategy{
+		Type: appsv1.RecreateDeploymentStrategyType,
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_StrategyRollingUpdateAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	maxSurge := intstr.FromInt(1)
+	maxUnavailable := intstr.FromInt(0)
+	k.Spec.Strategy = &appsv1.DeploymentStrategy{
+		Type: appsv1.RollingUpdateDeploymentStrategyType,
+		RollingUpdate: &appsv1.RollingUpdateDeployment{
+			MaxSurge:       &maxSurge,
+			MaxUnavailable: &maxUnavailable,
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_StrategyNilAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Strategy = nil
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
 }
 
 // --- Interface compliance (CC-0011) ---

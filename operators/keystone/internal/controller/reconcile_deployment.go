@@ -158,12 +158,13 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 			Selector: &metav1.LabelSelector{
 				MatchLabels: selector,
 			},
+			Strategy: deploymentStrategy(keystone),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
-					TerminationGracePeriodSeconds: ptr.To(int64(30)),
+					TerminationGracePeriodSeconds: ptr.To(terminationGracePeriodSeconds(keystone)),
 					TopologySpreadConstraints:     topologySpreadConstraints(keystone),
 					PriorityClassName:             priorityClassName(keystone),
 					Containers: []corev1.Container{{
@@ -209,7 +210,7 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 						Lifecycle: &corev1.Lifecycle{
 							PreStop: &corev1.LifecycleHandler{
 								Exec: &corev1.ExecAction{
-									Command: []string{"/bin/sh", "-c", "sleep 5"},
+									Command: preStopSleepCommand(keystone),
 								},
 							},
 						},
@@ -304,6 +305,15 @@ func buildPodDisruptionBudget(keystone *keystonev1alpha1.Keystone) *policyv1.Pod
 // httpKeepAlive=true) are used. Fixed flags (--http :5000, --wsgi-file,
 // --master, --lazy-apps, --need-app, --pyargv) are always included regardless
 // of configuration (CC-0040, REQ-004).
+//
+// Optional graceful-termination tuning (CC-0084): when UWSGISpec.Harakiri is
+// non-nil, "--harakiri <n>" is appended so a single stuck request cannot hold
+// a worker past the shutdown envelope (REQ-003). When HTTPKeepAliveTimeout is
+// non-nil AND httpKeepAlive is true, "--http-keepalive-timeout <n>" is
+// appended so idle keep-alive sockets close before SIGTERM (REQ-004). The
+// timeout flag is silently dropped when keep-alive is disabled — the flag has
+// no meaning without the parent feature, and the webhook rejects this
+// combination at admission (REQ-011).
 func uwsgiCommand(uwsgi *keystonev1alpha1.UWSGISpec) []string {
 	processes := int32(2)
 	threads := int32(1)
@@ -321,6 +331,9 @@ func uwsgiCommand(uwsgi *keystonev1alpha1.UWSGISpec) []string {
 	}
 	if httpKeepAlive {
 		cmd = append(cmd, "--http-keepalive")
+		if uwsgi != nil && uwsgi.HTTPKeepAliveTimeout != nil {
+			cmd = append(cmd, "--http-keepalive-timeout", strconv.Itoa(int(*uwsgi.HTTPKeepAliveTimeout)))
+		}
 	}
 	cmd = append(cmd,
 		"--wsgi-file", "/var/lib/openstack/bin/keystone-wsgi-public",
@@ -331,6 +344,9 @@ func uwsgiCommand(uwsgi *keystonev1alpha1.UWSGISpec) []string {
 		"--threads", strconv.Itoa(int(threads)),
 		"--pyargv=--config-dir=/etc/keystone/keystone.conf.d/",
 	)
+	if uwsgi != nil && uwsgi.Harakiri != nil {
+		cmd = append(cmd, "--harakiri", strconv.Itoa(int(*uwsgi.Harakiri)))
+	}
 	return cmd
 }
 
@@ -379,6 +395,56 @@ func priorityClassName(keystone *keystonev1alpha1.Keystone) string {
 		return *keystone.Spec.PriorityClassName
 	}
 	return ""
+}
+
+// terminationGracePeriodSeconds returns the PodSpec TerminationGracePeriodSeconds
+// value. When spec.TerminationGracePeriodSeconds is nil (existing CR, pre-CC-0084
+// upgrade), it falls back to keystonev1alpha1.DefaultTerminationGracePeriodSeconds,
+// the shared constant that the validating webhook also resolves against for
+// cross-field arithmetic. Routing both sides through the same constant prevents
+// silent drift (CC-0084, REQ-001).
+func terminationGracePeriodSeconds(keystone *keystonev1alpha1.Keystone) int64 {
+	if keystone.Spec.TerminationGracePeriodSeconds != nil {
+		return *keystone.Spec.TerminationGracePeriodSeconds
+	}
+	return keystonev1alpha1.DefaultTerminationGracePeriodSeconds
+}
+
+// preStopSleepCommand returns the preStop exec command. When
+// spec.PreStopSleepSeconds is nil, it falls back to
+// keystonev1alpha1.DefaultPreStopSleepSeconds, the shared constant that the
+// validating webhook also resolves against for cross-field arithmetic. Zero is
+// a permitted opt-out value and emits "sleep 0" verbatim. Routing both sides
+// through the same constant prevents silent drift (CC-0084, REQ-002, REQ-009,
+// REQ-010).
+func preStopSleepCommand(keystone *keystonev1alpha1.Keystone) []string {
+	seconds := keystonev1alpha1.DefaultPreStopSleepSeconds
+	if keystone.Spec.PreStopSleepSeconds != nil {
+		seconds = *keystone.Spec.PreStopSleepSeconds
+	}
+	return []string{"/bin/sh", "-c", fmt.Sprintf("sleep %d", seconds)}
+}
+
+// deploymentStrategy returns the Deployment rollout strategy. When
+// spec.Strategy is non-nil, it is returned verbatim (a deep copy, so callers
+// cannot mutate the CR). Otherwise, a RollingUpdate strategy with
+// MaxUnavailable=0 and MaxSurge=1 is synthesized so available capacity never
+// drops below spec.replicas during a rolling image-tag patch — the default
+// surge-before-remove behavior that guards Keystone's rolling-update SLO
+// (CC-0084, REQ-005, REQ-006).
+func deploymentStrategy(keystone *keystonev1alpha1.Keystone) appsv1.DeploymentStrategy {
+	if keystone.Spec.Strategy != nil {
+		return *keystone.Spec.Strategy.DeepCopy()
+	}
+	maxUnavailable := intstr.FromInt32(0)
+	maxSurge := intstr.FromInt32(1)
+	return appsv1.DeploymentStrategy{
+		Type: appsv1.RollingUpdateDeploymentStrategyType,
+		RollingUpdate: &appsv1.RollingUpdateDeployment{
+			MaxUnavailable: &maxUnavailable,
+			MaxSurge:       &maxSurge,
+		},
+	}
 }
 
 func buildKeystoneService(keystone *keystonev1alpha1.Keystone) *corev1.Service {

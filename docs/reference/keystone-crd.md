@@ -1,7 +1,7 @@
 ---
 title: Keystone CRD API Reference
 quadrant: operator
-feature: CC-0011, CC-0012, CC-0013, CC-0016, CC-0036, CC-0038, CC-0039, CC-0040, CC-0042, CC-0056, CC-0057, CC-0065, CC-0075
+feature: CC-0011, CC-0012, CC-0013, CC-0016, CC-0036, CC-0038, CC-0039, CC-0040, CC-0042, CC-0056, CC-0057, CC-0065, CC-0075, CC-0084
 ---
 
 # Keystone CRD API Reference
@@ -154,6 +154,9 @@ status:
 | `uwsgi` | [`*UWSGISpec`](#uwsgispec) | No | `nil` | uWSGI application server parameters. When set, the operator uses these values for the Deployment container command. When `nil`, hardcoded defaults (processes=2, threads=1, httpKeepAlive=true) are used in the reconciler (CC-0040). |
 | `topologySpreadConstraints` | [`[]corev1.TopologySpreadConstraint`](https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/) | No | See [below](#topologyspreadconstraints) | Scheduler hints for spreading pods across zones and nodes. `nil` injects two defaults (zone + hostname, MaxSkew=1, `ScheduleAnyway`); a non-nil value (including `[]`) is used verbatim (CC-0075). |
 | `priorityClassName` | `*string` | No | `nil` | PriorityClass attached to the Keystone API pod spec. When set, the webhook verifies the class exists; when unset, no priority class is configured (CC-0075). |
+| `terminationGracePeriodSeconds` | `*int64` | No | `nil` | Grace period (seconds) granted to Keystone API pods between SIGTERM and SIGKILL during rolling updates. When `nil`, the reconciler applies `30` (the CRD schema emits no `default:` so pre-existing CRs are not mutated on operator upgrade). Minimum: `10`. Must be strictly greater than `preStopSleepSeconds`. Drives the PodSpec `terminationGracePeriodSeconds`. See [Graceful-termination fields](#graceful-termination-fields-cc-0084) and the HA rollout sequence in `architecture/docs/04-architecture/04-high-availability.md` (CC-0084). |
+| `preStopSleepSeconds` | `*int64` | No | `nil` | Sleep duration (seconds) of the preStop lifecycle hook, covering the window between EndpointSlice removal and kube-proxy/ingress propagation. When `nil`, the reconciler applies `5` (the CRD schema emits no `default:` so pre-existing CRs are not mutated on operator upgrade). Minimum: `0`. Must be strictly less than `terminationGracePeriodSeconds`. See [Graceful-termination fields](#graceful-termination-fields-cc-0084) (CC-0084). |
+| `strategy` | [`*appsv1.DeploymentStrategy`](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/deployment-v1/#DeploymentSpec) | No | `RollingUpdate(maxSurge=1, maxUnavailable=0)` | Overrides the Deployment rollout strategy. When `nil`, the reconciler injects `RollingUpdate` with `maxUnavailable=0` and `maxSurge=1` so available capacity never drops below `spec.replicas` during an image-tag patch. Set to customize surge/unavailable counts or switch to `Recreate` (CC-0084). |
 | `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for additional configuration. |
 
 ### CEL Validation Rules
@@ -178,6 +181,10 @@ webhooks are invoked:
 | `spec.autoscaling.targetMemoryUtilization` | Range: 1–100 | — |
 | `spec.uwsgi.processes` | Minimum: 1 | — |
 | `spec.uwsgi.threads` | Minimum: 1 | — |
+| `spec.uwsgi.harakiri` | Minimum: 1 | — (CC-0084) |
+| `spec.uwsgi.httpKeepAliveTimeout` | Minimum: 1 | — (CC-0084) |
+| `spec.terminationGracePeriodSeconds` | Minimum: 10 | — (CC-0084) |
+| `spec.preStopSleepSeconds` | Minimum: 0 | — (CC-0084) |
 | `spec.gateway.hostname` | MinLength: 1 | (empty string rejected by API server) |
 | `spec.gateway.parentRef.name` | MinLength: 1 | (empty string rejected by API server) |
 
@@ -261,6 +268,8 @@ from the spec.
 | `processes` | `int32` | No | `2` | Number of uWSGI worker processes. Minimum: 1. Maps to `--processes` in the container command. |
 | `threads` | `int32` | No | `1` | Number of threads per uWSGI worker process. Minimum: 1. Maps to `--threads` in the container command. |
 | `httpKeepAlive` | `bool` | No | `true` | Enables the `--http-keepalive` flag on the uWSGI process. When `false`, the flag is omitted. See [HTTPKeepAlive defaulting](#httpkeepalive-defaulting-caveat) for the zero-value caveat. |
+| `harakiri` | `*int32` | No | `nil` (flag omitted) | Caps the per-request worker lifetime (seconds) via `--harakiri`. Minimum: `1`. The webhook additionally enforces `harakiri < terminationGracePeriodSeconds − preStopSleepSeconds` so the worst-case per-request kill fits inside the shutdown drain window. See the HA rollout sequence in `architecture/docs/04-architecture/04-high-availability.md` (CC-0084). |
+| `httpKeepAliveTimeout` | `*int32` | No | `nil` (flag omitted) | Idle timeout (seconds) for keep-alive connections via `--http-keepalive-timeout`. Minimum: `1`. Emitted only when `httpKeepAlive=true` (the webhook rejects a non-nil timeout combined with `httpKeepAlive=false`). Recommended to set `≤ preStopSleepSeconds` so idle sockets close before SIGTERM reaches uWSGI. See the HA rollout sequence in `architecture/docs/04-architecture/04-high-availability.md` (CC-0084). |
 
 ### Deployment Command Mapping
 
@@ -322,6 +331,101 @@ spec:
     processes: 4
     threads: 4
     httpKeepAlive: false
+```
+
+---
+
+## Graceful-termination fields (CC-0084)
+
+Five CR fields control the shutdown envelope applied during Keystone rolling
+updates — `spec.terminationGracePeriodSeconds`, `spec.preStopSleepSeconds`,
+`spec.strategy`, `spec.uwsgi.harakiri`, and `spec.uwsgi.httpKeepAliveTimeout`.
+Each field is listed in its owning section (top-level `KeystoneSpec` or
+`UWSGISpec`); this section consolidates their semantics, interaction rules,
+and defaulting behavior.
+
+For the rollout sequence diagram and tunable-selection guidance, see
+`architecture/docs/04-architecture/04-high-availability.md` (section
+"Keystone Rolling Update (CC-0084)").
+
+### Field Summary
+
+| Field                                     | Type                              | Default                                      | Minimum | Effect                                                                                                                             |
+| ----------------------------------------- | --------------------------------- | -------------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `spec.terminationGracePeriodSeconds`      | `*int64`                          | `30`                                         | `10`    | PodSpec `terminationGracePeriodSeconds` — total envelope between SIGTERM and SIGKILL.                                              |
+| `spec.preStopSleepSeconds`                | `*int64`                          | `5`                                          | `0`     | Sleep duration of the preStop hook (`/bin/sh -c 'sleep <n>'`). Covers the EndpointSlice / kube-proxy propagation window.           |
+| `spec.strategy`                           | `*appsv1.DeploymentStrategy`      | `RollingUpdate(maxSurge=1, maxUnavailable=0)` | —       | Deployment rollout strategy. Default guarantees surge-before-remove so capacity never dips below `spec.replicas`.                  |
+| `spec.uwsgi.harakiri`                     | `*int32`                          | unset (flag omitted)                         | `1`     | Per-request worker kill bound (`--harakiri <n>`). Prevents a single stuck request from holding a worker past the shutdown envelope. |
+| `spec.uwsgi.httpKeepAliveTimeout`         | `*int32`                          | unset (flag omitted)                         | `1`     | Idle keep-alive socket timeout (`--http-keepalive-timeout <n>`). Only emitted when `httpKeepAlive=true`.                           |
+
+### Interaction Rules Enforced by the Webhook (CC-0084)
+
+The validating webhook enforces the following cross-field invariants so that the
+shutdown envelope is always internally consistent. Violations are returned as
+`field.Invalid` errors.
+
+| Rule                                                                                                    | REQ           |
+| ------------------------------------------------------------------------------------------------------- | ------------- |
+| `preStopSleepSeconds < terminationGracePeriodSeconds` (with `nil` pointers resolved to defaults 5 / 30) | REQ-007       |
+| `harakiri < terminationGracePeriodSeconds − preStopSleepSeconds` (only when `harakiri` is set)          | REQ-008       |
+| `httpKeepAliveTimeout` requires `httpKeepAlive=true`                                                    | REQ-012       |
+| `strategy.type=Recreate` must not carry a `strategy.rollingUpdate` block                                | REQ-006       |
+
+### Operator Guidance (not webhook-enforced)
+
+- **`httpKeepAliveTimeout ≤ preStopSleepSeconds`** — when the keep-alive
+  timeout exceeds the preStop sleep, a client may still hold a warm
+  keep-alive socket to the Pod when SIGTERM fires, returning a connection
+  reset on the client's next request. Tune `httpKeepAliveTimeout` at or below
+  `preStopSleepSeconds` to close idle sockets before the kubelet signals
+  uWSGI and preserve the zero-reset SLO. The webhook does not enforce this
+  because slow clients may legitimately need a longer keep-alive window at
+  the cost of occasional resets on rollout.
+
+### Reconciler Fallbacks
+
+The reconciler applies internal defaults when the CR field is `nil` so
+pre-CC-0084 CRs continue to reconcile without the fields set:
+
+| Field                                | Fallback when `nil`                                         |
+| ------------------------------------ | ----------------------------------------------------------- |
+| `spec.terminationGracePeriodSeconds` | PodSpec receives `30`                                       |
+| `spec.preStopSleepSeconds`           | preStop command is `sleep 5`                                |
+| `spec.strategy`                      | `RollingUpdate` with `maxUnavailable=0`, `maxSurge=1`       |
+| `spec.uwsgi.harakiri`                | `--harakiri` flag is omitted                                |
+| `spec.uwsgi.httpKeepAliveTimeout`    | `--http-keepalive-timeout` flag is omitted                  |
+
+These fallbacks live in `internal/controller/reconcile_deployment.go`
+(`terminationGracePeriodSeconds`, `preStopSleepCommand`, `deploymentStrategy`,
+`uwsgiCommand`) and are the single source of truth for the no-op upgrade path.
+
+### Example
+
+```yaml
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone
+  namespace: openstack
+spec:
+  replicas: 3
+  image:
+    repository: c5c3/keystone
+    tag: "2025.1"
+  # ... other required fields ...
+  terminationGracePeriodSeconds: 60
+  preStopSleepSeconds: 10
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  uwsgi:
+    processes: 4
+    threads: 4
+    httpKeepAlive: true
+    httpKeepAliveTimeout: 10
+    harakiri: 45
 ```
 
 ---
@@ -918,6 +1022,14 @@ single `apierrors.NewInvalid` error. It does **not** short-circuit on the first 
 | NetworkPolicy ingress required | `spec.networkPolicy.ingress` | `field.Required` | `networkPolicy` is set but `ingress` is empty. Defense-in-depth alongside the CEL XValidation rule (CC-0039). |
 | uWSGI processes minimum | `spec.uwsgi.processes` | `field.Invalid` | `processes < 1` when `spec.uwsgi` is non-nil. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker (CC-0040). |
 | uWSGI threads minimum | `spec.uwsgi.threads` | `field.Invalid` | `threads < 1` when `spec.uwsgi` is non-nil. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker (CC-0040). |
+| uWSGI harakiri minimum | `spec.uwsgi.harakiri` | `field.Invalid` | `harakiri < 1` when set. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker (CC-0084). |
+| uWSGI keep-alive timeout minimum | `spec.uwsgi.httpKeepAliveTimeout` | `field.Invalid` | `httpKeepAliveTimeout < 1` when set. A zero value is rejected because uWSGI interprets it as unbounded, defeating the graceful-termination contract (CC-0084). |
+| uWSGI keep-alive timeout without keep-alive | `spec.uwsgi.httpKeepAliveTimeout` | `field.Invalid` | `httpKeepAliveTimeout` is set while `httpKeepAlive=false`. The `--http-keepalive-timeout` flag is only emitted when keep-alive is enabled, so the combination is rejected to avoid silently dropping user intent (CC-0084). |
+| TerminationGracePeriodSeconds minimum | `spec.terminationGracePeriodSeconds` | `field.Invalid` | `terminationGracePeriodSeconds < 10` when set. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=10` marker (CC-0084). |
+| PreStopSleepSeconds minimum | `spec.preStopSleepSeconds` | `field.Invalid` | `preStopSleepSeconds < 0` when set. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=0` marker (CC-0084). |
+| PreStopSleep ≥ grace period | `spec.preStopSleepSeconds` | `field.Invalid` | Resolved `preStopSleepSeconds >= terminationGracePeriodSeconds` (nil pointers resolve to defaults 5/30). Guarantees a non-zero drain window between the end of the preStop sleep and SIGKILL (CC-0084). |
+| Harakiri ≥ drain window | `spec.uwsgi.harakiri` | `field.Invalid` | `harakiri >= terminationGracePeriodSeconds − preStopSleepSeconds` (nil pointers resolve to defaults). Guarantees the per-request kill fits inside the shutdown envelope (CC-0084). |
+| Recreate strategy with RollingUpdate | `spec.strategy.rollingUpdate` | `field.Invalid` | `strategy.type = Recreate` combined with a non-nil `strategy.rollingUpdate` block. The Deployment controller would reject the object at apply time; the webhook catches the misconfiguration up-front (CC-0084). |
 | Resource request exceeds limit | `spec.resources.requests.<resource>` | `field.Invalid` | A resource request exceeds its corresponding limit (e.g., CPU request 1000m > limit 500m). Checked per resource type when both requests and limits are set (CC-0042). |
 | Trust flush schedule required | `spec.trustFlush.schedule` | `field.Required` | `trustFlush` is set but `schedule` is empty. Defense-in-depth — the `+kubebuilder:default` marker normally prevents this, but bypass paths (e.g., `kubectl patch`) may produce an empty string (CC-0057). |
 | Trust flush cron expression | `spec.trustFlush.schedule` | `field.Invalid` | `cron.ParseStandard()` fails on `trustFlush.schedule`. Error message includes the parse failure details (CC-0057). |

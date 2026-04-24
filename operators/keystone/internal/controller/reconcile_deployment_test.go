@@ -1199,3 +1199,368 @@ func indexOf(slice []string, s string) int {
 	}
 	return -1
 }
+
+// Feature: CC-0084
+
+// TestBuildKeystoneDeployment_TerminationGracePeriodDefault verifies that when
+// spec.TerminationGracePeriodSeconds is nil, the reconciler falls back to the
+// shared DefaultTerminationGracePeriodSeconds constant — the same value the
+// validating webhook resolves nil against for cross-field arithmetic. Pinning
+// both sides to the shared constant guarantees the reconciler and webhook
+// cannot silently drift on REQ-007's drain-window invariant (CC-0084, REQ-001).
+func TestBuildKeystoneDeployment_TerminationGracePeriodDefault(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+	ks.Spec.TerminationGracePeriodSeconds = nil
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	g.Expect(deploy.Spec.Template.Spec.TerminationGracePeriodSeconds).NotTo(BeNil())
+	g.Expect(*deploy.Spec.Template.Spec.TerminationGracePeriodSeconds).
+		To(Equal(keystonev1alpha1.DefaultTerminationGracePeriodSeconds))
+}
+
+// TestBuildKeystoneDeployment_TerminationGracePeriodCustom verifies that a set
+// spec.TerminationGracePeriodSeconds propagates verbatim to the PodSpec
+// (CC-0084, REQ-001).
+func TestBuildKeystoneDeployment_TerminationGracePeriodCustom(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+	custom := int64(90)
+	ks.Spec.TerminationGracePeriodSeconds = &custom
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	g.Expect(deploy.Spec.Template.Spec.TerminationGracePeriodSeconds).NotTo(BeNil())
+	g.Expect(*deploy.Spec.Template.Spec.TerminationGracePeriodSeconds).To(Equal(int64(90)))
+}
+
+// TestBuildKeystoneDeployment_PreStopSleepDefault verifies that when
+// spec.PreStopSleepSeconds is nil the reconciler falls back to the shared
+// DefaultPreStopSleepSeconds constant — the same value the validating webhook
+// resolves nil against for cross-field arithmetic. Pinning both sides to the
+// shared constant guarantees the reconciler and webhook cannot silently drift
+// on REQ-007's drain-window invariant (CC-0084, REQ-002, REQ-009).
+func TestBuildKeystoneDeployment_PreStopSleepDefault(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+	ks.Spec.PreStopSleepSeconds = nil
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone-api")
+	g.Expect(container).NotTo(BeNil())
+	g.Expect(container.Lifecycle).NotTo(BeNil())
+	g.Expect(container.Lifecycle.PreStop).NotTo(BeNil())
+	g.Expect(container.Lifecycle.PreStop.Exec).NotTo(BeNil())
+	g.Expect(container.Lifecycle.PreStop.Exec.Command).To(Equal(
+		[]string{"/bin/sh", "-c", fmt.Sprintf("sleep %d", keystonev1alpha1.DefaultPreStopSleepSeconds)},
+	))
+}
+
+// TestBuildKeystoneDeployment_PreStopSleepCustom verifies that a set
+// spec.PreStopSleepSeconds propagates into the preStop exec command as
+// "sleep <n>" (CC-0084, REQ-002, REQ-010).
+func TestBuildKeystoneDeployment_PreStopSleepCustom(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+	custom := int64(12)
+	ks.Spec.PreStopSleepSeconds = &custom
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone-api")
+	g.Expect(container).NotTo(BeNil())
+	g.Expect(container.Lifecycle.PreStop.Exec.Command).To(Equal([]string{"/bin/sh", "-c", "sleep 12"}))
+}
+
+// TestBuildKeystoneDeployment_PreStopSleepZero verifies that setting
+// spec.PreStopSleepSeconds=0 emits "sleep 0" rather than falling back to the
+// default — zero is a permitted opt-out value (CC-0084, REQ-002, REQ-010).
+func TestBuildKeystoneDeployment_PreStopSleepZero(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+	zero := int64(0)
+	ks.Spec.PreStopSleepSeconds = &zero
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone-api")
+	g.Expect(container).NotTo(BeNil())
+	g.Expect(container.Lifecycle.PreStop.Exec.Command).To(Equal([]string{"/bin/sh", "-c", "sleep 0"}))
+}
+
+// TestReconcileAndWebhookDefaultsAgree pins the reconciler's nil-default output
+// for terminationGracePeriodSeconds and preStopSleepSeconds to the shared
+// keystonev1alpha1.Default* constants that the validating webhook uses for
+// cross-field arithmetic. If a future refactor re-introduces a literal on
+// either side, this test fails — protecting REQ-007's drain-window invariant
+// (preStopSleep < terminationGracePeriod) from silent drift (CC-0084, REQ-001,
+// REQ-002, REQ-007).
+func TestReconcileAndWebhookDefaultsAgree(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+	ks.Spec.TerminationGracePeriodSeconds = nil
+	ks.Spec.PreStopSleepSeconds = nil
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	g.Expect(deploy.Spec.Template.Spec.TerminationGracePeriodSeconds).NotTo(BeNil())
+	g.Expect(*deploy.Spec.Template.Spec.TerminationGracePeriodSeconds).
+		To(Equal(keystonev1alpha1.DefaultTerminationGracePeriodSeconds),
+			"reconciler nil-default for TerminationGracePeriodSeconds must equal the shared webhook constant")
+
+	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone-api")
+	g.Expect(container).NotTo(BeNil())
+	g.Expect(container.Lifecycle).NotTo(BeNil())
+	g.Expect(container.Lifecycle.PreStop).NotTo(BeNil())
+	g.Expect(container.Lifecycle.PreStop.Exec).NotTo(BeNil())
+	g.Expect(container.Lifecycle.PreStop.Exec.Command).To(Equal(
+		[]string{"/bin/sh", "-c", fmt.Sprintf("sleep %d", keystonev1alpha1.DefaultPreStopSleepSeconds)},
+	), "reconciler nil-default for PreStopSleepSeconds must equal the shared webhook constant")
+
+	g.Expect(keystonev1alpha1.DefaultPreStopSleepSeconds).
+		To(BeNumerically("<", keystonev1alpha1.DefaultTerminationGracePeriodSeconds),
+			"shared defaults must satisfy the REQ-007 invariant preStopSleep < terminationGracePeriod")
+}
+
+// TestUwsgiCommand_HarakiriSet verifies that a non-nil UWSGISpec.Harakiri
+// appends "--harakiri <n>" to the command (CC-0084, REQ-003).
+func TestUwsgiCommand_HarakiriSet(t *testing.T) {
+	g := NewGomegaWithT(t)
+	harakiri := int32(25)
+
+	cmd := uwsgiCommand(&keystonev1alpha1.UWSGISpec{
+		Processes:     2,
+		Threads:       1,
+		HTTPKeepAlive: true,
+		Harakiri:      &harakiri,
+	})
+
+	idx := indexOf(cmd, "--harakiri")
+	g.Expect(idx).NotTo(Equal(-1))
+	g.Expect(cmd[idx+1]).To(Equal("25"))
+}
+
+// TestUwsgiCommand_HarakiriNilOmitted verifies that when UWSGISpec.Harakiri
+// is nil, the --harakiri flag is not emitted — the field is an explicit opt-in
+// with no hidden default (CC-0084, REQ-003).
+func TestUwsgiCommand_HarakiriNilOmitted(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cmd := uwsgiCommand(&keystonev1alpha1.UWSGISpec{
+		Processes:     2,
+		Threads:       1,
+		HTTPKeepAlive: true,
+	})
+
+	g.Expect(cmd).NotTo(ContainElement("--harakiri"))
+}
+
+// TestUwsgiCommand_KeepAliveTimeoutSet verifies that a non-nil
+// UWSGISpec.HTTPKeepAliveTimeout combined with HTTPKeepAlive=true appends
+// "--http-keepalive-timeout <n>" to the command (CC-0084, REQ-004).
+func TestUwsgiCommand_KeepAliveTimeoutSet(t *testing.T) {
+	g := NewGomegaWithT(t)
+	timeout := int32(4)
+
+	cmd := uwsgiCommand(&keystonev1alpha1.UWSGISpec{
+		Processes:            2,
+		Threads:              1,
+		HTTPKeepAlive:        true,
+		HTTPKeepAliveTimeout: &timeout,
+	})
+
+	idx := indexOf(cmd, "--http-keepalive-timeout")
+	g.Expect(idx).NotTo(Equal(-1))
+	g.Expect(cmd[idx+1]).To(Equal("4"))
+}
+
+// TestUwsgiCommand_KeepAliveTimeoutNilOmitted verifies that when
+// UWSGISpec.HTTPKeepAliveTimeout is nil, the flag is not emitted (CC-0084, REQ-004).
+func TestUwsgiCommand_KeepAliveTimeoutNilOmitted(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cmd := uwsgiCommand(&keystonev1alpha1.UWSGISpec{
+		Processes:     2,
+		Threads:       1,
+		HTTPKeepAlive: true,
+	})
+
+	g.Expect(cmd).NotTo(ContainElement("--http-keepalive-timeout"))
+}
+
+// TestUwsgiCommand_KeepAliveTimeoutIgnoredWhenKeepAliveDisabled verifies that
+// HTTPKeepAliveTimeout is silently ignored when HTTPKeepAlive=false — the flag
+// is meaningless without the parent feature, and the webhook forbids this
+// combination, so the command builder just omits it defensively (CC-0084, REQ-011).
+func TestUwsgiCommand_KeepAliveTimeoutIgnoredWhenKeepAliveDisabled(t *testing.T) {
+	g := NewGomegaWithT(t)
+	timeout := int32(4)
+
+	cmd := uwsgiCommand(&keystonev1alpha1.UWSGISpec{
+		Processes:            2,
+		Threads:              1,
+		HTTPKeepAlive:        false,
+		HTTPKeepAliveTimeout: &timeout,
+	})
+
+	g.Expect(cmd).NotTo(ContainElement("--http-keepalive"))
+	g.Expect(cmd).NotTo(ContainElement("--http-keepalive-timeout"))
+}
+
+// TestUwsgiCommand_FlagOrderDeterministic verifies that the command ordering
+// is deterministic for the same input, so the pod template hash is stable
+// across reconciles (CC-0084, REQ-003, REQ-004).
+func TestUwsgiCommand_FlagOrderDeterministic(t *testing.T) {
+	g := NewGomegaWithT(t)
+	harakiri := int32(25)
+	timeout := int32(4)
+	spec := &keystonev1alpha1.UWSGISpec{
+		Processes:            2,
+		Threads:              1,
+		HTTPKeepAlive:        true,
+		Harakiri:             &harakiri,
+		HTTPKeepAliveTimeout: &timeout,
+	}
+
+	first := uwsgiCommand(spec)
+	second := uwsgiCommand(spec)
+
+	g.Expect(first).To(Equal(second))
+}
+
+// TestBuildKeystoneDeployment_DefaultRollingUpdateStrategy verifies that when
+// spec.Strategy is nil, the reconciler injects a RollingUpdate strategy with
+// MaxUnavailable=0 and MaxSurge=1 so available capacity never dips below
+// spec.replicas during an image-tag patch (CC-0084, REQ-005).
+func TestBuildKeystoneDeployment_DefaultRollingUpdateStrategy(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+	ks.Spec.Strategy = nil
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	g.Expect(deploy.Spec.Strategy.Type).To(Equal(appsv1.RollingUpdateDeploymentStrategyType))
+	g.Expect(deploy.Spec.Strategy.RollingUpdate).NotTo(BeNil())
+	g.Expect(deploy.Spec.Strategy.RollingUpdate.MaxUnavailable).NotTo(BeNil())
+	g.Expect(*deploy.Spec.Strategy.RollingUpdate.MaxUnavailable).To(Equal(intstr.FromInt32(0)))
+	g.Expect(deploy.Spec.Strategy.RollingUpdate.MaxSurge).NotTo(BeNil())
+	g.Expect(*deploy.Spec.Strategy.RollingUpdate.MaxSurge).To(Equal(intstr.FromInt32(1)))
+}
+
+// TestBuildKeystoneDeployment_StrategyStableAcrossReconciles verifies that two
+// calls to buildKeystoneDeployment with identical input produce deeply equal
+// Strategy blocks (CC-0084, REQ-005, REQ-006).
+//
+// Drift note: EnsureDeployment unconditionally assigns `existing.Spec =
+// deploy.Spec` (CC-0005), so it does not gate the update on a drift check.
+// The stability contract we need is that buildKeystoneDeployment returns the
+// same Strategy for the same input — this guarantees the repeated Update
+// calls produce a no-op spec diff at the API server, which in turn keeps the
+// Deployment controller from triggering new rollouts on each reconcile. The
+// one-time convergence scenario (pre-existing Deployment built by an older
+// operator that never set Strategy, so the API server defaulted it to 25%/25%)
+// is covered by TestEnsureDeployment_StrategyConvergesFromServerDefault below.
+func TestBuildKeystoneDeployment_StrategyStableAcrossReconciles(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+
+	first := buildKeystoneDeployment(ks, "keystone-config-abc123")
+	second := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	g.Expect(first.Spec.Strategy).To(Equal(second.Spec.Strategy))
+}
+
+// TestEnsureDeployment_StrategyConvergesFromServerDefault verifies the
+// one-time convergence case: an existing Deployment was created by an older
+// operator version that did not set Strategy, so the API server defaulted it
+// to RollingUpdate 25%/25%. After the upgrade, buildKeystoneDeployment emits
+// the new 0/1 default, and a single reconcile must overwrite the server
+// default without error. A second reconcile must then produce a stable spec
+// (no further Strategy changes) (CC-0084, REQ-005).
+func TestEnsureDeployment_StrategyConvergesFromServerDefault(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+
+	// Seed an existing Deployment that mimics the server-defaulted Strategy
+	// (25%/25%) — as if created by an older operator that omitted the field.
+	existing := buildKeystoneDeployment(ks, "keystone-config-abc123")
+	serverDefaultUnavailable := intstr.FromString("25%")
+	serverDefaultSurge := intstr.FromString("25%")
+	existing.Spec.Strategy = appsv1.DeploymentStrategy{
+		Type: appsv1.RollingUpdateDeploymentStrategyType,
+		RollingUpdate: &appsv1.RollingUpdateDeployment{
+			MaxUnavailable: &serverDefaultUnavailable,
+			MaxSurge:       &serverDefaultSurge,
+		},
+	}
+	r := newDeployTestReconciler(s, ks, existing)
+
+	ctx := context.Background()
+
+	// First reconcile: the default 0/1 strategy overwrites the server default.
+	_, err := r.reconcileDeployment(ctx, ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var afterFirst appsv1.Deployment
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{
+		Name: "test-keystone-api", Namespace: "default",
+	}, &afterFirst)).To(Succeed())
+	g.Expect(afterFirst.Spec.Strategy.Type).To(Equal(appsv1.RollingUpdateDeploymentStrategyType))
+	g.Expect(*afterFirst.Spec.Strategy.RollingUpdate.MaxUnavailable).To(Equal(intstr.FromInt32(0)))
+	g.Expect(*afterFirst.Spec.Strategy.RollingUpdate.MaxSurge).To(Equal(intstr.FromInt32(1)))
+
+	// Second reconcile: the Strategy block must remain identical — no further
+	// drift-triggered rollout (the stability contract from
+	// TestBuildKeystoneDeployment_StrategyStableAcrossReconciles held end-to-end).
+	_, err = r.reconcileDeployment(ctx, ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var afterSecond appsv1.Deployment
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{
+		Name: "test-keystone-api", Namespace: "default",
+	}, &afterSecond)).To(Succeed())
+	g.Expect(afterSecond.Spec.Strategy).To(Equal(afterFirst.Spec.Strategy))
+}
+
+// TestBuildKeystoneDeployment_StrategyOverrideRollingCustomPercents verifies
+// that a user-provided RollingUpdate strategy with percentage-based surge and
+// unavailable values passes through verbatim (CC-0084, REQ-006).
+func TestBuildKeystoneDeployment_StrategyOverrideRollingCustomPercents(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+	maxUnavailable := intstr.FromString("25%")
+	maxSurge := intstr.FromString("50%")
+	ks.Spec.Strategy = &appsv1.DeploymentStrategy{
+		Type: appsv1.RollingUpdateDeploymentStrategyType,
+		RollingUpdate: &appsv1.RollingUpdateDeployment{
+			MaxUnavailable: &maxUnavailable,
+			MaxSurge:       &maxSurge,
+		},
+	}
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	g.Expect(deploy.Spec.Strategy.Type).To(Equal(appsv1.RollingUpdateDeploymentStrategyType))
+	g.Expect(deploy.Spec.Strategy.RollingUpdate).NotTo(BeNil())
+	g.Expect(*deploy.Spec.Strategy.RollingUpdate.MaxUnavailable).To(Equal(intstr.FromString("25%")))
+	g.Expect(*deploy.Spec.Strategy.RollingUpdate.MaxSurge).To(Equal(intstr.FromString("50%")))
+}
+
+// TestBuildKeystoneDeployment_StrategyOverrideRecreate verifies that a
+// user-provided Recreate strategy passes through verbatim without the default
+// RollingUpdate block being layered on top (CC-0084, REQ-006).
+func TestBuildKeystoneDeployment_StrategyOverrideRecreate(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+	ks.Spec.Strategy = &appsv1.DeploymentStrategy{
+		Type: appsv1.RecreateDeploymentStrategyType,
+	}
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	g.Expect(deploy.Spec.Strategy.Type).To(Equal(appsv1.RecreateDeploymentStrategyType))
+	g.Expect(deploy.Spec.Strategy.RollingUpdate).To(BeNil())
+}

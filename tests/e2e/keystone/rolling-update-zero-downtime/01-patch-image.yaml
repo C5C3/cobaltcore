@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch that bumps spec.image.tag to trigger a rolling update for the
+# rolling-update-zero-downtime E2E test (CC-0084).
+#
+# DECISION: reuse the '2025.2-upgraded' tag already pre-loaded by CI for the
+# image-upgrade test (see tests/e2e/keystone/image-upgrade/01-patch-image.yaml).
+# This keeps a single pre-load responsibility in the CI pipeline rather than
+# introducing a second alias.
+# The '2025.2-upgraded' tag is pre-loaded into kind by the "Load images into kind"
+# step within the `e2e-operator` job in .github/workflows/ci.yaml alongside
+# 2025.2, enabling the image-tag patch without an external pull.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-rolling-update
+  namespace: openstack
+spec:
+  image:
+    tag: "2025.2-upgraded"
