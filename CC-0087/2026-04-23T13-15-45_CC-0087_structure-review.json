@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-23T13:15:45.762193+00:00",
+  "feature_id": "CC-0087",
+  "task_type": "structure-review",
+  "session_key": "CC-0087",
+  "model": "claude-opus-4-7",
+  "prompt": "Convert this human code review feedback into a structured prompt for an AI coding agent.\n\nFeature: CC-0087 - Add field indexer for Secret-to-Keystone mapper to reduce AP\nReviewer: gndrmnn\n\nRaw feedback:\n\n\n## Inline Comments\n- `operators/keystone/internal/controller/keystone_controller_test.go:3290` — \"Remove lines 3287-3290. We have no interest in testing the value of constants we declare ourselves. There is no good reason to test if `KeystoneSecretNameIndexKey` has the value we assign to it.\"\n\nIMPORTANT: Preserve the reviewer's original scope exactly.\nIf the reviewer commented on specific files/lines, the structured prompt must target ONLY those locations.\nDo NOT broaden or generalize the reviewer's intent to other files.\n\nOutput a structured prompt in this format:\n\nPlease address the comments from this code review:\n## Overall Comments\n- (list each overall concern)\n## Individual Comments\n### Comment N\n<location path=\"...\" line_range=\"...\" />\n(description of change needed)\n\nBe specific about file paths and line numbers where available.\nOnly output the structured prompt, nothing else.",
+  "prompt_length": 1100,
+  "caller": "run_claude_cli"
+}

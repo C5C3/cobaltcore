@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-23T13:17:53.855263+00:00",
+  "feature_id": "CC-0087",
+  "task_type": "review",
+  "session_key": "CC-0087",
+  "model": "claude-opus-4-7",
+  "prompt": "Analyze the following external review that has been addressed.\nIdentify what our INTERNAL code review should have caught\nBEFORE the external reviewer found it.\n\n## External Review Feedback\n\n\n## Code Comments (with Resolutions)\n- [operators/keystone/internal/controller/keystone_controller_test.go:3290] Remove lines 3287-3290. We have no interest in testing the value of constants we declare ourselves. There is no good reason to test if `KeystoneSecretNameIndexKey` has the value we assign to it.\n\n## Resolution Summary\nRemoved the `g.Expect(KeystoneSecretNameIndexKey).To(Equal(\"spec.secretRefs.name\"), ...)` assertion (and its preceding explanatory comment) from `TestKeystoneSecretIndexerKey_IsDeclaredAsConst` in `keystone_controller_test.go`, per the reviewer's point that testing a self-declared constant's value has no value. The test's doc comment was also reworded to drop the 'documented value' framing and instead describe what the test actually verifies now — that `registerSecretNameIndex` passes the `KeystoneSecretNameIndexKey` constant to `IndexField`, ensuring registration and lookup sites share one source of truth.\n\nExtract 0-3 review improvement patterns. For each:\n- name: Short, action-oriented name IN ENGLISH\n- review_area: error-handling | security | testing | performance | type-safety | validation | architecture | naming | documentation\n- detection_hint: How should the reviewer detect this?\n- severity: BLOCKING | WARNING\n- what_to_check: What exactly to check\n- why_it_matters: Why it matters\n- example_feedback: Original quote from the reviewer\n- example_fix: What was changed\n\nQUALITY: Only real review blindspots. No subjective style opinions.\nNothing that only a domain expert could know.\nIf nothing extractable: empty array.\n\nLANGUAGE: ALL fields MUST be in English.\n\nResponse: ONLY JSON array.",
+  "prompt_length": 1831,
+  "caller": "run_claude_cli"
+}
