@@ -1,0 +1,61 @@
+{
+  "summary": "CC-0093 parameterises the OpenBao RemoteKey per Keystone CR. Both PushSecret builders (fernetKeysPushSecret, credentialKeysPushSecret) now emit fmt.Sprintf(\"openstack/keystone/%s/{fernet,credential}-keys\", keystone.Name). The push-keystone-keys.hcl policy switches from two literal paths to four `+`-glob paths (data+metadata for each leaf) with [create,update,read,delete] capabilities; the /db exclusion holds structurally because `+` requires the literal /fernet-keys or /credential-keys suffix. Tests: unit tests (reconcile_fernet_test.go:412, reconcile_credential_test.go:416) updated to the new RemoteKey; new table-driven TestFernetKeysPushSecret_RemoteKeyIsCRScoped and TestCredentialKeysPushSecret_RemoteKeyIsCRScoped plus PreservesDeletionPolicyAndStoreRef pins; envtest integration tests TestIntegrationKeystone_{Push,Credential}PushSecretRemoteKeyIsPerCR verify two CRs in one namespace produce distinct RemoteKeys; chainsaw/deletion-cleanup step-6 now asserts the keystone-cleanup-scoped paths; chainsaw/concurrent-cr-conflicts adds a new step-3 asserting four CR-scoped paths are present and the legacy flat paths are absent under a 60s/3s bounded retry. Docs: keystone-reconciler.md updated at rows 763-764, 803, 1341, 1376, 1510, 1550; Known-limitation block rewritten as a path-scoping statement; Migration-note subsection added with bao kv metadata delete cleanup commands; CC-0091 race narrative at :~1039 updated to describe the new path form while preserving the historical CI-run citation. No API/CRD changes. No submodule modifications (architecture/ submodule still pinned at 7beebd6f2d66a1012f16a52c3990bed9033b5af8 — stale flat-path reference at architecture/docs/09-implementation/04-keystone-reconciler.md:279 documented as an upstream follow-up in the PR description). `go test ./internal/controller/...` passes; `go vet` clean.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Unit tests pin new RemoteKey on both builders (reconcile_fernet_test.go:412, reconcile_credential_test.go:416)", "checked": true},
+    {"item": "Table-driven distinct-name tests cover keystone-a/keystone-b/keystone-cleanup with explicit collision + legacy-flat-path negative assertions", "checked": true},
+    {"item": "PreservesDeletionPolicyAndStoreRef tests guard CC-0079 finalizer wiring against regression", "checked": true},
+    {"item": "Envtest TestIntegrationKeystone_{Push,Credential}PushSecretRemoteKeyIsPerCR verify two CRs in shared namespace yield distinct CR-scoped RemoteKeys", "checked": true},
+    {"item": "chainsaw/deletion-cleanup step-6 asserts the keystone-cleanup-scoped paths (not the flat paths); 30s/3s bounded retry preserved", "checked": true},
+    {"item": "chainsaw/concurrent-cr-conflicts step-3 asserts all four CR-scoped paths present AND both legacy flat paths absent under 60s bounded retry; stderr reports each missing/leaked path; catch block dumps openbao logs + PushSecret state", "checked": true},
+    {"item": "Unit tests pass: go test -run 'TestFernetKeysPushSecret_|TestCredentialKeysPushSecret_' ./internal/controller/... -> PASS (6 tests)", "checked": true},
+    {"item": "Full controller package tests pass (go test ./internal/controller/... -> ok 1.461s)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns — fmt.Sprintf template matches the sibling `%s-fernet-keys-backup` / `%s-credential-keys` naming already used on lines 411, 422 of reconcile_fernet.go (and symmetric in reconcile_credential.go)", "checked": true},
+    {"item": "Godoc updated with the per-CR layout and CC-0093 reference alongside the existing CC-0079 reference", "checked": true},
+    {"item": "Symmetric changes: both builders edited identically, both tests added symmetrically, both docs rows updated together", "checked": true},
+    {"item": "No new public API, CRD version, or operator flag introduced (REQ-010) — `git diff operators/keystone/api/` is empty", "checked": true},
+    {"item": "No copy-paste of test infrastructure — both integration tests reuse existing setupEnvTestWithController / createPrerequisites / integrationBrownfieldKeystone / driveFullReconciliation helpers", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "push-keystone-keys.hcl does NOT grant /db — only two leaf names (fernet-keys, credential-keys) under the `+` glob; `+` requires the literal suffix so neither /db nor /db/anything is matched", "checked": true},
+    {"item": "Glob semantics claim in the HCL header cites OpenBao upstream docs (https://openbao.org/docs/concepts/policies) verbatim with the canonical `secret/+/teamb` example", "checked": true},
+    {"item": "No secrets or tokens added to the repo; test scripts extract the OpenBao root token from the existing openbao-init-keys Secret at runtime", "checked": true},
+    {"item": "eso-management.hcl wildcard `kv-v2/data/openstack/keystone/*` still covers the new per-CR read paths — read capability on push-keystone-keys.hcl remains redundant (policy-portability only), matching the plan's security-reviewer user story", "checked": true},
+    {"item": "No broadening of write surface outside the two leaf kinds — `+` is single-segment and anchored on the literal `/fernet-keys` or `/credential-keys` suffix", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Minimal, surgical change — single-line fmt.Sprintf in each builder; four path blocks in the HCL policy; no new abstractions or indirection layers", "checked": true},
+    {"item": "CR name is already in scope at both call sites (keystone *keystonev1alpha1.Keystone parameter), so no new plumbing required", "checked": true},
+    {"item": "Migration note explicitly states live state is driven from the local Kubernetes Secret, not the OpenBao backup — legacy paths are orphaned-but-harmless, with canonical `bao kv metadata delete` cleanup", "checked": true},
+    {"item": "No scope creep — diff limited to the 8 files required by the plan (2 builders, 2 unit tests, 1 integration test, 1 policy, 2 chainsaw tests, 1 docs file) plus the PR description and progress file", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code — single fmt.Sprintf per builder; no template helper extracted for a two-call-site template (YAGNI respected)", "checked": true},
+    {"item": "No unnecessary error handling introduced around the string formatting (fmt.Sprintf cannot fail)", "checked": true},
+    {"item": "No feature flag or backwards-compat shim — the migration note documents orphaned-path behaviour instead of adding code to read-then-write-then-delete the legacy path", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "chainsaw scripts use `set -u` and explicit non-zero exit on token extraction failure before entering the polling loop", "checked": true},
+    {"item": "chainsaw scripts emit one `ERROR: <path> still present/missing/leaked after <N>s` line per stuck path on timeout so failures are attributable", "checked": true},
+    {"item": "Unit tests assert distinct RemoteKeys explicitly (seen[got] collision detection) — a regression that makes the keys equal fails loudly rather than silently", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Policy `+` glob is anchored by the literal leaf name — a compromised ESO cannot reach /db via an empty or long CR-name segment", "checked": true},
+    {"item": "Legacy-flat-path negative assertions in unit tests and chainsaw regression-guard any future revert of the fmt.Sprintf back to a hard-coded string", "checked": true},
+    {"item": "chainsaw step-3 catch block collects openbao logs, PushSecret list, and PushSecret YAML on failure — sufficient diagnostic context per the 'ensure-test-error-capture-blocks-collect-sufficient-diagnostic-context' review pattern", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Consider extracting `fmt.Sprintf(\"openstack/keystone/%s/<leaf>\", keystone.Name)` into a small helper in reconcile_fernet.go or a shared util once a third per-CR KV path is added. Not worth doing for two call sites (YAGNI); flag only as a future-trigger.",
+    "The `keystone-db` / `keystone-admin` Secret refs are shared between kA and kB in the new envtest integration tests (via integrationBrownfieldKeystone). That happens to work because createPrerequisites creates the Secret once per namespace and both CRs read-only-reference it, but a future reader may assume per-CR Secrets. Consider a one-line comment in the two new tests calling out the shared-secret setup is intentional (they verify RemoteKey distinctness, not secret isolation)."
+  ],
+  "next_steps": [
+    "Open an upstream PR against github.com/C5C3/C5C3 correcting architecture/docs/09-implementation/04-keystone-reconciler.md:279 (and, for symmetry, 05-keystone-dependencies.md:63/:133/:147 which still reference the flat path). Then bump the `architecture` submodule pin here in a follow-up worktree (REQ-008).",
+    "On first CI run after merge, watch that tests/e2e/keystone/deletion-cleanup step-6 and tests/e2e/keystone/concurrent-cr-conflicts step-3 both pass in a `parallel: 4` run to confirm the flake is closed (acceptance criterion: 10 consecutive CI runs clean)."
+  ],
+  "detected_patterns": []
+}

@@ -60,7 +60,129 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 3: Assert unique Deployments and Services ───────────────────────
+  # ── Step 3: Assert per-CR OpenBao kv-v2 isolation (CC-0093, REQ-005) ─────
+  # CC-0093 parameterizes the OpenBao RemoteKey per Keystone CR so that
+  # concurrent CRs push their fernet-keys / credential-keys to distinct
+  # kv-v2 paths instead of colliding on a single shared path. This step
+  # exercises that contract end-to-end: after both CRs reach Ready, their
+  # PushSecrets must have synced to the four CR-scoped paths
+  #   kv-v2/openstack/keystone/keystone-concurrent-a/fernet-keys
+  #   kv-v2/openstack/keystone/keystone-concurrent-a/credential-keys
+  #   kv-v2/openstack/keystone/keystone-concurrent-b/fernet-keys
+  #   kv-v2/openstack/keystone/keystone-concurrent-b/credential-keys
+  # proving the RemoteKey templating is actually writing under
+  # <cr-name>/<material>. We additionally assert the legacy flat paths
+  #   kv-v2/openstack/keystone/fernet-keys
+  #   kv-v2/openstack/keystone/credential-keys
+  # do NOT exist. This is a regression guard: if the per-CR RemoteKey
+  # template in the PushSecret is ever reverted to a hard-coded string,
+  # both CRs would race to write the flat paths and silently overwrite
+  # each other's key material. Seeing those paths reappear here fails the
+  # test loudly before the bug ships.
+  #
+  # PushSecret sync is eventually-consistent; poll every 3 s for up to
+  # 60 s (20 iterations) and exit 0 on the first sweep where all four
+  # expected paths exist and both legacy paths are absent. Use date +%s
+  # (not $SECONDS) — chainsaw runs scripts under /usr/bin/sh (dash) which
+  # does not define SECONDS, so with `set -u` the expansion would fail.
+  #
+  # Script shape (bootstrap + poll loop + bao-kv-get subshell) intentionally
+  # mirrors deletion-cleanup/chainsaw-test.yaml step 6 so a future change to
+  # the bao-polling contract (token extraction, env wiring, exit-code
+  # handling) lands in one recognisable pattern across both tests
+  # (sourcery-review-1).
+  - try:
+    - script:
+        timeout: 90s
+        content: |
+          set -u
+          BAO_NS="openbao-system"
+          POD="openbao-0"
+          SECRET="openbao-init-keys"
+          BAO_ADDR="https://127.0.0.1:8200"
+          VAULT_CACERT="/openbao/tls/ca.crt"
+
+          BAO_TOKEN=$(kubectl get secret "${SECRET}" -n "${BAO_NS}" \
+            -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
+          if [ -z "${BAO_TOKEN}" ] || [ "${BAO_TOKEN}" = "null" ]; then
+            echo "ERROR: could not extract root token from ${BAO_NS}/${SECRET}"
+            exit 1
+          fi
+
+          # Bounded retry: 60 s budget, 3 s interval, 20 iterations max.
+          # Exit 0 on the first sweep where every expected-present path is
+          # present and every expected-absent path is absent.
+          deadline=$(( $(date +%s) + 60 ))
+          missing=""
+          leaked=""
+          while [ "$(date +%s)" -lt "${deadline}" ]; do
+            all_clear=1
+            missing=""
+            leaked=""
+            for path in "kv-v2/openstack/keystone/keystone-concurrent-a/fernet-keys" \
+                        "kv-v2/openstack/keystone/keystone-concurrent-a/credential-keys" \
+                        "kv-v2/openstack/keystone/keystone-concurrent-b/fernet-keys" \
+                        "kv-v2/openstack/keystone/keystone-concurrent-b/credential-keys"; do
+              echo "=== bao kv get ${path} (expect present) ==="
+              out=$(kubectl exec -n "${BAO_NS}" "${POD}" -- \
+                env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" \
+                    VAULT_CACERT="${VAULT_CACERT}" \
+                    bao kv get "${path}" 2>&1) && get_rc=0 || get_rc=$?
+              echo "${out}"
+              echo "exit=${get_rc}"
+              if [ "${get_rc}" -ne 0 ]; then
+                echo "NOT-YET: ${path} not present (PushSecret may not have synced yet)"
+                missing="${missing} ${path}"
+                all_clear=0
+              else
+                echo "OK: ${path} is present in OpenBao"
+              fi
+            done
+            for path in "kv-v2/openstack/keystone/fernet-keys" \
+                        "kv-v2/openstack/keystone/credential-keys"; do
+              echo "=== bao kv get ${path} (expect not-found) ==="
+              out=$(kubectl exec -n "${BAO_NS}" "${POD}" -- \
+                env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" \
+                    VAULT_CACERT="${VAULT_CACERT}" \
+                    bao kv get "${path}" 2>&1) && get_rc=0 || get_rc=$?
+              echo "${out}"
+              echo "exit=${get_rc}"
+              if [ "${get_rc}" -eq 0 ]; then
+                echo "ERROR: ${path} present (legacy flat path leaked — RemoteKey regression)"
+                leaked="${leaked} ${path}"
+                all_clear=0
+              else
+                echo "OK: ${path} is absent in OpenBao"
+              fi
+            done
+            if [ "${all_clear}" -eq 1 ]; then
+              exit 0
+            fi
+            sleep 3
+          done
+
+          # Timeout: name each still-wrong path on stderr so chainsaw's
+          # failure surface identifies exactly which kv-v2 path regressed
+          # (CC-0093, REQ-005).
+          for path in ${missing}; do
+            echo "ERROR: ${path} missing after 60s (PushSecret did not sync to per-CR path)" >&2
+          done
+          for path in ${leaked}; do
+            echo "ERROR: ${path} present after 60s (legacy flat path leaked — RemoteKey regression)" >&2
+          done
+          exit 1
+    catch:
+    - script:
+        content: |
+          echo "=== openbao pods ==="
+          kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao 2>&1 || true
+          echo "=== openbao-0 logs ==="
+          kubectl logs -n openbao-system openbao-0 --tail=200 2>&1 || true
+          echo "=== PushSecrets in $NAMESPACE ==="
+          kubectl get pushsecrets.external-secrets.io -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== PushSecret details ==="
+          kubectl get pushsecrets.external-secrets.io -n $NAMESPACE -o yaml 2>&1 || true
+  # ── Step 4: Assert unique Deployments and Services ───────────────────────
   - try:
     - assert:
         resource:
@@ -113,7 +235,7 @@ spec:
           kubectl get services -n $NAMESPACE -o wide 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 4: Assert unique Fernet CronJobs and ConfigMaps ─────────────────
+  # ── Step 5: Assert unique Fernet CronJobs and ConfigMaps ─────────────────
   - try:
     - assert:
         resource:
@@ -143,7 +265,7 @@ spec:
           kubectl get cm -n $NAMESPACE -o name 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 5: Delete CR-A and assert cleanup ───────────────────────────────
+  # ── Step 6: Delete CR-A and assert cleanup ───────────────────────────────
   # CC-0078: the Keystone finalizer blocks deletion until MariaDB
   # Database/User/Grant CRs are fully gone; under parallel:4 this exceeds
   # the global 30s delete timeout, so raise it to match deletion-cleanup.
@@ -207,7 +329,7 @@ spec:
           kubectl get cronjobs -n $NAMESPACE -o wide 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 6: Assert CR-B still Ready ──────────────────────────────────────
+  # ── Step 7: Assert CR-B still Ready ──────────────────────────────────────
   - try:
     - assert:
         resource:

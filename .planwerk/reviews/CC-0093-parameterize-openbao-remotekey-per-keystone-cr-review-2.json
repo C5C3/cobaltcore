@@ -1,0 +1,50 @@
+{
+  "summary": "External-review improvement cycle (sourcery-ai[bot]). Three targeted changes: (1) the two near-identical per-CR RemoteKey integration tests in operators/keystone/internal/controller/integration_test.go were consolidated into one table-driven test parameterized by material (fernet-keys, credential-keys); (2) the new bao-polling script in tests/e2e/keystone/concurrent-cr-conflicts/chainsaw-test.yaml was aligned with tests/e2e/keystone/deletion-cleanup/chainsaw-test.yaml (variable name all_clear, inline path lists, OK/NOT-YET/ERROR diagnostics, identical bootstrap + poll-loop shape); (3) the RemoteKey construction in fernetKeysPushSecret and credentialKeysPushSecret was switched from fmt.Sprintf to string concatenation to match the unit-test literal form. No production behaviour changes — RemoteKey values, test coverage, and chainsaw contract are all preserved. `go build ./...` and `go vet ./...` (with and without the integration tag) run clean on the changed Go files.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass", "checked": true},
+    {"item": "Edge cases are covered (per-CR RemoteKey distinctness, CR-name embedding, legacy flat-path absence)", "checked": true},
+    {"item": "Table-driven subtest names match materials (fernet-keys, credential-keys) for TAP-friendly output", "checked": true},
+    {"item": "E2E chainsaw poll loop still bounds retry at 60s/3s and fails loudly on both missing-per-CR and leaked-flat paths", "checked": true},
+    {"item": "No tests were removed; both REQ-001 and REQ-002 remain asserted (now as two subtests under one Test function)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (string concatenation for RemoteKey matches unit-test literals)", "checked": true},
+    {"item": "Chainsaw script structure now mirrors sibling deletion-cleanup step — reduces cognitive load for future changes", "checked": true},
+    {"item": "No dead code; no introduced TODOs (pre-existing TODO(CC-0042) comments at reconcile_fernet.go:315 and reconcile_credential.go:320 are unchanged and out-of-scope)", "checked": true},
+    {"item": "Table-driven test keeps per-row assertions explicit via tc.material and tc.requirement", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No new secrets, auth paths, or policy changes in this cycle", "checked": true},
+    {"item": "RemoteKey value is unchanged (same per-CR layout); OpenBao policy file not touched", "checked": true},
+    {"item": "No shell-injection surface added to chainsaw script — path literals only, no external input", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible — three surgical diffs, no abstractions introduced", "checked": true},
+    {"item": "No new Spec fields, CRD versions, or operator flags (REQ-010 preserved)", "checked": true},
+    {"item": "No submodule changes (architecture/ untouched per worktree rule 12)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "Duplicated test consolidated into table-driven form — directly reduces duplication", "checked": true},
+    {"item": "Chainsaw poll pattern not extracted into a shared snippet, but variable naming and structure are now aligned — the weaker of sourcery's two suggestions and acceptable", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Chainsaw script still exits non-zero on token-extraction failure and on deadline expiry with named paths on stderr", "checked": true},
+    {"item": "Per-subtest g := NewGomegaWithT(t) ensures a failed row does not mask later rows", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Table-driven test still asserts both wantA==keyA AND keyA != keyB AND keyA contains kA.Name — three independent guards survive the consolidation", "checked": true},
+    {"item": "Legacy flat-path absence assertion retained in e2e test (regression guard)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Minor: integration_test.go:3700 includes the string `tc.requirement` literally inside a Go comment (the field name is not interpolated in comments). Consider rephrasing to `(CC-0093, REQ-001 for fernet / REQ-002 for credential)` or `(CC-0093, see tc.requirement per row)` so a reader does not briefly think the comment was meant to template the value.",
+    "Minor: the sourcery rationale for the fmt.Sprintf -> concat change cites `avoid an unnecessary dependency on fmt in these hot paths`, but `fmt` remains heavily used in both reconcile_fernet.go and reconcile_credential.go for other formatting, so the import is not actually avoidable. The change is still worthwhile on the stronger grounds of matching the unit-test style and grep-ability; no action required."
+  ],
+  "next_steps": [
+    "No changes required for this cycle. Ready to re-request external review / merge."
+  ],
+  "detected_patterns": []
+}

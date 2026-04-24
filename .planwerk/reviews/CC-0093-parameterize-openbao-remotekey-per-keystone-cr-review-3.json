@@ -1,0 +1,43 @@
+{
+  "summary": "Documentation-only improvement cycle addressing berendt's external review #2 (2 WARNING findings, 1 INFO). The migration note in docs/reference/keystone-reconciler.md was rewritten to explicitly name the brownfield OpenBao ACL re-apply step (via hack/deploy-infra.sh / setup-policies.sh or `bao policy write`), warning that skipping it produces ESO 403s and flips FernetKeysReady/CredentialKeysReady to False. The HCL policy header comment in deploy/openbao/policies/push-keystone-keys.hcl was rewritten to accurately describe the invariant: the `db` leaf itself remains unwritable, while disclosing that `db/fernet-keys` and `db/credential-keys` would match the `+` glob but are independent KV-v2 keys that cannot overwrite the `db` secret. I-001 (architecture submodule at line 279) is correctly deferred per NO_SUBMODULE_MODIFICATIONS. Scope is clean: no code, test, or CRD changes; only two edited files plus three planwerk metadata files (progress phase, external review record, two review-pattern notes).",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "No code behavior changed — existing unit/integration/chainsaw tests remain valid", "checked": true},
+    {"item": "Documentation-only cycle — no new test coverage required", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing documentation patterns (migration note cross-linked from path-scoping callout)", "checked": true},
+    {"item": "HCL comment structure preserves existing paragraph cadence and cross-references (CC-0079, CC-0083)", "checked": true},
+    {"item": "No commented-out content, no stale flat-path references outside the explicit migration/historical blocks", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "HCL comment now accurately describes the db-leaf-protection invariant — no misleading security claims", "checked": true},
+    {"item": "No policy capabilities changed — create/update/read/delete on +/fernet-keys and +/credential-keys paths unchanged", "checked": true},
+    {"item": "Migration note warns that skipping the ACL re-apply causes silent 403 failures — brownfield security posture is explicit", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Brownfield-vs-greenfield distinction is explicit; no out-of-band policy application is silently assumed", "checked": true},
+    {"item": "Submodule architecture/docs/09-implementation/04-keystone-reconciler.md:279 correctly NOT modified (NO_SUBMODULE_MODIFICATIONS)", "checked": true},
+    {"item": "No new abstractions, no scope creep", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "Reviewer's drop-in replacements applied verbatim — no divergence, no speculative additions", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Migration note names the explicit failure symptom (403 on backup step, conditions flip to False) so brownfield upgraders fail loud, not silent", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "HCL comment documents the residual attack surface (writes to sibling db/fernet-keys and db/credential-keys paths) transparently", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Once the C5C3/C5C3 submodule PR updating architecture/docs/09-implementation/04-keystone-reconciler.md:279 lands and the submodule pin is bumped, remove the CC-0093 follow-up tracking note. No action required in this PR."
+  ],
+  "next_steps": [
+    "Merge after CI passes. No further documentation corrections outstanding.",
+    "Open (or verify existence of) the C5C3/C5C3 follow-up ticket for the submodule architecture doc update, per I-001."
+  ],
+  "detected_patterns": []
+}

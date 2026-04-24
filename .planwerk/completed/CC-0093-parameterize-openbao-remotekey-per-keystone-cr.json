@@ -2,8 +2,8 @@
   "feature_id": "CC-0093",
   "title": "Parameterize OpenBao RemoteKey per Keystone CR",
   "slug": "parameterize-openbao-remotekey-per-keystone-cr",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #279: Parameterize OpenBao RemoteKey per Keystone CR to eliminate cross-CR KV path collisions\n\n**Category**: bug | **Scope**: Medium\n\n**Description**: The Fernet and credential `PushSecret` builders hardcode the OpenBao `RemoteKey` to the same two literal paths for every Keystone CR in a cluster:\n\n- `operators/keystone/internal/controller/reconcile_fernet.go:423` — `RemoteKey: \"openstack/keystone/fernet-keys\"`\n- `operators/keystone/internal/controller/reconcile_credential.go:429` — `RemoteKey: \"openstack/keystone/credential-keys\"`\n\nEvery `PushSecret` CR — `{keystone.Name}-fernet-keys-backup` / `{keystone.Name}-credential-keys-backup` — is itself name-scoped, and the local `Secret` it selects is name-scoped too (`reconcile_fernet.go:417`, `reconcile_credential.go:423`). Only the remote KV-v2 path is flat-namespaced across CRs. Two Keystone CRs in the same Kubernetes namespace therefore share exactly two backing OpenBao objects — whichever CR's ESO push lands last wins, and either CR's deletion can race with the other CR's next push.\n\nIn production this is dormant (the conventional deployment runs a single Keystone per namespace), but it is load-bearing in the E2E suite, where `tests/e2e/chainsaw-config.yaml:40` sets `parallel: 4` and every `tests/e2e/keystone/*/chainsaw-test.yaml` file lives in the same `openstack` namespace. Step 6 of `tests/e2e/keystone/deletion-cleanup/chainsaw-test.yaml:255-256` asserts that both KV-v2 paths are `not-found` after the `keystone-cleanup` CR is deleted — an assertion that cannot hold whenever a concurrent test's CR is mid-reconcile, because that CR's `PushSecret` is writing back to the shared path the cleanup test just purged.\n\nThe operator's own OpenBao policy (`deploy/openbao/policies/push-keystone-keys.hcl:14-20`) already rejects a wildcard over the Keystone subtree — for the orthogonal reason of protecting the read-only `openstack/keystone/db` credentials consumed by Keystone — so the flat two-path scheme is not even a policy simplification we are preserving.\n\n**Motivation**: Reproduced on `feature/CC-0088` in CI run [24903037791/job 72927386373](https://github.com/C5C3/forge/actions/runs/24903037791/job/72927386373) at `2026-04-24T17:53:33Z`. The `keystone-deletion-cleanup` step-6 retry loop polled for 30 s and observed both KV-v2 paths continuously present with `created_time=2026-04-24T17:53:11.602847833Z` (Fernet) — created 10 s after the cleanup test's `kubectl delete` at `17:53:01` and exactly matching the `keystone-brownfield-database` step-2 apply at `17:53:11`. The adjacent `keystone-credential-rotation` and `keystone-concurrent-cr-conflicts` CRs running in parallel contribute additional overlapping writers. Step-4's `PushSecret NotFound` assertion passes cleanly on the cleanup test's own backup objects — the leak is purely the shared remote path being re-created by a neighbour.\n\nPreviously observed on `main` in CI run [24839732116](https://github.com/C5C3/forge/actions/runs/24839732116) at `14:31:30` (recorded in auto-memory `project_shared_openbao_kv_path.md`), 16 s after `keystone-cleanup` deletion, same failure mode. Both occurrences match the same timestamp-evidenced race; this is a reliably reproducible flake rather than a one-off. PR #271 (CC-0091) closed the independent adoption-race leak in the operator itself and added the bounded-retry loop step-6 depends on, but the loop cannot tolerate an external, legitimate writer regenerating the path — only this issue can.\n\nSpin-off from analysing the red `feature/CC-0088` E2E run; CC-0088 itself is unrelated (Envoy Gateway / HTTPRoute assertions).\n\n**Proposed approach**:\n\n1. Switch both builders to a per-CR remote key layout, e.g. `openstack/keystone/{keystone.Name}/fernet-keys` and `openstack/keystone/{keystone.Name}/credential-keys`. The CR name is already in scope in both functions (`fernetKeysPushSecret(keystone *keystonev1alpha1.Keystone)` at `reconcile_fernet.go:403`, symmetric at `reconcile_credential.go:409`), so the change is a one-line `fmt.Sprintf` in each. A nested subpath keeps the convention of the sibling `openstack/keystone/db` path used by `deploy/eso/externalsecrets/keystone-db.yaml:27` and preserves the existing wildcard reads granted by `deploy/openbao/policies/eso-management.hcl:34` (`kv-v2/data/openstack/keystone/*`).\n2. Broaden the `push-keystone-keys.hcl` policy from two literal paths to two per-name patterns while still excluding `/db`:\n   - `kv-v2/{data,metadata}/openstack/keystone/+/fernet-keys`\n   - `kv-v2/{data,metadata}/openstack/keystone/+/credential-keys`\n\n   The `+` single-segment glob (OpenBao/Vault capability template syntax) keeps the policy tight enough that a compromised ESO still cannot reach `openstack/keystone/db`, matching the `push-keystone-keys.hcl:14-20` rationale. Verify the `eso-management` wildcard (`kv-v2/data/openstack/keystone/*`) still covers the new read paths so the redundant-`read` capability remains redundant rather than load-bearing.\n3. Update the step-6 chainsaw script in `tests/e2e/keystone/deletion-cleanup/chainsaw-test.yaml:255-256` to target the CR-specific paths (`kv-v2/openstack/keystone/keystone-cleanup/fernet-keys` etc.), so the retry loop asserts exactly the path the cleanup CR owned and cannot be perturbed by parallel tests.\n4. Update both builder unit tests (`reconcile_fernet_test.go:412`, `reconcile_credential_test.go:416`) to the new expected `RemoteKey` string.\n5. Update reconciler docs: `docs/reference/keystone-reconciler.md:763-764`, `:803`, `:1341`, `:1376`, `:1510`, `:1550`, and `architecture/docs/09-implementation/04-keystone-reconciler.md:279` to reference `{keystone.Name}` in the path.\n\n**Acceptance Criteria**:\n- [ ] `fernetKeysPushSecret` and `credentialKeysPushSecret` emit per-CR `RemoteKey` values that embed `keystone.Name`.\n- [ ] `push-keystone-keys.hcl` grants `create/update/read/delete` on the per-name patterns only, still denies access to `openstack/keystone/db`, and does so under a policy comment that captures the rationale for including the name segment.\n- [ ] Two Keystone CRs named `keystone-a` and `keystone-b` in the same namespace produce four distinct populated KV-v2 paths (`.../keystone-a/{fernet,credential}-keys`, `.../keystone-b/{fernet,credential}-keys`) — verifiable by hand with `bao kv list kv-v2/openstack/keystone/` or by extending `tests/e2e/keystone/concurrent-cr-conflicts` with a positive KV assertion.\n- [ ] `chainsaw/keystone-deletion-cleanup` step-6 asserts the `keystone-cleanup`-scoped paths and passes while any of `keystone-autoscaling`, `keystone-credential-rotation`, `keystone-brownfield-database`, or `keystone-concurrent-cr-conflicts` run in parallel (`parallel: 4`).\n- [ ] No regression in `chainsaw/keystone-fernet-rotation` or `chainsaw/keystone-credential-rotation` — PushSecret still reaches `Ready=True` on the new path.\n- [ ] Deletion-cleanup flake does not recur across 10 consecutive CI runs (manual `gh workflow run e2e.yaml` trigger) to confirm the race is closed, matching the validation bar used for #271.\n- [ ] Docs: the `{keystone.Name}` segment appears in every reference-doc location that previously listed the flat path, including the PushSecret table at `docs/reference/keystone-reconciler.md:763-764` and the rotation sections at `:1341/:1376/:1510/:1550`.\n- [ ] Migration note added to `docs/reference/keystone-reconciler.md`: pre-existing clusters carrying data at `kv-v2/openstack/keystone/{fernet,credential}-keys` will see the operator write a new path on next reconcile; the old paths are orphaned but harmless (read-only from Keystone's perspective — the live Secret is driven from the local Kubernetes `Secret`, not the OpenBao backup) and can be hard-deleted manually. Call this out explicitly so upgraders don't interpret the stale path as a leak.\n\n**Refs**: CC-0079 (openbao-finalizer), CC-0083 (PushSecret write policy), CC-0091 (adoption race), #271, #273. Auto-memory: `project_shared_openbao_kv_path.md`.\n\n**Labels:** bug\n\n---\nSource: https://github.com/C5C3/forge/issues/279",
   "stories": [
@@ -409,6 +409,7 @@
       "title": "Parameterize RemoteKey in fernetKeysPushSecret (operators/keystone/internal/controller/reconcile_fernet.go:423) using fmt.Sprintf(\"openstack/keystone/%s/fernet-keys\", keystone.Name); update the godoc at :396-:402 so the kv-v2/openstack/keystone/fernet-keys mention becomes kv-v2/openstack/keystone/{name}/fernet-keys and references feature id CC-0093 (REQ-001, REQ-010)",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-010"
@@ -419,6 +420,7 @@
       "title": "Parameterize RemoteKey in credentialKeysPushSecret (operators/keystone/internal/controller/reconcile_credential.go:429) using fmt.Sprintf(\"openstack/keystone/%s/credential-keys\", keystone.Name); update the godoc at :402-:408 symmetrically and reference CC-0093 (REQ-002, REQ-010)",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-010"
@@ -426,9 +428,10 @@
     },
     {
       "id": "1.3",
-      "title": "Update reconcile_fernet_test.go:412 to Equal(\"openstack/keystone/test-keystone/fernet-keys\") and add TestFernetKeysPushSecret_RemoteKeyIsCRScoped (table-driven over names [keystone-a, keystone-b, keystone-cleanup]) and TestFernetKeysPushSecret_PreservesDeletionPolicyAndStoreRef in the same file — all must pass go test ./operators/keystone/... (REQ-001, REQ-006)",
+      "title": "Update reconcile_fernet_test.go:412 to Equal(\"openstack/keystone/test-keystone/fernet-keys\") and add TestFernetKeysPushSecret_RemoteKeyIsCRScoped (table-driven over names [keystone-a, keystone-b, keystone-cleanup]) and TestFernetKeysPushSecret_PreservesDeletionPolicyAndStoreRef in the same file (REQ-001, REQ-006)",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-006"
@@ -439,6 +442,7 @@
       "title": "Update reconcile_credential_test.go:416 to Equal(\"openstack/keystone/test-keystone/credential-keys\") and add TestCredentialKeysPushSecret_RemoteKeyIsCRScoped and TestCredentialKeysPushSecret_PreservesDeletionPolicyAndStoreRef with symmetric assertions (REQ-002, REQ-006)",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-006"
@@ -449,6 +453,7 @@
       "title": "Rewrite deploy/openbao/policies/push-keystone-keys.hcl: replace the four literal path blocks (lines 44-58) with four `+`-glob blocks — kv-v2/{data,metadata}/openstack/keystone/+/fernet-keys and kv-v2/{data,metadata}/openstack/keystone/+/credential-keys — each with capabilities = [\"create\",\"update\",\"read\",\"delete\"]. Extend the header comment to state: (a) why the `+` single-segment glob is now used (per-CR layout, CC-0093), (b) why /db exclusion still holds (`+` requires the literal /fernet-keys or /credential-keys suffix — a literal `db` leaf has no such child), (c) that eso-management.hcl's kv-v2/data/openstack/keystone/* already covers the new read paths so the redundant-read capability remains redundant. Preserve existing CC-0079 and CC-0083 rationale paragraphs verbatim (REQ-003, REQ-009)",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-009"
@@ -459,6 +464,7 @@
       "title": "Verify the OpenBao/Vault KV-v2 glob semantics claim from 2.1 by consulting the upstream policy docs (ACL templating / path glob rules) and record the citation in the new header comment of push-keystone-keys.hcl. If the upstream semantics do NOT let `+` work as a single-segment glob in the current OpenBao release pinned by deploy/openbao, fall back to enumerating the production CR names — and raise that as a blocker back to the planning context rather than silently diverging (REQ-003, REQ-009)",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-009"
@@ -469,6 +475,7 @@
       "title": "Update tests/e2e/keystone/deletion-cleanup/chainsaw-test.yaml step-6 (lines 205-285 region): change the shell for-loop path list (lines 255-256) from the two shared strings to \"kv-v2/openstack/keystone/keystone-cleanup/fernet-keys\" and \"kv-v2/openstack/keystone/keystone-cleanup/credential-keys\". Keep the 30 s / 3 s bounded retry (CC-0091) and the stderr per-path error line unchanged. Update the step-6 header comment (lines 205-226) to note per-CR isolation as the reason cross-test interference is no longer possible and reference CC-0093 (REQ-004)",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -478,6 +485,7 @@
       "title": "Extend tests/e2e/keystone/concurrent-cr-conflicts/chainsaw-test.yaml with a new step after step-2 (Ready=True assertion) that execs bao kv get against all four CR-scoped paths under a 60 s / 3 s bounded retry: kv-v2/openstack/keystone/keystone-concurrent-{a,b}/{fernet-keys,credential-keys}. Script skeleton: reuse the openbao-system / openbao-0 / init-output root-token extraction from deletion-cleanup step-6. Also assert the legacy flat paths (openstack/keystone/fernet-keys, openstack/keystone/credential-keys) return not-found. Provide a catch block dumping openbao pod logs on failure. Reference CC-0093 in the step header comment (REQ-005)",
       "level": 3,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -487,6 +495,7 @@
       "title": "Add TestIntegrationKeystone_PushSecretRemoteKeyIsPerCR and TestIntegrationKeystone_CredentialPushSecretRemoteKeyIsPerCR to operators/keystone/internal/controller/integration_test.go. Each test: create two Keystones (kA, kB) in a shared namespace via the existing setupEnvTestWithController helper, drive a reconcile, Eventually.Get the two PushSecrets, assert their Spec.Data[0].Match.RemoteRef.RemoteKey values are distinct and each contains its CR's Name (REQ-001, REQ-002)",
       "level": 3,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002"
@@ -497,6 +506,7 @@
       "title": "Update docs/reference/keystone-reconciler.md table rows at lines 763-764: change the KV-v2 Path column to kv-v2/data/openstack/keystone/{keystone.Name}/fernet-keys and kv-v2/data/openstack/keystone/{keystone.Name}/credential-keys. No other change in this table (REQ-007)",
       "level": 4,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -506,6 +516,7 @@
       "title": "Rewrite the `> **Known limitation:**` block in docs/reference/keystone-reconciler.md (lines 779-784) to remove the stale flat-path claim. Replace with a two-sentence normative statement: paths are per-CR-scoped via `openstack/keystone/{keystone.Name}/<leaf>`, safe under multi-Keystone-per-namespace. Cross-link the new migration-note subsection. Reference CC-0093 (REQ-007)",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -515,6 +526,7 @@
       "title": "Update the Go code fragment at docs/reference/keystone-reconciler.md:803 so RemoteKey reads `fmt.Sprintf(\"openstack/keystone/%s/fernet-keys\", keystone.Name)` and a preceding sentence names the per-CR layout. The fragment must still compile as a copy-paste example (REQ-007)",
       "level": 4,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -524,6 +536,7 @@
       "title": "Update the CC-0091 motivating-race paragraph at docs/reference/keystone-reconciler.md:~1007 so the observed stuck path is described as `kv-v2/openstack/keystone/{name}/fernet-keys` (with the note that CI run 24842115250 predated CC-0093 and observed the now-legacy flat path). Keep the CC-0091 narrative intact — only the path form changes (REQ-007)",
       "level": 4,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -533,6 +546,7 @@
       "title": "Update the Fernet sub-reconciler section at docs/reference/keystone-reconciler.md:1340-1376: the bullet at :1341 and the PushSecret Remote Key row at :1376 both become kv-v2/data/openstack/keystone/{name}/fernet-keys (REQ-007)",
       "level": 4,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -542,6 +556,7 @@
       "title": "Update the credential sub-reconciler section at docs/reference/keystone-reconciler.md:1509-1550: the bullet at :1510 and the PushSecret Remote Key row at :1550 both become kv-v2/data/openstack/keystone/{name}/credential-keys (REQ-007)",
       "level": 4,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -551,6 +566,7 @@
       "title": "Add a new migration-note subsection in docs/reference/keystone-reconciler.md near the PushSecret overview (section containing lines 755-810). The note states: (a) on upgrade to CC-0093 the operator will write to the new `{name}`-scoped paths on next reconcile, (b) the old flat paths `kv-v2/openstack/keystone/{fernet,credential}-keys` are orphaned but harmless (live Keystone state is driven from the local Kubernetes Secret, not the OpenBao backup), (c) the recommended cleanup commands are `bao kv metadata delete kv-v2/openstack/keystone/fernet-keys` and `bao kv metadata delete kv-v2/openstack/keystone/credential-keys`. Reference feature id CC-0093 (REQ-007)",
       "level": 4,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -560,6 +576,7 @@
       "title": "Run `rg 'openstack/keystone/(fernet|credential)-keys' docs/ deploy/ operators/` after 1.1-4.7 and confirm every remaining match is either (a) inside the new migration note, or (b) a comment explicitly documenting the legacy form. Record the verified grep output in the PR description body as the CC-0093 completeness proof (REQ-007)",
       "level": 5,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -569,20 +586,9 @@
       "title": "Document the architecture-submodule follow-up: in the PR description, flag that architecture/docs/09-implementation/04-keystone-reconciler.md:279 still references the flat path and must be corrected via a separate upstream PR to github.com/C5C3/C5C3 (the submodule URL in .gitmodules). Do NOT modify the submodule content from this worktree (REQ-008)",
       "level": 5,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-008"
-      ]
-    },
-    {
-      "id": "5.3",
-      "title": "Full verification pass: run go vet ./..., go test ./operators/keystone/..., and golangci-lint run --config .golangci.yml ./operators/keystone/... from /workspace (or the closest go.work project root). Run chainsaw lint against tests/e2e/keystone/{deletion-cleanup,concurrent-cr-conflicts}/chainsaw-test.yaml if the binary is available. Record outcomes (pass / blocked-by-sandbox) in the PR description. Do not mark completion if any go test or vet failure is unresolved (REQ-001, REQ-002, REQ-006, REQ-010)",
-      "level": 5,
-      "estimate_minutes": 25,
-      "requirements": [
-        "REQ-001",
-        "REQ-002",
-        "REQ-006",
-        "REQ-010"
       ]
     }
   ],
@@ -677,6 +683,608 @@
       "story": "Cluster operator upgrading an existing deployment understands migration impact",
       "expected": "[unit] A migration-note subsection exists, references CC-0093, states the stale paths are harmless, and gives the `bao kv metadata delete kv-v2/openstack/keystone/fernet-keys` and `kv-v2/openstack/keystone/credential-keys` cleanup commands",
       "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_NoSecret_CreatesSecretAndRequeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_SecretAlreadyExists",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_CronJobScheduleUpdated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_GeneratedKeysAreValid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_CronJobScheduleMatchesSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_PushSecretDeletionPolicyDelete",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_PushSecretReferencesCorrectSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestCredentialKeyGeneration_Valid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestCredentialKeyGeneration_Unique",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_MinActiveKeysFloor",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_ConditionMessages",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestCredentialRotationCronJob_SecurityContext",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_CronJobSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestCredentialRotateScript_EmbeddedContent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestCredentialRotateScript_RotateBeforeMigrate",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_ConditionObservedGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestCredentialRotationCronJob_PriorityClassNameSet",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestCredentialRotationCronJob_PriorityClassNameNil",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestEnsureCredentialRotationRBAC_MainSecretIsReadOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestEnsureCredentialRotationRBAC_StagingSecretHasGetPatchOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_CreatesEmptyStagingSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestEnsureCredentialRotationRBAC_IsIdempotent_CC0081",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_AppliesStagedKeysWhenAnnotationPresent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_NoSecret_CreatesSecretAndRequeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_SecretAlreadyExists",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_CronJobScheduleUpdated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_GeneratedKeysAreValid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_CronJobScheduleMatchesSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_PushSecretDeletionPolicyDelete",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_PushSecretReferencesCorrectSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestGenerateFernetKey_Valid",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestGenerateFernetKey_Unique",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_MinActiveKeysFloor",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_ConditionMessages",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestFernetRotationCronJob_SecurityContext",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_CronJobSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestFernetRotateScript_EmbeddedContent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_ConditionObservedGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestFernetRotationCronJob_PriorityClassNameSet",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestFernetRotationCronJob_PriorityClassNameNil",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestEnsureFernetRotationRBAC_MainSecretIsReadOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestEnsureFernetRotationRBAC_StagingSecretHasGetPatchOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_CreatesEmptyStagingSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_AppliesStagedKeysWhenAnnotationPresent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestEnsureFernetRotationRBAC_IsIdempotent_CC0081",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FullReconcile_Brownfield",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_ConditionProgression",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_ResourceCreation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_StatusEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_ObservedGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FullReconcile_Managed",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_CronJobDetailedSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_BootstrapJobDetailedSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PDBSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PDBUpdatedOnReplicaChange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HPASpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HPAUpdatedOnAutoscalingChange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HPADeletedWhenAutoscalingRemoved",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FreshDeployment_InstalledReleaseTracking",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_UpgradeCycle_ExpandMigrateContract",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_TrustFlush_CronJobCreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_TrustFlush_CronJobDeleted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_TrustFlush_OmittedDoesNotCreateCronJob",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_GracefulShutdownSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PolicyValidation_GatesDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PolicyValidation_NotRequired",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HTTPRoute_CreatedWhenGatewaySet",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HTTPRoute_DeletedWhenGatewayRemoved",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HTTPRoute_UpdatedWhenGatewayChanged",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HTTPRoute_EndpointDerivedFromGateway",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FinalizerLifecycle_AddAndRemove",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FinalizerBrownfieldDeletion",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestRotationApplyEndToEnd_EnvTest",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestRotationApplyRejectsMalformedKeys_EnvTest",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestRotationApplyReplacesDisjointIndices_EnvTest",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_KeystonePodReachesDatabaseViaEnvOverride",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_RecreateDerivedSecretWhenDeleted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_OpenBaoFinalizerLifecycle_AddAndRemove",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_OpenBaoFinalizer_BlockedWhenPushSecretStuck",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegrationKeystone_DeleteRacingESOAdoption",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_SecretEventTriggersReconcileViaIndexer",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_UnrelatedSecretDoesNotTriggerReconcile",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_IndexerRegistrationFailsManagerStartCleanly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_TerminationGracePeriodAppliedToDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_DefaultStrategyAppliedToDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_StrategyOverrideAppliedToDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],
@@ -710,8 +1318,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-24T19:00:09.968914"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-24T19:01:28.169122"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-24T21:03:57.127137"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/280",
+  "pr_number": 280,
   "execution_history": [
     {
       "run_id": "a04a5092-edbb-4303-bdfd-0a28919b5a47",
@@ -723,6 +1341,90 @@
           "name": "prepare",
           "duration": 497.1207971572876,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "c2fa318b-317d-442b-a681-dd54b01bccb9",
+      "timestamp": "2026-04-24T19:34:55.869352",
+      "total_duration": 1709.9209008216858,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (4 tasks)",
+          "duration": 227.172833442688,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (2 tasks)",
+          "duration": 186.97675609588623,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (3 tasks)",
+          "duration": 384.5693848133087,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (7 tasks)",
+          "duration": 243.8674831390381,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 5 (2 tasks)",
+          "duration": 209.42482686042786,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0093] Code Review",
+          "duration": 289.66736674308777,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0093] Improvements",
+          "duration": 83.67300581932068,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0093] Simplify",
+          "duration": 84.56924390792847,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "444ac865-0c98-4331-9f68-2f074fb277ba",
+      "timestamp": "2026-04-24T20:37:38.800474",
+      "total_duration": 871.9775774478912,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 871.9775774478912,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "b71495c8-ca0d-4acb-a552-0e26ced03ad2",
+      "timestamp": "2026-04-24T21:00:55.268142",
+      "total_duration": 540.4328463077545,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 540.4328463077545,
+          "type": "review_address",
           "status": "done"
         }
       ]

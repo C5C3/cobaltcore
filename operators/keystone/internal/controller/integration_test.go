@@ -3658,3 +3658,83 @@ func TestIntegration_StrategyOverrideAppliedToDeployment(t *testing.T) {
 	g.Expect(deploy.Spec.Strategy.RollingUpdate.MaxSurge).NotTo(BeNil())
 	g.Expect(*deploy.Spec.Strategy.RollingUpdate.MaxSurge).To(Equal(intstr.FromString("25%")))
 }
+
+// TestIntegrationKeystone_PushSecretRemoteKeyIsPerCR verifies that two
+// Keystone CRs in the same namespace produce two backup PushSecrets with
+// distinct, per-CR-scoped RemoteKey values for both fernet-keys
+// (CC-0093, REQ-001) and credential-keys (CC-0093, REQ-002) materials.
+//
+// Regression guard: before CC-0093, both PushSecrets wrote to the shared
+// path openstack/keystone/<material>, causing concurrent two-CR
+// deployments in the same namespace to race on the remote kv-v2 store.
+// The table-driven form keeps per-CR assertions for every key material in
+// one place so adding a new material (or changing the path layout)
+// requires a single edit (sourcery-review-1).
+func TestIntegrationKeystone_PushSecretRemoteKeyIsPerCR(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	cases := []struct {
+		material    string // kv-v2 leaf segment and PushSecret name suffix
+		requirement string // spec requirement this row covers (REQ-001 / REQ-002)
+	}{
+		{material: "fernet-keys", requirement: "REQ-001"},
+		{material: "credential-keys", requirement: "REQ-002"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.material, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			c, ctx, _ := setupEnvTestWithController(t)
+
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+				GenerateName: "test-per-cr-" + tc.material + "-",
+			}}
+			g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+			createPrerequisites(t, ctx, c, ns.Name)
+
+			// kA and kB intentionally share the namespace-scoped keystone-db and
+			// keystone-admin Secret refs created by createPrerequisites: this test
+			// asserts PushSecret RemoteKey distinctness (CC-0093, REQ-001 for
+			// fernet / REQ-002 for credential), not isolation of the read-only
+			// credential Secrets.
+			kA := integrationBrownfieldKeystone("keystone-a", ns.Name)
+			kB := integrationBrownfieldKeystone("keystone-b", ns.Name)
+			g.Expect(c.Create(ctx, kA)).To(Succeed())
+			g.Expect(c.Create(ctx, kB)).To(Succeed())
+
+			driveFullReconciliation(t, ctx, c, kA.Name, ns.Name)
+			driveFullReconciliation(t, ctx, c, kB.Name, ns.Name)
+
+			psA := &esov1alpha1.PushSecret{}
+			psB := &esov1alpha1.PushSecret{}
+			nameA := kA.Name + "-" + tc.material + "-backup"
+			nameB := kB.Name + "-" + tc.material + "-backup"
+			g.Eventually(func() error {
+				return c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: nameA}, psA)
+			}, eventuallyTimeout).Should(Succeed())
+			g.Eventually(func() error {
+				return c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: nameB}, psB)
+			}, eventuallyTimeout).Should(Succeed())
+
+			g.Expect(psA.Spec.Data).ToNot(BeEmpty())
+			g.Expect(psB.Spec.Data).ToNot(BeEmpty())
+
+			keyA := psA.Spec.Data[0].Match.RemoteRef.RemoteKey
+			keyB := psB.Spec.Data[0].Match.RemoteRef.RemoteKey
+
+			wantA := "openstack/keystone/" + kA.Name + "/" + tc.material
+			wantB := "openstack/keystone/" + kB.Name + "/" + tc.material
+
+			g.Expect(keyA).To(Equal(wantA),
+				kA.Name+" RemoteKey must embed CR name ("+tc.requirement+")")
+			g.Expect(keyB).To(Equal(wantB),
+				kB.Name+" RemoteKey must embed CR name ("+tc.requirement+")")
+			g.Expect(keyA).ToNot(Equal(keyB),
+				"RemoteKeys must be distinct per-CR to prevent concurrent write collision")
+			g.Expect(keyA).To(ContainSubstring(kA.Name))
+			g.Expect(keyB).To(ContainSubstring(kB.Name))
+		})
+	}
+}

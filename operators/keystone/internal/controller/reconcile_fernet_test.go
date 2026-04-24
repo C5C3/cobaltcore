@@ -409,7 +409,55 @@ func TestReconcileFernetKeys_PushSecretReferencesCorrectSecret(t *testing.T) {
 	g.Expect(ps.Spec.SecretStoreRefs[0].Kind).To(Equal("ClusterSecretStore"))
 	g.Expect(ps.Spec.SecretStoreRefs[0].Name).To(Equal("openbao-cluster-store"))
 	g.Expect(ps.Spec.Data).To(HaveLen(1))
-	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal("openstack/keystone/fernet-keys"))
+	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal("openstack/keystone/test-keystone/fernet-keys"))
+}
+
+// TestFernetKeysPushSecret_RemoteKeyIsCRScoped pins REQ-001 (CC-0093): every
+// Keystone CR must get a RemoteKey containing its own Name as a path segment,
+// so two CRs in the same namespace never collide on one shared KV-v2 path.
+func TestFernetKeysPushSecret_RemoteKeyIsCRScoped(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	names := []string{"keystone-a", "keystone-b", "keystone-cleanup"}
+	seen := make(map[string]string, len(names))
+
+	for _, name := range names {
+		ks := &keystonev1alpha1.Keystone{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		}
+
+		ps := fernetKeysPushSecret(ks)
+
+		g.Expect(ps.Spec.Data).To(HaveLen(1))
+		got := ps.Spec.Data[0].Match.RemoteRef.RemoteKey
+		want := "openstack/keystone/" + name + "/fernet-keys"
+		g.Expect(got).To(Equal(want), "RemoteKey must embed CR name for %q", name)
+		g.Expect(got).NotTo(Equal("openstack/keystone/fernet-keys"), "must not fall back to legacy flat path")
+
+		if prev, dup := seen[got]; dup {
+			t.Fatalf("RemoteKey collision: %q already produced by %q, now produced by %q", got, prev, name)
+		}
+		seen[got] = name
+	}
+}
+
+// TestFernetKeysPushSecret_PreservesDeletionPolicyAndStoreRef pins that the
+// CC-0079 OpenBao-finalizer wiring (DeletionPolicy=Delete, one
+// ClusterSecretStore ref to openbao-cluster-store) is not weakened by the
+// CC-0093 RemoteKey change.
+func TestFernetKeysPushSecret_PreservesDeletionPolicyAndStoreRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ks := &keystonev1alpha1.Keystone{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone", Namespace: "default"},
+	}
+
+	ps := fernetKeysPushSecret(ks)
+
+	g.Expect(ps.Spec.DeletionPolicy).To(Equal(esov1alpha1.PushSecretDeletionPolicyDelete))
+	g.Expect(ps.Spec.SecretStoreRefs).To(HaveLen(1))
+	g.Expect(ps.Spec.SecretStoreRefs[0].Kind).To(Equal("ClusterSecretStore"))
+	g.Expect(ps.Spec.SecretStoreRefs[0].Name).To(Equal("openbao-cluster-store"))
 }
 
 func TestGenerateFernetKey_Valid(t *testing.T) {

@@ -203,11 +203,18 @@ spec:
           fi
           echo "OK: No ConfigMap matching keystone-cleanup-config-* found"
   # ── Step 6: Assert OpenBao KV-v2 paths are absent ──────────────────────
+  # REQ-004 (CC-0093): RemoteKey is scoped per Keystone CR as
+  # openstack/keystone/{keystone.Name}/<leaf>, so this step checks the
+  # paths under the keystone-cleanup sub-tree only. Cross-test interference
+  # with other chainsaw suites is no longer structurally possible — each
+  # test's kv-v2 paths live in a disjoint sub-tree.
+  #
   # REQ-010 (CC-0079): PushSecret deletion with DeletionPolicy=Delete drives
-  # ESO to purge the remote kv-v2/openstack/keystone/{fernet-keys,credential-
-  # keys} paths. PushSecret NotFound alone does not guarantee the remote
-  # purge succeeded, so this step execs bao-cli inside the openbao-0 pod and
-  # asserts both paths return a non-zero exit (path not found / no value).
+  # ESO to purge the remote kv-v2/openstack/keystone/keystone-cleanup/
+  # {fernet-keys,credential-keys} paths. PushSecret NotFound alone does not
+  # guarantee the remote purge succeeded, so this step execs bao-cli inside
+  # the openbao-0 pod and asserts both paths return a non-zero exit (path
+  # not found / no value).
   #
   # REQ-004 (CC-0091): ESO's remote DeleteSecret completes asynchronously
   # after the PushSecret object is garbage-collected — typically 1-3 s, but
@@ -252,8 +259,8 @@ spec:
           while [ "$(date +%s)" -lt "${deadline}" ]; do
             all_clear=1
             still_present=""
-            for path in "kv-v2/openstack/keystone/fernet-keys" \
-                        "kv-v2/openstack/keystone/credential-keys"; do
+            for path in "kv-v2/openstack/keystone/keystone-cleanup/fernet-keys" \
+                        "kv-v2/openstack/keystone/keystone-cleanup/credential-keys"; do
               echo "=== bao kv get ${path} (expect not-found) ==="
               out=$(kubectl exec -n "${BAO_NS}" "${POD}" -- \
                 env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" \

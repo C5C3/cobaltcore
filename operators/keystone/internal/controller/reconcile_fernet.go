@@ -395,9 +395,14 @@ func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName st
 
 // fernetKeysPushSecret builds the PushSecret CR that backs up Fernet keys to OpenBao.
 //
+// The RemoteKey embeds keystone.Name as a path segment
+// (kv-v2/openstack/keystone/{keystone.Name}/fernet-keys) so two Keystone CRs
+// in the same namespace never share a backing OpenBao object (CC-0093,
+// REQ-001).
+//
 // DeletionPolicy=Delete wires the backup PushSecret into the OpenBao finalizer
 // flow: when the keystone.openstack.c5c3.io/openbao-finalizer handler deletes
-// this PushSecret, ESO purges the remote kv-v2/openstack/keystone/fernet-keys
+// this PushSecret, ESO purges the remote kv-v2/openstack/keystone/{keystone.Name}/fernet-keys
 // path before letting the PushSecret object be garbage-collected (CC-0079,
 // REQ-008).
 func fernetKeysPushSecret(keystone *keystonev1alpha1.Keystone) *esov1alpha1.PushSecret {
@@ -420,7 +425,7 @@ func fernetKeysPushSecret(keystone *keystonev1alpha1.Keystone) *esov1alpha1.Push
 			Data: []esov1alpha1.PushSecretData{{
 				Match: esov1alpha1.PushSecretMatch{
 					RemoteRef: esov1alpha1.PushSecretRemoteRef{
-						RemoteKey: "openstack/keystone/fernet-keys",
+						RemoteKey: "openstack/keystone/" + keystone.Name + "/fernet-keys",
 					},
 				},
 			}},

@@ -760,8 +760,8 @@ PushSecret CRs (both in the Keystone's namespace):
 
 | PushSecret | API Group | KV-v2 Path (OpenBao) |
 | --- | --- | --- |
-| `{keystone.Name}-fernet-keys-backup` | `external-secrets.io` | `kv-v2/data/openstack/keystone/fernet-keys` |
-| `{keystone.Name}-credential-keys-backup` | `external-secrets.io` | `kv-v2/data/openstack/keystone/credential-keys` |
+| `{keystone.Name}-fernet-keys-backup` | `external-secrets.io` | `kv-v2/data/openstack/keystone/{keystone.Name}/fernet-keys` |
+| `{keystone.Name}-credential-keys-backup` | `external-secrets.io` | `kv-v2/data/openstack/keystone/{keystone.Name}/credential-keys` |
 
 The names are produced by `openBaoBackupPushSecretNames(keystone)` so that
 adding a third backup target in the future is a one-line change. Both
@@ -776,18 +776,61 @@ The finalizer does **not** touch any other Keystone-owned resource
 built-in Kubernetes garbage collector via owner references — see
 [Owned Resources](#owned-resources).
 
-> **Known limitation:** Both KV-v2 paths are cluster-global
-> (`openstack/keystone/fernet-keys`, `openstack/keystone/credential-keys`)
-> rather than `{name}`-scoped. The current deploy model is
-> single-Keystone-per-cluster for the `openstack` namespace, so this is not
-> observable in practice. Multi-Keystone-per-namespace support would require
-> per-CR-scoped paths and is tracked as deferred scope.
+> **Path scoping (CC-0093):** Both KV-v2 paths are per-CR-scoped via
+> `openstack/keystone/{keystone.Name}/<leaf>` (where `<leaf>` is `fernet-keys`
+> or `credential-keys`), so multiple Keystone CRs in the same namespace write
+> to disjoint paths and cannot collide. See
+> [Migration note: legacy flat paths (CC-0093)](#migration-note-legacy-flat-paths-cc-0093)
+> for upgrade behaviour and recommended cleanup of orphaned pre-CC-0093 paths.
+
+### Migration note: legacy flat paths (CC-0093)
+
+Before CC-0093, both backup PushSecrets wrote to the cluster-global, flat
+KV-v2 paths `kv-v2/openstack/keystone/fernet-keys` and
+`kv-v2/openstack/keystone/credential-keys`. Starting with CC-0093 the
+operator writes to the per-CR-scoped paths
+`kv-v2/openstack/keystone/{keystone.Name}/fernet-keys` and
+`kv-v2/openstack/keystone/{keystone.Name}/credential-keys`.
+
+The RemoteKey change lands the moment the Keystone operator is upgraded —
+the next reconcile of each Keystone CR emits the new path. For existing
+clusters the corresponding OpenBao ACL
+(`deploy/openbao/policies/push-keystone-keys.hcl`) must also be re-applied
+so ESO is authorised to write to the new paths; otherwise ESO will return
+`403` on the backup step and `FernetKeysReady` / `CredentialKeysReady` will
+flip to `False`. For kind/dev clusters this happens automatically when
+`hack/deploy-infra.sh` (or `deploy/openbao/bootstrap/setup-policies.sh`)
+is re-run; for production clusters managed outside the bootstrap flow the
+equivalent is a single `bao policy write push-keystone-keys …` against the
+updated HCL file.
+
+The pre-CC-0093 flat paths are **orphaned but harmless** after upgrade:
+the live Keystone control plane reads its Fernet and credential keys from
+the local Kubernetes `Secret` (`{name}-fernet-keys`, `{name}-credential-keys`),
+not from the OpenBao backup. The OpenBao copy is a disaster-recovery
+artefact only; the legacy entries simply stop being refreshed, never get
+deleted by `DeletionPolicy=Delete` (no live PushSecret references them
+anymore), and are otherwise inert.
+
+Operators who want a clean OpenBao state can purge the legacy entries
+manually after upgrade:
+
+```sh
+bao kv metadata delete kv-v2/openstack/keystone/fernet-keys
+bao kv metadata delete kv-v2/openstack/keystone/credential-keys
+```
+
+`metadata delete` removes both the current version and all historical
+versions of the secret at that path; this is the canonical KV-v2 purge
+operation and the right inverse of the now-superseded write.
 
 ### DeletionPolicy=Delete Wiring Through ESO
 
 The Keystone operator has no OpenBao credentials and does not talk to the
 OpenBao API directly. Remote purge of the KV-v2 path is delegated to ESO
-via the PushSecret field `Spec.DeletionPolicy`:
+via the PushSecret field `Spec.DeletionPolicy`. The `RemoteKey` follows the
+per-CR layout `openstack/keystone/{keystone.Name}/<leaf>` introduced by
+CC-0093, so each Keystone CR writes to its own KV-v2 prefix:
 
 ```go
 Spec: esov1alpha1.PushSecretSpec{
@@ -800,7 +843,7 @@ Spec: esov1alpha1.PushSecretSpec{
     Data: []esov1alpha1.PushSecretData{{
         Match: esov1alpha1.PushSecretMatch{
             RemoteRef: esov1alpha1.PushSecretRemoteRef{
-                RemoteKey: "openstack/keystone/fernet-keys",
+                RemoteKey: fmt.Sprintf("openstack/keystone/%s/fernet-keys", keystone.Name),
             },
         },
     }},
@@ -1002,10 +1045,13 @@ ESO's first reconcile: the operator calls `Delete` on the PushSecret
 before ESO has installed its own cleanup finalizer, the API server
 immediately garbage-collects the PushSecret object, and ESO never observes
 the `DeletionTimestamp` — so `DeletionPolicy=Delete` never runs and the
-referenced kv-v2 path is orphaned in OpenBao. This was observed in CI run
-24842115250, where a deletion-cleanup run flaked with a still-present
-`kv-v2/openstack/keystone/fernet-keys` path after the PushSecret itself
-was already gone. Pass-0 gates the operator's `Delete` on ESO having
+referenced kv-v2 path is orphaned in OpenBao. The observed stuck path now
+takes the per-CR form `kv-v2/openstack/keystone/{name}/fernet-keys` (CC-0093);
+this was originally seen in CI run 24842115250, which predated CC-0093 and
+therefore observed the now-legacy flat path
+`kv-v2/openstack/keystone/fernet-keys`. The race itself is path-shape
+independent — the only difference is the kv-v2 key that would be left
+orphaned without Pass-0. Pass-0 gates the operator's `Delete` on ESO having
 signalled adoption by installing its cleanup finalizer, so the race
 collapses into an observable `WaitingForESOAdoption` state that resolves
 on the next ESO reconcile instead of a silent leak.
@@ -1338,7 +1384,7 @@ and disaster recovery backup to OpenBao.
 4. **Ensure rotation CronJob** — Create or update `{name}-fernet-rotate` CronJob
    with the schedule from `spec.fernet.rotationSchedule`.
 5. **Ensure PushSecret** — Create or update `{name}-fernet-keys-backup` PushSecret
-   targeting `kv-v2/data/openstack/keystone/fernet-keys` in the `openbao`
+   targeting `kv-v2/data/openstack/keystone/{name}/fernet-keys` in the `openbao`
    ClusterSecretStore.
 
 **Key Generation:**
@@ -1373,7 +1419,7 @@ and disaster recovery backup to OpenBao.
 | Name | `{name}-fernet-keys-backup` |
 | Store | `ClusterSecretStore/openbao` |
 | Source Secret | `{name}-fernet-keys` |
-| Remote Key | `kv-v2/data/openstack/keystone/fernet-keys` |
+| Remote Key | `kv-v2/data/openstack/keystone/{name}/fernet-keys` |
 
 **Condition Contract:**
 
@@ -1507,7 +1553,7 @@ with credential migration, and disaster recovery backup to OpenBao (CC-0036).
 4. **Ensure rotation CronJob** — Create or update `{name}-credential-rotate` CronJob
    with the schedule from `spec.credentialKeys.rotationSchedule`.
 5. **Ensure PushSecret** — Create or update `{name}-credential-keys-backup` PushSecret
-   targeting `kv-v2/data/openstack/keystone/credential-keys` in the `openbao`
+   targeting `kv-v2/data/openstack/keystone/{name}/credential-keys` in the `openbao`
    ClusterSecretStore.
 
 **Key Generation:**
@@ -1547,7 +1593,7 @@ with credential migration, and disaster recovery backup to OpenBao (CC-0036).
 | Name | `{name}-credential-keys-backup` |
 | Store | `ClusterSecretStore/openbao` |
 | Source Secret | `{name}-credential-keys` |
-| Remote Key | `kv-v2/data/openstack/keystone/credential-keys` |
+| Remote Key | `kv-v2/data/openstack/keystone/{name}/credential-keys` |
 
 **Condition Contract:**
 
