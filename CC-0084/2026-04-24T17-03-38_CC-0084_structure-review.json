@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-24T17:03:38.721130+00:00",
+  "feature_id": "CC-0084",
+  "task_type": "structure-review",
+  "session_key": "CC-0084",
+  "model": "claude-opus-4-7",
+  "prompt": "Convert this human code review feedback into a structured prompt for an AI coding agent.\n\nFeature: CC-0084 - Harden graceful pod termination in Keystone rolling updates\nReviewer: gndrmnn\n\nRaw feedback:\n\n\n## Inline Comments\n- `tests/e2e/keystone/rolling-update-zero-downtime/01-patch-image.yaml:13` — \"Remove the specific line reference `611-614` as this will likely be stale in the future\"\n\nIMPORTANT: Preserve the reviewer's original scope exactly.\nIf the reviewer commented on specific files/lines, the structured prompt must target ONLY those locations.\nDo NOT broaden or generalize the reviewer's intent to other files.\n\nOutput a structured prompt in this format:\n\nPlease address the comments from this code review:\n## Overall Comments\n- (list each overall concern)\n## Individual Comments\n### Comment N\n<location path=\"...\" line_range=\"...\" />\n(description of change needed)\n\nBe specific about file paths and line numbers where available.\nOnly output the structured prompt, nothing else.",
+  "prompt_length": 991,
+  "caller": "run_claude_cli"
+}

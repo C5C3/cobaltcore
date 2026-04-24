@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-24T17:04:21.702447+00:00",
+  "feature_id": "CC-0084",
+  "task_type": "review",
+  "session_key": "CC-0084",
+  "model": "claude-opus-4-7",
+  "prompt": "Analyze the following external review that has been addressed.\nIdentify what our INTERNAL code review should have caught\nBEFORE the external reviewer found it.\n\n## External Review Feedback\n\n\n## Code Comments (with Resolutions)\n- [tests/e2e/keystone/rolling-update-zero-downtime/01-patch-image.yaml:13] Remove the specific line reference `611-614` as this will likely be stale in the future\n\n## Resolution Summary\nAddressed the external review comment by removing the brittle line-number reference `ci.yaml:611-614` from the comment block in `tests/e2e/keystone/rolling-update-zero-downtime/01-patch-image.yaml`. Replaced it with a reference to the stable step name (\"Load images into kind\" step in `.github/workflows/ci.yaml`), which survives future file edits and remains meaningful as the workflow evolves. No additional files were modified.\n\nExtract 0-3 review improvement patterns. For each:\n- name: Short, action-oriented name IN ENGLISH\n- review_area: error-handling | security | testing | performance | type-safety | validation | architecture | naming | documentation\n- detection_hint: How should the reviewer detect this?\n- severity: BLOCKING | WARNING\n- what_to_check: What exactly to check\n- why_it_matters: Why it matters\n- example_feedback: Original quote from the reviewer\n- example_fix: What was changed\n\nQUALITY: Only real review blindspots. No subjective style opinions.\nNothing that only a domain expert could know.\nIf nothing extractable: empty array.\n\nLANGUAGE: ALL fields MUST be in English.\n\nResponse: ONLY JSON array.",
+  "prompt_length": 1539,
+  "caller": "run_claude_cli"
+}
