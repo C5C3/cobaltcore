@@ -354,23 +354,28 @@ func (r *KeystoneReconciler) hasLiveMariaDBResources(ctx context.Context, keysto
 // reconcileDeleteOpenBao drives the openbao-finalizer cleanup when the Keystone
 // CR is being deleted. It is a no-op if the openbao finalizer is absent.
 // Otherwise it emits FinalizingOpenBaoSecrets when at least one backup
-// PushSecret still exists (dedupes the event across requeues because subsequent
-// passes observe the PushSecrets gone or Terminating and suppress the emit),
-// calls finalizeOpenBaoSecrets, and on done=true emits OpenBaoSecretsFinalized
-// and releases the finalizer. A PushSecret held Terminating by ESO's cleanup
+// PushSecret has been adopted by ESO and is not yet Terminating (dedupes the
+// event across requeues because subsequent passes observe the PushSecrets
+// gone, Terminating, or still unadopted and suppress the emit), calls
+// finalizeOpenBaoSecrets, and on done=true emits OpenBaoSecretsFinalized and
+// releases the finalizer. A PushSecret held Terminating by ESO's cleanup
 // finalizer surfaces as ctrl.Result{RequeueAfter: RequeueSecretPolling} so the
 // Keystone CR stays live until ESO has purged the kv-v2 path (CC-0079,
-// REQ-002, REQ-004, REQ-006, REQ-007).
+// CC-0091, REQ-002, REQ-004, REQ-006, REQ-007).
 func (r *KeystoneReconciler) reconcileDeleteOpenBao(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(keystone, keystoneOpenBaoFinalizer) {
 		return ctrl.Result{}, nil
 	}
 
-	// Only emit FinalizingOpenBaoSecrets when a backup PushSecret is still
-	// present and not yet Terminating — subsequent requeues observe the same
-	// PushSecret Terminating (DeletionTimestamp set) or absent and suppress
-	// the emit, giving exactly-once semantics per termination (CC-0079,
-	// REQ-007).
+	// Only emit FinalizingOpenBaoSecrets when a backup PushSecret is adopted
+	// by ESO and not yet Terminating — subsequent requeues observe the same
+	// PushSecret Terminating (DeletionTimestamp set), absent, or still
+	// unadopted and suppress the emit, giving exactly-once semantics per
+	// termination. Gating on ESO adoption is what preserves the exactly-once
+	// contract across the Pass-0 adoption-wait window added by CC-0091:
+	// without the gate, the 15s RequeueSecretPolling tick would fire a fresh
+	// FinalizingOpenBaoSecrets event on every requeue until ESO adopts
+	// (CC-0079, CC-0091, REQ-007).
 	hasLiveCleanupWork, err := r.hasLiveOpenBaoBackupPushSecrets(ctx, keystone)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -398,12 +403,19 @@ func (r *KeystoneReconciler) reconcileDeleteOpenBao(ctx context.Context, keyston
 	return ctrl.Result{}, nil
 }
 
-// hasLiveOpenBaoBackupPushSecrets reports whether any backup PushSecret still
-// exists with DeletionTimestamp unset — i.e., real cleanup work remains. A
-// PushSecret that is Terminating (held by ESO's cleanup finalizer) is not
-// considered live because its deletion has already been announced — counting
-// it would double-emit FinalizingOpenBaoSecrets on every requeue (CC-0079,
-// REQ-007).
+// hasLiveOpenBaoBackupPushSecrets reports whether any backup PushSecret is
+// ready to be announced via FinalizingOpenBaoSecrets — i.e. is present, not
+// Terminating, AND has already been adopted by ESO (carries the ESO cleanup
+// finalizer). Three disqualifiers explicitly return false:
+//
+//   - NotFound: nothing to clean up.
+//   - Terminating (DeletionTimestamp set): the event was already emitted on
+//     the prior transition; counting it again would double-announce on every
+//     requeue.
+//   - Adopted=false: Pass-0 is still blocking the Delete, so there is nothing
+//     to announce yet. Without this gate the 15s RequeueSecretPolling tick
+//     would fire a fresh Event on every requeue until ESO adopts, regressing
+//     the exactly-once contract established by CC-0079 (CC-0091, REQ-007).
 func (r *KeystoneReconciler) hasLiveOpenBaoBackupPushSecrets(ctx context.Context, keystone *keystonev1alpha1.Keystone) (bool, error) {
 	for _, name := range openBaoBackupPushSecretNames(keystone) {
 		key := client.ObjectKey{Namespace: keystone.Namespace, Name: name}
@@ -415,7 +427,7 @@ func (r *KeystoneReconciler) hasLiveOpenBaoBackupPushSecrets(ctx context.Context
 		if err != nil {
 			return false, fmt.Errorf("checking PushSecret %s: %w", key, err)
 		}
-		if ps.GetDeletionTimestamp().IsZero() {
+		if ps.GetDeletionTimestamp().IsZero() && hasESOFinalizer(ps) {
 			return true, nil
 		}
 	}
@@ -573,7 +585,14 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&policyv1.PodDisruptionBudget{}).
 		Owns(&autoscalingv2.HorizontalPodAutoscaler{}).
 		Owns(&networkingv1.NetworkPolicy{}).
-		Owns(&batchv1.CronJob{})
+		Owns(&batchv1.CronJob{}).
+		// EnsurePushSecret (internal/common/secrets/secrets.go) sets a
+		// controller reference so Keystone owns each backup PushSecret.
+		// Watching the owned PushSecrets collapses the openbao-finalizer
+		// adoption-wait latency from up to RequeueSecretPolling (15s) to
+		// watch-event delivery latency once ESO installs its cleanup
+		// finalizer on first reconcile (CC-0091).
+		Owns(&esov1alpha1.PushSecret{})
 
 	if r.gatewayAPIAvailable {
 		builder = builder.Owns(&gatewayv1.HTTPRoute{})

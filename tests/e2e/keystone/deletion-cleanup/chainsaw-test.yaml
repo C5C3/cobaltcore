@@ -209,6 +209,16 @@ spec:
   # purge succeeded, so this step execs bao-cli inside the openbao-0 pod and
   # asserts both paths return a non-zero exit (path not found / no value).
   #
+  # REQ-004 (CC-0091): ESO's remote DeleteSecret completes asynchronously
+  # after the PushSecret object is garbage-collected — typically 1-3 s, but
+  # may lag under workqueue contention. Poll each kv-v2 path every 3 s for
+  # up to 30 s (10 iterations) and exit 0 on the first all-clear sweep, so
+  # the expected gap between step-4 (PushSecret gone) and the remote purge
+  # does not re-flake the test. On timeout, emit one
+  # "ERROR: <path> still present after 30s" line per stuck path to stderr
+  # and exit non-zero so chainsaw still fails loudly on an operator
+  # regression.
+  #
   # Namespace note: the OpenBao server runs in openbao-system (see
   # deploy/flux-system/releases/openbao.yaml:14 and
   # deploy/openbao/bootstrap/common.sh:17). The task spec reference to
@@ -232,24 +242,46 @@ spec:
             exit 1
           fi
 
-          rc=0
-          for path in "kv-v2/openstack/keystone/fernet-keys" \
-                      "kv-v2/openstack/keystone/credential-keys"; do
-            echo "=== bao kv get ${path} (expect not-found) ==="
-            out=$(kubectl exec -n "${BAO_NS}" "${POD}" -- \
-              env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" \
-                  VAULT_CACERT="${VAULT_CACERT}" \
-                  bao kv get "${path}" 2>&1) && get_rc=0 || get_rc=$?
-            echo "${out}"
-            echo "exit=${get_rc}"
-            if [ "${get_rc}" -eq 0 ]; then
-              echo "ERROR: ${path} still exists in OpenBao after PushSecret deletion"
-              rc=1
-            else
-              echo "OK: ${path} is absent in OpenBao"
+          # Bounded retry: 30 s budget, 3 s interval, 10 iterations max.
+          # Exit 0 on the first sweep where every path is absent.
+          # Use date +%s (not $SECONDS) — chainsaw runs scripts under
+          # /usr/bin/sh (dash), which does not define SECONDS, so with
+          # `set -u` the expansion would fail with "parameter not set".
+          deadline=$(( $(date +%s) + 30 ))
+          still_present=""
+          while [ "$(date +%s)" -lt "${deadline}" ]; do
+            all_clear=1
+            still_present=""
+            for path in "kv-v2/openstack/keystone/fernet-keys" \
+                        "kv-v2/openstack/keystone/credential-keys"; do
+              echo "=== bao kv get ${path} (expect not-found) ==="
+              out=$(kubectl exec -n "${BAO_NS}" "${POD}" -- \
+                env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" \
+                    VAULT_CACERT="${VAULT_CACERT}" \
+                    bao kv get "${path}" 2>&1) && get_rc=0 || get_rc=$?
+              echo "${out}"
+              echo "exit=${get_rc}"
+              if [ "${get_rc}" -eq 0 ]; then
+                echo "ERROR: ${path} still exists in OpenBao after PushSecret deletion"
+                still_present="${still_present} ${path}"
+                all_clear=0
+              else
+                echo "OK: ${path} is absent in OpenBao"
+              fi
+            done
+            if [ "${all_clear}" -eq 1 ]; then
+              exit 0
             fi
+            sleep 3
           done
-          exit "${rc}"
+
+          # Timeout: name each still-present path on stderr so chainsaw's
+          # failure surface identifies exactly which kv-v2 path leaked
+          # (REQ-004, CC-0091).
+          for path in ${still_present}; do
+            echo "ERROR: ${path} still present after 30s" >&2
+          done
+          exit 1
     catch:
     - script:
         content: |

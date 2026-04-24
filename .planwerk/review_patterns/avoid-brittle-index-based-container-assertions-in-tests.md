@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: In test code, look for direct slice indexing like `Containers[0]` or `InitContainers[0]` paired with `assert.Len(..., 1)`. These patterns break as soon as a sidecar or additional container is added.
 **Severity**: WARNING
-**Occurrences**: 4
+**Occurrences**: 5
 
 ## What to check
 
@@ -34,3 +34,8 @@ Index-based access couples tests to container ordering and count. Adding a sidec
 - **Feedback**: The added tests in reconcile_fernet_test.go Line 630-640 are STILL too implementation specific. We are not going to add unit tests that check for certain substrings in the Python source code... Checking the source code for the occurrence of substrings is very bad practice and very brittle.
 - **What was missed**: Flag tests that use Contains/substring matching on embedded script bodies (e.g., Python heredocs) to verify specific implementation details like identifiers, API call names, annotation keys, or library usage. Only allow minimal structural probes that validate deployment (e.g., shebang or heredoc delimiter).
 - **Fix**: Removed substring assertions for `CC-0081`, `forge.c5c3.io/rotation-completed-at`, `datetime.datetime`, `strategic-merge-patch+json`, and `Secret update failed` from both TestFernetRotateScript_EmbeddedContent and TestCredentialRotateScript_EmbeddedContent. Retained only the `python3 << 'PYTHON'` probe that validates the script is deployed.
+
+### CC-0091 — berendt
+- **Feedback**: Add an integration-test assertion in TestIntegrationKeystone_DeleteRacingESOAdoption stage 1 that counts FinalizingOpenBaoSecrets events and expects ≤ 1 across the adoption-wait window.
+- **What was missed**: For integration tests that span multiple requeues (wait states, polling, adoption races), verify that any Normal/Warning Events emitted during those requeues are asserted with an upper bound on count, filtered by InvolvedObject.UID and Reason, rather than merely asserting existence.
+- **Fix**: A stage-1 assertion was added in integration_test.go:3304-3323 that lists Events on the namespace, filters by InvolvedObject.UID and Reason==FinalizingOpenBaoSecrets across the adoption-wait window, and requires the count to be ≤ 1.

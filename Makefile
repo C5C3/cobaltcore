@@ -349,7 +349,7 @@ test-integration:
 	echo "KUBEBUILDER_ASSETS=$$KUBEBUILDER_ASSETS" && \
 	for op in $(OPERATORS); do \
 		echo "Integration-testing operators/$$op module..."; \
-		go test -tags=integration -coverprofile=cover-integration-$$op.out ./operators/$$op/... || exit 1; \
+		go test -tags=integration -timeout=20m -coverprofile=cover-integration-$$op.out ./operators/$$op/... || exit 1; \
 	done
 
 .PHONY: test-integration-common
@@ -360,4 +360,4 @@ test-integration-common:
 	@KUBEBUILDER_ASSETS=$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) -p path) && export KUBEBUILDER_ASSETS && \
 	echo "KUBEBUILDER_ASSETS=$$KUBEBUILDER_ASSETS" && \
 	echo "Integration-testing internal/common module..." && \
-	go test -tags=integration -coverprofile=cover-integration-common.out ./internal/common/...
+	go test -tags=integration -timeout=20m -coverprofile=cover-integration-common.out ./internal/common/...

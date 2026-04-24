@@ -2344,9 +2344,40 @@ func TestIntegration_FinalizerLifecycle_AddAndRemove(t *testing.T) {
 		return c.Get(ctx, grantKey, &mariadbv1alpha1.Grant{})
 	}, eventuallyLongTimeout, pollInterval).Should(Succeed(), "MariaDB Grant CR should be created")
 
+	// Simulate ESO adopting both backup PushSecrets so the openbao-finalizer
+	// Pass-0 adoption wait passes and the full deletion chain can run.
+	// Without ESO in envtest both PushSecrets would remain unadopted and the
+	// OpenBao finalizer would block forever, shadowing the MariaDB-finalizer
+	// assertion this test is meant to make (CC-0091, REQ-001, REQ-003).
+	fernetBackupKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-fernet-keys-backup", ks.Name)}
+	credBackupKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-credential-keys-backup", ks.Name)}
+	for _, key := range []client.ObjectKey{fernetBackupKey, credBackupKey} {
+		g.Eventually(func() error {
+			return c.Get(ctx, key, &esov1alpha1.PushSecret{})
+		}, eventuallyTimeout, pollInterval).Should(Succeed(),
+			"PushSecret %s should be provisioned", key)
+		addESOFinalizerToPushSecret(t, ctx, c, key)
+	}
+
 	// Delete the Keystone CR; the API server sets DeletionTimestamp but blocks
 	// removal from etcd while the finalizer is present.
 	g.Expect(c.Delete(ctx, ks)).To(Succeed(), "delete Keystone CR")
+
+	// After Pass-1 has issued Delete on both PushSecrets, clear the ESO
+	// finalizers so the API server garbage-collects them — this mimics ESO
+	// finishing its kv-v2 purge and is what allows Pass-2 to observe NotFound
+	// and release the openbao finalizer (CC-0091, REQ-001).
+	g.Eventually(func(ig Gomega) {
+		for _, key := range []client.ObjectKey{fernetBackupKey, credBackupKey} {
+			ps := &esov1alpha1.PushSecret{}
+			ig.Expect(c.Get(ctx, key, ps)).To(Succeed(),
+				"PushSecret %s should still exist while ESO finalizer is held", key)
+			ig.Expect(ps.GetDeletionTimestamp().IsZero()).To(BeFalse(),
+				"PushSecret %s should be Terminating after Pass-1 Delete", key)
+		}
+	}, eventuallyTimeout, pollInterval).Should(Succeed())
+	clearESOFinalizerFromPushSecret(t, ctx, c, fernetBackupKey)
+	clearESOFinalizerFromPushSecret(t, ctx, c, credBackupKey)
 
 	// Every MariaDB CR must be reclaimed. In envtest there is no MariaDB
 	// operator, so Delete resolves synchronously; in production the MariaDB
@@ -2413,7 +2444,39 @@ func TestIntegration_FinalizerBrownfieldDeletion(t *testing.T) {
 	g.Expect(apierrors.IsNotFound(c.Get(ctx, mdbKey, &mariadbv1alpha1.Grant{}))).
 		To(BeTrue(), "brownfield should not create a Grant CR")
 
+	// Brownfield Keystones still run reconcileFernetKeys / reconcileCredentialKeys,
+	// so the backup PushSecrets exist and Pass-0 of finalizeOpenBaoSecrets
+	// would block until ESO adopts them. Simulate ESO adoption (both
+	// finalizers) so the deletion chain can run through Pass-1; we clear the
+	// finalizers after Delete so the PushSecrets GC and Pass-2 releases the
+	// openbao finalizer (CC-0091, REQ-001, REQ-003).
+	fernetBackupKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-fernet-keys-backup", ks.Name)}
+	credBackupKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-credential-keys-backup", ks.Name)}
+	for _, key := range []client.ObjectKey{fernetBackupKey, credBackupKey} {
+		g.Eventually(func() error {
+			return c.Get(ctx, key, &esov1alpha1.PushSecret{})
+		}, eventuallyTimeout, pollInterval).Should(Succeed(),
+			"PushSecret %s should be provisioned", key)
+		addESOFinalizerToPushSecret(t, ctx, c, key)
+	}
+
 	g.Expect(c.Delete(ctx, ks)).To(Succeed(), "delete brownfield Keystone CR")
+
+	// Wait for Pass-1 Delete to flip both PushSecrets into Terminating, then
+	// clear the ESO finalizers to mimic ESO finishing its kv-v2 purge so the
+	// API server GCs the PushSecrets and Pass-2 can release the openbao
+	// finalizer (CC-0091, REQ-001).
+	g.Eventually(func(ig Gomega) {
+		for _, key := range []client.ObjectKey{fernetBackupKey, credBackupKey} {
+			ps := &esov1alpha1.PushSecret{}
+			ig.Expect(c.Get(ctx, key, ps)).To(Succeed(),
+				"PushSecret %s should still exist while ESO finalizer is held", key)
+			ig.Expect(ps.GetDeletionTimestamp().IsZero()).To(BeFalse(),
+				"PushSecret %s should be Terminating after Pass-1 Delete", key)
+		}
+	}, eventuallyTimeout, pollInterval).Should(Succeed())
+	clearESOFinalizerFromPushSecret(t, ctx, c, fernetBackupKey)
+	clearESOFinalizerFromPushSecret(t, ctx, c, credBackupKey)
 
 	// finalizeDatabaseResources treats every NotFound Delete as success, so
 	// the first pass through reconcileDelete releases the finalizer and the
@@ -2834,27 +2897,73 @@ func TestIntegration_RecreateDerivedSecretWhenDeleted(t *testing.T) {
 // semantics the production controller sees (CC-0079, REQ-002, REQ-004).
 const esoCleanupFinalizer = "external-secrets.io/cleanup"
 
-// addESOFinalizerToPushSecret attaches esoCleanupFinalizer to the PushSecret so
-// that a subsequent client.Delete flips it into Terminating state instead of
-// removing it from etcd — mimicking ESO holding the object while it purges the
-// remote kv-v2 path (CC-0079, REQ-002, REQ-004).
+// addESOFinalizerToPushSecret simulates full ESO adoption of the PushSecret by
+// attaching both ESO-owned finalizers:
+//
+//   - esoPushSecretFinalizer is the adoption signal checked by Pass-0 of
+//     finalizeOpenBaoSecrets. ESO's PushSecret controller installs this on
+//     first reconcile, so its presence is the operator's evidence that ESO
+//     will honour DeletionPolicy=Delete on a subsequent client.Delete
+//     (CC-0091, REQ-001, REQ-007).
+//   - esoCleanupFinalizer is the finalizer ESO holds while it purges the
+//     remote kv-v2 path. Its presence keeps the PushSecret in Terminating
+//     state after client.Delete instead of immediate etcd removal, which is
+//     what Pass-2 of finalizeOpenBaoSecrets observes and surfaces as
+//     OpenBaoFinalizerBlocked (CC-0079, REQ-002, REQ-004).
+//
+// Installing both mirrors the production pairing — ESO's DeletionPolicy=Delete
+// branch only fires once adoption has happened, at which point both finalizers
+// are on the object.
 func addESOFinalizerToPushSecret(t testing.TB, ctx context.Context, c client.Client, key client.ObjectKey) {
 	t.Helper()
 	g := NewGomegaWithT(t)
 
 	ps := &esov1alpha1.PushSecret{}
 	g.Expect(c.Get(ctx, key, ps)).To(Succeed(),
-		"PushSecret %s must exist before adding ESO finalizer", key)
+		"PushSecret %s must exist before adding ESO finalizers", key)
+
+	changed := false
+	if !controllerutil.ContainsFinalizer(ps, esoPushSecretFinalizer) {
+		controllerutil.AddFinalizer(ps, esoPushSecretFinalizer)
+		changed = true
+	}
 	if !controllerutil.ContainsFinalizer(ps, esoCleanupFinalizer) {
 		controllerutil.AddFinalizer(ps, esoCleanupFinalizer)
+		changed = true
+	}
+	if changed {
 		g.Expect(c.Update(ctx, ps)).To(Succeed(),
-			"add ESO finalizer to PushSecret %s", key)
+			"add ESO finalizers to PushSecret %s", key)
 	}
 }
 
-// clearESOFinalizerFromPushSecret removes esoCleanupFinalizer, letting the API
-// server garbage-collect the already-Terminating PushSecret — mimicking ESO
-// completing its kv-v2 purge (CC-0079, REQ-002, REQ-004).
+// addESOAdoptionFinalizerToPushSecret attaches only esoPushSecretFinalizer —
+// the adoption signal. This simulates the narrow window after ESO has
+// adopted a PushSecret (first reconcile has installed the adoption
+// finalizer) but before a client.Delete has fired. Any finalizer still
+// blocks etcd removal, so a subsequent Delete flips the object into
+// Terminating exactly as it does with addESOFinalizerToPushSecret — use
+// this helper when the test only needs to satisfy Pass-0 and does not
+// care about modelling ESO's kv-v2 purge latency (CC-0091, REQ-001,
+// REQ-003, REQ-007).
+func addESOAdoptionFinalizerToPushSecret(t testing.TB, ctx context.Context, c client.Client, key client.ObjectKey) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	ps := &esov1alpha1.PushSecret{}
+	g.Expect(c.Get(ctx, key, ps)).To(Succeed(),
+		"PushSecret %s must exist before adding ESO adoption finalizer", key)
+	if !controllerutil.ContainsFinalizer(ps, esoPushSecretFinalizer) {
+		controllerutil.AddFinalizer(ps, esoPushSecretFinalizer)
+		g.Expect(c.Update(ctx, ps)).To(Succeed(),
+			"add ESO adoption finalizer to PushSecret %s", key)
+	}
+}
+
+// clearESOFinalizerFromPushSecret removes both ESO-owned finalizers, letting
+// the API server garbage-collect the already-Terminating PushSecret —
+// mimicking ESO completing its kv-v2 purge and releasing the object
+// (CC-0079, CC-0091, REQ-002, REQ-004).
 func clearESOFinalizerFromPushSecret(t testing.TB, ctx context.Context, c client.Client, key client.ObjectKey) {
 	t.Helper()
 	g := NewGomegaWithT(t)
@@ -2864,13 +2973,14 @@ func clearESOFinalizerFromPushSecret(t testing.TB, ctx context.Context, c client
 		if err := c.Get(ctx, key, ps); err != nil {
 			return err
 		}
-		if !controllerutil.ContainsFinalizer(ps, esoCleanupFinalizer) {
+		removedCleanup := controllerutil.RemoveFinalizer(ps, esoCleanupFinalizer)
+		removedAdoption := controllerutil.RemoveFinalizer(ps, esoPushSecretFinalizer)
+		if !removedCleanup && !removedAdoption {
 			return nil
 		}
-		controllerutil.RemoveFinalizer(ps, esoCleanupFinalizer)
 		return c.Update(ctx, ps)
 	}, eventuallyTimeout, pollInterval).Should(Succeed(),
-		"clear ESO finalizer from PushSecret %s", key)
+		"clear ESO finalizers from PushSecret %s", key)
 }
 
 // TestIntegration_OpenBaoFinalizerLifecycle_AddAndRemove verifies that the
@@ -3013,19 +3123,28 @@ func TestIntegration_OpenBaoFinalizer_BlockedWhenPushSecretStuck(t *testing.T) {
 	ksKey := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
 
 	fernetKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-fernet-keys-backup", ks.Name)}
+	credKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-credential-keys-backup", ks.Name)}
 
-	// Wait for the fernet-keys-backup PushSecret to be provisioned before we
-	// attach the ESO finalizer — otherwise the Update below races the
-	// reconciler's create.
-	g.Eventually(func() error {
-		return c.Get(ctx, fernetKey, &esov1alpha1.PushSecret{})
-	}, eventuallyTimeout, pollInterval).Should(Succeed(),
-		"fernet-keys-backup PushSecret should be provisioned")
+	// Wait for both backup PushSecrets to be provisioned before we attach any
+	// finalizer — otherwise the Update below races the reconciler's create.
+	for _, key := range []client.ObjectKey{fernetKey, credKey} {
+		g.Eventually(func() error {
+			return c.Get(ctx, key, &esov1alpha1.PushSecret{})
+		}, eventuallyTimeout, pollInterval).Should(Succeed(),
+			"PushSecret %s should be provisioned", key)
+	}
 
-	// Attach the ESO cleanup finalizer ONLY to fernet-keys-backup. The
-	// credential-keys-backup PushSecret will be removed cleanly on Delete and
-	// is not the stuck resource.
+	// Attach the ESO cleanup finalizer ONLY to fernet-keys-backup so that a
+	// subsequent client.Delete flips it into Terminating and stays there —
+	// exercising Pass-2 of finalizeOpenBaoSecrets (CC-0079, REQ-004, REQ-009).
 	addESOFinalizerToPushSecret(t, ctx, c, fernetKey)
+
+	// Attach only the adoption finalizer to credential-keys-backup so Pass-0
+	// of finalizeOpenBaoSecrets proceeds past it — otherwise the reconciler
+	// would record WaitingForESOAdoption on credential-keys-backup and never
+	// reach Pass-2 on fernet-keys-backup, shadowing the blocked condition
+	// this test is meant to assert (CC-0091, REQ-001, REQ-003).
+	addESOAdoptionFinalizerToPushSecret(t, ctx, c, credKey)
 
 	g.Expect(c.Delete(ctx, ks)).To(Succeed(), "delete Keystone CR")
 
@@ -3053,13 +3172,228 @@ func TestIntegration_OpenBaoFinalizer_BlockedWhenPushSecretStuck(t *testing.T) {
 	g.Expect(controllerutil.ContainsFinalizer(ksState, keystoneOpenBaoFinalizer)).To(BeTrue(),
 		"openbao finalizer must still be present while blocked on stuck PushSecret")
 
-	// Simulate ESO finishing its kv-v2 purge. The API server garbage-collects
-	// the PushSecret, the next reconcile observes it NotFound, and the
-	// Keystone CR is reclaimed (CC-0079, REQ-002, REQ-004).
+	// Simulate ESO finishing its kv-v2 purge on both PushSecrets. The API
+	// server garbage-collects them, the next reconcile observes them NotFound,
+	// and the Keystone CR is reclaimed (CC-0079, CC-0091, REQ-002, REQ-004).
 	clearESOFinalizerFromPushSecret(t, ctx, c, fernetKey)
+	clearESOFinalizerFromPushSecret(t, ctx, c, credKey)
 
 	g.Eventually(func() bool {
 		return apierrors.IsNotFound(c.Get(ctx, ksKey, &keystonev1alpha1.Keystone{}))
 	}, eventuallyLongTimeout, pollInterval).Should(BeTrue(),
 		"Keystone CR should be removed from etcd after the stuck PushSecret clears")
+}
+
+// TestIntegrationKeystone_DeleteRacingESOAdoption exercises the Pass-0
+// adoption wait in finalizeOpenBaoSecrets (CC-0091, REQ-001, REQ-003,
+// REQ-007). When a Keystone CR is deleted before ESO has reconciled the
+// backup PushSecrets — i.e. before esoPushSecretFinalizer has been
+// installed — the operator must NOT issue Delete on those PushSecrets.
+// A racing Delete in that window would remove the PushSecret from the API
+// server outright, ESO would never observe the DeletionTimestamp, and the
+// kv-v2 path in OpenBao would be orphaned (the CI incident in run
+// 24842115250 that motivated this fix).
+//
+// The test walks the three distinct states the handler must traverse:
+//
+//  1. Racing delete: delete the Keystone CR before adoption. The handler
+//     must record SecretsReady=False/Reason=WaitingForESOAdoption and
+//     leave both PushSecrets live with zero DeletionTimestamp.
+//  2. Adoption: install both ESO finalizers on each PushSecret, matching
+//     what ESO would do after draining its workqueue. The handler must
+//     now fire Delete (Pass-1), after which both PushSecrets are held
+//     Terminating by esoCleanupFinalizer and the condition flips to
+//     Reason=OpenBaoFinalizerBlocked.
+//  3. Cleanup: clear the ESO finalizers. Both PushSecrets garbage-collect,
+//     the next reconcile observes them NotFound, finalizeOpenBaoSecrets
+//     returns done=true, and the API server reclaims the Keystone CR.
+func TestIntegrationKeystone_DeleteRacingESOAdoption(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-openbao-race-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	mdbCluster := &mariadbv1alpha1.MariaDB{
+		ObjectMeta: metav1.ObjectMeta{Name: "mariadb", Namespace: ns.Name},
+	}
+	g.Expect(c.Create(ctx, mdbCluster)).To(Succeed(), "create MariaDB cluster CR")
+	g.Expect(simulators.SimulateMariaDBReady(ctx, c, client.ObjectKey{Namespace: ns.Name, Name: "mariadb"}, 1)).
+		To(Succeed(), "simulate MariaDB cluster ready")
+
+	ks := integrationManagedKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+	ksKey := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+
+	fernetKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-fernet-keys-backup", ks.Name)}
+	credKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-credential-keys-backup", ks.Name)}
+
+	// Both backup PushSecrets must be created first so deletion doesn't race
+	// a missing object. We intentionally do NOT install any ESO finalizer
+	// here — this is the point of the test: the operator must tolerate the
+	// window between PushSecret creation and ESO's first reconcile
+	// (CC-0091, REQ-001).
+	for _, key := range []client.ObjectKey{fernetKey, credKey} {
+		g.Eventually(func() error {
+			return c.Get(ctx, key, &esov1alpha1.PushSecret{})
+		}, eventuallyTimeout, pollInterval).Should(Succeed(),
+			"PushSecret %s should be provisioned", key)
+	}
+
+	// Wait for the OpenBao finalizer so the subsequent Delete goes through
+	// reconcileDeleteOpenBao rather than a straight cascade (CC-0091,
+	// REQ-001, REQ-006).
+	g.Eventually(func() bool {
+		ksState := &keystonev1alpha1.Keystone{}
+		if err := c.Get(ctx, ksKey, ksState); err != nil {
+			return false
+		}
+		return controllerutil.ContainsFinalizer(ksState, keystoneOpenBaoFinalizer)
+	}, eventuallyTimeout, pollInterval).Should(BeTrue(),
+		"Keystone CR should carry the OpenBao finalizer before delete")
+
+	g.Expect(c.Delete(ctx, ks)).To(Succeed(), "delete Keystone CR before ESO adopts")
+
+	// Stage 1 — racing delete: finalizeOpenBaoSecrets must record
+	// WaitingForESOAdoption and MUST NOT issue Delete on either PushSecret.
+	// The message must name a concrete unadopted PushSecret so an SRE
+	// reading `kubectl describe keystone` can see which resource is
+	// blocking the handler (CC-0091, REQ-001, REQ-002, REQ-003).
+	g.Eventually(func(ig Gomega) {
+		ksState := &keystonev1alpha1.Keystone{}
+		ig.Expect(c.Get(ctx, ksKey, ksState)).To(Succeed())
+		cond := meta.FindStatusCondition(ksState.Status.Conditions, "SecretsReady")
+		ig.Expect(cond).NotTo(BeNil(),
+			"SecretsReady condition must be present while adoption is pending")
+		ig.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		ig.Expect(cond.Reason).To(Equal("WaitingForESOAdoption"),
+			"handler must gate Delete on ESO adoption to avoid orphaning the kv-v2 path")
+		ig.Expect(cond.Message).To(SatisfyAny(
+			ContainSubstring(fernetKey.Name),
+			ContainSubstring(credKey.Name),
+		), "adoption-wait message should name the unadopted PushSecret")
+	}, eventuallyLongTimeout, pollInterval).Should(Succeed())
+
+	// Both PushSecrets must still be live with zero DeletionTimestamp —
+	// this is the core safety property of Pass-0. A single Delete here
+	// would be the production bug the fix is guarding against
+	// (CC-0091, REQ-001).
+	for _, key := range []client.ObjectKey{fernetKey, credKey} {
+		ps := &esov1alpha1.PushSecret{}
+		g.Expect(c.Get(ctx, key, ps)).To(Succeed(),
+			"PushSecret %s must still exist during adoption wait", key)
+		g.Expect(ps.GetDeletionTimestamp().IsZero()).To(BeTrue(),
+			"PushSecret %s must NOT be Terminating during adoption wait — "+
+				"a racing Delete here orphans the kv-v2 path", key)
+	}
+
+	// The Keystone CR must still be alive — the openbao finalizer is
+	// holding it, and that finalizer must not be released while Pass-0
+	// is blocking (CC-0091, REQ-001, REQ-006).
+	ksState := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, ksKey, ksState)).To(Succeed())
+	g.Expect(ksState.GetDeletionTimestamp().IsZero()).To(BeFalse(),
+		"Keystone CR should be Terminating while adoption wait holds the finalizer")
+	g.Expect(controllerutil.ContainsFinalizer(ksState, keystoneOpenBaoFinalizer)).To(BeTrue(),
+		"OpenBao finalizer must still be present while Pass-0 is blocking")
+	// Capture the Keystone UID once — the cross-stage event-count assertion
+	// at the end of this test runs after the CR has been garbage-collected,
+	// so it cannot Get the CR to read the UID at that point.
+	ksUID := ksState.UID
+
+	// Across the adoption-wait window (stage 1) the reconciler must emit at
+	// most one FinalizingOpenBaoSecrets event — preserving the exactly-once
+	// contract established by CC-0079. The preceding Eventually already spans
+	// well over one RequeueSecretPolling tick, so any regression that fires
+	// the event per requeue would surface as stage1Finalizing>1 here. The
+	// exactly-once gate (hasLiveOpenBaoBackupPushSecrets skipping unadopted
+	// PushSecrets) means the expected count during stage 1 is 0; ≤1 is the
+	// loosest assertion that still catches the per-requeue regression
+	// (CC-0091, REQ-007).
+	stage1Events := &corev1.EventList{}
+	g.Expect(c.List(ctx, stage1Events, client.InNamespace(ns.Name))).To(Succeed())
+	stage1Finalizing := 0
+	for _, e := range stage1Events.Items {
+		if e.InvolvedObject.UID == ksState.UID && e.Reason == "FinalizingOpenBaoSecrets" {
+			stage1Finalizing++
+		}
+	}
+	g.Expect(stage1Finalizing).To(BeNumerically("<=", 1),
+		"FinalizingOpenBaoSecrets must fire at most once across the adoption-wait "+
+			"window; a per-requeue emit regresses the exactly-once contract (CC-0079, CC-0091)")
+
+	// Stage 2 — adoption: install both ESO finalizers. addESOFinalizerToPushSecret
+	// installs esoPushSecretFinalizer (the Pass-0 adoption signal) and
+	// esoCleanupFinalizer (the Pass-2 cleanup finalizer), matching the
+	// shape ESO leaves on a DeletionPolicy=Delete PushSecret after its
+	// first reconcile (CC-0091, REQ-001).
+	addESOFinalizerToPushSecret(t, ctx, c, fernetKey)
+	addESOFinalizerToPushSecret(t, ctx, c, credKey)
+
+	// The handler must now proceed past Pass-0, fire Delete on both
+	// PushSecrets (Pass-1), and — because esoCleanupFinalizer holds them
+	// Terminating — surface OpenBaoFinalizerBlocked from Pass-2
+	// (CC-0091, REQ-001, REQ-002).
+	g.Eventually(func(ig Gomega) {
+		ksState := &keystonev1alpha1.Keystone{}
+		ig.Expect(c.Get(ctx, ksKey, ksState)).To(Succeed())
+		cond := meta.FindStatusCondition(ksState.Status.Conditions, "SecretsReady")
+		ig.Expect(cond).NotTo(BeNil())
+		ig.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		ig.Expect(cond.Reason).To(Equal("OpenBaoFinalizerBlocked"),
+			"handler must advance from Pass-0 to Pass-2 once both PushSecrets are adopted")
+	}, eventuallyLongTimeout, pollInterval).Should(Succeed())
+
+	for _, key := range []client.ObjectKey{fernetKey, credKey} {
+		ps := &esov1alpha1.PushSecret{}
+		g.Expect(c.Get(ctx, key, ps)).To(Succeed(),
+			"PushSecret %s should still exist while ESO finalizers hold it", key)
+		g.Expect(ps.GetDeletionTimestamp().IsZero()).To(BeFalse(),
+			"PushSecret %s should be Terminating after Pass-1 Delete", key)
+	}
+
+	// Stage 3 — ESO finishes its purge: clear both finalizers. The API
+	// server garbage-collects the PushSecrets, Pass-2 observes NotFound,
+	// the handler returns done=true, and the API server reclaims the
+	// Keystone CR (CC-0091, REQ-001, REQ-002, REQ-004).
+	clearESOFinalizerFromPushSecret(t, ctx, c, fernetKey)
+	clearESOFinalizerFromPushSecret(t, ctx, c, credKey)
+
+	g.Eventually(func(ig Gomega) {
+		ig.Expect(apierrors.IsNotFound(c.Get(ctx, fernetKey, &esov1alpha1.PushSecret{}))).
+			To(BeTrue(), "fernet-keys-backup PushSecret should be garbage-collected")
+		ig.Expect(apierrors.IsNotFound(c.Get(ctx, credKey, &esov1alpha1.PushSecret{}))).
+			To(BeTrue(), "credential-keys-backup PushSecret should be garbage-collected")
+	}, eventuallyLongTimeout, pollInterval).Should(Succeed())
+
+	g.Eventually(func() bool {
+		return apierrors.IsNotFound(c.Get(ctx, ksKey, &keystonev1alpha1.Keystone{}))
+	}, eventuallyLongTimeout, pollInterval).Should(BeTrue(),
+		"Keystone CR should be removed from etcd once both PushSecrets GC")
+
+	// Cross-stage bound: across stages 1+2+3, FinalizingOpenBaoSecrets must
+	// fire at most twice. The expected count is exactly 1 — emitted once
+	// when Pass-0 clears in stage 2 and Pass-1 fires Delete; subsequent
+	// requeues see the PushSecrets in Terminating and hasLiveOpenBaoBackup-
+	// PushSecrets returns false. The ≤2 bound also catches a staggered-
+	// adoption regression where each partial adoption could otherwise
+	// trigger a fresh Pass-1 emit (CC-0079, CC-0091, REQ-007). Events are
+	// retained namespace-wide and outlive the involved Keystone CR, so the
+	// list survives the final GC above; ksUID was captured in stage 1.
+	allEvents := &corev1.EventList{}
+	g.Expect(c.List(ctx, allEvents, client.InNamespace(ns.Name))).To(Succeed())
+	totalFinalizing := 0
+	for _, e := range allEvents.Items {
+		if e.InvolvedObject.UID == ksUID && e.Reason == "FinalizingOpenBaoSecrets" {
+			totalFinalizing++
+		}
+	}
+	g.Expect(totalFinalizing).To(BeNumerically("<=", 2),
+		"FinalizingOpenBaoSecrets must fire at most twice across the full "+
+			"termination (stages 1+2+3); a per-requeue or per-partial-adoption "+
+			"emit regresses the exactly-once contract (CC-0079, CC-0091)")
 }

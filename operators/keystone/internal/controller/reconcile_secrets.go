@@ -37,6 +37,15 @@ const openBaoClusterStoreName = "openbao-cluster-store"
 // REQ-005).
 const keystoneOpenBaoFinalizer = "keystone.openstack.c5c3.io/openbao-finalizer"
 
+// esoPushSecretFinalizer is the cleanup finalizer ESO installs on every
+// PushSecret it adopts. The openbao-finalizer handler must observe this
+// finalizer on each backup PushSecret before issuing Delete — otherwise the
+// operator's Delete can race ahead of ESO's first reconcile, remove the
+// PushSecret object outright, and leave the referenced KV-v2 path orphaned
+// in OpenBao (CC-0091, REQ-007). Declared once as the single source of truth
+// for the handler and tests.
+const esoPushSecretFinalizer = "pushsecret.externalsecrets.io/finalizer"
+
 // reconcileSecrets checks that ESO-provided Kubernetes Secrets exist before
 // proceeding. It verifies the DB credentials and admin credentials
 // ExternalSecrets are ready (CC-0013).
@@ -155,7 +164,16 @@ func openBaoBackupPushSecretNames(keystone *keystonev1alpha1.Keystone) []string 
 // credential-keys-backup PushSecrets and confirms they are gone from the API
 // server before allowing the Keystone CR's OpenBao finalizer to be released.
 //
-// Runs in two sequential passes over openBaoBackupPushSecretNames:
+// Runs in three sequential passes over openBaoBackupPushSecretNames:
+//
+//  0. Adoption wait. For each still-live (non-Terminating) PushSecret, require
+//     ESO's cleanup finalizer before issuing Delete. Without this gate the
+//     operator's Delete can race ahead of ESO's first reconcile — the
+//     PushSecret object would be removed from the API server outright, ESO
+//     would never observe a DeletionTimestamp, and the referenced kv-v2 path
+//     in OpenBao would be orphaned. On the first unadopted PushSecret record
+//     WaitingForESOAdoption and return done=false WITHOUT firing any Delete
+//     (CC-0091, REQ-001, REQ-003, REQ-007).
 //  1. Issue Delete on every backup PushSecret, tolerating NotFound. Firing all
 //     Deletes up-front lets ESO's cleanup finalizers run in parallel — a
 //     serialised Delete→Get loop doubles the worst-case deletion window when
@@ -166,10 +184,10 @@ func openBaoBackupPushSecretNames(keystone *keystonev1alpha1.Keystone) []string 
 //     CR stays alive for the next reconcile. Return done=true only when every
 //     Get returns NotFound.
 //
-// NotFound on either Delete or Get is tolerated as success for idempotency —
-// a repeated Delete against an already-terminating object is also a no-op.
+// NotFound on Get or Delete is tolerated as success for idempotency — a
+// repeated Delete against an already-terminating object is also a no-op.
 // Non-NotFound errors propagate so controller-runtime retries with backoff
-// (CC-0079, REQ-002, REQ-003, REQ-004).
+// (CC-0079, CC-0091, REQ-001, REQ-002, REQ-003, REQ-004).
 func (r *KeystoneReconciler) finalizeOpenBaoSecrets(
 	ctx context.Context,
 	keystone *keystonev1alpha1.Keystone,
@@ -179,6 +197,38 @@ func (r *KeystoneReconciler) finalizeOpenBaoSecrets(
 	)
 
 	names := openBaoBackupPushSecretNames(keystone)
+
+	// Pass 0: adoption wait. For each present PushSecret, require ESO's
+	// cleanup finalizer before we issue Delete. If a PushSecret is missing
+	// that finalizer, record WaitingForESOAdoption and return without firing
+	// any Delete — a racing Delete here would remove the PushSecret object
+	// outright and orphan the kv-v2 path in OpenBao (CC-0091, REQ-001,
+	// REQ-003, REQ-007).
+	for _, name := range names {
+		key := client.ObjectKey{Namespace: keystone.Namespace, Name: name}
+		ps := &esov1alpha1.PushSecret{}
+		getErr := r.Get(ctx, key, ps)
+		if apierrors.IsNotFound(getErr) {
+			// Already deleted elsewhere — nothing to adopt, nothing to delete.
+			continue
+		}
+		if getErr != nil {
+			return false, fmt.Errorf("getting PushSecret %s for adoption check: %w", key, getErr)
+		}
+		if !ps.GetDeletionTimestamp().IsZero() {
+			// Already Terminating — Pass-0 is irrelevant; let Pass-2 wait on
+			// gone. An object in Terminating state has necessarily been
+			// through a prior Delete, which means the adoption question was
+			// already resolved (CC-0091, REQ-001).
+			continue
+		}
+		if !hasESOFinalizer(ps) {
+			setOpenBaoWaitingForESOAdoptionCondition(keystone, name)
+			logger.V(1).Info("openbao finalizer waiting for ESO adoption",
+				"pushsecret", name)
+			return false, nil
+		}
+	}
 
 	// Pass 1: issue Delete on every backup PushSecret so ESO's cleanup
 	// finalizers fire in parallel (CC-0079, REQ-002).
@@ -234,5 +284,38 @@ func setOpenBaoFinalizerBlockedCondition(keystone *keystonev1alpha1.Keystone, st
 		Message: fmt.Sprintf(
 			"Waiting for PushSecret %q to be garbage-collected before releasing openbao-finalizer",
 			stuckName),
+	})
+}
+
+// hasESOFinalizer reports whether the given PushSecret carries ESO's cleanup
+// finalizer. Presence of that finalizer is the signal that ESO has adopted
+// the PushSecret and will run its DeletionPolicy=Delete branch on Delete —
+// without it, a racing operator Delete would orphan the kv-v2 path in OpenBao
+// (CC-0091, REQ-001, REQ-007).
+func hasESOFinalizer(ps *esov1alpha1.PushSecret) bool {
+	for _, f := range ps.Finalizers {
+		if f == esoPushSecretFinalizer {
+			return true
+		}
+	}
+	return false
+}
+
+// setOpenBaoWaitingForESOAdoptionCondition records that the openbao finalizer
+// is waiting for ESO to adopt a backup PushSecret (i.e., install its cleanup
+// finalizer) before the operator issues Delete. Distinct from
+// setOpenBaoFinalizerBlockedCondition so an SRE reading `kubectl describe
+// keystone` can tell pre-Delete adoption waits (ESO workqueue backlog) from
+// post-Delete gone-waits (remote DeleteSecret in flight) — the two have
+// different remediations (CC-0091, REQ-002).
+func setOpenBaoWaitingForESOAdoptionCondition(keystone *keystonev1alpha1.Keystone, unadoptedName string) {
+	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+		Type:               "SecretsReady",
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: keystone.Generation,
+		Reason:             "WaitingForESOAdoption",
+		Message: fmt.Sprintf(
+			"Waiting for ESO to adopt PushSecret %q (cleanup finalizer not yet installed)",
+			unadoptedName),
 	})
 }

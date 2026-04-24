@@ -843,17 +843,33 @@ The deletion handler proceeds as follows:
    to Terminating (DeletionTimestamp set) or disappears, subsequent
    requeues observe no live PushSecret and suppress the emit, giving
    exactly-once semantics per termination across requeue loops.
-3. **Cleanup.** `finalizeOpenBaoSecrets` runs in two sequential passes
-   over the backup PushSecret names. The first pass issues `Delete` on
-   every name (tolerating `NotFound`), so ESO's cleanup finalizer fires
-   on all of them in parallel. The second pass re-`Get`s each name;
-   `done` is `true` only when **every** PushSecret returns `NotFound`.
-   On the first still-present PushSecret (typically Terminating behind
-   ESO's cleanup finalizer) the handler sets `done=false` and records
-   the blocked state as a side effect on `keystone.Status.Conditions`
-   via `setOpenBaoFinalizerBlockedCondition`, so the stuck object's name
-   surfaces on `kubectl get keystone` rather than being returned by the
-   function (the signature is `(done bool, err error)` only).
+3. **Cleanup.** `finalizeOpenBaoSecrets` runs in **three** sequential
+   passes over the backup PushSecret names (CC-0091 extended the original
+   CC-0079 two-pass design with a Pass-0 adoption wait):
+   - **Pass-0 — adoption wait.** For each backup PushSecret that still
+     exists and is not already Terminating, verify that ESO's cleanup
+     finalizer (`pushsecret.externalsecrets.io/finalizer`)
+     is present. On the first unadopted PushSecret, set `done=false`,
+     record `SecretsReady=False / WaitingForESOAdoption` via
+     `setOpenBaoWaitingForESOAdoptionCondition`, and return **without**
+     firing any `Delete`. This closes the race where a Keystone CR
+     deleted seconds after creation outruns ESO's first reconcile — a
+     racing `Delete` would remove the PushSecret object outright before
+     ESO had a chance to install `DeletionPolicy=Delete`, orphaning the
+     kv-v2 path in OpenBao (see
+     [Three-pass lifecycle with two blocked states](#three-pass-lifecycle-with-two-blocked-states)).
+   - **Pass-1 — parallel Delete.** Issue `Delete` on every backup
+     PushSecret (tolerating `NotFound`), so ESO's cleanup finalizers
+     fire on all of them in parallel rather than in a serialised
+     Delete→Get loop that would double the worst-case deletion window.
+   - **Pass-2 — wait-for-gone.** Re-`Get` each name; `done=true` only
+     when **every** PushSecret returns `NotFound`. On the first still-
+     present PushSecret (typically Terminating behind ESO's cleanup
+     finalizer) the handler sets `done=false` and records
+     `SecretsReady=False / OpenBaoFinalizerBlocked` via
+     `setOpenBaoFinalizerBlockedCondition`, so the stuck object's name
+     surfaces on `kubectl get keystone` rather than being returned by
+     the function (the signature is `(done bool, err error)` only).
 4. **Requeue while blocked.** If `done=false`, the handler records the
    `SecretsReady=False / OpenBaoFinalizerBlocked` condition (see
    [SecretsReady=False / OpenBaoFinalizerBlocked](#secretsreadyfalse--openbaofinalizerblocked)),
@@ -917,6 +933,99 @@ because:
 
 In all three cases the finalizer converges without surfacing spurious
 errors.
+
+### Three-pass lifecycle with two blocked states
+
+A single Keystone CR deletion drives the openbao-finalizer through three
+sequential passes (Pass-0, Pass-1, Pass-2). Two of those passes can
+**block** the handler waiting on ESO; the third (Pass-1) is a non-blocking
+fire-and-forget Delete. The two blocked states surface on the
+`SecretsReady` condition with `Status=False` but use distinct `Reason`
+values so that `kubectl describe keystone` distinguishes them without
+reading controller logs:
+
+| Reason | Pass | When Emitted | Typical Remediation |
+| --- | --- | --- | --- |
+| `WaitingForESOAdoption` | Pre-Delete adoption wait (Pass-0) | A backup PushSecret exists, is not Terminating, and does **not** yet carry ESO's cleanup finalizer. | Resolves itself on ESO workqueue drain. Check `kubectl -n external-secrets logs deploy/external-secrets` for backlog or errors. |
+| `OpenBaoFinalizerBlocked` | Post-Delete wait-for-gone (Pass-2) | A backup PushSecret is still present in the API server after `Delete` was issued, typically in Terminating state behind ESO's cleanup finalizer. | ESO is running `DeletionPolicy=Delete` against OpenBao. A persistent block here may indicate OpenBao unreachable or ClusterSecretStore auth revoked. |
+
+The three passes execute in strict order:
+
+1. **Pass-0 — adoption wait.** For each backup PushSecret that exists and
+   is not Terminating, the handler `Get`s the object and inspects its
+   `metadata.finalizers` for
+   `pushsecret.externalsecrets.io/finalizer`. On the
+   first unadopted PushSecret it records `WaitingForESOAdoption` and
+   returns `(done=false, nil)` **without** firing any `Delete`.
+2. **Pass-1 — parallel Delete.** Once every still-present PushSecret is
+   adopted (ESO finalizer present) or already Terminating, the handler
+   issues `Delete` on every name in a single pass so the cleanup
+   finalizers fire in parallel.
+3. **Pass-2 — wait-for-gone.** The handler re-`Get`s each name and, on
+   the first still-present PushSecret, records `OpenBaoFinalizerBlocked`
+   and returns `(done=false, nil)`. Release of the openbao-finalizer
+   requires **all** PushSecrets to return `NotFound`.
+
+#### Motivating race (CC-0091)
+
+Without Pass-0, a Keystone CR deleted within 1–2 s of creation can outrun
+ESO's first reconcile: the operator calls `Delete` on the PushSecret
+before ESO has installed its own cleanup finalizer, the API server
+immediately garbage-collects the PushSecret object, and ESO never observes
+the `DeletionTimestamp` — so `DeletionPolicy=Delete` never runs and the
+referenced kv-v2 path is orphaned in OpenBao. This was observed in CI run
+24842115250, where a deletion-cleanup run flaked with a still-present
+`kv-v2/openstack/keystone/fernet-keys` path after the PushSecret itself
+was already gone. Pass-0 gates the operator's `Delete` on ESO having
+signalled adoption by installing its cleanup finalizer, so the race
+collapses into an observable `WaitingForESOAdoption` state that resolves
+on the next ESO reconcile instead of a silent leak.
+
+#### Symmetric coverage of both PushSecrets
+
+Both `{name}-fernet-keys-backup` (Fernet token-signing material) and
+`{name}-credential-keys-backup` (credential-encryption keys) are covered
+by the same three-pass handler via the single `openBaoBackupPushSecretNames`
+iteration — there are no per-resource branches. A mixed adoption state
+(one PushSecret adopted by ESO, the other not) blocks on the unadopted
+resource in Pass-0 and fires **zero** `Delete` calls in that pass, so
+the existing Pass-1 "fire all deletes in parallel" property is preserved
+once adoption is confirmed. Adding a third backup target in the future
+remains a one-line change in `openBaoBackupPushSecretNames` — Pass-0,
+Pass-1, and Pass-2 all iterate the same list.
+
+### SecretsReady=False / WaitingForESOAdoption
+
+While the finalizer is waiting for ESO to adopt a backup PushSecret (i.e.
+install its own cleanup finalizer) before the operator issues `Delete`,
+the `SecretsReady` condition surfaces the pre-Delete adoption wait:
+
+| Field | Value |
+| --- | --- |
+| `Type` | `SecretsReady` |
+| `Status` | `False` |
+| `Reason` | `WaitingForESOAdoption` |
+| `Message` | `Waiting for ESO to adopt PushSecret "<name>" (cleanup finalizer not yet installed)` |
+| `ObservedGeneration` | `keystone.Generation` |
+
+The message names the first unadopted PushSecret encountered in the
+`openBaoBackupPushSecretNames` iteration. On the next reconcile after that
+PushSecret gains ESO's cleanup finalizer, Pass-0 advances past it and, if
+the other PushSecret is still unadopted, the condition message rotates
+to name the next one; otherwise Pass-1 fires `Delete` and the condition
+transitions to `OpenBaoFinalizerBlocked` (or clears if all PushSecrets
+terminate quickly).
+
+No `Warning` Event is emitted for this state. The structured log line
+`openbao finalizer waiting for ESO adoption` is produced at `V(1)` with
+`pushsecret=<name>`, and the `SecretsReady=False` condition is the
+primary observability signal. `reconcileDeleteOpenBao` returns
+`ctrl.Result{RequeueAfter: RequeueSecretPolling}` (15 s — see
+`requeue_intervals.go`) on `(done=false, nil)`, so the adoption wait is
+actively polled every 15 s until ESO installs its cleanup finalizer.
+The handler never force-deletes: if ESO is permanently broken, the
+Keystone CR correctly stays Terminating until an operator investigates
+(see [Why the finalizer waits](#why-the-finalizer-waits)).
 
 ### SecretsReady=False / OpenBaoFinalizerBlocked
 
