@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-24T20:31:47.776674+00:00",
+  "feature_id": "CC-0093",
+  "task_type": "commit",
+  "session_key": "CC-0093",
+  "model": "claude-opus-4-7",
+  "prompt": "Generate a detailed git commit body for this commit.\nSubject: fix(CC-0093): address review #1 feedback from sourcery-ai[bot]\n\nReview feedback is in: /worktrees/CC-0093/.planwerk/reviews/CC-0093-github-review-by-sourcery-ai-bot-external-1.json\nUse `git diff --cached -- ':(exclude).planwerk'` to see the full staged diff.\n\nDiff stat:\n.../internal/controller/integration_test.go        | 172 +++++++++------------\n .../internal/controller/reconcile_credential.go    |   2 +-\n .../internal/controller/reconcile_fernet.go        |   2 +-\n .../concurrent-cr-conflicts/chainsaw-test.yaml     |  51 +++---\n 4 files changed, 105 insertions(+), 122 deletions(-)\n\nWrite ONLY the body text, no subject line, no markdown.\nFor each changed file, write a bullet point: '- path/to/file: what was changed'\nDo NOT mention .planwerk directory changes.\nOutput ONLY plain text — no tool_call tags, no XML, no code blocks.",
+  "prompt_length": 901,
+  "caller": "run_claude_cli"
+}
