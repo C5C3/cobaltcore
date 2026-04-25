@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# REQ-002 (CC-0094): Keystone CR that sets BOTH spec.cache.clusterRef AND
+# a non-empty spec.cache.servers list. Mutual-exclusivity is enforced by
+# the CEL XValidation rule on KeystoneSpec.Cache (keystone_types.go) and
+# by the validating webhook (keystone_webhook.go). Admission must reject
+# this CR with an $error referencing spec.cache and the message
+# "exactly one of clusterRef or servers must be set". A non-empty servers
+# list is required for the CEL guard `size(self.servers) > 0` to fire.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: invalid-cache-both-modes
+spec:
+  replicas: 3
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    host: db.example.com
+    port: 3306
+    database: keystone
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+    servers:
+    - "mc:11211"
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne

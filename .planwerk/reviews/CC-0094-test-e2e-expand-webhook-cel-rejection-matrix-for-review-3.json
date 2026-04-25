@@ -1,0 +1,50 @@
+{
+  "summary": "Improvement cycle addressing the three findings from berendt's external review #2 (W-001, W-002, I-001). Two files in scope: (1) .github/workflows/ci.yaml gains `verify-invalid-cr-fixtures` in the `needs:` of `build-e2e-images` so the documented gating of the cluster-bound `e2e-operator` job is real rather than parallel; (2) tests/e2e/keystone/invalid-cr/_generate.py adds (a) `encoding=\"utf-8\"` on both `read_text`/`write_text` to make em-dash round-tripping locale-independent and (b) a bidirectional drift sweep using regex `^(0[2-9]|1[0-9])-.+\\.yaml$` that flags or removes orphan YAML files no longer declared in `FIXTURES`. The remaining files in scope are .planwerk metadata (review record, progress phase, three review-pattern files capturing the lessons). Verified: `_generate.py --check` exits 0 against current tree; injecting a synthetic `13-fake-orphan.yaml` correctly triggers exit 1 with the orphan annotation; `python3 test_generate.py` runs all 4 tests green; ruff and `mypy --strict` clean on the changed file.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass", "checked": true},
+    {"item": "Edge cases are covered (orphan detection verified by injection)", "checked": true},
+    {"item": "Locale-independent round-trip behavior locked in via encoding pin", "checked": true},
+    {"item": "Drift check returns 0 on clean tree, 1 on injected orphan", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (comments cite review IDs W-001/W-002/I-001 for traceability)", "checked": true},
+    {"item": "No dead code, no scope creep beyond the three review findings", "checked": true},
+    {"item": "Regex compiled at module level with descriptive private name and rationale comment", "checked": true},
+    {"item": "Deterministic iteration via sorted(here.iterdir()) for stable output", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No new untrusted-input surface introduced", "checked": true},
+    {"item": "Filename regex is anchored and bounded; cannot match traversal sequences", "checked": true},
+    {"item": "path.unlink() only triggers on files matching the bounded regex inside the script's own directory", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is the minimal verbatim implementation of the reviewer's suggested fixes", "checked": true},
+    {"item": "Documented CI gating now matches actual dependency graph (build-e2e-images depends on verify-invalid-cr-fixtures, e2e-operator transitively depends on build-e2e-images)", "checked": true},
+    {"item": "Drift detection is now bidirectional (FIXTURES->disk and disk->FIXTURES)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated logic; orphan sweep reuses the same drift list and check_only flag", "checked": true},
+    {"item": "No speculative future-proofing", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early (drift sweep runs in <1s in CI before any cluster job)", "checked": true},
+    {"item": "Orphan files now surface as drift instead of silently surviving", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Encoding pinned on file I/O eliminates locale-dependent silent corruption", "checked": true},
+    {"item": "Orphan sweep restricted to script's own directory, file-only, regex-bounded — cannot delete unrelated files", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Optional, non-blocking: the orphan-detection regex `^(0[2-9]|1[0-9])-.+\\.yaml$` is bounded to filenames numbered 02-19. If FIXTURES ever grows past 19 entries the regex would silently stop matching new orphans. Currently FIXTURES has 10 entries (02-12) so this is many years off, but a follow-up could broaden to `^[0-9]{2}-.+\\.yaml$` paired with an explicit allowlist for the pre-existing CC-0012 fixtures (00-, 01-) so the sweep stays consistent if the ID space expands.",
+    "Optional, non-blocking: the no-arg `_generate.py` invocation will now silently `unlink()` an on-disk file that a developer may have just hand-created before adding the matching FIXTURES entry. The `print(f\"removed orphan {path.name}\")` line provides feedback, and the workflow (edit FIXTURES first, then regenerate) makes this safe in practice — but a `--prune` flag or a confirmation prompt could be considered if anyone hits the footgun. Not worth changing now."
+  ],
+  "next_steps": [
+    "Merge once the CI run on this branch shows verify-invalid-cr-fixtures green and build-e2e-images consuming it via the new needs: edge.",
+    "On parent issue #277, tick the nine in-scope checkboxes and link the three deferred prerequisite items (image.tag MinLength, topologySpreadConstraints maxSkew Minimum, clusterRef immutability on ValidateUpdate) to follow-up feat-tickets, as planned in task 4.3."
+  ],
+  "detected_patterns": []
+}

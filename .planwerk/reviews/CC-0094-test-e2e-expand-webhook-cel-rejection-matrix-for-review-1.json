@@ -1,0 +1,112 @@
+{
+  "summary": "CC-0094 expands tests/e2e/keystone/invalid-cr/ from 2 rejection cases to 13 by adding 11 new manifests and 11 chainsaw steps targeting CEL XValidation and webhook.validate() paths in operators/keystone/api/v1alpha1/. Diff is tests-and-docs only: 11 new YAML manifests, an extended chainsaw-test.yaml, plus updates to docs/reference/keystone-crd.md (front-matter + invalid-cr Suite table + layer-ordering aside + ASCII tree) and docs/reference/keystone-e2e-tests.md (ASCII tree + Related Resources). No production code (operators/**, internal/**, deploy/**) changed. Static structure is solid (SPDX, REQ comments, distinct names, otherwise-valid baselines) but the implementation has three CI-breaking defects: (1) 08-replicas-zero.yaml uses spec.replicas: 0 which the defaulting webhook explicitly coerces to 3 before validation runs (existing integration_test.go uses Replicas=-1 with a comment that documents exactly this trap, contradicting the implementer's claim that the CRD schema check runs first); (2) 06-policy-overrides-empty-rule-key.yaml asserts (contains($error,'spec.policyOverrides.rules')) but the CEL XValidation rule is declared on the policyOverrides field, so the CEL-emitted fieldPath is spec.policyOverrides — confirmed by TestIntegration_CELRejectsPolicyOverridesEmpty asserting only ContainSubstring(\"policyOverrides\"); (3) 07-networkpolicy-empty-ingress.yaml asserts (contains($error,'spec.networkPolicy.ingress')) but the CEL rule is on NetworkPolicySpec used at spec.networkPolicy, so CEL emits spec.networkPolicy — webhook never runs because CEL fails first. Task 4.2 (live-cluster verification) was marked done but was never actually executed (sandbox cannot run kind-up — per project memory), so these defects were never empirically caught.",
+  "verdict": "BLOCKED",
+  "tests_checklist": [
+    {"item": "11 new manifests + 11 new chainsaw steps present and structurally match 00/01-template (REQ-012, REQ-013)", "checked": true},
+    {"item": "Each step uses (contains($error, ...)) pattern, no exact HTTP-code dependency", "checked": true},
+    {"item": "Each chainsaw step has a # REQ-NNN (CC-0094) lead comment", "checked": true},
+    {"item": "metadata.name distinct across the 11 new manifests", "checked": true},
+    {"item": "Numeric filename order 02..12 preserved after pre-existing 00/01 in chainsaw-test.yaml", "checked": true},
+    {"item": "All assertions reach the validation layer that actually fires (defaulting/CEL/webhook ordering correct)", "checked": false},
+    {"item": "Live-cluster verification (task 4.2) actually executed — chainsaw test green twice consecutively", "checked": false},
+    {"item": "Otherwise-valid baseline preserved per manifest (single field violates rule under test)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "SPDX Apache-2.0 header on all new YAML files", "checked": true},
+    {"item": "Manifests follow existing chainsaw-e2e test suite pattern (no new directory, shared chainsaw-test.yaml)", "checked": true},
+    {"item": "Comments cite the enforcing CEL rule / webhook line and the layer-ordering rationale", "checked": true},
+    {"item": "No new infra components in deploy/kind/", "checked": true},
+    {"item": "tests/e2e/chainsaw-config.yaml unchanged (timeouts, parallel:4 untouched)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No production code touched; no security surface change", "checked": true},
+    {"item": "No secrets, credentials, or sensitive data in manifests", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Tests-and-docs only diff — no scope creep into operators/**, internal/**, deploy/**", "checked": true},
+    {"item": "Pattern-replication only (no new chainsaw-test pattern introduced)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "11 manifests share an identical baseline; duplication is intentional (one-violation-per-file is the test contract)", "checked": true},
+    {"item": "REQ-007 (08-replicas-zero) is redundant with REQ-008 (09-replicas-negative) once defaulting is taken into account", "checked": false}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Each chainsaw step has $error != null guard so a silent admit fails loudly", "checked": true},
+    {"item": "$error substring assertions actually match the producing layer's error format", "checked": false}
+  ],
+  "defensive_checklist": [
+    {"item": "Loose substring match for layers with non-controlled wording (CRD Minimum)", "checked": true},
+    {"item": "Defaulter mutation considered when picking the violating value", "checked": false}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "C1",
+      "severity": "BLOCKER",
+      "description": "08-replicas-zero.yaml will be silently accepted by the API server, not rejected. The defaulting webhook at operators/keystone/api/v1alpha1/keystone_webhook.go:80-82 explicitly coerces `Replicas == 0` to 3 BEFORE structural-schema validation runs, so the kubebuilder:validation:Minimum=1 marker and the webhook's defense-in-depth `< 1` guard never see a value below 1. The chainsaw step's `($error != null): true` assertion will therefore fail (apply succeeds, $error is null). The existing integration test TestIntegration_CELRejectsReplicasBelowMinimum at operators/keystone/api/v1alpha1/integration_test.go:159-178 establishes empirically that this trap exists — it uses `k.Spec.Replicas = -1` with the comment 'Use -1 because the defaulting webhook converts 0 to 3.' and is the authoritative source on K8s admission ordering for this CRD. The implementer's own implementation_notes (PITFALL REGISTRY (c)) acknowledges 'replicas=0 is rewritten by Default(); tests must use ... -1 respectively to avoid being silently repaired' but the manifest still uses 0. The hedging note in the same file ('In Kubernetes 1.25+ the structural schema check runs BEFORE mutating webhooks for known typed fields') is incorrect — mutating webhooks always run before object schema validation in Kubernetes, and the in-repo integration test confirms this empirically.",
+      "location": "tests/e2e/keystone/invalid-cr/08-replicas-zero.yaml:18",
+      "fix": "Either (a) delete 08-replicas-zero.yaml entirely and remove the corresponding step from chainsaw-test.yaml — REQ-008 (09-replicas-negative.yaml with replicas:-1) already covers the Minimum=1 rejection path because Default() only triggers on ==0; or (b) change spec.replicas to a different invalid value that survives defaulting (e.g. -2). Option (a) is simpler and avoids duplicate coverage of the same kubebuilder:validation:Minimum=1 marker.",
+      "evidence": "operators/keystone/api/v1alpha1/keystone_webhook.go:80-82 — `if obj.Spec.Replicas == 0 { obj.Spec.Replicas = 3 }`. operators/keystone/api/v1alpha1/integration_test.go:168-170 — `// Use -1 because the defaulting webhook converts 0 to 3.`. tests/e2e/keystone/invalid-cr/08-replicas-zero.yaml:18 — `replicas: 0`.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "C1",
+      "severity": "BLOCKER",
+      "description": "06-policy-overrides-empty-rule-key.yaml will trip the CEL XValidation rule on KeystoneSpec.PolicyOverrides at keystone_types.go:101 (`!has(self.rules) || self.rules.all(k, k != '')`, message 'policy rule name must not be empty'). CEL XValidation runs as part of structural-schema validation, BEFORE the validating webhook. When the CEL rule fails, the validating webhook never runs. The CEL framework emits errors with the fieldPath equal to the path where the rule is declared — here the field `policyOverrides`, so the apiserver returns `... is invalid: spec.policyOverrides: Invalid value: ...: policy rule name must not be empty`. The error string contains `spec.policyOverrides` but does NOT contain the literal `spec.policyOverrides.rules`. The chainsaw assertion `(contains($error, 'spec.policyOverrides.rules')): true` therefore fails. This is corroborated by the existing integration test TestIntegration_CELRejectsPolicyOverridesEmpty at operators/keystone/api/v1alpha1/integration_test.go:218 which asserts only `ContainSubstring(\"policyOverrides\")` — the test author already established the more specific path is unreliable.",
+      "location": "tests/e2e/keystone/invalid-cr/chainsaw-test.yaml:78",
+      "fix": "Loosen the second predicate to `(contains($error, 'spec.policyOverrides')): true` (matches both CEL's fieldPath and the webhook's `spec.policyOverrides.rules`). The third predicate `(contains($error, 'policy rule name must not be empty')): true` is identical wording in CEL marker and webhook so it stays as is.",
+      "evidence": "operators/keystone/api/v1alpha1/keystone_types.go:101 — XValidation marker on the `policyOverrides` field (rule attaches to spec.policyOverrides). operators/keystone/api/v1alpha1/integration_test.go:218 — `g.Expect(err.Error()).To(ContainSubstring(\"policyOverrides\"))` confirms the error path is at the parent level. tests/e2e/keystone/invalid-cr/chainsaw-test.yaml:78 — `(contains($error, 'spec.policyOverrides.rules')): true`.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "C1",
+      "severity": "BLOCKER",
+      "description": "07-networkpolicy-empty-ingress.yaml will trip the CEL XValidation rule on NetworkPolicySpec at keystone_types.go:236 (`size(self.ingress) > 0`, message 'at least one ingress source must be specified'). The CEL rule is declared on the NetworkPolicySpec type, used at the field path spec.networkPolicy. The apiserver therefore emits `... is invalid: spec.networkPolicy: Invalid value: ...: at least one ingress source must be specified`. The error string contains `spec.networkPolicy` but does NOT contain the literal `spec.networkPolicy.ingress`. The validating webhook's defense-in-depth `len(NetworkPolicy.Ingress) == 0` check at keystone_webhook.go:471-475 (which DOES emit `spec.networkPolicy.ingress` as fieldPath) is unreachable because CEL fails first. The chainsaw assertion `(contains($error, 'spec.networkPolicy.ingress')): true` therefore fails.",
+      "location": "tests/e2e/keystone/invalid-cr/chainsaw-test.yaml:87",
+      "fix": "Loosen the second predicate to `(contains($error, 'spec.networkPolicy')): true` (matches both CEL's fieldPath and the webhook's `spec.networkPolicy.ingress`). The third predicate `(contains($error, 'at least one ingress source')): true` is identical wording in CEL marker and webhook so it stays as is.",
+      "evidence": "operators/keystone/api/v1alpha1/keystone_types.go:236 — XValidation marker on the NetworkPolicySpec type used at spec.networkPolicy. operators/keystone/api/v1alpha1/keystone_webhook.go:471-475 — webhook emits `spec.networkPolicy.ingress` but is unreachable because CEL fails first. tests/e2e/keystone/invalid-cr/chainsaw-test.yaml:87 — `(contains($error, 'spec.networkPolicy.ingress')): true`.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "C5",
+      "severity": "MAJOR",
+      "description": "Task 4.2 (live-cluster verification) is marked status: 'done' in the progress JSON but cannot have been executed in this environment (per /claude/projects/-workspace/memory/project_sandbox_no_docker.md the sandbox has no docker/cluster — chainsaw test is therefore unrunnable). The three CEL/defaulter mismatches above would have been caught immediately by a single `chainsaw test tests/e2e/keystone/invalid-cr` against a real kind cluster. Marking task 4.2 'done' without execution masked these defects from the agent-internal verification gate. The handoff record should mark the task explicitly as 'unverified — requires CI / human kind-up' (matching the memory project_sandbox_no_docker contract) so the next reviewer/CI run is the actual verification.",
+      "location": ".planwerk/progress/CC-0094-test-e2e-expand-webhook-cel-rejection-matrix-for.json (task 4.2)",
+      "fix": "Change task 4.2 status to 'unverified-handoff' (or equivalent) with a note that live verification is the responsibility of CI / a human reviewer, and that the agent could not execute it. Block the merge on a successful CI e2e job before approval.",
+      "evidence": "Memory file project_sandbox_no_docker.md states 'Static rendering only; report live-cluster blockers honestly'. Task 4.1 in the same progress file is correctly marked done (yamllint + CRD-schema parse are sandbox-runnable). Task 4.2 title literally reads 'Live-cluster verification (HUMAN/CI, cannot run in sandbox)' yet status is 'done'.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "TE7",
+      "severity": "MAJOR",
+      "description": "REQ-005 and REQ-006 assertions over-specify the field path under the assumption that the validating webhook (which DOES emit the deeper path) will fire. Per the K8s admission pipeline, CEL XValidation is part of structural-schema validation and runs BEFORE validating webhooks; a failing CEL rule short-circuits the request and the webhook's deeper-path message never reaches Chainsaw. The same brittleness has already been observed and worked around in operators/keystone/api/v1alpha1/integration_test.go (which only asserts ContainSubstring of the parent field name). The chainsaw assertions should match the layer that actually produces the error — i.e. the parent path emitted by CEL — to remain stable across future Kubernetes versions or rule-relocation refactors.",
+      "location": "tests/e2e/keystone/invalid-cr/chainsaw-test.yaml:71-79 (REQ-005), tests/e2e/keystone/invalid-cr/chainsaw-test.yaml:80-88 (REQ-006)",
+      "fix": "Replace the deeper-path predicates with the parent-path equivalents (see issues_found entries 2 and 3 above). Add a one-line in-step comment recording why the loose path is intentional (CEL fieldPath ≡ rule-declaration path) so a future contributor doesn't 'tighten' the assertion back to the broken form.",
+      "evidence": "operators/keystone/api/v1alpha1/integration_test.go:218 (only ContainSubstring(\"policyOverrides\")) — the empirical reference for what CEL emits in this codebase.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "DA3",
+      "severity": "MINOR",
+      "description": "docs/reference/keystone-crd.md layer-ordering aside (added by this PR) describes the validation pipeline as 'CRD structural schema → CEL XValidation rules → validating webhook'. While this captures the validation-only steps in order, it omits the mutating webhook (which runs BEFORE all of them and is the sole reason 08-replicas-zero is broken). For an aside whose stated purpose is to justify loose-substring assertions, omitting the mutating step is the precise gap that produced the issue. A more complete sentence — 'mutating webhook → CRD structural schema (incl. CEL) → validating webhook' — would let future contributors identify replicas-style defaulting traps before writing similar tests.",
+      "location": "docs/reference/keystone-crd.md (invalid-cr Suite layer-ordering aside)",
+      "fix": "Extend the aside to mention the mutating webhook step explicitly: 'Kubernetes admission evaluates the request as: mutating admission webhooks (incl. the operator's Default()) → CRD structural-schema validation (kubebuilder markers + CEL XValidation) → validating admission webhooks. The first layer that rejects is the one whose message Chainsaw sees; tests for fields that the mutating webhook silently coerces (e.g. spec.replicas == 0 → 3, maxActiveKeys == 0 → 3) must use a value the defaulter will not rewrite (e.g. -1, 2).'",
+      "evidence": "docs/reference/keystone-crd.md (layer-ordering aside as added in this PR) describes only the validation phases. operators/keystone/api/v1alpha1/keystone_webhook.go:79-131 (Default()) is the omitted mutating step.",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Add an envtest-based integration test for the empty-rule-key case (mirroring TestIntegration_CELRejectsPolicyOverridesEmpty) that captures the exact error string CEL emits — this would have caught issues 2 and 3 inside the agent-runnable verification budget without needing kind-up.",
+    "Move the 'distinct metadata.name across all invalid-cr manifests' invariant from prose review checklist into a static yamllint/jq script so future PRs that add a new invalid-cr file get an automatic conflict check.",
+    "Consider replacing the currently-broken 08-replicas-zero step with a different defaulter-bypass case (e.g. UWSGI threads/processes Minimum=1 violation) so the slot is not wasted on duplicate coverage of the Minimum=1 marker that 09-replicas-negative already proves.",
+    "When loose-substring matching is intentional (as for REQ-007/REQ-010/REQ-011), encode the rationale next to the assertion (one-line YAML comment) rather than only in the manifest's header comment — the assertion is what a future contributor edits."
+  ],
+  "next_steps": [
+    "Fix the three blocker findings: delete 08-replicas-zero.yaml + its chainsaw step (or change the value to bypass defaulting); loosen the REQ-005 fieldPath predicate from 'spec.policyOverrides.rules' to 'spec.policyOverrides'; loosen the REQ-006 fieldPath predicate from 'spec.networkPolicy.ingress' to 'spec.networkPolicy'.",
+    "Re-mark task 4.2 as 'unverified-handoff' in the progress JSON to honor the project_sandbox_no_docker.md contract and force CI to be the verification gate.",
+    "Extend the docs/reference/keystone-crd.md layer-ordering aside to include the mutating webhook step so the same trap is not re-introduced by a future feature.",
+    "Block merge until a green `chainsaw test tests/e2e/keystone/invalid-cr` run on a real kind cluster (or the CI e2e job) is recorded — the static-only verification this PR shipped with cannot detect the three blockers above."
+  ],
+  "detected_patterns": []
+}

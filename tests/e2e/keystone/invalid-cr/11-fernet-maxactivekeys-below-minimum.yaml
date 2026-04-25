@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# REQ-010 (CC-0094): Keystone CR with spec.fernet.maxActiveKeys: 2 — below
+# the documented minimum. Enforced by the +kubebuilder:validation:Minimum=3
+# marker on FernetSpec.MaxActiveKeys (keystone_types.go) and by
+# defense-in-depth in the validating webhook (keystone_webhook.go).
+# Admission must reject this CR with an $error referencing the substring
+# "maxActiveKeys". Either layer's message ("should be greater than or
+# equal to 3" from CRD schema, "maxActiveKeys must be at least 3" from
+# webhook) satisfies the assertion — see CC-0094 plan on layer-order
+# tolerance.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: invalid-fernet-maxactivekeys-below-minimum
+spec:
+  replicas: 3
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    host: db.example.com
+    port: 3306
+    database: keystone
+    secretRef:
+      name: keystone-db
+  cache:
+    backend: dogpile.cache.pymemcache
+    servers:
+    - "mc:11211"
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 2
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne

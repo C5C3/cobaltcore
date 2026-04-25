@@ -1,7 +1,7 @@
 ---
 title: Keystone CRD API Reference
 quadrant: operator
-feature: CC-0011, CC-0012, CC-0013, CC-0016, CC-0036, CC-0038, CC-0039, CC-0040, CC-0042, CC-0056, CC-0057, CC-0065, CC-0075, CC-0084
+feature: CC-0011, CC-0012, CC-0013, CC-0016, CC-0036, CC-0038, CC-0039, CC-0040, CC-0042, CC-0056, CC-0057, CC-0065, CC-0075, CC-0084, CC-0094
 ---
 
 # Keystone CRD API Reference
@@ -1159,13 +1159,84 @@ policy-validation, config-pruning, …), see
 
 #### invalid-cr Suite
 
+The full webhook + CEL rejection matrix (CC-0094) extends the original
+two-step suite (CC-0012) so that every implemented `XValidation` rule and
+every `webhook.validate()` branch in `operators/keystone/api/v1alpha1/`
+is pinned by a Chainsaw step. Each row maps 1:1 to a CC-0094 requirement.
+
 | Step | Manifest | Requirement | Expected Error |
 | --- | --- | --- | --- |
-| `invalid-cron-expression-rejected` | `00-invalid-cron.yaml` | Invalid cron | Error containing "rotationSchedule" and "invalid cron expression" |
-| `duplicate-plugin-config-section-rejected` | `01-duplicate-plugins.yaml` | Duplicate configSection | Error containing "configSection" and "Duplicate value" |
+| `invalid-cron-expression-rejected` | `00-invalid-cron.yaml` | Invalid cron (CC-0012 REQ-008) | Error containing "rotationSchedule" and "invalid cron expression" |
+| `duplicate-plugin-config-section-rejected` | `01-duplicate-plugins.yaml` | Duplicate configSection (CC-0012 REQ-009) | Error containing "configSection" and "Duplicate value" |
+| `database-both-modes-rejected` | `02-database-both-modes.yaml` | DatabaseSpec mutual exclusivity (CC-0094 REQ-001) | Error containing "spec.database" and "exactly one of clusterRef or host must be set" |
+| `cache-both-modes-rejected` | `03-cache-both-modes.yaml` | CacheSpec mutual exclusivity (CC-0094 REQ-002) | Error containing "spec.cache" and "exactly one of clusterRef or servers must be set" |
+| `autoscaling-no-target-rejected` | `04-autoscaling-no-target.yaml` | AutoscalingSpec target required (CC-0094 REQ-003) | Error containing "spec.autoscaling" and "at least one of targetCPUUtilization or targetMemoryUtilization" |
+| `policy-overrides-no-source-rejected` | `05-policy-overrides-no-source.yaml` | PolicyOverrides source required (CC-0094 REQ-004) | Error containing "spec.policyOverrides" and "at least one of rules or configMapRef must be set" |
+| `policy-overrides-empty-rule-key-rejected` | `06-policy-overrides-empty-rule-key.yaml` | Non-empty rule names (CC-0094 REQ-005) | Error containing "spec.policyOverrides" and "policy rule name must not be empty" |
+| `networkpolicy-empty-ingress-rejected` | `07-networkpolicy-empty-ingress.yaml` | NetworkPolicy ingress required (CC-0094 REQ-006) | Error containing "spec.networkPolicy" and "at least one ingress source" |
+| `replicas-negative-rejected` | `09-replicas-negative.yaml` | Replicas Minimum=1 (CC-0094 REQ-008; subsumes the dropped REQ-007 / `08-replicas-zero.yaml` case — see layer-ordering aside) | Error containing "replicas" |
+| `hpa-min-greater-than-max-rejected` | `10-hpa-min-greater-than-max.yaml` | minReplicas ≤ maxReplicas (CC-0094 REQ-009) | Error containing "spec.autoscaling.minReplicas" and "must not exceed maxReplicas" |
+| `fernet-maxactivekeys-below-minimum-rejected` | `11-fernet-maxactivekeys-below-minimum.yaml` | Fernet maxActiveKeys Minimum=3 (CC-0094 REQ-010) | Error containing "maxActiveKeys" |
+| `credentialkeys-maxactivekeys-below-minimum-rejected` | `12-credentialkeys-maxactivekeys-below-minimum.yaml` | CredentialKeys maxActiveKeys Minimum=3 (CC-0094 REQ-011) | Error containing "maxActiveKeys" |
 
 Each step uses `apply` with `expect` to assert that the `$error` variable is non-null
-and contains the expected field-level error message.
+and contains the expected field-level error message. Kubernetes admission evaluates
+validation in a fixed pipeline — **mutating webhook (defaulting) → CRD structural
+schema (incl. CEL `XValidation` rules) → validating webhook** — and the first layer
+that rejects an object is the one whose message Chainsaw sees. The mutating step is
+listed first because it can silently rewrite a value out from under a downstream
+rule: `keystone_webhook.go:80-82` coerces `spec.replicas == 0` to `3` BEFORE the
+`+kubebuilder:validation:Minimum=1` marker is evaluated, so a manifest using
+`spec.replicas: 0` would be silently accepted. This is the precise reason REQ-007
+(originally `08-replicas-zero.yaml`) was dropped from the suite during the CC-0094
+review-1 cycle: REQ-008 (`09-replicas-negative.yaml`, `spec.replicas: -1`) uses a
+value the defaulter does not touch (the defaulter only fires on `== 0`) and exercises
+the same `Minimum=1` and webhook-defense-in-depth path. The same trap applies to
+`maxActiveKeys: 0`, which is why REQ-010 / REQ-011 use `2` rather than `0`.
+
+For most CC-0094 rules the producing layer is unambiguous (CEL emits the exact
+"exactly one of …", "at least one of …", "must not exceed maxReplicas" wording),
+so the assertions match the full webhook-equivalent message. REQ-005
+(`06-policy-overrides-empty-rule-key.yaml`) and REQ-006
+(`07-networkpolicy-empty-ingress.yaml`) are the dual-layer exceptions where the
+fieldPath emitted by CEL is the parent path (`spec.policyOverrides` /
+`spec.networkPolicy`) — the path where the `XValidation` rule is declared — and
+NOT the deeper path the validating webhook would emit (`…rules` / `…ingress`).
+Because CEL fails first and short-circuits the admission pipeline, the validating
+webhook's deeper-path message never reaches Chainsaw, so the assertions match only
+the parent path. REQ-010 (`11-fernet-maxactivekeys-below-minimum.yaml`) and REQ-011
+(`12-credentialkeys-maxactivekeys-below-minimum.yaml`) are the field-substring
+exceptions: they trip the CRD structural schema's `Minimum=N` first, whose generated
+wording ("must be greater than or equal to N") differs from the webhook's
+defense-in-depth wording ("maxActiveKeys must be at least 3"). Both layers carry
+the field name, so the loose-substring assertion (`maxActiveKeys`) keeps the tests
+stable regardless of which layer fires first and across upstream Kubernetes
+admission-pipeline changes (CC-0094).
+
+The 10 CC-0094 fixtures (`02-…` through `12-…`, with the `08-replicas-zero.yaml`
+gap explained above) share an otherwise-identical minimal valid Keystone scaffold
+and differ only by the field under test. To prevent that scaffold from drifting
+across files (sourcery-ai review #1, CC-0094), the fixtures are generated from a
+single canonical source in `tests/e2e/keystone/invalid-cr/_generate.py`. After
+editing the scaffold or any per-fixture override, regenerate via
+`python3 tests/e2e/keystone/invalid-cr/_generate.py`. The
+`verify-invalid-cr-fixtures` CI job (and the matching
+`make verify-invalid-cr-fixtures` Makefile target) runs `_generate.py --check`
+in drift mode and the `test_generate.py` unit suite (`len(FIXTURES) == 10` plus
+a cross-reference assertion that every `Fixture.filename` appears as a
+`file:` step in `chainsaw-test.yaml`), so a hand-edit to any generated fixture
+— or a rename/removal that desynchs `FIXTURES` from `chainsaw-test.yaml` —
+fails the build before the cluster-bound `e2e-operator` job runs. The CC-0012
+fixtures (`00-invalid-cron.yaml`, `01-duplicate-plugins.yaml`) predate CC-0094
+and are intentionally NOT regenerated.
+
+The following CC-0094 follow-up gaps are intentionally **not** covered by this
+suite — they require new validation rules that do not exist yet, and each one
+is tracked as its own feature ticket:
+
+- Empty / malformed `spec.image.tag` (no `MinLength` or pattern on `ImageSpec.Tag`).
+- `topologySpreadConstraints[*].maxSkew: 0` (no CRD-level minimum on the upstream type, no defense-in-depth in the Keystone webhook).
+- Mutation of immutable fields (`spec.database.clusterRef`, `spec.cache.clusterRef`) on `ValidateUpdate` — old-vs-new comparison is not yet implemented.
 
 #### uwsgi Suite (CC-0040)
 
@@ -1250,9 +1321,19 @@ tests/e2e/keystone/
 │   ├── 00-keystone-cr.yaml           Keystone CR without explicit uWSGI
 │   └── 01-patch-custom-uwsgi.yaml    Patch with custom uWSGI values
 └── invalid-cr/
-    ├── chainsaw-test.yaml            Chainsaw E2E test definition (CC-0012)
-    ├── 00-invalid-cron.yaml          Invalid cron expression CR manifest
-    └── 01-duplicate-plugins.yaml     Duplicate plugin configSection CR manifest
+    ├── chainsaw-test.yaml                                  Chainsaw E2E test definition (CC-0012, CC-0094)
+    ├── 00-invalid-cron.yaml                                Invalid cron expression CR manifest (CC-0012)
+    ├── 01-duplicate-plugins.yaml                           Duplicate plugin configSection CR manifest (CC-0012)
+    ├── 02-database-both-modes.yaml                         Database clusterRef + host both set (CC-0094)
+    ├── 03-cache-both-modes.yaml                            Cache clusterRef + servers both set (CC-0094)
+    ├── 04-autoscaling-no-target.yaml                       Autoscaling without utilization target (CC-0094)
+    ├── 05-policy-overrides-no-source.yaml                  PolicyOverrides without rules or configMapRef (CC-0094)
+    ├── 06-policy-overrides-empty-rule-key.yaml             PolicyOverrides rule with empty key (CC-0094)
+    ├── 07-networkpolicy-empty-ingress.yaml                 NetworkPolicy with empty ingress array (CC-0094)
+    ├── 09-replicas-negative.yaml                           spec.replicas: -1 (CC-0094; subsumes the dropped 08-replicas-zero case)
+    ├── 10-hpa-min-greater-than-max.yaml                    HPA minReplicas > maxReplicas (CC-0094)
+    ├── 11-fernet-maxactivekeys-below-minimum.yaml          Fernet maxActiveKeys < 3 (CC-0094)
+    └── 12-credentialkeys-maxactivekeys-below-minimum.yaml  CredentialKeys maxActiveKeys < 3 (CC-0094)
 ```
 
 This layout is the canonical pattern for all CobaltCore operators. New operators

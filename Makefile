@@ -311,6 +311,19 @@ helm-package:
 # Testing and Infrastructure Targets
 # ============================================================================
 
+.PHONY: verify-invalid-cr-fixtures
+# verify-invalid-cr-fixtures asserts that the CC-0094 invalid-CR fixtures stay
+# in lockstep with their canonical scaffold and with chainsaw-test.yaml. It
+# runs `_generate.py --check` (drift mode: zero exit only when every on-disk
+# fixture matches the scaffold) and the test_generate.py unit suite (asserts
+# FIXTURES count, uniqueness, and that every Fixture.filename is referenced
+# by chainsaw-test.yaml). Both checks are sub-second and require no cluster.
+verify-invalid-cr-fixtures:
+	@echo "Checking CC-0094 invalid-CR fixture drift..."
+	@python3 tests/e2e/keystone/invalid-cr/_generate.py --check
+	@echo "Running CC-0094 invalid-CR fixture unit tests..."
+	@python3 tests/e2e/keystone/invalid-cr/test_generate.py
+
 .PHONY: e2e
 e2e:
 	chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/

@@ -2,9 +2,29 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E tests for Keystone CRD webhook validation rejection (CC-0012).
-# Verifies that the validating webhook correctly rejects invalid CR specs
-# with HTTP 422 responses containing descriptive field-level errors.
+# Chainsaw E2E tests for Keystone CRD webhook + CEL validation rejection.
+# Pins every implemented CEL XValidation and webhook.validate() rejection
+# path in operators/keystone/api/v1alpha1/ to a deterministic admission
+# failure (CC-0012, CC-0094). Each step applies an otherwise-valid Keystone
+# CR with a single field violating the rule under test, captures the
+# admission $error, and asserts the field-path plus message substring.
+#
+# The CC-0094 fixtures (02-…, 03-…, 04-…, 05-…, 06-…, 07-…, 09-…, 10-…,
+# 11-…, 12-…) share the same minimal valid Keystone scaffold and differ
+# only by the field under test. To prevent scaffold drift across these
+# 10 files (sourcery-ai review #1, CC-0094), they are generated from a
+# single source of truth in `_generate.py`. After editing the canonical
+# scaffold or any per-fixture override, regenerate via:
+#   python3 tests/e2e/keystone/invalid-cr/_generate.py
+# CI runs `make verify-invalid-cr-fixtures` (the
+# `verify-invalid-cr-fixtures` job in .github/workflows/ci.yaml), which
+# invokes `_generate.py --check` (drift mode) and `test_generate.py`
+# (FIXTURES count + chainsaw-test.yaml cross-reference) so any hand-edit
+# to a generated fixture — or a rename/removal that desynchs FIXTURES
+# from this file — fails the build before the cluster-bound e2e-operator
+# job runs.
+# The CC-0012 fixtures (00-invalid-cron.yaml, 01-duplicate-plugins.yaml)
+# predate CC-0094 and are intentionally NOT regenerated.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -29,3 +49,120 @@ spec:
             ($error != null): true
             (contains($error, 'configSection')): true
             (contains($error, 'Duplicate value')): true
+  # REQ-001 (CC-0094): spec.database with both clusterRef and host must be rejected.
+  - try:
+    - apply:
+        file: 02-database-both-modes.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.database')): true
+            (contains($error, 'exactly one of clusterRef or host must be set')): true
+  # REQ-002 (CC-0094): spec.cache with both clusterRef and a non-empty servers list must be rejected.
+  - try:
+    - apply:
+        file: 03-cache-both-modes.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.cache')): true
+            (contains($error, 'exactly one of clusterRef or servers must be set')): true
+  # REQ-003 (CC-0094): spec.autoscaling without any utilization target must be rejected.
+  - try:
+    - apply:
+        file: 04-autoscaling-no-target.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.autoscaling')): true
+            (contains($error, 'at least one of targetCPUUtilization or targetMemoryUtilization')): true
+  # REQ-004 (CC-0094): spec.policyOverrides with neither rules nor configMapRef must be rejected.
+  - try:
+    - apply:
+        file: 05-policy-overrides-no-source.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.policyOverrides')): true
+            (contains($error, 'at least one of rules or configMapRef must be set')): true
+  # REQ-005 (CC-0094): spec.policyOverrides.rules with an empty key must be rejected.
+  # The CEL XValidation rule is declared on the policyOverrides field, so the
+  # apiserver emits the error at fieldPath spec.policyOverrides (the parent),
+  # NOT spec.policyOverrides.rules. The validating webhook's deeper-path
+  # message never reaches Chainsaw because CEL fails first and short-circuits
+  # the admission pipeline. The assertion therefore matches only the parent
+  # path so the test is stable across rule-relocation refactors.
+  - try:
+    - apply:
+        file: 06-policy-overrides-empty-rule-key.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.policyOverrides')): true
+            (contains($error, 'policy rule name must not be empty')): true
+  # REQ-006 (CC-0094): spec.networkPolicy with an empty ingress array must be
+  # rejected. The CEL XValidation rule is declared on NetworkPolicySpec, so
+  # the apiserver emits the error at fieldPath spec.networkPolicy (the parent),
+  # NOT spec.networkPolicy.ingress. The validating webhook's deeper-path
+  # message never reaches Chainsaw because CEL fails first and short-circuits
+  # the admission pipeline. The assertion therefore matches only the parent
+  # path so the test is stable across rule-relocation refactors.
+  - try:
+    - apply:
+        file: 07-networkpolicy-empty-ingress.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.networkPolicy')): true
+            (contains($error, 'at least one ingress source')): true
+  # ── Numbering gap (CC-0094 review-1) ─────────────────────────────────
+  # REQ-007 / `08-replicas-zero.yaml` is INTENTIONALLY ABSENT. The
+  # mutating webhook (operators/keystone/api/v1alpha1/keystone_webhook.go:80-82)
+  # coerces `spec.replicas: 0` to 3 BEFORE the
+  # +kubebuilder:validation:Minimum=1 marker is evaluated, so the original
+  # `replicas: 0` manifest would silently round-trip to a valid CR and
+  # the test would never fire an admission error. REQ-007 is therefore
+  # subsumed by REQ-008 below, which uses `spec.replicas: -1` — a value
+  # the defaulter does not touch — to exercise the same Minimum=1 path.
+  # The numeric gaps (no REQ-007 step, no `08-replicas-zero.yaml` file)
+  # are preserved so the REQ→manifest mapping in
+  # docs/reference/keystone-crd.md stays 1:1 stable across review cycles.
+  # ─────────────────────────────────────────────────────────────────────
+  # REQ-008 (CC-0094): spec.replicas: -1 must be rejected by Minimum=1
+  # before any defaulting path can coerce the value.
+  - try:
+    - apply:
+        file: 09-replicas-negative.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'replicas')): true
+  # REQ-009 (CC-0094): spec.autoscaling.minReplicas > maxReplicas must be rejected.
+  - try:
+    - apply:
+        file: 10-hpa-min-greater-than-max.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.autoscaling.minReplicas')): true
+            (contains($error, 'must not exceed maxReplicas')): true
+  # REQ-010 (CC-0094): spec.fernet.maxActiveKeys below the minimum (3) must
+  # be rejected by either CRD schema (Minimum=3) or webhook. The assertion
+  # matches only 'maxActiveKeys' so either layer satisfies the test.
+  - try:
+    - apply:
+        file: 11-fernet-maxactivekeys-below-minimum.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'maxActiveKeys')): true
+  # REQ-011 (CC-0094): spec.credentialKeys.maxActiveKeys below the minimum (3)
+  # must be rejected by either CRD schema or webhook. The assertion matches
+  # only 'maxActiveKeys' so either layer satisfies the test.
+  - try:
+    - apply:
+        file: 12-credentialkeys-maxactivekeys-below-minimum.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'maxActiveKeys')): true

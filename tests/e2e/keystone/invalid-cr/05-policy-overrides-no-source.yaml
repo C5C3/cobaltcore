@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# REQ-004 (CC-0094): Keystone CR with spec.policyOverrides set to an empty
+# object — neither rules nor configMapRef populated. The constraint is
+# enforced by the CEL XValidation rule on KeystoneSpec.PolicyOverrides
+# (keystone_types.go) and by the validating webhook (keystone_webhook.go).
+# Admission must reject this CR with an $error referencing
+# spec.policyOverrides and the message "at least one of rules or
+# configMapRef must be set".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: invalid-policy-overrides-no-source
+spec:
+  replicas: 3
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    host: db.example.com
+    port: 3306
+    database: keystone
+    secretRef:
+      name: keystone-db
+  cache:
+    backend: dogpile.cache.pymemcache
+    servers:
+    - "mc:11211"
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
+  policyOverrides: {}

@@ -772,9 +772,21 @@ tests/e2e/keystone/
 │   ├── 00-keystone-cr.yaml             Keystone CR with initial image tag
 │   └── 01-patch-image.yaml             Patch spec.image.tag
 ├── invalid-cr/
-│   ├── chainsaw-test.yaml              CRD webhook validation (CC-0012)
-│   ├── 00-invalid-cron.yaml            Invalid cron expression CR
-│   └── 01-duplicate-plugins.yaml       Duplicate plugin configSection CR
+│   ├── chainsaw-test.yaml                                  CRD webhook + CEL validation (CC-0012, CC-0094)
+│   ├── _generate.py                                        Canonical scaffold + generator for CC-0094 fixtures (sourcery-ai review #1)
+│   ├── test_generate.py                                    Fast unit tests for the generator: drift check, FIXTURES count, chainsaw-test.yaml cross-reference (CC-0094, run by `make verify-invalid-cr-fixtures`)
+│   ├── 00-invalid-cron.yaml                                Invalid cron expression CR (CC-0012)
+│   ├── 01-duplicate-plugins.yaml                           Duplicate plugin configSection CR (CC-0012)
+│   ├── 02-database-both-modes.yaml                         Database both modes set (CC-0094, generated)
+│   ├── 03-cache-both-modes.yaml                            Cache both modes set (CC-0094, generated)
+│   ├── 04-autoscaling-no-target.yaml                       Autoscaling without target (CC-0094, generated)
+│   ├── 05-policy-overrides-no-source.yaml                  PolicyOverrides without source (CC-0094, generated)
+│   ├── 06-policy-overrides-empty-rule-key.yaml             PolicyOverrides empty rule key (CC-0094, generated)
+│   ├── 07-networkpolicy-empty-ingress.yaml                 NetworkPolicy empty ingress (CC-0094, generated)
+│   ├── 09-replicas-negative.yaml                           replicas: -1 (CC-0094, generated; subsumes dropped 08-replicas-zero case)
+│   ├── 10-hpa-min-greater-than-max.yaml                    HPA minReplicas > maxReplicas (CC-0094, generated)
+│   ├── 11-fernet-maxactivekeys-below-minimum.yaml          Fernet maxActiveKeys < 3 (CC-0094, generated)
+│   └── 12-credentialkeys-maxactivekeys-below-minimum.yaml  CredentialKeys maxActiveKeys < 3 (CC-0094, generated)
 ├── middleware-config/
 │   ├── chainsaw-test.yaml              Middleware pipeline (CC-0016)
 │   └── 00-keystone-cr.yaml             Keystone CR with custom middleware
@@ -844,7 +856,7 @@ tests/e2e/keystone/
 
 ## Related Resources
 
-- [Keystone CRD API Reference](./keystone-crd.md) — CRD types, webhooks, and `invalid-cr` E2E tests (CC-0011, CC-0012)
+- [Keystone CRD API Reference](./keystone-crd.md) — CRD types, webhooks, and `invalid-cr` E2E tests (CC-0011, CC-0012, CC-0094)
 - [Keystone Reconciler Architecture](./keystone-reconciler.md) — Sub-reconciler contracts and unit tests (CC-0013, CC-0015)
 - [Infrastructure E2E Deployment](./infrastructure/e2e-deployment.md) — Infrastructure stack deployment and `infra-stack-health` test (CC-0010)
 - `tests/e2e/chainsaw-config.yaml` — Shared Chainsaw configuration

@@ -202,6 +202,23 @@ jobs:
       - name: Run shellcheck on hack/*.sh and operator rotation scripts
         run: make shellcheck
 
+  # CC-0094: Enforce the canonical-scaffold contract for the invalid-CR
+  # Chainsaw fixtures (sourcery-ai review #1, FC1 from review #2). Runs
+  # `_generate.py --check` (drift mode) and the test_generate.py unit suite
+  # (FIXTURES count + chainsaw-test.yaml cross-reference) so a hand-edit to
+  # any 02-…/03-…/…/12-*.yaml fixture, or a rename/removal that desynchs
+  # FIXTURES from chainsaw-test.yaml, fails the build before the heavy
+  # cluster-bound e2e-operator job runs. Always-on because the check is
+  # sub-second and python3 is preinstalled on ubuntu-latest runners — no
+  # untrusted GitHub event input is read, so no injection surface is added.
+  verify-invalid-cr-fixtures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Verify CC-0094 invalid-CR fixture drift and structure
+        run: make verify-invalid-cr-fixtures
+
   # CC-0018: Matrix over [common, keystone, c5c3] to deduplicate common coverage
   # into a single leg (review comment #7/#8).
   test:
@@ -442,7 +459,7 @@ jobs:
   # as zstd-compressed tarballs.  e2e-operator and tempest download and load
   # the artifact instead of rebuilding, saving ~5-10 min per CI run.
   build-e2e-images:
-    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]
+    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures]
     # always(): allow the job to run when upstream Go jobs are skipped
     # (e.g. pure E2E test-definition PRs where go=false). The explicit
     # failure/cancelled guard still blocks if any upstream actually failed.

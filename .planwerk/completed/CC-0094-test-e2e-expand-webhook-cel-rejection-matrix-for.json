@@ -2,8 +2,8 @@
   "feature_id": "CC-0094",
   "title": "test(e2e): Expand webhook/CEL rejection matrix for Keystone",
   "slug": "test-e2e-expand-webhook-cel-rejection-matrix-for",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #281: test(e2e): Expand webhook/CEL rejection matrix for Keystone CR (#277 Phase 1)\n\n## Context\n\nParent: #277, Phase 1 → *Webhook / CEL validation matrix*.\n\nToday `tests/e2e/keystone/invalid-cr/` covers exactly two rejection cases: invalid cron in `spec.fernet.rotationSchedule` and duplicate `plugins[*].configSection` values (see `tests/e2e/keystone/invalid-cr/chainsaw-test.yaml`, REQ-008/009 under CC-0012).\n\nThe validation rules in `operators/keystone/api/v1alpha1/keystone_types.go` (CEL via `+kubebuilder:validation:XValidation`) and `operators/keystone/api/v1alpha1/keystone_webhook.go` (defense-in-depth) cover considerably more misconfigurations than that. This sub-issue closes the E2E gap for every rejection path that is already implemented.\n\n## Scope — new rejection cases\n\nThe existing test is extended with eleven input files and matching `apply` steps. Each row is taken 1:1 from the Phase 1 checklist in #277:\n\n| # | Scenario | Enforced by | Expected `fieldPath` / key string |\n|---|----------|-------------|------------------------------------|\n| 1 | `spec.database` with **both** `clusterRef` and `host` set | CEL on `DatabaseSpec` (keystone_types.go:61) + webhook (keystone_webhook.go:195) | `spec.database` / `exactly one of clusterRef or host must be set` |\n| 2 | `spec.cache` with **both** `clusterRef` and `servers` set | CEL on `CacheSpec` (types.go:66) + webhook (webhook.go:185) | `spec.cache` / `exactly one of clusterRef or servers must be set` |\n| 3 | `spec.autoscaling` with neither `targetCPUUtilization` nor `targetMemoryUtilization` | CEL on `AutoscalingSpec` (types.go:207) + webhook | `spec.autoscaling` / `at least one of targetCPUUtilization or targetMemoryUtilization` |\n| 4 | `spec.policyOverrides` with neither `rules` nor `configMapRef` | CEL (types.go:100) + webhook | `spec.policyOverrides` / `at least one of rules or configMapRef must be set` |\n| 5 | `spec.policyOverrides.rules` with an empty key | CEL (types.go:101) + webhook | `spec.policyOverrides.rules` / `policy rule name must not be empty` |\n| 6 | `spec.networkPolicy.ingress: []` (empty) | CEL on `NetworkPolicySpec` (types.go:236) + webhook | `spec.networkPolicy.ingress` / `at least one ingress source must be specified` |\n| 7 | `spec.replicas: 0` **and** `spec.replicas: -1` (two variants) | `+kubebuilder:validation:Minimum=1` + webhook | `spec.replicas` / `replicas must be at least 1` |\n| 8 | `spec.autoscaling.minReplicas > spec.autoscaling.maxReplicas` | webhook (webhook.go ~428) | `spec.autoscaling.minReplicas` / `must not exceed maxReplicas` |\n| 9 | `spec.fernet.maxActiveKeys: 2` **and** `spec.credentialKeys.maxActiveKeys: 2` | `+kubebuilder:validation:Minimum=3` + webhook | `spec.fernet.maxActiveKeys` / `must be at least 3` (same for `credentialKeys`) |\n\n> Note: the parent checklist says `maxActiveKeys < 2`, but the code enforces `>= 3`. The test follows the code; the parent checklist will be corrected when the box is ticked.\n\n## Explicitly out of scope (prerequisites, separate tickets)\n\nThree checkboxes from Phase 1 / \"Webhook matrix\" require webhook features that do **not** exist today. They need feature tickets first; the E2E tests follow once the feature lands (see #277, *Out of scope*):\n\n- Empty / malformed `spec.image.tag` — `commonv1.ImageSpec.Tag` (`internal/common/types/types.go:14`) has neither `MinLength` nor a regex pattern.\n- `topologySpreadConstraints[*].maxSkew: 0` — upstream `corev1.TopologySpreadConstraint.MaxSkew` carries no CRD-level minimum; no defense-in-depth in the Keystone webhook today.\n- Mutation of immutable fields (`spec.database.clusterRef`, analogously `spec.cache.clusterRef`) — `ValidateUpdate` does not currently compare old vs. new.\n\nThose three points will be split out of the Phase 1 list into their own `feat(CC-xxxx): harden <field> validation` issues, each followed by a dedicated test.\n\n## Test design\n\nLocation: `tests/e2e/keystone/invalid-cr/` (extend the existing test — **no** new directory; every case shares the scope \"webhook rejects an otherwise minimal Keystone CR\").\n\nFile layout after the change:\n\n```\ntests/e2e/keystone/invalid-cr/\n├── 00-invalid-cron.yaml                             (existing)\n├── 01-duplicate-plugins.yaml                        (existing)\n├── 02-database-both-modes.yaml                      (new)\n├── 03-cache-both-modes.yaml                         (new)\n├── 04-autoscaling-no-target.yaml                    (new)\n├── 05-policy-overrides-no-source.yaml               (new)\n├── 06-policy-overrides-empty-rule-key.yaml          (new)\n├── 07-networkpolicy-empty-ingress.yaml              (new)\n├── 08-replicas-zero.yaml                            (new)\n├── 09-replicas-negative.yaml                        (new)\n├── 10-hpa-min-greater-than-max.yaml                 (new)\n├── 11-fernet-maxactivekeys-below-minimum.yaml       (new)\n├── 12-credentialkeys-maxactivekeys-below-minimum.yaml (new)\n└── chainsaw-test.yaml                               (extended)\n```\n\nAssertion pattern per step (identical to `00-invalid-cron.yaml`, so CI reports stay homogeneous):\n\n```yaml\n- try:\n  - apply:\n      file: 02-database-both-modes.yaml\n      expect:\n      - check:\n          ($error != null): true\n          (contains($error, 'spec.database')): true\n          (contains($error, 'exactly one of clusterRef or host must be set')): true\n```\n\nInput YAMLs: each file carries a **complete, otherwise valid** minimal CR where exactly **one** field violates the rule under test. That keeps the error-message assertion sharp and makes follow-on regressions (e.g. a new required field) fail loudly. Template: the existing `00-invalid-cron.yaml` / `01-duplicate-plugins.yaml`.\n\nAll CRs remain **unapplied** in cluster state (admission reject), so no cleanup steps and no `delete` blocks are needed. The test fits inside the 30 s `apply` timeout from `tests/e2e/chainsaw-config.yaml` and does not affect `parallel: 4` execution.\n\n## Definition of Done\n\n- [ ] `chainsaw test tests/e2e/keystone/invalid-cr` green locally against `make kind-up`\n- [ ] `make e2e` green (rest of the Keystone suite unchanged, no new flakes)\n- [ ] Parallel-4 CI job `e2e` green in at least two consecutive runs (anti-flake)\n- [ ] All eleven new steps use the `(contains($error, …))` pattern from the existing test; no dependency on an exact HTTP-code string\n- [ ] No new infra components in `deploy/kind/`, no deviations from `tests/e2e/chainsaw-config.yaml`\n- [ ] Parent #277: the nine covered checkboxes ticked, the three prerequisite points linked as follow-up issues\n- [ ] Commit prefix `test(CC-xxxx)` in line with the repo style (feature code to be assigned by a maintainer)\n\n## Risks / open questions\n\n- **Error-message drift**: the CEL and webhook layers can produce slightly different strings (e.g. for `replicas: 0` the CRD layer says `\"should be greater than or equal to 1\"`, the webhook says `\"replicas must be at least 1\"`). Mitigation: match on the common substring (`\"replicas\"`) plus `($error != null): true`. Please confirm in review.\n- **Validator ordering**: CRD schema → CEL → validating webhook. If CEL rejects first, the request never reaches the webhook and the webhook-specific string is absent from `$error`. The test therefore matches the semantic core message, not the producing layer.\n- Feature code (`CC-xxxx`) to be assigned by a maintainer; suggest extending the sequence past CC-0093.\n\n---\nSource: https://github.com/C5C3/forge/issues/281",
   "stories": [
@@ -486,6 +486,7 @@
       "title": "Add tests/e2e/keystone/invalid-cr/02-database-both-modes.yaml (otherwise-valid Keystone CR setting BOTH spec.database.clusterRef.name AND spec.database.host) and append its chainsaw step to chainsaw-test.yaml — assertions: ($error != null), contains 'spec.database', contains 'exactly one of clusterRef or host must be set' (REQ-001, REQ-012, REQ-013) — CC-0094",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-012",
@@ -497,6 +498,7 @@
       "title": "Add tests/e2e/keystone/invalid-cr/03-cache-both-modes.yaml (otherwise-valid Keystone CR setting BOTH spec.cache.clusterRef.name AND a non-empty spec.cache.servers list) and append its chainsaw step — assertions: ($error != null), contains 'spec.cache', contains 'exactly one of clusterRef or servers must be set' (REQ-002, REQ-012, REQ-013) — CC-0094",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-012",
@@ -508,6 +510,7 @@
       "title": "Add tests/e2e/keystone/invalid-cr/04-autoscaling-no-target.yaml (spec.autoscaling.maxReplicas=10, no targetCPUUtilization, no targetMemoryUtilization; spec.replicas kept <= maxReplicas) and append its chainsaw step — assertions: ($error != null), contains 'spec.autoscaling', contains 'at least one of targetCPUUtilization or targetMemoryUtilization' (REQ-003, REQ-012, REQ-013) — CC-0094",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-012",
@@ -519,6 +522,7 @@
       "title": "Add tests/e2e/keystone/invalid-cr/05-policy-overrides-no-source.yaml (spec.policyOverrides: {} — present but empty) and append its chainsaw step — assertions: ($error != null), contains 'spec.policyOverrides', contains 'at least one of rules or configMapRef must be set' (REQ-004, REQ-012, REQ-013) — CC-0094",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-012",
@@ -530,6 +534,7 @@
       "title": "Add tests/e2e/keystone/invalid-cr/06-policy-overrides-empty-rule-key.yaml (spec.policyOverrides.rules with a single entry whose key is the empty string '') and append its chainsaw step — assertions: ($error != null), contains 'spec.policyOverrides.rules', contains 'policy rule name must not be empty' (REQ-005, REQ-012, REQ-013) — CC-0094",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-012",
@@ -541,6 +546,7 @@
       "title": "Add tests/e2e/keystone/invalid-cr/07-networkpolicy-empty-ingress.yaml (spec.networkPolicy.ingress: []) and append its chainsaw step — assertions: ($error != null), contains 'spec.networkPolicy.ingress', contains 'at least one ingress source' (REQ-006, REQ-012, REQ-013) — CC-0094",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-012",
@@ -552,6 +558,7 @@
       "title": "Add tests/e2e/keystone/invalid-cr/08-replicas-zero.yaml (spec.replicas: 0) and append its chainsaw step — assertions: ($error != null), contains 'replicas' (loose match for CRD 'greater than or equal to 1' OR webhook 'replicas must be at least 1'); add a comment in the step noting the loose match rationale and that the reviewer must confirm defaulting does not mask it (REQ-007, REQ-012, REQ-013) — CC-0094",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-007",
         "REQ-012",
@@ -563,6 +570,7 @@
       "title": "Add tests/e2e/keystone/invalid-cr/09-replicas-negative.yaml (spec.replicas: -1) and append its chainsaw step — assertions: ($error != null), contains 'replicas' (CRD Minimum=1 rejects deterministically because defaulter only triggers on ==0) (REQ-008, REQ-012, REQ-013) — CC-0094",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-008",
         "REQ-012",
@@ -574,6 +582,7 @@
       "title": "Add tests/e2e/keystone/invalid-cr/10-hpa-min-greater-than-max.yaml (spec.autoscaling.minReplicas=5, maxReplicas=3, AND targetCPUUtilization=70 to avoid confounding with REQ-003; spec.replicas kept at 3 or below so the implicit-min>max rule at keystone_webhook.go:438 does not fire) and append its chainsaw step — assertions: ($error != null), contains 'spec.autoscaling.minReplicas', contains 'must not exceed maxReplicas' (REQ-009, REQ-012, REQ-013) — CC-0094",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-009",
         "REQ-012",
@@ -585,6 +594,7 @@
       "title": "Add tests/e2e/keystone/invalid-cr/11-fernet-maxactivekeys-below-minimum.yaml (spec.fernet.maxActiveKeys: 2; rotationSchedule omitted so CRD default '0 0 * * 0' applies) and append its chainsaw step — assertions: ($error != null), contains 'maxActiveKeys' (loose match because CRD Minimum=3 wording differs from webhook wording) (REQ-010, REQ-012, REQ-013) — CC-0094",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-010",
         "REQ-012",
@@ -596,6 +606,7 @@
       "title": "Add tests/e2e/keystone/invalid-cr/12-credentialkeys-maxactivekeys-below-minimum.yaml (spec.credentialKeys.maxActiveKeys: 2; fernet.maxActiveKeys defaulted to 3) and append its chainsaw step — assertions: ($error != null), contains 'maxActiveKeys' (REQ-011, REQ-012, REQ-013) — CC-0094",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-011",
         "REQ-012",
@@ -607,6 +618,7 @@
       "title": "Audit the final tests/e2e/keystone/invalid-cr/chainsaw-test.yaml: verify (a) every new `- try:` block is preceded by a `# REQ-NNN (CC-0094):` comment identifying the rule under test, (b) all steps appear in numeric filename order 02..12 after the pre-existing 00/01 steps, (c) no `delete`/`assert`/`wait` blocks were introduced, (d) the top-level SPDX header remains unchanged (REQ-013) — CC-0094",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-013"
       ]
@@ -616,6 +628,7 @@
       "title": "Cross-review all eleven new manifests against the baseline template from 00-invalid-cron.yaml: (a) identical SPDX header, (b) `apiVersion: keystone.openstack.c5c3.io/v1alpha1`, `kind: Keystone`, (c) every required spec path (image, database, cache, fernet, bootstrap) present with the canonical minimal-valid values, (d) exactly one field violates the rule under test, (e) metadata.name distinct across all eleven files (REQ-012) — CC-0094",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-012"
       ]
@@ -625,6 +638,7 @@
       "title": "Extend docs/reference/keystone-crd.md §'invalid-cr Suite' table with 11 new rows (Step name, Manifest filename, Requirement one-line, Expected Error substrings) in numeric filename order; add CC-0094 to the front-matter `feature:` list; extend the file-layout ASCII tree at the end of the doc to include 02-...yaml through 12-...yaml (REQ-014) — CC-0094",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-014"
       ]
@@ -634,6 +648,7 @@
       "title": "Add a one-paragraph aside to docs/reference/keystone-crd.md (after the expanded table) documenting the 'layer-ordering' rationale for loose-substring assertions (CRD schema → CEL → webhook); cite why REQ-007/REQ-010/REQ-011 match only 'replicas' or 'maxActiveKeys' rather than the full webhook wording — CC-0094",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-014"
       ]
@@ -643,6 +658,7 @@
       "title": "Static verification (agent-local, sandbox): run `yamllint` or equivalent schema parse over the 11 new manifests AND `chainsaw-test.yaml`; verify each new manifest is schema-valid per the generated CRD at operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml EXCEPT for the one deliberately-violating field. Report any diagnostic findings without attempting kind-up (sandbox constraint — documented in memory) (REQ-012, REQ-013) — CC-0094",
       "level": 4,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-012",
         "REQ-013"
@@ -653,6 +669,7 @@
       "title": "Live-cluster verification (HUMAN/CI, cannot run in sandbox): `make kind-up && chainsaw test tests/e2e/keystone/invalid-cr` — confirm all 13 steps (2 existing + 11 new) pass on the first run and on a second consecutive run (anti-flake). If any step flakes or if spec.replicas:0 is silently defaulted, follow the fallback in REQ-007 scenario 3 and the test spec for 08-replicas-zero.yaml — CC-0094",
       "level": 4,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-007",
         "REQ-010"
@@ -663,6 +680,7 @@
       "title": "Parent-issue maintenance: on PR merge, tick the nine in-scope checkboxes under #277 Phase 1 and link the three deferred prerequisite items (spec.image.tag MinLength, topologySpreadConstraints maxSkew Minimum, clusterRef immutability on ValidateUpdate) to follow-up feat-tickets as described in deferred_items — CC-0094",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-014"
       ]
@@ -899,8 +917,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-24T21:20:11.896975"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-25T08:28:29.998863"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-25T11:38:36.448902"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/283",
+  "pr_number": 283,
   "execution_history": [
     {
       "run_id": "d564d684-beb6-4220-838b-3fc531099ce0",
@@ -912,6 +940,84 @@
           "name": "prepare",
           "duration": 449.63399505615234,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "3a26c335-70f6-4927-b96e-c3affe2fe631",
+      "timestamp": "2026-04-25T09:06:14.948930",
+      "total_duration": 2070.835634469986,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (11 tasks)",
+          "duration": 460.58440589904785,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (2 tasks)",
+          "duration": 91.94528317451477,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (2 tasks)",
+          "duration": 166.57412719726562,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (3 tasks)",
+          "duration": 196.06803393363953,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0094] Code Review",
+          "duration": 654.9244906902313,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0094] Improvements",
+          "duration": 450.36296582221985,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0094] Simplify",
+          "duration": 50.37632775306702,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "74c57220-22ed-4aad-a8e3-3fefa4afca25",
+      "timestamp": "2026-04-25T10:41:00.413688",
+      "total_duration": 1757.7078120708466,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 1757.7078120708466,
+          "type": "review_address",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "f7dbead5-9bb3-41ed-94d7-c65aa257da69",
+      "timestamp": "2026-04-25T11:03:03.775260",
+      "total_duration": 512.318487405777,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #2",
+          "duration": 512.318487405777,
+          "type": "review_address",
           "status": "done"
         }
       ]

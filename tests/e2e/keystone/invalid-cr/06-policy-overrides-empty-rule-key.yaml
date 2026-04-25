@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# REQ-005 (CC-0094): Keystone CR with spec.policyOverrides.rules containing
+# an empty-string map key. Forbidden by the CEL XValidation rule on
+# KeystoneSpec.PolicyOverrides (`self.rules.all(k, k != '')` in
+# keystone_types.go) and by the validating webhook (keystone_webhook.go).
+# Admission must reject this CR with an $error referencing the parent
+# fieldPath spec.policyOverrides and the message "policy rule name must
+# not be empty". The chainsaw assertion intentionally matches the parent
+# path (spec.policyOverrides) — not the deeper spec.policyOverrides.rules
+# — because CEL XValidation runs before the validating webhook in the
+# admission pipeline and emits the error at the field where the rule is
+# declared (here: policyOverrides). The validating webhook's deeper-path
+# message is unreachable when the CEL layer rejects first. The empty key
+# is quoted ('') so the YAML parser preserves it.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: invalid-policy-overrides-empty-rule-key
+spec:
+  replicas: 3
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    host: db.example.com
+    port: 3306
+    database: keystone
+    secretRef:
+      name: keystone-db
+  cache:
+    backend: dogpile.cache.pymemcache
+    servers:
+    - "mc:11211"
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
+  policyOverrides:
+    rules:
+      '': "role:admin"

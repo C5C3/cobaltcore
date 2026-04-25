@@ -1,0 +1,62 @@
+{
+  "summary": "Improvement cycle addressing sourcery-ai[bot] external review #1. Three concerns were raised: (1) confusing REQ-007/REQ-008 numbering after dropping the replicas-zero case, (2) duplicated minimal-valid Keystone scaffold across the 10 CC-0094 invalid-CR fixtures, (3) lowercase 'chainsaw' typo in keystone-crd.md:1165. All three are resolved: a fenced 'Numbering gap (CC-0094 review-1)' comment block was added in chainsaw-test.yaml between REQ-006 and REQ-008 explaining why REQ-007 / 08-replicas-zero.yaml is intentionally absent (mutating webhook coerces replicas:0 → 3 before Minimum=1 fires); a single-source-of-truth Python generator tests/e2e/keystone/invalid-cr/_generate.py was added that emits all 10 CC-0094 fixtures from a canonical scaffold and supports a `--check` drift mode; the typo was applied verbatim. Supporting doc updates were added to docs/reference/keystone-crd.md (regen paragraph) and docs/reference/keystone-e2e-tests.md (file tree + 'generated' tags). Three review-pattern files captured for future enforcement. Drift-check (`_generate.py --check`) returns 0 against the on-disk fixtures. No production code (operators/**, internal/**, deploy/**) touched. Pre-review validation (ruff, mypy, radon, vulture, stubs) all pass on _generate.py.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Drift check (_generate.py --check) passes against on-disk fixtures", "checked": true},
+    {"item": "All 10 CC-0094 fixtures still resolve to existing files referenced by chainsaw-test.yaml", "checked": true},
+    {"item": "metadata.name is unique across all 12 invalid-cr manifests", "checked": true},
+    {"item": "CC-0012 fixtures (00-, 01-) intentionally NOT regenerated and preserved verbatim", "checked": true},
+    {"item": "Numbering-gap comment block explains REQ-007 / 08-replicas-zero.yaml absence", "checked": true},
+    {"item": "Generator drift-check actually wired into CI (Makefile / workflow)", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Generator follows existing python-script conventions (SPDX header, docstring, dataclass)", "checked": true},
+    {"item": "Renders deterministically (drift-check exits 0)", "checked": true},
+    {"item": "No code duplication — single canonical scaffold for all 10 fixtures", "checked": true},
+    {"item": "Clear naming (Fixture, render, FIXTURES, --check)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No secrets or credentials added", "checked": true},
+    {"item": "No production code paths affected", "checked": true},
+    {"item": "Generator only writes to its own directory (Path(__file__).resolve().parent)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible (string-templating generator vs. full YAML library)", "checked": true},
+    {"item": "Tests-and-docs only — no scope creep into operator code", "checked": true},
+    {"item": "Generator approach matches pattern in extract-duplicated-test-assertion-blocks-into-shared-helpers.md", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "10 fixtures now derive from one canonical scaffold (resolves duplication concern)", "checked": true},
+    {"item": "No speculative features in generator (only emits what the suite needs today)", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Drift detected by --check exits non-zero with explicit filename list", "checked": true},
+    {"item": "Numbering gap is documented at the point of confusion (chainsaw-test.yaml line 112-124)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Generator validates rendered output against existing on-disk content before overwriting (idempotent)", "checked": true},
+    {"item": "--check mode does not modify files; only reports drift", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "FC1",
+      "severity": "MINOR",
+      "description": "The chainsaw-test.yaml header comment and docs/reference/keystone-crd.md:1222 both state \"CI may invoke `_generate.py --check`\" but the drift check is NOT wired into Makefile or any .github/workflows/ file. Without CI enforcement, the canonical-scaffold guarantee that motivated the generator (sourcery-ai concern #2) is only enforced by reviewer discipline. A hand-edit to any of 02-/03-/.../12-*.yaml would land silently.",
+      "location": ".github/workflows/* and Makefile (drift-check not registered)",
+      "fix": "Add a `lint-fixtures` (or similar) target to Makefile that runs `python3 tests/e2e/keystone/invalid-cr/_generate.py --check`, and reference it from the existing lint job in .github/workflows/ci.yaml. Alternatively, add a pre-commit hook entry. Then change the chainsaw-test.yaml header from \"CI may invoke\" to \"CI invokes\" so the comment matches reality.",
+      "evidence": "grep for `_generate.py --check` and `invalid-cr/_generate` across Makefile and .github/workflows/ returned no matches.",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "Wire `_generate.py --check` into CI/Makefile so drift fails the build instead of relying on the aspirational `CI may invoke` comment.",
+    "Consider adding a one-line unit test that imports _generate.py and asserts len(FIXTURES) == 10 and that every Fixture.filename matches the pattern listed in chainsaw-test.yaml — catches accidental fixture removal/rename in a fast unit-test layer rather than waiting for chainsaw to fail."
+  ],
+  "next_steps": [
+    "Optional: wire the drift check into CI as described under issues_found / FC1.",
+    "Run live-cluster verification (task 4.2 from the plan): `make kind-up && chainsaw test tests/e2e/keystone/invalid-cr` on two consecutive parallel-4 runs. Sandbox cannot execute this — honest blocker per memory project_sandbox_no_docker.md."
+  ],
+  "detected_patterns": []
+}

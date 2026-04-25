@@ -1,0 +1,37 @@
+{
+  "feature_id": "CC-0094",
+  "title": "GitHub Review by sourcery-ai[bot]",
+  "summary": "Reviewer wants the REQ numbering gap (REQ-007/REQ-008 after dropping `08-replicas-zero`) either renumbered or explained in a comment, and the duplicated invalid-CR manifests deduplicated via YAML anchors or a generator. Also a nit: capitalize \"Chainsaw\" at docs/reference/keystone-crd.md:1165.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "sourcery-ai[bot]",
+  "date": "2026-04-25T09:46:12Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "Hey - I've found 1 issue, and left some high level feedback:\n\n- The REQ numbering around replicas (REQ-007 vs REQ-008) is a bit confusing now that the `08-replicas-zero` case is intentionally dropped; consider either renumbering the remaining REQs or adding a short explicit note in the chainsaw test comments to explain the gap so future readers don’t wonder about the missing step.\n- All invalid-CR manifests repeat essentially the same minimal valid Keystone spec with a single field tweaked; consider factoring the common scaffold out via YAML anchors/aliases or a generator to reduce duplication and the risk of these inputs drifting out of sync with each other over time.\n\n<details>\n<summary>Prompt for AI Agents</summary>\n\n~~~markdown\nPlease address the comments from this code review:\n\n## Overall Comments\n- The REQ numbering around replicas (REQ-007 vs REQ-008) is a bit confusing now that the `08-replicas-zero` case is intentionally dropped; consider either renumbering the remaining REQs or adding a short explicit note in the chainsaw test comments to explain the gap so future readers don’t wonder about the missing step.\n- All invalid-CR manifests repeat essentially the same minimal valid Keystone spec with a single field tweaked; consider factoring the common scaffold out via YAML anchors/aliases or a generator to reduce duplication and the risk of these inputs drifting out of sync with each other over time.\n\n## Individual Comments\n\n### Comment 1\n<location path=\"docs/reference/keystone-crd.md\" line_range=\"1165\" />\n<code_context>\n+The full webhook + CEL rejection matrix (CC-0094) extends the original\n+two-step suite (CC-0012) so that every implemented `XValidation` rule and\n+every `webhook.validate()` branch in `operators/keystone/api/v1alpha1/`\n+is pinned by a chainsaw step. Each row maps 1:1 to a CC-0094 requirement.\n+\n | Step | Manifest | Requirement | Expected Error |\n</code_context>\n<issue_to_address>\n**nitpick (typo):** Consider capitalizing \"Chainsaw\" here for consistency with how the tool is referenced elsewhere.\n\nThis matches existing uses like `chainsaw-test.yaml` and \"Chainsaw E2E test definition,\" and clarifies that this refers to the specific Chainsaw tool rather than a generic step.\n\n```suggestion\nis pinned by a Chainsaw step. Each row maps 1:1 to a CC-0094 requirement.\n```\n</issue_to_address>\n~~~\n\n</details>\n\n***\n\n<details>\n<summary>Sourcery is free for open source - if you like our reviews please consider sharing them ✨</summary>\n\n- [X](https://twitter.com/intent/tweet?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [Mastodon](https://mastodon.social/share?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [LinkedIn](https://www.linkedin.com/sharing/share-offsite/?url=https://sourcery.ai)\n- [Facebook](https://www.facebook.com/sharer/sharer.php?u=https://sourcery.ai)\n\n</details>\n\n<sub>\nHelp me be more useful! Please click 👍 or 👎 on each comment and I'll use the feedback to improve your reviews.\n</sub>",
+  "code_comments": [
+    {
+      "body": "**nitpick (typo):** Consider capitalizing \"Chainsaw\" here for consistency with how the tool is referenced elsewhere.\n\nThis matches existing uses like `chainsaw-test.yaml` and \"Chainsaw E2E test definition,\" and clarifies that this refers to the specific Chainsaw tool rather than a generic step.\n\n```suggestion\nis pinned by a Chainsaw step. Each row maps 1:1 to a CC-0094 requirement.\n```",
+      "path": "docs/reference/keystone-crd.md",
+      "line": 1165,
+      "author": "sourcery-ai[bot]",
+      "created_at": "2026-04-25T09:46:12Z",
+      "id": null,
+      "resolution": "docs/reference/keystone-crd.md:1165 was changed from 'is pinned by a chainsaw step.' to 'is pinned by a Chainsaw step.', matching the reviewer's suggested capitalization for consistency with other Chainsaw references in the file."
+    }
+  ],
+  "resolution_summary": "Both high-level review concerns and the inline comment were addressed. (1) The REQ-007/REQ-008 numbering gap is now explicitly explained in tests/e2e/keystone/invalid-cr/chainsaw-test.yaml with a fenced `Numbering gap (CC-0094 review-1)` block between REQ-006 and REQ-008, calling out that REQ-007 / 08-replicas-zero.yaml is intentionally absent because the mutating webhook coerces replicas:0 → 3 before the Minimum=1 marker fires, and that REQ-008 (replicas:-1) subsumes it. The numbering itself is left as-is so the REQ→manifest mapping in the CRD doc stays stable. (2) The YAML-duplication concern was addressed by adding tests/e2e/keystone/invalid-cr/_generate.py, a single-source-of-truth Python generator that emits all 10 CC-0094 fixtures from a canonical scaffold and supports a `--check` drift mode for CI; the existing 02-…/03-…/04-…/05-…/06-…/07-…/09-…/10-…/11-…/12-…yaml files are now treated as generated outputs. (3) The inline 'chainsaw' → 'Chainsaw' typo at docs/reference/keystone-crd.md:1165 was applied verbatim. Additional changes beyond the strict locations the reviewer pointed at: docs/reference/keystone-crd.md gained a paragraph documenting the generator and regen command, and docs/reference/keystone-e2e-tests.md was updated to list `_generate.py` in the file tree and tag each generated fixture as `(CC-0094, generated)` — these were necessary so contributors discover the canonical scaffold and don't hand-edit the generated YAMLs (the very drift the reviewer flagged); a how-to-regenerate block was likewise added at the top of chainsaw-test.yaml for the same reason.",
+  "github_review_id": 4175401996
+}
