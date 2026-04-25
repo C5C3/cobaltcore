@@ -2,8 +2,8 @@
   "feature_id": "CC-0088",
   "title": "Expose Keystone API via Gateway API with Envoy and nip.io",
   "slug": "expose-keystone-api-via-gateway-api-with-envoy",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #265: Expose the Keystone API via Gateway API in the Quick Start using Envoy Gateway and nip.io\n\n**Category**: enhancement | **Scope**: Medium\n\n**Description**: Take the optional `spec.gateway` HTTPRoute sub-reconciler landed in CC-0065 (#238, commit `0b2c7d9`) all the way through the Quick Start, so that a fresh kind cluster ends with the Keystone API reachable at a fixed, externally-looking hostname — `https://keystone.127-0-0-1.nip.io/v3` — instead of the current `kubectl port-forward svc/keystone-api -n openstack 5000:5000` workaround (`docs/quick-start.md:498-546`). Using the public `nip.io` wildcard resolver means any `*.127-0-0-1.nip.io` label resolves to `127.0.0.1` over regular DNS with no `/etc/hosts` editing, no MetalLB, and no CoreDNS customisation — the hostname is stable, identical on every developer's machine, and round-trips cleanly through the Keystone CRD's `status.endpoint` derivation (CC-0065: *\"Derive status.endpoint from spec.gateway.hostname as https://{hostname}/v3 when gateway is set\"*). Today `hack/deploy-infra.sh:707-729` installs the Gateway API `standard-install.yaml` CRDs but no controller, no `GatewayClass`, and no `Gateway`, so `spec.gateway` is effectively a prod-only code path the Quick Start never exercises. The HTTPRoute E2E (`tests/e2e/keystone/httproute/`) compensates by applying the stub CRD from `00-httproute-crd.yaml` and patching `Accepted=True` onto the parent status manually — a fresh onboarding user has no such shortcut.\n\nConcrete steps: (1) add a kind-only Envoy Gateway install — matches the `envoy-gateway-system` namespace already referenced by `operators/keystone/api/v1alpha1/keystone_webhook_test.go:1083,1537`, the network-policy E2E (`tests/e2e/keystone/network-policy/00-keystone-cr.yaml:38`), and the CRD reference example at `docs/reference/keystone-crd.md:476`. Deliver it as a `HelmRepository` + `HelmRelease` under `deploy/kind/base/` (new `envoy-gateway.yaml`) so Flux reconciles it the same way it reconciles cert-manager / MariaDB-operator / memcached-operator (`deploy/flux-system/releases/*.yaml`); keep the production overlay `deploy/flux-system/` untouched — same kind-only posture as Headlamp (`deploy/kind/base/headlamp.yaml`) and the OpenBao UI flip (CC-0082). (2) Ship a `GatewayClass/envoy` + `Gateway/openstack-gw` (namespace `openstack`, not `envoy-gateway-system`, so Keystone's `spec.gateway.parentRef` does not need a `ReferenceGrant` — the operator explicitly does not manage `ReferenceGrant`, see `keystone_types.go:348-354`) with a single HTTPS listener on `:443`, hostname `keystone.127-0-0-1.nip.io`, TLS terminated with a self-signed certificate issued by the existing `selfsigned-cluster-issuer` (already set up by the OpenBao chain). Use an `EnvoyProxy` CR to switch the proxy Service to `NodePort` with a fixed nodePort so `kind` can route it without `MetalLB`. Name the Gateway `openstack-gw` to line up with the E2E fixture at `tests/e2e/keystone/httproute/01-keystone-cr.yaml:40`. (3) Extend `hack/kind-config.yaml` with `extraPortMappings` mapping host `443` → the fixed Envoy NodePort so `https://keystone.127-0-0-1.nip.io/v3` (which resolves to `127.0.0.1` via the public nip.io wildcard) reaches the Envoy proxy on the kind container. (4) Add a `Step 2b` to `hack/deploy-infra.sh` — after the Gateway API CRDs install — that waits for the new Envoy Gateway `HelmRelease` and the `Gateway/openstack-gw` resource to report `Programmed=True`; extend the existing Step 4 HelmRelease wait list to include `envoy-gateway`. (5) Rewrite Quick Start Step 7 (`docs/quick-start.md:374-414`) so the sample `Keystone` CR includes `spec.gateway` with `parentRef.name: openstack-gw`, `hostname: keystone.127-0-0-1.nip.io`, `path: /`. (6) Rewrite the `## Access Keystone from your local machine` section (`docs/quick-start.md:498-546`) to drop the port-forward and document: export `OS_AUTH_URL=https://keystone.127-0-0-1.nip.io/v3`, decide whether to trust the self-signed CA or set `OS_INSECURE=true`, then `openstack token issue` works without any terminal-blocking port-forward and without any local DNS / hosts-file editing. (7) Add an `## Accept the self-signed certificate` subsection explaining how to extract the self-signed CA from the `cert-manager` `selfsigned-cluster-issuer` and add it to the local trust store, for users who do not want `-k` / `OS_INSECURE`. (8) Update the `docs/reference/infrastructure/e2e-deployment.md:104-108` diagram to insert the Envoy Gateway + `Gateway/openstack-gw` install between `Step 2a` (CRDs) and `Step 3` (base overlay). (9) Add a new E2E suite under `tests/e2e/keystone/gateway-quick-start/` (or extend `httproute/`) that deploys against a real Envoy Gateway on kind and asserts that `HTTPRoute.status.parents[0].conditions[type=Accepted]=True` arrives from the real controller — not the simulated patch step — so the Quick Start path is covered by CI.\n\n**Motivation**: CC-0065 (#238) made `spec.gateway` a first-class feature but kept the Quick Start on the port-forward path. That leaves three concrete gaps for the on-ramp: (a) contributors who read the CRD reference (`docs/reference/keystone-crd.md:590-615`) and decide to try `spec.gateway` in kind will set it, watch `HTTPRouteReady=GatewayAPINotInstalled` stick, and have no documented way to install a Gateway controller on the kind cluster — the operator reports `GatewayAPINotInstalled` as a terminal state if the `HTTPRoute` CRD is present but no Gateway controller has claimed the parent, exactly the kind-cluster state today; (b) the `status.endpoint` field, which the operator derives as `https://{hostname}/v3` when `spec.gateway` is set, is a hollow promise in the Quick Start — it prints a URL that nothing resolves; (c) the current port-forward flow forces a second terminal window and then silently breaks the moment `openstack` CLI tries to resolve catalog endpoints, because the catalog contains cluster-internal URLs (`docs/quick-start.md:541-545`) — a real Gateway listener fixes both problems at once for `identity`-scope commands and sets up the story for follow-on OpenStack services landing under the same Gateway. Envoy Gateway is the natural choice because the project already assumes that namespace (`envoy-gateway-system`) in tests and reference docs, and because the upstream Envoy Gateway Helm chart supports `EnvoyProxy`-based NodePort exposure out of the box — no `MetalLB` dependency. `nip.io` is chosen over `/etc/hosts` entries because it needs zero local configuration: every developer hits the exact same hostname, CI gets the same hostname, the Quick Start has no \"add this line to your hosts file as root\" caveat, and the Keystone CR fixtures are byte-for-byte reproducible across machines. Shape and scope match CC-0082 (OpenBao UI, kind-only Flux release + Quick Start section) and CC-0086/#257 (flux-operator Web UI, kind-only Flux release + Quick Start section): one kind-only manifest, one Quick Start rewrite, one E2E suite extension; production overlay untouched.\n\n**Affected Areas**:\n- `deploy/kind/base/envoy-gateway.yaml` (new — `HelmRepository` + `HelmRelease` for the upstream `envoy-gateway` chart, pinned; `EnvoyProxy` CR switching the proxy Service to `NodePort` with a fixed nodePort so `extraPortMappings` can target it)\n- `deploy/kind/base/openstack-gateway.yaml` (new — `GatewayClass/envoy` (controllerName `gateway.envoyproxy.io/gatewayclass-controller`), `Gateway/openstack-gw` in namespace `openstack` with an HTTPS listener on `:443` for hostname `keystone.127-0-0-1.nip.io`, `tls.mode: Terminate`, `certificateRefs` pointing at a `Certificate` issued by `selfsigned-cluster-issuer`)\n- `deploy/kind/base/kustomization.yaml` (add the two new manifests to `resources` alongside `headlamp.yaml`; production overlay `deploy/flux-system/kustomization.yaml` stays unchanged)\n- `deploy/flux-system/sources/` (new `envoy-gateway-charts.yaml` `HelmRepository` if the chart is not already reachable via `c5c3-charts`)\n- `hack/kind-config.yaml` (add `extraPortMappings` for host `443` → container NodePort; the current file has an empty `nodes:` list so this is a single additive block)\n- `hack/deploy-infra.sh` (new `Step 2b` that waits for `HelmRelease/envoy-gateway` Ready and `Gateway/openstack-gw` `Programmed=True`; extend the existing Step 4 HelmRelease wait list to include `envoy-gateway`)\n- `docs/quick-start.md` — multiple edits: (a) Step 3 \"What happens\" table (`:103-116`) gets a `Step 2b` row for Envoy Gateway + Gateway install; (b) Step 7 sample CR (`:380-410`) gains `spec.gateway`; (c) the `## Access Keystone from your local machine` section (`:498-546`) is rewritten to use `https://keystone.127-0-0-1.nip.io/v3` directly — no `/etc/hosts` step, no port-forward; (d) a new subsection documents how to trust / bypass the self-signed TLS cert; (e) a short one-liner explains how `nip.io` works (public wildcard DNS that resolves `*.127-0-0-1.nip.io` to `127.0.0.1`, so no local DNS changes are required — the hostname is the same everywhere); (f) the architecture snapshot (`:141-155`) lists `envoy-gateway-system   envoy-gateway-*   Ready` alongside the existing controllers\n- `docs/reference/infrastructure/e2e-deployment.md` (insert a Gateway-install block between the existing `Step 2a` and `Step 3` at `:104-108`)\n- `docs/reference/keystone-crd.md:590-615` (add a kind-specific note pointing at the new Quick Start section and clarifying that `status.endpoint = https://{hostname}/v3` now actually resolves on a Quick Start cluster)\n- `tests/e2e/keystone/gateway-quick-start/` (new Chainsaw suite that deploys a Keystone CR with `spec.gateway` against the real Envoy Gateway and asserts real `Accepted=True` from the controller, not a simulated patch)\n- `renovate.json` (pin the Envoy Gateway chart version with a `customManagers` entry mirroring the `FLUX_OPERATOR_VERSION` pattern introduced by CC-0085, so chart bumps auto-PR)\n- Nothing in `operators/keystone/` — `spec.gateway`, the webhook, the reconciler, and `HTTPRouteReady` are already in place from CC-0065\n\n**Acceptance Criteria**:\n- [ ] `deploy/kind/base/envoy-gateway.yaml` ships a `HelmRelease/envoy-gateway` in `envoy-gateway-system` that reaches `Ready=True` during `make deploy-infra` within the existing `HELMRELEASE_TIMEOUT` window\n- [ ] `deploy/kind/base/openstack-gateway.yaml` ships a `GatewayClass/envoy` and a `Gateway/openstack-gw` in namespace `openstack`; on a fresh `make deploy-infra` run, `kubectl get gateway openstack-gw -n openstack -o jsonpath='{.status.conditions[?(@.type==\"Programmed\")].status}'` returns `True`\n- [ ] `hack/kind-config.yaml` exposes the Envoy proxy NodePort on host `443` via `extraPortMappings` so `https://keystone.127-0-0-1.nip.io/v3` is reachable on the developer's machine with no further port-forward\n- [ ] The Quick Start Step 7 sample CR sets `spec.gateway` with `parentRef.name: openstack-gw`, `hostname: keystone.127-0-0-1.nip.io`, `path: /`\n- [ ] `status.endpoint` on the Quick Start CR reports `https://keystone.127-0-0-1.nip.io/v3` after reconciliation, matching `spec.gateway.hostname`\n- [ ] `curl -k https://keystone.127-0-0-1.nip.io/v3` returns HTTP 200 with a `{\"version\": {\"id\": \"v3\", ...}}` JSON body on a freshly deployed kind cluster — no `/etc/hosts` edit required, no `kubectl port-forward` running\n- [ ] With `OS_AUTH_URL=https://keystone.127-0-0-1.nip.io/v3`, `openstack token issue` succeeds — no `kubectl port-forward`, no DNS / hosts-file editing\n- [ ] `docs/quick-start.md` `## Access Keystone from your local machine` section is rewritten and no longer references `kubectl port-forward svc/keystone-api`; the self-signed TLS handling (trust the CA or pass `-k` / `OS_INSECURE`) is documented inline; a short note explains the `nip.io` wildcard so readers understand why no local DNS config is needed\n- [ ] `docs/reference/infrastructure/e2e-deployment.md` diagram (`:104-108` block) shows the Gateway install immediately after the Gateway API CRDs step\n- [ ] `tests/e2e/keystone/gateway-quick-start/` asserts `HTTPRoute.status.parents[0].conditions[?(@.type==\"Accepted\")].status=True` arrives from the real Envoy Gateway controller within the Chainsaw timeout envelope, without any manual status patching\n- [ ] `renovate.json` has a `customManagers` entry that pins the Envoy Gateway chart version with `minimumReleaseAge: \"3 days\"` and disabled major bumps, same pattern as `FLUX_OPERATOR_VERSION`\n- [ ] `deploy/flux-system/kustomization.yaml`, `deploy/flux-system/fluxinstance.yaml`, and `deploy/flux-system/releases/*` are **not** modified — production overlay posture is unchanged\n- [ ] The existing `kubectl port-forward svc/keystone-api` path still works for users on networks that block `nip.io` resolution; it is moved into a \"Fallback\" subsection but not deleted\n\n**Non-Goals**:\n- Installing Envoy Gateway (or any Gateway controller) in the production `deploy/flux-system/` overlay. The operator stays platform-agnostic — customers pick their own Gateway implementation, exactly as the CRD reference already documents (`docs/reference/keystone-crd.md:316-318`: *\"The Gateway and GatewayClass are infrastructure concerns managed outside the operator\"*). This feature is strictly a kind-overlay demo convenience, same posture as CC-0082 (OpenBao UI) and CC-0086 (Flux Web UI).\n- Replacing the port-forward path for the rest of the Quick Start (Headlamp, OpenBao UI). Those stay on `kubectl port-forward` because they serve cluster-internal HTTP on non-443 ports; exposing them through the Gateway would require per-service HTTPRoute objects that do not match their current lifecycle.\n- Cross-namespace `parentRef` support. `Gateway/openstack-gw` lives in the same `openstack` namespace as the Keystone CR to avoid `ReferenceGrant` — the operator explicitly does not manage `ReferenceGrant` (`keystone_types.go:348-354`: *\"Cross-namespace references require a ReferenceGrant in the target namespace (out of scope for this operator)\"*).\n- Bringing up `MetalLB` in kind. Envoy Gateway's `EnvoyProxy` CR supports `NodePort` directly, which is the lighter-weight path and matches kind's single-node posture.\n- Switching the E2E httproute suite from its simulated parent-status patch (`tests/e2e/keystone/httproute/chainsaw-test.yaml:99-100`) to the real controller. That suite exists to exercise the operator reconciler in isolation — a new suite under `gateway-quick-start/` covers the real-controller path instead.\n- Editing `/etc/hosts` or shipping CoreDNS rewrite rules. The explicit design choice is public-wildcard DNS (`nip.io`) so the Quick Start has zero host-side DNS configuration. If `nip.io` is unreachable on a developer's network, the retained port-forward fallback covers that case.\n- Wiring OIDC / SSO / real CAs on the kind Gateway. The Quick Start cluster is single-user localhost-only; self-signed is correct, matching the OpenBao UI's posture (`docs/quick-start.md:242-245`: *\"Your browser will warn that the certificate is not trusted — this is expected for a kind cluster\"*).\n\n**References**:\n- CC-0065 / #238 / commit `0b2c7d9` — the HTTPRoute sub-reconciler and `spec.gateway` field\n- CRD reference for `spec.gateway`: `docs/reference/keystone-crd.md:590-636`\n- Existing `spec.gateway` E2E fixture: `tests/e2e/keystone/httproute/01-keystone-cr.yaml`\n- Envoy Gateway docs: https://gateway.envoyproxy.io/docs/\n- Envoy Gateway `EnvoyProxy` NodePort pattern: https://gateway.envoyproxy.io/docs/tasks/operations/customize-envoyproxy/\n- nip.io wildcard DNS: https://nip.io/\n- Prior art for kind-only Flux releases: `deploy/kind/base/headlamp.yaml`, #246 (OpenBao UI, CC-0082), #257 (Flux Web UI, CC-0086)\n\n**Labels:** enhancement\n\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/265",
   "stories": [
@@ -532,6 +532,7 @@
       "title": "Decide chart source and add HelmRepository if needed (REQ-001, REQ-012) — either reuse existing oci://ghcr.io/c5c3/charts (if the chart is mirrored) or create deploy/flux-system/sources/envoy-gateway-charts.yaml with the upstream `oci://docker.io/envoyproxy/gateway-helm` (or https://gateway.envoyproxy.io-hosted repo). Source-only addition per REQ-012.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-012"
@@ -542,6 +543,7 @@
       "title": "Create deploy/kind/base/envoy-gateway.yaml (REQ-001, REQ-002): Namespace `envoy-gateway-system`, `HelmRelease/envoy-gateway` referencing the source from 1.1 with a pinned version range, and an `EnvoyProxy` CR (apiVersion `gateway.envoyproxy.io/v1alpha1`) configuring the proxy Service as type `NodePort` with a fixed nodePort (e.g. 31443) for the HTTPS listener. Include SPDX header, feature-ID comment `CC-0088, REQ-001/REQ-002`.",
       "level": 1,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002"
@@ -552,6 +554,7 @@
       "title": "Create deploy/kind/base/openstack-gateway.yaml (REQ-003): `GatewayClass/envoy` with controllerName `gateway.envoyproxy.io/gatewayclass-controller` and a `parametersRef` to the EnvoyProxy CR from 1.2; a cert-manager `Certificate` for `keystone.127-0-0-1.nip.io` in namespace `openstack` referencing `selfsigned-cluster-issuer`; `Gateway/openstack-gw` in namespace `openstack` with a single HTTPS listener on port 443, hostname `keystone.127-0-0-1.nip.io`, `tls.mode: Terminate` and `certificateRefs` to the Secret produced by the Certificate. SPDX header + `CC-0088, REQ-003`.",
       "level": 1,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -561,6 +564,7 @@
       "title": "Wire the two new manifests into deploy/kind/base/kustomization.yaml (REQ-001): append `envoy-gateway.yaml` and `openstack-gateway.yaml` to `resources` beneath `headlamp.yaml`/`flux-web.yaml`. Do not touch `deploy/flux-system/kustomization.yaml` (REQ-012).",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-012"
@@ -571,6 +575,7 @@
       "title": "Update hack/kind-config.yaml (REQ-004): add a `nodes[0]` entry with `extraPortMappings` mapping `hostPort: 443` → `containerPort: 31443` (matching the fixed NodePort from 1.2) with `protocol: TCP` and `listenAddress: 127.0.0.1`. Comment references CC-0088.",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -580,6 +585,7 @@
       "title": "Add renovate.json customManager + packageRules for the Envoy Gateway chart (REQ-010): new entry targeting `deploy/kind/base/envoy-gateway.yaml`, `minimumReleaseAge: \"3 days\"`, majors disabled, groupName `envoy-gateway`. Mirror the `flux-operator` block already present.",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-010"
       ]
@@ -589,6 +595,7 @@
       "title": "Extend hack/deploy-infra.sh (REQ-005): add `envoy-gateway` to the Phase-3 HelmRelease wait list and add a new `wait_for_gateway_programmed` helper polling `Gateway/openstack-gw -n openstack` for `Programmed=True`; call it after Phase 3. On timeout, dump `describe` of the Gateway and pod logs from `envoy-gateway-system`.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -598,6 +605,7 @@
       "title": "Add tests/unit/hack/deploy_infra_gateway_wait_test.sh (REQ-005): unit test covering the happy path (Programmed=True returns 0) and the timeout path (surfaces diagnostics and exits non-zero) via a fake `kubectl` shim. Follow `deploy_infra_reconcile_sources_test.sh` style and ensure the test is discovered by the existing Makefile target.",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -607,6 +615,7 @@
       "title": "Add tests/unit/hack/kind_config_port_mapping_test.sh (REQ-004): uses `yq` to assert `.nodes[0].extraPortMappings[] | select(.hostPort==443)` exists with `containerPort: 31443` and `protocol: TCP`.",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -616,6 +625,7 @@
       "title": "Add tests/unit/deploy/production_posture_test.sh (REQ-012): shell-script test ensuring `deploy/flux-system/kustomization.yaml`, `deploy/flux-system/fluxinstance.yaml`, and `deploy/flux-system/releases/*` are not modified relative to `origin/main` (skip when not in a git worktree) and that any added file under `deploy/flux-system/sources/` contains only HelmRepository objects.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-012"
       ]
@@ -625,6 +635,7 @@
       "title": "Add tests/unit/renovate/envoy_gateway_manager_test.sh (REQ-010): validates `renovate.json` with `renovate-config-validator` if available, otherwise runs a Python regex-only test confirming the customManager regex extracts the chart version string from the fixture file and that the packageRule contains `minimumReleaseAge: 3 days` and major-disabled.",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-010"
       ]
@@ -634,6 +645,7 @@
       "title": "Update docs/quick-start.md Step 7 sample CR (REQ-006, REQ-008): insert `spec.gateway` with `parentRef.name: openstack-gw`, `hostname: keystone.127-0-0-1.nip.io`, `path: /`; add a one-liner `::: tip` explaining the nip.io wildcard. Cite CC-0088 in the comment.",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-008"
@@ -644,6 +656,7 @@
       "title": "Rewrite docs/quick-start.md `## Access Keystone from your local machine` (REQ-007): primary flow uses `OS_AUTH_URL=https://keystone.127-0-0-1.nip.io/v3`; add `## Accept the self-signed certificate` subsection (CA extract or `-k`/`OS_INSECURE=true`); move the port-forward commands to `## Fallback — kubectl port-forward`.",
       "level": 3,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -653,6 +666,7 @@
       "title": "Update docs/quick-start.md Step 3 `What happens` table and architecture snapshot (REQ-008): insert a `Step 2b` row for Envoy Gateway + `openstack-gw` install between `Step 2a` and `Step 3`; add `envoy-gateway-system   envoy-gateway-*   Ready` to the code-block snapshot. Note CC-0088.",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -662,6 +676,7 @@
       "title": "Update docs/reference/infrastructure/e2e-deployment.md (REQ-011): insert an `Install Envoy Gateway + Gateway/openstack-gw (kind-only)` block in the ASCII deployment diagram between the existing `Install Gateway API standard CRDs` and `Step 3`. Note CC-0088 and that production overlays exclude this.",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-011"
       ]
@@ -671,6 +686,7 @@
       "title": "Update docs/reference/keystone-crd.md (REQ-011): add a kind-specific admonition near `### Example — Basic Gateway Exposure` linking to the new Quick Start section and clarifying that `status.endpoint = https://{hostname}/v3` actually resolves on a Quick Start cluster now. Cite CC-0088.",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-011"
       ]
@@ -680,6 +696,7 @@
       "title": "Add tests/unit/docs/quick_start_access_section_test.sh (REQ-007): asserts the primary `## Access Keystone from your local machine` section no longer contains `port-forward svc/keystone-api` before a `## Fallback` heading, that a nip.io explainer is present, and that an `## Accept the self-signed certificate` subsection exists.",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -689,6 +706,7 @@
       "title": "Add tests/unit/docs/quick_start_coverage_test.sh and quick_start_sample_cr_test.sh (REQ-008): one asserts the Step 3 table gains the new row and the architecture snapshot is updated; the other extracts the Step 7 YAML block and verifies the three `spec.gateway` fields with `yq`.",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -698,6 +716,7 @@
       "title": "Add tests/unit/docs/reference_cross_links_test.sh (REQ-011): markdown scan confirming the e2e-deployment diagram insertion and the keystone-crd admonition link + CC-0088 citation.",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-011"
       ]
@@ -707,6 +726,7 @@
       "title": "Create tests/e2e/keystone/gateway-quick-start/ Chainsaw suite (REQ-006, REQ-009): chainsaw-test.yaml + fixtures (00-namespace.yaml, 01-keystone-cr.yaml). Label `overlay: kind` + presence probe skipping on non-kind. Assert HTTPRoute Accepted=True from real controller, `status.endpoint`, `HTTPRouteReady=True/HTTPRouteAccepted`. No manual status patches.",
       "level": 4,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-009"
@@ -717,6 +737,7 @@
       "title": "Add Gateway-programmed assertion to the gateway-quick-start suite (REQ-003): chainsaw step asserting `Gateway/openstack-gw` `Programmed=True` and listener `Accepted=True`, plus Certificate Ready assertion.",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -726,6 +747,7 @@
       "title": "Add EnvoyProxy NodePort assertion to the suite (REQ-002): shell step using `kubectl get svc -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw -o json` + jq to confirm `type=NodePort` and the declared nodePort.",
       "level": 4,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -735,6 +757,7 @@
       "title": "Add tests/e2e/infrastructure/gateway-quick-start-smoke/chainsaw-test.yaml (REQ-013): from a kind-internal pod (or CI host), `curl -k https://keystone.127-0-0-1.nip.io/v3` returns HTTP 200 with non-empty Keystone JSON. Mirror flux-web-health's label gating + presence probe; CC-0088 feature comment.",
       "level": 4,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-013"
       ]
@@ -744,6 +767,7 @@
       "title": "Wire the new e2e suites into the Makefile + CI (REQ-009, REQ-013): ensure `make e2e` discovers `tests/e2e/keystone/gateway-quick-start/` and `tests/e2e/infrastructure/gateway-quick-start-smoke/`; update any per-suite list in `tests/e2e/chainsaw-config.yaml` if required.",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-009",
         "REQ-013"
@@ -754,6 +778,7 @@
       "title": "Cross-check: re-read issue #265 acceptance criteria (12 items) against each doc task, manifest task, and test task; fill any gap immediately. Produce a short mapping table of acceptance-criterion → task-ID in the PR description.",
       "level": 5,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -774,6 +799,7 @@
       "title": "Run a full local `make deploy-infra` + `make e2e` dry run against a fresh kind cluster (REQ-001..REQ-009, REQ-013): capture timings, confirm every acceptance criterion is satisfied on a clean box, and update the PR description with smoke-test output.",
       "level": 5,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -986,8 +1012,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-22T19:20:35.993482"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-22T19:54:38.872265"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-25T21:44:09.000795"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/266",
+  "pr_number": 266,
   "execution_history": [
     {
       "run_id": "e4605c3f-2258-4531-b77c-9aa02a67569b",
@@ -999,6 +1035,76 @@
           "name": "prepare",
           "duration": 509.1315381526947,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "a43d7715-2e1f-4452-a464-b12366504587",
+      "timestamp": "2026-04-22T20:45:06.057578",
+      "total_duration": 2775.3051426410675,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (6 tasks)",
+          "duration": 548.2270820140839,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (5 tasks)",
+          "duration": 350.4344000816345,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (8 tasks)",
+          "duration": 385.6476767063141,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (5 tasks)",
+          "duration": 553.4416353702545,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 5 (2 tasks)",
+          "duration": 222.18188047409058,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0088] Code Review",
+          "duration": 304.2641267776489,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0088] Improvements",
+          "duration": 360.59011697769165,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0088] Simplify",
+          "duration": 50.518224239349365,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "6c5baa22-a024-4971-98a2-d453b4be166b",
+      "timestamp": "2026-04-25T13:21:16.425174",
+      "total_duration": 1587.6284613609314,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 1587.6284613609314,
+          "type": "review_address",
           "status": "done"
         }
       ]

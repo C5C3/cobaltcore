@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"net/url"
 
 	"github.com/robfig/cron/v3"
 	appsv1 "k8s.io/api/apps/v1"
@@ -492,6 +493,38 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 				gatewayPath.Child("parentRef", "name"),
 				"parentRef.name must be set when spec.gateway is configured",
 			))
+		}
+
+		// REQ-009 (CC-0088): When both spec.gateway and spec.bootstrap.publicEndpoint
+		// are set, the publicEndpoint host must equal spec.gateway.hostname.
+		// keystoneStatusEndpoint returns publicEndpoint verbatim and the bootstrap
+		// reconciler writes it into the Keystone service catalog — a mismatched
+		// host would diverge the catalog URL from the HTTPRoute hostname (the
+		// only host the Gateway listener accepts via SNI / Host header), so
+		// clients reaching status.endpoint would fail TLS / 404.
+		if k.Spec.Gateway.Hostname != "" && k.Spec.Bootstrap.PublicEndpoint != "" {
+			pePath := specPath.Child("bootstrap", "publicEndpoint")
+			u, err := url.Parse(k.Spec.Bootstrap.PublicEndpoint)
+			switch {
+			case err != nil:
+				allErrs = append(allErrs, field.Invalid(
+					pePath,
+					k.Spec.Bootstrap.PublicEndpoint,
+					fmt.Sprintf("must be a valid URL: %v", err),
+				))
+			case u.Scheme != "https":
+				allErrs = append(allErrs, field.Invalid(
+					pePath,
+					k.Spec.Bootstrap.PublicEndpoint,
+					"scheme must be https when spec.gateway is configured (Gateway listener terminates TLS)",
+				))
+			case u.Hostname() != k.Spec.Gateway.Hostname:
+				allErrs = append(allErrs, field.Invalid(
+					pePath,
+					k.Spec.Bootstrap.PublicEndpoint,
+					fmt.Sprintf("host %q must equal spec.gateway.hostname %q", u.Hostname(), k.Spec.Gateway.Hostname),
+				))
+			}
 		}
 	}
 

@@ -32,6 +32,11 @@
 #   deploy/openbao/bootstrap/.
 # REQ-011 (CC-0010): set -euo pipefail, SPDX Apache-2.0 header, feature ID.
 # REQ-012 (CC-0010): Configurable timeouts via environment variables.
+# REQ-005 (CC-0088): envoy-gateway HelmRelease is gated in Phase 3 and a
+#   Gateway/openstack-gw Programmed=True wait runs after Step 5 (once the
+#   EnvoyProxy CR that GatewayClass/envoy's parametersRef targets has been
+#   applied via the infrastructure overlay), dumping describe +
+#   envoy-gateway-system pod logs on timeout.
 
 set -euo pipefail
 
@@ -45,6 +50,17 @@ CLUSTER_NAME="${CLUSTER_NAME:-forge-e2e}"
 HELMRELEASE_TIMEOUT="${HELMRELEASE_TIMEOUT:-600}"
 POD_TIMEOUT="${POD_TIMEOUT:-300}"
 EXTERNALSECRET_TIMEOUT="${EXTERNALSECRET_TIMEOUT:-120}"
+
+# Host port that kind binds to forward into the Envoy data-plane NodePort
+# (containerPort 31443). Defaults to 443 so the documented Quick Start URL
+# `https://keystone.127-0-0-1.nip.io/v3` works unchanged on Linux + rootful
+# Docker (the CI baseline). Override to a non-privileged port (e.g. 8443)
+# on hosts that cannot bind <1024 — typical on macOS Docker Desktop without
+# the `vmnetd` privileged helper, rootless Docker, or Podman. With an
+# override, the endpoint becomes `https://keystone.127-0-0-1.nip.io:${KIND_HOST_PORT}/v3`
+# and any sample CR's `spec.endpoints.public` must include the same `:PORT`
+# suffix. See docs/quick-start.md (CC-0088).
+KIND_HOST_PORT="${KIND_HOST_PORT:-443}"
 
 # Gateway API CRD release installed before the keystone-operator HelmRelease so
 # the operator's HTTPRoute watch has a registered kind at startup (CC-0065).
@@ -206,6 +222,71 @@ reconcile_helmrepository_sources() {
     kubectl annotate "helmrepository/${repo}" \
       "reconcile.fluxcd.io/requestedAt=$(date +%s%N)" \
       --overwrite -n flux-system || true
+  done
+}
+
+# ---------------------------------------------------------------------------
+# wait_for_gateway_programmed — Wait for a Gateway CR to report Programmed=True
+# (CC-0088, REQ-005).
+#
+# Polls every 10s up to the supplied timeout for
+# `.status.conditions[type=Programmed].status == True` on the named Gateway.
+# On timeout, dumps `kubectl describe gateway/<name>` and the logs of every
+# pod in the envoy-gateway-system namespace, then exits 1. This matches the
+# diagnostic shape of wait_for_fluxinstance for consistency.
+#
+# Arguments:
+#   $1 — gateway name (e.g., openstack-gw)
+#   $2 — namespace (e.g., openstack)
+#   $3 — timeout in seconds
+# ---------------------------------------------------------------------------
+wait_for_gateway_programmed() {
+  local name="$1"
+  local namespace="$2"
+  local timeout="$3"
+  local deadline=$(( $(date +%s) + timeout ))
+
+  log "Waiting up to ${timeout}s for Gateway/${name} in namespace '${namespace}' to report Programmed=True..."
+
+  while true; do
+    local programmed_status
+    programmed_status=$(kubectl get gateway/"${name}" -n "${namespace}" -o json 2>/dev/null \
+      | jq -r '.status.conditions[]? | select(.type == "Programmed") | .status' 2>/dev/null) || true
+
+    if [[ "${programmed_status}" == "True" ]]; then
+      log "Gateway/${name} is Programmed."
+      return 0
+    fi
+
+    local reason message
+    reason=$(kubectl get gateway/"${name}" -n "${namespace}" -o json 2>/dev/null \
+      | jq -r '.status.conditions[]? | select(.type == "Programmed") | .reason // "Pending"' 2>/dev/null) || true
+    message=$(kubectl get gateway/"${name}" -n "${namespace}" -o json 2>/dev/null \
+      | jq -r '.status.conditions[]? | select(.type == "Programmed") | .message // ""' 2>/dev/null) || true
+    log "  Gateway/${name} is not Programmed yet (reason: ${reason:-Pending})."
+    if [[ -n "${message}" ]]; then
+      log "    ${message}"
+    fi
+
+    if [[ $(date +%s) -ge ${deadline} ]]; then
+      log "ERROR: Timed out waiting for Gateway/${name} after ${timeout}s."
+      log "Gateway description:"
+      kubectl describe gateway/"${name}" -n "${namespace}" 2>/dev/null || true
+      log "envoy-gateway-system pod logs (last 10m, tail 200):"
+      local gw_pods
+      gw_pods=$(kubectl get pods -n envoy-gateway-system -o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || true
+      # `--since=10m` keeps the dump focused on the most recent failure
+      # window. On long-running timeouts the default --tail=200 may already
+      # have rolled past the relevant crash frame; the time filter bounds
+      # the output to a meaningful post-mortem window (CC-0088).
+      for pod in ${gw_pods}; do
+        log "--- logs for pod ${pod} ---"
+        kubectl logs "${pod}" -n envoy-gateway-system --all-containers=true --since=10m --tail=200 2>/dev/null || true
+      done
+      exit 1
+    fi
+
+    sleep 10
   done
 }
 
@@ -652,6 +733,52 @@ openbao_bootstrap() {
 }
 
 # ---------------------------------------------------------------------------
+# render_kind_config — Produce the kind-config YAML that `kind create cluster`
+# should consume, applying the `KIND_HOST_PORT` override when set (CC-0088).
+#
+# When `KIND_HOST_PORT == 443` (the default), the checked-in
+# hack/kind-config.yaml is copied verbatim — no `yq` dependency at runtime.
+# Otherwise, `yq` rewrites the single `nodes[0].extraPortMappings[]` entry
+# whose `hostPort` is 443, leaving `containerPort` (31443), `protocol` (TCP),
+# and `listenAddress` (127.0.0.1) untouched. The Envoy proxy NodePort and
+# the Gateway listener port are intentionally unaffected — only the host-
+# side binding moves to a non-privileged port.
+#
+# Arguments:
+#   $1 — destination path for the rendered config
+# Errors:
+#   - exits 1 if KIND_HOST_PORT is not a positive integer in [1, 65535]
+#   - exits 1 if `yq` is required (override path) but not on PATH
+# ---------------------------------------------------------------------------
+render_kind_config() {
+  local out_path="$1"
+  local src="${SCRIPT_DIR}/kind-config.yaml"
+
+  if [[ ! "${KIND_HOST_PORT}" =~ ^[0-9]+$ ]] \
+    || (( KIND_HOST_PORT < 1 || KIND_HOST_PORT > 65535 )); then
+    log "ERROR: KIND_HOST_PORT='${KIND_HOST_PORT}' is not a valid TCP port (1-65535)."
+    exit 1
+  fi
+
+  if [[ "${KIND_HOST_PORT}" == "443" ]]; then
+    cp "${src}" "${out_path}"
+    return 0
+  fi
+
+  if ! command -v yq >/dev/null 2>&1; then
+    log "ERROR: KIND_HOST_PORT=${KIND_HOST_PORT} (override) requires 'yq' on PATH."
+    exit 1
+  fi
+
+  # Select-and-mutate the single hostPort=443 entry; idempotent if the input
+  # already uses the override port (yq's `select(... == 443)` matches nothing
+  # and the document passes through unchanged).
+  KIND_HOST_PORT="${KIND_HOST_PORT}" yq \
+    '(.nodes[0].extraPortMappings[] | select(.hostPort == 443)).hostPort = (env(KIND_HOST_PORT) | tonumber)' \
+    "${src}" > "${out_path}"
+}
+
+# ---------------------------------------------------------------------------
 # main — Orchestrate the 8-step deployment sequence.
 # ---------------------------------------------------------------------------
 main() {
@@ -662,6 +789,7 @@ main() {
   log "HelmRelease timeout : ${HELMRELEASE_TIMEOUT}s"
   log "Pod timeout         : ${POD_TIMEOUT}s"
   log "ExternalSecret timeout : ${EXTERNALSECRET_TIMEOUT}s"
+  log "Kind host port      : ${KIND_HOST_PORT} → 31443 (override via KIND_HOST_PORT)"
   log ""
 
   # Pre-flight checks
@@ -678,10 +806,21 @@ main() {
   elif kind get clusters 2>/dev/null | grep -qx "${CLUSTER_NAME}"; then
     log "Kind cluster '${CLUSTER_NAME}' already exists — skipping creation."
   else
+    # Render kind-config.yaml into a tempfile so KIND_HOST_PORT overrides
+    # take effect without mutating the checked-in file (CC-0088). We do not
+    # install a cleanup trap here: openbao_bootstrap registers its own EXIT
+    # trap later in the run and a second `trap ... EXIT` would overwrite it,
+    # leaking BAO_TOKEN into the environment. The tempfile is a few hundred
+    # bytes and `/tmp` is volume-cleared at reboot, so explicit deletion
+    # post-success is sufficient.
+    local kind_cfg
+    kind_cfg="$(mktemp -t forge-kind-config.XXXXXX.yaml)"
+    render_kind_config "${kind_cfg}"
     kind create cluster \
       --name "${CLUSTER_NAME}" \
-      --config "${SCRIPT_DIR}/kind-config.yaml" \
+      --config "${kind_cfg}" \
       --wait 60s
+    rm -f "${kind_cfg}"
     log "Kind cluster '${CLUSTER_NAME}' created."
   fi
 
@@ -760,9 +899,13 @@ main() {
   kubectl apply -f "${REPO_ROOT}/deploy/flux-system/infrastructure/openbao-tls-cert.yaml"
 
   # Phase 3: Wait for remaining HelmReleases now that OpenBao can mount its TLS secret.
+  # envoy-gateway is kind-only (deploy/kind/base/envoy-gateway.yaml) and provides
+  # the GatewayClass consumed by Gateway/openstack-gw; gating it here ensures
+  # the wait_for_gateway_programmed poll below finds a reconciling controller
+  # (CC-0088, REQ-005).
   log "Phase 3: Waiting for remaining HelmReleases..."
   wait_for_helmreleases "${HELMRELEASE_TIMEOUT}" \
-    prometheus-operator-crds openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator chaos-mesh
+    prometheus-operator-crds openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator chaos-mesh envoy-gateway
 
   # Step 5: Apply infrastructure kustomize overlay (CRD-dependent resources)
   log "=== Step 5/8: Apply infrastructure kustomize overlay ==="
@@ -770,17 +913,29 @@ main() {
   # Wait for operator CRDs to be registered before applying CRD-dependent
   # resources. HelmRelease Ready does not guarantee CRDs are available in
   # the API server — the operator pods may still be starting.
+  # envoyproxies.gateway.envoyproxy.io is installed by the envoy-gateway
+  # HelmRelease (Phase 3 above) and is required by the EnvoyProxy CR in
+  # deploy/kind/infrastructure/envoy-nodeport.yaml (CC-0088).
   wait_for_crds "${POD_TIMEOUT}" \
     memcacheds.memcached.c5c3.io \
     clustersecretstores.external-secrets.io \
     externalsecrets.external-secrets.io \
-    mariadbs.k8s.mariadb.com
+    mariadbs.k8s.mariadb.com \
+    envoyproxies.gateway.envoyproxy.io
 
   # Invalidate kubectl's client-side discovery cache so that the newly
   # registered CRDs are visible to kubectl apply.
   kubectl api-resources > /dev/null 2>&1 || true
   kubectl apply -k "${REPO_ROOT}/deploy/kind/infrastructure"
   log "Infrastructure kustomize overlay applied."
+
+  # Gateway/openstack-gw can only report Programmed=True after the
+  # EnvoyProxy CR (applied via the infrastructure overlay above) binds
+  # its parametersRef on GatewayClass/envoy — so this wait must run
+  # AFTER Step 5, not between Phase 3 and Step 5. Downstream HTTPRoute
+  # resources (operator-created from keystone-api spec.gateway) need a
+  # Programmed listener to bind to (CC-0088, REQ-005).
+  wait_for_gateway_programmed openstack-gw openstack "${HELMRELEASE_TIMEOUT}"
 
   # Step 6: Wait for OpenBao pod to be Running (not Ready — it becomes Ready
   # only after init+unseal in Step 7).

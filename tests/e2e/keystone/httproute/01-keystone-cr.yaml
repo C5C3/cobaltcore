@@ -4,9 +4,19 @@
 
 # Keystone CR fixture for the httproute E2E test (CC-0065).
 # spec.gateway drives the optional HTTPRoute sub-reconciler: the operator
-# creates an HTTPRoute attached to a fictitious Gateway (openstack/openstack-gw).
-# No Gateway controller is running in the test cluster; the test simulates
-# Accepted=True on the route's parent status via a subsequent patch step.
+# creates an HTTPRoute attached to a deliberately-non-existent Gateway
+# (`openstack/not-a-real-gateway`). The CC-0088 kind overlay installs a
+# REAL Envoy Gateway controller in the test cluster bound to
+# `Gateway/openstack-gw`, so this fixture used to race that controller:
+# its `kubectl patch --subresource=status --type=merge` against
+# `status.parents` performs a JSON merge-patch which replaces the entire
+# `parents` list, and the real controller would re-add its slot
+# (`Accepted=False, NoMatchingListenerHostname` because listener hostname
+# `keystone.127-0-0-1.nip.io` does not match this fixture's
+# `keystone.e2e.example.com`). Using a non-existent ParentRef name —
+# which no Gateway resolves — guarantees the real controller never
+# writes a RouteParentStatus slot for this HTTPRoute, so the merge-patch
+# remains the sole writer (CC-0088).
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:
@@ -37,7 +47,7 @@ spec:
     region: RegionOne
   gateway:
     parentRef:
-      name: openstack-gw
+      name: not-a-real-gateway
     hostname: keystone.e2e.example.com
     path: /v3
     annotations:

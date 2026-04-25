@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: When a PR includes both tests and documentation describing those tests, read the doc description of each test and verify the actual assertions match what the docs claim is validated.
 **Severity**: BLOCKING
-**Occurrences**: 1
+**Occurrences**: 2
 
 ## What to check
 
@@ -19,3 +19,8 @@ Documentation that overstates test coverage creates a false sense of safety. Tea
 - **Feedback**: Both `test_grype_scan_action_sha_pinned` and `test_sarif_upload_action_sha_pinned` validate only the 40-character hex SHA pattern, but do not check for the inline version comments (`# v7` and `# v3`). The documentation table explicitly states that these tests validate the version comments.
 - **What was missed**: For each test function, compare its actual assertions against any documentation table or description that enumerates what the test validates. Flag any claim in the docs that has no corresponding assertion in the test code.
 - **Fix**: Added `assert_file_contains` calls to validate the `# v7` and `# v3` version comments in the respective test functions, aligning actual test behavior with the documentation.
+
+### CC-0088 — berendt
+- **Feedback**: The SKIP message points to `tests/e2e/keystone/gateway-quick-start/chainsaw-test.yaml`, but that suite has no curl step — only declarative status assertions.
+- **What was missed**: If a test's SKIP message claims coverage lives elsewhere (e.g., 'operator-path coverage lives in tests/e2e/keystone/gateway-quick-start/'), verify that referenced suite contains the equivalent verification step. A pointer to a suite with only declarative status assertions does not substitute for an HTTP-level smoke check.
+- **Fix**: Relocated the smoke suite into the keystone test tree so the curl step itself becomes the operator-path coverage, eliminating the need for a redirect comment.

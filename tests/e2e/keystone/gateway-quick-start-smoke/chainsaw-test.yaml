@@ -1,0 +1,317 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E smoke test for the Gateway API quick-start path (CC-0088).
+# Exercises REQ-013 end-to-end:
+#   `curl -k https://keystone.127-0-0-1.nip.io/v3` returns HTTP 200 with
+#   a non-empty Keystone v3 JSON response (containing `version`).
+#
+# The full chain under test:
+#   kind host :443 → kindnode :31443 (NodePort) → Envoy Gateway proxy
+#   → HTTPS listener on `openstack/openstack-gw` (self-signed cert from
+#   `selfsigned-cluster-issuer`) → HTTPRoute managed by the Keystone
+#   Operator (`keystone-smoke-api`) → Service `keystone-smoke-api:5000`
+#   → Keystone pod.
+#
+# Suite location: this test lives under `tests/e2e/keystone/` (not
+# `tests/e2e/infrastructure/`) so the operator-installed `e2e-operator`
+# matrix job runs it — that job is the only place where the
+# Keystone CRD is registered and the operator can reconcile the smoke
+# Keystone CR into an HTTPRoute. The `e2e-infra` job intentionally
+# suspends the keystone-operator HelmRelease
+# (`deploy/kind/base/kustomization.yaml`), so a smoke suite under
+# `tests/e2e/infrastructure/` would never be able to apply a Keystone CR
+# and the curl step could never actually exercise REQ-013 (CC-0088).
+#
+# ── DECISION: curl from the chainsaw host (Option B) ─────────────────
+# We run curl directly from the chainsaw script step on the developer's
+# or CI host, NOT from an ephemeral in-cluster pod. Rationale:
+#   1. REQ-013 explicitly targets the URL from the host perspective
+#      ("from the CI host"), because the nip.io → 127.0.0.1 mapping is
+#      an external DNS concern, not an in-cluster concern.
+#   2. `hack/kind-config.yaml` already bridges host 127.0.0.1:443 to the
+#      proxy NodePort 31443 via `extraPortMappings`, so the host path
+#      works out of the box without DNS shims or hostAlias tricks.
+#   3. Mirrors the sibling `tests/e2e/infrastructure/flux-web-health/`
+#      pattern, which also performs HTTP assertions from the chainsaw
+#      host (there via port-forward) rather than from an in-cluster pod.
+#   4. Running curl from inside the kind network would require either
+#      overriding DNS or adding a hostAlias, both fragile and at odds
+#      with the point of a quick-start smoke test — which is to prove
+#      "the external URL that docs/quick-start.md tells the user to
+#      type WORKS".
+# Format follows the DECISION comment style of
+# `tests/e2e/chainsaw-config.yaml:8-12` so reviewers see the ambiguity
+# and resolution at the top of the file.
+#
+# ── DECISION: accept HTTP 200 only (not 200 OR 404) ──────────────────
+# Re-reading REQ-013, the requirement is "HTTP 200 with non-empty
+# Keystone JSON" — a 404 would prove the Gateway data-plane is
+# reachable but would NOT prove the HTTPRoute is attached and the
+# Keystone backend is serving. The latter is the actual feature under
+# test. To make the assertion fire on the right failure mode, the test
+# applies its OWN minimal Keystone CR (`01-smoke-keystone-cr.yaml`)
+# rather than depending on the sibling Keystone-suite test to run
+# first (chainsaw runs suites in parallel with `parallel: 4`, ordering
+# is not guaranteed). Self-contained fixture → deterministic 200.
+#
+# ── Scope gating — runtime presence checks ──────────────────────────
+# The first lines of the script probe for `GatewayClass/envoy`,
+# `Gateway/openstack-gw`, and the `keystones.keystone.openstack.c5c3.io`
+# CRD. If any is absent the script exits 0 with a SKIP log line.
+# Production overlays never apply `deploy/kind/base/openstack-gateway.yaml`
+# nor install Envoy Gateway, so those probes default-skip the test off
+# any non-kind cluster — no chainsaw `--selector` flag is required from
+# callers (CC-0088).
+#
+# The health check runs as a single `script` operation rather than
+# chainsaw declarative `assert`s because chainsaw has no step-level
+# skip: declarative asserts would time out and fail even if an earlier
+# guard script exited 0. Consolidating into one script is the only way
+# to keep the presence-check short-circuit default-safe.
+#
+# Feature: CC-0088, REQ-013
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: gateway-quick-start-smoke
+spec:
+  # Timeout budget (CC-0088): the script's sequential waits have
+  # per-call upper bounds of 5m (Gateway Programmed) + 5m (Keystone
+  # HTTPRouteReady) + ~30s (curl retries) = ~10.5m worst case — but the
+  # two waits are effectively sequential phases of a single reconcile
+  # chain (Gateway must be Programmed before the HTTPRoute can attach
+  # Accepted), so in practice both complete well inside 7m on a warm
+  # cluster. Keeping `timeouts.exec` at 7m matches the sibling
+  # `flux-web-health` envelope and surfaces a clear timeout rather
+  # than silently stretching CI runs.
+  #
+  # The inner `kubectl wait --timeout` values below (5m each) are
+  # intentionally less than the outer 7m bound so their failure mode
+  # surfaces as a targeted `condition X not reached` diagnostic rather
+  # than chainsaw's generic script-timeout kill. An earlier revision
+  # used --timeout=8m on the HTTPRouteReady wait, which could never
+  # fire because the outer 7m script cap always triggered first.
+  timeouts:
+    assert: 7m
+    exec: 7m
+  steps:
+  # ── Step 1: Apply namespace ───────────────────────────────────────
+  # The Keystone CR (01-smoke-keystone-cr.yaml) is NOT applied here —
+  # its CRD is registered by the keystone-operator, which is suspended
+  # in some overlays. Applying the CR unconditionally would abort
+  # chainsaw with `no matches for kind "Keystone"` on those clusters,
+  # so the apply has been moved into the Step 2 script body, behind a
+  # CRD presence guard, to keep this test default-safe.
+  - try:
+    - apply:
+        file: 00-namespace.yaml
+  # ── Step 2: Smoke-check Gateway reachability ──────────────────────
+  - try:
+    - script:
+        # Matches spec.timeouts.exec above; kept explicit so the
+        # per-step bound is visible at the call site.
+        timeout: 7m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`
+        # with "Illegal option -o pipefail" (exit 2). All other
+        # infra/keystone e2e scripts pin bash for the same reason.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          # ── Presence guard (CC-0088) ──────────────────────────────
+          # The kind overlay alone applies
+          # `deploy/kind/base/openstack-gateway.yaml`, which materialises
+          # GatewayClass/envoy and Gateway/openstack-gw. Their absence
+          # unambiguously signals a non-kind cluster — exit 0 with a
+          # SKIP line so the test passes without failing downstream.
+          if ! kubectl get gatewayclass envoy >/dev/null 2>&1; then
+            echo "SKIP: GatewayClass/envoy not present."
+            echo "      This is expected on non-kind overlays"
+            echo "      (deploy/flux-system/ does not reference"
+            echo "      deploy/kind/base/envoy-gateway.yaml)."
+            exit 0
+          fi
+          if ! kubectl get gateway openstack-gw -n openstack >/dev/null 2>&1; then
+            echo "SKIP: Gateway/openstack-gw not present in openstack namespace."
+            echo "      This is expected on non-kind overlays"
+            echo "      (deploy/flux-system/ does not reference"
+            echo "      deploy/kind/base/openstack-gateway.yaml)."
+            exit 0
+          fi
+          # Keystone CRD gate — the smoke test applies a Keystone CR
+          # below, which needs the operator-registered CRD. The
+          # `e2e-operator` matrix job installs the operator so the CRD
+          # is present and this guard passes; on infra-only or
+          # production clusters where the operator is suspended/absent,
+          # the guard exits 0 and the suite skips cleanly (CC-0088).
+          if ! kubectl get crd keystones.keystone.openstack.c5c3.io >/dev/null 2>&1; then
+            echo "SKIP: Keystone CRD not present on this cluster"
+            echo "      (operator not deployed). The curl smoke check"
+            echo "      requires the keystone-operator to reconcile the"
+            echo "      smoke Keystone CR into an HTTPRoute."
+            exit 0
+          fi
+          echo "OK: Gateway + Keystone CRD present — running smoke checks"
+
+          # Apply the minimal Keystone CR fixture now that the CRD
+          # presence guard has passed. Chainsaw runs scripts with the
+          # test directory as CWD, so the relative path resolves.
+          kubectl apply -f 01-smoke-keystone-cr.yaml
+
+          # ── Pre-flight: Gateway Programmed ────────────────────────
+          # Envoy Gateway sets `Programmed=True` on the Gateway once
+          # the listener has a usable TLS Secret and the xDS data-plane
+          # is ready. Without this wait, an early curl races kind
+          # startup (cert issuance + Envoy pod roll-out take 30-60s).
+          kubectl wait --for=condition=Programmed \
+            gateway/openstack-gw -n openstack --timeout=5m
+          echo "OK: Gateway/openstack-gw is Programmed (CC-0088, REQ-013)"
+
+          # ── Pre-flight: Keystone HTTPRouteReady=True ──────────────
+          # The Keystone Operator only marks HTTPRouteReady=True after
+          # Envoy Gateway's status-writer publishes Accepted=True on
+          # the route's parent. This is the single highest-value wait
+          # before the curl: it gates on BOTH the HTTPRoute existing
+          # AND the Gateway controller having attached it.
+          #
+          # --timeout=5m (not 8m) so it stays inside the outer 7m
+          # chainsaw script cap (`spec.timeouts.exec` / step `timeout`
+          # above). An 8m inner bound could never fire because the
+          # outer cap would kill the script first, masking the
+          # targeted `HTTPRouteReady not reached` diagnostic as a
+          # generic script-timeout kill.
+          kubectl wait --for=condition=HTTPRouteReady \
+            keystone/keystone-smoke -n openstack --timeout=5m
+          echo "OK: Keystone/keystone-smoke HTTPRouteReady=True (CC-0088, REQ-013)"
+
+          # ── REQ-013: HTTP 200 from the CI host ────────────────────
+          # `-k` accepts the self-signed certificate issued by
+          # selfsigned-cluster-issuer; this matches docs/quick-start.md
+          # guidance ("Your browser will warn that the certificate is
+          # not trusted — this is expected for a kind cluster").
+          #
+          # Retry loop: Envoy Gateway's xDS push and the Keystone pod's
+          # uWSGI warm-up can race the `HTTPRouteReady=True` signal by
+          # a few seconds. Mirror the flux-web-health port-forward
+          # poll shape — up to 15 attempts, 2s sleep between — so a
+          # brief 503 from the proxy doesn't fail the whole run.
+          URL="https://keystone.127-0-0-1.nip.io/v3"
+          HTTP_CODE=""
+          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+            # `-s` silent, `-k` accept self-signed, `-o` body to tmp,
+            # `-w '%{http_code}'` prints just the HTTP status.
+            HTTP_CODE="$(curl -sk -o /tmp/body -w '%{http_code}' "$URL" || true)"
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "OK: got HTTP 200 on attempt $attempt"
+              break
+            fi
+            echo "attempt $attempt: HTTP $HTTP_CODE (retrying in 2s)"
+            sleep 2
+          done
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "ERROR: $URL returned HTTP $HTTP_CODE (expected 200)"
+            echo "--- response body (first 2KB) ---"
+            head -c 2048 /tmp/body 2>/dev/null || true
+            echo
+            exit 1
+          fi
+
+          # Non-empty body assertion: a 200 with an empty body would
+          # mean the HTTPRoute is attached but the Keystone backend
+          # returned nothing (pod starting, probe race, misconfigured
+          # uWSGI). Feature: CC-0088, REQ-013
+          if [ ! -s /tmp/body ]; then
+            echo "ERROR: $URL returned HTTP 200 with empty body"
+            exit 1
+          fi
+
+          # JSON `version` field assertion: Keystone's v3 root returns
+          # `{"version": {...}}`. Prefer `jq -e` when available (exact
+          # JSON parse); fall back to a literal grep for `"version"`
+          # when `jq` is missing (some minimal CI images don't ship
+          # it) — the grep is a weaker check but still catches the
+          # "gateway served a plain-text 200" regression.
+          if command -v jq >/dev/null 2>&1; then
+            if ! jq -e '.version' /tmp/body >/dev/null 2>&1; then
+              echo "ERROR: response body has no JSON 'version' field"
+              echo "--- response body (first 2KB) ---"
+              head -c 2048 /tmp/body 2>/dev/null || true
+              echo
+              exit 1
+            fi
+            echo "OK: response body contains JSON 'version' field (jq)"
+          else
+            if ! grep -q '"version"' /tmp/body; then
+              echo "ERROR: response body does not contain literal 'version' key"
+              echo "--- response body (first 2KB) ---"
+              head -c 2048 /tmp/body 2>/dev/null || true
+              echo
+              exit 1
+            fi
+            echo "OK: response body contains literal 'version' key (grep fallback)"
+          fi
+
+          echo "OK: Keystone v3 responded 200 on https://keystone.127-0-0-1.nip.io/v3 (CC-0088, REQ-013)"
+    catch:
+    # On failure, dump post-mortem state to help CI triage. Each
+    # resource is individually scoped so a missing one (the smoke
+    # test might run without the sibling suite's fixtures) doesn't
+    # short-circuit the remainder of the dump. `describe` on a
+    # non-existent resource errors out, so wrap the less-critical
+    # ones in a `script` with `|| true` guards where needed.
+    - describe:
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: Gateway
+        name: openstack-gw
+        namespace: openstack
+    - describe:
+        apiVersion: keystone.openstack.c5c3.io/v1alpha1
+        kind: Keystone
+        name: keystone-smoke
+        namespace: openstack
+    - script:
+        # HTTPRoute and Certificate may not exist on an early failure
+        # (e.g. the Keystone CR hasn't reconciled yet), so use a
+        # script wrapper with `|| true` so the dump always runs to
+        # completion. Uses the expected operator-managed HTTPRoute
+        # name `keystone-smoke-api` (Keystone CR name + `-api`
+        # suffix, matching the sibling httproute suite's
+        # `keystone-httproute-api` naming).
+        shell: bash
+        content: |
+          echo "=== HTTPRoute keystone-smoke-api ==="
+          kubectl describe httproute keystone-smoke-api -n openstack 2>&1 || true
+          echo
+          echo "=== Certificate keystone-nip-io-tls ==="
+          kubectl describe certificate keystone-nip-io-tls -n openstack 2>&1 || true
+          echo
+          echo "=== Gateway events (last 30) ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    # The Envoy Gateway Helm chart labels its controller Deployment
+    # with `app.kubernetes.io/name=gateway-helm` — verified against
+    # the upstream chart defaults. If that label selector ever drifts,
+    # the follow-up script below catches everything in the namespace
+    # as a broad fallback.
+    - podLogs:
+        namespace: envoy-gateway-system
+        selector: app.kubernetes.io/name=gateway-helm
+        tail: 200
+    - script:
+        # Broad fallback: dump logs for every pod in
+        # envoy-gateway-system regardless of labels, so we still see
+        # proxy-side errors if the selector above misses the Envoy
+        # data-plane pod (which typically carries
+        # `app.kubernetes.io/component=proxy`).
+        shell: bash
+        content: |
+          echo "=== all pods in envoy-gateway-system ==="
+          kubectl get pods -n envoy-gateway-system -o wide 2>&1 || true
+          echo
+          for pod in $(kubectl get pods -n envoy-gateway-system -o name 2>/dev/null); do
+            echo "--- $pod (last 200 lines, all containers) ---"
+            kubectl logs -n envoy-gateway-system "$pod" --all-containers --tail=200 2>&1 || true
+          done

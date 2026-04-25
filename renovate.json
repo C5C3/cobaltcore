@@ -41,6 +41,20 @@
       "datasourceTemplate": "github-releases",
       "packageNameTemplate": "controlplaneio-fluxcd/flux-operator",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/deploy/kind/base/envoy-gateway\\.yaml$/"
+      ],
+      "matchStrings": [
+        "version:\\s*\">=(?<currentValue>\\d+\\.\\d+\\.\\d+)\\s+<\\d+\\.\\d+\\.\\d+\""
+      ],
+      "depNameTemplate": "envoyproxy/gateway",
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "envoyproxy/gateway",
+      "extractVersionTemplate": "^v(?<version>.+)$",
+      "versioningTemplate": "semver"
     }
   ],
   "packageRules": [
@@ -73,6 +87,22 @@
       "automerge": true,
       "minimumReleaseAge": "3 days",
       "groupName": "flux-operator"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["deploy/kind/base/envoy-gateway.yaml"],
+      "matchPackageNames": ["envoyproxy/gateway"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["deploy/kind/base/envoy-gateway.yaml"],
+      "matchPackageNames": ["envoyproxy/gateway"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "minimumReleaseAge": "3 days",
+      "groupName": "envoy-gateway"
     }
   ]
 }

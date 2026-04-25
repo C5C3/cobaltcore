@@ -1,0 +1,69 @@
+{
+  "summary": "Review of the improvement cycle that addressed external review #1 from berendt. The PR correctly addresses every finding (C-001, W-001..W-004, I-001..I-003): the smoke suite was relocated from `tests/e2e/infrastructure/gateway-quick-start-smoke/` to `tests/e2e/keystone/gateway-quick-start-smoke/` (via three R086/R100 renames) so the `e2e-operator` matrix job's chainsaw invocation actually runs the curl step (REQ-013); the httproute fixture parentRef was changed to `not-a-real-gateway` to defuse the merge-patch race with the now-real Envoy Gateway controller; the unused `overlay: kind` label and selector framing were removed from gateway-quick-start; a port-443 binding warning admonition was added under Quick Start Step 2 with a cross-link to the port-forward fallback; the supply-chain note now references the concrete CC-0095 follow-up ticket; `install.createNamespace: true` was dropped (Namespace resource is the sole owner); the chart version pin was raised from `>=1.3.0` to `>=1.7.0` to avoid Renovate noise; the keystone-crd.md admonition gained the missing `/v3` suffix. However, the relocation of the smoke suite into the same chainsaw invocation as `tests/e2e/keystone/gateway-quick-start/` introduces a NEW race: under `execution.parallel: 4` both suites attach HTTPRoutes to the same `Gateway/openstack-gw` https listener simultaneously, but `gateway-quick-start/chainsaw-test.yaml:164` still asserts `(listeners[?name == 'https'].attachedRoutes | [0]): 1` — that assertion will time out once the smoke suite's `keystone-smoke-api` HTTPRoute also attaches (attachedRoutes==2). This is a probabilistic but high-likelihood flake driven by which suite chainsaw schedules first; with `failFast: true` it will abort the whole keystone matrix on hit.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "C-001 fix verified: smoke suite renamed into tests/e2e/keystone/gateway-quick-start-smoke/ — git diff --find-renames shows R100/R100/R086 (00-namespace.yaml, 01-smoke-keystone-cr.yaml, chainsaw-test.yaml)", "checked": true},
+    {"item": "Smoke suite picked up by e2e-operator matrix: ci.yaml:645 runs `chainsaw test ... tests/e2e/${{ matrix.operator }}/`, which now includes gateway-quick-start-smoke for matrix.operator==keystone", "checked": true},
+    {"item": "Self-contained fixture: smoke test applies its own keystone-smoke CR inside the script (post CRD-presence guard) so it does not depend on sibling-suite ordering", "checked": true},
+    {"item": "W-001 fix verified: httproute parentRef.name changed to `not-a-real-gateway` in both 01-keystone-cr.yaml:50 and chainsaw-test.yaml:61,112 — defuses merge-patch race with real Envoy Gateway controller", "checked": true},
+    {"item": "W-002 fix verified: `metadata.labels.overlay: kind` removed from gateway-quick-start chainsaw test header, and the smoke suite never carried the label", "checked": true},
+    {"item": "Cross-suite race introduced: gateway-quick-start asserts attachedRoutes:1 but the smoke suite now creates a SECOND HTTPRoute on the same listener under parallel:4 — see issues_found", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "SPDX headers present on every new/renamed manifest and CC-0088 feature ID cited", "checked": true},
+    {"item": "DECISION comments document the curl-from-host vs curl-from-pod tradeoff and the assertion timeout budget rationale", "checked": true},
+    {"item": "Comment in gateway-quick-start/chainsaw-test.yaml:138-150 about `attachedRoutes: 1` is incorrect — the listener counter is global, not per-suite (see issues_found)", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "No new secrets, credentials, or sensitive paths introduced", "checked": true},
+    {"item": "TLS handling unchanged (still cert-manager + selfsigned-cluster-issuer + curl -k for smoke)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Production overlay (deploy/flux-system/) untouched: the diff only modifies kind-overlay file (deploy/kind/base/envoy-gateway.yaml) and tests/docs", "checked": true},
+    {"item": "Smoke suite location (tests/e2e/keystone/) honors the principle that REQ-013's curl path requires the operator-installed CRD that lives in e2e-operator", "checked": true},
+    {"item": "Namespace ownership rationalized: `install.createNamespace: true` removed so the kustomize-applied Namespace is sole owner — avoids divergent meta.helm.sh/release-namespace annotations", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "Dead overlay-selector documentation removed; runtime presence probe is the sole gating mechanism (matches what `make e2e` and CI actually invoke)", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Smoke test exits 0 with explicit SKIP messages when GatewayClass/Gateway/CRD are absent — non-kind clusters skip cleanly without leaking failures", "checked": true},
+    {"item": "kubectl wait inner timeouts (5m) are smaller than chainsaw script-cap (7m) so the targeted condition diagnostic surfaces before the generic script-timeout kill", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Catch blocks dump Gateway/HTTPRoute/Certificate descriptions plus envoy-gateway-system pod logs (selector + broad fallback) for post-mortem triage", "checked": true},
+    {"item": "Curl response body assertions: HTTP 200 + non-empty + JSON `version` field (with grep fallback when jq is unavailable)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "C5",
+      "severity": "BLOCKER",
+      "description": "Cross-suite race on `Gateway/openstack-gw` listener `attachedRoutes` count introduced by relocating the smoke suite into the keystone matrix. `tests/e2e/keystone/gateway-quick-start/chainsaw-test.yaml:164` still asserts `(listeners[?name == 'https'].attachedRoutes | [0]): 1`, but `tests/e2e/keystone/gateway-quick-start-smoke/01-smoke-keystone-cr.yaml` now also creates a Keystone CR (`keystone-smoke`) whose `spec.gateway.parentRef.name: openstack-gw` causes the operator to synthesize a SECOND HTTPRoute (`keystone-smoke-api`) attached to the same https listener. Per Gateway API spec, `Listener.status.attachedRoutes` is the total number of routes attached to the listener — counting BOTH routes, not just the asserting suite's route. With `tests/e2e/chainsaw-config.yaml` setting `execution.parallel: 4` and the two suites being alphabetically adjacent (positions 12 and 13 of ~34 keystone tests), they will frequently land in the same parallel batch. If the smoke suite's `kubectl apply -f 01-smoke-keystone-cr.yaml` runs before gateway-quick-start hits step 3, attachedRoutes is already 2 and the chainsaw assert keeps polling for the full 8m `assert` timeout, then fails. Combined with `failFast: true`, this aborts the whole keystone matrix run. Before the relocation, the smoke suite lived under `tests/e2e/infrastructure/` (run by the `e2e-infra` job), so this race could not happen — the relocation is a NEW regression of the previously-passing assertion.",
+      "location": "tests/e2e/keystone/gateway-quick-start/chainsaw-test.yaml:164",
+      "fix": "Either (a) relax the count assertion — replace the equality check with a presence check (`(listeners[?name == 'https'].attachedRoutes | [0]): >= 1` is not valid chainsaw JMESPath; instead drop the line and assert HTTPRoute Accepted=True from the controller in step 6, which is the actually-meaningful invariant), or (b) keep the equality but make it tolerate the smoke suite's route by asserting `attachedRoutes: 2` only when the smoke fixture is also active (fragile), or (c) add a chainsaw-level dependency that prevents the two suites from running concurrently (chainsaw v0.2.x has no native test-ordering primitive, so this would require renaming or grouping). Option (a) is cleanest: the comment block at lines 138-150 already acknowledges that `RouteRuleConflict` would be visible elsewhere (HTTPRouteReady never flipping True in step 7), so the count check is redundant defensive instrumentation, not a real invariant.",
+      "evidence": "tests/e2e/keystone/gateway-quick-start/chainsaw-test.yaml:164:            (listeners[?name == 'https'].attachedRoutes | [0]): 1\n\ntests/e2e/keystone/gateway-quick-start-smoke/01-smoke-keystone-cr.yaml:72-82:\n  gateway:\n    parentRef:\n      name: openstack-gw\n    hostname: keystone.127-0-0-1.nip.io\n    path: /v3\n\ntests/e2e/chainsaw-config.yaml:38-40:\n  execution:\n    failFast: true\n    parallel: 4",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "Q4",
+      "severity": "MAJOR",
+      "description": "The comment block at `tests/e2e/keystone/gateway-quick-start/chainsaw-test.yaml:138-150` justifies the `attachedRoutes: 1` assertion with an incorrect mental model: it claims the value `asserts that invariant from this suite's point of view: the https listener must have exactly one route bound to it (the one created from keystone-gateway-qs's spec.gateway)`. But `Listener.status.attachedRoutes` is a global counter on the Gateway listener — it is not per-route, per-namespace, or per-suite. When the smoke suite (now in the same chainsaw invocation per C-001 fix) attaches its `keystone-smoke-api` HTTPRoute to the same listener, the counter becomes 2 regardless of which suite is reading it. The comment's reasoning needs to be rewritten to acknowledge cross-suite interaction, or the assertion removed (see C5 finding). Since the comment was specifically updated in this PR cycle to add the smoke-suite scenario, this is squarely in scope for the current improvement.",
+      "location": "tests/e2e/keystone/gateway-quick-start/chainsaw-test.yaml:138-150",
+      "fix": "If the assertion is kept, rewrite the comment to state explicitly that any concurrent suite attaching an HTTPRoute to `openstack-gw` will cause this assertion to fail, and document the chainsaw scheduling assumption (e.g., `assumes no other suite in the same invocation attaches a route to openstack-gw`). If the assertion is removed per the C5 fix, delete the entire 138-150 comment block.",
+      "evidence": "tests/e2e/keystone/gateway-quick-start/chainsaw-test.yaml:138-150:\n  # `attachedRoutes == 1` early-catches a RouteRuleConflict race: if\n  # this suite and the infra-smoke suite under `parallel: 4` both bound\n  # HTTPRoutes to the same hostname+path (hypothetically), Envoy Gateway\n  # would accept one and reject the other with\n  # `Accepted=False, reason=RouteRuleConflict`, leaving the listener\n  # with zero attached routes. The 01-smoke-keystone-cr.yaml fixture\n  # already uses path `/v3` to avoid overlap, so `attachedRoutes: 1`\n  # asserts that invariant from this suite's point of view: the https\n  # listener must have exactly one route bound to it (the one created\n  # from keystone-gateway-qs's spec.gateway).",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a `tests/e2e/keystone/gateway-quick-start-smoke/00-namespace.yaml`-style header note in the gateway-quick-start fixture explicitly listing the alphabetically-adjacent suites that share the `openstack-gw` Gateway. This makes the parallel-execution coupling discoverable for future authors who add a third suite.",
+    "Once CC-0095 (Envoy Gateway chart mirror to ghcr.io/c5c3/charts) lands, follow through on the deploy/kind/base/envoy-gateway.yaml header note: swap the `url:` to the mirror and remove the supply-chain admonition. Schedule the cleanup."
+  ],
+  "next_steps": [
+    "Address the BLOCKER finding (C5) by removing the brittle `attachedRoutes: 1` assertion from gateway-quick-start step 3 (and the now-stale comment block at lines 138-150). Step 6's HTTPRoute Accepted=True assertion already covers the meaningful contract; step 7's HTTPRouteReady covers the operator-side observation.",
+    "Confirm the fix by running `make e2e` (or `chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/keystone/`) locally a few times to verify the gateway-quick-start and gateway-quick-start-smoke suites consistently pass when scheduled concurrently.",
+    "After fixing, re-record the resolution rationale in the planwerk progress notes so the next reviewer can trace why the count assertion was dropped."
+  ],
+  "detected_patterns": []
+}

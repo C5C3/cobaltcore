@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# TLS material for the Gateway listener defined in
+# deploy/kind/base/openstack-gateway.yaml. cert-manager issues a
+# self-signed certificate for `keystone.127-0-0-1.nip.io` and writes it
+# to the `keystone-nip-io-tls` Secret in the `openstack` namespace,
+# where the Gateway's `certificateRefs` picks it up.
+#
+# Lives in the infrastructure overlay (Phase 2 of hack/deploy-infra.sh)
+# rather than the base overlay because the `cert-manager.io/v1`
+# Certificate CRD is installed by the `cert-manager` HelmRelease in
+# Phase 1; applying this resource before Phase 4 ("wait HelmReleases
+# Ready") would fail with `no matches for kind "Certificate"`.
+# The same reasoning applies to the `selfsigned-cluster-issuer`
+# ClusterIssuer it references (deploy/flux-system/infrastructure/
+# cluster-issuer.yaml) — also a Phase-2 resource.
+#
+# Self-signed is correct for a kind quick-start cluster (single-user
+# localhost-only), matching the OpenBao UI posture documented at
+# docs/quick-start.md:242-245 ("Your browser will warn that the
+# certificate is not trusted — this is expected for a kind cluster").
+#
+# Feature: CC-0088, REQ-003
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: keystone-nip-io-tls
+  namespace: openstack
+spec:
+  secretName: keystone-nip-io-tls
+  duration: 8760h
+  renewBefore: 720h
+  issuerRef:
+    name: selfsigned-cluster-issuer
+    kind: ClusterIssuer
+  dnsNames:
+    - keystone.127-0-0-1.nip.io

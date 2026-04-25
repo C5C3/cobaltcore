@@ -52,20 +52,34 @@ const (
 )
 
 // keystoneStatusEndpoint returns the externally reachable Keystone API endpoint
-// URL. When spec.gateway is set, the endpoint uses the configured hostname over
-// HTTPS (gateways are the public-ingress hop and terminate TLS); otherwise it
-// returns the in-cluster Service DNS name so existing CRs without spec.gateway
-// continue to report the cluster-local URL (CC-0065, REQ-004).
+// URL (CC-0065, REQ-004; CC-0088).
+//
+// Resolution order when spec.gateway is set:
+//  1. spec.bootstrap.publicEndpoint, if non-empty — used verbatim.
+//  2. otherwise https://{spec.gateway.hostname}/v3 (implicit port 443).
+//
+// publicEndpoint takes precedence because the externally reachable URL can
+// include a port that no Kubernetes object captures: the Gateway listener is
+// always the in-cluster TLS port (443), but kind extraPortMappings,
+// LoadBalancer overrides, and edge proxies can republish that listener on a
+// different host-side port (e.g. KIND_HOST_PORT=8443). Synthesising
+// https://{hostname}/v3 in that case would diverge from spec.bootstrap.publicEndpoint
+// and from the URL the operator writes into the Keystone service catalog
+// (reconcile_bootstrap.go), so consumers of status.endpoint would see a
+// stale URL. The webhook enforces that publicEndpoint, when set, uses
+// spec.gateway.hostname as its host (REQ-009), preventing drift.
 //
 // spec.gateway.hostname is validated non-empty by both the CRD schema
 // (+kubebuilder:validation:MinLength=1) and the admission webhook (REQ-007),
-// so the gateway branch cannot produce a fallback URL post-admission. No
-// secondary hostname check is performed here: a cluster-local fallback when
-// gateway is explicitly set would silently mask misconfiguration (e.g. webhook
-// bypass via raw etcd writes), whereas emitting https:///v3 surfaces the bug
-// loudly to any consumer of status.endpoint.
+// so the fallback branch cannot produce https:///v3 post-admission.
+//
+// When spec.gateway is nil, the cluster-local Service DNS name is returned so
+// existing CRs without external exposure continue to report a usable URL.
 func keystoneStatusEndpoint(keystone *keystonev1alpha1.Keystone) string {
 	if keystone.Spec.Gateway != nil {
+		if pe := keystone.Spec.Bootstrap.PublicEndpoint; pe != "" {
+			return pe
+		}
 		return fmt.Sprintf("https://%s/v3", keystone.Spec.Gateway.Hostname)
 	}
 	return internalAPIURL(keystone)

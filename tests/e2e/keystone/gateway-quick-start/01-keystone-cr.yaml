@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR fixture for the Gateway quick-start E2E test.
+#
+# Unlike tests/e2e/keystone/httproute/01-keystone-cr.yaml (which points
+# at a fictitious Gateway and relies on the test suite patching
+# HTTPRoute status by hand), this CR is pinned to the real
+# `openstack-gw` Gateway installed by `deploy/kind/base/openstack-gateway.yaml`
+# and the real Envoy Gateway controller installed by
+# `deploy/kind/base/envoy-gateway.yaml`. The hostname MUST match the
+# Gateway listener hostname AND the dnsName on
+# `Certificate/keystone-nip-io-tls` so that the listener's TLS Secret
+# matches the SNI the client will present.
+#
+# Database name `keystone_gateway_qs` is distinct from the httproute
+# suite's `keystone_httproute` so both suites can run in parallel
+# (chainsaw-config.yaml sets parallel: 4) against the shared
+# openstack-db MariaDB cluster without colliding on schema names.
+#
+# Feature: CC-0088, REQ-006, REQ-008
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-gateway-qs
+  namespace: openstack
+spec:
+  replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_gateway_qs
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
+  gateway:
+    parentRef:
+      name: openstack-gw
+    hostname: keystone.127-0-0-1.nip.io
+    # Root path per REQ-008: the quick-start URL is
+    # https://keystone.127-0-0-1.nip.io/v3 and the HTTPRoute should
+    # match the full request path starting at `/`.
+    path: /

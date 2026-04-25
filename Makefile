@@ -146,10 +146,11 @@ shellcheck:
 .PHONY: test-shell
 # test-shell runs every shell-script unit test under tests/unit/ (CC-0085, REQ-003/REQ-005/REQ-007).
 # Each test is a self-contained bash script that uses tests/lib/assertions.sh.
+# CC-0088: added tests/unit/docs/ for documentation-coverage shell tests (tasks 3.6-3.8).
 test-shell:
 	@echo "Running shell unit tests..."
 	@status=0; \
-	for t in tests/unit/hack/*_test.sh tests/unit/deploy/*_test.sh tests/unit/renovate/*_test.sh; do \
+	for t in tests/unit/hack/*_test.sh tests/unit/deploy/*_test.sh tests/unit/renovate/*_test.sh tests/unit/docs/*_test.sh; do \
 		[ -f "$$t" ] || continue; \
 		echo "=== $$t ==="; \
 		bash "$$t" || status=1; \
@@ -325,6 +326,9 @@ verify-invalid-cr-fixtures:
 	@python3 tests/e2e/keystone/invalid-cr/test_generate.py
 
 .PHONY: e2e
+# CC-0088: chainsaw auto-discovers chainsaw-test.yaml recursively, so new suites
+# under tests/e2e/**/ (e.g. keystone/gateway-quick-start, infrastructure/gateway-quick-start-smoke)
+# are picked up without Makefile changes.
 e2e:
 	chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/
 

@@ -1,0 +1,128 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Envoy Gateway (kind-only demo addon).
+#
+# Installs the upstream Envoy Gateway Helm chart into
+# `envoy-gateway-system` and pins the proxy data-plane Service to
+# `type: NodePort` with a fixed nodePort (31443) via an `EnvoyProxy` CR
+# referenced by `GatewayClass/envoy` (see `openstack-gateway.yaml`).
+# The fixed NodePort lines up with the `extraPortMappings` entry in
+# `hack/kind-config.yaml` so that the host's TCP :443 is bridged to
+# the Envoy data plane inside the kind container; this enables
+# `https://keystone.127-0-0-1.nip.io/v3` to reach the proxy from the
+# developer's machine without MetalLB and without port-forwarding.
+#
+# This manifest is deployed ONLY from the kind overlay
+# (deploy/kind/base/kustomization.yaml) and NEVER reaches
+# deploy/flux-system/ — installing a Gateway controller in the
+# production overlay is explicitly out of scope (the operator stays
+# platform-agnostic; customers pick their own Gateway implementation,
+# matching docs/reference/keystone-crd.md:316-318).
+#
+# DECISION: chart source
+# Ambiguity: task 1.1 allows either reusing `oci://ghcr.io/c5c3/charts`
+# (if the chart is mirrored) or adding a new `HelmRepository` under
+# `deploy/flux-system/sources/envoy-gateway-charts.yaml`.
+# Chose: inline a kind-only `HelmRepository` in this file, mirroring the
+# `headlamp.yaml` precedent (self-contained kind addon).
+# Reason: (a) the Envoy Gateway chart is not known to be mirrored into
+# `c5c3-charts`, (b) adding the repo under `deploy/flux-system/sources/`
+# would still require wiring it into `deploy/flux-system/kustomization.yaml`,
+# which REQ-012 forbids, and (c) `deploy/kind/base/headlamp.yaml` already
+# sets the precedent for inlining a per-addon `HelmRepository` in the
+# kind overlay. Result: `deploy/flux-system/` is byte-identical to main.
+#
+# Supply-chain note: `oci://docker.io/envoyproxy` is an anonymous Docker
+# Hub pull. Docker Hub throttles anonymous pulls to 100/6h per source IP,
+# so CI runners behind shared NAT can occasionally surface TOOMANYREQUESTS
+# from source-controller, causing the envoy-gateway HelmRelease wait in
+# `hack/deploy-infra.sh` Phase 3 to flake. Mitigation is tracked under
+# **CC-0095** ("Mirror Envoy Gateway chart into `oci://ghcr.io/c5c3/charts`")
+# — once that follow-up lands, swap the `url:` below to the mirror and
+# remove this note. Documenting the failure mode here keeps the
+# root-cause diagnosis visible to whoever triages the first rate-limit
+# flake (CC-0088).
+#
+# DECISION: EnvoyProxy NodePort pinning
+# Ambiguity: the EnvoyProxy v1alpha1 schema exposes multiple ways to
+# pin a fixed nodePort; the exact shape differs across chart versions.
+# Chose: use a `JSONPatch` on the generated proxy Service targeting
+# `/spec/ports/0/nodePort` — the Gateway has a single HTTPS listener
+# so index 0 is stable. This avoids depending on the auto-generated
+# port `name` (which is derived from the listener name and chart version).
+# Reason: JSONPatch by index is resilient to chart-side port-name
+# formatting changes and unambiguous for a single-listener Gateway.
+# If a future chart version adds a second listener, the index-0 target
+# will still point at the HTTPS listener because the chart preserves
+# declaration order from the Gateway's `spec.listeners` array.
+#
+# Version pin: `spec.chart.spec.version` uses a SemVer range locked to
+# the 1.x track, mirroring `cert-manager.yaml`. Renovate extracts the
+# lower bound and auto-PRs minor/patch bumps with a 3-day cooldown and
+# majors disabled (see `renovate.json` customManager for
+# `deploy/kind/base/envoy-gateway.yaml`).
+#
+# Feature: CC-0088, REQ-001, REQ-002, REQ-012
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: envoy-gateway-system
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  # `-charts` suffix disambiguates the HelmRepository from the
+  # `HelmRelease/envoy-gateway` consumer below. Without the suffix both
+  # objects share the name `envoy-gateway`; different namespaces and
+  # kinds keep the API safe, but `kubectl get` output and
+  # source-controller / helm-controller log lines become ambiguous
+  # ("envoy-gateway not ready" could mean the repo OR the release).
+  # Mirrors the `HelmRepository/*-charts` pattern used by c5c3-charts
+  # and the flux-web-chart source in `deploy/flux-system/sources/`.
+  name: envoy-gateway-charts
+  namespace: flux-system
+spec:
+  type: oci
+  interval: 1h
+  url: oci://docker.io/envoyproxy
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: envoy-gateway
+  namespace: envoy-gateway-system
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: gateway-helm
+      version: ">=1.7.0 <2.0.0"
+      sourceRef:
+        kind: HelmRepository
+        name: envoy-gateway-charts
+        namespace: flux-system
+  install:
+    # `Namespace/envoy-gateway-system` is already declared above in this
+    # file, so the kustomize apply creates it before the HelmRelease
+    # reconciles. Setting `createNamespace: true` here would race that
+    # apply (Helm's pre-install hook also tries to create it) and the
+    # two paths attach divergent `meta.helm.sh/release-namespace`
+    # annotations. Leaving it unset (Helm default `false`) lets the
+    # explicit Namespace resource own the object (CC-0088).
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    # Minimal kind-only footprint — single replica, no metrics sidecar.
+    # The production overlay installs no Envoy Gateway, so these values
+    # intentionally do not attempt to be production-tunable.
+    config:
+      envoyGateway:
+        logging:
+          level:
+            default: info

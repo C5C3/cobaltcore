@@ -54,7 +54,11 @@ spec:
               keystone.openstack.c5c3.io/managed-annotations: example.com/test-annotation
           spec:
             parentRefs:
-            - name: openstack-gw
+            # Deliberately non-existent: keeps the real Envoy Gateway
+            # controller introduced by CC-0088 from writing its own
+            # RouteParentStatus slot and racing the merge-patch in
+            # step 5 (see 01-keystone-cr.yaml header).
+            - name: not-a-real-gateway
             hostnames:
             - keystone.e2e.example.com
             rules:
@@ -105,7 +109,7 @@ spec:
             --subresource=status --type=merge -p '{
               "status": {
                 "parents": [{
-                  "parentRef": {"name": "openstack-gw"},
+                  "parentRef": {"name": "not-a-real-gateway"},
                   "controllerName": "e2e.example.com/fake-gateway-controller",
                   "conditions": [{
                     "type": "Accepted",

@@ -693,6 +693,19 @@ the Gateway's data-plane pods can reach Keystone on TCP 5000 (CC-0065, REQ-008):
 
 ### Example — Basic Gateway Exposure
 
+> **kind Quick Start note (CC-0088):** a ready-made
+> `Gateway/openstack-gw` ships in the kind overlay
+> (`deploy/kind/base/openstack-gateway.yaml`) and is reachable on the host
+> at `https://keystone.127-0-0-1.nip.io/v3` — see the
+> [Quick Start / Access Keystone section](../quick-start.md#access-keystone-from-your-local-machine).
+> On a Quick Start cluster, setting `spec.gateway.parentRef.name:
+> openstack-gw` plus `hostname: keystone.127-0-0-1.nip.io` makes
+> `status.endpoint = https://keystone.127-0-0-1.nip.io/v3` actually
+> resolve from your workstation — no `/etc/hosts` edit, no
+> `kubectl port-forward`. Production overlays do **not** ship
+> `openstack-gw`; operators pick their own Gateway implementation and
+> parent reference there.
+
 ```yaml
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone

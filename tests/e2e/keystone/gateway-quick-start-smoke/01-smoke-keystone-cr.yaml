@@ -1,0 +1,82 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Minimal Keystone CR fixture for the Gateway quick-start smoke test.
+#
+# This smoke test exercises the end-to-end TLS + Gateway data-plane path
+# documented by REQ-013 of CC-0088: `curl -k https://keystone.127-0-0-1.nip.io/v3`
+# must return HTTP 200 with a non-empty Keystone JSON response. That
+# requires a Keystone CR whose spec.gateway produces an HTTPRoute
+# attaching to the kind overlay's `openstack-gw` Gateway.
+#
+# Name collision avoidance:
+#   chainsaw-config.yaml sets `execution.parallel: 4`, and the sibling
+#   Keystone-suite fixture `tests/e2e/keystone/gateway-quick-start/
+#   01-keystone-cr.yaml` already pins `name: keystone-gateway-qs` and
+#   database `keystone_gateway_qs`. Under parallel execution the two
+#   suites can run concurrently, so this fixture uses DIFFERENT names
+#   (`keystone-smoke` / database `keystone_smoke`) to avoid clashing on
+#   the shared `openstack-db` MariaDB cluster and on HTTPRoute object
+#   names inside the `openstack` namespace.
+#
+# HTTPRoute path isolation:
+#   The sibling keystone-suite fixture attaches to `openstack-gw` with
+#   hostname `keystone.127-0-0-1.nip.io` and path `/` — a root-path
+#   match. Under `parallel: 4` the two Keystone CRs reconcile
+#   concurrently and the operator synthesises TWO HTTPRoutes
+#   (`keystone-smoke-api` + `keystone-gateway-qs-api`) attaching to the
+#   same Gateway listener. If both routes also matched on path `/` they
+#   would overlap entirely, and the Gateway API spec instructs the
+#   controller to mark one as `Accepted=False, reason=RouteRuleConflict`
+#   — whichever loses the race never flips HTTPRouteReady=True and the
+#   suite times out. Using path `/v3` here (and leaving the keystone
+#   suite on `/`) makes the smoke HTTPRoute strictly more specific, so
+#   both routes attach without conflict. The smoke curl only hits
+#   `https://keystone.127-0-0-1.nip.io/v3` anyway, so scoping the
+#   HTTPRoute to the same path costs nothing functionally.
+#
+# The hostname MUST match the Gateway listener hostname AND the dnsName
+# on `Certificate/keystone-nip-io-tls` so the listener's TLS Secret
+# matches the SNI presented by the client.
+#
+# Feature: CC-0088, REQ-013
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-smoke
+  namespace: openstack
+spec:
+  replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_smoke
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
+  gateway:
+    parentRef:
+      name: openstack-gw
+    hostname: keystone.127-0-0-1.nip.io
+    # Path `/v3` (not `/`) — the sibling keystone-suite fixture uses
+    # path `/`, so making this route strictly more specific avoids the
+    # `RouteRuleConflict` race when both CRs reconcile in parallel (see
+    # the header's "HTTPRoute path isolation" block). The smoke curl
+    # only hits https://keystone.127-0-0-1.nip.io/v3, so a /v3-scoped
+    # route is functionally identical for this test (CC-0088, REQ-013).
+    path: /v3

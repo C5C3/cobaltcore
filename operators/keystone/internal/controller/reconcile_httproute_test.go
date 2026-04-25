@@ -113,6 +113,52 @@ func TestKeystoneStatusEndpoint_GatewaySet_ReturnsHTTPSHostnameEndpoint(t *testi
 		"spec.gateway.Hostname must drive the public HTTPS endpoint (CC-0065, REQ-004)")
 }
 
+func TestKeystoneStatusEndpoint_PublicEndpointSet_OverridesHostnameDefault(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := hrTestKeystone()
+	ks.Spec.Gateway = hrTestGateway()
+	// External port stems from kind extraPortMappings or an edge proxy and is
+	// not captured anywhere in the Keystone or Gateway spec — only
+	// publicEndpoint can express it (CC-0088, REQ-009).
+	ks.Spec.Bootstrap.PublicEndpoint = "https://keystone.example.com:8443/v3"
+
+	endpoint := keystoneStatusEndpoint(ks)
+
+	g.Expect(endpoint).To(Equal("https://keystone.example.com:8443/v3"),
+		"spec.bootstrap.publicEndpoint must take precedence over the synthesised https://{hostname}/v3 default (CC-0088, REQ-009)")
+}
+
+func TestKeystoneStatusEndpoint_PublicEndpointEmpty_FallsBackToHostnameDefault(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := hrTestKeystone()
+	ks.Spec.Gateway = hrTestGateway()
+	// PublicEndpoint left empty (the default for CRs that don't republish
+	// the listener on a non-443 host port). Status must continue to fall
+	// back to the synthesised URL so behaviour is unchanged for existing
+	// CRs.
+	ks.Spec.Bootstrap.PublicEndpoint = ""
+
+	endpoint := keystoneStatusEndpoint(ks)
+
+	g.Expect(endpoint).To(Equal("https://keystone.example.com/v3"),
+		"empty publicEndpoint must fall back to https://{hostname}/v3 (CC-0088, REQ-009)")
+}
+
+func TestKeystoneStatusEndpoint_PublicEndpointWithoutGateway_ReturnsClusterLocal(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := hrTestKeystone()
+	// spec.gateway nil: even when publicEndpoint is set, the operator did
+	// not create an HTTPRoute, so status.endpoint must continue to expose
+	// the in-cluster Service DNS (the only address whose readiness the
+	// operator's health-check actually verifies).
+	ks.Spec.Bootstrap.PublicEndpoint = "https://keystone.example.com/v3"
+
+	endpoint := keystoneStatusEndpoint(ks)
+
+	g.Expect(endpoint).To(Equal("http://test-keystone-api.default.svc.cluster.local:5000/v3"),
+		"publicEndpoint without spec.gateway must not override the cluster-local fallback (CC-0088, REQ-009)")
+}
+
 // --- buildKeystoneHTTPRoute unit tests (CC-0065, REQ-001, REQ-003, REQ-006) ---
 
 func TestBuildKeystoneHTTPRoute_NameAndNamespace(t *testing.T) {

@@ -1607,6 +1607,100 @@ func TestValidate_GatewayEmptyParentRefName(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("name"))
 }
 
+// --- publicEndpoint / gateway.hostname consistency tests (CC-0088, REQ-009) ---
+
+func TestValidate_GatewayPublicEndpointHostMatchesAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Gateway = &GatewaySpec{
+		ParentRef: GatewayParentRefSpec{Name: "openstack-gw"},
+		Hostname:  "keystone.127-0-0-1.nip.io",
+	}
+	k.Spec.Bootstrap.PublicEndpoint = "https://keystone.127-0-0-1.nip.io:8443/v3"
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_GatewayPublicEndpointWithoutPortAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Gateway = &GatewaySpec{
+		ParentRef: GatewayParentRefSpec{Name: "openstack-gw"},
+		Hostname:  "keystone.example.com",
+	}
+	k.Spec.Bootstrap.PublicEndpoint = "https://keystone.example.com/v3"
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_GatewayPublicEndpointHostMismatchRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Gateway = &GatewaySpec{
+		ParentRef: GatewayParentRefSpec{Name: "openstack-gw"},
+		Hostname:  "keystone.example.com",
+	}
+	k.Spec.Bootstrap.PublicEndpoint = "https://keystone.other.example.com/v3"
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("publicEndpoint"))
+	g.Expect(err.Error()).To(ContainSubstring("keystone.other.example.com"))
+	g.Expect(err.Error()).To(ContainSubstring("keystone.example.com"))
+}
+
+func TestValidate_GatewayPublicEndpointNonHTTPSRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Gateway = &GatewaySpec{
+		ParentRef: GatewayParentRefSpec{Name: "openstack-gw"},
+		Hostname:  "keystone.example.com",
+	}
+	k.Spec.Bootstrap.PublicEndpoint = "http://keystone.example.com/v3"
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("publicEndpoint"))
+	g.Expect(err.Error()).To(ContainSubstring("https"))
+}
+
+func TestValidate_GatewayPublicEndpointMalformedRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Gateway = &GatewaySpec{
+		ParentRef: GatewayParentRefSpec{Name: "openstack-gw"},
+		Hostname:  "keystone.example.com",
+	}
+	// url.Parse rejects control characters (and a few other malformed inputs)
+	// outright, surfacing the schema-level "must be a valid URL" branch.
+	k.Spec.Bootstrap.PublicEndpoint = "https://keystone.example.com/\x00/v3"
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("publicEndpoint"))
+}
+
+func TestValidate_PublicEndpointWithoutGatewayAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	// publicEndpoint set without spec.gateway is the legacy path: the operator
+	// writes it into the catalog but does not create an HTTPRoute. No
+	// hostname-consistency rule applies.
+	k.Spec.Gateway = nil
+	k.Spec.Bootstrap.PublicEndpoint = "https://keystone.legacy.example.com/v3"
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
 func TestValidate_GatewayNil_Accepted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}

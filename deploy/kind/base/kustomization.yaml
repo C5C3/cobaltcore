@@ -18,6 +18,10 @@ resources:
   - headlamp.yaml
   # Flux Web UI — kind-only demo addon (see flux-web.yaml header). Feature: CC-0086, REQ-002
   - flux-web.yaml
+  # Envoy Gateway controller + EnvoyProxy NodePort config (kind-only). Feature: CC-0088, REQ-001, REQ-002
+  - envoy-gateway.yaml
+  # GatewayClass/envoy + Certificate + Gateway/openstack-gw (kind-only). Feature: CC-0088, REQ-003
+  - openstack-gateway.yaml
 
 patches:
   - target:

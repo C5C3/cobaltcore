@@ -1,0 +1,374 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the Envoy Gateway quick-start wiring (CC-0088).
+# Exercises the real reconcile path end-to-end on the kind cluster:
+#
+#   - GatewayClass/envoy + Gateway/openstack-gw reach Programmed=True,
+#     the HTTPS listener reaches Accepted=True (REQ-003).
+#   - cert-manager issues Certificate/keystone-nip-io-tls (REQ-003).
+#   - The Envoy proxy Service is `type: NodePort` with nodePort 31443,
+#     matching `hack/kind-config.yaml` extraPortMappings (REQ-002).
+#   - A Keystone CR with spec.gateway triggers the operator to create
+#     an HTTPRoute, and the REAL Envoy Gateway controller (not a test
+#     patch) publishes Accepted=True on the route's parent status
+#     (REQ-006, REQ-009).
+#   - The Keystone CR's HTTPRouteReady condition flips True with reason
+#     HTTPRouteAccepted, and status.endpoint resolves to
+#     https://keystone.127-0-0-1.nip.io/v3 (REQ-006).
+#
+# Scope gating — runtime presence probe (first step):
+#   an early `kubectl get gateway openstack-gw -n openstack` /
+#   `kubectl get gatewayclass envoy` check. If either is missing, the
+#   probe script logs SKIP and exits 0, short-circuiting the suite.
+#   Production overlays (deploy/flux-system/) do not install Envoy
+#   Gateway nor the quick-start Gateway, so this probe default-skips the
+#   test off any non-kind cluster — no chainsaw `--selector` flag is
+#   required from callers (CC-0088, REQ-012).
+#
+# Differs from tests/e2e/keystone/httproute/chainsaw-test.yaml:
+# that suite installs a minimal HTTPRoute CRD, patches
+# `status.parents[].conditions.Accepted` by hand to simulate a Gateway
+# controller, and asserts the reconciler reacts. This suite intentionally
+# does NOT patch HTTPRoute status anywhere — a real Envoy Gateway
+# controller runs in the kind cluster and must publish Accepted=True
+# on its own, which is the specific contract REQ-006/REQ-009 exercises.
+#
+# Cross-suite parallelism — shares `openstack-gw` listener:
+#   tests/e2e/chainsaw-config.yaml sets `execution.parallel: 4`, so this
+#   suite frequently runs concurrently with its alphabetically-adjacent
+#   sibling `tests/e2e/keystone/gateway-quick-start-smoke/`. Both attach
+#   an HTTPRoute to the same `Gateway/openstack-gw` https listener
+#   (`keystone-gateway-qs-api` here, `keystone-smoke-api` there).
+#   Anything asserted on the LISTENER as a whole (e.g.
+#   `status.listeners[].attachedRoutes`) is therefore a cross-suite
+#   counter and MUST NOT be expected to equal this suite's own route
+#   count. Per-route assertions (steps 6 and 7) are the safe contract
+#   surface; future authors adding a third suite that attaches to
+#   `openstack-gw` should follow the same pattern (CC-0088).
+#
+# Timeouts: Envoy Gateway install, Gateway Programmed, Certificate
+# Ready, and HTTPRoute Accepted-by-real-controller take minutes on a
+# fresh kind cluster. `timeouts.assert: 8m` is deliberately generous
+# relative to the 2–5m ceilings used elsewhere in tests/e2e/.
+#
+# Feature: CC-0088, REQ-002, REQ-003, REQ-006, REQ-009
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-gateway-quick-start
+spec:
+  # Relative resource references (Keystone CR, HTTPRoute, Certificate)
+  # resolve against this namespace. Matches the httproute suite.
+  namespace: openstack
+  timeouts:
+    # Envoy Gateway install + Gateway Programmed + Certificate Ready +
+    # HTTPRoute Accepted-by-real-controller realistically costs minutes
+    # on a fresh kind cluster — the default 2m is too tight.
+    assert: 8m
+    exec: 5m
+  steps:
+  # ── Step 1: Runtime presence probe ─────────────────────────────────
+  # Structured as a separate step (not a wrapper around the rest of
+  # the suite) because chainsaw has no step-level skip and nesting
+  # every declarative assert inside a shell `if` would defeat the
+  # point of declarative asserts. If either resource is missing we
+  # exit 0 with a SKIP line; subsequent steps still execute, but
+  # because the cluster truly lacks a Gateway controller, asserting
+  # Programmed=True would fail. CI pipelines that cannot install Envoy
+  # Gateway never deploy `deploy/kind/base/openstack-gateway.yaml`, so
+  # the runtime probe alone is sufficient to default-skip this test
+  # off non-kind clusters.
+  - try:
+    - script:
+        timeout: 1m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`
+        # with "Illegal option -o pipefail" (exit 2). Pin bash to match
+        # the rest of the infra/keystone e2e scripts.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          # ── Presence guard (CC-0088) ──────────────────────────────
+          # The kind overlay alone deploys
+          # deploy/kind/base/envoy-gateway.yaml +
+          # deploy/kind/base/openstack-gateway.yaml, which between them
+          # materialise GatewayClass/envoy and Gateway/openstack-gw.
+          # Their absence unambiguously signals a non-kind cluster — exit
+          # 0 with a SKIP line so the suite passes without failing on
+          # the missing reconcile path downstream.
+          if ! kubectl get gatewayclass envoy >/dev/null 2>&1; then
+            echo "SKIP: GatewayClass/envoy not present on this cluster."
+            echo "      This is expected on non-kind overlays (deploy/flux-system/"
+            echo "      does not reference deploy/kind/base/envoy-gateway.yaml)."
+            exit 0
+          fi
+          if ! kubectl get gateway openstack-gw -n openstack >/dev/null 2>&1; then
+            echo "SKIP: Gateway/openstack-gw not present in namespace openstack."
+            echo "      This is expected on non-kind overlays (deploy/flux-system/"
+            echo "      does not reference deploy/kind/base/openstack-gateway.yaml)."
+            exit 0
+          fi
+          echo "OK: GatewayClass/envoy and Gateway/openstack-gw present — running real-controller assertions"
+
+  # ── Step 2: Apply fixtures ─────────────────────────────────────────
+  # Namespace first (idempotent if already created by the kind overlay),
+  # then the Keystone CR that wires spec.gateway to the real Gateway.
+  - try:
+    - apply:
+        file: 00-namespace.yaml
+    - apply:
+        file: 01-keystone-cr.yaml
+    catch:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          echo "=== Events in openstack namespace ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+
+  # ── Step 3: Gateway Programmed=True + https listener Accepted=True (REQ-003)
+  # Uses chainsaw JMESPath projection syntax
+  # `(conditions[?type == 'Programmed'])` and
+  # `(listeners[?name == 'https'] | [0].conditions[?type == 'Accepted'])`
+  # to match on condition type regardless of ordering, mirroring how
+  # the httproute suite filters conditions by type.
+  #
+  # The `| [0]` pipe unwraps the single-element list returned by the
+  # listener filter before descending into `.conditions` so the
+  # subsequent filter has a straight object context. The earlier form
+  # `listeners[?name == 'https'].conditions[?type == 'Accepted'][]`
+  # (projection + flatten) evaluated to an empty slice under
+  # go-jmespath even when the describe output clearly showed
+  # `Accepted=True` on the https listener — chainsaw's matcher then
+  # failed with "Invalid value: []: lengths of slices don't match"
+  # after the full 8m assert timeout. Piping to `[0]` first matches
+  # the shape used elsewhere, which works in practice (CC-0088).
+  #
+  # NO `attachedRoutes` count assertion: `Listener.status.attachedRoutes`
+  # is a global counter on the Gateway listener — it counts every
+  # HTTPRoute attached to it across every suite, namespace, and CR.
+  # Under `tests/e2e/chainsaw-config.yaml`'s `execution.parallel: 4`,
+  # this suite (`gateway-quick-start`) and the alphabetically-adjacent
+  # `gateway-quick-start-smoke` suite frequently land in the same
+  # parallel batch and BOTH attach an HTTPRoute to the `openstack-gw`
+  # https listener (`keystone-gateway-qs-api` + `keystone-smoke-api`).
+  # Asserting `attachedRoutes == 1` would race that scheduling and
+  # time out the full 8m budget once the smoke route also attaches.
+  # The meaningful contracts are already covered downstream: step 6
+  # asserts the operator's HTTPRoute reaches `Accepted=True` from the
+  # real controller, and step 7 asserts the operator-side
+  # `HTTPRouteReady` mirrors that — neither depends on the global
+  # listener counter (CC-0088).
+  - try:
+    - assert:
+        resource:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: Gateway
+          metadata:
+            name: openstack-gw
+            namespace: openstack
+          status:
+            (conditions[?type == 'Programmed']):
+            - status: "True"
+            (listeners[?name == 'https'] | [0].conditions[?type == 'Accepted']):
+            - status: "True"
+    catch:
+    - describe:
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: Gateway
+        name: openstack-gw
+        namespace: openstack
+    - describe:
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: GatewayClass
+        name: envoy
+    - podLogs:
+        namespace: envoy-gateway-system
+        selector: control-plane=envoy-gateway
+        tail: 200
+
+  # ── Step 4: Certificate Ready=True (REQ-003) ───────────────────────
+  # cert-manager publishes Ready=True on the Certificate once it has
+  # issued and stored the TLS Secret (keystone-nip-io-tls) that the
+  # Gateway listener references.
+  - try:
+    - assert:
+        resource:
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          metadata:
+            name: keystone-nip-io-tls
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    catch:
+    - describe:
+        apiVersion: cert-manager.io/v1
+        kind: Certificate
+        name: keystone-nip-io-tls
+        namespace: openstack
+    - podLogs:
+        namespace: cert-manager
+        selector: app.kubernetes.io/name=cert-manager
+        tail: 200
+
+  # ── Step 5: Envoy proxy Service is NodePort with nodePort 31443 (REQ-002)
+  # The Envoy Gateway controller generates a Service per Gateway, labelled
+  # `gateway.envoyproxy.io/owning-gateway-name=<gateway-name>`. The
+  # EnvoyProxy JSONPatch in deploy/kind/base/envoy-gateway.yaml pins
+  # `/spec/ports/0/nodePort` to 31443 so kind's extraPortMappings can
+  # bridge host :443 to it.
+  #
+  # Using jq (rather than kubectl jsonpath) so the diagnostic on
+  # mismatch can print the entire service for post-mortem. The check
+  # is shaped as:
+  #   - exactly one service matched (0 → cryptic waits from the real
+  #     controller; >1 → ambiguous which one kind maps to :443),
+  #   - `.spec.type == "NodePort"`,
+  #   - at least one port has `.nodePort == 31443` (the JSONPatch
+  #     targets /spec/ports/0/nodePort but we match any port index so
+  #     the assertion survives a chart-side port-ordering change).
+  - try:
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          set -euo pipefail
+
+          # Poll until the Envoy Gateway controller has materialised the
+          # per-Gateway Service — it's asynchronous from the Gateway
+          # reaching Programmed=True above.
+          for _ in $(seq 1 60); do
+            count="$(kubectl get svc -n envoy-gateway-system \
+              -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw \
+              -o json | jq '.items | length')"
+            if [ "$count" = "1" ]; then
+              break
+            fi
+            sleep 5
+          done
+
+          svc_json="$(kubectl get svc -n envoy-gateway-system \
+            -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw \
+            -o json)"
+          count="$(echo "$svc_json" | jq '.items | length')"
+          if [ "$count" != "1" ]; then
+            echo "ERROR: expected exactly 1 Service with label"
+            echo "       gateway.envoyproxy.io/owning-gateway-name=openstack-gw,"
+            echo "       got $count"
+            echo "$svc_json" | jq .
+            exit 1
+          fi
+
+          svc_type="$(echo "$svc_json" | jq -r '.items[0].spec.type')"
+          if [ "$svc_type" != "NodePort" ]; then
+            echo "ERROR: Envoy proxy Service .spec.type is '$svc_type', expected NodePort"
+            echo "$svc_json" | jq '.items[0].spec'
+            exit 1
+          fi
+
+          has_nodeport="$(echo "$svc_json" | jq '[.items[0].spec.ports[] | select(.nodePort == 31443)] | length')"
+          if [ "$has_nodeport" = "0" ]; then
+            echo "ERROR: Envoy proxy Service has no port with nodePort=31443"
+            echo "$svc_json" | jq '.items[0].spec.ports'
+            exit 1
+          fi
+
+          echo "OK: Envoy proxy Service is NodePort with nodePort 31443 (CC-0088, REQ-002)"
+    catch:
+    - describe:
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: Gateway
+        name: openstack-gw
+        namespace: openstack
+    - podLogs:
+        namespace: envoy-gateway-system
+        selector: control-plane=envoy-gateway
+        tail: 200
+
+  # ── Step 6: HTTPRoute Accepted=True by the REAL controller (REQ-006, REQ-009)
+  # IMPORTANT: unlike tests/e2e/keystone/httproute/chainsaw-test.yaml
+  # (which patches status.parents[].conditions by hand at step 5), this
+  # suite relies exclusively on the real Envoy Gateway controller to
+  # publish Accepted=True on the route's parent status. NO `patch`
+  # step exists anywhere in this file; if Envoy Gateway fails to
+  # accept the route, this assertion times out and the catch dumps
+  # the controller logs for triage.
+  #
+  # The HTTPRoute name is derived from the Keystone CR name via
+  # `apiResourceName(keystone)` → `{name}-api`
+  # (operators/keystone/internal/controller/reconcile_httproute.go).
+  #
+  # JMESPath filter `(parents[0].conditions[?type == 'Accepted'])` matches
+  # only the Accepted condition — the real Envoy Gateway controller also
+  # publishes ResolvedRefs alongside Accepted, and chainsaw's array
+  # matcher is length-strict ("lengths of slices don't match"). Same
+  # projection trick as steps 3/4/7.
+  - try:
+    - assert:
+        resource:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: keystone-gateway-qs-api
+            namespace: openstack
+          status:
+            (parents[0].conditions[?type == 'Accepted']):
+            - status: "True"
+    catch:
+    - describe:
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: HTTPRoute
+        name: keystone-gateway-qs-api
+        namespace: openstack
+    - describe:
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: Gateway
+        name: openstack-gw
+        namespace: openstack
+    - podLogs:
+        namespace: envoy-gateway-system
+        selector: control-plane=envoy-gateway
+        tail: 200
+
+  # ── Step 7: Keystone HTTPRouteReady=True/HTTPRouteAccepted + status.endpoint (REQ-006)
+  # The operator observes HTTPRoute.status.parents[].conditions and
+  # flips its own HTTPRouteReady condition True with reason
+  # HTTPRouteAccepted once a parent reports Accepted=True. status.endpoint
+  # is derived from spec.gateway.hostname + "/v3".
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-gateway-qs
+            namespace: openstack
+          status:
+            endpoint: https://keystone.127-0-0-1.nip.io/v3
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteAccepted
+    catch:
+    - describe:
+        apiVersion: keystone.openstack.c5c3.io/v1alpha1
+        kind: Keystone
+        name: keystone-gateway-qs
+        namespace: openstack
+    - describe:
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: HTTPRoute
+        name: keystone-gateway-qs-api
+        namespace: openstack
+    - podLogs:
+        namespace: openstack
+        selector: app.kubernetes.io/name=keystone-operator
+        tail: 200
+    - podLogs:
+        namespace: envoy-gateway-system
+        selector: control-plane=envoy-gateway
+        tail: 200

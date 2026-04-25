@@ -1,0 +1,146 @@
+{
+  "summary": "CC-0088 delivers a kind-only Gateway API quick-start path that exposes Keystone at https://keystone.127-0-0-1.nip.io/v3 via Envoy Gateway + EnvoyProxy NodePort + nip.io wildcard DNS, backed by two chainsaw suites, seven shell-unit tests, a production-posture guard, a Renovate customManager, and documentation updates. All blocker criteria pass: deploy/flux-system/ is byte-identical to origin/main; the gateway-quick-start Keystone suite drives the real Envoy Gateway controller end-to-end with no manual HTTPRoute status patching; the smoke suite asserts HTTP 200 with a non-empty JSON body containing `version`; both chainsaw suites carry `overlay: kind` labels plus runtime presence probes (belt-and-braces gating, mirrors flux-web-health); wait_for_gateway_programmed dumps describe + envoy-gateway-system logs on timeout; renovate.json pins the chart version with `minimumReleaseAge: \"3 days\"`, majors disabled, automerge on minor/patch; Quick Start's Access section is rewritten with the nip.io endpoint as the primary flow and kubectl port-forward moved to a Fallback subsection; Step 7 CR gains `spec.gateway` with `openstack-gw` / `keystone.127-0-0-1.nip.io` / `/`. A handful of minor issues remain: two `# Reviewer: please verify` leftover comments in envoy-gateway.yaml, a potential HTTPRoute-conflict race when the smoke and keystone-suite CRs attach the same hostname+path concurrently, an internal kubectl-wait timeout (8m) that exceeds the outer chainsaw script timeout (7m) in the smoke suite, and the unauthenticated `oci://docker.io/envoyproxy` HelmRepository which can hit Docker Hub rate limits. None are blockers.",
+  "verdict": "APPROVED",
+  "tests_checklist": {
+    "coverage_adequate": true,
+    "edge_cases_covered": true,
+    "tests_match_behavior": true,
+    "test_quality_good": true,
+    "notes": "Seven shell-unit tests covering port-mapping shape, gateway-wait happy/timeout paths, production posture (git-diff guard against origin/main), renovate customManager regex capture, Step 2b table row + architecture snapshot, Step 7 sample-CR structural yq assertions, access-section rewrite, reference-docs cross-links. Two chainsaw suites: keystone/gateway-quick-start drives the real Envoy Gateway controller through Gateway Programmed → listener Accepted → Certificate Ready → NodePort 31443 verification → HTTPRoute Accepted (no patch) → Keystone HTTPRouteReady + status.endpoint, and infrastructure/gateway-quick-start-smoke asserts HTTP 200 with non-empty JSON body containing `version` from the CI host. Both suites use overlay label + runtime presence-probe gating, both carry catch blocks with describe + podLogs. Shell tests gate on optional tooling (yq, jq, npx, perl, git) with SKIP counters."
+  },
+  "code_quality_checklist": {
+    "naming_clear": true,
+    "no_duplication": true,
+    "complexity_appropriate": true,
+    "follows_conventions": true,
+    "notes": "All new/changed files carry SPDX Apache-2.0 headers and cite CC-0088 + REQ-*. Shell scripts follow the established PASS/FAIL/SKIP-counter pattern + `source tests/lib/assertions.sh` convention. Chainsaw suites mirror the flux-web-health belt-and-braces gating pattern. Manifests carry extensive DECISION comments explaining chart-source and NodePort-pinning choices. Two leftover `# Reviewer: please verify` notes in deploy/kind/base/envoy-gateway.yaml (lines 36, 47) duplicate the review-pattern flag from CC-0065; they should be resolved or rewritten as declarative DECISION comments before merge."
+  },
+  "security_checklist": {
+    "input_validated": true,
+    "no_injection_risks": true,
+    "secrets_handled_properly": true,
+    "auth_checks_present": true,
+    "notes": "Self-signed cert matches the OpenBao UI posture (documented kind-only demo). `listenAddress: 127.0.0.1` on the extraPortMappings keeps the endpoint local-only — it is explicitly not bindable on the host's public interface. Gateway/openstack-gw lives in the `openstack` namespace (same-namespace parentRef → no ReferenceGrant needed, matches the operator's stated scope at keystone_types.go:348-354). curl `-k` usage is inside the smoke test only and is clearly documented as kind-only. No secrets logged in stubs/fixtures. The unauthenticated `oci://docker.io/envoyproxy` HelmRepository can be rate-limited by Docker Hub on high-churn CI; not a security issue per se but a supply-chain availability concern."
+  },
+  "architecture_checklist": {
+    "separation_of_concerns": true,
+    "abstraction_appropriate": true,
+    "dependencies_sensible": true,
+    "notes": "Production overlay (deploy/flux-system/) is untouched — verified by tests/unit/deploy/production_posture_test.sh comparing against origin/main. Kind-only addons (Envoy Gateway controller + GatewayClass + Certificate + Gateway) live under deploy/kind/base/ exclusively. REQ-012 operator-platform-agnostic invariant preserved. Gateway choice left to customers in production, per docs/reference/keystone-crd.md:316-318 (the kind-only admonition in keystone-crd.md makes this explicit). HelmRepository + HelmRelease inlined in envoy-gateway.yaml mirrors headlamp.yaml precedent; the header DECISION block explains why this was chosen over adding a shared source under deploy/flux-system/sources/."
+  },
+  "dry_yagni_checklist": {
+    "no_premature_abstraction": true,
+    "no_speculative_features": true,
+    "appropriate_reuse": true,
+    "notes": "No speculative fields added to the CR schema; spec.gateway was already delivered by CC-0065. No new bash helpers beyond wait_for_gateway_programmed, which directly mirrors wait_for_fluxinstance's diagnostic shape. Chainsaw suite naming (`keystone-gateway-qs-api`, `keystone-smoke-api`) follows the operator's existing `{cr-name}-api` HTTPRoute suffix convention. Minor: the duplicated `keystone-smoke` and `keystone-gateway-qs` CR fixtures in two separate suites are justified by parallel-execution isolation of database names — but they also create an HTTPRoute-conflict race on the shared openstack-gw listener with the same hostname+path (see issues_found)."
+  },
+  "fail_fast_checklist": {
+    "errors_surface_early": true,
+    "no_silent_failures": true,
+    "notes": "wait_for_gateway_programmed exits non-zero on timeout with describe + podLogs dumps (unit-tested on happy + timeout paths). Chainsaw catch blocks dump describe + podLogs on every step. Production-posture shell test FAILs if deploy/flux-system/ drifts from origin/main. Smoke test FAILs on HTTP != 200, empty body, or missing `version` field. Runtime presence probe in both chainsaw suites exits 0 with a SKIP line when fixtures are absent — intentional belt-and-braces for operators who forget the `overlay!=kind` selector."
+  },
+  "defensive_checklist": {
+    "no_unnecessary_guards": true,
+    "trust_boundaries_appropriate": true,
+    "notes": "Shell tests bound `|| true` usage to diagnostic dumps and optional-tooling probes where SKIP is the right answer (git worktree detection, yq/jq/npx/perl availability). The JSONPatch on EnvoyProxy targets /spec/ports/0/nodePort by index rather than by name — DECISION comment justifies the choice against name-drift across chart versions. Gateway listener uses `allowedRoutes.namespaces.from: Same` — correct minimum surface for the same-namespace Keystone CR without a ReferenceGrant."
+  },
+  "security_findings": [],
+  "architecture_findings": [
+    {
+      "priority": "minor",
+      "title": "Leftover `# Reviewer: please verify` comments in envoy-gateway.yaml",
+      "location": "deploy/kind/base/envoy-gateway.yaml:36, :47",
+      "description": "Two DECISION blocks end with `# Reviewer: please verify this matches intent.` and `# Reviewer: please verify against the pinned chart version.` These are review-time prompts, not durable documentation, and will rot in the repo once the PR is merged. Matches the review pattern from CC-0065 that flagged similar leftover reviewer notes.",
+      "suggested_fix": "Resolve the ambiguity in the text itself (e.g., drop the prompt and state the decision as finalised), or remove the two lines outright. The surrounding DECISION/Reason/Chose paragraphs already carry the full rationale.",
+      "confidence": "high"
+    }
+  ],
+  "issues_found": [
+    {
+      "priority": "minor",
+      "title": "HTTPRoute hostname+path collision between gateway-quick-start and smoke suites",
+      "location": "tests/e2e/keystone/gateway-quick-start/01-keystone-cr.yaml:54-58 vs tests/e2e/infrastructure/gateway-quick-start-smoke/01-smoke-keystone-cr.yaml:61-65",
+      "description": "Both CRs attach to `parentRef.name: openstack-gw`, `hostname: keystone.127-0-0-1.nip.io`, `path: /`. Under chainsaw's `parallel: 4` the operator will synthesize two HTTPRoutes (`keystone-gateway-qs-api` + `keystone-smoke-api`) that overlap entirely on hostname+path, which the Gateway API spec allows but marks one as Accepted=False, reason RouteRuleConflict. Whichever suite wins first is non-deterministic; the loser's Keystone CR never flips HTTPRouteReady=True and times out. The database-name isolation comment in 01-smoke-keystone-cr.yaml:13-21 acknowledges the parallelism but not this routing conflict.",
+      "suggested_fix": "Either (a) differentiate paths (e.g., smoke uses `/v3`, keystone-suite uses `/`), or (b) apply `chainsaw-config.yaml` `parallel: 1` to these two suites via separate config, or (c) document a `--selector` split so infra-smoke and keystone-suite are not expected to run simultaneously in CI. Option (a) is cleanest — smoke suite only curls `/v3` anyway.",
+      "confidence": "medium"
+    },
+    {
+      "priority": "minor",
+      "title": "Inner kubectl-wait timeout (8m) exceeds outer chainsaw script timeout (7m) in smoke suite",
+      "location": "tests/e2e/infrastructure/gateway-quick-start-smoke/chainsaw-test.yaml:91-93, 107-110, 155-156",
+      "description": "`timeouts.exec: 7m` and `timeout: 7m` on the script bound the whole step at 7m, but the script contains `kubectl wait --for=condition=HTTPRouteReady keystone/keystone-smoke --timeout=8m`. Chainsaw will kill the script at 7m regardless, so the 8m inner bound can never fire — the only visible failure mode is chainsaw's generic script-timeout kill, not a targeted `HTTPRouteReady not reached` diagnostic.",
+      "suggested_fix": "Either raise `timeouts.exec`/`script.timeout` to ≥ 9m (kubectl-wait 8m + Gateway Programmed 5m + curl retries + margin), or lower the inner `kubectl wait --timeout` to 5m so its failure surfaces with a targeted error before the outer kill.",
+      "confidence": "high"
+    },
+    {
+      "priority": "minor",
+      "title": "Unauthenticated Docker Hub HelmRepository is subject to anonymous pull rate limits",
+      "location": "deploy/kind/base/envoy-gateway.yaml:62-70",
+      "description": "`url: oci://docker.io/envoyproxy` pulls the Envoy Gateway chart anonymously. Docker Hub throttles anonymous pulls to 100/6h per source IP; CI runners behind shared NAT can hit the limit on busy days, surfacing as `TOOMANYREQUESTS` from source-controller and turning the envoy-gateway HelmRelease wait (Phase 3 in deploy-infra.sh) into a flake. The DECISION block already acknowledges the chart is not yet mirrored into c5c3-charts.",
+      "suggested_fix": "Either (a) mirror the chart into the existing `oci://ghcr.io/c5c3/charts` source to align with the other addon charts, (b) optionally authenticate via a `secretRef` when DOCKERHUB_USER is available, or (c) document the rate-limit risk in the DECISION block so a future flake lands on the right root cause.",
+      "confidence": "medium"
+    },
+    {
+      "priority": "nit",
+      "title": "HelmRepository and HelmRelease share the name `envoy-gateway`",
+      "location": "deploy/kind/base/envoy-gateway.yaml:65, :75",
+      "description": "`HelmRepository/envoy-gateway` (flux-system ns) and `HelmRelease/envoy-gateway` (envoy-gateway-system ns) share a name. Different namespaces and kinds keep the API safe, but `kubectl get` output and flux log lines become ambiguous (\"envoy-gateway not ready\" could mean the repo OR the release).",
+      "suggested_fix": "Rename the repository to `envoy-gateway-charts` (or similar) so logs disambiguate repo vs. release. Optional — not load-bearing.",
+      "confidence": "low"
+    }
+  ],
+  "suggested_improvements": [
+    "Gateway-quick-start suite could additionally assert Gateway's `.status.listeners[name=https].attachedRoutes == 1` — this would catch the HTTPRoute-conflict race flagged above while the conflict symptom is still \"no listener binding\" rather than \"timeout waiting for HTTPRouteReady\".",
+    "deploy-infra.sh's wait_for_gateway_programmed currently dumps logs for every pod in envoy-gateway-system without filtering by `--since`. On long runs the `--tail=200` may already exclude the relevant crash frame. Consider `--since=10m` or similar to keep diagnostics focused.",
+    "Consider adding a `make quick-start` or similar one-shot target that chains `make deploy-infra` + keystone build/load + `kubectl apply -f keystone.yaml` from the Quick Start so the curl-accessible endpoint can be reached from a single invocation (not a blocker, but would close the loop on the \"Quick Start\" narrative CC-0088 sells)."
+  ],
+  "next_steps": [
+    "Delete or rewrite the two `# Reviewer: please verify` comments in deploy/kind/base/envoy-gateway.yaml:36 and :47 before merge.",
+    "Decide on the HTTPRoute-collision mitigation for the smoke + keystone-suite pair — simplest fix is `path: /v3` in the smoke fixture.",
+    "Either raise the smoke suite's chainsaw `timeouts.exec/script.timeout` to ≥ 9m or lower the inner `kubectl wait --timeout=8m` to 5m so timeout diagnostics fire before the chainsaw kill.",
+    "Merge after the above three low-cost adjustments; no blocker-level rework required."
+  ],
+  "detected_patterns": [
+    "Overlay gating: chainsaw metadata.labels.overlay=kind selector + runtime presence probe (from tests/e2e/infrastructure/flux-web-health/chainsaw-test.yaml)",
+    "JSONPath-style condition assertion: `(conditions[?type == 'X'])` projection in chainsaw (from tests/e2e/keystone/httproute/chainsaw-test.yaml)",
+    "Stub-kubectl + source-and-invoke unit-test pattern for hack/deploy-infra.sh helpers (from tests/unit/hack/deploy_infra_reconcile_sources_test.sh)",
+    "Renovate customManager regex with automerge minor/patch + majors disabled + minimumReleaseAge (from renovate.json flux-operator + flux-web-chart rules)",
+    "SPDX header + Feature: CC-XXXX, REQ-N footer on every new file (project-wide convention)",
+    "DECISION/Ambiguity/Chose/Reason comment block in manifests (from tests/e2e/chainsaw-config.yaml:8-12 header style)",
+    "production-posture git-diff guard vs origin/main (unit test uses the same `deploy/flux-system/ untouched` invariant the feature ticket calls out as REQ-012)"
+  ],
+  "metadata": {
+    "reviewer": "planwerk-reviewer",
+    "review_number": 1,
+    "feature_id": "CC-0088",
+    "feature_title": "Expose Keystone API via Gateway API with Envoy and nip.io",
+    "review_date": "2026-04-22",
+    "files_reviewed": [
+      "Makefile",
+      "deploy/kind/base/envoy-gateway.yaml",
+      "deploy/kind/base/kustomization.yaml",
+      "deploy/kind/base/openstack-gateway.yaml",
+      "docs/quick-start.md",
+      "docs/reference/infrastructure/e2e-deployment.md",
+      "docs/reference/keystone-crd.md",
+      "hack/deploy-infra.sh",
+      "hack/kind-config.yaml",
+      "renovate.json",
+      "tests/e2e/infrastructure/gateway-quick-start-smoke/00-namespace.yaml",
+      "tests/e2e/infrastructure/gateway-quick-start-smoke/01-smoke-keystone-cr.yaml",
+      "tests/e2e/infrastructure/gateway-quick-start-smoke/chainsaw-test.yaml",
+      "tests/e2e/keystone/gateway-quick-start/00-namespace.yaml",
+      "tests/e2e/keystone/gateway-quick-start/01-keystone-cr.yaml",
+      "tests/e2e/keystone/gateway-quick-start/chainsaw-test.yaml",
+      "tests/unit/deploy/production_posture_test.sh",
+      "tests/unit/docs/quick_start_access_section_test.sh",
+      "tests/unit/docs/quick_start_coverage_test.sh",
+      "tests/unit/docs/quick_start_sample_cr_test.sh",
+      "tests/unit/docs/reference_cross_links_test.sh",
+      "tests/unit/hack/deploy_infra_gateway_wait_test.sh",
+      "tests/unit/hack/kind_config_port_mapping_test.sh",
+      "tests/unit/renovate/envoy_gateway_manager_test.sh"
+    ],
+    "scope_note": "Strictly in-diff review. Unchanged files referenced only as context for pattern matching (e.g. flux-web-health chainsaw suite, httproute chainsaw suite, existing renovate entries)."
+  }
+}

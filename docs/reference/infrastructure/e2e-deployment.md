@@ -106,6 +106,19 @@ Step 2 ── Install flux-operator + apply FluxInstance (CC-0085)
      │         Required by the keystone-operator HTTPRoute watch; version
      │         pinned via GATEWAY_API_VERSION, default matches go.mod.
      │
+     ├── Install Envoy Gateway + Gateway/openstack-gw (kind-only) (CC-0088)
+     │         Installed as part of the deploy/kind/base/ overlay applied
+     │         in Step 3: the `envoy-gateway` HelmRelease brings up the
+     │         control plane, and deploy/kind/base/openstack-gateway.yaml
+     │         creates GatewayClass/envoy (parametersRef → EnvoyProxy with
+     │         NodePort 31443), a cert-manager Certificate for
+     │         keystone.127-0-0-1.nip.io signed by selfsigned-cluster-issuer,
+     │         and Gateway/openstack-gw on :443. wait_for_gateway_programmed
+     │         polls Programmed=True after Phase 3.
+     │         The production deploy/flux-system/ overlay does NOT ship
+     │         these resources — operators pick their own Gateway
+     │         implementation in production (CC-0088, REQ-011/REQ-012).
+     │
 Step 3 ── Apply base kustomize overlay (deploy/kind/base/)
      │         Namespaces, HelmRepositories, HelmReleases
      │

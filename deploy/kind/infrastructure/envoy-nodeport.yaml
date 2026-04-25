@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# EnvoyProxy CR referenced by `GatewayClass/envoy` (see
+# deploy/kind/base/openstack-gateway.yaml). Switches the generated
+# Envoy proxy Service to `type: NodePort` and pins the HTTPS listener's
+# nodePort to 31443 via a StrategicMerge patch; kind's
+# `extraPortMappings` maps host :443 to this port
+# (hack/kind-config.yaml).
+#
+# Lives in the infrastructure overlay (Phase 2 of hack/deploy-infra.sh)
+# rather than the base overlay because the
+# `gateway.envoyproxy.io/v1alpha1` EnvoyProxy CRD is installed by the
+# `envoy-gateway` HelmRelease in Phase 1; applying this resource before
+# Phase 4 ("wait HelmReleases Ready") would fail with
+# `no matches for kind "EnvoyProxy"`. The `GatewayClass/envoy`
+# `parametersRef` that points here is resolved lazily by the
+# envoy-gateway controller, so leaving the GatewayClass in the base
+# overlay is safe.
+#
+# DECISION: patch type
+# gateway-helm@1.7.2 rejects `JSONPatch` for `envoyService.patch` with
+# `Invalid parametersRef: unsupported envoy service patch type JSONPatch`;
+# only `StrategicMerge` and `JSONMerge` are accepted. StrategicMerge
+# keys v1.ServicePort entries by `port` (patchMergeKey=port), so listing
+# `port: 443` selects the auto-generated HTTPS ServicePort without
+# depending on the chart-generated `name` (which varies with the
+# Gateway's listener name and chart version).
+#
+# Feature: CC-0088, REQ-001, REQ-002
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: envoy-nodeport
+  namespace: envoy-gateway-system
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        type: NodePort
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              ports:
+                - port: 443
+                  nodePort: 31443

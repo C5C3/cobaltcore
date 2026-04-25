@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Gateway API wiring for the kind Quick Start — `GatewayClass/envoy`
+# plus a single-listener HTTPS Gateway at
+# `keystone.127-0-0-1.nip.io:443` terminating TLS with a self-signed
+# certificate issued by the existing `selfsigned-cluster-issuer`
+# ClusterIssuer (the same issuer OpenBao uses; see
+# `deploy/flux-system/infrastructure/cluster-issuer.yaml`).
+#
+# The Gateway lives in the `openstack` namespace alongside the Keystone
+# CR on purpose: same-namespace `parentRef` resolution does not need a
+# `ReferenceGrant`, and the Keystone Operator explicitly does not manage
+# ReferenceGrant (see `keystone_types.go:348-354`: "Cross-namespace
+# references require a ReferenceGrant in the target namespace (out of
+# scope for this operator)"). This also matches the E2E fixture at
+# `tests/e2e/keystone/httproute/01-keystone-cr.yaml:40`, which hard-codes
+# `parentRef.name: openstack-gw` in the `openstack` namespace.
+#
+# The `parametersRef` on the GatewayClass points at the EnvoyProxy CR
+# defined in `envoy-gateway.yaml`, which pins the proxy data-plane
+# Service to `type: NodePort` with `nodePort: 31443` — the fixed port
+# that `hack/kind-config.yaml` `extraPortMappings` bridges to the host's
+# TCP :443. Result: `https://keystone.127-0-0-1.nip.io/v3` reaches the
+# proxy from the developer's machine with no `/etc/hosts` edit and no
+# `kubectl port-forward`.
+#
+# This manifest is deployed ONLY from the kind overlay
+# (deploy/kind/base/kustomization.yaml) and NEVER reaches the production
+# overlay — the Gateway/GatewayClass stay infrastructure concerns that
+# customers pick for themselves (docs/reference/keystone-crd.md:316-318).
+#
+# Feature: CC-0088, REQ-003
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: envoy
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: envoy-nodeport
+    namespace: envoy-gateway-system
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: openstack-gw
+  namespace: openstack
+spec:
+  gatewayClassName: envoy
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: keystone.127-0-0-1.nip.io
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: keystone-nip-io-tls
+      allowedRoutes:
+        namespaces:
+          from: Same

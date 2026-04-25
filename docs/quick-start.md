@@ -37,7 +37,7 @@ identical to what CI validates.
 | [kubectl](https://kubernetes.io/docs/tasks/tools/) | see below |
 | [Helm](https://helm.sh/docs/intro/install/) | platform installer |
 | [jq](https://jqlang.org/download/) | platform installer |
-| [Flux CLI](https://fluxcd.io/flux/installation/) | **Optional — debugging only.** `make deploy-infra` bootstraps Flux via flux-operator + `FluxInstance` and does not require the CLI (CC-0085, REQ-004). Install it only to run ad-hoc `flux logs` or `flux get` commands against a live cluster. |
+| [Flux CLI](https://fluxcd.io/flux/installation/) | **Optional — debugging only.** `make deploy-infra` bootstraps Flux via flux-operator + `FluxInstance` and does not require the CLI. Install it only to run ad-hoc `flux logs` or `flux get` commands against a live cluster. |
 
 The project ships a helper script that downloads and verifies kind and kubectl with pinned
 SHA256 checksums. The authoritative versions are declared at the top of
@@ -88,6 +88,54 @@ Verify the cluster is ready:
 kubectl cluster-info --context kind-forge-e2e
 ```
 
+::: warning Host port 443 binding requirement
+The kind config binds host TCP port `443` (mapped to NodePort `31443`) so the
+[Quick Start endpoint](#access-keystone-from-your-local-machine)
+`https://keystone.127-0-0-1.nip.io/v3` resolves directly from your workstation.
+Binding a port below 1024 is privileged on every host OS, and the failure mode
+differs by platform.
+
+**Linux** requires `CAP_NET_BIND_SERVICE`, granted by default with **rootful
+Docker**. With **rootless Docker** or **Podman**, or when the host sets
+`net.ipv4.ip_unprivileged_port_start` to `443` or higher, `kind create
+cluster` fails with `failed to start container … bind: permission denied`
+on port 443.
+
+**macOS** Docker Desktop binds privileged ports through a system helper
+(`vmnetd`) at `/var/run/com.docker.vmnetd.sock`. If that socket is missing —
+common after a user-mode install of Docker Desktop, or when you are using
+Colima / OrbStack / Rancher Desktop — `kind create cluster` fails with
+`connecting to /var/run/com.docker.vmnetd.sock: dial unix … no such file or
+directory`. Fix it by enabling **Docker Desktop → Settings → Advanced →
+"Allow privileged port mapping"** (Docker prompts for an admin password and
+installs the helper), or run
+`sudo /Applications/Docker.app/Contents/MacOS/install vmnetd` and restart
+Docker Desktop. Other Docker runtimes do not ship `vmnetd` — use the override
+below instead.
+
+**Override the host port without privileged binding (any OS):** export
+`KIND_HOST_PORT` before `make deploy-infra` and the script renders a
+non-privileged kind config on the fly. The Envoy proxy still listens on
+NodePort `31443` inside the cluster — only the host-side bind moves.
+
+```bash
+export KIND_HOST_PORT=8443
+make deploy-infra
+# Endpoint becomes https://keystone.127-0-0-1.nip.io:8443/v3 — your
+# Keystone CR's `spec.bootstrap.publicEndpoint` must include the same
+# `:8443` suffix so the issued service catalog matches the reachable URL.
+# See Step 7 for a ready-to-apply CR example.
+```
+
+The `KIND_HOST_PORT` override needs `yq` on PATH (only required when the value
+differs from `443`). The Chainsaw E2E suites under
+`tests/e2e/keystone/gateway-quick-start*` hard-code the default
+`https://keystone.127-0-0-1.nip.io/v3` URL and **will not pass with an
+override** — use the
+[`kubectl port-forward` fallback](#fallback-kubectl-port-forward) for those
+suites or run them in CI (Linux + rootful Docker).
+:::
+
 ---
 
 ## Step 3 — Deploy the infrastructure stack
@@ -106,6 +154,7 @@ Internally this performs the following steps:
 | 1 | Kind cluster already exists — skipped (cluster was created in Step 2) |
 | 2 | **Install flux-operator** + apply `FluxInstance/flux` — flux-operator reconciles the Flux controller Deployments from the `FluxInstance` spec, then the step blocks until `FluxInstance/flux` reports `Ready=True`. Reaching `Ready=True` guarantees the Flux toolkit CRDs (`source.toolkit.fluxcd.io`, `helm.toolkit.fluxcd.io`, `kustomize.toolkit.fluxcd.io`, `notification.toolkit.fluxcd.io`) are registered, so Step 3 can apply `HelmRepository` and `HelmRelease` objects without a separate `wait_for_crds` gate |
 | 2a | **Install Gateway API CRDs** — `kubectl apply --server-side` of the upstream `standard-install.yaml` for the version in `GATEWAY_API_VERSION` (default matches `sigs.k8s.io/gateway-api` in `operators/keystone/go.mod`). Required by the keystone-operator's HTTPRoute watch — without it the operator logs `no matches for kind HTTPRoute` at startup. |
+| 2b | **Install Envoy Gateway + `openstack-gw` Gateway** (kind-only) — base overlay installs the `envoy-gateway` HelmRelease and creates `GatewayClass/envoy`, `Certificate/keystone-nip-io-tls`, and `Gateway/openstack-gw` so `https://keystone.127-0-0-1.nip.io/v3` becomes reachable from the developer's host once Keystone attaches an HTTPRoute in Step 7. Production overlays exclude this. |
 | 3 | Apply base kustomize overlay — namespaces, `HelmRepository` sources, `HelmRelease` objects (the Flux toolkit CRDs they depend on were registered by Step 2) |
 | 4 | Wait for HelmReleases to become `Ready`: cert-manager → OpenBao TLS prerequisites → prometheus-operator-crds, openbao, mariadb-operator, external-secrets, memcached-operator |
 | 5 | Apply infrastructure kustomize overlay — `ClusterSecretStore`, `ExternalSecret` objects, `MariaDB` and `Memcached` cluster CRs |
@@ -145,6 +194,7 @@ flux-system           kustomize-controller-*         Ready
 flux-system           helm-controller-*              Ready
 flux-system           notification-controller-*      Ready
 flux-system           flux-web-*                     Ready (kind-only; see Step 4a)
+envoy-gateway-system  envoy-gateway-*                Ready (kind-only; provides openstack-gw — see Step 2b)
 cert-manager          cert-manager-*         Ready
 mariadb-system        mariadb-operator-*     Ready
 memcached-system      memcached-operator-*   Ready
@@ -198,7 +248,7 @@ bound to a read-only ClusterRole covering Flux toolkit API groups and forge-stac
 The Headlamp Flux plugin is the primary Flux UI used by this project. The `flux-operator`
 also ships an embedded Flux Web UI ([fluxoperator.dev/web-ui](https://fluxoperator.dev/web-ui/))
 that the kind overlay turns on as a demo addon — see
-[Step 4a — Open the Flux Web UI](#step-4a-flux-web-ui) for how to reach it (CC-0086, REQ-006).
+[Step 4a — Open the Flux Web UI](#step-4a-flux-web-ui) for how to reach it.
 Once Headlamp is open and you are authenticated, click **Flux** in the left sidebar
 to switch into the Flux views:
 
@@ -218,7 +268,7 @@ Kubernetes events that produced it.
 ## Step 4a — Open the Flux Web UI {#step-4a-flux-web-ui}
 
 The kind overlay also ships the flux-operator's own
-[Flux Web UI](https://fluxoperator.dev/web-ui/) as a demo surface (CC-0086, REQ-005).
+[Flux Web UI](https://fluxoperator.dev/web-ui/) as a demo surface.
 This is a kind-only convenience — the production `deploy/flux-system/` overlay keeps the
 Web UI disabled (no token, no TLS, no Ingress) until the upstream project ships token
 auth, TLS termination, and an Ingress story suitable for a shared cluster. Forward the
@@ -399,7 +449,10 @@ kind load docker-image "ghcr.io/c5c3/keystone:${RELEASE}" --name forge-e2e
 
 Apply the following manifest to deploy a Keystone instance in **managed mode**. In this mode the
 operator creates and manages the MariaDB database (via `clusterRef`) and configures Memcached
-for session caching. Replace `<RELEASE>` with the same value used in Step 6 (e.g. `2025.2`):
+for session caching. The `spec.gateway` block attaches the Keystone API to the
+`openstack-gw` Gateway provisioned in Step 2b, so the service is reachable at
+`https://keystone.127-0-0-1.nip.io/v3` from your workstation with no port-forward.
+Replace `<RELEASE>` with the same value used in Step 6 (e.g. `2025.2`):
 
 ```yaml
 # keystone.yaml
@@ -431,11 +484,87 @@ spec:
     adminPasswordSecretRef:
       name: keystone-admin
     region: RegionOne
+  # Gateway API attachment — routes https://keystone.127-0-0-1.nip.io/v3 to
+  # the keystone-api Service via the shared openstack-gw Gateway.
+  gateway:
+    parentRef:
+      name: openstack-gw
+    hostname: keystone.127-0-0-1.nip.io
+    path: /
 ```
+
+::: tip Why `127-0-0-1.nip.io`?
+[nip.io](https://nip.io/) is a free wildcard DNS service: any hostname of the form
+`anything.<ip-with-dashes>.nip.io` resolves to `<ip>`. `keystone.127-0-0-1.nip.io`
+therefore resolves to `127.0.0.1` without touching `/etc/hosts`, which pairs with
+the `hostPort: 443 → containerPort: 31443` mapping in `hack/kind-config.yaml`.
+:::
 
 ```bash
 kubectl apply -f keystone.yaml
 ```
+
+::: details Variant — when `KIND_HOST_PORT=8443` was used in Step 2
+If you exported `KIND_HOST_PORT=8443` before `make deploy-infra`, the
+endpoint is reachable at `https://keystone.127-0-0-1.nip.io:8443/v3`
+instead of the default `:443`. The Gateway API `hostname` field stays
+unchanged (Gateway API hostnames carry no port — the HTTPRoute matches
+the SNI / Host header), but `spec.bootstrap.publicEndpoint` must be set
+explicitly so the issued service catalog points at the same `:8443` URL
+external clients reach. Apply this CR instead:
+
+```yaml
+# keystone.yaml
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone
+  namespace: openstack
+spec:
+  replicas: 3
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "<RELEASE>"   # e.g. 2025.2 — must match the image loaded in Step 6
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
+    # Catalog URL must include the host-side port that KIND_HOST_PORT set.
+    publicEndpoint: https://keystone.127-0-0-1.nip.io:8443/v3
+  gateway:
+    parentRef:
+      name: openstack-gw
+    hostname: keystone.127-0-0-1.nip.io   # no port — Gateway API hostnames are SNI/Host only
+    path: /
+```
+
+When verifying access (see [Access Keystone from your local machine](#access-keystone-from-your-local-machine)),
+substitute `:8443` everywhere the default guide writes `https://keystone.127-0-0-1.nip.io/v3`,
+e.g. `export OS_AUTH_URL=https://keystone.127-0-0-1.nip.io:8443/v3`.
+
+`kubectl get keystone` will report the same `:8443` URL in the `ENDPOINT`
+column once the CR reconciles: the operator mirrors
+`spec.bootstrap.publicEndpoint` into `status.endpoint` whenever it is set,
+so the externally reachable URL, the issued service catalog, and
+`status.endpoint` stay aligned. The webhook rejects a
+`publicEndpoint` whose host differs from `spec.gateway.hostname`, so
+drift between the catalog URL and the HTTPRoute hostname is caught at
+admission time.
+:::
 
 ---
 
@@ -521,25 +650,29 @@ kubectl get keystone keystone -n openstack -o jsonpath='{.status.conditions}' | 
 
 ## Access Keystone from your local machine
 
-The Keystone Service is of type `ClusterIP` and is only reachable inside the cluster. To access the
-API from your workstation, forward the port with `kubectl` and export the OpenStack credentials from
-the `keystone-admin` Secret that was synced from OpenBao during `make deploy-infra`.
+The Keystone CR from Step 7 attaches to the `openstack-gw` Gateway and is exposed at
+`https://keystone.127-0-0-1.nip.io/v3`. The kind cluster's `extraPortMappings` bridges the
+host's TCP :443 to the Envoy proxy's NodePort `31443`, so the endpoint resolves directly
+to `127.0.0.1` via the [nip.io](https://nip.io/) wildcard DNS service — no `/etc/hosts`
+edit and no `kubectl port-forward` required.
 
-### Step 1 — Forward port 5000
+::: warning Did you set `KIND_HOST_PORT=8443` in Step 2?
+Then the endpoint is `https://keystone.127-0-0-1.nip.io:8443/v3` instead of the
+default `:443`. Substitute `:8443` everywhere this section writes
+`https://keystone.127-0-0-1.nip.io/...`, including `OS_AUTH_URL`, the verification
+`curl`, and any URL printed by `openstack catalog`. The Gateway hostname and the
+extracted CA from Option B are unchanged — only the port differs. The matching
+`spec.bootstrap.publicEndpoint` is shown in the `KIND_HOST_PORT=8443` variant
+block at the end of Step 7.
+:::
+
+### Step 1 — Export OpenStack credentials
+
+Read the admin password directly from the cluster and set the standard OpenStack
+environment variables against the nip.io endpoint:
 
 ```bash
-kubectl port-forward svc/keystone-api -n openstack 5000:5000
-```
-
-Leave this running in a separate terminal. The API is now available at `http://localhost:5000`.
-
-### Step 2 — Export OpenStack credentials
-
-In a second terminal, read the admin password directly from the cluster and set the standard
-OpenStack environment variables:
-
-```bash
-export OS_AUTH_URL=http://localhost:5000/v3
+export OS_AUTH_URL=https://keystone.127-0-0-1.nip.io/v3
 export OS_USERNAME=admin
 export OS_PASSWORD=$(kubectl get secret keystone-admin -n openstack -o jsonpath='{.data.password}' | base64 -d)
 export OS_PROJECT_NAME=admin
@@ -547,16 +680,16 @@ export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
 ```
 
-### Step 3 — Verify access
+### Step 2 — Verify access
 
 Check that the API responds and that authentication works:
 
 ```bash
-# Unauthenticated version endpoint
-curl http://localhost:5000/v3
+# Unauthenticated version endpoint (-k skips verification; see below)
+curl -k https://keystone.127-0-0-1.nip.io/v3
 
 # Authenticated token request (requires python-openstackclient)
-openstack token issue
+openstack --insecure token issue
 ```
 
 A successful `curl` response begins with `{"version": {"id": "v3", ...}}`. A successful
@@ -564,9 +697,55 @@ A successful `curl` response begins with `{"version": {"id": "v3", ...}}`. A suc
 
 > **Note:** The service catalog returned by Keystone contains cluster-internal endpoint URLs
 > (e.g. `http://keystone-api.openstack.svc.cluster.local:5000/v3`). Only `identity` commands
-> that authenticate directly against `OS_AUTH_URL` work via port-forward. Commands that resolve
-> other service endpoints from the catalog (Nova, Neutron, …) require additional port-forwards
-> for each service.
+> that authenticate directly against `OS_AUTH_URL` work through the Gateway. Commands that
+> resolve other service endpoints from the catalog (Nova, Neutron, …) require additional
+> Gateway routes or port-forwards for each service.
+
+### Accept the self-signed certificate
+
+The Gateway terminates TLS with a certificate issued by the in-cluster
+`selfsigned-cluster-issuer`, which is not in any OS trust store. Pick one of:
+
+**Option A — quick, one-off runs:** pass `-k` / `--insecure` on the CLI.
+
+```bash
+curl -k https://keystone.127-0-0-1.nip.io/v3
+openstack --insecure token issue
+# Or set the environment variable once per shell:
+export OS_INSECURE=true
+```
+
+**Option B — trust the issuer (recommended for repeated use):** extract the
+self-signed CA from the cluster and point OpenStack tooling at it.
+
+```bash
+# Extract the issuer's CA bundle to a local file
+kubectl get secret keystone-nip-io-tls -n openstack \
+  -o jsonpath='{.data.ca\.crt}' | base64 -d > keystone-ca.crt
+export OS_CACERT="$(pwd)/keystone-ca.crt"
+
+# Now curl and the OpenStack CLI accept the cert
+curl --cacert "$OS_CACERT" https://keystone.127-0-0-1.nip.io/v3
+openstack token issue
+```
+
+### Fallback — `kubectl port-forward` {#fallback-kubectl-port-forward}
+
+If the Gateway is unavailable (Envoy still reconciling, nip.io blocked by a corporate
+resolver, or you are debugging the in-cluster Service directly), fall back to
+port-forwarding the `keystone-api` Service and pointing `OS_AUTH_URL` at `localhost`:
+
+```bash
+# In a separate terminal:
+kubectl port-forward svc/keystone-api -n openstack 5000:5000
+
+# Then, in your shell:
+export OS_AUTH_URL=http://localhost:5000/v3
+curl http://localhost:5000/v3
+openstack token issue
+```
+
+This reaches the ClusterIP Service directly and bypasses the Gateway data plane entirely.
 
 ---
 
