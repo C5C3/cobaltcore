@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-25T10:57:25.656714+00:00",
+  "feature_id": "CC-0094",
+  "task_type": "commit",
+  "session_key": "CC-0094",
+  "model": "claude-opus-4-7",
+  "prompt": "Generate a detailed git commit body for this commit.\nSubject: fix(CC-0094): address review #2 feedback from berendt\n\nReview feedback is in: /worktrees/CC-0094/.planwerk/reviews/CC-0094-github-review-by-berendt-external-2.json\nUse `git diff --cached -- ':(exclude).planwerk'` to see the full staged diff.\n\nDiff stat:\n.github/workflows/ci.yaml                  |  2 +-\n tests/e2e/keystone/invalid-cr/_generate.py | 31 ++++++++++++++++++++++++++++--\n 2 files changed, 30 insertions(+), 3 deletions(-)\n\nWrite ONLY the body text, no subject line, no markdown.\nFor each changed file, write a bullet point: '- path/to/file: what was changed'\nDo NOT mention .planwerk directory changes.\nOutput ONLY plain text — no tool_call tags, no XML, no code blocks.",
+  "prompt_length": 746,
+  "caller": "run_claude_cli"
+}

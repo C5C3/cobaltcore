@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-25T10:25:54.210509+00:00",
+  "feature_id": "CC-0094",
+  "task_type": "commit",
+  "session_key": "CC-0094",
+  "model": "claude-opus-4-7",
+  "prompt": "Generate a detailed git commit body for this commit.\nSubject: fix(CC-0094): address review #1 feedback from sourcery-ai[bot]\n\nReview feedback is in: /worktrees/CC-0094/.planwerk/reviews/CC-0094-github-review-by-sourcery-ai-bot-external-1.json\nUse `git diff --cached -- ':(exclude).planwerk'` to see the full staged diff.\n\nDiff stat:\ndocs/reference/keystone-crd.md                   |  13 +-\n docs/reference/keystone-e2e-tests.md             |  21 +-\n tests/e2e/keystone/invalid-cr/_generate.py       | 329 +++++++++++++++++++++++\n tests/e2e/keystone/invalid-cr/chainsaw-test.yaml |  29 +-\n 4 files changed, 377 insertions(+), 15 deletions(-)\n\nWrite ONLY the body text, no subject line, no markdown.\nFor each changed file, write a bullet point: '- path/to/file: what was changed'\nDo NOT mention .planwerk directory changes.\nOutput ONLY plain text — no tool_call tags, no XML, no code blocks.",
+  "prompt_length": 890,
+  "caller": "run_claude_cli"
+}
