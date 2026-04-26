@@ -701,9 +701,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # CC-0097: tests/e2e/infrastructure/chaos-mesh-health is included in
+          # both matrix entries so the kind-only chaos-mesh installation is
+          # health-checked against the cluster each runner spins up. Both
+          # runners set WITH_CHAOS_MESH=true via setup-e2e-infra (env block
+          # below), so the test's runtime presence guard never SKIPs here.
           - suite: pod
             runner: blacksmith-4vcpu-ubuntu-2404
             test_dirs: >-
+              tests/e2e/infrastructure/chaos-mesh-health
               tests/e2e-chaos/api-pod-kill-pdb
               tests/e2e-chaos/cronjob-rotation-failure
               tests/e2e-chaos/mariadb-pod-kill
@@ -714,6 +720,7 @@ jobs:
           - suite: network
             runner: ubuntu-24.04
             test_dirs: >-
+              tests/e2e/infrastructure/chaos-mesh-health
               tests/e2e-chaos/mariadb-network-latency
               tests/e2e-chaos/mariadb-network-partition
     runs-on: ${{ matrix.runner }}
@@ -735,8 +742,11 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name forge-e2e
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name forge-e2e
       # CC-0050: Use composite action for shared Flux CLI + test deps + deploy-infra sequence (REQ-005).
+      # CC-0097: Opt in to Chaos Mesh - required for the chaos suites; covers both matrix entries.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
+        env:
+          WITH_CHAOS_MESH: "true"
       # CC-0050: Use shared operator deployment script (REQ-003).
       - name: Deploy operator
         run: hack/ci-deploy-operator.sh

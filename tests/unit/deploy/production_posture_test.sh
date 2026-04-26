@@ -8,9 +8,20 @@
 # addons must live under deploy/kind/ and deploy/flux-system/ must be
 # byte-identical to origin/main for the following paths:
 #
-#   - deploy/flux-system/kustomization.yaml
 #   - deploy/flux-system/fluxinstance.yaml
 #   - deploy/flux-system/releases/*
+#
+# CC-0097 deliberately removes chaos-mesh from the production overlay
+# entirely:
+#   - the `sources/chaos-mesh.yaml` and `releases/chaos-mesh.yaml` files
+#     are relocated into the kind-only opt-in overlay at
+#     deploy/kind/chaos-mesh/ so the overlay is self-contained (no
+#     parent-directory references — kubectl#948); and
+#   - kustomization.yaml drops the corresponding entries from `resources:`.
+# kustomization.yaml and the two relocated chaos-mesh files are therefore
+# excluded from the byte-identity check. The chaos_mesh_overlay_test.sh
+# suite asserts the resulting posture (production renders zero chaos-mesh
+# resources; the overlay renders the full bundle).
 #
 # In addition, any net-new file under deploy/flux-system/sources/ must contain
 # ONLY HelmRepository objects (no HelmRelease / Gateway controller leakage).
@@ -52,7 +63,7 @@ preflight() {
 # --- Test 1: tracked production-overlay files are unchanged vs origin/main
 #             (CC-0088, REQ-012) ---
 test_production_overlay_unchanged() {
-  echo "Test: deploy/flux-system/{kustomization,fluxinstance,releases/*} unchanged vs origin/main (CC-0088, REQ-012)"
+  echo "Test: deploy/flux-system/{fluxinstance,releases/*} unchanged vs origin/main (CC-0088, REQ-012)"
 
   if ! preflight; then
     echo "  SKIP: git / origin/main unavailable (1 check skipped)"
@@ -60,21 +71,33 @@ test_production_overlay_unchanged() {
     return
   fi
 
-  # Compare each path deterministically; `git diff --exit-code` returns
-  # non-zero when the worktree differs from the ref.
-  local paths=(
-    "deploy/flux-system/kustomization.yaml"
+  # `git diff --exit-code` returns non-zero when the worktree differs from
+  # the ref. The CC-0097 chaos-mesh relocation deliberately removes
+  # deploy/flux-system/releases/chaos-mesh.yaml (now at
+  # deploy/kind/chaos-mesh/release.yaml), so it is carved out per-path with
+  # `:(exclude)…` pathspecs. fluxinstance.yaml has no carve-out — it must
+  # remain byte-identical.
+  local groups_label=(
     "deploy/flux-system/fluxinstance.yaml"
-    "deploy/flux-system/releases"
+    "deploy/flux-system/releases (excluding chaos-mesh.yaml relocated by CC-0097)"
+  )
+  local groups_specs=(
+    "deploy/flux-system/fluxinstance.yaml"
+    "deploy/flux-system/releases :(exclude)deploy/flux-system/releases/chaos-mesh.yaml"
   )
 
   local diff_output=""
   local status=0
-  for path in "${paths[@]}"; do
-    if ! git -C "$PROJECT_ROOT" diff --quiet origin/main -- "$path"; then
+  local i
+  # shellcheck disable=SC2068  # intentional word-splitting of the pathspec list
+  for i in "${!groups_specs[@]}"; do
+    # Use read -a to split the space-separated spec into pathspec args.
+    local -a specs
+    read -r -a specs <<< "${groups_specs[$i]}"
+    if ! git -C "$PROJECT_ROOT" diff --quiet origin/main -- "${specs[@]}"; then
       status=1
-      diff_output+=$'\n'"--- diff in $path ---"$'\n'
-      diff_output+="$(git -C "$PROJECT_ROOT" diff origin/main -- "$path")"
+      diff_output+=$'\n'"--- diff in ${groups_label[$i]} ---"$'\n'
+      diff_output+="$(git -C "$PROJECT_ROOT" diff origin/main -- "${specs[@]}")"
     fi
   done
 

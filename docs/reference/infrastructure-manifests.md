@@ -27,7 +27,7 @@ deploy/
     │   ├── openbao.yaml                  OpenBao Helm chart registry
     │   ├── c5c3-charts.yaml              C5C3 shared OCI chart registry
     │   ├── prometheus-community.yaml     Prometheus Community OCI chart registry
-    │   └── chaos-mesh.yaml               Chaos Mesh Helm chart registry
+    │   └── chaos-mesh.yaml               Chaos Mesh Helm chart registry (kind-only addon — see "Kind Overlay Demo Addons")
     ├── releases/                         FluxCD HelmRelease CRs
     │   ├── cert-manager.yaml             cert-manager
     │   ├── prometheus-operator-crds.yaml Prometheus Operator CRDs
@@ -37,7 +37,7 @@ deploy/
     │   ├── memcached-operator.yaml       Memcached Operator (from c5c3-charts)
     │   ├── openbao.yaml                  OpenBao HA Raft cluster
     │   ├── keystone-operator.yaml        Keystone Operator (from c5c3-charts)
-    │   └── chaos-mesh.yaml               Chaos Mesh
+    │   └── chaos-mesh.yaml               Chaos Mesh (kind-only addon — see "Kind Overlay Demo Addons")
     └── infrastructure/                   CRD-dependent infrastructure resources
         ├── kustomization.yaml            Infrastructure kustomize overlay
         ├── cluster-issuer.yaml           Self-signed ClusterIssuer (requires cert-manager CRDs)
@@ -50,7 +50,7 @@ comment, license identifier).
 
 ## Namespaces
 
-Eight `Namespace` resources are defined in `namespaces.yaml` and included as the first
+Seven `Namespace` resources are defined in `namespaces.yaml` and included as the first
 entry in the base kustomization. Kustomize applies `Namespace` resources before other
 resource kinds, ensuring target namespaces exist before any namespaced resources are
 created.
@@ -64,7 +64,11 @@ created.
 | `memcached-system` | Memcached Operator |
 | `openstack` | Infrastructure instance CRs (MariaDB cluster, Memcached cluster) |
 | `openbao-system` | OpenBao HA Raft cluster (CC-0009) |
-| `chaos-mesh` | Chaos Mesh fault injection platform (CC-0046) |
+
+The `chaos-mesh` namespace is **not** part of the production base. It is created
+inline by the kind-only opt-in overlay at `deploy/kind/chaos-mesh/` when
+`WITH_CHAOS_MESH=true make deploy-infra` is used (CC-0097). See
+[Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in) below.
 
 **Note:** The `install.createNamespace: true` setting on HelmReleases instructs FluxCD's
 helm-controller to create namespaces when installing charts. However, this does not help
@@ -114,7 +118,7 @@ applied via `kubectl apply -f install.yaml`) before this kustomization is applie
 
 ## HelmRepository Sources
 
-Seven HelmRepository CRs define the Helm chart registries that FluxCD pulls from. All
+Six HelmRepository CRs define the Helm chart registries that FluxCD pulls from. All
 use `apiVersion: source.toolkit.fluxcd.io/v1`, are deployed to the `flux-system`
 namespace, and poll at `interval: 1h`.
 
@@ -126,7 +130,11 @@ namespace, and poll at `interval: 1h`.
 | `sources/openbao.yaml` | `openbao` | `https://openbao.github.io/openbao-helm` | HTTPS |
 | `sources/c5c3-charts.yaml` | `c5c3-charts` | `oci://ghcr.io/c5c3/charts` | OCI |
 | `sources/prometheus-community.yaml` | `prometheus-community` | `oci://ghcr.io/prometheus-community/charts` | OCI |
-| `sources/chaos-mesh.yaml` | `chaos-mesh` | `https://charts.chaos-mesh.org` | HTTPS |
+
+The `chaos-mesh` HelmRepository ships in the kind-only opt-in overlay at
+`deploy/kind/chaos-mesh/source.yaml` (CC-0097) — it is intentionally absent
+from `deploy/flux-system/{sources,kustomization.yaml}`. See
+[Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in).
 
 The `c5c3-charts` and `prometheus-community` repositories are OCI-type sources
 (`spec.type: oci`). `c5c3-charts` hosts internally-built operator charts (e.g.,
@@ -136,7 +144,7 @@ use standard HTTPS Helm registries.
 
 ## HelmRelease Operators
 
-Nine HelmRelease CRs deploy the infrastructure operators and CRD charts. All use
+Eight HelmRelease CRs deploy the infrastructure operators and CRD charts. All use
 `apiVersion: helm.toolkit.fluxcd.io/v2` and share these common settings:
 
 | Setting | Value | Purpose |
@@ -162,12 +170,16 @@ mariadb-operator-crds     (no dependencies)
 ├── external-secrets      dependsOn: cert-manager
 ├── memcached-operator    dependsOn: cert-manager, prometheus-operator-crds
 ├── openbao               dependsOn: cert-manager
-├── keystone-operator     dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets
-└── chaos-mesh            dependsOn: cert-manager
+└── keystone-operator     dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets
 ```
 
 FluxCD resolves this dependency graph and installs operators in the correct order.
 If cert-manager is not ready, dependent operators are held in a pending state.
+
+The kind-only `chaos-mesh` HelmRelease (`deploy/kind/chaos-mesh/`, CC-0097) also
+declares `dependsOn: cert-manager` but is only installed when
+`WITH_CHAOS_MESH=true make deploy-infra` is used. Production overlays do not
+install it. See [Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in).
 
 ### cert-manager
 
@@ -336,35 +348,6 @@ provisioning, memcached-operator for caching, and external-secrets for secret ma
 | `leaderElection.enabled` | `true` | Enable leader election for HA |
 | `image.tag` | `latest` | Use latest image until a versioned release publishes a semver tag |
 
-### Chaos Mesh
-
-**File:** `deploy/flux-system/releases/chaos-mesh.yaml`
-
-| Property | Value |
-| --- | --- |
-| Target namespace | `chaos-mesh` |
-| Chart | `chaos-mesh` |
-| Version constraint | `>=2.6.0 <3.0.0` |
-| Source | `chaos-mesh` HelmRepository |
-| Dependencies | `cert-manager` in `cert-manager` namespace |
-
-Chaos Mesh is a fault injection platform for chaos engineering. It installs a
-controller-manager Deployment, a chaos-daemon DaemonSet (one pod per node), and CRDs
-for fault types (PodChaos, NetworkChaos, etc.). The operator requires cert-manager for
-webhook TLS certificates (CC-0046).
-
-**Namespace management:** Like all other HelmReleases, chaos-mesh sets
-`install.createNamespace: true` as a safety net for FluxCD reconciliation edge cases,
-complementing the explicit `Namespace` resource in `namespaces.yaml`.
-
-**No Helm values in base release.** The base HelmRelease uses upstream chart defaults
-(dashboard enabled, default resource requests, auto-detected container runtime). The
-kind overlay (`deploy/kind/base/kustomization.yaml`) patches Chaos Mesh with
-containerd runtime settings, disabled dashboard, and reduced resource requests
-suitable for single-node kind clusters. This divergence is intentional: non-kind
-(production) environments use the upstream defaults, which include the dashboard and
-higher resource allocations appropriate for multi-node clusters.
-
 ## HelmRelease–HelmRepository Cross-Reference
 
 Each HelmRelease `sourceRef.name` must match a HelmRepository `metadata.name` in
@@ -380,7 +363,11 @@ Each HelmRelease `sourceRef.name` must match a HelmRepository `metadata.name` in
 | `memcached-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
 | `openbao` | `openbao` | `sources/openbao.yaml` |
 | `keystone-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
-| `chaos-mesh` | `chaos-mesh` | `sources/chaos-mesh.yaml` |
+
+The kind-only `chaos-mesh` HelmRelease ships in the opt-in overlay at
+`deploy/kind/chaos-mesh/release.yaml` (CC-0097), with its own local
+`source.yaml`. It is intentionally absent from this always-on table because
+production overlays do not install it.
 
 ## Infrastructure Custom Resources
 
@@ -469,15 +456,19 @@ The base kustomization uses `apiVersion: kustomize.config.k8s.io/v1beta1` and in
 namespaces, the FluxInstance CR, HelmRepository sources, and HelmRelease operators.
 These resources do not depend on any custom CRDs.
 
-**Resource count:** 18 files producing 25 Kubernetes resources.
+**Resource count:** 16 files producing 22 Kubernetes resources.
 
 | Category | Count | Resources |
 | --- | --- | --- |
-| Namespace | 8 | cert-manager, mariadb-system, external-secrets, monitoring-system, memcached-system, openstack, openbao-system, chaos-mesh |
+| Namespace | 7 | cert-manager, mariadb-system, external-secrets, monitoring-system, memcached-system, openstack, openbao-system |
 | FluxInstance | 1 | flux (drives the flux-operator) |
-| HelmRepository | 7 | cert-manager, mariadb-operator, external-secrets, openbao, c5c3-charts, prometheus-community, chaos-mesh |
-| HelmRelease | 9 | cert-manager, prometheus-operator-crds, mariadb-operator-crds, mariadb-operator, external-secrets, memcached-operator, openbao, keystone-operator, chaos-mesh |
-| **Total** | **25** | |
+| HelmRepository | 6 | cert-manager, mariadb-operator, external-secrets, openbao, c5c3-charts, prometheus-community |
+| HelmRelease | 8 | cert-manager, prometheus-operator-crds, mariadb-operator-crds, mariadb-operator, external-secrets, memcached-operator, openbao, keystone-operator |
+| **Total** | **22** | |
+
+The `chaos-mesh` HelmRepository, HelmRelease, and Namespace ship in the
+kind-only opt-in overlay at `deploy/kind/chaos-mesh/` (CC-0097) and are not
+counted here.
 
 ### Infrastructure Kustomization
 
@@ -504,8 +495,8 @@ kustomization and after operators have finished installing their CRDs.
 kubectl apply -k deploy/flux-system/
 ```
 
-This applies 25 resources: 8 namespaces, 1 FluxInstance, 7 HelmRepository
-sources, and 9 HelmRelease operators. FluxCD resolves the dependency graph between
+This applies 22 resources: 7 namespaces, 1 FluxInstance, 6 HelmRepository
+sources, and 8 HelmRelease operators. FluxCD resolves the dependency graph between
 HelmReleases and installs operators in the correct order. Wait for all operators to
 finish installing before proceeding to step 2.
 
@@ -609,7 +600,10 @@ kind-only demo manifests on top of the production base. These files live under
 `deploy/kind/base/` and are **not** referenced from `deploy/flux-system/kustomization.yaml`,
 so they never reach production clusters. The section below catalogues the addons that
 the `CC-0086` tranche introduced; earlier kind-only manifests (Headlamp, OpenBao UI
-patch) are documented in the Quick Start (CC-0086, REQ-008).
+patch) are documented in the Quick Start (CC-0086, REQ-008). Chaos Mesh ships as a
+separate **opt-in** kind overlay at `deploy/kind/chaos-mesh/` — applied only when
+`WITH_CHAOS_MESH=true` is set on `make deploy-infra` (CC-0097); see
+[Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in) below.
 
 ### Flux Web UI ResourceSet
 
@@ -664,3 +658,65 @@ Browse <http://localhost:9080> — no login required. The Web UI complements
 Headlamp by rendering the three flux-operator-specific CRDs (`ResourceSet`,
 `ResourceSetInputProvider`, `FluxReport`) that the generic Headlamp Flux
 plugin does not know about.
+
+### Chaos Mesh (kind-only opt-in)
+
+**File:** `deploy/kind/chaos-mesh/kustomization.yaml`
+
+[Chaos Mesh](https://chaos-mesh.org/) ships as a separate **opt-in** kind
+overlay (CC-0097). The default `make deploy-infra` flow does **not** install
+it — first-run deployments skip the privileged `chaos-daemon` DaemonSet, the
+`chaos-mesh` namespace, and the upstream HelmRepository / HelmRelease pair so
+that developers who never run chaos E2E suites pay zero install cost. The
+production `deploy/flux-system/` overlay also does not install Chaos Mesh.
+
+The overlay is self-contained: the `HelmRepository` lives in
+`deploy/kind/chaos-mesh/source.yaml` and the `HelmRelease` in
+`deploy/kind/chaos-mesh/release.yaml` (both relocated from the former
+`deploy/flux-system/{sources,releases}/chaos-mesh.yaml` locations). The
+overlay bundles them with:
+
+| Property | Value |
+| --- | --- |
+| Target namespace | `chaos-mesh` (created inline with the privileged PodSecurity label required by `chaos-daemon`'s host PID/network access) |
+| Chart | `chaos-mesh` |
+| Version constraint | `>=2.6.0 <3.0.0` |
+| Source | `chaos-mesh` HelmRepository (`deploy/kind/chaos-mesh/source.yaml`) |
+| Dependencies | `cert-manager` in `cert-manager` namespace |
+
+**Kind-tuning patch** (relocated here from
+`deploy/kind/base/kustomization.yaml` because kustomize requires the patch
+target to live in the same overlay — CC-0097, REQ-009):
+
+| Helm value | Override | Purpose |
+| --- | --- | --- |
+| `chaosDaemon.runtime` | `containerd` | Match the kind node's container runtime |
+| `chaosDaemon.socketPath` | `/run/containerd/containerd.sock` | Mount the kind containerd socket so chaos-daemon can attack pods |
+| `chaosDaemon.resources` | `25m / 64Mi` requests | Reduce footprint on single-node kind |
+| `dashboard.create` | `false` | Dashboard is unnecessary in CI |
+| `controllerManager.resources` | `25m / 64Mi` requests | Reduce footprint on single-node kind |
+
+These overrides diverge intentionally from the upstream chart defaults
+(dashboard enabled, larger resource requests, auto-detected runtime), which
+target multi-node production clusters. Because the patch and the
+HelmRelease both live in the kind-only overlay, production environments that
+opt into Chaos Mesh start from the upstream defaults instead of inheriting
+the kind-tuning values.
+
+**No load-restrictor flag required.** The overlay has no parent-directory
+`../../` references — every resource (`namespace.yaml`, `source.yaml`,
+`release.yaml`) lives under `deploy/kind/chaos-mesh/`. Kustomize's default
+`LoadRestrictionsRootOnly` security check is therefore satisfied without
+`--load-restrictor=LoadRestrictionsNone`, which matters because kubectl's
+embedded kustomize does not expose that flag (kubernetes/kubectl#948) and
+`hack/deploy-infra.sh` invokes the apply via `kubectl apply -k`
+(CC-0097, REQ-003).
+
+**Opt-in usage:**
+
+```bash
+WITH_CHAOS_MESH=true make deploy-infra
+```
+
+This is the prerequisite for `make e2e-chaos`. See
+[Chaos E2E Tests](./chaos-e2e-tests.md) for the full workflow.

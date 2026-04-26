@@ -334,7 +334,16 @@ e2e:
 
 .PHONY: e2e-chaos
 # e2e-chaos runs Chaos Mesh pod-kill E2E tests against a deployed kind cluster (CC-0047).
+# Chaos Mesh is opt-in in the kind Quick Start (CC-0097, REQ-007); fail fast with a
+# clear remediation hint when the namespace is missing instead of letting chainsaw
+# attempt the suite against a cluster that lacks the dependency. The two preflights
+# are kept separate so the kubectl/cluster-reachability failure is not conflated with
+# the chaos-mesh-not-installed failure — see review pattern
+# .planwerk/review_patterns/distinguish-collapsed-failure-modes-in-preflight-checks.md
+# (CC-0097).
 e2e-chaos:
+	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
+	@kubectl get ns chaos-mesh >/dev/null 2>&1 || { echo 'chaos-mesh is not installed; run `WITH_CHAOS_MESH=true make deploy-infra` first' >&2; exit 1; }
 	chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml tests/e2e-chaos/
 
 .PHONY: tempest-test

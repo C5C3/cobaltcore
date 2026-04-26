@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# chaos-mesh Namespace, relocated from deploy/flux-system/namespaces.yaml
+# so the privileged PodSecurity label only lands when the opt-in kind
+# overlay is applied (CC-0097, REQ-001, REQ-002).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: chaos-mesh
+  labels:
+    # Chaos Mesh chaos-daemon requires privileged containers with host PID,
+    # network, and the containerd socket mounted. Without this label, the
+    # Pod Security admission controller may silently prevent the DaemonSet
+    # controller from reconciling pod status.
+    pod-security.kubernetes.io/enforce: privileged

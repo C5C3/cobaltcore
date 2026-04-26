@@ -62,6 +62,12 @@ EXTERNALSECRET_TIMEOUT="${EXTERNALSECRET_TIMEOUT:-120}"
 # suffix. See docs/quick-start.md (CC-0088).
 KIND_HOST_PORT="${KIND_HOST_PORT:-443}"
 
+# Gates the opt-in chaos-mesh kind overlay (deploy/kind/chaos-mesh) and the
+# host-side kernel-module load. Defaults to false so the kind Quick Start
+# stays minimal; set WITH_CHAOS_MESH=true to enable chaos-engineering tests
+# (CC-0097).
+WITH_CHAOS_MESH="${WITH_CHAOS_MESH:-false}"
+
 # Gateway API CRD release installed before the keystone-operator HelmRelease so
 # the operator's HTTPRoute watch has a registered kind at startup (CC-0065).
 # Keep aligned with sigs.k8s.io/gateway-api in operators/keystone/go.mod.
@@ -790,6 +796,7 @@ main() {
   log "Pod timeout         : ${POD_TIMEOUT}s"
   log "ExternalSecret timeout : ${EXTERNALSECRET_TIMEOUT}s"
   log "Kind host port      : ${KIND_HOST_PORT} → 31443 (override via KIND_HOST_PORT)"
+  log "Chaos Mesh         : ${WITH_CHAOS_MESH} (set WITH_CHAOS_MESH=true to install)"
   log ""
 
   # Pre-flight checks
@@ -797,7 +804,13 @@ main() {
 
   # Load chaos-mesh kernel modules on the host before creating the cluster.
   # Kind nodes share the host kernel; NetworkChaos needs ipset/tc modules.
-  load_chaos_mesh_kernel_modules
+  # Gated on WITH_CHAOS_MESH so the default Quick Start does not require
+  # passwordless sudo or modprobe access (CC-0097).
+  if [[ "${WITH_CHAOS_MESH}" == "true" ]]; then
+    load_chaos_mesh_kernel_modules
+  else
+    log "Skipping chaos-mesh kernel modules (WITH_CHAOS_MESH=false)."
+  fi
 
   # Step 1: Create kind cluster
   log "=== Step 1/8: Create kind cluster ==="
@@ -877,6 +890,18 @@ main() {
   kubectl apply -k "${REPO_ROOT}/deploy/kind/base"
   log "Base kustomize overlay applied."
 
+  # Opt-in chaos-mesh overlay (CC-0097). Layered on top of the base so the
+  # default Quick Start stays minimal; enable with WITH_CHAOS_MESH=true.
+  # The overlay is self-contained (no `../../` parent-dir references), so
+  # kubectl's embedded kustomize renders it under the default
+  # LoadRestrictionsRootOnly security check — no `--load-restrictor` flag
+  # required (kubectl's embedded kustomize does not expose one,
+  # kubernetes/kubectl#948).
+  if [[ "${WITH_CHAOS_MESH}" == "true" ]]; then
+    kubectl apply -k "${REPO_ROOT}/deploy/kind/chaos-mesh"
+    log "Chaos Mesh kind overlay applied (WITH_CHAOS_MESH=true)."
+  fi
+
   # Force-reconcile HelmRepository sources so chart indexes are available
   # before HelmReleases attempt to resolve charts. Without this, the
   # helm-controller may see unindexed sources and wait until the next
@@ -904,8 +929,15 @@ main() {
   # the wait_for_gateway_programmed poll below finds a reconciling controller
   # (CC-0088, REQ-005).
   log "Phase 3: Waiting for remaining HelmReleases..."
-  wait_for_helmreleases "${HELMRELEASE_TIMEOUT}" \
-    prometheus-operator-crds openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator chaos-mesh envoy-gateway
+  # Build the release list dynamically so chaos-mesh is only awaited when the
+  # opt-in overlay was applied (CC-0097). The surviving non-chaos order is
+  # preserved exactly as before; chaos-mesh is appended last to avoid moving
+  # any other release's relative position.
+  local helm_releases=(prometheus-operator-crds openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator envoy-gateway)
+  if [[ "${WITH_CHAOS_MESH}" == "true" ]]; then
+    helm_releases+=(chaos-mesh)
+  fi
+  wait_for_helmreleases "${HELMRELEASE_TIMEOUT}" "${helm_releases[@]}"
 
   # Step 5: Apply infrastructure kustomize overlay (CRD-dependent resources)
   log "=== Step 5/8: Apply infrastructure kustomize overlay ==="

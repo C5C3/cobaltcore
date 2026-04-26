@@ -26,16 +26,20 @@ resources:
   # FluxInstance CR consumed by the flux-operator (CC-0085, REQ-006)
   - fluxinstance.yaml
 
-  # HelmRepository sources (FluxCD chart registries)
+  # HelmRepository sources (FluxCD chart registries).
+  # Chaos Mesh is intentionally absent: the developer-only fault-injection
+  # platform is opt-in via the deploy/kind/chaos-mesh/ overlay (which carries
+  # its own source.yaml / release.yaml — CC-0097, REQ-001).
   - sources/cert-manager.yaml
   - sources/mariadb-operator.yaml
   - sources/external-secrets.yaml
   - sources/openbao.yaml
   - sources/c5c3-charts.yaml
   - sources/prometheus-community.yaml
-  - sources/chaos-mesh.yaml
 
-  # HelmRelease operators (deployed via FluxCD)
+  # HelmRelease operators (deployed via FluxCD).
+  # Chaos Mesh is intentionally absent: opt-in via deploy/kind/chaos-mesh/
+  # (CC-0097, REQ-001).
   - releases/cert-manager.yaml
   - releases/prometheus-operator-crds.yaml
   - releases/mariadb-operator-crds.yaml
@@ -44,4 +48,3 @@ resources:
   - releases/memcached-operator.yaml
   - releases/openbao.yaml
   - releases/keystone-operator.yaml
-  - releases/chaos-mesh.yaml

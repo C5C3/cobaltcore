@@ -12,7 +12,6 @@
 #   - OpenBao StatefulSet readiness
 #   - Infrastructure CRs: ClusterIssuer, MariaDB, Memcached
 #   - ESO resources: ClusterSecretStore (Valid), ExternalSecrets (SecretSynced)
-#   - Chaos Mesh: controller-manager Deployment, chaos-daemon DaemonSet (CC-0046)
 #   - flux-operator: FluxInstance Ready, FluxReport entitled, five flux-system
 #     controller Deployments available (CC-0085)
 #
@@ -21,6 +20,14 @@
 # `overlay: kind` so non-kind runs can exclude it via
 # `chainsaw test --selector 'overlay!=kind'`. Splitting it out keeps this
 # overlay-agnostic test unconditional.
+#
+# The kind-only opt-in Chaos Mesh addon (CC-0097) similarly lives in a
+# sibling test — tests/e2e/infrastructure/chaos-mesh-health/chainsaw-test.yaml
+# — labelled `overlay: kind` with a runtime presence-check guard. The
+# chaos-mesh assertions previously inhabiting Step 5 of this file (CC-0046)
+# moved out as part of CC-0097, REQ-005 because the production overlay
+# (deploy/flux-system/) no longer installs chaos-mesh by default — keeping
+# the assertions here would fail on every default `make deploy-infra` run.
 #
 # REQ-008 (CC-0010, CC-0085)
 apiVersion: chainsaw.kyverno.io/v1alpha1
@@ -166,29 +173,7 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: SecretSynced
-  # ── Step 5: Chaos Mesh (CC-0046) ─────────────────────────────────────
-  # Verify that the Chaos Mesh controller-manager Deployment is available
-  # and the chaos-daemon DaemonSet is running on cluster nodes.
-  - try:
-    - assert:
-        resource:
-          apiVersion: apps/v1
-          kind: Deployment
-          metadata:
-            name: chaos-controller-manager
-            namespace: chaos-mesh
-          status:
-            (availableReplicas > `0`): true
-    - assert:
-        resource:
-          apiVersion: apps/v1
-          kind: DaemonSet
-          metadata:
-            name: chaos-daemon
-            namespace: chaos-mesh
-          status:
-            (numberReady >= `1`): true
-  # ── Step 6: flux-operator (CC-0085) ──────────────────────────────────
+  # ── Step 5: flux-operator (CC-0085) ──────────────────────────────────
   # Verify the flux-operator bootstrap is healthy:
   #   - FluxInstance/flux has a Ready=True condition
   #   - FluxReport/flux exists with a non-empty entitlement (operator has
@@ -273,6 +258,6 @@ spec:
             namespace: flux-system
           status:
             (availableReplicas > `0`): true
-  # Flux Web UI health checks live in the sibling flux-web-health test
-  # (labelled `overlay: kind`) — see the header of this file for the
-  # rationale behind the split.
+  # Flux Web UI and Chaos Mesh health checks live in sibling tests
+  # (flux-web-health and chaos-mesh-health, both labelled `overlay: kind`)
+  # — see the header of this file for the rationale behind the splits.

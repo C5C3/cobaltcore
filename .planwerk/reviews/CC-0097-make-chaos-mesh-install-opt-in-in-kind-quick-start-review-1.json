@@ -1,0 +1,171 @@
+{
+  "summary": "CC-0097 moves Chaos Mesh from the always-on production overlay into a kind-only opt-in path gated by WITH_CHAOS_MESH. The flux-system kustomization no longer references sources/releases/chaos-mesh.yaml, the chaos-mesh Namespace and the kind-tuning HelmRelease patch are relocated into a new deploy/kind/chaos-mesh/ overlay, hack/deploy-infra.sh threads WITH_CHAOS_MESH (default false) through three gate sites (load_chaos_mesh_kernel_modules, kubectl apply, helm-release wait list), the e2e-chaos CI job sets WITH_CHAOS_MESH=true via a new env-passthrough on setup-e2e-infra, infra-stack-health Step 5 is split into a new chaos-mesh-health Chainsaw suite with a runtime presence guard, make e2e-chaos has a preflight that fails fast with a remediation hint, ci-dump-diagnostics.sh skips the chaos-daemon describe when the namespace is absent, docs (quick-start.md, reference/infrastructure-manifests.md, reference/chaos-e2e-tests.md) and the existing review pattern are updated, and a thorough set of bash *_test.sh suites cover each contract. The shape of the change is sound and matches the prior-art pattern for kind-only addons. However the WITH_CHAOS_MESH=true happy path is broken at runtime: the new overlay reuses sibling files via ../../flux-system/... cross-root references that kustomize's default LoadRestrictionsRootOnly rejects, and hack/deploy-infra.sh applies it via `kubectl apply -k` (which has no flag to disable that restriction), so the apply will fail with a 'security; file ... is not in or below ...' error before any chaos-mesh resource is created. The inline kustomization comment and docs/reference/infrastructure-manifests.md falsely state the script passes --load-restrictor=LoadRestrictionsNone. Additionally, the new chaos-mesh-health Chainsaw suite is never executed against an installed chaos-mesh in CI: e2e-infra runs it without the namespace (always SKIPs via the runtime guard) and e2e-chaos only invokes tests/e2e-chaos/, not tests/e2e/infrastructure/, so the health assertions are no longer exercised end-to-end anywhere.",
+  "verdict": "BLOCKED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (kustomize/yq-skipping ok)", "checked": true},
+    {"item": "Default vs explicit-true vs explicit-false vs non-true value coverage for WITH_CHAOS_MESH", "checked": true},
+    {"item": "infra-stack-health passes against a default cluster (Step 5 removed)", "checked": true},
+    {"item": "chaos-mesh-health runs the same assertions as the removed Step 5 against a chaos-installed cluster (REQ-005)", "checked": false},
+    {"item": "make e2e-chaos preflight fast-fails with stderr message + no chainsaw invocation", "checked": true},
+    {"item": "ci-dump-diagnostics.sh covers both absent and present namespace branches", "checked": true},
+    {"item": "Doc-conformance tests assert quick-start and infrastructure-manifests contracts", "checked": true},
+    {"item": "Composite-action threading test covers the four contract corners (CC-0097 ref, env passthrough, chaos opt-in, infra default-off)", "checked": true},
+    {"item": "Manual end-to-end verification of WITH_CHAOS_MESH=true make deploy-infra (Level 7)", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "WITH_CHAOS_MESH gate uses strict `== \"true\"` comparison consistently at all three sites", "checked": true},
+    {"item": "Phase 3 helm-release wait list is built dynamically; pre-CC-0097 release order preserved", "checked": true},
+    {"item": "chaos-mesh-health has both label-based and runtime-based gating (belt-and-braces)", "checked": true},
+    {"item": "ci-dump-diagnostics.sh emits an explicit SKIP line rather than silent suppression", "checked": true},
+    {"item": "Inline kustomization comment matches actual deploy-infra.sh behavior", "checked": false},
+    {"item": "No leftover 'Reviewer: please verify' comments", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "Privileged PodSecurity label travels with the opt-in overlay (only created when chaos-mesh actually installs)", "checked": true},
+    {"item": "Default Quick Start no longer requires passwordless sudo / modprobe / apt-get install", "checked": true},
+    {"item": "No hard-coded secrets or credentials introduced", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Mirrors the established WITH_FLUX_CLI opt-in pattern (hack/install-test-deps.sh)", "checked": true},
+    {"item": "Kind-only addon shape consistent with Headlamp / Flux Web UI / Envoy Gateway prior art", "checked": true},
+    {"item": "WITH_CHAOS_MESH=true `make deploy-infra` actually installs Chaos Mesh end-to-end", "checked": false}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "Existing chaos-mesh source/release files reused via overlay rather than duplicated", "checked": true},
+    {"item": "Kind-tuning HelmRelease patch relocated (not copied) into the opt-in overlay", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "make e2e-chaos preflight fails fast with a clear remediation hint", "checked": true},
+    {"item": "ci-dump-diagnostics.sh exits 0 even when chaos-mesh namespace is absent", "checked": true},
+    {"item": "deploy-infra.sh fails before chaos-mesh apply when --load-restrictor is missing — but with a confusing kustomize security error rather than a clear remediation hint", "checked": false}
+  ],
+  "defensive_checklist": [
+    {"item": "Strict `== \"true\"` comparison rejects accidental non-canonical values like `yes` / `1`", "checked": true},
+    {"item": "Runtime presence guard in chaos-mesh-health protects against missing label selector", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [
+    {
+      "severity": "HIGH",
+      "description": "chaos-mesh-health Chainsaw suite is never executed against an installed Chaos Mesh in CI. The e2e-infra job runs `chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/infrastructure/` against a default cluster (no chaos-mesh) — the new suite therefore always takes the runtime SKIP branch. The e2e-chaos job invokes only `tests/e2e-chaos/` (ci.yaml:706-718), not `tests/e2e/infrastructure/chaos-mesh-health/`. Net effect: the assertions that previously lived in infra-stack-health Step 5 (Deployment/chaos-controller-manager Available, DaemonSet/chaos-daemon numberReady>=1) are no longer exercised anywhere in CI after this change. The acceptance criterion 'WITH_CHAOS_MESH=true make deploy-infra reaches the same end state as today ... assertions identical to tests/e2e/infrastructure/infra-stack-health/chainsaw-test.yaml:172-190' is satisfied only by the test's existence, not by an automated execution path.",
+      "location": ".github/workflows/ci.yaml:749-753 (e2e-chaos job test_dirs) + tests/e2e/infrastructure/chaos-mesh-health/chainsaw-test.yaml",
+      "fix": "Either (a) add `tests/e2e/infrastructure/chaos-mesh-health` to each e2e-chaos matrix entry's `test_dirs`, or (b) extend the e2e-chaos `Run chaos E2E tests` step to also invoke `chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/infrastructure/chaos-mesh-health` against the chaos-installed cluster. Without this, the kind-only opt-in overlay can render but its runtime health is unverified by CI."
+    }
+  ],
+  "issues_found": [
+    {
+      "check_id": "C1",
+      "severity": "BLOCKER",
+      "description": "WITH_CHAOS_MESH=true `make deploy-infra` will fail at the kubectl apply step. `deploy/kind/chaos-mesh/kustomization.yaml` references `../../flux-system/sources/chaos-mesh.yaml` and `../../flux-system/releases/chaos-mesh.yaml` (lines 45-46), which trip kustomize's default `LoadRestrictionsRootOnly` security check (parent-directory references are rejected). `hack/deploy-infra.sh:896` invokes `kubectl apply -k \"${REPO_ROOT}/deploy/kind/chaos-mesh\"` with no flags. kubectl's embedded kustomize does NOT expose `--load-restrictor` (long-standing kubectl limitation, kubernetes/kubectl#948), so the apply will fail with `error: accumulating resources: ... security; file '.../deploy/flux-system/sources/chaos-mesh.yaml' is not in or below '.../deploy/kind/chaos-mesh'` before any chaos-mesh resource is created. The implementation's own unit test in tests/unit/deploy/chaos_mesh_overlay_test.sh:284 acknowledges the requirement by passing `--load-restrictor=LoadRestrictionsNone` to the kustomize CLI, but the deploy script does not. The acceptance criterion `WITH_CHAOS_MESH=true make deploy-infra reaches end state with HelmRelease/chaos-mesh Ready=True ...` cannot be met. Manual verification (Level 7 task 7.1) was marked done but cannot have run in this environment (sandbox has no docker/cluster).",
+      "location": "hack/deploy-infra.sh:893-898",
+      "fix": "Replace the bare `kubectl apply -k` with kustomize CLI piped to apply, since the kustomize CLI is already installed via hack/install-test-deps.sh and is on $PATH at this point in the deploy:\n\n```\n  if [[ \"${WITH_CHAOS_MESH}\" == \"true\" ]]; then\n    kustomize build --load-restrictor=LoadRestrictionsNone \\\n      \"${REPO_ROOT}/deploy/kind/chaos-mesh\" | kubectl apply -f -\n    log \"Chaos Mesh kind overlay applied (WITH_CHAOS_MESH=true).\"\n  fi\n```\n\nAlternative: copy the two manifests into deploy/kind/chaos-mesh/ (or use a `components/` indirection) so the overlay no longer crosses the kustomization root. Either fix must be paired with a test that actually exercises the runtime apply (a render-only kustomize check is not sufficient, since the real failure surfaces only via kubectl).",
+      "evidence": "deploy/kind/chaos-mesh/kustomization.yaml:45-46\n  - ../../flux-system/sources/chaos-mesh.yaml\n  - ../../flux-system/releases/chaos-mesh.yaml\n\nhack/deploy-infra.sh:893-898\n  # Opt-in chaos-mesh overlay (CC-0097). Layered on top of the base so the\n  # default Quick Start stays minimal; enable with WITH_CHAOS_MESH=true.\n  if [[ \"${WITH_CHAOS_MESH}\" == \"true\" ]]; then\n    kubectl apply -k \"${REPO_ROOT}/deploy/kind/chaos-mesh\"\n    log \"Chaos Mesh kind overlay applied (WITH_CHAOS_MESH=true).\"\n  fi\n\ntests/unit/deploy/chaos_mesh_overlay_test.sh:284 (the same overlay rendered for the unit test):\n  if ! rendered=\"$(kustomize build --load-restrictor=LoadRestrictionsNone \"$KIND_CHAOS_DIR\" 2>&1)\"; then",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "C5",
+      "severity": "BLOCKER",
+      "description": "Two locations in the diff document the script as already passing `--load-restrictor=LoadRestrictionsNone` automatically when it does not. This is not a documentation-only nit — the docs were the implementer's own contract that the load restrictor would be wired into deploy-infra.sh, and that wiring was missed. The misleading docs masked the C1 bug from review-by-reading.",
+      "location": "deploy/kind/chaos-mesh/kustomization.yaml:23-29 and docs/reference/infrastructure-manifests.md:704-707",
+      "fix": "Either (a) implement the `--load-restrictor=LoadRestrictionsNone` wiring in hack/deploy-infra.sh per finding C1, in which case both comments become accurate; or (b) reword both comments to point at a `kustomize build | kubectl apply -f -` pipeline once that fix lands. Do not leave the docs inconsistent with the script.",
+      "evidence": "deploy/kind/chaos-mesh/kustomization.yaml:23-29\n  # Reusing sibling files via ../../flux-system/... triggers kustomize's\n  # load-restrictor security check. Apply this overlay with\n  # `--load-restrictor=LoadRestrictionsNone`, e.g.\n  #   kubectl kustomize --load-restrictor=LoadRestrictionsNone \\\n  #     deploy/kind/chaos-mesh | kubectl apply -f -\n  # The flag is wired into hack/deploy-infra.sh's WITH_CHAOS_MESH=true path\n  # (CC-0097, REQ-003, task 2.3).\n\ndocs/reference/infrastructure-manifests.md:704-707\n  **Load restrictor.** The overlay's `../../flux-system/...` references trip\n  kustomize's default `LoadRestrictionsRootOnly` security check. Apply it with\n  `--load-restrictor=LoadRestrictionsNone` — `hack/deploy-infra.sh` does this\n  automatically when `WITH_CHAOS_MESH=true` is set (CC-0097, REQ-003).",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "FC4",
+      "severity": "CRITICAL",
+      "description": "The chaos-mesh-health Chainsaw test was created to replace the removed infra-stack-health Step 5, but no CI path actually invokes it against a cluster where chaos-mesh is installed (see Architecture finding above for full trace). The test definition itself is sound — labels, runtime guard, kubectl wait + rollout status are correct — but the assertion logic never runs in the chaos-installed CI matrix entry. After CC-0097 lands as written, a regression in the Chaos Mesh installation (image pull failure, DaemonSet wedge, controller-manager crash loop) would not be caught by any GitHub Actions run.",
+      "location": ".github/workflows/ci.yaml:749-753 vs tests/e2e/infrastructure/chaos-mesh-health/chainsaw-test.yaml",
+      "fix": "Add the chaos-mesh-health suite to each e2e-chaos matrix entry's `test_dirs` (it costs ~5s per run and adds the only automated verification of the kind-only addon's runtime health). For example:\n\n  test_dirs: >-\n    tests/e2e-chaos/api-pod-kill-pdb\n    ...\n    tests/e2e/infrastructure/chaos-mesh-health\n\nor invoke it as a separate chainsaw run after the main chaos suite. Either way, the suite must execute against a cluster brought up with WITH_CHAOS_MESH=true.",
+      "evidence": ".github/workflows/ci.yaml:706-718 (e2e-chaos test_dirs lists only tests/e2e-chaos/* — no infrastructure/* entries)\n.github/workflows/ci.yaml:444 (e2e-infra runs tests/e2e/infrastructure/ but does NOT set WITH_CHAOS_MESH=true, so the runtime guard always SKIPs)\ntests/e2e/infrastructure/chaos-mesh-health/chainsaw-test.yaml:96-102 (early-exit when chaos-mesh namespace absent)",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "TE3",
+      "severity": "CRITICAL",
+      "description": "tests/unit/deploy/chaos_mesh_overlay_test.sh validates the overlay renders correctly with `kustomize build --load-restrictor=LoadRestrictionsNone` (Test 8) but does NOT exercise the actual deploy code path (`kubectl apply -k` with no flag). The unit test therefore approves a kustomization that succeeds for the test harness but fails for the production caller. A test that mirrors the production invocation (or asserts the production invocation passes the right flag) would have caught the C1 bug.",
+      "location": "tests/unit/deploy/chaos_mesh_overlay_test.sh:269-339",
+      "fix": "After fixing C1, add a test that asserts hack/deploy-infra.sh contains the `--load-restrictor=LoadRestrictionsNone` flag (or the pipeline form `kustomize build ... | kubectl apply -f -`) wherever it touches deploy/kind/chaos-mesh — mirroring the existing `test_chaos_mesh_kustomize_is_gated` shape. This locks the contract that a renderer-only test cannot assert.",
+      "evidence": "tests/unit/deploy/chaos_mesh_overlay_test.sh:284\n  if ! rendered=\"$(kustomize build --load-restrictor=LoadRestrictionsNone \"$KIND_CHAOS_DIR\" 2>&1)\"; then\n    # ... but production code path uses kubectl apply -k with no flag\n\nhack/deploy-infra.sh:896\n  kubectl apply -k \"${REPO_ROOT}/deploy/kind/chaos-mesh\"",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "D2",
+      "severity": "MINOR",
+      "description": "Two new test files contain unresolved 'Reviewer: please verify' comments asking the reviewer to confirm a design decision (bash *_test.sh vs .bats). The decision is clearly correct — the project has zero .bats files and an established sibling pattern — and the comment serves no purpose post-decision. Per the external-review pattern resolve-ambiguous-commented-out-alternatives-before-merge, ambiguous reviewer-targeted comments should be resolved before merge.",
+      "location": "tests/ci/verify_with_chaos_mesh_threading.sh:30 and tests/unit/Makefile/test_e2e_chaos_preflight.sh:21-22",
+      "fix": "Drop the two `Reviewer: please verify ...` lines. The `DECISION` block above each one already states the rationale, which is sufficient as historical context.",
+      "evidence": "tests/ci/verify_with_chaos_mesh_threading.sh:30\n  # Reviewer: please verify this matches the intent of REQ-004.\n\ntests/unit/Makefile/test_e2e_chaos_preflight.sh:21-22\n  # Reviewer: please verify this matches intent — switching to bats later is\n  # a mechanical rewrite if you prefer.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "DA1",
+      "severity": "MINOR",
+      "description": "architecture/docs/09-implementation/10-chaos-e2e-testing.md:70 still references `SKIP_CHAOS_MESH=true` as the way to skip Chaos Mesh installation. After CC-0097, the contract is the inverse (`WITH_CHAOS_MESH=true` to opt in). Per the project rule that architecture/ is read-only and authoritative, the implementation correctly did not modify it — but the architecture doc is now stale and a future contributor reading it will be misled. The plan task 6.4 explicitly asked for this file to be updated; the implementer chose not to touch architecture/ (which is the right call per the rules). Recommend resolving the conflict by either (a) carving out an exception to the read-only rule for stale flag names that diverge from current behavior, or (b) updating the plan to drop task 6.4 and move the architecture-doc update to a separate housekeeping ticket.",
+      "location": "architecture/docs/09-implementation/10-chaos-e2e-testing.md:70 (read-only; flag for follow-up)",
+      "fix": "Tracking-only finding. Do not modify architecture/ in this PR — file a follow-up to bring the architecture doc in line with the new WITH_CHAOS_MESH=true opt-in flag.",
+      "evidence": "architecture/docs/09-implementation/10-chaos-e2e-testing.md:70\n  For local development, Chaos Mesh can be skipped (`SKIP_CHAOS_MESH=true`) to reduce resource usage.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "TE3",
+      "severity": "MINOR",
+      "description": "tests/unit/Makefile/test_e2e_chaos_preflight.sh and tests/unit/hack/ci_dump_diagnostics_chaos_absent_test.sh both write a `kubectl` shim that `exit 0` for everything except `kubectl get ns chaos-mesh`. The diagnostics tests at lines 32-33 dump pods/daemonsets across all namespaces — under the shim those return successfully with no output, so the test happens to pass. If a future change adds a kubectl call that the diagnostics dump expects to fail-fast (e.g. a required secret), the shim's blanket-success behavior will mask the regression. Consider tightening the shim to only handle the verbs the script under test actually invokes, and exit non-zero (or print a debug marker) for unexpected calls.",
+      "location": "tests/unit/hack/ci_dump_diagnostics_chaos_absent_test.sh:36-61 and tests/unit/Makefile/test_e2e_chaos_preflight.sh:49-71",
+      "fix": "Replace the catch-all `exit 0` with a strict whitelist of expected kubectl/chainsaw invocations. Anything outside the whitelist should write a marker file and exit 0 so the test can assert it was not unexpectedly called.",
+      "evidence": "tests/unit/hack/ci_dump_diagnostics_chaos_absent_test.sh:51\n  exit 0   # falls through silently for any other kubectl invocation\n\ntests/unit/Makefile/test_e2e_chaos_preflight.sh:59\n  exit 0   # same pattern",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Add an integration smoke test (or a docker-in-docker E2E gate) that brings up a kind cluster with WITH_CHAOS_MESH=true and asserts kubectl get ns chaos-mesh succeeds — this is the exact gap that hid the load-restrictor bug.",
+    "Centralise the strict-equality WITH_CHAOS_MESH gate into a small bash helper (`is_chaos_mesh_enabled()`) so the three sites in deploy-infra.sh do not drift if a future task adds a fourth.",
+    "Add `.github/actions/**` to the `e2e_infra` path filter (currently only `e2e_chaos` lists it) so changes to setup-e2e-infra also trigger the e2e-infra job — the new WITH_CHAOS_MESH env-passthrough touches a path that affects both jobs but is only filtered by one. Out of scope for this PR but worth a follow-up.",
+    "Document the production-overlay omission of chaos-mesh inside the kustomization.yaml's resources block as a structured comment (not only as inline prose) so removal/restoration of the chaos-mesh entries is mechanically reviewable.",
+    "Consider replacing the chaos-mesh-health test's `kubectl rollout status daemonset/chaos-daemon` call with a chainsaw assertion on `numberReady >= 1` — closer in semantics to the original Step 5 (which only required at least one ready node, not full rollout) and avoids slowing down the suite on multi-node kind clusters."
+  ],
+  "next_steps": [
+    "Fix the WITH_CHAOS_MESH=true apply path in hack/deploy-infra.sh (issue C1) — either pipe `kustomize build --load-restrictor=LoadRestrictionsNone` into `kubectl apply -f -`, or eliminate the parent-directory references in deploy/kind/chaos-mesh/kustomization.yaml. Re-run the chaos-installed CI matrix to confirm Chaos Mesh actually reaches Ready=True.",
+    "Reconcile the inline kustomization comment and infrastructure-manifests.md's 'Load restrictor' paragraph with whatever fix lands for C1.",
+    "Wire the chaos-mesh-health suite into the e2e-chaos workflow's test_dirs so the kind-only addon's runtime health is verified by CI (Architecture finding).",
+    "Add a unit test that asserts hack/deploy-infra.sh's chaos-mesh apply uses the load restrictor (or the pipeline form), so a render-only kustomize check cannot pass while the production code path is broken (issue TE3).",
+    "Drop the two 'Reviewer: please verify' comments in the new test files (issue D2).",
+    "Re-mark Level 7 manual verification (task 7.1) as not done until WITH_CHAOS_MESH=true `make deploy-infra` has actually been observed to reach end state on a real kind cluster — sandbox-only inspection cannot satisfy the acceptance criterion."
+  ],
+  "detected_patterns": [
+    {
+      "name": "Chainsaw kind-only health suite with belt-and-braces gating (label + runtime presence guard)",
+      "component": "tests/e2e/infrastructure/<addon>-health/",
+      "category": "testing",
+      "applies_when": "Adding an E2E health-check suite for a kind-only addon that may be absent on a default cluster",
+      "description": "Each kind-only addon health suite is a single-file Chainsaw Test with two independent gating mechanisms: (1) `metadata.labels.overlay: kind` so non-kind invocations can filter out via `chainsaw test --selector 'overlay!=kind'`, and (2) a runtime `kubectl get ns <addon>` presence guard at the top of a single `script:` step that exits 0 with a SKIP log when the namespace is absent. The script consolidates all assertions (kubectl wait, kubectl rollout status, etc.) into one step because chainsaw has no step-level skip — declarative asserts in sibling steps would time out and fail even after a guard exited 0. The catch block individually scopes each describe so a missing resource does not short-circuit the dump. This pattern was established by flux-web-health (CC-0086) and is now used by chaos-mesh-health (CC-0097).",
+      "examples": [
+        {
+          "location": "tests/e2e/infrastructure/chaos-mesh-health/chainsaw-test.yaml:55-122",
+          "code": "apiVersion: chainsaw.kyverno.io/v1alpha1\nkind: Test\nmetadata:\n  name: chaos-mesh-health\n  labels:\n    overlay: kind\nspec:\n  timeouts:\n    assert: 5m\n    exec: 5m\n  steps:\n  - try:\n    - script:\n        timeout: 5m\n        shell: bash\n        content: |\n          set -euo pipefail\n          if ! kubectl get ns chaos-mesh >/dev/null 2>&1; then\n            echo \"SKIP: chaos-mesh namespace not present.\"\n            exit 0\n          fi\n          kubectl wait --for=condition=Available deployment/chaos-controller-manager -n chaos-mesh --timeout=2m\n          kubectl rollout status daemonset/chaos-daemon -n chaos-mesh --timeout=2m"
+        },
+        {
+          "location": "tests/e2e/infrastructure/flux-web-health/chainsaw-test.yaml (sibling)",
+          "code": "apiVersion: chainsaw.kyverno.io/v1alpha1\nkind: Test\nmetadata:\n  name: flux-web-health\n  labels:\n    overlay: kind\n# Same belt-and-braces shape: overlay=kind label + runtime presence guard inside the single script step."
+        }
+      ]
+    },
+    {
+      "name": "Strict-equality opt-in flag with three-site gating in deploy-infra",
+      "component": "hack/deploy-infra.sh",
+      "category": "configuration",
+      "applies_when": "Adding a new opt-in feature flag (e.g. WITH_FLUX_CLI, WITH_CHAOS_MESH) that gates host-side prerequisites, kustomize apply, and Phase 3 helm-release wait",
+      "description": "Each opt-in flag is declared in the configuration block as `WITH_<FEATURE>=\"${WITH_<FEATURE>:-false}\"`, echoed in the deploy banner so the resolved value is visible in CI logs, and gated by strict `[[ \"${WITH_<FEATURE>}\" == \"true\" ]]` comparison at every site (host-side preflight call, opt-in kustomize apply after the base overlay, dynamic append to the helm-release wait list). Strict equality rejects accidental non-canonical values like `yes` / `1`. The flag's three gates always go in the same order: preflight, post-base apply, wait-list append.",
+      "examples": [
+        {
+          "location": "hack/deploy-infra.sh:65-69",
+          "code": "# Gates the opt-in chaos-mesh kind overlay (deploy/kind/chaos-mesh) and the\n# host-side kernel-module load. Defaults to false so the kind Quick Start\n# stays minimal; set WITH_CHAOS_MESH=true to enable chaos-engineering tests\n# (CC-0097).\nWITH_CHAOS_MESH=\"${WITH_CHAOS_MESH:-false}\""
+        },
+        {
+          "location": "hack/deploy-infra.sh:809-813, 893-898, 932-934",
+          "code": "if [[ \"${WITH_CHAOS_MESH}\" == \"true\" ]]; then\n    load_chaos_mesh_kernel_modules\n  else\n    log \"Skipping chaos-mesh kernel modules (WITH_CHAOS_MESH=false).\"\n  fi\n  ...\n  if [[ \"${WITH_CHAOS_MESH}\" == \"true\" ]]; then\n    kubectl apply -k \"${REPO_ROOT}/deploy/kind/chaos-mesh\"\n    log \"Chaos Mesh kind overlay applied (WITH_CHAOS_MESH=true).\"\n  fi\n  ...\n  local helm_releases=(prometheus-operator-crds openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator envoy-gateway)\n  if [[ \"${WITH_CHAOS_MESH}\" == \"true\" ]]; then\n    helm_releases+=(chaos-mesh)\n  fi"
+        }
+      ]
+    }
+  ]
+}

@@ -35,8 +35,16 @@ kubectl get pods --all-namespaces || true
 echo "=== DaemonSets ==="
 kubectl get daemonsets --all-namespaces -o wide || true
 
+# Chaos Mesh is opt-in in the kind Quick Start (CC-0097): the chaos-mesh
+# namespace only exists when the cluster was deployed with
+# WITH_CHAOS_MESH=true. Guard the describe so the log emits an explicit
+# SKIP line instead of swallowing the not-found error silently.
 echo "=== DaemonSet chaos-daemon detail ==="
-kubectl describe daemonset -n chaos-mesh chaos-daemon 2>/dev/null || true
+if kubectl get ns chaos-mesh >/dev/null 2>&1; then
+  kubectl describe daemonset -n chaos-mesh chaos-daemon 2>/dev/null || true
+else
+  echo "SKIP: chaos-mesh namespace not present (install with WITH_CHAOS_MESH=true)"
+fi
 
 echo "=== Events (last 50) ==="
 kubectl get events --all-namespaces --sort-by='.lastTimestamp' | tail -50 || true

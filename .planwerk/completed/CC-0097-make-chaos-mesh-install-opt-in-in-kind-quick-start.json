@@ -2,8 +2,8 @@
   "feature_id": "CC-0097",
   "title": "Make Chaos Mesh install opt-in in kind Quick Start",
   "slug": "make-chaos-mesh-install-opt-in-in-kind-quick-start",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #284: Make Chaos Mesh installation in the kind Quick Start opt-in via a flag\n\n**Category**: enhancement | **Scope**: Medium\n\n**Description**: Move the `chaos-mesh` HelmRepository + HelmRelease out of the always-on `deploy/flux-system/kustomization.yaml` resource list (`deploy/flux-system/kustomization.yaml:36,47`) and into a kind-only opt-in path so that `make deploy-infra` no longer installs Chaos Mesh by default. The fault-injection platform is only needed for `make e2e-chaos` (`Makefile:335-338`) and the `e2e-chaos` GitHub Actions matrix (`.github/workflows/ci.yaml:678-761`) — for everyone else (Quick Start onboarding, contributors iterating on the operator, the regular `e2e-operator` run) it adds image pulls (controller-manager + chaos-daemon DaemonSet + cert-manager-issued webhook cert), a `dependsOn: cert-manager` gate inside Phase 3 of the HelmRelease wait (`hack/deploy-infra.sh:908`), and a `load_chaos_mesh_kernel_modules` pre-step (`hack/deploy-infra.sh:513-588`) that on Ubuntu CI runners can shell out to `apt-get install linux-modules-extra-$(uname -r)` — none of which moves the developer any closer to a working Keystone API.\n\nConcrete steps: (1) Drop `sources/chaos-mesh.yaml` and `releases/chaos-mesh.yaml` from `deploy/flux-system/kustomization.yaml` (the two files stay on disk — they are reused by the new opt-in overlay). Drop the `chaos-mesh` `Namespace` from `deploy/flux-system/namespaces.yaml:44-53` and move it into the opt-in overlay alongside the HelmRelease so the privileged-PodSecurity label only lands when Chaos Mesh is actually deployed. (2) Add a new opt-in kind overlay at `deploy/kind/chaos-mesh/kustomization.yaml` that pulls in `../../flux-system/sources/chaos-mesh.yaml`, `../../flux-system/releases/chaos-mesh.yaml`, the `chaos-mesh` Namespace, and the existing kind-tuning patch currently at `deploy/kind/base/kustomization.yaml:108-142` (containerd runtime, dashboard disabled, reduced resource requests). (3) Remove the chaos-mesh patch block from `deploy/kind/base/kustomization.yaml:108-142` — it has no target once chaos-mesh is no longer in the base resource list. (4) Add `WITH_CHAOS_MESH` (default `false`) to `hack/deploy-infra.sh`, mirroring the `WITH_FLUX_CLI` pattern at `hack/install-test-deps.sh:292`. When unset/`false`: skip `load_chaos_mesh_kernel_modules`, drop `chaos-mesh` from the Phase 3 `wait_for_helmreleases` list, and do not apply the new overlay. When `true`: run kernel-module loading, `kubectl apply -k deploy/kind/chaos-mesh` after the base overlay, and add `chaos-mesh` back to the Phase 3 wait list. (5) Set `WITH_CHAOS_MESH=true` in the `e2e-chaos` workflow's deploy step (`.github/workflows/ci.yaml:738-739` `Setup E2E infrastructure` composite action — pass through as an env var) so the chaos test matrix continues to find a deployed Chaos Mesh. The default `e2e-operator` workflow stays on `WITH_CHAOS_MESH=false` and gets a faster cluster bring-up. (6) Make the chaos-mesh assertion in `tests/e2e/infrastructure/infra-stack-health/chainsaw-test.yaml:169-190` (Step 5) conditional — either gate the whole step on a Chainsaw `bindings`/`with` flag set from a `WITH_CHAOS_MESH` env var, or split it out into a separate suite under `tests/e2e/infrastructure/chaos-mesh-health/` that the chaos workflow runs and the operator workflow skips. (7) Update `docs/quick-start.md` Step 3 architecture snapshot (`docs/quick-start.md:186-204`) and the *What happens* table (`docs/quick-start.md:150-161`): drop `chaos-mesh` from the default snapshot, add a `::: tip Enabling Chaos Mesh` block that documents `WITH_CHAOS_MESH=true make deploy-infra`. (8) Update `docs/reference/infrastructure-manifests.md:339-366` to mark Chaos Mesh as kind-opt-in and point at the new overlay path. (9) Update the architecture document `architecture/docs/09-implementation/10-chaos-e2e-testing.md` and the existing review pattern at `.planwerk/review_patterns/document-intentional-environment-divergence-in-overlays.md` to reflect that Chaos Mesh is now kind-only — production overlays are explicitly *not* the place where customers get a chaos engineering platform; that is a separate operational decision left to the operator's user.\n\n**Motivation**: The Quick Start's stated value proposition is *\\\"a fresh kind cluster with a working Keystone API in 5–10 minutes\\\"* (`docs/quick-start.md:166`), but the `chaos-mesh` HelmRelease pulls down the controller-manager image, the chaos-daemon DaemonSet image, and waits on cert-manager to issue webhook TLS — none of which contributes to a developer's first `openstack token issue`. Empirically the `chaos-mesh` line in Phase 3 of `wait_for_helmreleases` is one of the slower releases to flip `Ready=True` because it sits behind `dependsOn: cert-manager` (`deploy/flux-system/releases/chaos-mesh.yaml:17-19`) and its DaemonSet has to schedule on the kind node *and* successfully bind-mount the containerd socket. On top of that, `load_chaos_mesh_kernel_modules` (`hack/deploy-infra.sh:513-588`) is run unconditionally on every Linux host even when no chaos suite will execute — on a clean Ubuntu CI runner this can trigger an `apt-get update` + `apt-get install linux-modules-extra-$(uname -r)` round-trip that the comment block at `:553-558` explicitly justifies because the modules are otherwise missing. For the Quick Start user that whole code path is dead weight. The asymmetry is well-established already by other recent kind-only addons: Headlamp (CC-0017), the Flux Web UI (CC-0086 / #257), the OpenBao UI flip (CC-0082 / #246), and Envoy Gateway + the `openstack-gw` Gateway (CC-0088 / #265) all live exclusively under `deploy/kind/base/` and stay out of the production `deploy/flux-system/` resource list. Chaos Mesh is the last platform-level addon that is still installed unconditionally, and it is the most expensive of the bunch in startup time and host-side prerequisites. Flipping it to opt-in is a one-flag switch in `deploy-infra.sh` plus a Kustomize move — same shape as `WITH_FLUX_CLI` for the optional Flux CLI install (`hack/install-test-deps.sh:289-294`).\n\n**Affected Areas**:\n- `deploy/flux-system/kustomization.yaml` (drop `sources/chaos-mesh.yaml` and `releases/chaos-mesh.yaml` from the `resources:` list — the files themselves stay so the new overlay can reference them directly)\n- `deploy/flux-system/namespaces.yaml:44-53` (move the `chaos-mesh` Namespace + privileged PodSecurity label out of the unconditional namespace bundle)\n- `deploy/kind/chaos-mesh/kustomization.yaml` (new — references the two flux-system manifests, declares the `chaos-mesh` Namespace, hosts the existing kind-tuning patch from `deploy/kind/base/kustomization.yaml:108-142`)\n- `deploy/kind/base/kustomization.yaml` (remove the chaos-mesh `patches:` block at lines 108-142; remaining base overlay is unchanged)\n- `hack/deploy-infra.sh` (add `WITH_CHAOS_MESH=\\\"${WITH_CHAOS_MESH:-false}\\\"` near the existing config block at `:49-63`; gate `load_chaos_mesh_kernel_modules` (called at `:800`); drop `chaos-mesh` from the Phase 3 `wait_for_helmreleases` argument list at `:907-908` when the flag is `false`; apply `kubectl apply -k deploy/kind/chaos-mesh` after Step 3 when the flag is `true`)\n- `.github/workflows/ci.yaml` (export `WITH_CHAOS_MESH=true` in the chaos job's `Setup E2E infrastructure` step around `:738-739` — the operator job around `:474` deliberately stays on the default `false`)\n- `.github/actions/setup-e2e-infra/action.yml` (thread `WITH_CHAOS_MESH` from the workflow input into the deploy-infra environment if the action wraps the env)\n- `tests/e2e/infrastructure/infra-stack-health/chainsaw-test.yaml:169-190` (gate or split out the Step 5 chaos-mesh assertion so the suite passes on a default `WITH_CHAOS_MESH=false` cluster)\n- `docs/quick-start.md:150-161, 186-204` (drop `chaos-mesh` from the architecture snapshot; add a `::: tip` block that documents `WITH_CHAOS_MESH=true make deploy-infra` and the chaos-suite use case)\n- `docs/reference/infrastructure-manifests.md:23-67, 339-366` (move the Chaos Mesh entry into a kind-only addon section, point the *File* line at the new `deploy/kind/chaos-mesh/` overlay, drop the chaos-mesh row from the always-on cross-reference table)\n- `docs/reference/chaos-e2e-tests.md` (note the new `WITH_CHAOS_MESH=true make deploy-infra` prerequisite for running the chaos suites locally)\n- `architecture/docs/09-implementation/10-chaos-e2e-testing.md` (update the deployment-prerequisite section to reflect the opt-in flag)\n- `Makefile:335-338` (optional — pre-set `WITH_CHAOS_MESH=true` for the `e2e-chaos` target so a developer running `make e2e-chaos` after a default Quick Start deploy gets a clear actionable error or auto-deploys Chaos Mesh; the simplest version is a recipe-level `@WITH_CHAOS_MESH=true hack/deploy-infra.sh` reminder)\n- `hack/ci-dump-diagnostics.sh` (the existing chaos-mesh diagnostic dumps must no-op when the namespace is absent, not exit non-zero)\n\n**Acceptance Criteria**:\n- [ ] `make deploy-infra` on a fresh kind cluster (no `WITH_CHAOS_MESH` set) finishes without ever creating a `chaos-mesh` namespace, HelmRelease, or pod; `kubectl get ns chaos-mesh` returns `NotFound`\n- [ ] `WITH_CHAOS_MESH=true make deploy-infra` reaches the same end state as today: `HelmRelease/chaos-mesh` `Ready=True`, `Deployment/chaos-controller-manager` `Available`, `DaemonSet/chaos-daemon` `numberReady >= 1` — assertions identical to `tests/e2e/infrastructure/infra-stack-health/chainsaw-test.yaml:172-190`\n- [ ] Default `make deploy-infra` shaves measurable wall-clock time off Phase 3 (target: ≥ 30s on a warm-cache laptop, ≥ 60s on a cold CI runner that skips the `linux-modules-extra` install path); a before/after timing line in the PR description is sufficient evidence\n- [ ] `load_chaos_mesh_kernel_modules` does not run when `WITH_CHAOS_MESH=false` — verified by inspecting the `deploy-infra` log (`Loading kernel modules for chaos-mesh NetworkChaos:` line is absent)\n- [ ] `make e2e-chaos` against a cluster brought up with `WITH_CHAOS_MESH=true` passes the same suites it passes today (PodChaos and, where the host kernel cooperates, NetworkChaos); a cluster brought up with the default flag fails fast with a clear error pointing at the flag rather than dumping cryptic CRD-not-found messages\n- [ ] The `e2e-chaos` GitHub Actions job sets `WITH_CHAOS_MESH=true`; the `e2e-operator` job does not — the latter's wall-clock time on the Blacksmith runner drops by at least the chaos-mesh HelmRelease wait\n- [ ] `tests/e2e/infrastructure/infra-stack-health/chainsaw-test.yaml` Step 5 either (a) runs only on `WITH_CHAOS_MESH=true` clusters via a Chainsaw binding, or (b) is moved to a sibling suite that the chaos workflow runs and the operator workflow does not — a default Quick Start cluster passes the remaining infra-stack-health assertions\n- [ ] `docs/quick-start.md` no longer claims `chaos-mesh` is part of the default cluster snapshot at `:186-204`; a tip block documents the opt-in flag and links to `docs/reference/chaos-e2e-tests.md`\n- [ ] `docs/reference/infrastructure-manifests.md` reclassifies Chaos Mesh as a kind-only addon and lists its overlay path (`deploy/kind/chaos-mesh/`), matching the documentation posture for Headlamp / Flux Web UI / Envoy Gateway\n- [ ] `deploy/flux-system/kustomization.yaml` no longer references `sources/chaos-mesh.yaml` or `releases/chaos-mesh.yaml` — production overlay never deploys Chaos Mesh implicitly\n- [ ] `deploy/flux-system/namespaces.yaml` no longer creates the `chaos-mesh` Namespace; the namespace is created by `deploy/kind/chaos-mesh/` only when the flag is set\n\n**Non-Goals**:\n- Removing Chaos Mesh from the project. The CRDs, the chaos-suite tests under `tests/e2e-chaos/`, and the kind-tuning patch are all kept exactly as they are — the change is *when* Chaos Mesh is installed, not *whether* the project supports it.\n- Reworking the `tests/e2e-chaos/` suites or the `chainsaw-config.yaml` for the chaos workflow. They keep working byte-for-byte once the deploy flag is set.\n- Switching the chaos workflow's runner topology, caching, or NetworkChaos kernel-module handling. Those concerns are orthogonal to making chaos opt-in for everyone else.\n- Building a new mode that auto-detects whether the chaos suite is about to run and toggles the flag. Explicit opt-in mirrors the existing `WITH_FLUX_CLI` pattern (`hack/install-test-deps.sh:292`) and avoids a magic-action coupling between the deploy script and the test runner.\n- Adding Chaos Mesh to a prod overlay or any non-kind context. Production users who want a chaos engineering platform install it themselves on the same posture as Envoy Gateway / Headlamp / the OpenBao UI flip — those are deliberately kind-only conveniences.\n- Making the `chaos-mesh` patch block in `deploy/kind/base/kustomization.yaml` survive in place \\\"just in case.\\\" Once the resource is gone from the base resource list the patch has no target and Kustomize will refuse to render — the patch must move into the new overlay where its target lives.\n\n**References**:\n- Existing kind-only addon prior art: CC-0082 / #246 (OpenBao UI), CC-0086 / #257 (Flux Web UI), CC-0088 / #265 (Envoy Gateway + `openstack-gw`)\n- `WITH_FLUX_CLI` opt-in pattern: `hack/install-test-deps.sh:289-294` and `docs/quick-start.md:51-55`\n- Chaos Mesh feature history: CC-0046 (initial Chaos Mesh deployment), CC-0049 (NetworkChaos kernel-module handling), CC-0054 (chaos E2E workflow split-out)\n- Current chaos-mesh manifests: `deploy/flux-system/sources/chaos-mesh.yaml`, `deploy/flux-system/releases/chaos-mesh.yaml`, `deploy/kind/base/kustomization.yaml:108-142`\n- Current kernel-module pre-step: `hack/deploy-infra.sh:513-588`, called unconditionally at `:800`\n- Chaos suite consumer: `Makefile:335-338`, `.github/workflows/ci.yaml:678-761`, `tests/e2e-chaos/`\n- Architecture context: `architecture/docs/09-implementation/10-chaos-e2e-testing.md`, `docs/reference/chaos-e2e-tests.md`\n\n**Labels:** enhancement\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/284",
   "stories": [
@@ -390,6 +390,7 @@
       "title": "Drop chaos-mesh entries from `deploy/flux-system/kustomization.yaml` (`sources/chaos-mesh.yaml` line 36, `releases/chaos-mesh.yaml` line 47); leave the two referenced files untouched on disk for reuse by the new overlay (REQ-001, CC-0097)",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-001"
       ]
@@ -399,6 +400,7 @@
       "title": "Remove the `chaos-mesh` Namespace block (lines 44-53) from `deploy/flux-system/namespaces.yaml` so the privileged-PodSecurity label only lands when the kind chaos-mesh overlay is applied (REQ-001, CC-0097)",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-001"
       ]
@@ -408,6 +410,7 @@
       "title": "Create `deploy/kind/chaos-mesh/kustomization.yaml` referencing `../../flux-system/sources/chaos-mesh.yaml`, `../../flux-system/releases/chaos-mesh.yaml`, and an inline `Namespace/chaos-mesh` (with privileged PodSecurity label + rationale comment); host the kind-tuning HelmRelease patch (containerd runtime, dashboard disabled, reduced resource requests) verbatim from current base lines 108-142 (REQ-002, REQ-009, CC-0097)",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-009"
@@ -418,6 +421,7 @@
       "title": "Remove the chaos-mesh patch block at `deploy/kind/base/kustomization.yaml:108-142` so kustomize no longer references a missing target (REQ-009, CC-0097)",
       "level": 1,
       "estimate_minutes": 5,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -427,6 +431,7 @@
       "title": "Add `tests/unit/deploy/test_kustomize_render.bats` (or extend an existing kustomize-render test if present) covering: (a) `kustomize build deploy/flux-system` emits no chaos-mesh resources, (b) `kustomize build deploy/kind/base` succeeds with no chaos-mesh resources and no orphan patch error, (c) `kustomize build deploy/kind/chaos-mesh` emits Namespace + HelmRepository + HelmRelease with kind-tuning values applied and `dependsOn: cert-manager` preserved (REQ-001, REQ-002, REQ-009, CC-0097)",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -438,6 +443,7 @@
       "title": "Add `WITH_CHAOS_MESH=\"${WITH_CHAOS_MESH:-false}\"` to the config block of `hack/deploy-infra.sh` near lines 49-63; emit it in the `Deploy Infrastructure to Kind Cluster` config echo at line 788+ so the value is visible in CI logs (REQ-003, CC-0097)",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -447,6 +453,7 @@
       "title": "Gate the `load_chaos_mesh_kernel_modules` call (currently unconditional at `hack/deploy-infra.sh:800`) on `WITH_CHAOS_MESH=true`; preserve the existing function body unchanged (REQ-003, CC-0097)",
       "level": 2,
       "estimate_minutes": 5,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -456,6 +463,7 @@
       "title": "After `kubectl apply -k \"${REPO_ROOT}/deploy/kind/base\"` in Step 3 (`hack/deploy-infra.sh` near line 877), conditionally run `kubectl apply -k \"${REPO_ROOT}/deploy/kind/chaos-mesh\"` when `WITH_CHAOS_MESH=true`; log the action (REQ-003, CC-0097)",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -465,6 +473,7 @@
       "title": "Refactor the Phase 3 `wait_for_helmreleases` invocation at `hack/deploy-infra.sh:907-908` to build the argument list dynamically — append `chaos-mesh` only when `WITH_CHAOS_MESH=true`; preserve order of remaining releases (REQ-003, CC-0097)",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -474,6 +483,7 @@
       "title": "Add `tests/unit/hack/test_deploy_infra_chaos_flag.bats` exercising default-false skip, explicit-true install, explicit-false skip, and non-`true` (e.g. `yes`) defensive-skip cases by stubbing `load_chaos_mesh_kernel_modules`, `kubectl`, and `wait_for_helmreleases` and asserting which invocations occurred (REQ-003, CC-0097)",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -483,6 +493,7 @@
       "title": "Update `hack/ci-dump-diagnostics.sh` chaos-daemon block (line 38-39) to guard with `if kubectl get ns chaos-mesh >/dev/null 2>&1; then ...; else echo 'SKIP: chaos-mesh namespace not present'; fi` (REQ-008, CC-0097)",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -492,6 +503,7 @@
       "title": "Add `tests/unit/hack/test_ci_dump_diagnostics_chaos_absent.bats` covering both absent-namespace (skip line, exit 0) and present-namespace (describe invocation) cases via stubbed kubectl (REQ-008, CC-0097)",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -501,6 +513,7 @@
       "title": "Update `.github/actions/setup-e2e-infra/action.yaml` to thread `WITH_CHAOS_MESH` from the calling job's env into the `Deploy infrastructure stack` step's env (alongside the existing `SKIP_KIND_CREATE`); add a header comment referencing CC-0097 (REQ-004)",
       "level": 3,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -510,6 +523,7 @@
       "title": "Update `.github/workflows/ci.yaml` `e2e-chaos` job (around line 738-739) to set `env: WITH_CHAOS_MESH: \"true\"` on the `Setup E2E infrastructure` step for both matrix entries; verify the `e2e-infra` job (around line 439-440) does NOT set the variable so it falls back to false (REQ-004, CC-0097)",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -519,6 +533,7 @@
       "title": "Add `tests/integration/ci/test_setup_e2e_infra_threading.bats` (or extend an existing CI-action contract test) covering: WITH_CHAOS_MESH=true threads through to deploy-infra env; unset value does not leak into deploy-infra env (REQ-004, CC-0097)",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -528,6 +543,7 @@
       "title": "Create `tests/e2e/infrastructure/chaos-mesh-health/chainsaw-test.yaml` modeled on `tests/e2e/infrastructure/flux-web-health/chainsaw-test.yaml` (CC-0086): `metadata.labels.overlay: kind`, single `script:` step bash with `set -euo pipefail`, presence guard `kubectl get ns chaos-mesh`, then `kubectl wait --for=condition=Available deployment/chaos-controller-manager -n chaos-mesh` and `kubectl rollout status daemonset/chaos-daemon -n chaos-mesh` (or asserts equivalent to today's lines 172-190); `catch:` describes both resources (REQ-005, CC-0097)",
       "level": 4,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -537,6 +553,7 @@
       "title": "Remove Step 5 chaos-mesh assertions (lines 169-190) from `tests/e2e/infrastructure/infra-stack-health/chainsaw-test.yaml`; renumber surrounding step comments and update the file header to mention the sibling chaos-mesh-health suite — mirror the flux-web-health header pattern (REQ-005, CC-0097)",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -546,6 +563,7 @@
       "title": "Update the `.PHONY: e2e-chaos` recipe in `Makefile` (around lines 335-338) to add a single-line preflight: `@kubectl get ns chaos-mesh >/dev/null 2>&1 || { echo 'chaos-mesh is not installed; run \\`WITH_CHAOS_MESH=true make deploy-infra\\` first'; exit 1; }` before the chainsaw invocation (REQ-007, CC-0097)",
       "level": 5,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -555,6 +573,7 @@
       "title": "Add `tests/unit/Makefile/test_e2e_chaos_preflight.bats` exercising the missing-namespace fast-fail (exit non-zero, message on stderr, no chainsaw) and present-namespace happy path via stubbed kubectl + chainsaw (REQ-007, CC-0097)",
       "level": 5,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -564,6 +583,7 @@
       "title": "Update `docs/quick-start.md` Step 3 (`What happens` table at lines 150-161 and `What gets deployed` snapshot at lines 186-204) to drop chaos-mesh from the default flow; add a new `::: tip Enabling Chaos Mesh` block documenting `WITH_CHAOS_MESH=true make deploy-infra` and linking to `docs/reference/chaos-e2e-tests.md` (REQ-006, CC-0097)",
       "level": 6,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -573,6 +593,7 @@
       "title": "Update `docs/reference/infrastructure-manifests.md`: move the Chaos Mesh entry to a `### Kind-only addons` subsection alongside Headlamp/Flux Web UI/Envoy Gateway prior art; change *File* line to `deploy/kind/chaos-mesh/kustomization.yaml`; remove the chaos-mesh row from the always-on HelmRelease–HelmRepository cross-reference table; remove `chaos-mesh` from the Namespaces table at lines 58-67; add a note explaining the WITH_CHAOS_MESH flag (REQ-006, CC-0097)",
       "level": 6,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -582,6 +603,7 @@
       "title": "Update `docs/reference/chaos-e2e-tests.md` Setup/Quick Start section to add a single-sentence prerequisite: `Run \\`WITH_CHAOS_MESH=true make deploy-infra\\` before \\`make e2e-chaos\\``; cross-link to `docs/quick-start.md` tip block (REQ-006, CC-0097)",
       "level": 6,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -591,6 +613,7 @@
       "title": "Update `architecture/docs/09-implementation/10-chaos-e2e-testing.md` Infrastructure Setup section: replace the `SKIP_CHAOS_MESH=true` reference with the new `WITH_CHAOS_MESH=true` opt-in flag; explain that production overlays explicitly do NOT install chaos-mesh (REQ-006, CC-0097)",
       "level": 6,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -600,6 +623,7 @@
       "title": "Update `.planwerk/review_patterns/document-intentional-environment-divergence-in-overlays.md` to reflect that the Chaos Mesh kind-tuning patch now lives in a kind-only overlay (production explicitly omits chaos-mesh entirely); preserve the original CC-0046 example block as historical record but add a CC-0097 follow-up note (REQ-006, CC-0097)",
       "level": 6,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -609,6 +633,7 @@
       "title": "Add `tests/unit/docs/test_quick_start_no_chaos_default.py` and `tests/unit/docs/test_infrastructure_manifests_chaos_kind_only.py` (or extend equivalent doc-conformance tests if present) that parse the markdown and assert the contracts in REQ-006 (CC-0097)",
       "level": 6,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -618,6 +643,7 @@
       "title": "End-to-end manual verification (recorded in PR description per acceptance criteria): time `make deploy-infra` and `WITH_CHAOS_MESH=true make deploy-infra` on a clean kind cluster; capture before/after timing line; confirm `kubectl get ns chaos-mesh` returns NotFound on the default run and Ready resources on the opt-in run; confirm `make e2e-chaos` against the opt-in cluster passes the same suites it passes today (CC-0097)",
       "level": 7,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -789,8 +815,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-26T17:31:03.158722"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-26T17:39:08.123853"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-26T20:26:54.752422"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/290",
+  "pr_number": 290,
   "execution_history": [
     {
       "run_id": "05bd1c49-411a-4ec2-8c0f-af363274403c",
@@ -802,6 +838,88 @@
           "name": "prepare",
           "duration": 476.84716057777405,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "a00c20d7-69af-4a58-859b-f99f1501c542",
+      "timestamp": "2026-04-26T18:54:39.515428",
+      "total_duration": 4154.051537275314,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (5 tasks)",
+          "duration": 651.4329528808594,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (7 tasks)",
+          "duration": 502.2101893424988,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (3 tasks)",
+          "duration": 352.4933967590332,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (2 tasks)",
+          "duration": 225.57467317581177,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 5 (2 tasks)",
+          "duration": 234.67290091514587,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 6 (6 tasks)",
+          "duration": 549.1243617534637,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 7 (1 tasks)",
+          "duration": 203.23579049110413,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0097] Code Review",
+          "duration": 471.92915749549866,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0097] Improvements",
+          "duration": 773.609085559845,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0097] Simplify",
+          "duration": 189.76902890205383,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "fb45aed1-4a08-4b49-a73f-37074915d775",
+      "timestamp": "2026-04-26T19:56:46.830789",
+      "total_duration": 689.7784016132355,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 689.7784016132355,
+          "type": "review_address",
           "status": "done"
         }
       ]

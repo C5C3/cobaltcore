@@ -88,10 +88,19 @@ Each suite deploys a Keystone CR, asserts a healthy baseline, injects a
 All 9 test suites require the infrastructure stack and Chaos Mesh to be deployed and
 healthy.
 
+::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first (CC-0097)
+Chaos Mesh is **opt-in** in the kind Quick Start — the default `make deploy-infra`
+flow leaves the `chaos-mesh` namespace absent. Run
+`WITH_CHAOS_MESH=true make deploy-infra` before `make e2e-chaos`, or `make e2e-chaos`
+will fail its preflight check (`chaos-mesh is not installed`). See the
+[Enabling Chaos Mesh tip in Quick Start](../quick-start.md#step-3-deploy-the-infrastructure-stack)
+for the rationale.
+:::
+
 | Prerequisite | Details |
 | --- | --- |
-| Infrastructure stack | Deployed via `make deploy-infra` (see [Infrastructure E2E Deployment](./infrastructure/e2e-deployment.md)) |
-| Chaos Mesh | Installed in `chaos-mesh` namespace (via FluxCD HelmRelease or `chaos-mesh/chaos-mesh-action`) |
+| Infrastructure stack | Deployed via `WITH_CHAOS_MESH=true make deploy-infra` (CC-0097 — opt-in path; see [Infrastructure E2E Deployment](./infrastructure/e2e-deployment.md)) |
+| Chaos Mesh | Installed in `chaos-mesh` namespace by the kind-only opt-in overlay at `deploy/kind/chaos-mesh/` (or by `chaos-mesh/chaos-mesh-action` in CI) |
 | Keystone operator | Deployed to the cluster with CRDs installed |
 | ESO ExternalSecrets | `keystone-admin`, `keystone-db` synced in `openstack` namespace |
 | MariaDB instance | `openstack-db` MariaDB CR Ready in `openstack` namespace |

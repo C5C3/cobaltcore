@@ -221,6 +221,27 @@ openstack   keystone-db           (database credentials from OpenBao)
 ```
 :::
 
+::: tip Enabling Chaos Mesh (CC-0097)
+Chaos Mesh is **not installed by default** in the kind Quick Start. The default
+`make deploy-infra` flow leaves the `chaos-mesh` namespace absent so first-run
+deployments are faster and do not require the `chaos-daemon` privileged
+DaemonSet on hosts that don't need it. Production overlays (`deploy/flux-system/`)
+also explicitly omit Chaos Mesh.
+
+Opt in by setting `WITH_CHAOS_MESH=true` before `make deploy-infra`:
+
+```bash
+WITH_CHAOS_MESH=true make deploy-infra
+```
+
+This applies the kind-only overlay at `deploy/kind/chaos-mesh/`, loads the
+chaos-daemon kernel modules on the kind node, and waits for the Chaos Mesh
+HelmRelease to become Ready alongside the other operators. It is required
+before running the chaos E2E suites — see
+[Chaos E2E Tests](./reference/chaos-e2e-tests.md) for the full prerequisite
+list and `make e2e-chaos` workflow.
+:::
+
 ---
 
 ## Step 4 — Open the Headlamp UI

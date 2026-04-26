@@ -4,6 +4,14 @@
 
 # CC-0050: Composite action encapsulating the Flux CLI + test deps + deploy-infra
 # sequence shared across e2e-infra, e2e-operator, and tempest jobs.
+#
+# CC-0097: WITH_CHAOS_MESH is threaded from the calling job's env context
+# into the `Deploy infrastructure stack` step's env so callers (e.g. the
+# e2e-chaos job) can opt in to installing Chaos Mesh on top of the otherwise
+# minimal Quick Start. When the calling job leaves WITH_CHAOS_MESH unset,
+# `${{ env.WITH_CHAOS_MESH }}` resolves to an empty string and
+# hack/deploy-infra.sh's `${WITH_CHAOS_MESH:-false}` default keeps Chaos
+# Mesh out of the install.
 
 name: Setup E2E infrastructure
 description: >
@@ -12,7 +20,8 @@ description: >
   (handled by flux-operator + FluxInstance, CC-0085) and is installed here
   solely so `hack/ci-dump-diagnostics.sh` can call `flux logs` on failed
   runs. Assumes a kind cluster already exists (SKIP_KIND_CREATE is set
-  automatically).
+  automatically). Set WITH_CHAOS_MESH=true on the calling step to opt in to
+  Chaos Mesh installation (CC-0097); default is to skip it.
 
 runs:
   using: composite
@@ -42,4 +51,6 @@ runs:
       shell: bash
       env:
         SKIP_KIND_CREATE: "true"
+        # CC-0097: opt-in flag — empty when caller does not set it; deploy-infra.sh defaults to false.
+        WITH_CHAOS_MESH: ${{ env.WITH_CHAOS_MESH }}
       run: make deploy-infra

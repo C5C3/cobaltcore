@@ -1,0 +1,69 @@
+{
+  "summary": "Improvement cycle following external review #1 (berendt). Two changes addressed: (1) Makefile e2e-chaos preflight split into a kubectl-reachability probe followed by the chaos-mesh-namespace probe so the two failure modes carry distinct, actionable messages (CC-0097 review #1, comment I-002); (2) external review JSON marked ADDRESSED with a resolution_summary, plus two review-pattern files updated/added to capture the lessons (collapsed failure modes; submodule-pointer cross-file consistency). Architecture submodule pointer was intentionally left unchanged — the upstream architecture-doc update is recorded via the existing PR-link commit (bfc04619).",
+  "verdict": "BLOCKED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass", "checked": false},
+    {"item": "New kubectl-version preflight failure path has unit-test coverage", "checked": false},
+    {"item": "Edge cases are covered", "checked": false},
+    {"item": "Existing tests still pass after Makefile change", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (recipe-level @-prefixed kubectl preflight, sibling style)", "checked": true},
+    {"item": "Error messages are actionable and target stderr (REQ-007 contract)", "checked": true},
+    {"item": "Recipe header comment captures rationale and review reference", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No new untrusted inputs", "checked": true},
+    {"item": "No secrets exposed", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible (one extra preflight line)", "checked": true},
+    {"item": "Scope kept to external-review feedback only", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": true},
+    {"item": "No speculative future-proofing", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early (kubectl reachability before namespace probe)", "checked": true},
+    {"item": "Distinct failure modes produce distinct messages", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "kubectl version timeout (--request-timeout=2s) prevents hangs against unreachable clusters", "checked": true},
+    {"item": "Both preflights swallow stdout/stderr and emit a single curated message on stderr", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "V1",
+      "severity": "BLOCKING",
+      "description": "The new `kubectl version --request-timeout=2s` preflight in Makefile:343 breaks the existing unit test `tests/unit/Makefile/test_e2e_chaos_preflight.sh`. The kubectl stub in that test was deliberately tightened to ONLY accept `kubectl get ns chaos-mesh` and to exit 64 with a `[kubectl-stub] unexpected invocation` line on stderr for every other verb — its stated intent (in the inline comment block at lines 53-62) is exactly to surface 'a future change that adds a kubectl call expecting fail-fast behaviour ... here instead of silently passing under a blanket exit 0'. The new `kubectl version` call now triggers that defensive exit, so both test cases regress: test_fast_fail_when_namespace_absent loses 2 of 4 assertions (the stderr no longer contains 'WITH_CHAOS_MESH=true make deploy-infra' nor 'chaos-mesh is not installed') and test_happy_path_when_namespace_present fails entirely (make exits 2 instead of 0; chainsaw is never invoked). Verified by running the test against the new Makefile: 4 assertions fail, 5 pass.",
+      "location": "tests/unit/Makefile/test_e2e_chaos_preflight.sh:51-62 (stub) — fails because of Makefile:343",
+      "fix": "Update the kubectl stub in tests/unit/Makefile/test_e2e_chaos_preflight.sh to also handle `kubectl version` (return exit 0 when the recipe's reachability probe is expected to succeed). The cleanest shape, consistent with the existing stub's per-verb dispatch, is to add a second branch before the catch-all: `if [ \"$1\" = \"version\" ]; then exit 0; fi`. Both existing test cases will then pass again, since the test scenarios assume a reachable cluster.",
+      "evidence": "Run output:\n  Test: e2e-chaos fast-fails when chaos-mesh namespace is absent ...\n    PASS: make e2e-chaos exits non-zero when chaos-mesh namespace absent\n    FAIL: remediation message on stderr names WITH_CHAOS_MESH=true make deploy-infra\n      expected to contain: WITH_CHAOS_MESH=true make deploy-infra\n      actual: kubectl is not configured or no cluster is reachable\n    FAIL: remediation message on stderr states chaos-mesh is not installed\n      expected to contain: chaos-mesh is not installed\n      actual: kubectl is not configured or no cluster is reachable\n  ...\n  Test: e2e-chaos invokes chainsaw when chaos-mesh namespace present ...\n    FAIL: make e2e-chaos exits 0 when chaos-mesh namespace present\n      expected: 0\n      actual:   2\n    FAIL: chainsaw should be invoked when preflight succeeds\n  Results: 5 passed, 4 failed, 0 skipped\n\nStub source (tests/unit/Makefile/test_e2e_chaos_preflight.sh:51-62):\n  cat >\"$dir/kubectl\" <<STUB\n  #!/bin/bash\n  if [ \"\\$1\" = \"get\" ] && [ \"\\$2\" = \"ns\" ] && [ \"\\$3\" = \"chaos-mesh\" ]; then\n    exit ${ns_exit}\n  fi\n  echo \"[kubectl-stub] unexpected invocation: \\$*\" >&2\n  exit 64\n  STUB",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "TE3",
+      "severity": "MAJOR",
+      "description": "The whole point of the I-002 fix is to give the cluster-unreachable case a distinct, actionable message — yet there is no test case that exercises the `kubectl version` failure path. After the BLOCKING fix above, all existing assertions exercise the cluster-reachable branch only; nothing pins the new error string ('kubectl is not configured or no cluster is reachable') or proves the preflight short-circuits before invoking `kubectl get ns chaos-mesh` and `chainsaw`. A future regression that drops the version probe, or that prints the wrong message, would not be caught.",
+      "location": "tests/unit/Makefile/test_e2e_chaos_preflight.sh — missing `test_fast_fail_when_kubectl_unreachable` case",
+      "fix": "Add a third test case that stubs kubectl to exit non-zero on `version` (e.g., extend write_stubs with a `version_exit` parameter, or write a separate stub) and asserts: (a) make exits non-zero, (b) stderr contains 'kubectl is not configured or no cluster is reachable', (c) stderr does NOT contain 'chaos-mesh is not installed' (proves short-circuit), (d) chainsaw is not invoked, (e) the chaos-mesh namespace probe is not invoked (proves ordering — the existing strict stub already gives this property for free).",
+      "evidence": "Current test file only defines two test functions: test_fast_fail_when_namespace_absent and test_happy_path_when_namespace_present (tests/unit/Makefile/test_e2e_chaos_preflight.sh:166-167). Neither exercises a non-zero exit from `kubectl version`. The Makefile change at Makefile:343 introduces a new failure path with no corresponding test.",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "When the test stub is updated to add a `version` branch, mirror the stub's existing per-verb tightening style (explicit branch + retain the catch-all `[kubectl-stub] unexpected invocation` exit 64) so any further new kubectl call introduced into the recipe in a future PR still surfaces here instead of silently passing.",
+    "Consider parameterizing write_stubs with a third argument `version_exit` (default 0) so the new cluster-unreachable case reuses the same helper instead of duplicating it.",
+    "The existing review pattern `verify-cross-file-consistency-after-renames-within-a-pr.md` was extended to cover the I-001 submodule case, but the title and Detection-Hint still talk about renames. Consider broadening the title to 'verify cross-file consistency across the PR scope' or splitting the submodule-pointer concern into its own pattern — the current pattern's hint won't match the next time a submodule pointer is missed.",
+    "The Makefile recipe header comment cites 'CC-0097 review #1, comment 2'. Once the external review is merged/closed and the comment numbering is no longer addressable, this reference will rot. Consider citing the commit SHA or a stable identifier instead."
+  ],
+  "next_steps": [
+    "BLOCKER: Update tests/unit/Makefile/test_e2e_chaos_preflight.sh kubectl stub so `kubectl version` returns 0 in the existing two test cases, restoring all 4 currently-failing assertions.",
+    "MAJOR: Add a third test case that exercises the `kubectl version` non-zero exit path and asserts the new 'kubectl is not configured or no cluster is reachable' message and short-circuit ordering (no namespace probe, no chainsaw invocation).",
+    "Re-run `bash tests/unit/Makefile/test_e2e_chaos_preflight.sh` and confirm all assertions pass before re-requesting review."
+  ],
+  "detected_patterns": []
+}
