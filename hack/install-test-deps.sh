@@ -18,9 +18,9 @@ INSTALL_DIR="${INSTALL_DIR:-${HOME}/.local/bin}"
 # Pinned versions
 # ---------------------------------------------------------------------------
 CHAINSAW_VERSION="v0.2.14"
-FLUX_VERSION="2.5.1"
-KIND_VERSION="v0.27.0"
-KUBECTL_VERSION="v1.33.1"
+FLUX_VERSION="2.8.6"
+KIND_VERSION="v0.31.0"
+KUBECTL_VERSION="v1.36.0"
 
 # ---------------------------------------------------------------------------
 # Pinned SHA256 hashes (CC-0010).
@@ -36,31 +36,31 @@ KUBECTL_VERSION="v1.33.1"
 # Use plain variables instead of associative arrays for bash 3.2 (macOS) compatibility.
 # These are referenced via indirect expansion (e.g. ${!_flux_var}).
 # shellcheck disable=SC2034
-FLUX_SHA256_linux_amd64="f64c85db4b94aefcdf6e0f2825c32573fc2bd234e5489ff332fee62776973ec3"
+FLUX_SHA256_linux_amd64="c53cc990ae266f7840f64c81515d701d8821d558a9062aa4211d71b38cf044be"
 # shellcheck disable=SC2034
-FLUX_SHA256_linux_arm64="35b6160d6b3c9ec3bbfe3f526927e713d877c274e7debffd13e270e47221a79f"
+FLUX_SHA256_linux_arm64="bc460320c2d33ad833791277896dd1aaf1cff6b3e64ba397c44238f00d4ae5bc"
 # shellcheck disable=SC2034
-FLUX_SHA256_darwin_amd64="8618395bbdd35b681768e26612e1c2f9cb6d67060f7e2df0f8d36ca67783478e"
+FLUX_SHA256_darwin_amd64="83ce032f39248ed04324f3e50344794575fb5f7149f24c071972e320b64826a6"
 # shellcheck disable=SC2034
-FLUX_SHA256_darwin_arm64="68c025b8059934457978d8952c0c62fd06c585d46b334804da72d268eaf630d4"
+FLUX_SHA256_darwin_arm64="20de67ebf2da689dd165b004dc073469f33aa2a3eac45a69f38a40435e14d20b"
 
 # shellcheck disable=SC2034
-KIND_SHA256_linux_amd64="a6875aaea358acf0ac07786b1a6755d08fd640f4c79b7a2e46681cc13f49a04b"
+KIND_SHA256_linux_amd64="eb244cbafcc157dff60cf68693c14c9a75c4e6e6fedaf9cd71c58117cb93e3fa"
 # shellcheck disable=SC2034
-KIND_SHA256_linux_arm64="5e4507a41c69679562610b1be82ba4f80693a7826f4e9c6e39236169a3e4f9d0"
+KIND_SHA256_linux_arm64="8e1014e87c34901cc422a1445866835d1e666f2a61301c27e722bdeab5a1f7e4"
 # shellcheck disable=SC2034
-KIND_SHA256_darwin_amd64="3435134325b6b9406ccfec417b13bb46a808fc74e9a2ebb0ca31b379c8293863"
+KIND_SHA256_darwin_amd64="a8b3cf77b2ad77aec5bf710d1a2589d9117576132af812885cad41e9dede4d4e"
 # shellcheck disable=SC2034
-KIND_SHA256_darwin_arm64="5240ca1acb587e1d0386532dd8c3373d81f5173b5af322919fc56f0cdd646596"
+KIND_SHA256_darwin_arm64="88bf554fe9da6311c9f8c2d082613c002911a476f6b5090e9420b35d84e70c5c"
 
 # shellcheck disable=SC2034
-KUBECTL_SHA256_linux_amd64="5de4e9f2266738fd112b721265a0c1cd7f4e5208b670f811861f699474a100a3"
+KUBECTL_SHA256_linux_amd64="123d8c8844f46b1244c547fffb3c17180c0c26dac9890589fe7e67763298748e"
 # shellcheck disable=SC2034
-KUBECTL_SHA256_linux_arm64="d595d1a26b7444e0beb122e25750ee4524e74414bbde070b672b423139295ce6"
+KUBECTL_SHA256_linux_arm64="9f9d9c44a7b5264515ac9da5991584e2395bd50662e651132337e7b4d0c56f8f"
 # shellcheck disable=SC2034
-KUBECTL_SHA256_darwin_amd64="8d36a5c66142547ad16e332942fd16a0ca2b3346d9ebaab6c348de2c70d9d875"
+KUBECTL_SHA256_darwin_amd64="06d7e9a3a26a326d43102c70b19f9d233db219d09890e558dbdc3647db732f06"
 # shellcheck disable=SC2034
-KUBECTL_SHA256_darwin_arm64="8ae6823839993bb2e394c3cf1919748e530642c625dc9100159595301f53bdeb"
+KUBECTL_SHA256_darwin_arm64="4bcf268eacdc1d2df74e37d86f639f27ca7dea3ae185b7b452b73b9fb5ddc14e"
 
 # ---------------------------------------------------------------------------
 # log — Print a timestamped log message (ISO 8601 UTC).

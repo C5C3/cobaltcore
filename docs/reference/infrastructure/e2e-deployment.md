@@ -274,9 +274,9 @@ the new release artifacts, compute `sha256sum`, and replace the values in the sc
 | Tool | Version | SHA256 Pinning |
 | --- | --- | --- |
 | chainsaw | v0.2.14 | upstream (fetched) |
-| flux | 2.5.1 | pinned |
-| kind | v0.27.0 | pinned |
-| kubectl | v1.33.1 | pinned |
+| flux | 2.8.6 | pinned |
+| kind | v0.31.0 | pinned |
+| kubectl | v1.36.0 | pinned |
 
 ## Quick Start
 
