@@ -143,6 +143,25 @@ shellcheck:
 	@echo "Linting operator rotation scripts..."
 	@shellcheck --severity=warning operators/*/internal/controller/scripts/*.sh
 
+.PHONY: chainsaw-lint
+# chainsaw-lint validates every Chainsaw test (tests/**/chainsaw-test.yaml) and
+# Chainsaw configuration (tests/**/chainsaw-config.yaml) against the Chainsaw
+# schema. Catches structural issues (typos, removed fields, schema drift after
+# a chainsaw version bump) before the heavy cluster-bound e2e-operator and
+# e2e-chaos jobs run. No cluster required — chainsaw must be on PATH (install
+# via `make install-test-deps`). xargs propagates any per-file failure as a
+# non-zero exit (123) so make fails the target as a whole; -print0/-0 keeps
+# paths with spaces safe; -r/--no-run-if-empty turns an empty find result
+# into a clean no-op instead of a `flag needs an argument` error if the
+# tests/ tree is ever restructured (GNU xargs only, matches the Linux-only
+# CI runner).
+chainsaw-lint:
+	@command -v chainsaw >/dev/null 2>&1 || { echo 'chainsaw is not installed; run `make install-test-deps` first' >&2; exit 1; }
+	@echo "Linting Chainsaw test definitions..."
+	@find tests -type f -name 'chainsaw-test.yaml' -print0 | xargs -0 -r -n1 chainsaw lint test -f
+	@echo "Linting Chainsaw configurations..."
+	@find tests -type f -name 'chainsaw-config.yaml' -print0 | xargs -0 -r -n1 chainsaw lint configuration -f
+
 .PHONY: test-shell
 # test-shell runs every shell-script unit test under tests/unit/ (CC-0085, REQ-003/REQ-005/REQ-007).
 # Each test is a self-contained bash script that uses tests/lib/assertions.sh.

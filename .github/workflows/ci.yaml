@@ -219,6 +219,21 @@ jobs:
       - name: Verify CC-0094 invalid-CR fixture drift and structure
         run: make verify-invalid-cr-fixtures
 
+  # Schema-lint every Chainsaw test (tests/**/chainsaw-test.yaml) and config
+  # (tests/{e2e,e2e-chaos}/chainsaw-config.yaml) via `chainsaw lint` so typos,
+  # removed fields, or schema drift after a chainsaw version bump fail fast —
+  # before the cluster-bound e2e-operator/e2e-chaos jobs spin up a kind cluster.
+  # Always-on: no cluster needed; chainsaw is restored from the shared testdeps
+  # cache via the same composite action setup-e2e-infra uses internally.
+  chainsaw-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: ./.github/actions/setup-test-deps
+      - name: Run chainsaw lint
+        run: make chainsaw-lint
+
   # CC-0018: Matrix over [common, keystone, c5c3] to deduplicate common coverage
   # into a single leg (review comment #7/#8).
   test:
@@ -459,7 +474,7 @@ jobs:
   # as zstd-compressed tarballs.  e2e-operator and tempest download and load
   # the artifact instead of rebuilding, saving ~5-10 min per CI run.
   build-e2e-images:
-    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures]
+    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures, chainsaw-lint]
     # always(): allow the job to run when upstream Go jobs are skipped
     # (e.g. pure E2E test-definition PRs where go=false). The explicit
     # failure/cancelled guard still blocks if any upstream actually failed.
@@ -686,7 +701,7 @@ jobs:
   # runs to consider making this job blocking and adding it to publish
   # dependencies.
   e2e-chaos:
-    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, build-e2e-images]
+    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
     # always(): allow the job to run when upstream Go jobs are skipped
     # (e.g. pure E2E test-definition PRs where go=false). The explicit
     # failure/cancelled guard still blocks if any upstream actually failed.

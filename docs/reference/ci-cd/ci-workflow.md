@@ -84,17 +84,19 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 
 ## Job Dependency DAG
 
-The workflow defines 18 jobs organised in a directed acyclic graph (CC-0018, CC-0041,
-CC-0050, CC-0052, CC-0053, CC-0054, CC-0061):
+The workflow defines 22 jobs organised in a directed acyclic graph (CC-0018, CC-0041,
+CC-0050, CC-0052, CC-0053, CC-0054, CC-0061, CC-0094):
 
 ```
 Gate Jobs (always run):
-  lint ─────────────┐
-  format-check ─────┤
-  shellcheck ───────┤
-  verify-codegen ───┤
-  test (matrix) ────┼──> build-e2e-images ──> E2E Jobs
-  test-integration ─┘
+  lint ────────────────────────┐
+  format-check ────────────────┤
+  shellcheck ──────────────────┤
+  verify-codegen ──────────────┤
+  verify-invalid-cr-fixtures ──┤
+  chainsaw-lint ───────────────┤
+  test (matrix) ───────────────┼──> build-e2e-images ──> E2E Jobs
+  test-integration ────────────┘
 
 Conditional Jobs (path-filtered via changes job):
   test-race ────> needs: [changes], if: needs.changes.outputs.go == 'true'
@@ -103,12 +105,12 @@ Conditional Jobs (path-filtered via changes job):
   docs ──────────> needs: [changes], if: needs.changes.outputs.docs == 'true'
 
 Image Build (depends on gates):
-  build-e2e-images ──> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]
+  build-e2e-images ──> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures, chainsaw-lint]
 
 E2E Jobs (depends on build-e2e-images):
   e2e-infra ──────> needs: [changes], if: needs.changes.outputs.e2e-infra == 'true'
   e2e-operator ───> needs: [changes, build-e2e-images]
-  e2e-chaos ──────> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]
+  e2e-chaos ──────> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
   tempest ────────> needs: [changes, build-e2e-images]
 
 Publish Jobs (main/tags only, depends on E2E):
@@ -206,6 +208,42 @@ The shellcheck binary is pre-installed on `ubuntu-latest` runners.
 | --- | --- | --- |
 | 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
 | 2 | `shellcheck --severity=warning hack/*.sh` | Lints all shell scripts in `hack/` |
+
+Timeout: 5 minutes.
+
+### verify-invalid-cr-fixtures
+
+Enforces the canonical-scaffold contract for the invalid-CR Chainsaw fixtures (CC-0094).
+Runs `_generate.py --check` (drift mode) and the `test_generate.py` unit suite
+(FIXTURES count + `chainsaw-test.yaml` cross-reference) so a hand-edit to any
+`02-…/03-…/…/12-*.yaml` fixture, or a rename or removal that desynchronises FIXTURES
+from `chainsaw-test.yaml`, fails the build before the heavy cluster-bound `e2e-operator`
+job runs. Always-on because the check is sub-second and `python3` is preinstalled on
+`ubuntu-latest` runners.
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 2 | `make verify-invalid-cr-fixtures` | Runs `_generate.py --check` and `test_generate.py` (CC-0094) |
+
+Timeout: 5 minutes.
+
+### chainsaw-lint
+
+Schema-lints every Chainsaw test (`tests/**/chainsaw-test.yaml`) and configuration
+(`tests/{e2e,e2e-chaos}/chainsaw-config.yaml`) via `chainsaw lint` so typos, removed
+fields, or schema drift after a chainsaw version bump fail fast — before the
+cluster-bound `e2e-operator` and `e2e-chaos` jobs spin up a kind cluster. Always-on
+because no cluster is needed: chainsaw is restored from the shared testdeps cache via
+the `setup-test-deps` composite action, the same one consumed internally by
+`setup-e2e-infra`. A schema break therefore surfaces in `needs.*.result` for both
+`build-e2e-images` and `e2e-chaos`.
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 2 | `./.github/actions/setup-test-deps` | Restores the testdeps cache and runs `make install-test-deps` (puts `chainsaw` on `PATH`) |
+| 3 | `make chainsaw-lint` | Runs `chainsaw lint test -f` and `chainsaw lint configuration -f` over every matching file under `tests/` |
 
 Timeout: 5 minutes.
 
@@ -860,6 +898,23 @@ hack/ci-run-tempest.sh
 SERVICE=keystone OUTPUT_DIR=_output/tempest hack/ci-run-tempest.sh
 ```
 
+## Composite Action: setup-test-deps
+
+`.github/actions/setup-test-deps/action.yaml`
+
+A composite GitHub Action that encapsulates the shared cache + `make install-test-deps`
+step used by every job that needs the pinned `chainsaw`/`flux`/`kind`/`kubectl` binaries.
+Extracted so the cache key, `restore-keys:`, and `PATH` wiring live in one place:
+`setup-e2e-infra` (cluster-bound jobs) and the lightweight `chainsaw-lint` job both
+consume this and inherit any future tweaks (key bump, additional pinned tool) for free.
+
+| Step | Description |
+| --- | --- |
+| 1 | Restores `$HOME/.local/bin` from cache, keyed on the hash of `hack/install-test-deps.sh` (auto-invalidates when any pinned tool version changes) |
+| 2 | Runs `make install-test-deps` (no-op on cache hit thanks to the script's skip-if-correct-version logic) and appends `~/.local/bin` to `GITHUB_PATH` |
+
+The action takes no inputs.
+
 ## Composite Action: setup-e2e-infra (CC-0050 REQ-005)
 
 `.github/actions/setup-e2e-infra/action.yaml`
@@ -874,7 +929,7 @@ internally).
 | Step | Description |
 | --- | --- |
 | 1 | Installs Flux CLI via `fluxcd/flux2/action@v2.8.3` (SHA-pinned) |
-| 2 | Runs `make install-test-deps` and adds `~/.local/bin` to `GITHUB_PATH` |
+| 2 | Delegates to the `setup-test-deps` composite action (cache restore + `make install-test-deps` + `PATH` wiring) |
 | 3 | Runs `make deploy-infra` with `SKIP_KIND_CREATE=true` |
 
 Usage in a workflow job:
@@ -1129,6 +1184,7 @@ The CI workflow depends on artifacts introduced by CC-0001, CC-0010, and CC-0050
 | `hack/ci-build-service-image.sh` | `e2e-operator`, `e2e-chaos`, `tempest` jobs | Builds OpenStack service images (CC-0050) |
 | `hack/ci-deploy-operator.sh` | `e2e-operator`, `e2e-chaos`, `tempest` jobs | Deploys operator via Helm (CC-0050) |
 | `hack/ci-run-tempest.sh` | `tempest` job | Runs Tempest API tests (CC-0050) |
+| `.github/actions/setup-test-deps/` | `chainsaw-lint` job, `setup-e2e-infra` composite action | Composite action for testdeps cache + `make install-test-deps` |
 | `.github/actions/setup-e2e-infra/` | `e2e-infra`, `e2e-operator`, `e2e-chaos`, `tempest` jobs | Composite action for infra setup (CC-0050) |
 | `.github/actions/load-e2e-images/` | `e2e-operator`, `tempest` jobs | Composite action for artifact download + zstd decompress + docker load |
 | `tests/e2e-chaos/chainsaw-config.yaml` | `e2e-chaos` job | Chaos-specific Chainsaw configuration (CC-0054) |

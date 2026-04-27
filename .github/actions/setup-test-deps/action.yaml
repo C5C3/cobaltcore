@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Composite action encapsulating the shared cache + `make install-test-deps`
+# step used by every job that needs the pinned chainsaw/flux/kind/kubectl
+# binaries. Extracted so the cache key, restore-keys, and PATH wiring stay in
+# one place: setup-e2e-infra (cluster-bound jobs) and lightweight jobs like
+# chainsaw-lint both consume this and inherit any future tweaks (key bump,
+# additional pinned tool, etc.) for free.
+
+name: Setup test dependencies
+description: >
+  Restore the shared testdeps cache and run `make install-test-deps` so the
+  pinned chainsaw/flux/kind/kubectl binaries are on PATH. No cluster required.
+
+runs:
+  using: composite
+  steps:
+    # Cache test tool binaries installed by hack/install-test-deps.sh (chainsaw,
+    # flux, kind, kubectl). The script has skip-if-correct-version logic, so a
+    # cache hit makes install-test-deps a no-op. Key on the script hash so the
+    # cache auto-invalidates when any pinned version changes.
+    - name: Cache test dependency binaries
+      uses: actions/cache@v5
+      with:
+        path: $HOME/.local/bin
+        key: ${{ runner.os }}-testdeps-${{ hashFiles('hack/install-test-deps.sh') }}
+        restore-keys: ${{ runner.os }}-testdeps-
+
+    - name: Install test dependencies
+      shell: bash
+      run: |
+        make install-test-deps
+        echo "${HOME}/.local/bin" >> "$GITHUB_PATH"

@@ -30,22 +30,10 @@ runs:
     - name: Install Flux CLI
       uses: fluxcd/flux2/action@871be9b40d53627786d3a3835a3ddba1e3234bd2 # v2.8.3
 
-    # Cache test tool binaries installed by hack/install-test-deps.sh (chainsaw,
-    # flux, kind, kubectl). The script has skip-if-correct-version logic, so a
-    # cache hit makes install-test-deps a no-op. Key on the script hash so the
-    # cache auto-invalidates when any pinned version changes.
-    - name: Cache test dependency binaries
-      uses: actions/cache@v5
-      with:
-        path: $HOME/.local/bin
-        key: ${{ runner.os }}-testdeps-${{ hashFiles('hack/install-test-deps.sh') }}
-        restore-keys: ${{ runner.os }}-testdeps-
-
-    - name: Install test dependencies
-      shell: bash
-      run: |
-        make install-test-deps
-        echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
+    # Cache + `make install-test-deps` is shared with the lightweight
+    # chainsaw-lint job — keeping it in one composite action ensures the cache
+    # key/path stay in lockstep across consumers.
+    - uses: ./.github/actions/setup-test-deps
 
     - name: Deploy infrastructure stack
       shell: bash
