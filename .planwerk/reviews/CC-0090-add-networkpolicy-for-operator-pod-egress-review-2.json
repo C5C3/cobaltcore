@@ -1,0 +1,44 @@
+{
+  "summary": "Second-round review of CC-0090 after external-review improvements. Changes address all three items from berendt's external review #1: (W-001) Chart.yaml version bumped 0.2.0 \u2192 0.3.0 with a new artifacthub.io/changes entry for the NetworkPolicy feature; (W-002) tests/e2e/keystone-operator/network-policy-egress/chainsaw-test.yaml gains a prominent SCOPE CAVEAT comment block that documents kindnet non-enforcement, Service-VIP DNAT on Calico/Cilium, and the leader-election ambiguity introduced by the second operator release, plus a follow-up note for a Calico-enabled kind CI job; (I-002) values.schema.json expands the 'cidr' description to document that the IPv6 regex half is intentionally loose and that final IPv6 validation is delegated to apiserver admission. Supporting .planwerk/ artefacts are consistent: progress phase moved awaiting_external_review \u2192 improving, external review JSON verdict flipped NEEDS_CHANGES \u2192 ADDRESSED, the 'update-documentation-when-referenced-code-behavior-changes' review pattern gained a CC-0090 entry (occurrences 6 \u2192 7), and a new 'document-cnienvironment-limitations-of-network-policy-tests' review pattern was recorded. No code-level logic changes; no new risk surface introduced.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (no test code changed in this review round; helm-unittest + chainsaw suite from round 1 still in place)", "checked": true},
+    {"item": "Edge cases are covered (schema validation + fail-closed guards unchanged)", "checked": true},
+    {"item": "Chainsaw E2E test documents its own enforcement scope (kindnet caveat now inline)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing chart conventions (version bump + artifacthub.io/changes entry mirror CC-0069 precedent)", "checked": true},
+    {"item": "No scope creep \u2014 changes strictly target the three items flagged by berendt", "checked": true},
+    {"item": "Comments explain WHY (IPv6 laxity rationale, test scope caveat), not WHAT", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No new user inputs; schema change is documentation-only (regex unchanged)", "checked": true},
+    {"item": "No secrets, no auth surface, no new egress paths introduced", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible \u2014 pure metadata + doc-comment edits", "checked": true},
+    {"item": "Chart version bump correctly follows semver for a new top-level values key (networkPolicy)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code introduced; no new abstractions", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Pre-existing fail-closed guards in templates/networkpolicy.yaml untouched", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Schema still validates CIDR pattern, port range, and boolean type", "checked": true},
+    {"item": "IPv6 laxity now explicitly documented \u2014 no hidden assumption", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Track the follow-up from the chainsaw-test SCOPE CAVEAT as an explicit ticket: a Calico- or Cilium-enabled kind CI job that re-runs this test under an enforcing CNI, ideally with a negative assertion that traffic to a non-allow-listed destination is blocked. Without that, the egress allow-list remains validated only by helm-unittest rendering, not by runtime enforcement.",
+    "Consider adding a brief link from docs/reference/keystone-operator-networkpolicy.md to the same SCOPE CAVEAT so operators reading the reference doc see the enforcement caveat without having to open the Chainsaw test file."
+  ],
+  "next_steps": [
+    "Merge: all three external-review items are addressed and no new issues were introduced by the fixes.",
+    "Open a follow-up ticket for the Calico-enabled kind CI job referenced in the chainsaw-test SCOPE CAVEAT (tracked intent, not currently scheduled)."
+  ],
+  "detected_patterns": []
+}

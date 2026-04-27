@@ -2,7 +2,7 @@
 **Review-Area**: documentation
 **Detection-Hint**: When a PR modifies script logic (e.g., file paths, arguments, invocation requirements), search the docs/ directory for references to that script and verify descriptions still match the implementation.
 **Severity**: WARNING
-**Occurrences**: 6
+**Occurrences**: 7
 
 ## What to check
 
@@ -43,3 +43,8 @@ Stale documentation misleads users into invoking tools incorrectly, leading to s
 - **Feedback**: The [test] extra was removed from pip extras resolution and replaced with test-requirements.txt detection, but there is no inline comment explaining why [test] was removed. The commit message documents the rationale but the code itself lacks context for future readers.
 - **What was missed**: When a PR removes a previously supported behavior (e.g., stripping an option, dropping a branch), verify that an inline comment near the remaining code explains why the old path was removed and where the replacement lives.
 - **Fix**: Added an inline comment above the 'Resolve pip extras' step: '# CC-0051: [test] extra removed — upstream projects list test deps in test-requirements.txt, not as a setuptools extra.'
+
+### CC-0090 — berendt
+- **Feedback**: CC-0090 introduces a significant new chart feature (opt-in NetworkPolicy for operator pod hardening) and a new top-level values key (`networkPolicy`). The `artifacthub.io/changes` annotation is not updated, so Artifact Hub consumers will not see the new feature advertised. The chart version (`0.2.0`) is also not bumped despite the chart surface growing with a new top-level key.
+- **What was missed**: On any Helm chart change that introduces a new feature, new top-level values key, or otherwise grows the chart surface, verify the chart `version` is bumped per semver and that `artifacthub.io/changes` has a new entry describing the change.
+- **Fix**: Bumped Chart.yaml version from 0.2.0 to 0.3.0 and added a new `artifacthub.io/changes` entry for CC-0090 describing the opt-in NetworkPolicy feature.

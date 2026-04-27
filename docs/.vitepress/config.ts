@@ -30,6 +30,7 @@ export default defineConfig({
           { text: 'Advanced Configuration', link: '/guides/advanced-configuration' },
           { text: 'Rotate Keystone Keys', link: '/guides/keystone-key-rotation' },
           { text: 'Multi-Tenant Deployment', link: '/guides/multi-tenant-deployment' },
+          { text: 'Enable Keystone Operator NetworkPolicy', link: '/guides/enable-keystone-operator-networkpolicy' },
         ],
       },
       {
@@ -44,6 +45,7 @@ export default defineConfig({
               { text: 'Reconciler Architecture', link: '/reference/keystone/keystone-reconciler' },
               { text: 'Upgrade Flow', link: '/reference/keystone/keystone-upgrade-flow' },
               { text: 'Schema Drift Detection', link: '/reference/keystone/keystone-schema-drift-detection' },
+              { text: 'Operator NetworkPolicy', link: '/reference/keystone/keystone-operator-networkpolicy' },
             ],
           },
           {

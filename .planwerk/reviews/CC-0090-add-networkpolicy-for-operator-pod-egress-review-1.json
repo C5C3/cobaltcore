@@ -1,0 +1,220 @@
+{
+  "feature_id": "CC-0090",
+  "feature_name": "add-networkpolicy-for-operator-pod-egress",
+  "review_iteration": 1,
+  "reviewer": "claude-opus-4-7",
+  "review_date": "2026-04-22",
+  "scope": "/worktrees/CC-0090",
+  "verdict": "NEEDS_CHANGES",
+  "summary": "CC-0090 ships a well-structured, fail-closed, opt-in chart-level NetworkPolicy that hardens the keystone-operator pod itself, with complete REQ-001..REQ-013 traceability, strict JSON schema, helm-unittest coverage, a Chainsaw E2E test on kind, and reference + how-to documentation. The code matches project conventions (selectorLabels pinning, {{ fail }} defensive guards, opt-in defaults). One BLOCKING finding: the back-link decision block in docs/reference/keystone-reconciler.md still contains the leftover 'Reviewer: please verify this placement matches intent.' phrase, which matches the external-feedback pattern 'resolve-ambiguous-commented-out-alternatives-before-merge' (CC-0065) — sourcery-ai specifically flagged this phrasing on the CC-0065 merge and it must be removed before merge. Two minor suggestions: the DNS selector schema accepts empty maps (which would match all namespaces/pods as a NetworkPolicyPeer), and the IPv4 CIDR regex is lenient on octet bounds.",
+  "checklists": {
+    "tests": {
+      "pass": [
+        "REQ-001 default-off posture covered: tests/networkpolicy_test.yaml asserts hasDocuments:0 with default values",
+        "REQ-002 default-deny verified: test 'default-deny both directions' asserts policyTypes contains Ingress and Egress with no catch-all rule",
+        "REQ-003 DNS egress rule verified: test asserts UDP 53 + TCP 53 with configured kube-system/kube-dns selectors",
+        "REQ-004 single-rule N×M kube-apiserver verified: test 'emits a single egress rule with all CIDRs and all ports' asserts one egress entry containing multiple to[] and multiple ports[]",
+        "REQ-006 fail-closed guards verified: two failedTemplate tests cover empty cidrs and empty ports at render time with the exact error message wording",
+        "REQ-007 webhook ingress fallback verified: test covers both the explicit webhookClients.cidrs path and the fallback-to-kubeApiServer.cidrs path",
+        "REQ-008 metrics ingress opt-in verified: test with empty allowMetricsFrom asserts zero metrics ingress rules; populated allowMetricsFrom test asserts peer is rendered verbatim",
+        "REQ-009 no 8081 rule verified: test 'does not render ingress rule for probe port 8081' asserts absence",
+        "REQ-005 schema validation coverage added to tests/schema_validation_test.yaml: invalid CIDR, out-of-range port, non-boolean enabled, additionalProperties rejection, empty list rejection when enabled=true",
+        "REQ-010/REQ-011 Chainsaw E2E at tests/e2e/keystone-operator/network-policy-egress/chainsaw-test.yaml installs the operator with networkPolicy.enabled=true on kind, asserts NetworkPolicy exists, applies a minimal Keystone CR, and waits for Ready=True under the restricted egress",
+        "E2E catch blocks dump operator logs (current+previous), NetworkPolicy YAML, events, and Job logs for diagnostic observability (REQ-011)"
+      ],
+      "fail": []
+    },
+    "code_quality": {
+      "pass": [
+        "Template named templates/networkpolicy.yaml matches project convention",
+        "Comment-first preamble in networkpolicy.yaml explains default-deny, each rule's purpose, and the 8081 omission with a link to the upstream 'what you can't do' doc",
+        "Fail-closed guards mirror the defensive pattern at operators/keystone/internal/controller/reconcile_networkpolicy.go:61-63 (open-empty-ports / empty-CIDR refusal) — consistent style across the operator",
+        "Selector pinning uses include \"keystone-operator.selectorLabels\" rather than hardcoding labels, so the policy follows fullnameOverride / nameOverride changes automatically",
+        "Values file documents each key inline with CC-0090 REQ-IDs, discovery command, and kind-default hints",
+        "JSON schema uses strict additionalProperties:false throughout the networkPolicy subtree, preventing silent typos like kubeAPIServer vs kubeApiServer"
+      ],
+      "fail": [
+        "docs/reference/keystone-reconciler.md:27 contains 'Reviewer: please verify this placement matches intent.' — a leftover reviewer-directed note that matches the external-feedback pattern and must be converted to a plain DECISION/NOTE comment"
+      ]
+    },
+    "security": {
+      "pass": [
+        "Default-off posture (networkPolicy.enabled=false) preserves upgrade safety on clusters without NetworkPolicy-enforcing CNIs (kindnet, bare Flannel) and makes the harden-up an explicit opt-in (REQ-001)",
+        "Ingress policyTypes included alongside Egress — default-denies inbound traffic to the operator pod, not just outbound (REQ-002)",
+        "Metrics port is default-denied; allowMetricsFrom requires explicit peer opt-in rather than a blanket allow (REQ-008)",
+        "Webhook ingress is scoped to API-server CIDRs rather than a world-open rule, and the fallback behaviour is documented",
+        "Fail-closed guards at template render time prevent the two known accidental-open-policy footguns (empty CIDRs → no destinations; empty ports → all ports open per NetworkPolicy semantics) even if schema validation is bypassed with --skip-schema-validation"
+      ],
+      "fail": []
+    },
+    "architecture": {
+      "pass": [
+        "Clear scope boundary between CC-0039 (per-CR NetworkPolicy, protects Keystone API pods) and CC-0090 (chart-level NetworkPolicy, protects the operator pod itself) — called out in both the reference doc and the how-to",
+        "Single NetworkPolicy object per release rather than split objects, matching REQ-004 and keeping the resource count minimal",
+        "Webhook client fallback (webhookClients.cidrs → kubeApiServer.cidrs when empty) is the correct default for standard clusters (API server is the sole webhook caller) with a documented escape hatch for front-ended API servers"
+      ],
+      "fail": []
+    },
+    "dry_yagni": {
+      "pass": [
+        "Template uses toYaml + nindent for dns.namespaceSelector / dns.podSelector / allowMetricsFrom rather than duplicating map-rendering logic",
+        "Single egress rule for kube-apiserver (exploiting cartesian-product NetworkPolicy semantics) instead of nested loops emitting N×M rules — minimal YAML, matches REQ-004",
+        "No premature abstractions: fallback logic is a three-line if-block, not a helper template"
+      ],
+      "fail": []
+    },
+    "fail_fast": {
+      "pass": [
+        "Template {{ fail }} with specific error messages referencing CC-0090 REQ-006 on empty cidrs or empty ports — clear diagnostics at helm render time",
+        "Schema conditional allOf enforces minItems:1 on cidrs and ports when enabled=true — caught before the template runs in the default path",
+        "E2E test catch blocks dump logs/events/NetworkPolicy YAML so a failure in CI yields enough signal to debug without re-running locally"
+      ],
+      "fail": []
+    },
+    "defensive": {
+      "pass": [
+        "Defense-in-depth: schema validation (first line) + template fail guard (backstop) on the same invariant — correctly called out in the reference doc",
+        "Fail-closed semantics: the template refuses to render rather than rendering an unsafe policy",
+        "Documentation explicitly warns that kindnet does NOT enforce NetworkPolicy, so operators on kind understand the policy is inert without a supported CNI"
+      ],
+      "fail": [
+        "networkPolicy.dns.namespaceSelector and podSelector are typed as stringMap with no minProperties constraint — an empty map renders a NetworkPolicyPeer that matches all namespaces / all pods, broadening DNS egress beyond the intended kube-dns target. Minor because the happy path populates defaults, but the schema does not prevent an operator from explicitly setting {} and getting a wider policy than they expect."
+      ]
+    }
+  },
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "id": "CC-0090-R1-001",
+      "severity": "BLOCKING",
+      "category": "external_feedback_pattern_match",
+      "classification": "[AUTO_FIX]",
+      "check_id": "pattern:resolve-ambiguous-commented-out-alternatives-before-merge",
+      "title": "Leftover 'Reviewer: please verify' note in DECISION comment (CC-0090 back-link placement)",
+      "location": "docs/reference/keystone-reconciler.md:19-28",
+      "evidence": "<!--\n  DECISION (CC-0090, REQ-012): back-link placement\n  Ambiguity: The task specified \"operator hardening section\", but this document\n  has no section by that name — it is structured by sub-reconciler contract, not\n  by security topic. The top-of-doc link block is the single location every\n  reader hits, so a pointer here reliably surfaces the operator-pod NetworkPolicy\n  reference for readers researching operator-side hardening. A second in-line\n  back-link also appears in the `reconcileNetworkPolicy` sub-condition row below\n  to clarify the CC-0039 (per-CR) vs CC-0090 (operator-pod) distinction.\n  Reviewer: please verify this placement matches intent.\n-->",
+      "rationale": "This is the exact external-feedback pattern flagged by sourcery-ai on CC-0065 ('In buildKeystoneNetworkPolicy the inline comment still contains Reviewer: please verify.; consider removing this leftover note now that the behavior is codified and covered by tests'). The documented fix in .planwerk/review_patterns/resolve-ambiguous-commented-out-alternatives-before-merge.md is to convert reviewer-directed language into a plain DECISION/NOTE comment now that the behaviour is codified and tested. The back-link has been shipped and validated end-to-end; there is no longer an open question.",
+      "fix": "Remove the 'Reviewer: please verify this placement matches intent.' line from docs/reference/keystone-reconciler.md:27. Keep the rest of the DECISION block — it is a valid rationale comment that documents why the back-link sits at the top rather than under a section called 'operator hardening'.",
+      "confidence": "HIGH"
+    },
+    {
+      "id": "CC-0090-R1-002",
+      "severity": "MINOR",
+      "category": "schema_validation",
+      "classification": "[AUTO_FIX]",
+      "check_id": "review:schema_allows_too_broad_selector",
+      "title": "networkPolicy.dns selector stringMap has no minProperties — empty map silently broadens DNS egress",
+      "location": "operators/keystone/helm/keystone-operator/values.schema.json:26-32 (stringMap definition referenced from dns.namespaceSelector / dns.podSelector at lines 217-226)",
+      "evidence": "\"stringMap\": {\n  \"description\": \"Map of string keys to string values (Kubernetes labels/selectors)\",\n  \"type\": \"object\",\n  \"additionalProperties\": {\n    \"type\": \"string\"\n  }\n}",
+      "rationale": "If an operator explicitly sets networkPolicy.dns.namespaceSelector: {} or podSelector: {}, Kubernetes interprets an empty matchLabels as matching every namespace / every pod. The rendered NetworkPolicyPeer would then permit UDP/TCP 53 egress to every pod in the cluster, not just kube-dns. This is broader than intended by the reference doc's rule table and silently undermines the defense-in-depth goal of the policy. The default values populate the selectors correctly, so the happy path is safe, but the schema does not catch a misconfigured override.",
+      "fix": "Either add minProperties: 1 to the stringMap definition (tightens everywhere it is used), or add minProperties: 1 locally on dns.namespaceSelector / dns.podSelector in the networkPolicy.dns subtree. Preferred: local constraint on the two dns selector properties, to avoid perturbing unrelated stringMap consumers. Add a schema_validation_test_yaml test case that asserts the schema rejects {} for these fields.",
+      "confidence": "HIGH"
+    },
+    {
+      "id": "CC-0090-R1-003",
+      "severity": "MINOR",
+      "category": "schema_validation",
+      "classification": "[ASK]",
+      "check_id": "review:cidr_regex_lenient_on_octet_bounds",
+      "title": "IPv4 CIDR regex accepts octets > 255 (e.g., 999.999.999.999/32)",
+      "location": "operators/keystone/helm/keystone-operator/values.schema.json:21-25",
+      "evidence": "\"cidr\": {\n  \"description\": \"IPv4 or IPv6 CIDR block (e.g., '10.96.0.1/32', '2001:db8::/32')\",\n  \"type\": \"string\",\n  \"pattern\": \"^(([0-9]{1,3}\\\\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])|[0-9a-fA-F:]+/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8]))$\"\n}",
+      "rationale": "The IPv4 branch accepts any 1-3 digit group, so '999.999.999.999/32' passes schema validation. The Kubernetes API server will reject the malformed CIDR at admission time, so cluster state never becomes corrupted — but the error surface shifts from helm-render (clear schema message) to kubectl apply (opaque admission error). Low impact because the fail-closed layer catches it before reaching the cluster, but the schema could be tighter.",
+      "fix": "Replace the IPv4 half of the pattern with a strict per-octet form, e.g. '((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\\\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)/([0-9]|[12][0-9]|3[0-2])'. Before applying, confirm the project prefers strict per-octet validation over the simpler lenient form — other projects accept the lenient form for readability.",
+      "confidence": "MEDIUM"
+    }
+  ],
+  "suggested_improvements": [
+    {
+      "id": "CC-0090-R1-S001",
+      "title": "Add helm-unittest case for schema rejection of empty DNS selectors",
+      "location": "operators/keystone/helm/keystone-operator/tests/schema_validation_test.yaml",
+      "rationale": "Pairs with finding CC-0090-R1-002. Once minProperties:1 is added, a regression test keeps the guard honest.",
+      "priority": "low"
+    },
+    {
+      "id": "CC-0090-R1-S002",
+      "title": "Cross-reference E2E test from docs/reference/keystone-operator-networkpolicy.md#testing",
+      "location": "docs/reference/keystone-operator-networkpolicy.md:180-184",
+      "rationale": "Reference doc already lists the Chainsaw path correctly; no change required. Noted as verified, not a fix.",
+      "priority": "info"
+    }
+  ],
+  "next_steps": [
+    "Remove 'Reviewer: please verify this placement matches intent.' from docs/reference/keystone-reconciler.md:27. The enclosing DECISION block should remain (it is a legitimate rationale comment); only the reviewer-directed closing sentence needs to go.",
+    "Add minProperties: 1 on networkPolicy.dns.namespaceSelector and networkPolicy.dns.podSelector (or on the shared stringMap definition) in values.schema.json, plus a corresponding rejection test in tests/schema_validation_test.yaml.",
+    "Optional: tighten the IPv4 half of the cidr regex to enforce per-octet bounds — ask the team before changing, since the current lenient form is a deliberate trade-off in some codebases.",
+    "After the two AUTO_FIX items above are applied, this feature is ready to merge. All SHALL requirements (REQ-001 through REQ-013) have passing tests, the fail-closed guards mirror the established project pattern, and documentation is complete (reference + how-to + sidebar integration)."
+  ],
+  "detected_patterns": {
+    "mandatory_patterns_matched": [
+      {
+        "name": "default-off-opt-in-for-new-chart-features",
+        "evidence": "networkPolicy.enabled defaults to false in operators/keystone/helm/keystone-operator/values.yaml:46 with CC-0090 REQ-001/REQ-005 comment explaining rationale",
+        "applied_correctly": true
+      },
+      {
+        "name": "fail-closed-template-guards-mirror-reconciler-guards",
+        "evidence": "templates/networkpolicy.yaml:27-32 uses {{ fail }} with error messages citing CC-0090 REQ-006 and referencing the defensive pattern at operators/keystone/internal/controller/reconcile_networkpolicy.go:61-63",
+        "applied_correctly": true
+      },
+      {
+        "name": "selector-labels-pinning-for-resource-targeting",
+        "evidence": "templates/networkpolicy.yaml:42-43 uses include \"keystone-operator.selectorLabels\" rather than hardcoded labels, so fullnameOverride / nameOverride propagate correctly",
+        "applied_correctly": true
+      },
+      {
+        "name": "strict-schema-additionalProperties-false",
+        "evidence": "values.schema.json:6 (root), :38 (image), :67 (resources), :210 (dns), :240 (webhookClients), etc. — additionalProperties:false set throughout the networkPolicy subtree, preventing silent typos",
+        "applied_correctly": true
+      },
+      {
+        "name": "e2e-test-covers-the-exact-code-path",
+        "evidence": "tests/e2e/keystone-operator/network-policy-egress/chainsaw-test.yaml installs the chart with networkPolicy.enabled=true and asserts a real Keystone CR reaches Ready=True under the restricted egress, not just that the NetworkPolicy object rendered",
+        "applied_correctly": true
+      },
+      {
+        "name": "requirement-id-traceability-across-code-tests-docs",
+        "evidence": "REQ-001..REQ-013 tags appear in template comments, values.yaml comments, schema descriptions, helm-unittest test names, Chainsaw test comments, and both reference and how-to docs",
+        "applied_correctly": true
+      }
+    ],
+    "external_feedback_patterns_matched": [
+      {
+        "name": "resolve-ambiguous-commented-out-alternatives-before-merge",
+        "file": ".planwerk/review_patterns/resolve-ambiguous-commented-out-alternatives-before-merge.md",
+        "severity": "BLOCKING",
+        "match": "docs/reference/keystone-reconciler.md:27 contains 'Reviewer: please verify this placement matches intent.' — identical phrasing to the sourcery-ai feedback on CC-0065 that created this review pattern. The pattern exists specifically to catch this recurring leftover.",
+        "action": "Remove the phrase; keep the surrounding DECISION block."
+      }
+    ],
+    "anti_patterns_detected": []
+  },
+  "files_reviewed": [
+    "operators/keystone/helm/keystone-operator/templates/networkpolicy.yaml",
+    "operators/keystone/helm/keystone-operator/values.yaml",
+    "operators/keystone/helm/keystone-operator/values.schema.json",
+    "operators/keystone/helm/keystone-operator/tests/networkpolicy_test.yaml",
+    "operators/keystone/helm/keystone-operator/tests/schema_validation_test.yaml",
+    "tests/e2e/keystone-operator/network-policy-egress/chainsaw-test.yaml",
+    "tests/e2e/keystone-operator/network-policy-egress/00-install-operator.yaml",
+    "tests/e2e/keystone-operator/network-policy-egress/01-keystone-cr.yaml",
+    "docs/reference/keystone-operator-networkpolicy.md",
+    "docs/how-to/enable-keystone-operator-networkpolicy.md",
+    "docs/reference/keystone-reconciler.md",
+    "docs/.vitepress/config.ts",
+    ".github/workflows/ci.yaml",
+    ".planwerk/progress/CC-0090-add-networkpolicy-for-operator-pod-egress.json"
+  ],
+  "blocking_criteria_status": {
+    "opt_in_default": "PASS — networkPolicy.enabled defaults to false (values.yaml:46)",
+    "fail_closed_guards": "PASS — templates/networkpolicy.yaml:27-32 refuses to render on empty cidrs/ports",
+    "selector_labels_pinned": "PASS — uses include \"keystone-operator.selectorLabels\"",
+    "schema_strictness": "PASS — additionalProperties:false, minItems:1 conditional, CIDR/port regex in place",
+    "req_coverage": "PASS — REQ-001..REQ-013 all have matching tests or template logic",
+    "cc_0090_references": "PASS — feature ID + REQ IDs appear in template, values, schema, tests, E2E, docs",
+    "e2e_guardrail": "PASS — Chainsaw test in tests/e2e/keystone-operator/network-policy-egress",
+    "external_feedback_patterns": "FAIL — 'Reviewer: please verify' leftover in docs/reference/keystone-reconciler.md:27"
+  }
+}

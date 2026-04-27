@@ -15,6 +15,11 @@ For CRD type definitions and webhooks, see
 used by sub-reconcilers, see
 [Kubernetes-Interacting Packages](../backend/kubernetes-packages.md).
 
+For the NetworkPolicy that hardens the **keystone-operator pod itself**
+(distinct from the per-CR NetworkPolicy emitted by
+[`reconcileNetworkPolicy`](#sub-reconciler-contracts) below), see
+[Keystone Operator NetworkPolicy](./keystone-operator-networkpolicy.md) (CC-0090).
+
 ## Controller Registration
 
 The KeystoneReconciler is registered with the controller manager in

@@ -2,8 +2,8 @@
   "feature_id": "CC-0090",
   "title": "Add NetworkPolicy for operator pod egress restriction",
   "slug": "add-networkpolicy-for-operator-pod-egress",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #127: Add NetworkPolicy for operator pod egress restriction\n\n**Category**: security | **Scope**: Small\n\n**Description**: The NetworkPolicy sub-reconciler creates policies for Keystone API pods but not for the operator Deployment itself. Add a NetworkPolicy that restricts the operator pod's egress to only the Kubernetes API server and the namespaces it needs to communicate with.\n\n**Motivation**: The operator pod currently has unrestricted network egress. If compromised, it could be used to reach arbitrary destinations. Restricting egress to only necessary endpoints reduces the blast radius.\n\n**Affected Areas**:\n- `operators/keystone/chart/templates/`\n- `operators/keystone/internal/controller/reconcile_networkpolicy.go`\n\n**Acceptance Criteria**:\n- [ ] NetworkPolicy restricts operator pod egress to kube-apiserver CIDR\n- [ ] DNS egress to kube-dns is permitted\n- [ ] Operator functions correctly with the restricted policy\n- [ ] E2E tests pass with the NetworkPolicy applied\n\n---\nSource: https://github.com/C5C3/forge/issues/127",
   "stories": [
@@ -433,6 +433,7 @@
       "title": "Add networkPolicy block to values.yaml with enabled:false default, kubeApiServer.cidrs/ports empty, dns defaults (kube-system+k8s-app=kube-dns), empty allowMetricsFrom list, and empty webhookClients override block (CC-0090, REQ-001, REQ-005)",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-005"
@@ -443,6 +444,7 @@
       "title": "Add networkPolicy schema to values.schema.json: enabled boolean default false, kubeApiServer object with cidrs (array of CIDR-pattern strings) and ports (array of integers 1-65535), dns object with enabled/namespaceSelector/podSelector, allowMetricsFrom array of peer objects, webhookClients cidrs array; add allOf conditional requiring non-empty cidrs/ports when enabled=true (CC-0090, REQ-005, REQ-006)",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-006"
@@ -453,6 +455,7 @@
       "title": "Create templates/networkpolicy.yaml gated by `if .Values.networkPolicy.enabled`; render metadata with keystone-operator.fullname+labels helpers, spec.podSelector via selectorLabels, policyTypes [Ingress, Egress] (CC-0090, REQ-001, REQ-002)",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002"
@@ -463,6 +466,7 @@
       "title": "Add fail-closed guards to templates/networkpolicy.yaml: `{{ fail }}` when kubeApiServer.cidrs or kubeApiServer.ports is empty — reference reconcile_networkpolicy.go:61-63 comment as convention (CC-0090, REQ-006)",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -472,6 +476,7 @@
       "title": "Add DNS egress rule block to templates/networkpolicy.yaml: UDP+TCP 53 with configurable namespaceSelector+podSelector, gated by networkPolicy.dns.enabled (default true) (CC-0090, REQ-003)",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -481,6 +486,7 @@
       "title": "Add kube-apiserver egress rule to templates/networkpolicy.yaml: render one egress rule with `to: []ipBlock` from cidrs and `ports: []` from ports — single rule, not one per tuple (CC-0090, REQ-004)",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -490,6 +496,7 @@
       "title": "Add webhook ingress rule to templates/networkpolicy.yaml gated by `webhook.enabled`: TCP 9443 from peers derived from networkPolicy.webhookClients.cidrs (default: reuse kubeApiServer.cidrs) (CC-0090, REQ-007)",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -499,6 +506,7 @@
       "title": "Add metrics ingress rule to templates/networkpolicy.yaml gated by non-empty networkPolicy.allowMetricsFrom: TCP metrics.port with from peers rendered verbatim from the list (CC-0090, REQ-008)",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -508,6 +516,7 @@
       "title": "Add comment block in templates/networkpolicy.yaml documenting that health probe (8081) is kubelet-local and not covered by NetworkPolicy in standard CNIs; no rule added (CC-0090, REQ-009)",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -517,6 +526,7 @@
       "title": "Author tests/networkpolicy_test.yaml helm-unittest suite with: default-off count=0, enabled-on count=1 + labels, policyTypes exact equality (CC-0090, REQ-001, REQ-002)",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002"
@@ -527,6 +537,7 @@
       "title": "Extend tests/networkpolicy_test.yaml with DNS rule tests: default selectors, overridden selectors, dns.enabled=false drops rule (CC-0090, REQ-003)",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -536,6 +547,7 @@
       "title": "Extend tests/networkpolicy_test.yaml with kube-apiserver rule tests: single CIDR+port, multiple CIDRs, multiple ports — one rule with combined lists (CC-0090, REQ-004)",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -545,6 +557,7 @@
       "title": "Extend tests/networkpolicy_test.yaml with webhook ingress tests (enabled/disabled, custom webhookClients) and metrics ingress tests (empty list, one peer, multiple peers) (CC-0090, REQ-007, REQ-008)",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-007",
         "REQ-008"
@@ -555,6 +568,7 @@
       "title": "Extend tests/networkpolicy_test.yaml with negative tests: enabled=true + empty cidrs triggers failedTemplate, enabled=true + empty ports triggers failedTemplate, no 8081 ingress rule ever rendered (CC-0090, REQ-006, REQ-009)",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-009"
@@ -565,6 +579,7 @@
       "title": "Extend tests/schema_validation_test.yaml with schema tests for networkPolicy: invalid CIDR rejected, port>65535 rejected, enabled non-boolean rejected (CC-0090, REQ-005)",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -574,6 +589,7 @@
       "title": "Create tests/e2e/keystone-operator/network-policy-egress/ directory with 00-install-operator.yaml (Helm install with networkPolicy.enabled=true for kind CIDR 10.96.0.1/32:6443) and 01-keystone-cr.yaml (minimal Keystone CR) (CC-0090, REQ-010)",
       "level": 4,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-010"
       ]
@@ -583,6 +599,7 @@
       "title": "Create tests/e2e/keystone-operator/network-policy-egress/chainsaw-test.yaml: apply fixtures, assert NetworkPolicy exists in release namespace, assert Keystone CR status.conditions[Ready]=True, catch block dumping operator logs+networkpolicy+events (CC-0090, REQ-010, REQ-011)",
       "level": 4,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-010",
         "REQ-011"
@@ -593,6 +610,7 @@
       "title": "Wire the new Chainsaw test into the operator E2E suite (tests/e2e/chainsaw-config.yaml or the keystone-operator suite entry point — follow pattern of existing tests/e2e/keystone/network-policy registration) (CC-0090, REQ-010)",
       "level": 4,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-010"
       ]
@@ -602,6 +620,7 @@
       "title": "Write docs/reference/keystone-operator-networkpolicy.md: overview, default-off posture, table of all ingress and egress rules (direction/protocol/ports/peer/values-key/default), values snippet for kind, link to values.schema.json (CC-0090, REQ-012)",
       "level": 5,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-012"
       ]
@@ -611,6 +630,7 @@
       "title": "Write docs/how-to/enable-keystone-operator-networkpolicy.md: prerequisites (CNI supports NetworkPolicy), numbered steps (gather apiserver CIDR, update values, helm upgrade), verification (operator pod still reconciles, kubectl describe networkpolicy), troubleshooting (reconcile timeouts, webhook TLS failures), See Also pointing to reference doc (CC-0090, REQ-013)",
       "level": 5,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-013"
       ]
@@ -620,6 +640,7 @@
       "title": "Add reference link from docs/index.md under the reference section and a back-link from docs/reference/keystone-reconciler.md (operator hardening section) to the new NetworkPolicy reference doc (CC-0090, REQ-012)",
       "level": 5,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-012"
       ]
@@ -845,8 +866,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-22T20:39:49.535070"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-22T20:40:24.819524"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-27T10:40:55.356175"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/268",
+  "pr_number": 268,
   "execution_history": [
     {
       "run_id": "5a73ba25-92ca-4c19-b506-9d8bb25d679d",
@@ -858,6 +889,62 @@
           "name": "prepare",
           "duration": 419.6535186767578,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "204d4093-3042-4c47-b645-6307fccc5372",
+      "timestamp": "2026-04-22T21:22:40.054503",
+      "total_duration": 2332.630278110504,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (2 tasks)",
+          "duration": 198.6335644721985,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (7 tasks)",
+          "duration": 231.05493712425232,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (6 tasks)",
+          "duration": 371.5323610305786,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (3 tasks)",
+          "duration": 525.4266140460968,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 5 (3 tasks)",
+          "duration": 399.07150888442993,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0090] Code Review",
+          "duration": 396.70547580718994,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0090] Improvements",
+          "duration": 165.92522883415222,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0090] Simplify",
+          "duration": 44.280587911605835,
+          "type": "simplify",
           "status": "done"
         }
       ]

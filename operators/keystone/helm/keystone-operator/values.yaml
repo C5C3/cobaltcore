@@ -35,3 +35,50 @@ metrics:
 serviceAccount:
   create: true
   name: ""
+
+# CC-0090 (REQ-001, REQ-005): NetworkPolicy for operator pod egress restriction.
+# Default-off (opt-in) to preserve upgrade compatibility for clusters whose
+# kube-apiserver CIDR or DNS layout does not match the defaults below.
+networkPolicy:
+  # REQ-001: When true, a NetworkPolicy is rendered that targets the operator
+  # pod and default-denies both ingress and egress except for the rules below.
+  # When false (default), no NetworkPolicy object is emitted.
+  enabled: false
+
+  # REQ-004, REQ-006: Kubernetes API server reachability. When networkPolicy is
+  # enabled, both cidrs and ports MUST be non-empty — an empty list would render
+  # an open egress rule (fail-closed guard in templates/networkpolicy.yaml).
+  # Discover the CIDR with:  kubectl get endpoints kubernetes -o json
+  # Kind default (uncomment to enable on a kind cluster):
+  #   cidrs: ["10.96.0.1/32"]
+  #   ports: [6443]
+  kubeApiServer:
+    cidrs: []
+    ports: []
+
+  # REQ-003: DNS egress. Required for kubernetes.default.svc resolution and for
+  # any hostname-based client configuration. Both UDP and TCP port 53 are
+  # permitted (TCP is used for DNS responses larger than 512 bytes).
+  dns:
+    enabled: true
+    namespaceSelector:
+      kubernetes.io/metadata.name: kube-system
+    podSelector:
+      k8s-app: kube-dns
+
+  # REQ-008: Prometheus metrics scraping. Opt-in — when empty (default), no
+  # ingress rule is rendered for the metrics port. Each list entry is a
+  # NetworkPolicyPeer rendered verbatim (namespaceSelector and/or podSelector).
+  # Example:
+  #   allowMetricsFrom:
+  #     - namespaceSelector:
+  #         matchLabels:
+  #           kubernetes.io/metadata.name: monitoring
+  allowMetricsFrom: []
+
+  # REQ-007: Webhook admission ingress source override. Only consulted when
+  # webhook.enabled=true. When cidrs is empty (default), the webhook ingress
+  # rule falls back to kubeApiServer.cidrs (the API server initiates webhook
+  # calls, so a single knob usually covers both directions).
+  webhookClients:
+    cidrs: []

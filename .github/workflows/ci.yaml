@@ -640,9 +640,19 @@ jobs:
           OPERATOR: ${{ matrix.operator }}
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator
       - name: Run E2E tests
+        env:
+          OPERATOR: ${{ matrix.operator }}
         run: |
           mkdir -p _output/reports
-          chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/${{ matrix.operator }}/
+          # CC-0090, REQ-010: Operator-chart-level tests (e.g. network-policy-egress)
+          # live under tests/e2e/<operator>-operator/ to keep them separate from
+          # the per-CR tests under tests/e2e/<operator>/. Include the directory
+          # only when it exists so operators without chart-level tests still run.
+          test_dirs=("tests/e2e/${OPERATOR}/")
+          if [ -d "tests/e2e/${OPERATOR}-operator/" ]; then
+            test_dirs+=("tests/e2e/${OPERATOR}-operator/")
+          fi
+          chainsaw test --config tests/e2e/chainsaw-config.yaml "${test_dirs[@]}"
       # CC-0050: Use shared diagnostic dump script (REQ-001).
       - name: Dump diagnostic info
         if: always()

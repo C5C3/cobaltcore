@@ -339,3 +339,137 @@ tests:
     asserts:
       - isKind:
           of: Deployment
+
+  # ---------------------------------------------------------------------------
+  # CC-0090, REQ-005: networkPolicy schema constraints
+  # ---------------------------------------------------------------------------
+  - it: should reject non-boolean networkPolicy.enabled (CC-0090, REQ-005)
+    set:
+      networkPolicy:
+        enabled: "yes"
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy/enabled.*want boolean"
+
+  - it: should reject invalid CIDR in networkPolicy.kubeApiServer.cidrs (CC-0090, REQ-005)
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs:
+            - "not-a-cidr"
+          ports: [6443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy/kubeApiServer/cidrs.*does not match pattern"
+
+  - it: should reject CIDR with out-of-range prefix length (CC-0090, REQ-005)
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs:
+            - "10.0.0.0/33"
+          ports: [6443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy/kubeApiServer/cidrs.*does not match pattern"
+
+  - it: should reject kube-apiserver port above maximum of 65535 (CC-0090, REQ-005)
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: [65536]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy/kubeApiServer/ports.*maximum"
+
+  - it: should reject kube-apiserver port below minimum of 1 (CC-0090, REQ-005)
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: [0]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy/kubeApiServer/ports.*minimum"
+
+  - it: should reject networkPolicy.enabled=true with empty cidrs (CC-0090, REQ-005, REQ-006)
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: []
+          ports: [6443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "cidrs"
+
+  - it: should reject networkPolicy.enabled=true with empty ports (CC-0090, REQ-005, REQ-006)
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: []
+    asserts:
+      - failedTemplate:
+          errorPattern: "ports"
+
+  - it: should reject unknown property in networkPolicy (CC-0090, REQ-005)
+    set:
+      networkPolicy:
+        unknownField: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "/networkPolicy.*additional properties.*not allowed"
+
+  # Note: the schema guards `networkPolicy.dns.namespaceSelector` and
+  # `networkPolicy.dns.podSelector` with `minProperties: 1` as defense-in-depth,
+  # but that constraint is not reachable through `set:` in this suite. Helm's
+  # value-coalescing treats a `{}` override as "nothing to merge" and preserves
+  # the non-empty defaults from values.yaml (`kubernetes.io/metadata.name:
+  # kube-system` / `k8s-app: kube-dns`), so the rendered selector is never
+  # empty and the schema constraint never fires. The guard still matters for a
+  # future maintainer who changes the values.yaml default to `{}`.
+
+  - it: should reject CIDR with out-of-range IPv4 octet (CC-0090, REQ-005)
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs:
+            - "999.0.0.1/32"
+          ports: [6443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy/kubeApiServer/cidrs.*does not match pattern"
+
+  - it: should accept a fully configured networkPolicy (CC-0090, REQ-005)
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs:
+            - "10.96.0.1/32"
+            - "2001:db8::/32"
+          ports: [443, 6443]
+        dns:
+          enabled: true
+          namespaceSelector:
+            kubernetes.io/metadata.name: kube-system
+          podSelector:
+            k8s-app: kube-dns
+        allowMetricsFrom:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: monitoring
+        webhookClients:
+          cidrs:
+            - "10.96.0.1/32"
+    asserts:
+      - isKind:
+          of: Deployment

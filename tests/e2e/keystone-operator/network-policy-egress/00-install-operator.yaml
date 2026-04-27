@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Helm values override for the keystone-operator network-policy-egress E2E
+# test (CC-0090, REQ-010). Consumed via `helm install -f` in chainsaw-test.yaml.
+#
+# kubeApiServer.cidrs / .ports match the kind default API server endpoint
+# (10.96.0.1:6443) so the operator can reach the API server under the
+# restricted egress policy. The same snippet is the reference kind example
+# documented in docs/reference/keystone-operator-networkpolicy.md (CC-0090,
+# REQ-012).
+#
+# webhook.enabled=false avoids conflicting with the admission webhook already
+# registered by the primary keystone-operator deployment that hack/ci-deploy-
+# operator.sh installs as part of the CI E2E bootstrap (same rationale as
+# tests/e2e/keystone/namespace-scoped-rbac/).
+image:
+  repository: ghcr.io/c5c3/keystone-operator
+  tag: dev
+  pullPolicy: Never
+replicas: 1
+webhook:
+  enabled: false
+networkPolicy:
+  enabled: true
+  kubeApiServer:
+    cidrs:
+      - 10.96.0.1/32
+    ports:
+      - 6443
