@@ -4,7 +4,7 @@ quadrant: operator
 feature: CC-0073, CC-0081
 ---
 
-# How-to: Rotate Keystone Fernet and Credential Keys
+# Rotate Keystone Fernet and Credential Keys
 
 This guide walks an operator through triggering a manual rotation of a
 Keystone instance's Fernet or credential-encryption keys, verifying each
