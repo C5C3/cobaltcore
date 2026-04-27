@@ -3,20 +3,27 @@ layout: home
 
 hero:
   name: CobaltCore Forge
-  tagline: A Kubernetes-native OpenStack distribution for operating Hosted Control Planes
+  text: Kubernetes-native OpenStack
+  tagline: Operator-driven OpenStack distribution for Hosted Control Planes
   actions:
     - theme: brand
+      text: Quick Start
+      link: /quick-start
+    - theme: alt
       text: Reference Docs
       link: /reference/keystone/keystone-crd
-    - theme: alt
-      text: Architecture Docs
-      link: https://c5c3.github.io/C5C3/
 
 features:
-  - title: Reference Documentation
-    details: API references for CRDs, CI workflows, container images, and Kubernetes packages.
-  - title: Container Images
-    details: Multi-stage builds for OpenStack service images with release-pinned dependencies.
-  - title: Kubernetes Operators
-    details: Keystone Operator and c5c3-operator for declarative OpenStack lifecycle management.
+  - title: Operators
+    details: Service operators following a shared sub-reconciler pattern, with Keystone as the reference implementation and c5c3-operator as the ControlPlane orchestration layer.
+  - title: Backend & Shared Library
+    details: Common types, conditions, config rendering, and Kubernetes helpers in internal/common/, plus Helm chart, operator packaging, and rotation scripts.
+  - title: Infrastructure Stack
+    details: Declarative FluxCD HelmReleases for OpenBao HA, External Secrets Operator, MariaDB, and Memcached.
+  - title: CI/CD & Container Images
+    details: GitHub Actions workflows for CI and image builds, plus multi-stage builds for OpenStack service images, Tempest, python-base, and the venv-builder.
+  - title: Test Suites
+    details: Unit, envtest integration, Chainsaw E2E, Tempest, and Chaos Mesh coverage across the stack.
+  - title: Day 2 Operations
+    details: Guides for observability, key rotation, multi-tenant deployment, and advanced configuration.
 ---
