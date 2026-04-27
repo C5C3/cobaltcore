@@ -8,7 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 Three operational patterns you will use most often on a running Keystone CR: scaling,
 upgrading the OpenStack release, and rotating Fernet keys.
 
-**Prerequisites:** A running Keystone CR from the [Quick Start](../quick-start.md) (Steps 1–9).
+**Prerequisites:** A running Keystone CR from the [Quick Start (Extended)](../quick-start-extended.md) (Steps 1–9).
 The examples assume the CR is named `keystone` in the `openstack` namespace.
 
 ---

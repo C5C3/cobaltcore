@@ -93,7 +93,7 @@ Chaos Mesh is **opt-in** in the kind Quick Start — the default `make deploy-in
 flow leaves the `chaos-mesh` namespace absent. Run
 `WITH_CHAOS_MESH=true make deploy-infra` before `make e2e-chaos`, or `make e2e-chaos`
 will fail its preflight check (`chaos-mesh is not installed`). See the
-[Enabling Chaos Mesh tip in Quick Start](../../quick-start.md#step-3-deploy-the-infrastructure-stack)
+[Enabling Chaos Mesh tip in Quick Start (Extended)](../../quick-start-extended.md#step-3-deploy-the-infrastructure-stack)
 for the rationale.
 :::
 

@@ -5,12 +5,12 @@ SPDX-License-Identifier: Apache-2.0
 
 # Advanced Configuration
 
-Beyond the minimal `Keystone` CR from the [Quick Start](../quick-start.md), the operator
+Beyond the minimal `Keystone` CR from the [Quick Start (Extended)](../quick-start-extended.md), the operator
 supports a number of configuration options for real cluster deployments. This guide
 walks through the four that cover the most common real-world needs and points to the
 reference for the rest.
 
-**Prerequisites:** A running Keystone CR from the [Quick Start](../quick-start.md).
+**Prerequisites:** A running Keystone CR from the [Quick Start (Extended)](../quick-start-extended.md).
 Each pattern below is an independent recipe — apply only what you need.
 
 ---

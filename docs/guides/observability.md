@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 
 How to read what the Keystone operator is doing — without tailing controller logs.
 
-**Prerequisites:** A running Keystone CR from the [Quick Start](../quick-start.md) (Steps 1–9).
+**Prerequisites:** A running Keystone CR from the [Quick Start (Extended)](../quick-start-extended.md) (Steps 1–9).
 
 The operator surfaces its state through three complementary channels:
 

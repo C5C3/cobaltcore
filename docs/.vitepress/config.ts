@@ -18,7 +18,8 @@ export default defineConfig({
       {
         text: 'Getting Started',
         items: [
-          { text: 'Quick Start (Kind)', link: '/quick-start' },
+          { text: 'Quick Start', link: '/quick-start' },
+          { text: 'Quick Start (Extended)', link: '/quick-start-extended' },
         ],
       },
       {
