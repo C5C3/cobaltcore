@@ -725,7 +725,7 @@ the Gateway's data-plane pods can reach Keystone on TCP 5000 (CC-0065, REQ-008):
 > `Gateway/openstack-gw` ships in the kind overlay
 > (`deploy/kind/base/openstack-gateway.yaml`) and is reachable on the host
 > at `https://keystone.127-0-0-1.nip.io/v3` — see the
-> [Quick Start / Access Keystone section](../quick-start.md#access-keystone-from-your-local-machine).
+> [Quick Start / Access Keystone section](../../quick-start.md#access-keystone-from-your-local-machine).
 > On a Quick Start cluster, setting `spec.gateway.parentRef.name:
 > openstack-gw` plus `hostname: keystone.127-0-0-1.nip.io` makes
 > `status.endpoint = https://keystone.127-0-0-1.nip.io/v3` actually
@@ -1196,7 +1196,7 @@ E2E test suite inventory (basic-deployment, scale, fernet-rotation,
 credential-rotation, network-policy, topology-spread, priority-class,
 release-upgrade, schema-drift-detection, events, healthcheck, graceful-shutdown,
 policy-validation, config-pruning, …), see
-[Keystone E2E Test Suites](./keystone-e2e-tests.md) (CC-0016).
+[Keystone E2E Test Suites](../testing/keystone-e2e-tests.md) (CC-0016).
 
 #### invalid-cr Suite
 

@@ -118,7 +118,7 @@ kubectl describe hpa keystone -n openstack
 ```
 
 Removing `spec.autoscaling` deletes the HPA and returns replica control to
-`spec.replicas`. See [HPA Resource Mapping in the CRD reference](../reference/keystone-crd.md#hpa-resource-mapping)
+`spec.replicas`. See [HPA Resource Mapping in the CRD reference](../reference/keystone/keystone-crd.md#hpa-resource-mapping)
 for the exact field-to-resource mapping.
 
 ---
@@ -150,7 +150,7 @@ normally not an issue because probes originate from the node, but verify in your
 cluster topology.**
 
 Removing `spec.networkPolicy` deletes the NetworkPolicy and restores unrestricted
-traffic. See the [NetworkPolicy reference](../reference/keystone-crd.md#networkpolicyspec)
+traffic. See the [NetworkPolicy reference](../reference/keystone/keystone-crd.md#networkpolicyspec)
 for the auto-derived egress rules (Keystone API → MariaDB, Memcached, DNS).
 
 ---
@@ -188,22 +188,22 @@ a link to the full reference.
 
 | Feature | Field | What it does | Reference |
 |---------|-------|--------------|-----------|
-| Credential-key rotation | `spec.credentialKeys` | Separate rotation schedule for the credential encryption key | [CredentialKeysSpec](../reference/keystone-crd.md#credentialkeysspec) |
-| Trust flush | `spec.trustFlush` | CronJob running `keystone-manage trust_flush` on a schedule | [TrustFlushSpec](../reference/keystone-crd.md#trustflushspec) |
-| uWSGI tuning | `spec.uwsgi` | Worker processes, threads, HTTP keep-alive | [UWSGISpec](../reference/keystone-crd.md#uwsgispec) |
-| Topology spread | `spec.topologySpreadConstraints` | Pod spread across zones/hostnames | [TopologySpreadConstraints](../reference/keystone-crd.md#topologyspreadconstraints) |
-| Priority class | `spec.priorityClassName` | Scheduling priority and preemption class | [PriorityClassName](../reference/keystone-crd.md#priorityclassname) |
-| Policy overrides | `spec.policyOverrides` | Custom `oslo.policy` rules (inline or ConfigMap) | [PolicySpec](../reference/keystone-crd.md#policyspec) |
-| Middleware | `spec.middleware` | Custom WSGI filters in the `api-paste.ini` pipeline | [MiddlewareSpec](../reference/keystone-crd.md#middlewarespec) |
-| Plugins | `spec.plugins` | Service-side Keystone plugins/drivers | [PluginSpec](../reference/keystone-crd.md#pluginspec) |
-| Federation | `spec.federation` | Enables Keystone federation (SAML/OIDC, Shibboleth) | [FederationSpec](../reference/keystone-crd.md#federationspec) |
-| Resource requests/limits | `spec.resources` | CPU/memory requests and limits on API pods | [KeystoneSpec](../reference/keystone-crd.md#keystonespec) |
-| Public endpoint | `spec.bootstrap.publicEndpoint` | External URL written to the Keystone service catalogue | [BootstrapSpec](../reference/keystone-crd.md#bootstrapspec) |
+| Credential-key rotation | `spec.credentialKeys` | Separate rotation schedule for the credential encryption key | [CredentialKeysSpec](../reference/keystone/keystone-crd.md#credentialkeysspec) |
+| Trust flush | `spec.trustFlush` | CronJob running `keystone-manage trust_flush` on a schedule | [TrustFlushSpec](../reference/keystone/keystone-crd.md#trustflushspec) |
+| uWSGI tuning | `spec.uwsgi` | Worker processes, threads, HTTP keep-alive | [UWSGISpec](../reference/keystone/keystone-crd.md#uwsgispec) |
+| Topology spread | `spec.topologySpreadConstraints` | Pod spread across zones/hostnames | [TopologySpreadConstraints](../reference/keystone/keystone-crd.md#topologyspreadconstraints) |
+| Priority class | `spec.priorityClassName` | Scheduling priority and preemption class | [PriorityClassName](../reference/keystone/keystone-crd.md#priorityclassname) |
+| Policy overrides | `spec.policyOverrides` | Custom `oslo.policy` rules (inline or ConfigMap) | [PolicySpec](../reference/keystone/keystone-crd.md#policyspec) |
+| Middleware | `spec.middleware` | Custom WSGI filters in the `api-paste.ini` pipeline | [MiddlewareSpec](../reference/keystone/keystone-crd.md#middlewarespec) |
+| Plugins | `spec.plugins` | Service-side Keystone plugins/drivers | [PluginSpec](../reference/keystone/keystone-crd.md#pluginspec) |
+| Federation | `spec.federation` | Enables Keystone federation (SAML/OIDC, Shibboleth) | [FederationSpec](../reference/keystone/keystone-crd.md#federationspec) |
+| Resource requests/limits | `spec.resources` | CPU/memory requests and limits on API pods | [KeystoneSpec](../reference/keystone/keystone-crd.md#keystonespec) |
+| Public endpoint | `spec.bootstrap.publicEndpoint` | External URL written to the Keystone service catalogue | [BootstrapSpec](../reference/keystone/keystone-crd.md#bootstrapspec) |
 
 ---
 
 ## Further reading
 
-- [Keystone CRD API Reference](../reference/keystone-crd.md) — complete field-by-field reference with validation rules and examples
+- [Keystone CRD API Reference](../reference/keystone/keystone-crd.md) — complete field-by-field reference with validation rules and examples
 - [Observability & Diagnostics](./observability.md) — how to verify a new configuration took effect
 - [Day 2 Operations](./day-2-operations.md) — scale, upgrade, rotate using the configured CR

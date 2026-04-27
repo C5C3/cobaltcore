@@ -238,7 +238,7 @@ This applies the kind-only overlay at `deploy/kind/chaos-mesh/`, loads the
 chaos-daemon kernel modules on the kind node, and waits for the Chaos Mesh
 HelmRelease to become Ready alongside the other operators. It is required
 before running the chaos E2E suites — see
-[Chaos E2E Tests](./reference/chaos-e2e-tests.md) for the full prerequisite
+[Chaos E2E Tests](./reference/testing/chaos-e2e-tests.md) for the full prerequisite
 list and `make e2e-chaos` workflow.
 :::
 
@@ -782,7 +782,7 @@ follow-up guides below cover everything you will actually do with the CR:
 | [Advanced Configuration](./guides/advanced-configuration.md) | Brownfield database, autoscaling, network policy, free-form INI, and pointers to every other `spec.*` option |
 
 For the full field reference of the Keystone CR, see
-[Keystone CRD API Reference](./reference/keystone-crd.md).
+[Keystone CRD API Reference](./reference/keystone/keystone-crd.md).
 
 ---
 

@@ -7,7 +7,7 @@ hero:
   actions:
     - theme: brand
       text: Reference Docs
-      link: /reference/keystone-crd
+      link: /reference/keystone/keystone-crd
     - theme: alt
       text: Architecture Docs
       link: https://c5c3.github.io/C5C3/

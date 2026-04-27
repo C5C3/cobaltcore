@@ -514,7 +514,7 @@ kind-loaded image is used instead of attempting a registry pull. Timeout: 45 min
 End-to-end chaos tests using kind cluster, Chaos Mesh, and Chainsaw (CC-0054). Builds the
 keystone operator image, deploys it alongside Chaos Mesh infrastructure, and runs the chaos
 test suites (MariaDB pod kill, Memcached pod kill, OpenBao pod kill, MariaDB network partition, MariaDB network latency). See
-[Chaos E2E Test Suites](./chaos-e2e-tests.md) for test suite details.
+[Chaos E2E Test Suites](../testing/chaos-e2e-tests.md) for test suite details.
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]`
 **Condition:** Runs only when `e2e-chaos == 'true'` or the PR has a `run-chaos` label (CC-0049 REQ-007), and no dependency failed or was cancelled.

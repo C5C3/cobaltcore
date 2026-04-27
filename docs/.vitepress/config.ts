@@ -34,19 +34,35 @@ export default defineConfig({
       {
         text: 'Reference',
         items: [
-          { text: 'Keystone CRD', link: '/reference/keystone-crd' },
-          { text: 'Keystone Controller Events', link: '/reference/keystone-events' },
-          { text: 'Keystone Reconciler Architecture', link: '/reference/keystone-reconciler' },
-          { text: 'Keystone Upgrade Flow', link: '/reference/keystone-upgrade-flow' },
-          { text: 'Keystone Schema Drift Detection', link: '/reference/keystone-schema-drift-detection' },
-          { text: 'Keystone E2E Tests', link: '/reference/keystone-e2e-tests' },
-          { text: 'Chaos E2E Tests', link: '/reference/chaos-e2e-tests' },
-          { text: 'CI Workflow', link: '/reference/ci-workflow' },
-          { text: 'Build Images Workflow', link: '/reference/build-images-workflow' },
-          { text: 'Container Images', link: '/reference/container-images' },
-          { text: 'Tempest Test Infrastructure', link: '/reference/tempest-test-infrastructure' },
-          { text: 'Infrastructure Manifests', link: '/reference/infrastructure-manifests' },
-          { text: 'Kubernetes Packages', link: '/reference/kubernetes-packages' },
+          {
+            text: 'Keystone',
+            collapsed: true,
+            items: [
+              { text: 'CRD', link: '/reference/keystone/keystone-crd' },
+              { text: 'Controller Events', link: '/reference/keystone/keystone-events' },
+              { text: 'Reconciler Architecture', link: '/reference/keystone/keystone-reconciler' },
+              { text: 'Upgrade Flow', link: '/reference/keystone/keystone-upgrade-flow' },
+              { text: 'Schema Drift Detection', link: '/reference/keystone/keystone-schema-drift-detection' },
+            ],
+          },
+          {
+            text: 'Testing',
+            collapsed: true,
+            items: [
+              { text: 'Keystone E2E Tests', link: '/reference/testing/keystone-e2e-tests' },
+              { text: 'Chaos E2E Tests', link: '/reference/testing/chaos-e2e-tests' },
+              { text: 'Tempest Test Infrastructure', link: '/reference/testing/tempest-test-infrastructure' },
+            ],
+          },
+          {
+            text: 'CI/CD',
+            collapsed: true,
+            items: [
+              { text: 'CI Workflow', link: '/reference/ci-cd/ci-workflow' },
+              { text: 'Build Images Workflow', link: '/reference/ci-cd/build-images-workflow' },
+              { text: 'Container Images', link: '/reference/ci-cd/container-images' },
+            ],
+          },
           {
             text: 'Backend',
             collapsed: true,
@@ -54,12 +70,14 @@ export default defineConfig({
               { text: 'Helm Values Schema', link: '/reference/backend/helm-values-schema' },
               { text: 'Keystone Operator Packaging', link: '/reference/backend/keystone-operator-packaging' },
               { text: 'Rotation Scripts', link: '/reference/backend/rotation-scripts' },
+              { text: 'Kubernetes Packages', link: '/reference/backend/kubernetes-packages' },
             ],
           },
           {
             text: 'Infrastructure',
             collapsed: true,
             items: [
+              { text: 'Manifests', link: '/reference/infrastructure/infrastructure-manifests' },
               { text: 'E2E Deployment', link: '/reference/infrastructure/e2e-deployment' },
               { text: 'OpenBao Bootstrap', link: '/reference/infrastructure/openbao-bootstrap' },
             ],

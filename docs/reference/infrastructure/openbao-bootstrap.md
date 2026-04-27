@@ -559,7 +559,7 @@ Common causes:
 
 ## Related Resources
 
-- [Infrastructure Manifests](../infrastructure-manifests.md) — FluxCD base deployment (CC-0008)
+- [Infrastructure Manifests](./infrastructure-manifests.md) — FluxCD base deployment (CC-0008)
 - `deploy/flux-system/releases/openbao.yaml` — OpenBao HelmRelease
 - `deploy/flux-system/infrastructure/openbao-tls-cert.yaml` — TLS Certificate
 - `deploy/eso/clustersecretstore.yaml` — ClusterSecretStore configuration

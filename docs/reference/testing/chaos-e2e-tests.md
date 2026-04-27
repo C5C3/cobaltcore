@@ -93,13 +93,13 @@ Chaos Mesh is **opt-in** in the kind Quick Start — the default `make deploy-in
 flow leaves the `chaos-mesh` namespace absent. Run
 `WITH_CHAOS_MESH=true make deploy-infra` before `make e2e-chaos`, or `make e2e-chaos`
 will fail its preflight check (`chaos-mesh is not installed`). See the
-[Enabling Chaos Mesh tip in Quick Start](../quick-start.md#step-3-deploy-the-infrastructure-stack)
+[Enabling Chaos Mesh tip in Quick Start](../../quick-start.md#step-3-deploy-the-infrastructure-stack)
 for the rationale.
 :::
 
 | Prerequisite | Details |
 | --- | --- |
-| Infrastructure stack | Deployed via `WITH_CHAOS_MESH=true make deploy-infra` (CC-0097 — opt-in path; see [Infrastructure E2E Deployment](./infrastructure/e2e-deployment.md)) |
+| Infrastructure stack | Deployed via `WITH_CHAOS_MESH=true make deploy-infra` (CC-0097 — opt-in path; see [Infrastructure E2E Deployment](../infrastructure/e2e-deployment.md)) |
 | Chaos Mesh | Installed in `chaos-mesh` namespace by the kind-only opt-in overlay at `deploy/kind/chaos-mesh/` (or by `chaos-mesh/chaos-mesh-action` in CI) |
 | Keystone operator | Deployed to the cluster with CRDs installed |
 | ESO ExternalSecrets | `keystone-admin`, `keystone-db` synced in `openstack` namespace |
@@ -139,7 +139,7 @@ Individual test suites override the assert timeout to 5 minutes (`5m`) at the sp
 
 Chaos tests run as a separate `e2e-chaos` GitHub Actions job in the CI workflow (CC-0054).
 The job is path-filtered and non-blocking while stability is being proven. See
-[CI Workflow — e2e-chaos](./ci-workflow.md#e2e-chaos) for full job documentation.
+[CI Workflow — e2e-chaos](../ci-cd/ci-workflow.md#e2e-chaos) for full job documentation.
 
 **Path filter (`e2e_chaos`):** Changes to `tests/e2e-chaos/**`, `hack/**`, `deploy/**`,
 `.github/workflows/ci.yaml`, or `.github/actions/**` trigger the job. Additionally, any Go code change — whether in
@@ -862,7 +862,7 @@ tests/e2e-chaos/
 
 ## Related Resources
 - [Keystone E2E Test Suites](./keystone-e2e-tests.md) — Happy-path E2E tests (CC-0016)
-- [Keystone Reconciler Architecture](./keystone-reconciler.md) — Sub-reconciler contracts and condition semantics (CC-0013, CC-0015)
-- [Infrastructure E2E Deployment](./infrastructure/e2e-deployment.md) — Infrastructure stack deployment (CC-0010)
+- [Keystone Reconciler Architecture](../keystone/keystone-reconciler.md) — Sub-reconciler contracts and condition semantics (CC-0013, CC-0015)
+- [Infrastructure E2E Deployment](../infrastructure/e2e-deployment.md) — Infrastructure stack deployment (CC-0010)
 - `tests/e2e-chaos/chainsaw-config.yaml` — Chaos-specific Chainsaw configuration
 - `tests/e2e-chaos/README.md` — Quick-start guide

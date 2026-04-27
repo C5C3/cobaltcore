@@ -11,11 +11,11 @@ tests validate the KeystoneReconciler's end-to-end behavior in a real Kubernetes
 with all infrastructure dependencies deployed (MariaDB, Memcached, ESO, OpenBao).
 
 For CRD validation E2E tests (`invalid-cr`), see
-[Keystone CRD API Reference](./keystone-crd.md#chainsaw-e2e-tests). For the reconciler
+[Keystone CRD API Reference](../keystone/keystone-crd.md#chainsaw-e2e-tests). For the reconciler
 architecture and sub-reconciler contracts, see
-[Keystone Reconciler Architecture](./keystone-reconciler.md). For infrastructure
+[Keystone Reconciler Architecture](../keystone/keystone-reconciler.md). For infrastructure
 deployment automation, see
-[Infrastructure E2E Deployment](./infrastructure/e2e-deployment.md).
+[Infrastructure E2E Deployment](../infrastructure/e2e-deployment.md).
 
 ## Overview
 
@@ -81,7 +81,7 @@ All test suites require the infrastructure stack to be deployed and healthy. The
 
 | Prerequisite | Details |
 | --- | --- |
-| Infrastructure stack | Deployed via `make deploy-infra` (see [Infrastructure E2E Deployment](./infrastructure/e2e-deployment.md)) |
+| Infrastructure stack | Deployed via `make deploy-infra` (see [Infrastructure E2E Deployment](../infrastructure/e2e-deployment.md)) |
 | Keystone operator | Deployed to the cluster with CRDs installed |
 | ESO ExternalSecrets | `keystone-admin`, `keystone-db` synced in `openstack` namespace |
 | MariaDB instance | `openstack-db` MariaDB CR Ready in `openstack` namespace |
@@ -856,8 +856,8 @@ tests/e2e/keystone/
 
 ## Related Resources
 
-- [Keystone CRD API Reference](./keystone-crd.md) — CRD types, webhooks, and `invalid-cr` E2E tests (CC-0011, CC-0012, CC-0094)
-- [Keystone Reconciler Architecture](./keystone-reconciler.md) — Sub-reconciler contracts and unit tests (CC-0013, CC-0015)
-- [Infrastructure E2E Deployment](./infrastructure/e2e-deployment.md) — Infrastructure stack deployment and `infra-stack-health` test (CC-0010)
+- [Keystone CRD API Reference](../keystone/keystone-crd.md) — CRD types, webhooks, and `invalid-cr` E2E tests (CC-0011, CC-0012, CC-0094)
+- [Keystone Reconciler Architecture](../keystone/keystone-reconciler.md) — Sub-reconciler contracts and unit tests (CC-0013, CC-0015)
+- [Infrastructure E2E Deployment](../infrastructure/e2e-deployment.md) — Infrastructure stack deployment and `infra-stack-health` test (CC-0010)
 - `tests/e2e/chainsaw-config.yaml` — Shared Chainsaw configuration
 - `.github/workflows/ci.yaml` — CI workflow with E2E job

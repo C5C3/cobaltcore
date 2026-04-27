@@ -20,7 +20,7 @@ immutable, content-hash-named ConfigMaps.
 For full reference documentation — including the go:embed pattern, ConfigMap mounting,
 content-hash naming, CronJob volume layout, error handling, and idempotency guarantees —
 see the sub-reconciler sections in
-[Keystone Reconciler Architecture](../keystone-reconciler.md):
+[Keystone Reconciler Architecture](../keystone/keystone-reconciler.md):
 
 - **`reconcileFernetKeys`** — Fernet key rotation script lifecycle
 - **`reconcileCredentialKeys`** — Credential key rotation script lifecycle

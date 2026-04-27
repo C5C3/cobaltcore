@@ -719,4 +719,4 @@ WITH_CHAOS_MESH=true make deploy-infra
 ```
 
 This is the prerequisite for `make e2e-chaos`. See
-[Chaos E2E Tests](./chaos-e2e-tests.md) for the full workflow.
+[Chaos E2E Tests](../testing/chaos-e2e-tests.md) for the full workflow.

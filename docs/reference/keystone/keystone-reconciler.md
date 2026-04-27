@@ -13,7 +13,7 @@ CR from desired state to a fully operational Keystone Identity Service deploymen
 For CRD type definitions and webhooks, see
 [Keystone CRD API Reference](./keystone-crd.md). For the shared library functions
 used by sub-reconcilers, see
-[Kubernetes-Interacting Packages](./kubernetes-packages.md).
+[Kubernetes-Interacting Packages](../backend/kubernetes-packages.md).
 
 ## Controller Registration
 
@@ -2652,7 +2652,7 @@ readable through the `get configmap` verb.
 
 The reconciler has comprehensive unit tests using `gomega` with `NewGomegaWithT(t)`.
 For end-to-end Chainsaw tests that validate the reconciler in a real cluster, see
-[Keystone E2E Test Suites](./keystone-e2e-tests.md) (CC-0016).
+[Keystone E2E Test Suites](../testing/keystone-e2e-tests.md) (CC-0016).
 
 ### Running Tests
 

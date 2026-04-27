@@ -13,9 +13,9 @@ and recovering when the operator rejects a staged rotation.
 
 For the reconciler-side contract (RBAC split, staging-Secret naming,
 validation rules, event reasons), see
-[Key Rotation RBAC Split](../reference/keystone-reconciler.md#key-rotation-rbac-split-cc-0081)
+[Key Rotation RBAC Split](../reference/keystone/keystone-reconciler.md#key-rotation-rbac-split-cc-0081)
 under the Fernet and credential sub-reconciler sections in
-[Keystone Reconciler Architecture](../reference/keystone-reconciler.md).
+[Keystone Reconciler Architecture](../reference/keystone/keystone-reconciler.md).
 
 > **Terminology.** In this document `<ks>` is the Keystone CR's `.metadata.name`
 > (e.g. `keystone-default`) and `<ns>` is its namespace (typically `openstack`).
@@ -188,7 +188,7 @@ kubectl -n <ns> get secret <ks>-fernet-keys-rotation -o yaml
 ```
 
 Match the event message against the operator's validation contract
-(see [Operator validation rules](../reference/keystone-reconciler.md#key-rotation-rbac-split-cc-0081)):
+(see [Operator validation rules](../reference/keystone/keystone-reconciler.md#key-rotation-rbac-split-cc-0081)):
 
 | Event message contains | Likely cause |
 | --- | --- |
@@ -254,7 +254,7 @@ aging-out (CC-0036).
 
 ## Related reference
 
-- [Key Rotation RBAC Split](../reference/keystone-reconciler.md#key-rotation-rbac-split-cc-0081) — the authoritative contract for the Fernet sub-reconciler (CC-0081).
-- [Labels and Annotations](../reference/keystone-reconciler.md#labels-and-annotations) — stable metadata keys observable by consumers (CC-0081).
+- [Key Rotation RBAC Split](../reference/keystone/keystone-reconciler.md#key-rotation-rbac-split-cc-0081) — the authoritative contract for the Fernet sub-reconciler (CC-0081).
+- [Labels and Annotations](../reference/keystone/keystone-reconciler.md#labels-and-annotations) — stable metadata keys observable by consumers (CC-0081).
 - [Rotation Scripts](../reference/backend/rotation-scripts.md) — the embedded `fernet_rotate.sh` / `credential_rotate.sh` contract (CC-0073).
 - Chainsaw tests: `tests/e2e/keystone/fernet-rotation/chainsaw-test.yaml` and `tests/e2e/keystone/credential-rotation/chainsaw-test.yaml` assert this guide's happy path and the RBAC verb split end-to-end.

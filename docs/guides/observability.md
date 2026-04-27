@@ -138,7 +138,7 @@ kubectl get events -n openstack \
 | `DowngradeNotSupported` | Warning | Target tag is older than `installedRelease` |
 | `UpgradePathInvalid` | Warning | Target tag skips a release (non-sequential) |
 
-The full catalogue is in [Keystone Controller Events](../reference/keystone-events.md).
+The full catalogue is in [Keystone Controller Events](../reference/keystone/keystone-events.md).
 
 ---
 
@@ -162,7 +162,7 @@ kubectl logs -n openstack -l app.kubernetes.io/name=keystone-operator --tail=500
 
 ## Further reading
 
-- [Keystone Controller Events](../reference/keystone-events.md) — full event reason catalogue with example messages and alerting templates
-- [Keystone Reconciler Architecture](../reference/keystone-reconciler.md) — sub-reconciler contracts and watches
-- [Keystone Upgrade Flow](../reference/keystone-upgrade-flow.md) — state machine that drives upgrade conditions
+- [Keystone Controller Events](../reference/keystone/keystone-events.md) — full event reason catalogue with example messages and alerting templates
+- [Keystone Reconciler Architecture](../reference/keystone/keystone-reconciler.md) — sub-reconciler contracts and watches
+- [Keystone Upgrade Flow](../reference/keystone/keystone-upgrade-flow.md) — state machine that drives upgrade conditions
 - [Day 2 Operations](./day-2-operations.md) — putting this observability into practice during scale, upgrade, rotation

@@ -83,7 +83,7 @@ rejected with `UpgradePathInvalid` or `DowngradeNotSupported` Warning events. Ta
 that differ only in patch suffix (`2025.2` → `2025.2-p1`) use the plain `db_sync`
 path — no upgrade pipeline.
 
-Full contract in [Keystone Upgrade Flow](../reference/keystone-upgrade-flow.md).
+Full contract in [Keystone Upgrade Flow](../reference/keystone/keystone-upgrade-flow.md).
 :::
 
 ### Rolling back a bad upgrade
@@ -152,6 +152,6 @@ kubectl delete job keystone-manual-fernet-rotate keystone-manual-credential-rota
 ## Further reading
 
 - [Observability & Diagnostics](./observability.md) — reading conditions, events, and status fields while operations run
-- [Keystone Upgrade Flow](../reference/keystone-upgrade-flow.md) — state machine, job names, retry behavior
-- [Keystone Controller Events](../reference/keystone-events.md) — full event catalogue for upgrade, rotation, and scale events
+- [Keystone Upgrade Flow](../reference/keystone/keystone-upgrade-flow.md) — state machine, job names, retry behavior
+- [Keystone Controller Events](../reference/keystone/keystone-events.md) — full event catalogue for upgrade, rotation, and scale events
 - [Advanced Configuration](./advanced-configuration.md) — brownfield DB, autoscaling, network policy, and more
