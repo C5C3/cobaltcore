@@ -34,7 +34,7 @@
 #   ADMIN_SECRET  — Secret name holding admin password (default: keystone-admin)
 #   OUTPUT_DIR    — Test output directory (default: _output/tempest)
 #   TEMPEST_IMAGE    — Tempest container image (default: c5c3/tempest:local)
-#   SERVICE_K8S_NAME — K8s Service name for port-forward (default: ${SERVICE}-tempest-2025-2-api)
+#   SERVICE_K8S_NAME — K8s Service name for port-forward (default: ${SERVICE}-tempest-2025-2)
 #   TEMPEST_CONCURRENCY — stestr worker count (default: 4). Must not exceed the
 #                   request capacity of the Keystone target (replicas × uwsgi.processes).
 #
@@ -58,9 +58,10 @@ OUTPUT_DIR="${OUTPUT_DIR:-_output/tempest}"
 TEMPEST_IMAGE="${TEMPEST_IMAGE:-c5c3/tempest:local}"
 TEMPEST_CONCURRENCY="${TEMPEST_CONCURRENCY:-4}"
 
-# Derive the service name used in k8s (e.g. keystone-tempest-2025-2-api).
-# CC-0051: Allow override for release-specific CR names (e.g. keystone-tempest-2026-1-api).
-SERVICE_K8S_NAME="${SERVICE_K8S_NAME:-${SERVICE}-tempest-2025-2-api}"
+# Derive the service name used in k8s (e.g. keystone-tempest-2025-2).
+# CC-0051: Allow override for release-specific CR names (e.g. keystone-tempest-2026-1).
+# CC-0095: bare CR name; the historical "-api" suffix was dropped.
+SERVICE_K8S_NAME="${SERVICE_K8S_NAME:-${SERVICE}-tempest-2025-2}"
 CATALOG_SVC="${SERVICE_K8S_NAME}.${NAMESPACE}.svc.cluster.local"
 
 # ---------------------------------------------------------------------------

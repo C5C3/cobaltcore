@@ -94,12 +94,13 @@ func keystoneStatusEndpoint(keystone *keystonev1alpha1.Keystone) string {
 // readiness and break KeystoneAPIReady in environments where the operator pod
 // has no Internet egress (CC-0065, CC-0067).
 func internalAPIURL(keystone *keystonev1alpha1.Keystone) string {
-	return fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", apiResourceName(keystone), keystone.Namespace)
+	return fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", subResourceName(keystone), keystone.Namespace)
 }
 
 // keystoneAPIPort is the backend Service port targeted by the HTTPRoute
-// (CC-0065, REQ-003). The Keystone API Service is named "{name}-api" and
-// listens on port 5000 in every existing deployment.
+// (CC-0065, REQ-003). The Keystone Service is named after the CR
+// (metadata.name, no suffix — CC-0095) and listens on port 5000 in every
+// existing deployment.
 const keystoneAPIPort = gatewayv1.PortNumber(5000)
 
 // requeueHTTPRouteAccepted is the interval for requeuing while waiting for a
@@ -144,7 +145,7 @@ func (r *KeystoneReconciler) reconcileHTTPRoute(ctx context.Context, keystone *k
 
 	// Path 2: gateway disabled — delete any existing HTTPRoute (CC-0065, REQ-002).
 	if keystone.Spec.Gateway == nil {
-		if err := deleteHTTPRoute(ctx, r.Client, keystone.Namespace, apiResourceName(keystone)); err != nil {
+		if err := deleteHTTPRoute(ctx, r.Client, keystone.Namespace, subResourceName(keystone)); err != nil {
 			return ctrl.Result{}, fmt.Errorf("deleting HTTPRoute: %w", err)
 		}
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
@@ -194,8 +195,8 @@ func (r *KeystoneReconciler) reconcileHTTPRoute(ctx context.Context, keystone *k
 // buildKeystoneHTTPRoute constructs the desired HTTPRoute for the Keystone API.
 // It attaches to the Gateway referenced by spec.gateway.parentRef, matches the
 // configured hostname with a PathPrefix match on spec.gateway.path (or "/" when
-// empty), and forwards to the {name}-api Service on port 5000
-// (CC-0065, REQ-001, REQ-003, REQ-006).
+// empty), and forwards to the {name} Service on port 5000 (CC-0095 dropped the
+// historical -api suffix; CC-0065, REQ-001, REQ-003, REQ-006).
 func buildKeystoneHTTPRoute(keystone *keystonev1alpha1.Keystone) *gatewayv1.HTTPRoute {
 	gw := keystone.Spec.Gateway
 
@@ -222,7 +223,7 @@ func buildKeystoneHTTPRoute(keystone *keystonev1alpha1.Keystone) *gatewayv1.HTTP
 
 	route := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      apiResourceName(keystone),
+			Name:      subResourceName(keystone),
 			Namespace: keystone.Namespace,
 			Labels:    commonLabels(keystone),
 		},
@@ -246,7 +247,7 @@ func buildKeystoneHTTPRoute(keystone *keystonev1alpha1.Keystone) *gatewayv1.HTTP
 							BackendRef: gatewayv1.BackendRef{
 								BackendObjectReference: gatewayv1.BackendObjectReference{
 									Kind: ptr.To(gatewayv1.Kind("Service")),
-									Name: gatewayv1.ObjectName(apiResourceName(keystone)),
+									Name: gatewayv1.ObjectName(subResourceName(keystone)),
 									Port: ptr.To(keystoneAPIPort),
 								},
 							},

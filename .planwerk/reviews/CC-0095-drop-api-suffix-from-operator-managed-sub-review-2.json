@@ -1,0 +1,58 @@
+{
+  "summary": "Review of the c0eda157 commit addressing sourcery-ai[bot] external review #1. Two external bugs were fixed (literal-scan self-trip in scripts/grep-keystone-api-residue.sh; missing verb in docs/reference/keystone-upgrade-flow.md) and one high-level suggestion was applied (rename apiResourceName → subResourceName across the helper, all 5 call sites, tests, doc comments, and the chaos-e2e fixture). The script was also hardened with an EXCLUDED_ROOTS array plus a top-level-directory completeness guard that exits 2 on a newly added unclassified directory. The rename is mechanical and complete: only one residual textual reference to apiResourceName remains, intentionally, in the helper's doc-comment to document the rename. Residue scanner reports clean (30 occurrences, all annotated). go vet and the renamed unit tests pass.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (TestSubResourceName_*, TestBootstrapServiceURL_*)", "checked": true},
+    {"item": "Test names updated atomically with the helper rename (no stale Test*ApiResourceName* identifier)", "checked": true},
+    {"item": "Edge cases covered (empty CR name, CR name containing -api literally)", "checked": true},
+    {"item": "Residue scanner self-test: bash scripts/grep-keystone-api-residue.sh exits 0 on the current tree", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Helper rename propagated to every call site, test, doc comment, and downstream fixture", "checked": true},
+    {"item": "No partial rename: grep for apiResourceName returns only the single intentional doc-comment reference at reconcile_hpa.go:29", "checked": true},
+    {"item": "Search-root list now has explicit exclusion rationales (architecture, internal, scripts, releases, images, LICENSES) so future top-level additions cannot silently bypass the residue gate", "checked": true},
+    {"item": "Self-exclusion symmetric across both literal and templated scans of grep-keystone-api-residue.sh", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No new external inputs introduced; helper rename is a no-op semantically", "checked": true},
+    {"item": "Script invokes grep with a fixed pattern set; no caller-influenced interpolation", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Helper name now matches its semantics (returns bare CR name for all sub-resource kinds, not just API)", "checked": true},
+    {"item": "bootstrapServiceURL still composes the host segment via the helper; no parallel naming convention reintroduced", "checked": true},
+    {"item": "Residue gate has a structural completeness check (declared_roots vs visible top-level dirs) rather than only an at-runtime existence check", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated logic introduced; the rename is purely a single-symbol search-and-replace plus three new doc/comment lines", "checked": true},
+    {"item": "EXCLUDED_ROOTS is the minimum addition required to satisfy the completeness guard — no speculative scaffolding", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Script exits 2 (distinct from 1) when a newly added top-level directory is neither scanned nor excluded — surfaces misconfiguration loudly", "checked": true},
+    {"item": "Script exits 1 with a per-line listing of unmarked residue, not a generic message", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Self-exclusion of the script applied to BOTH literal and templated scans, not just one", "checked": true},
+    {"item": "Hidden top-level directories (.git, .github, .planwerk) deliberately skipped by the completeness check with a comment explaining why", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "D2",
+      "severity": "MINOR",
+      "description": "Awkward inline 'CC-0095 legacy' marker placed mid-sentence in the subResourceName doc-comment hurts readability. Line 27 reads `// the historical \"{name}-api\" framing was dropped to align internal Service // CC-0095 legacy: pre-rename name referenced for traceability.` — the second `//` in the middle of a sentence forces the reader to parse a double comment, and the prose continues on the next line as if the marker weren't there. The marker is required only because the line contains the templated literal `{name}-api` that the residue scanner matches. A cleaner alternative is to rephrase the prose to refer to \"the historical `-api` suffix\" (no templated literal, no marker needed). The current form is functional and the residue scanner accepts it; this is a readability nit, not a correctness defect.",
+      "location": "operators/keystone/internal/controller/reconcile_hpa.go:27",
+      "fix": "Replace the templated literal in the prose with a non-templated description so no inline marker is needed: `// place. Since CC-0095 the helper returns the bare CR name with no suffix — the historical -api suffix was dropped to align internal Service DNS with the public hostname posture established by CC-0088.` Then drop the inline `// CC-0095 legacy: ...` fragment.",
+      "evidence": "// place. Since CC-0095 the helper returns the bare CR name with no suffix —\n// the historical \"{name}-api\" framing was dropped to align internal Service // CC-0095 legacy: pre-rename name referenced for traceability.\n// DNS with the public hostname posture established by CC-0088. The name is",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider replacing the templated `{name}-api` literal in the subResourceName doc-comment (operators/keystone/internal/controller/reconcile_hpa.go:27) with prose like 'the historical -api suffix' so the residue-scanner marker is not needed mid-sentence; this resolves the only readability nit in this round.",
+    "The EXCLUDED_ROOTS array now lists `releases` with the rationale 'generated install manifests; sourced from operators/ which is scanned'. If `releases/` later starts containing hand-edited content rather than purely generated output, that exclusion becomes a silent gap. Consider revisiting if the directory's purpose changes."
+  ],
+  "next_steps": [
+    "Optional: apply the AUTO_FIX in reconcile_hpa.go:27 to remove the inline comment placement; everything else is good to merge."
+  ],
+  "detected_patterns": []
+}

@@ -189,7 +189,7 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-concurrent-a-api
+            name: keystone-concurrent-a
             namespace: openstack
           status:
             availableReplicas: 1
@@ -198,7 +198,7 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-concurrent-b-api
+            name: keystone-concurrent-b
             namespace: openstack
           status:
             availableReplicas: 1
@@ -207,7 +207,7 @@ spec:
           apiVersion: v1
           kind: Service
           metadata:
-            name: keystone-concurrent-a-api
+            name: keystone-concurrent-a
             namespace: openstack
           spec:
             ports:
@@ -217,7 +217,7 @@ spec:
           apiVersion: v1
           kind: Service
           metadata:
-            name: keystone-concurrent-b-api
+            name: keystone-concurrent-b
             namespace: openstack
           spec:
             ports:
@@ -282,14 +282,14 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-concurrent-a-api
+            name: keystone-concurrent-a
             namespace: openstack
     - error:
         resource:
           apiVersion: v1
           kind: Service
           metadata:
-            name: keystone-concurrent-a-api
+            name: keystone-concurrent-a
             namespace: openstack
     - error:
         resource:
@@ -347,7 +347,7 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-concurrent-b-api
+            name: keystone-concurrent-b
             namespace: openstack
           status:
             availableReplicas: 1

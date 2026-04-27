@@ -40,13 +40,13 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-resources-api
+            name: keystone-resources
             namespace: openstack
           spec:
             template:
               spec:
                 containers:
-                - name: keystone-api
+                - name: keystone
                   resources:
                     requests:
                       memory: 256Mi
@@ -74,7 +74,7 @@ spec:
             kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
           done
           echo "=== Deployment resources ==="
-          kubectl get deployment keystone-resources-api -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].resources}' 2>&1 || true
+          kubectl get deployment keystone-resources -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].resources}' 2>&1 || true
           echo ""
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
@@ -89,13 +89,13 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-resources-api
+            name: keystone-resources
             namespace: openstack
           spec:
             template:
               spec:
                 containers:
-                - name: keystone-api
+                - name: keystone
                   resources:
                     requests:
                       memory: 512Mi
@@ -108,7 +108,7 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-resources-api
+            name: keystone-resources
             namespace: openstack
           status:
             (updatedReplicas): 3

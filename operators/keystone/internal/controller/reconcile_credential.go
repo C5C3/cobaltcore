@@ -319,7 +319,7 @@ func credentialRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapNam
 								Image: image,
 								// TODO(CC-0042): Wire spec.Resources (or a smaller Job-specific default) to
 								// this container. Currently runs as BestEffort QoS. See reconcile_deployment.go
-								// containerResources() for the pattern used by the keystone-api container.
+								// containerResources() for the pattern used by the keystone container (CC-0095).
 								Command:         []string{"/scripts/credential_rotate.sh"},
 								SecurityContext: restrictedSecurityContext(),
 								Env: []corev1.EnvVar{

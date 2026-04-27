@@ -965,7 +965,7 @@ main() {
   # EnvoyProxy CR (applied via the infrastructure overlay above) binds
   # its parametersRef on GatewayClass/envoy — so this wait must run
   # AFTER Step 5, not between Phase 3 and Step 5. Downstream HTTPRoute
-  # resources (operator-created from keystone-api spec.gateway) need a
+  # resources (operator-created from the Keystone CR's spec.gateway) need a
   # Programmed listener to bind to (CC-0088, REQ-005).
   wait_for_gateway_programmed openstack-gw openstack "${HELMRELEASE_TIMEOUT}"
 

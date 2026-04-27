@@ -186,7 +186,7 @@ run_tempest() {
   local admin_password="$1"
   local release_slug="${RELEASE//./-}"
   local config_dir="${REPO_ROOT}/tests/tempest/${SERVICE}-${release_slug}"
-  local svc_name="${SERVICE_NAME:-${SERVICE}-api}"
+  local svc_name="${SERVICE_NAME:-${SERVICE}}"
 
   # Ensure output directory is writable by the container user (UID 42424 / openstack).
   mkdir -p "${OUTPUT_DIR}"

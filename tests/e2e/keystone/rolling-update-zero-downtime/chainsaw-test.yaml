@@ -57,7 +57,7 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-rolling-update-api
+            name: keystone-rolling-update
             namespace: openstack
           spec:
             replicas: 3
@@ -134,7 +134,7 @@ spec:
                     # during an image-tag rolling update. Records any 5xx or
                     # connection-reset response as a failure.
                     import sys, time, urllib.request, urllib.error
-                    TARGET = "http://keystone-rolling-update-api.openstack.svc:5000/v3"
+                    TARGET = "http://keystone-rolling-update.openstack.svc:5000/v3"
                     DURATION = 60
                     INTERVAL = 0.25
                     TIMEOUT = 3.0
@@ -229,7 +229,7 @@ spec:
           # tests/e2e-chaos/memcached-pod-kill/chainsaw-test.yaml:64,
           # tests/e2e-chaos/operator-pod-kill/chainsaw-test.yaml:74
           # (CC-0084, review #2 W-002).
-          EXPECTED_REPLICAS=$(kubectl -n openstack get deploy keystone-rolling-update-api \
+          EXPECTED_REPLICAS=$(kubectl -n openstack get deploy keystone-rolling-update \
             -o jsonpath='{.spec.replicas}')
           if [ -z "$EXPECTED_REPLICAS" ]; then
             echo "FAIL: could not read .spec.replicas from deployment"
@@ -239,10 +239,10 @@ spec:
           MIN=999
           SAMPLES=0
           while [ $(date +%s) -lt $DEADLINE ]; do
-            AVAIL=$(kubectl -n openstack get deploy keystone-rolling-update-api \
+            AVAIL=$(kubectl -n openstack get deploy keystone-rolling-update \
               -o jsonpath='{.status.availableReplicas}' 2>/dev/null || echo 0)
             AVAIL="${AVAIL:-0}"
-            UPDATED=$(kubectl -n openstack get deploy keystone-rolling-update-api \
+            UPDATED=$(kubectl -n openstack get deploy keystone-rolling-update \
               -o jsonpath='{.status.updatedReplicas}' 2>/dev/null || echo 0)
             UPDATED="${UPDATED:-0}"
             SAMPLES=$((SAMPLES + 1))
@@ -252,7 +252,7 @@ spec:
             echo "t=$(date +%s) sample=$SAMPLES availableReplicas=$AVAIL updatedReplicas=$UPDATED min=$MIN"
             if [ "$AVAIL" -lt "$EXPECTED_REPLICAS" ]; then
               echo "FAIL: availableReplicas=$AVAIL dropped below spec.replicas=$EXPECTED_REPLICAS"
-              kubectl -n openstack get deploy keystone-rolling-update-api -o yaml || true
+              kubectl -n openstack get deploy keystone-rolling-update -o yaml || true
               kubectl -n openstack get pods -l app.kubernetes.io/instance=keystone-rolling-update -o wide || true
               exit 1
             fi
@@ -267,7 +267,7 @@ spec:
     - script:
         content: |
           echo "=== Deployment status ==="
-          kubectl -n $NAMESPACE get deploy keystone-rolling-update-api -o yaml 2>&1 || true
+          kubectl -n $NAMESPACE get deploy keystone-rolling-update -o yaml 2>&1 || true
           echo "=== Deployment pods ==="
           kubectl -n $NAMESPACE get pods -l app.kubernetes.io/instance=keystone-rolling-update -o wide 2>&1 || true
           echo "=== Events ==="
@@ -339,7 +339,7 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-rolling-update-api
+            name: keystone-rolling-update
             namespace: openstack
           spec:
             replicas: 3
@@ -361,7 +361,7 @@ spec:
               reason: AllReady
     - script:
         content: |
-          IMAGE=$(kubectl -n $NAMESPACE get deploy keystone-rolling-update-api \
+          IMAGE=$(kubectl -n $NAMESPACE get deploy keystone-rolling-update \
             -o jsonpath='{.spec.template.spec.containers[0].image}')
           echo "Deployment image: $IMAGE"
           echo "$IMAGE" | grep -q '2025.2-upgraded'

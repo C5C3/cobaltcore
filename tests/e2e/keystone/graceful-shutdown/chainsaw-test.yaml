@@ -63,14 +63,14 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-graceful-shutdown-api
+            name: keystone-graceful-shutdown
             namespace: openstack
           spec:
             template:
               spec:
                 terminationGracePeriodSeconds: 30
                 containers:
-                - name: keystone-api
+                - name: keystone
                   lifecycle:
                     preStop:
                       exec:
@@ -88,6 +88,6 @@ spec:
     - script:
         content: |
           echo "=== Deployment spec ==="
-          kubectl get deployment keystone-graceful-shutdown-api -n $NAMESPACE -o yaml 2>&1 || true
+          kubectl get deployment keystone-graceful-shutdown -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

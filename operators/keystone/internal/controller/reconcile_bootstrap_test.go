@@ -143,7 +143,7 @@ func TestReconcileBootstrap_JobCreated(t *testing.T) {
 	g.Expect(container.Name).To(Equal("bootstrap"))
 	g.Expect(container.Command[:3]).To(Equal([]string{"/bin/sh", "-eu", "-c"}))
 	g.Expect(container.Command[3]).To(ContainSubstring("keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap"))
-	expectedServiceURL := fmt.Sprintf("http://%s-api.%s.svc.cluster.local:5000/v3", ks.Name, ks.Namespace)
+	expectedServiceURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", ks.Name, ks.Namespace)
 	g.Expect(container.Command[3]).To(ContainSubstring(expectedServiceURL))
 	g.Expect(container.Command[3]).To(ContainSubstring("--bootstrap-region-id RegionOne"))
 	g.Expect(container.Args).To(BeNil())
@@ -347,7 +347,7 @@ func TestReconcileBootstrap_PublicEndpoint(t *testing.T) {
 
 	container := createdJob.Spec.Template.Spec.Containers[0]
 	// Admin and internal URLs should use cluster-local service.
-	internalURL := fmt.Sprintf("http://%s-api.%s.svc.cluster.local:5000/v3", ks.Name, ks.Namespace)
+	internalURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", ks.Name, ks.Namespace)
 	g.Expect(container.Command[3]).To(ContainSubstring("--bootstrap-admin-url " + internalURL))
 	g.Expect(container.Command[3]).To(ContainSubstring("--bootstrap-internal-url " + internalURL))
 	// Public URL should use the explicit PublicEndpoint (CC-0013).
@@ -484,4 +484,66 @@ func TestBuildBootstrapJob_PreInsertScriptReadsDBConnectionEnvVar(t *testing.T) 
 		"pre-insert script must still fall back to keystone.conf when the env var is unset (CC-0080, C-001)")
 	g.Expect(script).To(MatchRegexp(`(?s)os\.environ\.get\("OS_DATABASE__CONNECTION"\).*configparser`),
 		"env-var lookup must precede the configparser fallback (CC-0080, C-001)")
+}
+
+// TestBootstrapServiceURL_ComposesViaHelper verifies that
+// bootstrapServiceURL() composes its return value from subResourceName(),
+// the namespace, and the :5000/v3 suffix (CC-0095, REQ-002). The helper
+// output is the single source of truth for the host segment.
+func TestBootstrapServiceURL_ComposesViaHelper(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := bootstrapKeystone()
+	ks.Name = "keystone"
+	ks.Namespace = "openstack"
+
+	url := bootstrapServiceURL(ks)
+
+	g.Expect(url).To(Equal("http://keystone.openstack.svc.cluster.local:5000/v3"),
+		"bootstrapServiceURL must produce host == subResourceName(ks) (CC-0095, REQ-002)")
+	g.Expect(url).To(ContainSubstring(subResourceName(ks)),
+		"bootstrapServiceURL host segment must equal subResourceName(ks) so future helper changes propagate (CC-0095, REQ-002)")
+}
+
+// TestBootstrapServiceURL_NoApiLiteral guards against re-introducing the
+// literal "-api." substring in the bootstrap URL (CC-0095, REQ-002). After
+// the rename the URL must not contain the legacy suffix in any form.
+func TestBootstrapServiceURL_NoApiLiteral(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := bootstrapKeystone()
+	ks.Name = "keystone"
+	ks.Namespace = "openstack"
+
+	url := bootstrapServiceURL(ks)
+
+	g.Expect(url).NotTo(ContainSubstring("-api."),
+		"bootstrapServiceURL must not contain the legacy '-api.' suffix (CC-0095, REQ-002)")
+	g.Expect(url).NotTo(ContainSubstring("-api:"),
+		"bootstrapServiceURL must not contain a stray '-api:' segment (CC-0095, REQ-002)")
+}
+
+// TestBuildBootstrapJob_AdminInternalURLsUseBareName pins the bootstrap
+// command's --bootstrap-admin-url and --bootstrap-internal-url flags to the
+// bare-CR-name Service URL produced by bootstrapServiceURL(). After the
+// CC-0095 rename these flags must never embed the legacy "-api." segment in
+// the host: any drift would write a stale catalog entry on the next bootstrap
+// run, sending in-cluster clients to a non-existent Service (CC-0095,
+// REQ-002, REQ-005).
+func TestBuildBootstrapJob_AdminInternalURLsUseBareName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := bootstrapKeystone()
+
+	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
+
+	g.Expect(job.Spec.Template.Spec.Containers).To(HaveLen(1))
+	script := job.Spec.Template.Spec.Containers[0].Command[3]
+
+	expectedURL := bootstrapServiceURL(ks)
+	g.Expect(script).To(ContainSubstring("--bootstrap-admin-url "+expectedURL),
+		"--bootstrap-admin-url must use the bare-CR-name Service URL (CC-0095, REQ-002, REQ-005)")
+	g.Expect(script).To(ContainSubstring("--bootstrap-internal-url "+expectedURL),
+		"--bootstrap-internal-url must use the bare-CR-name Service URL (CC-0095, REQ-002, REQ-005)")
+
+	legacyHost := fmt.Sprintf("%s-api.%s.svc.cluster.local", ks.Name, ks.Namespace)
+	g.Expect(script).NotTo(ContainSubstring(legacyHost),
+		"bootstrap script must not embed the legacy `<cr-name>-api.<ns>` host (CC-0095, REQ-002, REQ-005)") // CC-0095 legacy: assertion pins absence of the pre-rename host.
 }

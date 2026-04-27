@@ -90,7 +90,7 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-basic-api
+            name: keystone-basic
             namespace: openstack
           status:
             (availableReplicas > `0`): true
@@ -99,7 +99,7 @@ spec:
           apiVersion: v1
           kind: Service
           metadata:
-            name: keystone-basic-api
+            name: keystone-basic
             namespace: openstack
           spec:
             ports:
@@ -109,7 +109,7 @@ spec:
           apiVersion: policy/v1
           kind: PodDisruptionBudget
           metadata:
-            name: keystone-basic-api
+            name: keystone-basic
             namespace: openstack
             labels:
               app.kubernetes.io/name: keystone
@@ -218,4 +218,4 @@ spec:
         timeout: 30s
         content: |
           kubectl run curl-test-basic --image=ghcr.io/c5c3/keystone:2025.2 --rm -i --restart=Never \
-            --command -- python3 -c "import urllib.request; print(urllib.request.urlopen('http://keystone-basic-api.openstack.svc:5000/v3').read().decode())"
+            --command -- python3 -c "import urllib.request; print(urllib.request.urlopen('http://keystone-basic.openstack.svc:5000/v3').read().decode())"

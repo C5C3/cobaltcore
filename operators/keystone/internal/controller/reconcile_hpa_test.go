@@ -76,6 +76,39 @@ func newHPATestReconciler(s *runtime.Scheme, objs ...client.Object) *KeystoneRec
 
 func int32Ptr(v int32) *int32 { return &v }
 
+// TestSubResourceName_ReturnsCRNameWithoutSuffix verifies that the
+// subResourceName helper returns the bare CR name with no "-api" suffix
+// (CC-0095, REQ-001). The helper is the single source of truth for sub-resource
+// names; flipping it here propagates through every builder (Deployment, HPA,
+// Service, PDB, NetworkPolicy, HTTPRoute).
+func TestSubResourceName_ReturnsCRNameWithoutSuffix(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	// Plain CR name → returned verbatim.
+	ks := &keystonev1alpha1.Keystone{ObjectMeta: metav1.ObjectMeta{Name: "test-keystone"}}
+	g.Expect(subResourceName(ks)).To(Equal("test-keystone"),
+		"subResourceName must return CR name with no '-api' suffix (CC-0095, REQ-001)")
+
+	// CR name that itself contains '-api' → suffix is NOT stripped from the
+	// CR name, only the helper's own suffix is dropped. This protects fixtures
+	// like the e2e-chaos `keystone-chaos-api` CR from regressing to
+	// `keystone-chaos-api-api` or being incorrectly truncated.
+	chaosKS := &keystonev1alpha1.Keystone{ObjectMeta: metav1.ObjectMeta{Name: "keystone-chaos-api"}}
+	g.Expect(subResourceName(chaosKS)).To(Equal("keystone-chaos-api"),
+		"subResourceName must preserve CR names that contain '-api' (CC-0095, REQ-001)")
+}
+
+// TestSubResourceName_EmptyCRName verifies that an empty CR name yields an
+// empty result rather than a synthetic "-api" artefact (CC-0095, REQ-001).
+// Empty-name input is the responsibility of CRD validation, not this helper.
+func TestSubResourceName_EmptyCRName(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ks := &keystonev1alpha1.Keystone{ObjectMeta: metav1.ObjectMeta{Name: ""}}
+	g.Expect(subResourceName(ks)).To(Equal(""),
+		"subResourceName must return empty string for empty CR name (CC-0095, REQ-001)")
+}
+
 // --- Path 1: autoscaling enabled — create HPA (REQ-001) ---
 
 func TestReconcileHPA_AutoscalingSet_CreatesHPA(t *testing.T) {
@@ -94,7 +127,7 @@ func TestReconcileHPA_AutoscalingSet_CreatesHPA(t *testing.T) {
 
 	var hpa autoscalingv2.HorizontalPodAutoscaler
 	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &hpa)).To(Succeed())
 
 	g.Expect(hpa.OwnerReferences).To(HaveLen(1))
@@ -162,7 +195,7 @@ func TestReconcileHPA_AutoscalingEnabled_HPAUpdated(t *testing.T) {
 
 	var hpa autoscalingv2.HorizontalPodAutoscaler
 	g.Expect(r.Client.Get(ctx, types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &hpa)).To(Succeed())
 
 	g.Expect(hpa.Spec.MaxReplicas).To(Equal(int32(20)))
@@ -195,14 +228,14 @@ func TestReconcileHPA_AutoscalingNil_ExistingHPA_DeletesHPA(t *testing.T) {
 	// Pre-create an HPA as if autoscaling was previously enabled.
 	existingHPA := &autoscalingv2.HorizontalPodAutoscaler{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-keystone-api",
+			Name:      "test-keystone",
 			Namespace: "default",
 		},
 		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
 			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
 				APIVersion: "apps/v1",
 				Kind:       "Deployment",
-				Name:       "test-keystone-api",
+				Name:       "test-keystone",
 			},
 			MaxReplicas: 10,
 		},
@@ -213,7 +246,7 @@ func TestReconcileHPA_AutoscalingNil_ExistingHPA_DeletesHPA(t *testing.T) {
 	// Verify HPA exists before reconcile.
 	var hpa autoscalingv2.HorizontalPodAutoscaler
 	g.Expect(r.Client.Get(ctx, types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &hpa)).To(Succeed())
 
 	// reconcileHPA with nil autoscaling should delete the HPA.
@@ -223,7 +256,7 @@ func TestReconcileHPA_AutoscalingNil_ExistingHPA_DeletesHPA(t *testing.T) {
 
 	// Verify HPA was deleted.
 	err = r.Get(ctx, types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &hpa)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(client.IgnoreNotFound(err)).To(Succeed())
@@ -280,14 +313,14 @@ func TestReconcileHPA_DeleteError_Propagated(t *testing.T) {
 
 	existingHPA := &autoscalingv2.HorizontalPodAutoscaler{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-keystone-api",
+			Name:      "test-keystone",
 			Namespace: "default",
 		},
 		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
 			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
 				APIVersion: "apps/v1",
 				Kind:       "Deployment",
-				Name:       "test-keystone-api",
+				Name:       "test-keystone",
 			},
 			MaxReplicas: 10,
 		},
@@ -331,11 +364,11 @@ func TestBuildKeystoneHPA_ScaleTargetRef(t *testing.T) {
 
 	hpa := buildKeystoneHPA(ks)
 
-	g.Expect(hpa.Name).To(Equal("test-keystone-api"))
+	g.Expect(hpa.Name).To(Equal("test-keystone"))
 	g.Expect(hpa.Namespace).To(Equal("default"))
 	g.Expect(hpa.Spec.ScaleTargetRef.APIVersion).To(Equal("apps/v1"))
 	g.Expect(hpa.Spec.ScaleTargetRef.Kind).To(Equal("Deployment"))
-	g.Expect(hpa.Spec.ScaleTargetRef.Name).To(Equal("test-keystone-api"))
+	g.Expect(hpa.Spec.ScaleTargetRef.Name).To(Equal("test-keystone"))
 }
 
 func TestBuildKeystoneHPA_Labels(t *testing.T) {
@@ -474,4 +507,28 @@ func TestBuildKeystoneHPA_MinReplicasDefaultIndependentOfPointer(t *testing.T) {
 	g.Expect(*hpa.Spec.MinReplicas).To(Equal(int32(5)))
 	ks.Spec.Replicas = 99
 	g.Expect(*hpa.Spec.MinReplicas).To(Equal(int32(5)))
+}
+
+// TestBuildKeystoneHPA_NameMatchesCR pins both the HPA ObjectMeta.Name and its
+// ScaleTargetRef.Name to the bare CR name. The HPA must scale the same
+// Deployment the operator emits at `<cr-name>` — any drift would leave the HPA
+// pointing at a non-existent target after the rename (CC-0095, REQ-004).
+func TestBuildKeystoneHPA_NameMatchesCR(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := hpaTestKeystone()
+	ks.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{
+		MaxReplicas:          10,
+		TargetCPUUtilization: int32Ptr(80),
+	}
+
+	hpa := buildKeystoneHPA(ks)
+
+	g.Expect(hpa.Name).To(Equal(ks.Name),
+		"HPA Name must equal the CR name (CC-0095, REQ-004)")
+	g.Expect(hpa.Name).NotTo(HaveSuffix("-api"),
+		"HPA Name must not carry the legacy `-api` suffix (CC-0095, REQ-004)")
+	g.Expect(hpa.Spec.ScaleTargetRef.Name).To(Equal(ks.Name),
+		"HPA ScaleTargetRef must point at the Deployment named after the CR (CC-0095, REQ-004)")
+	g.Expect(hpa.Spec.ScaleTargetRef.Name).NotTo(HaveSuffix("-api"),
+		"HPA ScaleTargetRef Name must not carry the legacy `-api` suffix (CC-0095, REQ-004)")
 }

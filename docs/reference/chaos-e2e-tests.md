@@ -470,10 +470,10 @@ PDB assertion step and a script-based availability check.
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR (replicas: 3) | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-chaos-api` with database `keystone_chaos_api`, replicas: 3 |
 | 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady |
-| 3 | Assert PDB exists | `assert` (5m) | PDB `keystone-chaos-api-api` with `spec.minAvailable: 1` (apiVersion: `policy/v1`) |
-| 4 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml` — PodChaos `kill-keystone-api` targeting `app.kubernetes.io/name: keystone` AND `app.kubernetes.io/instance: keystone-chaos-api` in `openstack` |
+| 3 | Assert PDB exists | `assert` (5m) | PDB `keystone-chaos-api` with `spec.minAvailable: 1` (apiVersion: `policy/v1`) |
+| 4 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml` — PodChaos `kill-keystone-api` targeting `app.kubernetes.io/name: keystone` AND `app.kubernetes.io/instance: keystone-chaos-api` in `openstack` (the PodChaos resource name retains its historical `kill-keystone-api` label as a chaos-test identifier; the chaos still targets the bare-name `keystone-chaos-api` Pods, since CC-0095) | <!-- CC-0095 legacy: chaos-test fixture identifier intentionally retained -->
 | 5 | Verify PDB enforcement and assert conditions | `script` (120s) + `assert` (5m) | Script polls until `readyReplicas < 3` (kill took effect), then asserts `availableReplicas >= 1`; Chainsaw asserts `DeploymentReady=True` and `Ready=True` with reason AllReady |
-| 6 | Delete PodChaos | `delete` | Removes PodChaos `kill-keystone-api` to clean up |
+| 6 | Delete PodChaos | `delete` | Removes PodChaos `kill-keystone-api` to clean up | <!-- CC-0095 legacy: chaos-test fixture identifier intentionally retained -->
 | 7 | Assert Ready=True after recovery | `assert` (5m) | Ready=True with reason AllReady — full replica count restored |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-podchaos.yaml`
@@ -486,8 +486,8 @@ Steps 5 and 7 catch with `diagnostics.sh chaos` using
 `wait` with a label selector waits for ALL matching pods, which does not work when the goal
 is to verify that NOT ALL pods are down. The script polls `readyReplicas < 3` (confirming
 the kill took effect) then asserts `availableReplicas >= 1`. The PDB name follows the
-naming convention `apiResourceName(keystone)` = `{cr-name}-api`, so for CR `keystone-chaos-api`,
-the PDB is `keystone-chaos-api-api`.
+naming convention `subResourceName(keystone)` = `{cr-name}` (bare CR name since CC-0095),
+so for CR `keystone-chaos-api`, the PDB is `keystone-chaos-api`.
 
 ---
 
@@ -518,7 +518,7 @@ recovery to confirm the new leader processes spec changes end-to-end.
 | 4 | Delete PodChaos | `delete` | Removes PodChaos `kill-operator-all` to lift the fault |
 | 5 | Assert Ready=True after failover | `assert` (5m) | All 6 conditions: SecretsReady=True, FernetKeysReady=True, DatabaseReady=True, DeploymentReady=True, BootstrapReady=True, Ready=True (AllReady) |
 | 6 | Patch replicas 1→2 | `patch` | Applies `02-patch-replicas.yaml` — patches `spec.replicas` to 2 |
-| 7 | Assert replica patch and Ready=True | `assert` (5m) | Deployment `keystone-chaos-opk-api` has `replicas: 2` and `availableReplicas: 2`; Ready=True with reason AllReady |
+| 7 | Assert replica patch and Ready=True | `assert` (5m) | Deployment `keystone-chaos-opk` has `replicas: 2` and `availableReplicas: 2`; Ready=True with reason AllReady |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-podchaos.yaml`, `02-patch-replicas.yaml`
 

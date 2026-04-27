@@ -149,7 +149,7 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 	credentialSecretName := fmt.Sprintf("%s-credential-keys", keystone.Name)
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      apiResourceName(keystone),
+			Name:      subResourceName(keystone),
 			Namespace: keystone.Namespace,
 			Labels:    labels,
 		},
@@ -168,14 +168,14 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 					TopologySpreadConstraints:     topologySpreadConstraints(keystone),
 					PriorityClassName:             priorityClassName(keystone),
 					Containers: []corev1.Container{{
-						Name:            "keystone-api",
+						Name:            "keystone",
 						Image:           fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag),
 						Resources:       containerResources(keystone),
 						SecurityContext: restrictedSecurityContext(),
 						Command:         uwsgiCommand(keystone.Spec.UWSGI),
 						Env:             []corev1.EnvVar{buildDBConnectionEnvVar(keystone)},
 						Ports: []corev1.ContainerPort{{
-							Name:          "keystone-api",
+							Name:          "keystone",
 							ContainerPort: 5000,
 						}},
 						LivenessProbe: &corev1.Probe{
@@ -278,7 +278,7 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 func buildPodDisruptionBudget(keystone *keystonev1alpha1.Keystone) *policyv1.PodDisruptionBudget {
 	pdb := &policyv1.PodDisruptionBudget{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      apiResourceName(keystone),
+			Name:      subResourceName(keystone),
 			Namespace: keystone.Namespace,
 			Labels:    commonLabels(keystone),
 		},
@@ -350,10 +350,10 @@ func uwsgiCommand(uwsgi *keystonev1alpha1.UWSGISpec) []string {
 	return cmd
 }
 
-// containerResources returns the ResourceRequirements for the keystone-api
+// containerResources returns the ResourceRequirements for the keystone
 // container. It dereferences spec.Resources if set, falling back to a zero
 // value if nil (safe fallback for CRs that bypassed the webhook, e.g.
-// pre-existing CRs during operator upgrade) (CC-0042).
+// pre-existing CRs during operator upgrade) (CC-0042, CC-0095).
 func containerResources(keystone *keystonev1alpha1.Keystone) corev1.ResourceRequirements {
 	if keystone.Spec.Resources != nil {
 		return *keystone.Spec.Resources
@@ -450,7 +450,7 @@ func deploymentStrategy(keystone *keystonev1alpha1.Keystone) appsv1.DeploymentSt
 func buildKeystoneService(keystone *keystonev1alpha1.Keystone) *corev1.Service {
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      apiResourceName(keystone),
+			Name:      subResourceName(keystone),
 			Namespace: keystone.Namespace,
 			Labels:    commonLabels(keystone),
 		},

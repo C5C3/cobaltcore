@@ -63,9 +63,13 @@ func (r *KeystoneReconciler) reconcileBootstrap(ctx context.Context, keystone *k
 }
 
 // bootstrapServiceURL returns the cluster-local service URL for the Keystone
-// API service associated with this CR.
+// Service associated with this CR. The host segment is composed via
+// subResourceName(keystone) so the bootstrap-seeded catalog URL automatically
+// tracks any future change to the sub-resource naming convention — divergence
+// between the bootstrap URL and the actual Service hostname is impossible by
+// construction (CC-0095, REQ-002).
 func bootstrapServiceURL(keystone *keystonev1alpha1.Keystone) string {
-	return fmt.Sprintf("http://%s-api.%s.svc.cluster.local:5000/v3", keystone.Name, keystone.Namespace)
+	return fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", subResourceName(keystone), keystone.Namespace)
 }
 
 func buildBootstrapJob(keystone *keystonev1alpha1.Keystone, configMapName string, fernetSecretName string) *batchv1.Job {
@@ -131,7 +135,7 @@ exec keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap \
 						Image: fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag),
 						// TODO(CC-0042): Wire spec.Resources (or a smaller Job-specific default) to
 						// this container. Currently runs as BestEffort QoS. See reconcile_deployment.go
-						// containerResources() for the pattern used by the keystone-api container.
+						// containerResources() for the pattern used by the keystone container (CC-0095).
 						Command: []string{"/bin/sh", "-eu", "-c", bootstrapScript},
 						Env: []corev1.EnvVar{
 							{

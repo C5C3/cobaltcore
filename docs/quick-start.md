@@ -506,7 +506,7 @@ spec:
       name: keystone-admin
     region: RegionOne
   # Gateway API attachment — routes https://keystone.127-0-0-1.nip.io/v3 to
-  # the keystone-api Service via the shared openstack-gw Gateway.
+  # the keystone Service via the shared openstack-gw Gateway.
   gateway:
     parentRef:
       name: openstack-gw
@@ -656,7 +656,7 @@ kubectl run curl-test \
   --image="ghcr.io/c5c3/keystone:${RELEASE}" \
   --rm -i --restart=Never \
   --command -- python3 -c \
-  "import urllib.request; print(urllib.request.urlopen('http://keystone-api.openstack.svc:5000/v3').read().decode())"
+  "import urllib.request; print(urllib.request.urlopen('http://keystone.openstack.svc:5000/v3').read().decode())"
 ```
 
 A successful response returns a JSON document beginning with `{"version": {"id": "v3", ...}}`.
@@ -717,7 +717,7 @@ A successful `curl` response begins with `{"version": {"id": "v3", ...}}`. A suc
 `openstack token issue` prints a table with the issued token and its expiry.
 
 > **Note:** The service catalog returned by Keystone contains cluster-internal endpoint URLs
-> (e.g. `http://keystone-api.openstack.svc.cluster.local:5000/v3`). Only `identity` commands
+> (e.g. `http://keystone.openstack.svc.cluster.local:5000/v3`). Only `identity` commands
 > that authenticate directly against `OS_AUTH_URL` work through the Gateway. Commands that
 > resolve other service endpoints from the catalog (Nova, Neutron, …) require additional
 > Gateway routes or port-forwards for each service.
@@ -754,11 +754,11 @@ openstack token issue
 
 If the Gateway is unavailable (Envoy still reconciling, nip.io blocked by a corporate
 resolver, or you are debugging the in-cluster Service directly), fall back to
-port-forwarding the `keystone-api` Service and pointing `OS_AUTH_URL` at `localhost`:
+port-forwarding the `keystone` Service and pointing `OS_AUTH_URL` at `localhost`:
 
 ```bash
 # In a separate terminal:
-kubectl port-forward svc/keystone-api -n openstack 5000:5000
+kubectl port-forward svc/keystone -n openstack 5000:5000
 
 # Then, in your shell:
 export OS_AUTH_URL=http://localhost:5000/v3

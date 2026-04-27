@@ -40,7 +40,7 @@
 #   suite frequently runs concurrently with its alphabetically-adjacent
 #   sibling `tests/e2e/keystone/gateway-quick-start-smoke/`. Both attach
 #   an HTTPRoute to the same `Gateway/openstack-gw` https listener
-#   (`keystone-gateway-qs-api` here, `keystone-smoke-api` there).
+#   (`keystone-gateway-qs` here, `keystone-smoke` there).
 #   Anything asserted on the LISTENER as a whole (e.g.
 #   `status.listeners[].attachedRoutes`) is therefore a cross-suite
 #   counter and MUST NOT be expected to equal this suite's own route
@@ -154,7 +154,7 @@ spec:
   # this suite (`gateway-quick-start`) and the alphabetically-adjacent
   # `gateway-quick-start-smoke` suite frequently land in the same
   # parallel batch and BOTH attach an HTTPRoute to the `openstack-gw`
-  # https listener (`keystone-gateway-qs-api` + `keystone-smoke-api`).
+  # https listener (`keystone-gateway-qs` + `keystone-smoke`).
   # Asserting `attachedRoutes == 1` would race that scheduling and
   # time out the full 8m budget once the smoke route also attaches.
   # The meaningful contracts are already covered downstream: step 6
@@ -300,8 +300,8 @@ spec:
   # the controller logs for triage.
   #
   # The HTTPRoute name is derived from the Keystone CR name via
-  # `apiResourceName(keystone)` → `{name}-api`
-  # (operators/keystone/internal/controller/reconcile_httproute.go).
+  # `subResourceName(keystone)` → `{name}` (CC-0095 dropped the historical
+  # `-api` suffix; see operators/keystone/internal/controller/reconcile_httproute.go).
   #
   # JMESPath filter `(parents[0].conditions[?type == 'Accepted'])` matches
   # only the Accepted condition — the real Envoy Gateway controller also
@@ -314,7 +314,7 @@ spec:
           apiVersion: gateway.networking.k8s.io/v1
           kind: HTTPRoute
           metadata:
-            name: keystone-gateway-qs-api
+            name: keystone-gateway-qs
             namespace: openstack
           status:
             (parents[0].conditions[?type == 'Accepted']):
@@ -323,7 +323,7 @@ spec:
     - describe:
         apiVersion: gateway.networking.k8s.io/v1
         kind: HTTPRoute
-        name: keystone-gateway-qs-api
+        name: keystone-gateway-qs
         namespace: openstack
     - describe:
         apiVersion: gateway.networking.k8s.io/v1
@@ -362,7 +362,7 @@ spec:
     - describe:
         apiVersion: gateway.networking.k8s.io/v1
         kind: HTTPRoute
-        name: keystone-gateway-qs-api
+        name: keystone-gateway-qs
         namespace: openstack
     - podLogs:
         namespace: openstack

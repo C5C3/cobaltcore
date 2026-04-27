@@ -98,14 +98,14 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-cleanup-api
+            name: keystone-cleanup
             namespace: openstack
     - error:
         resource:
           apiVersion: v1
           kind: Service
           metadata:
-            name: keystone-cleanup-api
+            name: keystone-cleanup
             namespace: openstack
     - error:
         resource:

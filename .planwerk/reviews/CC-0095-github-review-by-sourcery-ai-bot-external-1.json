@@ -1,0 +1,46 @@
+{
+  "feature_id": "CC-0095",
+  "title": "GitHub Review by sourcery-ai[bot]",
+  "summary": "The reviewer wants `apiResourceName` renamed to something neutral (e.g. `coreResourceName`/`subResourceName`) and the hardcoded search roots in `grep-keystone-api-residue.sh` derived from or validated against a shared config. They also flag two specific bugs: the script must exclude itself (or annotate its own `keystone-api` references) from the literal scan to avoid self-flagging, and a grammar fix in `docs/reference/keystone-upgrade-flow.md:499` (\"deployed after carry\" → \"deployed after that carry\").",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "sourcery-ai[bot]",
+  "date": "2026-04-26T16:18:30Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "Hey - I've found 2 issues, and left some high level feedback:\n\n- Now that `apiResourceName` returns the bare CR name and is used for all sub-resources, consider renaming it to something neutral like `coreResourceName` or `subResourceName` to better reflect its semantics and avoid future confusion.\n- The `grep-keystone-api-residue.sh` script hardcodes the set of search roots; if new top-level directories are added later (e.g. additional code or config roots), it would be easy to miss them, so consider deriving the roots from a single shared config or at least validating them against a central list to keep the residue scan comprehensive.\n\n<details>\n<summary>Prompt for AI Agents</summary>\n\n~~~markdown\nPlease address the comments from this code review:\n\n## Overall Comments\n- Now that `apiResourceName` returns the bare CR name and is used for all sub-resources, consider renaming it to something neutral like `coreResourceName` or `subResourceName` to better reflect its semantics and avoid future confusion.\n- The `grep-keystone-api-residue.sh` script hardcodes the set of search roots; if new top-level directories are added later (e.g. additional code or config roots), it would be easy to miss them, so consider deriving the roots from a single shared config or at least validating them against a central list to keep the residue scan comprehensive.\n\n## Individual Comments\n\n### Comment 1\n<location path=\"scripts/grep-keystone-api-residue.sh\" line_range=\"89-90\" />\n<code_context>\n+literal_pattern='keystone-api'\n+templated_pattern='\\{name\\}-api|<name>-api|<cr-name>-api|\\{cr-name\\}-api'\n+\n+literal_hits=\"$(grep -rnE --binary-files=without-match \\\n+  \"${literal_pattern}\" \"${SEARCH_ROOTS[@]}\" || true)\"\n+templated_hits=\"$(grep -rnE --binary-files=without-match \\\n+  --exclude='grep-keystone-api-residue.sh' \\\n</code_context>\n<issue_to_address>\n**issue (bug_risk):** Exclude this script from the literal scan (or mark its own references), otherwise it will flag itself as residue.\n\nBecause this script is included in the literal scan and its header has unannotated `keystone-api` references, it will always report its own header as residue and exit 1. Please either (a) exclude this script from the literal grep (as you already do for the templated scan), or (b) annotate all literal `keystone-api` mentions here with `CC-0095 legacy`, so CI doesn’t fail on a clean tree.\n</issue_to_address>\n\n### Comment 2\n<location path=\"docs/reference/keystone-upgrade-flow.md\" line_range=\"497-499\" />\n<code_context>\n+\n+CC-0095 dropped the `-api` suffix from operator-managed sub-resources. Clusters\n+deployed before this change have sub-resources named `<cr-name>-api`; clusters <!-- CC-0095 legacy: pre-rename name referenced for traceability. -->\n+deployed after carry sub-resources named `<cr-name>` (bare CR name). When the\n+operator is upgraded across this boundary, the rename takes effect on the\n+next reconcile that touches each sub-resource.\n</code_context>\n<issue_to_address>\n**issue (typo):** Fix grammar in \"deployed after carry sub-resources\" phrase.\n\nThe phrase \"clusters deployed after carry sub-resources\" is missing a verb. Please rephrase, e.g. \"clusters deployed after that carry sub-resources\" for correct grammar.\n\n```suggestion\nCC-0095 dropped the `-api` suffix from operator-managed sub-resources. Clusters\ndeployed before this change have sub-resources named `<cr-name>-api`; clusters <!-- CC-0095 legacy: pre-rename name referenced for traceability. -->\ndeployed after that carry sub-resources named `<cr-name>` (bare CR name). When the\n```\n</issue_to_address>\n~~~\n\n</details>\n\n***\n\n<details>\n<summary>Sourcery is free for open source - if you like our reviews please consider sharing them ✨</summary>\n\n- [X](https://twitter.com/intent/tweet?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [Mastodon](https://mastodon.social/share?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [LinkedIn](https://www.linkedin.com/sharing/share-offsite/?url=https://sourcery.ai)\n- [Facebook](https://www.facebook.com/sharer/sharer.php?u=https://sourcery.ai)\n\n</details>\n\n<sub>\nHelp me be more useful! Please click 👍 or 👎 on each comment and I'll use the feedback to improve your reviews.\n</sub>",
+  "code_comments": [
+    {
+      "body": "**issue (bug_risk):** Exclude this script from the literal scan (or mark its own references), otherwise it will flag itself as residue.\n\nBecause this script is included in the literal scan and its header has unannotated `keystone-api` references, it will always report its own header as residue and exit 1. Please either (a) exclude this script from the literal grep (as you already do for the templated scan), or (b) annotate all literal `keystone-api` mentions here with `CC-0095 legacy`, so CI doesn’t fail on a clean tree.",
+      "path": "scripts/grep-keystone-api-residue.sh",
+      "line": 90,
+      "author": "sourcery-ai[bot]",
+      "created_at": "2026-04-26T16:18:30Z",
+      "id": null,
+      "resolution": "Added `--exclude='grep-keystone-api-residue.sh'` to the literal grep invocation in scripts/grep-keystone-api-residue.sh (matching the existing exclusion on the templated scan) and updated the surrounding header comment to document that the script is now excluded from BOTH scans, preventing self-trips on its own keystone-api references."
+    },
+    {
+      "body": "**issue (typo):** Fix grammar in \"deployed after carry sub-resources\" phrase.\n\nThe phrase \"clusters deployed after carry sub-resources\" is missing a verb. Please rephrase, e.g. \"clusters deployed after that carry sub-resources\" for correct grammar.\n\n```suggestion\nCC-0095 dropped the `-api` suffix from operator-managed sub-resources. Clusters\ndeployed before this change have sub-resources named `<cr-name>-api`; clusters <!-- CC-0095 legacy: pre-rename name referenced for traceability. -->\ndeployed after that carry sub-resources named `<cr-name>` (bare CR name). When the\n```",
+      "path": "docs/reference/keystone-upgrade-flow.md",
+      "line": 499,
+      "author": "sourcery-ai[bot]",
+      "created_at": "2026-04-26T16:18:30Z",
+      "id": null,
+      "resolution": "Reworded line 499 of docs/reference/keystone-upgrade-flow.md from 'deployed after carry sub-resources named `<cr-name>`' to 'deployed after that change carry sub-resources named `<cr-name>`', fixing the missing verb as suggested."
+    }
+  ],
+  "resolution_summary": "Renamed `apiResourceName` to `subResourceName` across the helper definition (operators/keystone/internal/controller/reconcile_hpa.go), all five call sites (reconcile_bootstrap.go, reconcile_deployment.go, reconcile_httproute.go, reconcile_networkpolicy.go), tests (reconcile_bootstrap_test.go, reconcile_hpa_test.go), and downstream docs/fixtures (docs/reference/chaos-e2e-tests.md, tests/e2e/keystone/gateway-quick-start/chainsaw-test.yaml) — these doc/test updates were not in the review but were necessary because they referenced the helper by its old name. Hardened scripts/grep-keystone-api-residue.sh by adding an EXCLUDED_ROOTS array with per-entry rationale and a top-level-directory completeness check that exits 2 when a new visible directory is neither scanned nor excluded, addressing the search-roots-comprehensiveness comment. Excluded the script from the literal grep scan (in addition to the existing templated-scan exclusion) so its own header references no longer self-trip the gate. Fixed the grammar issue in docs/reference/keystone-upgrade-flow.md by rephrasing 'deployed after carry sub-resources' to 'deployed after that change carry sub-resources'.",
+  "github_review_id": 4177146155
+}

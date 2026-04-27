@@ -98,7 +98,7 @@ func TestKeystoneStatusEndpoint_GatewayNil_ReturnsClusterLocal(t *testing.T) {
 
 	endpoint := keystoneStatusEndpoint(ks)
 
-	g.Expect(endpoint).To(Equal("http://test-keystone-api.default.svc.cluster.local:5000/v3"),
+	g.Expect(endpoint).To(Equal("http://test-keystone.default.svc.cluster.local:5000/v3"),
 		"spec.gateway unset must produce the in-cluster Service DNS endpoint (CC-0065, REQ-004)")
 }
 
@@ -155,7 +155,7 @@ func TestKeystoneStatusEndpoint_PublicEndpointWithoutGateway_ReturnsClusterLocal
 
 	endpoint := keystoneStatusEndpoint(ks)
 
-	g.Expect(endpoint).To(Equal("http://test-keystone-api.default.svc.cluster.local:5000/v3"),
+	g.Expect(endpoint).To(Equal("http://test-keystone.default.svc.cluster.local:5000/v3"),
 		"publicEndpoint without spec.gateway must not override the cluster-local fallback (CC-0088, REQ-009)")
 }
 
@@ -168,7 +168,7 @@ func TestBuildKeystoneHTTPRoute_NameAndNamespace(t *testing.T) {
 
 	route := buildKeystoneHTTPRoute(ks)
 
-	g.Expect(route.Name).To(Equal("test-keystone-api"))
+	g.Expect(route.Name).To(Equal("test-keystone"))
 	g.Expect(route.Namespace).To(Equal("default"))
 }
 
@@ -293,7 +293,7 @@ func TestBuildKeystoneHTTPRoute_BackendRef(t *testing.T) {
 	g.Expect(route.Spec.Rules[0].BackendRefs).To(HaveLen(1))
 
 	backend := route.Spec.Rules[0].BackendRefs[0].BackendObjectReference
-	g.Expect(backend.Name).To(Equal(gatewayv1.ObjectName("test-keystone-api")))
+	g.Expect(backend.Name).To(Equal(gatewayv1.ObjectName("test-keystone")))
 	g.Expect(backend.Port).NotTo(BeNil())
 	g.Expect(*backend.Port).To(Equal(gatewayv1.PortNumber(5000)))
 
@@ -350,7 +350,7 @@ func TestReconcileHTTPRoute_GatewaySet_CreatesHTTPRoute(t *testing.T) {
 
 	var route gatewayv1.HTTPRoute
 	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &route)).To(Succeed())
 
 	g.Expect(route.OwnerReferences).To(HaveLen(1))
@@ -391,7 +391,7 @@ func TestReconcileHTTPRoute_GatewayNil_ExistingRoute_DeletesHTTPRoute(t *testing
 	// Pre-create an HTTPRoute as if gateway was previously enabled.
 	existingRoute := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-keystone-api",
+			Name:      "test-keystone",
 			Namespace: "default",
 		},
 	}
@@ -401,7 +401,7 @@ func TestReconcileHTTPRoute_GatewayNil_ExistingRoute_DeletesHTTPRoute(t *testing
 	// Verify HTTPRoute exists before reconcile.
 	var route gatewayv1.HTTPRoute
 	g.Expect(r.Client.Get(ctx, types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &route)).To(Succeed())
 
 	// reconcileHTTPRoute with nil gateway should delete the route.
@@ -411,7 +411,7 @@ func TestReconcileHTTPRoute_GatewayNil_ExistingRoute_DeletesHTTPRoute(t *testing
 
 	// Verify HTTPRoute was deleted.
 	err = r.Get(ctx, types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &route)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(client.IgnoreNotFound(err)).To(Succeed())
@@ -472,7 +472,7 @@ func TestReconcileHTTPRoute_GatewaySet_HTTPRouteUpdated(t *testing.T) {
 
 	var route gatewayv1.HTTPRoute
 	g.Expect(r.Client.Get(ctx, types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &route)).To(Succeed())
 
 	g.Expect(route.Spec.Hostnames).To(ConsistOf(gatewayv1.Hostname("keystone.new-example.com")))
@@ -562,7 +562,7 @@ func TestReconcileHTTPRoute_DeleteError_Propagated(t *testing.T) {
 
 	existingRoute := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-keystone-api",
+			Name:      "test-keystone",
 			Namespace: "default",
 		},
 	}
@@ -614,7 +614,7 @@ func TestReconcileHTTPRoute_AnnotationRemoval_RemovesKeyFromLiveRoute(t *testing
 
 	var route gatewayv1.HTTPRoute
 	g.Expect(r.Get(ctx, types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &route)).To(Succeed())
 	g.Expect(route.Annotations).To(HaveKeyWithValue("konghq.com/plugins", "rate-limiting"))
 	g.Expect(route.Annotations).To(HaveKeyWithValue("nginx.ingress.k8s.io", "test"))
@@ -629,7 +629,7 @@ func TestReconcileHTTPRoute_AnnotationRemoval_RemovesKeyFromLiveRoute(t *testing
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(r.Get(ctx, types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &route)).To(Succeed())
 	g.Expect(route.Annotations).NotTo(HaveKey("konghq.com/plugins"),
 		"annotation removed from spec.gateway.annotations must be removed from the live HTTPRoute (CC-0065, W-001)")
@@ -642,7 +642,7 @@ func TestReconcileHTTPRoute_AnnotationRemoval_RemovesKeyFromLiveRoute(t *testing
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(r.Get(ctx, types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &route)).To(Succeed())
 	g.Expect(route.Annotations).NotTo(HaveKey("nginx.ingress.k8s.io"),
 		"clearing spec.gateway.annotations must remove all previously-managed annotation keys (CC-0065, W-001)")
@@ -669,7 +669,7 @@ func TestReconcileHTTPRoute_AnnotationRemoval_PreservesUserAddedKey(t *testing.T
 	// that the operator does not manage.
 	var route gatewayv1.HTTPRoute
 	g.Expect(r.Get(ctx, types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &route)).To(Succeed())
 	route.Annotations["sidecar.istio.io/inject"] = "false"
 	g.Expect(r.Client.Update(ctx, &route)).To(Succeed())
@@ -680,7 +680,7 @@ func TestReconcileHTTPRoute_AnnotationRemoval_PreservesUserAddedKey(t *testing.T
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(r.Get(ctx, types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &route)).To(Succeed())
 	g.Expect(route.Annotations).NotTo(HaveKey("konghq.com/plugins"),
 		"operator-managed annotation must be removed")
@@ -701,7 +701,7 @@ func TestReconcileHTTPRoute_AcceptedCondition_True(t *testing.T) {
 	// (CC-0065, REQ-005).
 	acceptedRoute := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-keystone-api",
+			Name:      "test-keystone",
 			Namespace: "default",
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
@@ -750,7 +750,7 @@ func TestReconcileHTTPRoute_AcceptedCondition_False_Requeues(t *testing.T) {
 	// Pre-create an HTTPRoute whose parent reports Accepted=False.
 	rejectedRoute := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-keystone-api",
+			Name:      "test-keystone",
 			Namespace: "default",
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
@@ -838,4 +838,47 @@ func TestReconcileHTTPRoute_GatewayAPIUnavailable_GatewaySet_SurfacesCondition(t
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonGatewayAPINotInstalled))
 	g.Expect(cond.Message).To(ContainSubstring("HTTPRoute CRD is not installed"))
+}
+
+// TestBuildKeystoneHTTPRoute_NameAndBackendRefMatchCR pins the HTTPRoute
+// ObjectMeta.Name and the BackendRef.Name to the bare CR name. Both must point
+// at the Keystone Service emitted at `<cr-name>` (renamed from `<cr-name>-api` // CC-0095 legacy: pre-rename name referenced for traceability.
+// by CC-0095, REQ-004): a mismatched BackendRef would silently 503 every
+// request that the Gateway routes through the API hostname.
+func TestBuildKeystoneHTTPRoute_NameAndBackendRefMatchCR(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := hrTestKeystone()
+	ks.Spec.Gateway = hrTestGateway()
+
+	route := buildKeystoneHTTPRoute(ks)
+
+	g.Expect(route.Name).To(Equal(ks.Name),
+		"HTTPRoute Name must equal the CR name (CC-0095, REQ-004)")
+	g.Expect(route.Name).NotTo(HaveSuffix("-api"),
+		"HTTPRoute Name must not carry the legacy `-api` suffix (CC-0095, REQ-004)")
+	g.Expect(route.Spec.Rules).NotTo(BeEmpty())
+	g.Expect(route.Spec.Rules[0].BackendRefs).NotTo(BeEmpty())
+	backendName := string(route.Spec.Rules[0].BackendRefs[0].Name)
+	g.Expect(backendName).To(Equal(ks.Name),
+		"BackendRef must point at the Service emitted at `<cr-name>` (CC-0095, REQ-004)")
+	g.Expect(backendName).NotTo(HaveSuffix("-api"),
+		"BackendRef Name must not carry the legacy `-api` suffix (CC-0095, REQ-004)")
+}
+
+// TestInternalAPIURL_UsesBareCRName pins the cluster-internal Keystone URL —
+// the URL the operator hits to verify KeystoneAPIReady — to the bare-CR-name
+// Service DNS form. Any drift here would either (a) regress to the legacy
+// `<cr-name>-api` host and 503 from the Service rename, or (b) skip the // CC-0095 legacy: pre-rename name referenced for traceability.
+// Service entirely and bypass kube-proxy load balancing (CC-0095, REQ-005).
+func TestInternalAPIURL_UsesBareCRName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := hrTestKeystone()
+
+	url := internalAPIURL(ks)
+
+	expected := fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", ks.Name, ks.Namespace)
+	g.Expect(url).To(Equal(expected),
+		"internalAPIURL must use the bare CR name (CC-0095, REQ-005)")
+	g.Expect(url).NotTo(ContainSubstring(ks.Name+"-api."),
+		"internalAPIURL must not embed the legacy `-api` suffix in the host segment (CC-0095, REQ-005)")
 }

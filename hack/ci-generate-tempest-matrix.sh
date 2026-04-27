@@ -41,7 +41,7 @@ for d in "${dirs[@]}"; do
     exit 1
   fi
   cr_name="keystone-tempest-${slug}"
-  svc_name="keystone-tempest-${slug}-api"
+  svc_name="${cr_name}"
   entries+=("{\"release\":\"${release}\",\"config-dir\":\"${config_dir}\",\"cr-name\":\"${cr_name}\",\"service-k8s-name\":\"${svc_name}\"}")
 done
 

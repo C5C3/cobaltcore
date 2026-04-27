@@ -129,13 +129,13 @@ func TestReconcileDeployment_DeploymentAndServiceCreated(t *testing.T) {
 	// Verify Deployment was created.
 	var deploy appsv1.Deployment
 	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &deploy)).To(Succeed())
 
 	// Verify Service was created.
 	var svc corev1.Service
 	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &svc)).To(Succeed())
 }
 
@@ -172,7 +172,7 @@ func TestReconcileDeployment_Ready_SetsEndpoint(t *testing.T) {
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal("DeploymentReady"))
 
-	g.Expect(ks.Status.Endpoint).To(Equal("http://test-keystone-api.default.svc.cluster.local:5000/v3"))
+	g.Expect(ks.Status.Endpoint).To(Equal("http://test-keystone.default.svc.cluster.local:5000/v3"))
 }
 
 func TestReconcileDeployment_OwnerReferences(t *testing.T) {
@@ -187,7 +187,7 @@ func TestReconcileDeployment_OwnerReferences(t *testing.T) {
 	// Verify Deployment has owner reference.
 	var deploy appsv1.Deployment
 	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &deploy)).To(Succeed())
 	g.Expect(deploy.OwnerReferences).To(HaveLen(1))
 	g.Expect(deploy.OwnerReferences[0].Name).To(Equal("test-keystone"))
@@ -195,7 +195,7 @@ func TestReconcileDeployment_OwnerReferences(t *testing.T) {
 	// Verify Service has owner reference.
 	var svc corev1.Service
 	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &svc)).To(Succeed())
 	g.Expect(svc.OwnerReferences).To(HaveLen(1))
 	g.Expect(svc.OwnerReferences[0].Name).To(Equal("test-keystone"))
@@ -212,7 +212,7 @@ func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
 
 	var deploy appsv1.Deployment
 	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &deploy)).To(Succeed())
 
 	// Verify replicas.
@@ -222,13 +222,13 @@ func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
 	// Verify container spec.
 	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
 	container := deploy.Spec.Template.Spec.Containers[0]
-	g.Expect(container.Name).To(Equal("keystone-api"))
+	g.Expect(container.Name).To(Equal("keystone"))
 	g.Expect(container.Image).To(Equal("ghcr.io/c5c3/keystone:2025.2"))
 
 	// Verify port.
 	g.Expect(container.Ports).To(HaveLen(1))
 	g.Expect(container.Ports[0].ContainerPort).To(Equal(int32(5000)))
-	g.Expect(container.Ports[0].Name).To(Equal("keystone-api"))
+	g.Expect(container.Ports[0].Name).To(Equal("keystone"))
 
 	// Verify liveness probe uses TCPSocket (CC-0062): a TCP-only check ensures
 	// the uWSGI process is alive without exercising the database code path,
@@ -326,7 +326,7 @@ func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
 	// Verify Service spec.
 	var svc corev1.Service
 	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &svc)).To(Succeed())
 	g.Expect(svc.Spec.Ports).To(HaveLen(1))
 	g.Expect(svc.Spec.Ports[0].Port).To(Equal(int32(5000)))
@@ -390,12 +390,12 @@ func TestReconcileDeployment_ServiceCreatedAlongsideDeployment(t *testing.T) {
 	// Verify both Deployment and Service exist after a single reconcile call.
 	var deploy appsv1.Deployment
 	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &deploy)).To(Succeed())
 
 	var svc corev1.Service
 	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &svc)).To(Succeed())
 
 	// Verify the Service targets the Deployment's pods.
@@ -453,10 +453,10 @@ func TestBuildKeystoneDeployment_VolumesMaintained(t *testing.T) {
 
 	// Verify expected volume mounts at correct paths (name-based lookup to avoid
 	// brittleness if sidecars are added in the future).
-	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone-api")
-	g.Expect(container).NotTo(BeNil(), "keystone-api container must exist")
+	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
+	g.Expect(container).NotTo(BeNil(), "keystone container must exist")
 	mounts := container.VolumeMounts
-	g.Expect(mounts).NotTo(BeEmpty(), "keystone-api container must have volume mounts")
+	g.Expect(mounts).NotTo(BeEmpty(), "keystone container must have volume mounts")
 	mountPaths := make(map[string]string, len(mounts))
 	for _, m := range mounts {
 		mountPaths[m.Name] = m.MountPath
@@ -486,7 +486,7 @@ func TestBuildDBConnectionEnvVar(t *testing.T) {
 	g.Expect(env.ValueFrom.SecretKeyRef.Key).To(Equal(dbConnectionSecretKey))
 }
 
-// TestBuildKeystoneDeployment_DBConnectionEnv verifies that the keystone-api
+// TestBuildKeystoneDeployment_DBConnectionEnv verifies that the keystone
 // container has the OS_DATABASE__CONNECTION env var wired to the derived
 // connection Secret so oslo.config overrides the [database] connection value
 // (CC-0080, REQ-003, REQ-007). Volumes and mounts must remain unchanged.
@@ -496,10 +496,10 @@ func TestBuildKeystoneDeployment_DBConnectionEnv(t *testing.T) {
 
 	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
 
-	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone-api")
+	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
 	g.Expect(container).NotTo(BeNil())
 	g.Expect(container.Env).To(ContainElement(buildDBConnectionEnvVar(ks)),
-		"keystone-api must consume DB connection via OS_DATABASE__CONNECTION (CC-0080, REQ-003)")
+		"keystone container must consume DB connection via OS_DATABASE__CONNECTION (CC-0080, REQ-003)")
 
 	// Volumes/mounts must remain unchanged (REQ-007).
 	volumeNames := make([]string, 0, len(deploy.Spec.Template.Spec.Volumes))
@@ -560,7 +560,7 @@ func TestReconcileDeployment_PDBCreated(t *testing.T) {
 
 	var pdb policyv1.PodDisruptionBudget
 	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &pdb)).To(Succeed())
 
 	g.Expect(pdb.OwnerReferences).To(HaveLen(1))
@@ -578,7 +578,7 @@ func TestReconcileDeployment_PDBLabelsAndSelector(t *testing.T) {
 
 	var pdb policyv1.PodDisruptionBudget
 	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &pdb)).To(Succeed())
 
 	// PDB labels match commonLabels (CC-0037).
@@ -604,7 +604,7 @@ func TestReconcileDeployment_PDBMinAvailableForMultipleReplicas(t *testing.T) {
 
 	var pdb policyv1.PodDisruptionBudget
 	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &pdb)).To(Succeed())
 
 	g.Expect(pdb.Spec.MinAvailable).NotTo(BeNil())
@@ -624,7 +624,7 @@ func TestReconcileDeployment_PDBMaxUnavailableForSingleReplica(t *testing.T) {
 
 	var pdb policyv1.PodDisruptionBudget
 	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &pdb)).To(Succeed())
 
 	g.Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
@@ -647,7 +647,7 @@ func TestReconcileDeployment_PDBUpdatedOnReplicaChange(t *testing.T) {
 
 	var pdb policyv1.PodDisruptionBudget
 	g.Expect(r.Client.Get(ctx, types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &pdb)).To(Succeed())
 	g.Expect(pdb.Spec.MinAvailable).NotTo(BeNil())
 
@@ -657,7 +657,7 @@ func TestReconcileDeployment_PDBUpdatedOnReplicaChange(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(r.Client.Get(ctx, types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &pdb)).To(Succeed())
 	g.Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
 	g.Expect(*pdb.Spec.MaxUnavailable).To(Equal(intstr.FromInt32(1)))
@@ -675,12 +675,12 @@ func TestReconcileDeployment_PDBSelectorMatchesDeployment(t *testing.T) {
 
 	var deploy appsv1.Deployment
 	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &deploy)).To(Succeed())
 
 	var pdb policyv1.PodDisruptionBudget
 	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &pdb)).To(Succeed())
 
 	g.Expect(pdb.Spec.Selector.MatchLabels).To(Equal(deploy.Spec.Selector.MatchLabels))
@@ -1106,7 +1106,7 @@ func TestReconcileDeployment_NoUpgrade_Ready_SetsEndpoint(t *testing.T) {
 	g.Expect(result).To(Equal(ctrl.Result{}))
 
 	// Endpoint must be set.
-	g.Expect(ks.Status.Endpoint).To(Equal("http://test-keystone-api.default.svc.cluster.local:5000/v3"))
+	g.Expect(ks.Status.Endpoint).To(Equal("http://test-keystone.default.svc.cluster.local:5000/v3"))
 
 	// UpgradePhase must remain empty.
 	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhase("")))
@@ -1142,7 +1142,7 @@ func TestReconcileDeployment_OtherPhase_Ready_SetsEndpoint(t *testing.T) {
 	g.Expect(result).To(Equal(ctrl.Result{}))
 
 	// Endpoint must be set (normal ready path).
-	g.Expect(ks.Status.Endpoint).To(Equal("http://test-keystone-api.default.svc.cluster.local:5000/v3"))
+	g.Expect(ks.Status.Endpoint).To(Equal("http://test-keystone.default.svc.cluster.local:5000/v3"))
 
 	// UpgradePhase must remain Expanding — no transition.
 	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseExpanding))
@@ -1248,7 +1248,7 @@ func TestBuildKeystoneDeployment_PreStopSleepDefault(t *testing.T) {
 
 	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
 
-	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone-api")
+	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
 	g.Expect(container).NotTo(BeNil())
 	g.Expect(container.Lifecycle).NotTo(BeNil())
 	g.Expect(container.Lifecycle.PreStop).NotTo(BeNil())
@@ -1269,7 +1269,7 @@ func TestBuildKeystoneDeployment_PreStopSleepCustom(t *testing.T) {
 
 	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
 
-	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone-api")
+	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
 	g.Expect(container).NotTo(BeNil())
 	g.Expect(container.Lifecycle.PreStop.Exec.Command).To(Equal([]string{"/bin/sh", "-c", "sleep 12"}))
 }
@@ -1285,7 +1285,7 @@ func TestBuildKeystoneDeployment_PreStopSleepZero(t *testing.T) {
 
 	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
 
-	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone-api")
+	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
 	g.Expect(container).NotTo(BeNil())
 	g.Expect(container.Lifecycle.PreStop.Exec.Command).To(Equal([]string{"/bin/sh", "-c", "sleep 0"}))
 }
@@ -1310,7 +1310,7 @@ func TestReconcileAndWebhookDefaultsAgree(t *testing.T) {
 		To(Equal(keystonev1alpha1.DefaultTerminationGracePeriodSeconds),
 			"reconciler nil-default for TerminationGracePeriodSeconds must equal the shared webhook constant")
 
-	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone-api")
+	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
 	g.Expect(container).NotTo(BeNil())
 	g.Expect(container.Lifecycle).NotTo(BeNil())
 	g.Expect(container.Lifecycle.PreStop).NotTo(BeNil())
@@ -1506,7 +1506,7 @@ func TestEnsureDeployment_StrategyConvergesFromServerDefault(t *testing.T) {
 
 	var afterFirst appsv1.Deployment
 	g.Expect(r.Client.Get(ctx, types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &afterFirst)).To(Succeed())
 	g.Expect(afterFirst.Spec.Strategy.Type).To(Equal(appsv1.RollingUpdateDeploymentStrategyType))
 	g.Expect(*afterFirst.Spec.Strategy.RollingUpdate.MaxUnavailable).To(Equal(intstr.FromInt32(0)))
@@ -1520,7 +1520,7 @@ func TestEnsureDeployment_StrategyConvergesFromServerDefault(t *testing.T) {
 
 	var afterSecond appsv1.Deployment
 	g.Expect(r.Client.Get(ctx, types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &afterSecond)).To(Succeed())
 	g.Expect(afterSecond.Spec.Strategy).To(Equal(afterFirst.Spec.Strategy))
 }
@@ -1563,4 +1563,92 @@ func TestBuildKeystoneDeployment_StrategyOverrideRecreate(t *testing.T) {
 
 	g.Expect(deploy.Spec.Strategy.Type).To(Equal(appsv1.RecreateDeploymentStrategyType))
 	g.Expect(deploy.Spec.Strategy.RollingUpdate).To(BeNil())
+}
+
+// TestBuildKeystoneDeployment_ContainerNameIsKeystone verifies that the sole
+// container in the Keystone Deployment is named "keystone".
+// Symmetric with Service/<cr-name> and ensures `kubectl logs <pod> -c keystone`
+// resolves without falling back to the legacy name.
+// CC-0095 legacy: pre-rename name documented for traceability (REQ-003).
+func TestBuildKeystoneDeployment_ContainerNameIsKeystone(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1),
+		"Deployment must define exactly one container (CC-0095, REQ-003)")
+	g.Expect(deploy.Spec.Template.Spec.Containers[0].Name).To(Equal("keystone"),
+		"container Name must be 'keystone' (renamed by CC-0095, REQ-003)") // CC-0095 legacy: legacy name "keystone-api" referenced for traceability.
+}
+
+// TestBuildKeystoneDeployment_NamedPortIsKeystone verifies that the
+// container's named port is "keystone" with ContainerPort 5000.
+// The rename is local-cosmetic: Service targetPort and HTTPRoute backendRef.port
+// continue to reference the int 5000, so no cross-resource changes are required.
+// CC-0095 legacy: pre-rename name documented for traceability (REQ-003).
+func TestBuildKeystoneDeployment_NamedPortIsKeystone(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
+	ports := deploy.Spec.Template.Spec.Containers[0].Ports
+	g.Expect(ports).To(HaveLen(1),
+		"container must define exactly one named port (CC-0095, REQ-003)")
+	g.Expect(ports[0].Name).To(Equal("keystone"),
+		"named port must be 'keystone' (renamed by CC-0095, REQ-003)") // CC-0095 legacy: legacy name "keystone-api" referenced for traceability.
+	g.Expect(ports[0].ContainerPort).To(Equal(int32(5000)),
+		"ContainerPort must remain 5000 — the rename is name-only (CC-0095, REQ-003)")
+}
+
+// TestBuildKeystoneDeployment_NameMatchesCR pins the Deployment ObjectMeta.Name
+// to the bare CR name (no `-api` suffix). Symmetric with the Service, PDB, and
+// HPA name guards: together they assert the operator emits sub-resources at
+// `<cr-name>` rather than the legacy `<cr-name>-api` (CC-0095, REQ-003, // CC-0095 legacy: pre-rename name referenced for traceability.
+// REQ-004).
+func TestBuildKeystoneDeployment_NameMatchesCR(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	g.Expect(deploy.Name).To(Equal(ks.Name),
+		"Deployment Name must equal the CR name (CC-0095, REQ-003)")
+	g.Expect(deploy.Name).NotTo(HaveSuffix("-api"),
+		"Deployment Name must not carry the legacy `-api` suffix (CC-0095, REQ-003)")
+}
+
+// TestBuildKeystoneService_NameMatchesCR pins the Service ObjectMeta.Name to
+// the bare CR name. The cluster-internal Keystone URL is
+// `http://<cr-name>.<ns>.svc...:5000/v3`, so any drift here would silently
+// break in-cluster clients that follow the documented DNS form (CC-0095,
+// REQ-004, REQ-005).
+func TestBuildKeystoneService_NameMatchesCR(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+
+	svc := buildKeystoneService(ks)
+
+	g.Expect(svc.Name).To(Equal(ks.Name),
+		"Service Name must equal the CR name (CC-0095, REQ-004)")
+	g.Expect(svc.Name).NotTo(HaveSuffix("-api"),
+		"Service Name must not carry the legacy `-api` suffix (CC-0095, REQ-004)")
+}
+
+// TestBuildPodDisruptionBudget_NameMatchesCR pins the PDB ObjectMeta.Name to
+// the bare CR name. Chaos e2e tests look up the PDB by `<cr-name>`, so any
+// drift here would break the chaos suite's PDB-availability assertion
+// (CC-0095, REQ-004).
+func TestBuildPodDisruptionBudget_NameMatchesCR(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+
+	pdb := buildPodDisruptionBudget(ks)
+
+	g.Expect(pdb.Name).To(Equal(ks.Name),
+		"PodDisruptionBudget Name must equal the CR name (CC-0095, REQ-004)")
+	g.Expect(pdb.Name).NotTo(HaveSuffix("-api"),
+		"PodDisruptionBudget Name must not carry the legacy `-api` suffix (CC-0095, REQ-004)")
 }

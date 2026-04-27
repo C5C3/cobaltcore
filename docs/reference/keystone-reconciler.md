@@ -1,7 +1,7 @@
 ---
 title: Keystone Reconciler Architecture
 quadrant: operator
-feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0065, CC-0067, CC-0068, CC-0071, CC-0072, CC-0073, CC-0074, CC-0077, CC-0078, CC-0079, CC-0080, CC-0081, CC-0087
+feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0065, CC-0067, CC-0068, CC-0071, CC-0072, CC-0073, CC-0074, CC-0077, CC-0078, CC-0079, CC-0080, CC-0081, CC-0087, CC-0095
 ---
 
 # Keystone Reconciler Architecture
@@ -605,7 +605,7 @@ concurrent Keystone deletions (chainsaw `parallel: 4`) this created a deadlock:
 
 1. The Keystone finalizer kept the Keystone CR in etcd.
 2. Kubernetes garbage collection therefore did **not** cascade-delete the owned
-   `Deployment`, so the `keystone-api` Pod kept its MariaDB connections open.
+   `Deployment`, so the `keystone` Pod kept its MariaDB connections open.
 3. The MariaDB operator could not run `DROP DATABASE` while connections were
    live, so the `Database` CR stayed in Terminating state.
 4. Goto 1 — the finalizer never released, the 2 min `delete:` timeout in the
@@ -1913,13 +1913,13 @@ CronJob rotates keys → Secret data changes → kubelet projects new keys
 
 | Field | Value |
 | --- | --- |
-| Name | `keystone-api` |
+| Name | `{name}` (bare CR name; since CC-0095) |
 | Replicas | `spec.replicas` |
 | Labels | `app.kubernetes.io/name=keystone`, `app.kubernetes.io/instance={name}`, `app.kubernetes.io/managed-by=keystone-operator` |
 | Selector | `app.kubernetes.io/name=keystone`, `app.kubernetes.io/instance={name}` |
-| Container name | `keystone-api` |
+| Container name | `keystone` (since CC-0095) |
 | Image | `{spec.image.repository}:{spec.image.tag}` |
-| Port | 5000 (named `keystone-api`) |
+| Port | 5000 (named `keystone`; since CC-0095) |
 
 **Probes:**
 
@@ -1942,7 +1942,7 @@ The liveness and readiness probes are intentionally separated (CC-0062). The liv
 
 | Field | Value |
 | --- | --- |
-| Name | `keystone-api` |
+| Name | `{name}` (bare CR name; since CC-0095) |
 | Selector | `app.kubernetes.io/name=keystone`, `app.kubernetes.io/instance={name}` |
 | Port | 5000 TCP |
 
@@ -1954,7 +1954,7 @@ REQ-004):
 
 | `spec.gateway` | Resulting `status.endpoint` |
 | --- | --- |
-| nil | `http://{name}-api.{namespace}.svc.cluster.local:5000/v3` |
+| nil | `http://{name}.{namespace}.svc.cluster.local:5000/v3` |
 | set (hostname `api.example.com`) | `https://api.example.com/v3` |
 
 The helper is owned by `reconcile_httproute.go` but invoked from
@@ -1975,7 +1975,7 @@ disruption budget strategy:
 
 | PDB Field | Value |
 | --- | --- |
-| Name | `{name}-api` |
+| Name | `{name}` |
 | Labels | Same as Deployment (`commonLabels`) |
 | Selector | Same as Deployment (`selectorLabels`) |
 
@@ -2093,7 +2093,7 @@ route that attaches the Keystone Service to it. Four lifecycle paths
    Ready. Runtime installation of the CRD requires an operator restart for
    the RESTMapper probe and the `Owns()` watch to pick it up.
 1. **Gateway disabled** (`spec.gateway` is nil, CRD present): Delete any
-   existing `{name}-api` HTTPRoute and set `HTTPRouteReady=True` with reason
+   existing `{name}` HTTPRoute and set `HTTPRouteReady=True` with reason
    `HTTPRouteNotRequired`.
 2. **Gateway enabled** (`spec.gateway` is set, CRD present): Build the
    desired HTTPRoute via `buildKeystoneHTTPRoute()` and call
@@ -2106,7 +2106,7 @@ route that attaches the Keystone Service to it. Four lifecycle paths
    descriptive context.
 
 **Placement rationale:** Runs after `reconcileDeployment` + `pruneStaleConfigMaps`
-so the backend Service (`{name}-api`) is guaranteed to exist before the HTTPRoute
+so the backend Service (`{name}`) is guaranteed to exist before the HTTPRoute
 references it, and before `reconcileHealthCheck` reads `status.endpoint`. The
 route is deliberately not part of `reconcileParallelGroup` because it has a
 transitive dependency on the Service created by `reconcileDeployment`.
@@ -2115,7 +2115,7 @@ transitive dependency on the Service created by `reconcileDeployment`.
 
 | HTTPRoute Field | Source |
 | --- | --- |
-| `metadata.name` | `{name}-api` (shared with the Keystone API Service) |
+| `metadata.name` | `{name}` (shared with the Keystone API Service) |
 | `metadata.namespace` | Keystone CR namespace |
 | `metadata.labels` | `commonLabels(keystone)` |
 | `metadata.annotations` | `spec.gateway.annotations` (copied; operator-managed keys stay authoritative on merge) |
@@ -2126,7 +2126,7 @@ transitive dependency on the Service created by `reconcileDeployment`.
 | `spec.rules[0].matches[0].path.type` | `PathPrefix` |
 | `spec.rules[0].matches[0].path.value` | `spec.gateway.path` (defaults to `/` when empty, `defaultHTTPRoutePath`) |
 | `spec.rules[0].backendRefs[0].kind` | `Service` |
-| `spec.rules[0].backendRefs[0].name` | `{name}-api` |
+| `spec.rules[0].backendRefs[0].name` | `{name}` |
 | `spec.rules[0].backendRefs[0].port` | `5000` (`keystoneAPIPort`) |
 | `metadata.ownerReferences` | Keystone CR (controller owner via `controllerutil.SetControllerReference`) |
 
@@ -2165,7 +2165,7 @@ condition with a short requeue rather than a permanent error.
 `keystoneStatusEndpoint()` is defined alongside this sub-reconciler but called
 from `reconcileDeployment`. When `spec.gateway.hostname` is set, the helper
 returns `https://{hostname}/v3`; otherwise it returns the cluster-local
-`http://{name}-api.{namespace}.svc.cluster.local:5000/v3`. The gateway path
+`http://{name}.{namespace}.svc.cluster.local:5000/v3`. The gateway path
 prefix from `spec.gateway.path` is used for HTTPRoute routing only; it is not
 appended to `status.endpoint`. The `https` scheme is emitted unconditionally
 when a gateway hostname is configured — gateways are the public-ingress hop
@@ -2211,7 +2211,7 @@ This catches cases where pods pass their readiness probe but the API is not
 functionally healthy.
 
 **Endpoint:** Uses `keystone.Status.Endpoint` which is set by `reconcileDeployment`
-(e.g., `http://keystone-api.{namespace}.svc.cluster.local:5000/v3`). If the endpoint
+(e.g., `http://keystone.{namespace}.svc.cluster.local:5000/v3`). If the endpoint
 is empty (not yet configured), the health check sets `KeystoneAPIReady=False` with
 reason `EndpointNotReady` and requeues.
 
@@ -2301,11 +2301,11 @@ func (r *KeystoneReconciler) reconcileHPA(ctx context.Context,
 
 | HPA Field | Value |
 | --- | --- |
-| Name | `{name}-api` |
+| Name | `{name}` |
 | Labels | `commonLabels(keystone)` |
 | `scaleTargetRef.apiVersion` | `apps/v1` |
 | `scaleTargetRef.kind` | `Deployment` |
-| `scaleTargetRef.name` | `{name}-api` |
+| `scaleTargetRef.name` | `{name}` |
 | `minReplicas` | `spec.autoscaling.minReplicas` (falls back to `spec.replicas` when nil) |
 | `maxReplicas` | `spec.autoscaling.maxReplicas` |
 
@@ -2365,9 +2365,9 @@ project, roles, and service catalog entries.
 | Argument | Value Source |
 | --- | --- |
 | `--bootstrap-password` | `$(BOOTSTRAP_PASSWORD)` env var from `spec.bootstrap.adminPasswordSecretRef` Secret, key `password` |
-| `--bootstrap-admin-url` | `http://keystone-api.{namespace}.svc.cluster.local:5000/v3` |
-| `--bootstrap-internal-url` | `http://keystone-api.{namespace}.svc.cluster.local:5000/v3` |
-| `--bootstrap-public-url` | `http://keystone-api.{namespace}.svc.cluster.local:5000/v3` |
+| `--bootstrap-admin-url` | `http://keystone.{namespace}.svc.cluster.local:5000/v3` |
+| `--bootstrap-internal-url` | `http://keystone.{namespace}.svc.cluster.local:5000/v3` |
+| `--bootstrap-public-url` | `http://keystone.{namespace}.svc.cluster.local:5000/v3` |
 | `--bootstrap-region-id` | `spec.bootstrap.region` |
 
 **Condition Contract:**
@@ -2509,11 +2509,11 @@ Keystone CR via `controllerutil.SetControllerReference()`. This enables:
 | ConfigMap | `{name}-config-{hash}` | Keystone CR |
 | Job | `keystone-db-sync` | Keystone CR | <!-- TODO: align to {name}-* pattern (pre-existing, CC-0073 W-002) -->
 | Job | `keystone-bootstrap` | Keystone CR | <!-- TODO: align to {name}-* pattern (pre-existing, CC-0073 W-002) -->
-| Deployment | `keystone-api` | Keystone CR | <!-- TODO: align to {name}-* pattern (pre-existing, CC-0073 W-002) -->
-| Service | `keystone-api` | Keystone CR | <!-- TODO: align to {name}-* pattern (pre-existing, CC-0073 W-002) -->
-| PodDisruptionBudget | `{name}-api` | Keystone CR |
-| HorizontalPodAutoscaler | `{name}-api` | Keystone CR (only when `spec.autoscaling` is set) |
-| HTTPRoute | `{name}-api` | Keystone CR (only when `spec.gateway` is set, CC-0065) |
+| Deployment | `{name}` | Keystone CR (bare CR name since CC-0095) |
+| Service | `{name}` | Keystone CR (bare CR name since CC-0095) |
+| PodDisruptionBudget | `{name}` | Keystone CR (bare CR name since CC-0095) |
+| HorizontalPodAutoscaler | `{name}` | Keystone CR (only when `spec.autoscaling` is set; bare CR name since CC-0095) |
+| HTTPRoute | `{name}` | Keystone CR (only when `spec.gateway` is set, CC-0065; bare CR name since CC-0095) |
 | Job | `{name}-policy-validation` | Keystone CR (only when `spec.policyOverrides` is set) |
 | CronJob | `{name}-trust-flush` | Keystone CR (only when `spec.trustFlush` is set) |
 | ConfigMap | `{name}-fernet-rotate-script-{hash}` | Keystone CR (CC-0073) |

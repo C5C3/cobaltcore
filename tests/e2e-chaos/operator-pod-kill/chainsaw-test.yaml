@@ -172,7 +172,7 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-chaos-opk-api
+            name: keystone-chaos-opk
             namespace: openstack
           spec:
             replicas: 2

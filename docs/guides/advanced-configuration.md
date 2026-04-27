@@ -93,7 +93,7 @@ spec:
 
 - At least one of `targetCPUUtilization` or `targetMemoryUtilization` is required.
 - `minReplicas` defaults to `spec.replicas` if unset — omitting it will floor the HPA at your current hand-set replica count, not at 1.
-- The generated HPA references `deploy/keystone-api` and uses the Kubernetes standard
+- The generated HPA references `deploy/keystone` and uses the Kubernetes standard
   `metrics-server`. The Quick Start kind cluster does **not** ship one — the HPA will
   sit at `unknown/80%` until you install it:
 
@@ -114,7 +114,7 @@ Inspect the HPA:
 
 ```bash
 kubectl get hpa -n openstack -l app.kubernetes.io/instance=keystone
-kubectl describe hpa keystone-api -n openstack
+kubectl describe hpa keystone -n openstack
 ```
 
 Removing `spec.autoscaling` deletes the HPA and returns replica control to

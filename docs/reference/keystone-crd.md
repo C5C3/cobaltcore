@@ -1,7 +1,7 @@
 ---
 title: Keystone CRD API Reference
 quadrant: operator
-feature: CC-0011, CC-0012, CC-0013, CC-0016, CC-0036, CC-0038, CC-0039, CC-0040, CC-0042, CC-0056, CC-0057, CC-0065, CC-0075, CC-0084, CC-0094
+feature: CC-0011, CC-0012, CC-0013, CC-0016, CC-0036, CC-0038, CC-0039, CC-0040, CC-0042, CC-0056, CC-0057, CC-0065, CC-0075, CC-0084, CC-0094, CC-0095
 ---
 
 # Keystone CRD API Reference
@@ -32,6 +32,34 @@ import keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 The `init()` function in `keystone_types.go` registers `Keystone` and `KeystoneList`
 with the `SchemeBuilder`. Operator `main.go` calls `AddToScheme` to register the types
 with the manager's scheme.
+
+---
+
+## Sub-Resource Naming Convention (CC-0095)
+
+All operator-managed sub-resources for a Keystone CR are named after the CR itself
+with **no `-api` suffix**. For a Keystone CR named `keystone` in namespace `openstack`,
+the operator creates:
+
+| Sub-resource | Name | Cluster-internal DNS |
+| --- | --- | --- |
+| `Deployment` | `keystone` | — |
+| `Service` (ClusterIP) | `keystone` | `keystone.openstack.svc.cluster.local` |
+| `HorizontalPodAutoscaler` | `keystone` | — |
+| `PodDisruptionBudget` | `keystone` | — |
+| `NetworkPolicy` | `keystone` | — |
+| `HTTPRoute` | `keystone` | — |
+| Container & named port | `keystone` | port 5000 |
+
+This convention replaces the historical `<name>-api` form (where the same CR would <!-- CC-0095 legacy: pre-rename name referenced for traceability. -->
+have produced `keystone-api` Service, Deployment, etc.). <!-- CC-0095 legacy: pre-rename name referenced for traceability. -->
+The change aligns the internal Service DNS with the public Gateway hostname posture
+established by CC-0088 and removes the redundant suffix that no longer reflected a
+meaningful split — the Keystone CR has owned only the API role since CC-0011.
+
+For migration semantics (catalog refresh, ownerReference cascade GC of legacy
+sub-resources, and operator workflows for upgrading a pre-CC-0095 cluster), see the
+[Keystone Upgrade Flow reference](./keystone-upgrade-flow.md).
 
 ---
 
@@ -112,9 +140,9 @@ status:
     - type: KeystoneAPIReady
       status: "True"
       reason: APIHealthy
-      message: "Keystone API is responding at http://keystone-api.openstack.svc.cluster.local:5000/v3"
+      message: "Keystone API is responding at http://keystone.openstack.svc.cluster.local:5000/v3"
       lastTransitionTime: "2026-03-09T00:00:00Z"
-  endpoint: http://keystone-api.openstack.svc.cluster.local:5000/v3
+  endpoint: http://keystone.openstack.svc.cluster.local:5000/v3
   installedRelease: "2025.2"
 ```
 
@@ -147,9 +175,9 @@ status:
 | `middleware` | `[]MiddlewareSpec` | No | `nil` | WSGI middleware filters for api-paste.ini. |
 | `plugins` | `[]PluginSpec` | No | `nil` | Service plugins/drivers to configure. |
 | `policyOverrides` | [`*PolicySpec`](#policyspec) | No | `nil` | Custom oslo.policy rules. |
-| `autoscaling` | [`*AutoscalingSpec`](#autoscalingspec) | No | `nil` | Horizontal pod autoscaling configuration. When set, an HPA is created targeting the `{name}-api` Deployment. When removed, the HPA is deleted (CC-0038). |
+| `autoscaling` | [`*AutoscalingSpec`](#autoscalingspec) | No | `nil` | Horizontal pod autoscaling configuration. When set, an HPA is created targeting the `{name}` Deployment. When removed, the HPA is deleted (CC-0038). |
 | `networkPolicy` | [`*NetworkPolicySpec`](#networkpolicyspec) | No | `nil` | Network isolation for Keystone API pods. When set, a NetworkPolicy restricting ingress to TCP 5000 and auto-deriving egress rules for DNS, MariaDB, and Memcached is created. When `nil`, no NetworkPolicy is managed and traffic is unrestricted (CC-0039). |
-| `gateway` | [`*GatewaySpec`](#gatewayspec) | No | `nil` | Gateway API HTTPRoute configuration. When set, an HTTPRoute is created targeting the `{name}-api` Service on port 5000 and attached to the referenced pre-existing Gateway; `status.endpoint` is updated to `https://{hostname}/v3`. When removed, the HTTPRoute is deleted and `status.endpoint` reverts to the cluster-local Service URL (CC-0065). |
+| `gateway` | [`*GatewaySpec`](#gatewayspec) | No | `nil` | Gateway API HTTPRoute configuration. When set, an HTTPRoute is created targeting the `{name}` Service on port 5000 and attached to the referenced pre-existing Gateway; `status.endpoint` is updated to `https://{hostname}/v3`. When removed, the HTTPRoute is deleted and `status.endpoint` reverts to the cluster-local Service URL (CC-0065). |
 | `resources` | [`*corev1.ResourceRequirements`](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#resources) | No | See below | CPU and memory requests and limits for the Keystone API container. When unset, the defaulting webhook injects sensible defaults to ensure Burstable QoS class and enable HPA utilization calculations (CC-0042). |
 | `uwsgi` | [`*UWSGISpec`](#uwsgispec) | No | `nil` | uWSGI application server parameters. When set, the operator uses these values for the Deployment container command. When `nil`, hardcoded defaults (processes=2, threads=1, httpKeepAlive=true) are used in the reconciler (CC-0040). |
 | `topologySpreadConstraints` | [`[]corev1.TopologySpreadConstraint`](https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/) | No | See [below](#topologyspreadconstraints) | Scheduler hints for spreading pods across zones and nodes. `nil` injects two defaults (zone + hostname, MaxSkew=1, `ScheduleAnyway`); a non-nil value (including `[]`) is used verbatim (CC-0075). |
@@ -202,7 +230,7 @@ Configures horizontal pod autoscaling for the Keystone API Deployment (CC-0038).
 This is a pointer field (`*AutoscalingSpec`) on `KeystoneSpec` — when `nil`,
 no HPA is created and the `HPAReady` condition is set to `True` with reason
 `HPANotRequired`. When set, a `HorizontalPodAutoscaler` (autoscaling/v2) is
-created targeting the `{name}-api` Deployment. Removing the field deletes the
+created targeting the `{name}` Deployment. Removing the field deletes the
 existing HPA.
 
 | Field | Type | Required | Default | Description |
@@ -221,11 +249,11 @@ The HPA created from this spec has the following shape:
 
 | HPA Field | Value |
 | --- | --- |
-| `metadata.name` | `{name}-api` |
+| `metadata.name` | `{name}` |
 | `metadata.labels` | `commonLabels` (same as Deployment) |
 | `spec.scaleTargetRef.apiVersion` | `apps/v1` |
 | `spec.scaleTargetRef.kind` | `Deployment` |
-| `spec.scaleTargetRef.name` | `{name}-api` |
+| `spec.scaleTargetRef.name` | `{name}` |
 | `spec.minReplicas` | `autoscaling.minReplicas` (or `spec.replicas` if unset) |
 | `spec.maxReplicas` | `autoscaling.maxReplicas` |
 | `spec.metrics` | CPU and/or memory `Resource` metrics based on which targets are set |
@@ -596,7 +624,7 @@ Configures external exposure of the Keystone API via a Gateway API HTTPRoute
 no HTTPRoute is created and the `HTTPRouteReady` condition is set to `True` with
 reason `HTTPRouteNotRequired`. When set, an `HTTPRoute` (from
 `gateway.networking.k8s.io/v1`) is created in the Keystone CR's namespace, attached
-to the referenced pre-existing Gateway, and pointing to the `{name}-api` Service on
+to the referenced pre-existing Gateway, and pointing to the `{name}` Service on
 port 5000. Removing the field deletes the existing HTTPRoute.
 
 The operator plays the **application-developer** role in the Gateway API model: it
@@ -642,7 +670,7 @@ The HTTPRoute created from this spec has the following shape
 
 | HTTPRoute Field | Value |
 | --- | --- |
-| `metadata.name` | `{name}-api` (matches the backend Service, Deployment, HPA, NetworkPolicy naming) |
+| `metadata.name` | `{name}` (matches the backend Service, Deployment, HPA, NetworkPolicy naming) |
 | `metadata.namespace` | Keystone CR namespace |
 | `metadata.labels` | `commonLabels` (same as Deployment) |
 | `metadata.annotations` | Merged from `spec.gateway.annotations` |
@@ -653,7 +681,7 @@ The HTTPRoute created from this spec has the following shape
 | `spec.rules[0].matches[0].path.type` | `PathPrefix` |
 | `spec.rules[0].matches[0].path.value` | `spec.gateway.path` (or `"/"` when empty) |
 | `spec.rules[0].backendRefs[0].kind` | `Service` |
-| `spec.rules[0].backendRefs[0].name` | `{name}-api` |
+| `spec.rules[0].backendRefs[0].name` | `{name}` |
 | `spec.rules[0].backendRefs[0].port` | `5000` |
 | `ownerReferences` | Points to the Keystone CR (controller: true) — enables garbage collection |
 
@@ -664,7 +692,7 @@ recomputed on every reconcile:
 
 | `spec.gateway` | `status.endpoint` Value |
 | --- | --- |
-| `nil` | `http://{name}-api.{namespace}.svc.cluster.local:5000/v3` (cluster-local fallback) |
+| `nil` | `http://{name}.{namespace}.svc.cluster.local:5000/v3` (cluster-local fallback) |
 | Set | `https://{hostname}/v3` — HTTPS is fixed because Gateways are the public-ingress hop and terminate TLS |
 
 `status.endpoint` does **not** include `spec.gateway.path`. The `/v3` suffix is
@@ -844,7 +872,7 @@ Configures the initial Keystone bootstrap.
 | Field | Type | Description |
 | --- | --- | --- |
 | `conditions` | `[]metav1.Condition` | Latest available observations of the Keystone state. |
-| `endpoint` | `string` | Keystone API endpoint URL (set by the controller when ready). Defaults to `http://{name}-api.{namespace}.svc.cluster.local:5000/v3`. |
+| `endpoint` | `string` | Keystone API endpoint URL (set by the controller when ready). Defaults to `http://{name}.{namespace}.svc.cluster.local:5000/v3`. |
 | `installedRelease` | `string` | OpenStack release version currently deployed. Set by the controller after a successful `db_sync`; reflects the value extracted from `spec.image.tag` (CC-0056). |
 | `targetRelease` | `string` | Upgrade target release during an active upgrade. Set while `upgradePhase` is one of `Expanding`/`Migrating`/`RollingUpdate`/`Contracting`; cleared after `Contracting` completes (CC-0056). |
 | `upgradePhase` | [`UpgradePhase`](#upgradephase) | Current phase of an active database upgrade. Empty outside upgrades (CC-0056). |

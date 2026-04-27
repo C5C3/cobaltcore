@@ -43,7 +43,7 @@ spec:
           apiVersion: gateway.networking.k8s.io/v1
           kind: HTTPRoute
           metadata:
-            name: keystone-httproute-api
+            name: keystone-httproute
             namespace: openstack
             labels:
               app.kubernetes.io/name: keystone
@@ -67,7 +67,7 @@ spec:
                   type: PathPrefix
                   value: /v3
               backendRefs:
-              - name: keystone-httproute-api
+              - name: keystone-httproute
                 port: 5000
     catch:
     - script:
@@ -105,7 +105,7 @@ spec:
   - try:
     - script:
         content: |
-          kubectl patch httproute keystone-httproute-api -n $NAMESPACE \
+          kubectl patch httproute keystone-httproute -n $NAMESPACE \
             --subresource=status --type=merge -p '{
               "status": {
                 "parents": [{
@@ -141,7 +141,7 @@ spec:
           echo "=== Keystone CR status ==="
           kubectl get keystone keystone-httproute -n $NAMESPACE -o jsonpath='{.status}' 2>&1 | jq . || true
           echo "=== HTTPRoute with status ==="
-          kubectl get httproute keystone-httproute-api -n $NAMESPACE -o yaml 2>&1 || true
+          kubectl get httproute keystone-httproute -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== Operator pod logs ==="
           for pod in $(kubectl get pods -n keystone-operator -o name 2>/dev/null); do
             echo "--- $pod ---"
@@ -167,7 +167,7 @@ spec:
     - script:
         content: |
           # Verify HTTPRoute no longer exists (CC-0065, REQ-002).
-          if kubectl get httproute keystone-httproute-api -n $NAMESPACE 2>/dev/null; then
+          if kubectl get httproute keystone-httproute -n $NAMESPACE 2>/dev/null; then
             echo "FAIL: HTTPRoute should have been deleted"
             exit 1
           fi

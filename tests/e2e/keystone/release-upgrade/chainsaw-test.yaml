@@ -43,7 +43,7 @@ spec:
               reason: AllReady
     - script:
         content: |
-          kubectl get deploy keystone-release-upgrade-api -n openstack \
+          kubectl get deploy keystone-release-upgrade -n openstack \
             -o jsonpath='{.spec.template.spec.containers[0].image}' | grep '2025\.2$'
     catch:
     - script:
@@ -79,7 +79,7 @@ spec:
         timeout: 30s
         content: |
           kubectl run curl-test-release-pre -n $NAMESPACE --image=ghcr.io/c5c3/keystone:2025.2 --rm -i --restart=Never \
-            --command -- python3 -c "import urllib.request; print(urllib.request.urlopen('http://keystone-release-upgrade-api.openstack.svc:5000/v3').read().decode())"
+            --command -- python3 -c "import urllib.request; print(urllib.request.urlopen('http://keystone-release-upgrade.openstack.svc:5000/v3').read().decode())"
     catch:
     - script:
         content: |
@@ -124,14 +124,14 @@ spec:
           done
     - script:
         content: |
-          kubectl get deploy keystone-release-upgrade-api -n openstack \
+          kubectl get deploy keystone-release-upgrade -n openstack \
             -o jsonpath='{.spec.template.spec.containers[0].image}' | grep '2026\.1$'
     - assert:
         resource:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-release-upgrade-api
+            name: keystone-release-upgrade
             namespace: openstack
           status:
             (availableReplicas > `0`): true
@@ -167,7 +167,7 @@ spec:
         timeout: 30s
         content: |
           kubectl run curl-test-release-post -n $NAMESPACE --image=ghcr.io/c5c3/keystone:2026.1 --rm -i --restart=Never \
-            --command -- python3 -c "import urllib.request; print(urllib.request.urlopen('http://keystone-release-upgrade-api.openstack.svc:5000/v3').read().decode())"
+            --command -- python3 -c "import urllib.request; print(urllib.request.urlopen('http://keystone-release-upgrade.openstack.svc:5000/v3').read().decode())"
     catch:
     - script:
         content: |

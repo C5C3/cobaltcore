@@ -5,13 +5,14 @@
 
 # Verify docs/quick-start.md's "Access Keystone from your local machine"
 # section has been rewritten so the nip.io Gateway endpoint is the
-# primary flow and `kubectl port-forward svc/keystone-api` has been moved
-# into a Fallback subsection (CC-0088, REQ-007).
+# primary flow and `kubectl port-forward svc/keystone` has been moved
+# into a Fallback subsection (CC-0088, REQ-007). Sub-resource Service
+# name is bare `keystone` (no `-api` suffix) since CC-0095.
 #
 # Assertions:
 #   1. `## Access Keystone from your local machine` exists
 #   2. Between that heading and the `## Fallback — kubectl port-forward`
-#      subheading, there is NO `kubectl port-forward svc/keystone-api`
+#      subheading, there is NO `kubectl port-forward svc/keystone`
 #      command (the primary flow must not rely on port-forward).
 #   3. A nip.io explainer paragraph sits inside the primary section
 #      (searches for `nip.io` between the two headings).
@@ -57,9 +58,9 @@ test_primary_section_heading() {
   fi
 }
 
-# --- Test 2: no `kubectl port-forward svc/keystone-api` before Fallback (CC-0088, REQ-007) ---
+# --- Test 2: no `kubectl port-forward svc/keystone` before Fallback (CC-0088, REQ-007) ---
 test_no_portforward_before_fallback() {
-  echo "Test: no 'kubectl port-forward svc/keystone-api' appears in the primary section (CC-0088, REQ-007)"
+  echo "Test: no 'kubectl port-forward svc/keystone' appears in the primary section (CC-0088, REQ-007)"
 
   if [[ -z "$access_line" || -z "$fallback_line" ]]; then
     echo "  FAIL: missing anchor heading(s); cannot perform range check"
@@ -77,11 +78,11 @@ test_no_portforward_before_fallback() {
   local window
   window="$(sed -n "${access_line},$((fallback_line - 1))p" "$QUICK_START")"
 
-  if echo "$window" | grep -q 'kubectl port-forward svc/keystone-api'; then
-    echo "  FAIL: 'kubectl port-forward svc/keystone-api' found in the primary section (should be in Fallback only)"
+  if echo "$window" | grep -q 'kubectl port-forward svc/keystone'; then
+    echo "  FAIL: 'kubectl port-forward svc/keystone' found in the primary section (should be in Fallback only)"
     FAIL=$((FAIL + 1))
   else
-    echo "  PASS: primary section does not use 'kubectl port-forward svc/keystone-api'"
+    echo "  PASS: primary section does not use 'kubectl port-forward svc/keystone'"
     PASS=$((PASS + 1))
   fi
 }
@@ -122,7 +123,7 @@ test_accept_self_signed_subsection() {
 
 # --- Test 5: Fallback subsection exists and contains the port-forward command (CC-0088, REQ-007) ---
 test_fallback_contains_portforward() {
-  echo "Test: Fallback subsection contains kubectl port-forward svc/keystone-api (CC-0088, REQ-007)"
+  echo "Test: Fallback subsection contains kubectl port-forward svc/keystone (CC-0088, REQ-007)"
 
   if [[ -z "$fallback_line" ]]; then
     echo "  FAIL: Fallback heading not found"
@@ -133,11 +134,11 @@ test_fallback_contains_portforward() {
   local fallback_tail
   fallback_tail="$(tail -n +"$fallback_line" "$QUICK_START")"
 
-  if echo "$fallback_tail" | grep -q 'kubectl port-forward svc/keystone-api'; then
+  if echo "$fallback_tail" | grep -q 'kubectl port-forward svc/keystone'; then
     echo "  PASS: Fallback section contains the port-forward command"
     PASS=$((PASS + 1))
   else
-    echo "  FAIL: Fallback section does not contain 'kubectl port-forward svc/keystone-api'"
+    echo "  FAIL: Fallback section does not contain 'kubectl port-forward svc/keystone'"
     FAIL=$((FAIL + 1))
   fi
 }

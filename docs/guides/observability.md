@@ -29,7 +29,7 @@ kubectl get keystones -A
 
 ```
 NAMESPACE   NAME       READY   ENDPOINT                                              RELEASE   AGE
-openstack   keystone   True    http://keystone-api.openstack.svc.cluster.local:5000  2025.2    12m
+openstack   keystone   True    http://keystone.openstack.svc.cluster.local:5000      2025.2    12m
 ```
 
 | Column | Source | Meaning |
@@ -80,7 +80,7 @@ The first `status=False` condition from the top is usually the bottleneck:
 
 - `SecretsReady=False` → check that `keystone-db` and `keystone-admin` Secrets exist in the same namespace
 - `DatabaseReady=False` → look at Events for `DBSyncFailed` or `SchemaDriftDetected`
-- `DeploymentReady=False` → `kubectl describe deploy keystone-api` — usually image pull or probe failures
+- `DeploymentReady=False` → `kubectl describe deploy keystone` — usually image pull or probe failures
 :::
 
 ---

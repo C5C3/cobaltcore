@@ -264,7 +264,7 @@ func TestReconcileHealthCheck_AlwaysTargetsInternalAPIURL_NoGateway(t *testing.T
 
 	_, err := r.reconcileHealthCheck(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(capture.url).To(Equal("http://test-keystone-api.default.svc.cluster.local:5000/v3"),
+	g.Expect(capture.url).To(Equal("http://test-keystone.default.svc.cluster.local:5000/v3"),
 		"health check must probe the cluster-local Service URL regardless of Status.Endpoint (CC-0065)")
 }
 
@@ -285,7 +285,7 @@ func TestReconcileHealthCheck_AlwaysTargetsInternalAPIURL_GatewaySet(t *testing.
 
 	_, err := r.reconcileHealthCheck(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(capture.url).To(Equal("http://test-keystone-api.default.svc.cluster.local:5000/v3"),
+	g.Expect(capture.url).To(Equal("http://test-keystone.default.svc.cluster.local:5000/v3"),
 		"health check must not probe the public Gateway URL; conflating ingress/DNS/cert health with API readiness is a regression (CC-0065)")
 }
 
@@ -400,7 +400,7 @@ func TestReconcileHealthCheck_DNSError_SetsConditionFalse(t *testing.T) {
 			URL: "http://test/v3",
 			Err: &net.DNSError{
 				Err:  "no such host",
-				Name: "test-keystone-api.default.svc.cluster.local",
+				Name: "test-keystone.default.svc.cluster.local",
 			},
 		},
 	}

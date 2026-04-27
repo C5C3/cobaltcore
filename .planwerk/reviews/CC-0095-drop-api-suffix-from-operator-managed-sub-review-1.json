@@ -1,0 +1,111 @@
+{
+  "summary": "CC-0095 drops the '-api' suffix from every operator-managed Keystone sub-resource (Deployment, Service, PDB, HPA, NetworkPolicy, HTTPRoute, container, named port) by flipping `apiResourceName()` to return `keystone.Name` and refactoring `bootstrapServiceURL()` to delegate to that helper. The container/port literals at `reconcile_deployment.go:171,178` were renamed to `keystone`. Tests across all controller files were realigned (~100+ assertion sites). E2E chainsaw fixtures and chaos-mesh PodChaos resources were updated; PodChaos selector and CR fixture names that legitimately contain '-api' were intentionally retained with `CC-0095 legacy` annotations. Two new doc tests gate the upgrade-flow callout and the CRD naming-convention section. A new `scripts/grep-keystone-api-residue.sh` enforces zero unmarked `keystone-api` literals in operators/, tests/, docs/, hack/, deploy/. Architecture/ submodule is excluded from the scanner with documented rationale (read-only from the worktree). All controller unit tests and the three doc tests pass.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "All blocking unit tests pass (TestApiResourceName_*, TestBootstrapServiceURL_*, TestBuildKeystone*_NameMatchesCR, TestInternalAPIURL_UsesBareCRName, TestBuildBootstrapJob_AdminInternalURLsUseBareName)", "checked": true},
+    {"item": "Per-builder unit tests pin both Name and absence of '-api' suffix (defense-in-depth)", "checked": true},
+    {"item": "Integration tests TestIntegration_ReconcileProducesRenamedSubResources and TestIntegration_NoOrphanedApiSuffixedResourcesAfterReconcile present and well-scoped to envtest", "checked": true},
+    {"item": "Existing controller test suite passes against renamed source (`go test ./internal/controller/` is green)", "checked": true},
+    {"item": "Edge cases covered: empty CR name, CR name containing '-api' (chaos fixture)", "checked": true},
+    {"item": "Doc-test gates updated atomically with the docs they verify (quick_start_access_section_test.sh)", "checked": true},
+    {"item": "New doc tests for CRD naming-convention and upgrade-flow callout pass", "checked": true},
+    {"item": "Chainsaw e2e fixtures realigned; PodChaos label selector preserved (still targets app.kubernetes.io/instance=keystone-chaos-api which IS the CR name)", "checked": true},
+    {"item": "Live chainsaw e2e and chaos-e2e suites verified on a kind cluster", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "apiResourceName() returns keystone.Name directly with no fmt.Sprintf or suffix", "checked": true},
+    {"item": "bootstrapServiceURL() composes via apiResourceName(); contains no literal '-api'", "checked": true},
+    {"item": "Container Name and named ContainerPort Name are 'keystone' (not 'keystone-api')", "checked": true},
+    {"item": "selectorLabels() and commonLabels() unchanged (label-based consumers unaffected)", "checked": true},
+    {"item": "HTTPRoute BackendRef.Port and Service TargetPort still reference int 5000 — named-port rename is local-cosmetic", "checked": true},
+    {"item": "Doc-comments touched by Task 1.4 use uniform tone across all 5 sites", "checked": true},
+    {"item": "Stale doc-comments not in Task 1.4/1.5 scope were also caught (e.g. reconcile_httproute.go:198)", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "No new attack surface — pure rename refactor", "checked": true},
+    {"item": "No secret handling changes", "checked": true},
+    {"item": "RBAC unchanged (rename does not touch permissions)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Single source of truth: apiResourceName() centralises naming for all sub-resources", "checked": true},
+    {"item": "bootstrapServiceURL() no longer reimplements the naming pattern (closes latent divergence channel)", "checked": true},
+    {"item": "Rename has minimum blast radius (no selector/label changes, no port/service/backendRef changes beyond Name fields)", "checked": true},
+    {"item": "Documented migration mechanism for orphan cleanup matches the actual implementation", "checked": false},
+    {"item": "Architecture submodule (read-only) excluded from residue scanner with documented rationale", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "apiResourceName() preserved as the centralised helper rather than inlined", "checked": true},
+    {"item": "No backwards-compat shim creating both <name> and <name>-api in parallel (matches Non-Goal)", "checked": true},
+    {"item": "No new abstractions introduced for the rename — minimal mechanical change", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Residue scanner exits non-zero on any unmarked 'keystone-api' literal in tracked roots", "checked": true},
+    {"item": "Search-root existence is validated; missing roots return exit 2 (not silent vacuous pass)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "TestApiResourceName_EmptyCRName guards against future suffix regression", "checked": true},
+    {"item": "TestBootstrapServiceURL_NoApiLiteral guards against re-introducing the legacy host pattern", "checked": true},
+    {"item": "TestBuildBootstrapJob_AdminInternalURLsUseBareName asserts both presence of bare URL and absence of legacy host", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [
+    {
+      "severity": "MAJOR",
+      "description": "Documented orphan-cleanup mechanism does not exist in the controller. `docs/reference/keystone-upgrade-flow.md:562-563` claims 'the operator explicitly issues `Delete` calls for them during reconcile, and the ownerReference cascade ensures their child objects ... are garbage-collected'. There is NO code in any reconcile_*.go file that explicitly deletes legacy `<name>-api` resources (verified via grep). Furthermore, ownerReference cascade is triggered only when the OWNER is deleted — the Keystone CR is NOT being deleted on a CC-0095 upgrade, so cascade GC will NOT reap the legacy `<name>-api` Deployment/Service/PDB/HPA/NetworkPolicy/HTTPRoute. After upgrade, operators will be left with persistent orphan resources (the old Pods continue to run, the old Service still routes traffic, the old PDB still applies). The Non-Goals section acknowledges no migration code is added, but the upgrade-flow doc misrepresents this as automatic cleanup. This will mislead operators into not running manual `kubectl delete` of legacy sub-resources.",
+      "location": "docs/reference/keystone-upgrade-flow.md:555-573",
+      "fix": "Rewrite the 'ownerReference Cascade GC of Legacy Sub-Resources' section to honestly state that legacy `<name>-api` resources are NOT automatically cleaned up because (a) the operator does not issue Delete calls for them and (b) ownerReference cascade only fires when the parent CR is deleted. Document the manual cleanup commands operators must run after upgrade (e.g. `kubectl delete deployment,service,pdb,hpa,networkpolicy,httproute -n <ns> -l app.kubernetes.io/instance=<cr-name> --field-selector metadata.name=<cr-name>-api` — or simply naming each resource explicitly). Alternatively, implement a one-shot legacy-cleanup sub-reconciler (the explicit Non-Goal becomes a Goal here, but the docs' current claim cannot stand without it).",
+      "fix_classification": "ASK"
+    }
+  ],
+  "issues_found": [
+    {
+      "check_id": "DA1",
+      "severity": "MAJOR",
+      "description": "Stale templated `{name}-api` references in docs/reference/keystone-crd.md contradict the post-CC-0095 implementation. The residue scanner (which greps for the literal `keystone-api` string only) missed every templated form. Field-description tables and subsection prose describe HPA, HTTPRoute, Service, status.endpoint etc. as named `{name}-api` — directly contradicting the new naming convention introduced in this same PR (which the same doc otherwise documents in the `## Sub-Resource Naming Convention (CC-0095)` section).",
+      "location": "docs/reference/keystone-crd.md:178,180,233,252,256,627,673,684,695,875",
+      "fix": "Replace every `{name}-api` (and `{name}-api.{namespace}.svc.cluster.local`) occurrence with `{name}` (and `{name}.{namespace}.svc.cluster.local`) at the listed lines. Verify with `grep -n '{name}-api\\|<cr-name>-api\\|<name>-api' docs/reference/keystone-crd.md` returning only the explicit `<!-- CC-0095 legacy -->` line(s). Also extend `scripts/grep-keystone-api-residue.sh` to detect templated `\\{name\\}-api`/`<name>-api`/`<cr-name>-api` patterns so this class of stale doc reference is caught by CI.",
+      "evidence": "docs/reference/keystone-crd.md:178: `Horizontal pod autoscaling configuration. When set, an HPA is created targeting the \\`{name}-api\\` Deployment.` ; line 252: `| \\`metadata.name\\` | \\`{name}-api\\` |` ; line 695: `| \\`nil\\` | \\`http://{name}-api.{namespace}.svc.cluster.local:5000/v3\\` (cluster-local fallback) |` ; line 875: `Defaults to \\`http://{name}-api.{namespace}.svc.cluster.local:5000/v3\\`.`",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "DA1",
+      "severity": "MAJOR",
+      "description": "Stale templated `{name}-api` references in docs/reference/keystone-reconciler.md contradict the post-CC-0095 implementation. The PR updated some literal lines in this file but missed every `{name}-api` templated form. The HTTPRoute Name and BackendRef tables, the cluster-local URL example, and the HPA scaleTargetRef tables all still describe the legacy naming.",
+      "location": "docs/reference/keystone-reconciler.md:1978,2096,2109,2118,2129,2168,2304,2308",
+      "fix": "Replace every `{name}-api` occurrence at the listed lines with `{name}`. The reconciler reference also needs the same treatment as the CRD doc — the residue scanner should be extended to match templated forms so this regresses no further.",
+      "evidence": "docs/reference/keystone-reconciler.md:1978: `| Name | \\`{name}-api\\` |` (HTTPRoute table) ; line 2118: `| \\`metadata.name\\` | \\`{name}-api\\` (shared with the Keystone API Service) |` ; line 2168: `\\`http://{name}-api.{namespace}.svc.cluster.local:5000/v3\\`` ; line 2304: `| Name | \\`{name}-api\\` |` (HPA table)",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "Q7",
+      "severity": "MINOR",
+      "description": "Stale doc-comment in source: `reconcile_httproute.go:198` says the HTTPRoute `forwards to the {name}-api Service on port 5000`. The implementation now forwards to `{name}` (the bare CR name). Task 1.5 only touched the `keystoneAPIPort` const doc-comment but missed this comment two lines below `buildKeystoneHTTPRoute`. Since this comment misdescribes WHAT the function does, it actively misleads future readers.",
+      "location": "operators/keystone/internal/controller/reconcile_httproute.go:198",
+      "fix": "Edit line 198 to read: `// empty), and forwards to the bare-name `{name}` Service on port 5000` (or simply drop the `-api` segment). Add a `(CC-0095)` trailing reference per the FEATURE_ID_REQUIRED rule.",
+      "evidence": "operators/keystone/internal/controller/reconcile_httproute.go:195-199:\\n// buildKeystoneHTTPRoute constructs the desired HTTPRoute for the Keystone API.\\n// It attaches to the Gateway referenced by spec.gateway.parentRef, matches the\\n// configured hostname with a PathPrefix match on spec.gateway.path (or \\\"/\\\" when\\n// empty), and forwards to the {name}-api Service on port 5000\\n// (CC-0065, REQ-001, REQ-003, REQ-006).",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "TE7",
+      "severity": "MINOR",
+      "description": "TestIntegration_NoOrphanedApiSuffixedResourcesAfterReconcile is named to suggest it verifies cleanup of legacy resources but actually verifies only that a fresh reconcile doesn't create them — which is trivially satisfied since none were pre-created. The test never seeds a `<cr-name>-api` Deployment/Service/PDB and therefore cannot detect the very orphan-persistence problem the upgrade-flow doc claims is solved by ownerReference cascade. Rename the test to reflect what it actually verifies (e.g. `TestIntegration_FreshReconcileEmitsNoLegacyApiSuffixedResources`) OR augment it to pre-create legacy resources, run the reconciler, and assert they are gone (which would currently FAIL — see architecture finding above).",
+      "location": "operators/keystone/internal/controller/integration_test.go:3776-3810",
+      "fix": "Rename to `TestIntegration_FreshReconcileEmitsNoLegacyApiSuffixedResources` to honestly reflect coverage; OR seed the legacy resources before driveFullReconciliation and assert their absence after — but be aware the augmented test will fail until the orphan-cleanup architecture finding is addressed.",
+      "evidence": "operators/keystone/internal/controller/integration_test.go:3782-3810: the test creates a fresh Keystone CR with no pre-existing `<cr-name>-api` resources, then asserts those resources do not exist after reconcile. Nothing in the setup creates the legacy resources, so the assertion is trivially true.",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "Extend `scripts/grep-keystone-api-residue.sh` to also flag templated forms (`{name}-api`, `<name>-api`, `<cr-name>-api`, `{cr-name}-api`) so future doc drift is caught at CI time. The current literal-only scan was the root cause of the doc stragglers in keystone-crd.md and keystone-reconciler.md.",
+    "Consider adding a short cleanup runbook to docs/guides/day-2-operations.md showing the exact `kubectl delete` invocations operators should run after upgrading from a pre-CC-0095 cluster, until either an explicit cleanup sub-reconciler is implemented or the upgrade-flow doc is rewritten.",
+    "When the kind-cluster upgrade-path verification (Task 5.4) is finally executed, capture the observed orphan-persistence behavior and either confirm the docs' cleanup claim or update both docs and tests accordingly. The current sandbox-only verification cannot disambiguate the two."
+  ],
+  "next_steps": [
+    "Rewrite docs/reference/keystone-upgrade-flow.md:555-573 to truthfully describe orphan-cleanup behavior (likely: 'manual cleanup required', with explicit kubectl commands).",
+    "Replace all `{name}-api` templated references in docs/reference/keystone-crd.md and docs/reference/keystone-reconciler.md with `{name}` (~17 lines total).",
+    "Fix the stale `{name}-api` comment at operators/keystone/internal/controller/reconcile_httproute.go:198.",
+    "Either rename TestIntegration_NoOrphanedApiSuffixedResourcesAfterReconcile or rework it to actually exercise the upgrade-orphan-cleanup path.",
+    "(Optional) Extend scripts/grep-keystone-api-residue.sh to also flag templated `-api` forms."
+  ],
+  "detected_patterns": []
+}

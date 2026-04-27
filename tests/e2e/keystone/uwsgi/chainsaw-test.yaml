@@ -40,13 +40,13 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-uwsgi-api
+            name: keystone-uwsgi
             namespace: openstack
           spec:
             template:
               spec:
                 containers:
-                - name: keystone-api
+                - name: keystone
                   command:
                   - uwsgi
                   - "--http"
@@ -82,7 +82,7 @@ spec:
             kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
           done
           echo "=== Deployment command ==="
-          kubectl get deployment keystone-uwsgi-api -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].command}' 2>&1 || true
+          kubectl get deployment keystone-uwsgi -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].command}' 2>&1 || true
           echo ""
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
@@ -97,13 +97,13 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-uwsgi-api
+            name: keystone-uwsgi
             namespace: openstack
           spec:
             template:
               spec:
                 containers:
-                - name: keystone-api
+                - name: keystone
                   command:
                   - uwsgi
                   - "--http"
@@ -123,7 +123,7 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-uwsgi-api
+            name: keystone-uwsgi
             namespace: openstack
           status:
             (updatedReplicas): 3

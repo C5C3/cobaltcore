@@ -149,7 +149,7 @@ spec:
           fi
           echo "OK: db-connection Secret carries a real pymysql URL"
   # ── Step 5: Assert Deployment env wires OS_DATABASE__CONNECTION ────────
-  # The keystone-api container must read its DB URL from the derived Secret
+  # The keystone container must read its DB URL from the derived Secret
   # via the oslo.config OS_<GROUP>__<OPTION> override (CC-0080, REQ-003).
   - try:
     - assert:
@@ -157,13 +157,13 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-cc0080-api
+            name: keystone-cc0080
             namespace: openstack
           spec:
             template:
               spec:
                 containers:
-                - name: keystone-api
+                - name: keystone
                   (env[?name == 'OS_DATABASE__CONNECTION']):
                   - valueFrom:
                       secretKeyRef:

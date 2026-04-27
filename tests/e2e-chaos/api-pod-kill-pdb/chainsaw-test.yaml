@@ -18,7 +18,7 @@
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
-  name: keystone-api-pod-kill-pdb
+  name: keystone-api-pod-kill-pdb  # CC-0095 legacy: chaos-test name retained for fixture parity
 spec:
   namespace: openstack
   timeouts:
@@ -51,13 +51,13 @@ spec:
           apiVersion: policy/v1
           kind: PodDisruptionBudget
           metadata:
-            name: keystone-chaos-api-api
+            name: keystone-chaos-api
             namespace: openstack
           spec:
             minAvailable: 1
     catch:
     - script:
-        content: kubectl describe pdb keystone-chaos-api-api -n $NAMESPACE 2>/dev/null || kubectl get pdb -n $NAMESPACE -o wide
+        content: kubectl describe pdb keystone-chaos-api -n $NAMESPACE 2>/dev/null || kubectl get pdb -n $NAMESPACE -o wide
   # ── Step 4: Inject PodChaos to kill one Keystone API pod ───────────────
   - try:
     - apply:
@@ -78,7 +78,7 @@ spec:
           # is checked explicitly rather than relying on exit codes.
           # Poll until readyReplicas < 3 (confirms pod kill took effect)
           for i in $(seq 1 60); do
-            READY=$(kubectl get deployment keystone-chaos-api-api -n $NAMESPACE -o jsonpath='{.status.readyReplicas}')
+            READY=$(kubectl get deployment keystone-chaos-api -n $NAMESPACE -o jsonpath='{.status.readyReplicas}')
             if [ "${READY:-0}" -lt 3 ]; then
               break
             fi
@@ -90,7 +90,7 @@ spec:
             exit 1
           fi
           # Assert at least 1 replica remains available during pod kill
-          AVAILABLE=$(kubectl get deployment keystone-chaos-api-api -n $NAMESPACE -o jsonpath='{.status.availableReplicas}')
+          AVAILABLE=$(kubectl get deployment keystone-chaos-api -n $NAMESPACE -o jsonpath='{.status.availableReplicas}')
           if [ "${AVAILABLE:-0}" -lt 1 ]; then
             echo "ERROR: availableReplicas ($AVAILABLE) < 1 — availability not maintained during pod kill"
             exit 1
@@ -118,7 +118,7 @@ spec:
         ref:
           apiVersion: chaos-mesh.org/v1alpha1
           kind: PodChaos
-          name: kill-keystone-api
+          name: kill-keystone-api  # CC-0095 legacy: matches the PodChaos resource name in 01-podchaos.yaml
   # ── Step 7: Assert Ready=True after chaos cleanup ──────────────────────
   - try:
     - assert:

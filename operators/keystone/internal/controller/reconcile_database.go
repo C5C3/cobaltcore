@@ -511,7 +511,7 @@ func (r *KeystoneReconciler) reconcileContract(ctx context.Context, keystone *ke
 // its own teardown. Waiting for the CRs to disappear from etcd created a
 // deadlock under concurrent deletions: as long as the Keystone finalizer held
 // the CR in etcd, Kubernetes garbage collection could not cascade-delete the
-// owned Deployment, so the keystone-api Pod kept its connections open, so the
+// owned Deployment, so the keystone Pod kept its connections open, so the
 // MariaDB operator could not DROP DATABASE, so the Database CR stayed
 // Terminating — and the finalizer never released. Releasing immediately breaks
 // that cycle: GC cascade-deletes the Pod, connections close, and the MariaDB
@@ -617,7 +617,7 @@ func buildGrant(keystone *keystonev1alpha1.Keystone) *mariadbv1alpha1.Grant {
 //
 // TODO(CC-0042): Wire spec.Resources (or a smaller Job-specific default) to the
 // container. Currently runs as BestEffort QoS. See reconcile_deployment.go
-// containerResources() for the pattern used by the keystone-api container.
+// containerResources() for the pattern used by the keystone container (CC-0095).
 func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, imageTag, nameSuffix string, command []string) *batchv1.Job {
 	backoffLimit := int32(4)
 	return &batchv1.Job{

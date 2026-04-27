@@ -342,7 +342,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 //
 // The handler deliberately does not wait for the MariaDB CRs to disappear from
 // etcd: waiting created a deadlock where the Keystone finalizer kept the CR
-// alive, Kubernetes GC could not cascade-delete the keystone-api Deployment,
+// alive, Kubernetes GC could not cascade-delete the keystone Deployment,
 // the Pod kept its connections open, and the MariaDB operator could not DROP
 // DATABASE. Owner references set by reconcileDatabase ensure the MariaDB CRs
 // are still reclaimed after the Keystone CR is gone — either via their own

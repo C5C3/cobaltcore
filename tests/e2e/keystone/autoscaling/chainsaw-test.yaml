@@ -44,7 +44,7 @@ spec:
           apiVersion: autoscaling/v2
           kind: HorizontalPodAutoscaler
           metadata:
-            name: keystone-autoscaling-api
+            name: keystone-autoscaling
             namespace: openstack
             labels:
               app.kubernetes.io/name: keystone
@@ -54,7 +54,7 @@ spec:
             scaleTargetRef:
               apiVersion: apps/v1
               kind: Deployment
-              name: keystone-autoscaling-api
+              name: keystone-autoscaling
             minReplicas: 3
             maxReplicas: 6
             metrics:
@@ -105,7 +105,7 @@ spec:
           apiVersion: autoscaling/v2
           kind: HorizontalPodAutoscaler
           metadata:
-            name: keystone-autoscaling-api
+            name: keystone-autoscaling
             namespace: openstack
           spec:
             maxReplicas: 6
@@ -142,7 +142,7 @@ spec:
     - script:
         content: |
           # Verify HPA no longer exists (CC-0038, REQ-003).
-          if kubectl get hpa keystone-autoscaling-api -n $NAMESPACE 2>/dev/null; then
+          if kubectl get hpa keystone-autoscaling -n $NAMESPACE 2>/dev/null; then
             echo "FAIL: HPA should have been deleted"
             exit 1
           fi

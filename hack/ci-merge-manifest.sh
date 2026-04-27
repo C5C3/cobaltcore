@@ -48,10 +48,30 @@ done
 # ---------------------------------------------------------------------------
 # 3. Create multi-arch manifest
 # ---------------------------------------------------------------------------
-# shellcheck disable=SC2046
-docker buildx imagetools create \
-  "${tag_args[@]}" \
-  $(for d in *; do printf '%s ' "${IMAGE}@sha256:${d}"; done)
+# Retry the create call to absorb ghcr.io's eventual-consistency window
+# between the per-arch `docker buildx --push` and the manifest merge: the
+# registry has occasionally returned 404 on a freshly-pushed digest the
+# same workflow consumed seconds earlier as a `--build-context` source.
+# Backoff: 5s, 15s, 30s — total worst-case 50s before the third attempt.
+src_refs=()
+for d in *; do
+  src_refs+=("${IMAGE}@sha256:${d}")
+done
+
+attempts=3
+delay=5
+for attempt in $(seq 1 "${attempts}"); do
+  if docker buildx imagetools create "${tag_args[@]}" "${src_refs[@]}"; then
+    break
+  fi
+  if [[ "${attempt}" -eq "${attempts}" ]]; then
+    echo "::error::imagetools create failed after ${attempts} attempts" >&2
+    exit 1
+  fi
+  echo "::warning::imagetools create attempt ${attempt} failed; retrying in ${delay}s"
+  sleep "${delay}"
+  delay=$((delay * 3))
+done
 
 # ---------------------------------------------------------------------------
 # 4. Inspect merged manifest to get digest

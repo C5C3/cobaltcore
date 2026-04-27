@@ -20,11 +20,17 @@ import (
 
 // Feature: CC-0038
 
-// apiResourceName returns the canonical name for Keystone API sub-resources
-// (Deployment, HPA, Service, etc.). Centralised here so the naming convention
-// ("{name}-api") is defined in one place (CC-0038).
-func apiResourceName(keystone *keystonev1alpha1.Keystone) string {
-	return fmt.Sprintf("%s-api", keystone.Name)
+// subResourceName returns the canonical name for Keystone operator-managed
+// sub-resources (Deployment, HPA, Service, PodDisruptionBudget, NetworkPolicy,
+// HTTPRoute). Centralised here so the naming convention is defined in one
+// place. Since CC-0095 the helper returns the bare CR name with no suffix —
+// the historical `-api` suffix was dropped to align internal Service DNS
+// with the public hostname posture established by CC-0088. The name is
+// deliberately neutral (not `apiResourceName`) so future readers do not
+// expect an `-api` suffix or otherwise infer API-specific semantics
+// (CC-0095, REQ-001).
+func subResourceName(keystone *keystonev1alpha1.Keystone) string {
+	return keystone.Name
 }
 
 // reconcileHPA ensures the HorizontalPodAutoscaler for the Keystone API
@@ -33,7 +39,7 @@ func apiResourceName(keystone *keystonev1alpha1.Keystone) string {
 //   - spec.autoscaling nil: delete any existing HPA (REQ-003)
 //   - error: propagate errors from ensure/delete operations (REQ-008)
 func (r *KeystoneReconciler) reconcileHPA(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
-	hpaName := apiResourceName(keystone)
+	hpaName := subResourceName(keystone)
 
 	// Path 2: autoscaling disabled — delete any existing HPA (CC-0038, REQ-003).
 	if keystone.Spec.Autoscaling == nil {
@@ -78,7 +84,7 @@ func buildKeystoneHPA(keystone *keystonev1alpha1.Keystone) *autoscalingv2.Horizo
 		minReplicas = &defaultMin
 	}
 
-	name := apiResourceName(keystone)
+	name := subResourceName(keystone)
 	hpa := &autoscalingv2.HorizontalPodAutoscaler{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,

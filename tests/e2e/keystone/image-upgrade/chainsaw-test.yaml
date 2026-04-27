@@ -36,7 +36,7 @@ spec:
               reason: AllReady
     - script:
         content: |
-          kubectl get deploy keystone-upgrade-api -n openstack \
+          kubectl get deploy keystone-upgrade -n openstack \
             -o jsonpath='{.spec.template.spec.containers[0].image}' | grep '2025\.2$'
     catch:
     - script:
@@ -80,7 +80,7 @@ spec:
           TIMEOUT=120
           ELAPSED=0
           while [ $ELAPSED -lt $TIMEOUT ]; do
-            IMAGE=$(kubectl get deploy keystone-upgrade-api -n openstack \
+            IMAGE=$(kubectl get deploy keystone-upgrade -n openstack \
               -o jsonpath='{.spec.template.spec.containers[0].image}')
             if echo "$IMAGE" | grep -q '2025.2-upgraded'; then
               echo "OK: Deployment image updated to $IMAGE"
@@ -109,7 +109,7 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-upgrade-api
+            name: keystone-upgrade
             namespace: openstack
           status:
             (availableReplicas > `0`): true

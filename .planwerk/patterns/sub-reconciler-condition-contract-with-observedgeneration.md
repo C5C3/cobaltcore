@@ -39,7 +39,7 @@ conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 
 ```go
 func (r *KeystoneReconciler) reconcileHPA(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
-	hpaName := apiResourceName(keystone)
+	hpaName := subResourceName(keystone)
 	if keystone.Spec.Autoscaling == nil {
 		if err := deployment.DeleteHPA(ctx, r.Client, keystone.Namespace, hpaName); err != nil {
 			return ctrl.Result{}, fmt.Errorf("deleting HorizontalPodAutoscaler: %w", err)
@@ -68,7 +68,7 @@ func (r *KeystoneReconciler) reconcileHPA(ctx context.Context, keystone *keyston
 
 ```go
 func (r *KeystoneReconciler) reconcileNetworkPolicy(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
-	npName := apiResourceName(keystone)
+	npName := subResourceName(keystone)
 	if keystone.Spec.NetworkPolicy == nil {
 		if err := deleteNetworkPolicy(ctx, r.Client, keystone.Namespace, npName); err != nil {
 			return ctrl.Result{}, fmt.Errorf("deleting NetworkPolicy: %w", err)

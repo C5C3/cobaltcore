@@ -27,7 +27,7 @@ kubectl patch keystone keystone -n openstack \
 Watch the rollout:
 
 ```bash
-kubectl rollout status deploy/keystone-api -n openstack
+kubectl rollout status deploy/keystone -n openstack
 ```
 
 Scale down the same way. With a `PodDisruptionBudget` in place (created by the operator

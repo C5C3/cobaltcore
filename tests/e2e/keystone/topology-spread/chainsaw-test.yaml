@@ -41,7 +41,7 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-tsc-api
+            name: keystone-tsc
             namespace: openstack
           spec:
             template:
@@ -81,7 +81,7 @@ spec:
             kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
           done
           echo "=== Deployment TSC ==="
-          kubectl get deployment keystone-tsc-api -n $NAMESPACE -o jsonpath='{.spec.template.spec.topologySpreadConstraints}' 2>&1 || true
+          kubectl get deployment keystone-tsc -n $NAMESPACE -o jsonpath='{.spec.template.spec.topologySpreadConstraints}' 2>&1 || true
           echo ""
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
@@ -101,7 +101,7 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-tsc-api
+            name: keystone-tsc
             namespace: openstack
           spec:
             template:
@@ -144,7 +144,7 @@ spec:
           TIMEOUT=120
           ELAPSED=0
           while [ $ELAPSED -lt $TIMEOUT ]; do
-            TSC=$(kubectl get deployment keystone-tsc-api -n openstack -o jsonpath='{.spec.template.spec.topologySpreadConstraints}')
+            TSC=$(kubectl get deployment keystone-tsc -n openstack -o jsonpath='{.spec.template.spec.topologySpreadConstraints}')
             if [ "$TSC" = "" ] || [ "$TSC" = "null" ] || [ "$TSC" = "[]" ]; then
               echo "PASS: No topology spread constraints on Deployment"
               exit 0
@@ -160,7 +160,7 @@ spec:
         args:
         - get
         - deployment
-        - keystone-tsc-api
+        - keystone-tsc
         - -n
         - openstack
         - -o

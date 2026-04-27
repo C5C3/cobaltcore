@@ -47,7 +47,7 @@ spec:
           apiVersion: networking.k8s.io/v1
           kind: NetworkPolicy
           metadata:
-            name: keystone-netpol-api
+            name: keystone-netpol
             namespace: openstack
             labels:
               app.kubernetes.io/name: keystone
@@ -110,7 +110,7 @@ spec:
           apiVersion: networking.k8s.io/v1
           kind: NetworkPolicy
           metadata:
-            name: keystone-netpol-api
+            name: keystone-netpol
             namespace: openstack
           spec:
             ingress:
@@ -144,7 +144,7 @@ spec:
     - script:
         content: |
           # Verify NetworkPolicy no longer exists (CC-0039, REQ-003).
-          if kubectl get networkpolicy keystone-netpol-api -n $NAMESPACE 2>/dev/null; then
+          if kubectl get networkpolicy keystone-netpol -n $NAMESPACE 2>/dev/null; then
             echo "FAIL: NetworkPolicy should have been deleted"
             exit 1
           fi

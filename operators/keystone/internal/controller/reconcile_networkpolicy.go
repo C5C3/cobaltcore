@@ -40,7 +40,7 @@ const (
 func (r *KeystoneReconciler) reconcileNetworkPolicy(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 	// Path 2: networkPolicy disabled — delete any existing NetworkPolicy (CC-0039, REQ-003).
 	if keystone.Spec.NetworkPolicy == nil {
-		if err := deleteNetworkPolicy(ctx, r.Client, keystone.Namespace, apiResourceName(keystone)); err != nil {
+		if err := deleteNetworkPolicy(ctx, r.Client, keystone.Namespace, subResourceName(keystone)); err != nil {
 			return ctrl.Result{}, fmt.Errorf("deleting NetworkPolicy: %w", err)
 		}
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
@@ -147,7 +147,7 @@ func buildKeystoneNetworkPolicy(keystone *keystonev1alpha1.Keystone) *networking
 
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      apiResourceName(keystone),
+			Name:      subResourceName(keystone),
 			Namespace: keystone.Namespace,
 			Labels:    commonLabels(keystone),
 		},

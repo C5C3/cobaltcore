@@ -323,7 +323,7 @@ func driveFullReconciliation(t testing.TB, ctx context.Context, c client.Client,
 	waitForCondition(t, ctx, c, key, "DatabaseReady", metav1.ConditionTrue, eventuallyTimeout)
 
 	// Wait for the Deployment to appear and simulate its readiness.
-	deployKey := client.ObjectKey{Namespace: ns, Name: fmt.Sprintf("%s-api", ksName)}
+	deployKey := client.ObjectKey{Namespace: ns, Name: ksName}
 	deploy := &appsv1.Deployment{}
 	g.Eventually(func() error {
 		return c.Get(ctx, deployKey, deploy)
@@ -384,7 +384,7 @@ func TestIntegration_FullReconcile_Brownfield(t *testing.T) {
 	g.Expect(readyCond.Reason).To(Equal("AllReady"))
 
 	// Verify status.endpoint (REQ-006).
-	expectedEndpoint := fmt.Sprintf("http://%s-api.%s.svc.cluster.local:5000/v3", ks.Name, ns.Name)
+	expectedEndpoint := fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", ks.Name, ns.Name)
 	g.Expect(updated.Status.Endpoint).To(Equal(expectedEndpoint), "status.endpoint should be set correctly")
 
 	// Verify ObservedGeneration on all conditions (REQ-007).
@@ -503,7 +503,7 @@ func TestIntegration_ConditionProgression(t *testing.T) {
 	g.Expect(deployCond.Reason).To(Equal("WaitingForDeployment"), "DeploymentReady reason should be WaitingForDeployment")
 
 	// Phase 4: Simulate Deployment ready → DeploymentReady=True.
-	deployKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-api", ks.Name)}
+	deployKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name}
 	deploy := &appsv1.Deployment{}
 	g.Eventually(func() error {
 		return c.Get(ctx, deployKey, deploy)
@@ -563,12 +563,12 @@ func TestIntegration_ResourceCreation(t *testing.T) {
 	// Verify all child resources exist (REQ-005).
 
 	// Deployment.
-	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-api"}, &appsv1.Deployment{})).
-		To(Succeed(), "Deployment test-keystone-api should exist")
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}, &appsv1.Deployment{})).
+		To(Succeed(), "Deployment test-keystone should exist")
 
 	// Service.
-	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-api"}, &corev1.Service{})).
-		To(Succeed(), "Service test-keystone-api should exist")
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}, &corev1.Service{})).
+		To(Succeed(), "Service test-keystone should exist")
 
 	// ConfigMap (immutable, hashed name: test-keystone-config-{hash}).
 	configMaps := &corev1.ConfigMapList{}
@@ -610,8 +610,8 @@ func TestIntegration_ResourceCreation(t *testing.T) {
 		To(Succeed(), "PushSecret test-keystone-fernet-keys-backup should exist")
 
 	// PodDisruptionBudget (CC-0037).
-	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-api"}, &policyv1.PodDisruptionBudget{})).
-		To(Succeed(), "PodDisruptionBudget test-keystone-api should exist")
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}, &policyv1.PodDisruptionBudget{})).
+		To(Succeed(), "PodDisruptionBudget test-keystone should exist")
 }
 
 func TestIntegration_StatusEndpoint(t *testing.T) {
@@ -634,7 +634,7 @@ func TestIntegration_StatusEndpoint(t *testing.T) {
 	updated := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ns.Name}, updated)).To(Succeed())
 
-	expectedEndpoint := fmt.Sprintf("http://%s-api.%s.svc.cluster.local:5000/v3", ks.Name, ns.Name)
+	expectedEndpoint := fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", ks.Name, ns.Name)
 	g.Expect(updated.Status.Endpoint).To(Equal(expectedEndpoint), "status.endpoint should match expected format")
 }
 
@@ -755,7 +755,7 @@ func TestIntegration_FullReconcile_Managed(t *testing.T) {
 	waitForCondition(t, ctx, c, key, "DatabaseReady", metav1.ConditionTrue, eventuallyTimeout)
 
 	// Wait for Deployment and simulate readiness.
-	deployKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-api", ks.Name)}
+	deployKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name}
 	deploy := &appsv1.Deployment{}
 	g.Eventually(func() error {
 		return c.Get(ctx, deployKey, deploy)
@@ -790,7 +790,7 @@ func TestIntegration_FullReconcile_Managed(t *testing.T) {
 	g.Expect(readyCond.Reason).To(Equal("AllReady"))
 
 	// Status endpoint should be set.
-	expectedEndpoint := fmt.Sprintf("http://%s-api.%s.svc.cluster.local:5000/v3", ks.Name, ns.Name)
+	expectedEndpoint := fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", ks.Name, ns.Name)
 	g.Expect(updated.Status.Endpoint).To(Equal(expectedEndpoint))
 
 	// Verify MariaDB CRs still exist with correct names.
@@ -950,7 +950,7 @@ func driveReconciliationToBootstrapJob(t testing.TB, ctx context.Context, c clie
 
 	waitForCondition(t, ctx, c, key, "DatabaseReady", metav1.ConditionTrue, eventuallyTimeout)
 
-	deployKey := client.ObjectKey{Namespace: ns, Name: fmt.Sprintf("%s-api", ksName)}
+	deployKey := client.ObjectKey{Namespace: ns, Name: ksName}
 	deploy := &appsv1.Deployment{}
 	g.Eventually(func() error {
 		return c.Get(ctx, deployKey, deploy)
@@ -1008,7 +1008,7 @@ func TestIntegration_BootstrapJobDetailedSpec(t *testing.T) {
 	// Verify command uses shell wrapper for idempotent bootstrap (REQ-007).
 	g.Expect(container.Command[:3]).To(Equal([]string{"/bin/sh", "-eu", "-c"}))
 	g.Expect(container.Command[3]).To(ContainSubstring("keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap"))
-	expectedServiceURL := fmt.Sprintf("http://%s-api.%s.svc.cluster.local:5000/v3", ks.Name, ns.Name)
+	expectedServiceURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", ks.Name, ns.Name)
 	g.Expect(container.Command[3]).To(ContainSubstring(expectedServiceURL))
 	g.Expect(container.Command[3]).To(ContainSubstring("--bootstrap-region-id " + ks.Spec.Bootstrap.Region))
 	g.Expect(container.Args).To(BeNil())
@@ -1080,8 +1080,8 @@ func TestIntegration_PDBSpec(t *testing.T) {
 
 	// Fetch the PDB (CC-0037).
 	pdb := &policyv1.PodDisruptionBudget{}
-	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-api"}, pdb)).
-		To(Succeed(), "PDB test-keystone-api should exist")
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}, pdb)).
+		To(Succeed(), "PDB test-keystone should exist")
 
 	// Verify labels match commonLabels (CC-0037).
 	g.Expect(pdb.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
@@ -1095,7 +1095,7 @@ func TestIntegration_PDBSpec(t *testing.T) {
 
 	// Verify PDB selector matches Deployment selector (CC-0037).
 	deploy := &appsv1.Deployment{}
-	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-api"}, deploy)).To(Succeed())
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}, deploy)).To(Succeed())
 	g.Expect(pdb.Spec.Selector.MatchLabels).To(Equal(deploy.Spec.Selector.MatchLabels))
 
 	// Replicas=3 → minAvailable=1 (CC-0037).
@@ -1125,7 +1125,7 @@ func TestIntegration_PDBUpdatedOnReplicaChange(t *testing.T) {
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 
 	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
-	pdbKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-api"}
+	pdbKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}
 
 	// Initial state: replicas=3 → minAvailable=1 (CC-0037).
 	pdb := &policyv1.PodDisruptionBudget{}
@@ -1185,12 +1185,12 @@ func TestIntegration_HPASpec(t *testing.T) {
 
 	// Fetch the HPA (CC-0038).
 	hpa := &autoscalingv2.HorizontalPodAutoscaler{}
-	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-api"}, hpa)).
-		To(Succeed(), "HPA test-keystone-api should exist")
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}, hpa)).
+		To(Succeed(), "HPA test-keystone should exist")
 
 	// Verify ScaleTargetRef (CC-0038).
 	g.Expect(hpa.Spec.ScaleTargetRef.Kind).To(Equal("Deployment"))
-	g.Expect(hpa.Spec.ScaleTargetRef.Name).To(Equal("test-keystone-api"))
+	g.Expect(hpa.Spec.ScaleTargetRef.Name).To(Equal("test-keystone"))
 	g.Expect(hpa.Spec.ScaleTargetRef.APIVersion).To(Equal("apps/v1"))
 
 	// MinReplicas defaults to spec.replicas (3) when not explicitly set (CC-0038).
@@ -1241,7 +1241,7 @@ func TestIntegration_HPAUpdatedOnAutoscalingChange(t *testing.T) {
 
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 
-	hpaKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-api"}
+	hpaKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}
 	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
 
 	// Initial state: maxReplicas=10 (CC-0038).
@@ -1282,7 +1282,7 @@ func TestIntegration_HPADeletedWhenAutoscalingRemoved(t *testing.T) {
 
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 
-	hpaKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-api"}
+	hpaKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}
 	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
 
 	// HPA should exist initially (CC-0038).
@@ -1482,7 +1482,7 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 		"upgradePhase should transition to RollingUpdate")
 
 	// Wait for Deployment to be updated with new image (CC-0056, REQ-004).
-	deployKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-api", ks.Name)}
+	deployKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name}
 	g.Eventually(func() string {
 		d := &appsv1.Deployment{}
 		if err := c.Get(ctx, deployKey, d); err != nil {
@@ -1595,7 +1595,7 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 	g.Expect(c.Get(ctx, key, final)).To(Succeed())
 	g.Expect(final.Status.InstalledRelease).To(Equal("2025.2"))
 	g.Expect(final.Status.Endpoint).To(Equal(
-		fmt.Sprintf("http://test-keystone-api.%s.svc.cluster.local:5000/v3", ns.Name)),
+		fmt.Sprintf("http://test-keystone.%s.svc.cluster.local:5000/v3", ns.Name)),
 		"endpoint should still be set after upgrade")
 }
 
@@ -1802,8 +1802,8 @@ func TestIntegration_GracefulShutdownSpec(t *testing.T) {
 
 	// Fetch the Deployment (CC-0063).
 	deploy := &appsv1.Deployment{}
-	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-api"}, deploy)).
-		To(Succeed(), "Deployment test-keystone-api should exist")
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}, deploy)).
+		To(Succeed(), "Deployment test-keystone should exist")
 
 	// Verify terminationGracePeriodSeconds (CC-0063, REQ-002): 30s gives 5s for
 	// preStop sleep + 25s for uWSGI to drain in-flight requests.
@@ -1811,9 +1811,9 @@ func TestIntegration_GracefulShutdownSpec(t *testing.T) {
 		"terminationGracePeriodSeconds must be set")
 	g.Expect(*deploy.Spec.Template.Spec.TerminationGracePeriodSeconds).To(Equal(int64(30)))
 
-	// Find the keystone-api container.
-	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone-api")
-	g.Expect(container).NotTo(BeNil(), "keystone-api container must exist")
+	// Find the keystone container.
+	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
+	g.Expect(container).NotTo(BeNil(), "keystone container must exist")
 
 	// Verify preStop lifecycle hook (CC-0063, REQ-001): 5-second sleep before
 	// SIGTERM gives kube-proxy time to propagate endpoint removal.
@@ -1930,7 +1930,7 @@ func TestIntegration_PolicyValidation_GatesDeployment(t *testing.T) {
 		"PolicyValidReady reason should be PolicyValidationPassed")
 
 	// After validation passes, the Deployment should appear. Simulate readiness.
-	deployKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-api", ks.Name)}
+	deployKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name}
 	deploy := &appsv1.Deployment{}
 	g.Eventually(func() error {
 		return c.Get(ctx, deployKey, deploy)
@@ -2023,7 +2023,7 @@ func driveReconciliationToDeployment(t testing.TB, ctx context.Context, c client
 
 	waitForCondition(t, ctx, c, key, "DatabaseReady", metav1.ConditionTrue, eventuallyTimeout)
 
-	deployKey := client.ObjectKey{Namespace: ns, Name: fmt.Sprintf("%s-api", ksName)}
+	deployKey := client.ObjectKey{Namespace: ns, Name: ksName}
 	deploy := &appsv1.Deployment{}
 	g.Eventually(func() error {
 		return c.Get(ctx, deployKey, deploy)
@@ -2104,7 +2104,7 @@ func TestIntegration_HTTPRoute_CreatedWhenGatewaySet(t *testing.T) {
 	driveReconciliationToDeployment(t, ctx, c, ks.Name, ns.Name)
 
 	// The HTTPRoute appears once reconcileHTTPRoute runs after DeploymentReady.
-	routeKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-api", ks.Name)}
+	routeKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name}
 	route := &gatewayv1.HTTPRoute{}
 	g.Eventually(func() error {
 		return c.Get(ctx, routeKey, route)
@@ -2118,11 +2118,11 @@ func TestIntegration_HTTPRoute_CreatedWhenGatewaySet(t *testing.T) {
 	g.Expect(route.Spec.Hostnames).To(HaveLen(1))
 	g.Expect(string(route.Spec.Hostnames[0])).To(Equal(hostname))
 
-	// Validate backendRef targets the {name}-api Service on port 5000 (REQ-003).
+	// Validate backendRef targets the {name} Service on port 5000 (CC-0095, REQ-004).
 	g.Expect(route.Spec.Rules).To(HaveLen(1))
 	g.Expect(route.Spec.Rules[0].BackendRefs).To(HaveLen(1))
 	backend := route.Spec.Rules[0].BackendRefs[0]
-	g.Expect(string(backend.Name)).To(Equal(fmt.Sprintf("%s-api", ks.Name)))
+	g.Expect(string(backend.Name)).To(Equal(ks.Name))
 	g.Expect(backend.Port).NotTo(BeNil())
 	g.Expect(int32(*backend.Port)).To(Equal(int32(5000)))
 
@@ -2166,7 +2166,7 @@ func TestIntegration_HTTPRoute_DeletedWhenGatewayRemoved(t *testing.T) {
 
 	driveReconciliationToDeployment(t, ctx, c, ks.Name, ns.Name)
 
-	routeKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-api", ks.Name)}
+	routeKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name}
 	g.Eventually(func() error {
 		return c.Get(ctx, routeKey, &gatewayv1.HTTPRoute{})
 	}, eventuallyTimeout, pollInterval).Should(Succeed(), "HTTPRoute should be created initially")
@@ -2216,7 +2216,7 @@ func TestIntegration_HTTPRoute_UpdatedWhenGatewayChanged(t *testing.T) {
 
 	driveReconciliationToDeployment(t, ctx, c, ks.Name, ns.Name)
 
-	routeKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-api", ks.Name)}
+	routeKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name}
 	g.Eventually(func() error {
 		return c.Get(ctx, routeKey, &gatewayv1.HTTPRoute{})
 	}, eventuallyTimeout, pollInterval).Should(Succeed(), "HTTPRoute should be created initially")
@@ -2844,10 +2844,10 @@ func TestIntegration_KeystonePodReachesDatabaseViaEnvOverride(t *testing.T) {
 	// REQ-003: the Deployment pod spec injects OS_DATABASE__CONNECTION sourced
 	// from the derived Secret.
 	deploy := &appsv1.Deployment{}
-	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-api", ks.Name)}, deploy)).
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: ks.Name}, deploy)).
 		To(Succeed())
-	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone-api")
-	g.Expect(container).NotTo(BeNil(), "keystone-api container must exist")
+	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
+	g.Expect(container).NotTo(BeNil(), "keystone container must exist")
 	g.Expect(container.Env).To(ContainElement(buildDBConnectionEnvVar(ks)),
 		"Deployment container must carry OS_DATABASE__CONNECTION from derived Secret (CC-0080, REQ-003)")
 }
@@ -3553,7 +3553,7 @@ func TestIntegration_IndexerRegistrationFailsManagerStartCleanly(t *testing.T) {
 
 // TestIntegration_TerminationGracePeriodAppliedToDeployment verifies that user-
 // supplied spec.terminationGracePeriodSeconds and spec.preStopSleepSeconds are
-// propagated verbatim to the Deployment pod template and keystone-api
+// propagated verbatim to the Deployment pod template and keystone
 // container's preStop hook (CC-0084, REQ-001).
 func TestIntegration_TerminationGracePeriodAppliedToDeployment(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
@@ -3574,15 +3574,15 @@ func TestIntegration_TerminationGracePeriodAppliedToDeployment(t *testing.T) {
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 
 	deploy := &appsv1.Deployment{}
-	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-api"}, deploy)).
-		To(Succeed(), "Deployment test-keystone-api should exist")
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}, deploy)).
+		To(Succeed(), "Deployment test-keystone should exist")
 
 	g.Expect(deploy.Spec.Template.Spec.TerminationGracePeriodSeconds).NotTo(BeNil(),
 		"terminationGracePeriodSeconds must be set")
 	g.Expect(*deploy.Spec.Template.Spec.TerminationGracePeriodSeconds).To(Equal(int64(60)))
 
-	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone-api")
-	g.Expect(container).NotTo(BeNil(), "keystone-api container must exist")
+	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
+	g.Expect(container).NotTo(BeNil(), "keystone container must exist")
 	g.Expect(container.Lifecycle).NotTo(BeNil(), "Lifecycle must be set")
 	g.Expect(container.Lifecycle.PreStop).NotTo(BeNil(), "PreStop hook must be set")
 	g.Expect(container.Lifecycle.PreStop.Exec).NotTo(BeNil(), "PreStop must use exec")
@@ -3610,8 +3610,8 @@ func TestIntegration_DefaultStrategyAppliedToDeployment(t *testing.T) {
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 
 	deploy := &appsv1.Deployment{}
-	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-api"}, deploy)).
-		To(Succeed(), "Deployment test-keystone-api should exist")
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}, deploy)).
+		To(Succeed(), "Deployment test-keystone should exist")
 
 	g.Expect(deploy.Spec.Strategy.Type).To(Equal(appsv1.RollingUpdateDeploymentStrategyType))
 	g.Expect(deploy.Spec.Strategy.RollingUpdate).NotTo(BeNil(), "RollingUpdate must be set")
@@ -3648,8 +3648,8 @@ func TestIntegration_StrategyOverrideAppliedToDeployment(t *testing.T) {
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 
 	deploy := &appsv1.Deployment{}
-	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-api"}, deploy)).
-		To(Succeed(), "Deployment test-keystone-api should exist")
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}, deploy)).
+		To(Succeed(), "Deployment test-keystone should exist")
 
 	g.Expect(deploy.Spec.Strategy.Type).To(Equal(appsv1.RollingUpdateDeploymentStrategyType))
 	g.Expect(deploy.Spec.Strategy.RollingUpdate).NotTo(BeNil(), "RollingUpdate must be set")
@@ -3737,4 +3737,81 @@ func TestIntegrationKeystone_PushSecretRemoteKeyIsPerCR(t *testing.T) {
 			g.Expect(keyB).To(ContainSubstring(kB.Name))
 		})
 	}
+}
+
+// --- CC-0095: Sub-resource rename to bare CR name (REQ-003, REQ-004) ---
+
+// TestIntegration_ReconcileProducesRenamedSubResources end-to-end-validates
+// that after a full reconciliation the operator emits every sub-resource at
+// `<cr-name>` (no `-api` suffix). Symmetric with the per-builder unit tests
+// (`TestBuildKeystoneDeployment_NameMatchesCR`, etc.) but exercises the live
+// reconciler against envtest so any future regression in name composition is
+// caught at the integration layer (CC-0095, REQ-003, REQ-004).
+func TestIntegration_ReconcileProducesRenamedSubResources(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cc0095-rename-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	// All operator-managed sub-resources must exist under the bare CR name.
+	bareKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name}
+
+	g.Expect(c.Get(ctx, bareKey, &appsv1.Deployment{})).
+		To(Succeed(), "Deployment must exist at <cr-name> (CC-0095, REQ-003)")
+	g.Expect(c.Get(ctx, bareKey, &corev1.Service{})).
+		To(Succeed(), "Service must exist at <cr-name> (CC-0095, REQ-004)")
+	g.Expect(c.Get(ctx, bareKey, &policyv1.PodDisruptionBudget{})).
+		To(Succeed(), "PodDisruptionBudget must exist at <cr-name> (CC-0095, REQ-004)")
+}
+
+// TestIntegration_FreshReconcileEmitsNoLegacyApiSuffixedResources pins the
+// post-rename steady state: starting from an empty namespace, a fresh
+// reconcile must not emit any operator-managed sub-resource at the legacy
+// `<cr-name>-api` name. // CC-0095 legacy: pre-rename name referenced for traceability.
+// A regression here would either re-introduce the `-api` suffix in a builder,
+// or leave dual-writes after a partial revert — both visible to live clients
+// (CC-0095, REQ-004).
+//
+// This test does NOT exercise upgrade-from-pre-CC-0095 orphan cleanup: it
+// never pre-seeds legacy `<cr-name>-api` Deployment/Service/PDB, // CC-0095 legacy: pre-rename name referenced for traceability.
+// so it cannot detect orphan persistence on a real upgrade path. See
+// docs/reference/keystone-upgrade-flow.md for the manual cleanup runbook
+// that currently covers that scenario (CC-0095).
+func TestIntegration_FreshReconcileEmitsNoLegacyApiSuffixedResources(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cc0095-noorphans-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	legacyKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name + "-api"}
+
+	err := c.Get(ctx, legacyKey, &appsv1.Deployment{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+		"no legacy <cr-name>-api Deployment must exist after reconcile (CC-0095, REQ-004)") // CC-0095 legacy: assertion pins absence of the pre-rename name.
+
+	err = c.Get(ctx, legacyKey, &corev1.Service{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+		"no legacy <cr-name>-api Service must exist after reconcile (CC-0095, REQ-004)") // CC-0095 legacy: assertion pins absence of the pre-rename name.
+
+	err = c.Get(ctx, legacyKey, &policyv1.PodDisruptionBudget{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+		"no legacy <cr-name>-api PodDisruptionBudget must exist after reconcile (CC-0095, REQ-004)") // CC-0095 legacy: assertion pins absence of the pre-rename name.
 }

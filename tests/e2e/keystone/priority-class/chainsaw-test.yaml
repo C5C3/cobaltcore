@@ -41,7 +41,7 @@ spec:
               reason: AllReady
     - script:
         content: |
-          PCN=$(kubectl get deployment keystone-pc-api -n openstack -o jsonpath='{.spec.template.spec.priorityClassName}')
+          PCN=$(kubectl get deployment keystone-pc -n openstack -o jsonpath='{.spec.template.spec.priorityClassName}')
           if [ "$PCN" = "" ] || [ "$PCN" = "null" ]; then
             echo "PASS: No priorityClassName on Deployment (default)"
             exit 0
@@ -69,7 +69,7 @@ spec:
             kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
           done
           echo "=== Deployment priorityClassName ==="
-          kubectl get deployment keystone-pc-api -n $NAMESPACE -o jsonpath='{.spec.template.spec.priorityClassName}' 2>&1 || true
+          kubectl get deployment keystone-pc -n $NAMESPACE -o jsonpath='{.spec.template.spec.priorityClassName}' 2>&1 || true
           echo ""
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
@@ -84,7 +84,7 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-pc-api
+            name: keystone-pc
             namespace: openstack
           spec:
             template:
@@ -95,7 +95,7 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-pc-api
+            name: keystone-pc
             namespace: openstack
           status:
             (updatedReplicas): 3
@@ -130,7 +130,7 @@ spec:
           TIMEOUT=120
           ELAPSED=0
           while [ $ELAPSED -lt $TIMEOUT ]; do
-            PCN=$(kubectl get deployment keystone-pc-api -n openstack -o jsonpath='{.spec.template.spec.priorityClassName}')
+            PCN=$(kubectl get deployment keystone-pc -n openstack -o jsonpath='{.spec.template.spec.priorityClassName}')
             if [ "$PCN" = "" ] || [ "$PCN" = "null" ]; then
               echo "PASS: priorityClassName removed from Deployment"
               exit 0
@@ -146,7 +146,7 @@ spec:
         args:
         - get
         - deployment
-        - keystone-pc-api
+        - keystone-pc
         - -n
         - openstack
         - -o

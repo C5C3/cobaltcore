@@ -88,7 +88,7 @@ func TestBuildKeystoneNetworkPolicy_NameAndNamespace(t *testing.T) {
 
 	np := buildKeystoneNetworkPolicy(ks)
 
-	g.Expect(np.Name).To(Equal("test-keystone-api"))
+	g.Expect(np.Name).To(Equal("test-keystone"))
 	g.Expect(np.Namespace).To(Equal("default"))
 }
 
@@ -412,7 +412,7 @@ func TestReconcileNetworkPolicy_GatewaySet_NetworkPolicyNil_NoNetworkPolicyCreat
 	// Verify no NetworkPolicy was created (CC-0065, REQ-008).
 	var np networkingv1.NetworkPolicy
 	getErr := r.Get(context.Background(), types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &np)
 	g.Expect(getErr).To(HaveOccurred())
 	g.Expect(client.IgnoreNotFound(getErr)).To(Succeed(),
@@ -471,7 +471,7 @@ func TestReconcileNetworkPolicy_NetworkPolicySet_CreatesNetworkPolicy(t *testing
 
 	var np networkingv1.NetworkPolicy
 	g.Expect(r.Get(context.Background(), types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &np)).To(Succeed())
 
 	g.Expect(np.OwnerReferences).To(HaveLen(1))
@@ -545,7 +545,7 @@ func TestReconcileNetworkPolicy_NetworkPolicyEnabled_NetworkPolicyUpdated(t *tes
 
 	var np networkingv1.NetworkPolicy
 	g.Expect(r.Get(ctx, types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &np)).To(Succeed())
 
 	g.Expect(np.Spec.Ingress[0].From).To(HaveLen(2))
@@ -624,7 +624,7 @@ func TestReconcileNetworkPolicy_NetworkPolicyNil_ExistingNP_DeletesNetworkPolicy
 	// Pre-create a NetworkPolicy as if networkPolicy was previously enabled.
 	existingNP := &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-keystone-api",
+			Name:      "test-keystone",
 			Namespace: "default",
 		},
 		Spec: networkingv1.NetworkPolicySpec{
@@ -637,7 +637,7 @@ func TestReconcileNetworkPolicy_NetworkPolicyNil_ExistingNP_DeletesNetworkPolicy
 	// Verify NetworkPolicy exists before reconcile.
 	var np networkingv1.NetworkPolicy
 	g.Expect(r.Get(ctx, types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &np)).To(Succeed())
 
 	// reconcileNetworkPolicy with nil networkPolicy should delete the NP.
@@ -647,7 +647,7 @@ func TestReconcileNetworkPolicy_NetworkPolicyNil_ExistingNP_DeletesNetworkPolicy
 
 	// Verify NetworkPolicy was deleted.
 	err = r.Get(ctx, types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &np)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(client.IgnoreNotFound(err)).To(Succeed())
@@ -677,7 +677,7 @@ func TestReconcileNetworkPolicy_EmptyIngress_ReturnsError(t *testing.T) {
 	// Verify no NetworkPolicy was created (fail closed).
 	var np networkingv1.NetworkPolicy
 	getErr := r.Get(context.Background(), types.NamespacedName{
-		Name: "test-keystone-api", Namespace: "default",
+		Name: "test-keystone", Namespace: "default",
 	}, &np)
 	g.Expect(getErr).To(HaveOccurred())
 	g.Expect(client.IgnoreNotFound(getErr)).To(Succeed())
@@ -729,7 +729,7 @@ func TestReconcileNetworkPolicy_DeleteError_Propagated(t *testing.T) {
 
 	existingNP := &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-keystone-api",
+			Name:      "test-keystone",
 			Namespace: "default",
 		},
 		Spec: networkingv1.NetworkPolicySpec{
@@ -761,4 +761,25 @@ func TestReconcileNetworkPolicy_DeleteError_Propagated(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("deleting NetworkPolicy"))
 	g.Expect(err.Error()).To(ContainSubstring("simulated NetworkPolicy deletion error"))
+}
+
+// TestBuildKeystoneNetworkPolicy_NameMatchesCR pins the NetworkPolicy
+// ObjectMeta.Name to the bare CR name. Symmetric with the Deployment, Service,
+// PDB, and HPA name guards: the rename must hit every operator-managed
+// sub-resource (CC-0095, REQ-004).
+func TestBuildKeystoneNetworkPolicy_NameMatchesCR(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := npTestKeystone()
+	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
+		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
+			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+		},
+	}
+
+	np := buildKeystoneNetworkPolicy(ks)
+
+	g.Expect(np.Name).To(Equal(ks.Name),
+		"NetworkPolicy Name must equal the CR name (CC-0095, REQ-004)")
+	g.Expect(np.Name).NotTo(HaveSuffix("-api"),
+		"NetworkPolicy Name must not carry the legacy `-api` suffix (CC-0095, REQ-004)")
 }

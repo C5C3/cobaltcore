@@ -229,7 +229,7 @@ func testReadyKeystoneDeployment() runtime.Object {
 	labels := commonLabels(ks)
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:       fmt.Sprintf("%s-api", ks.Name),
+			Name:       ks.Name,
 			Namespace:  "default",
 			Generation: 1,
 			Labels:     labels,
@@ -239,7 +239,7 @@ func testReadyKeystoneDeployment() runtime.Object {
 			Selector: &metav1.LabelSelector{MatchLabels: sel},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
-				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "keystone-api", Image: "ghcr.io/c5c3/keystone:2025.2"}}},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "keystone", Image: "ghcr.io/c5c3/keystone:2025.2"}}},
 			},
 		},
 		Status: appsv1.DeploymentStatus{

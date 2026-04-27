@@ -115,7 +115,7 @@ type KeystoneSpec struct {
 
 	// Gateway configures external exposure of the Keystone API via a Gateway API
 	// HTTPRoute (CC-0065). When set, the operator creates an HTTPRoute targeting
-	// the {name}-api Service on port 5000 and attaches it to the referenced
+	// the {name} Service on port 5000 and attaches it to the referenced
 	// pre-existing Gateway. When removed (nil), the HTTPRoute is deleted.
 	// The Gateway and GatewayClass are infrastructure concerns managed outside
 	// this operator.
