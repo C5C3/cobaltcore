@@ -23,14 +23,14 @@ the production HelmRelease, E2E and Tempest, see
 
 - `yq` on `PATH` (only required because `KIND_HOST_PORT` is overridden)
 
-## 1 — Clone
+## Step 1 — Clone
 
 ```bash
 git clone https://github.com/c5c3/forge.git
 cd forge
 ```
 
-## 2 — Cluster + infrastructure stack
+## Step 2 — Cluster + infrastructure stack
 
 ```bash
 KIND_HOST_PORT=8443 make deploy-infra
@@ -42,7 +42,7 @@ bootstrapped), MariaDB operator + `openstack-db`, Memcached operator +
 `openstack-memcached`, External Secrets, Envoy Gateway and the shared
 `openstack-gw`. Expect **5–10 minutes** on first run (image pulls dominate).
 
-## 3 — Keystone operator
+## Step 3 — Keystone operator
 
 ```bash
 kubectl apply -f deploy/flux-system/sources/c5c3-charts.yaml
@@ -51,7 +51,7 @@ kubectl wait helmrelease/keystone-operator -n openstack \
   --for=condition=Ready --timeout=120s
 ```
 
-## 4 — Keystone service image
+## Step 4 — Keystone service image
 
 ```bash
 RELEASE=2025.2
@@ -59,7 +59,7 @@ docker pull ghcr.io/c5c3/keystone:${RELEASE}
 kind load docker-image ghcr.io/c5c3/keystone:${RELEASE} --name forge-e2e
 ```
 
-## 5 — Keystone CR
+## Step 5 — Keystone CR
 
 ```yaml
 # keystone.yaml
@@ -105,13 +105,17 @@ kubectl wait keystone/keystone -n openstack \
   --for=condition=Ready --timeout=5m
 ```
 
-## 6 — Verify
+## Step 6 — Verify
 
 ```bash
 curl -k https://keystone.127-0-0-1.nip.io:8443/v3
 ```
 
-Returns `{"version": {"id": "v3", ...}}`.
+Erwartete Ausgabe:
+
+```json
+{"version": {"id": "v3.14", "status": "stable", "updated": "2020-04-07T00:00:00Z", "links": [{"rel": "self", "href": "https://keystone.127-0-0-1.nip.io:8443/v3/"}], "media-types": [{"base": "application/json", "type": "application/vnd.openstack.identity-v3+json"}]}}
+```
 
 Authenticated token request:
 
@@ -123,6 +127,21 @@ export OS_PROJECT_NAME=admin
 export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
 openstack --insecure token issue
+```
+
+Erwartete Ausgabe:
+
+```text
++------------+-------------------------------------------------------------------------------------------------------+
+| Field      | Value                                                                                                 |
++------------+-------------------------------------------------------------------------------------------------------+
+| expires    | 2026-04-27T10:47:07+0000                                                                              |
+| id         | gAAAAABp7zCb9zhkS7ULijkujyqTFwXQshf_SXm6TMe0APpwHCpTV10gGrEakgWX-                                     |
+|            | OKcFgwDocxHvluFfr9MN2ByqSmuMEJT2vuXfTbOX7mn1zMIecvUTwLFQKgWsKpfQyRFNW71s4S4MVpd93o_EPLleg7aAZPT-      |
+|            | fLjitIFzU7b6sCSUG-CEdg                                                                                |
+| project_id | aed71e82de764a00aaab396e472e7929                                                                      |
+| user_id    | 8ac0e4e97079469dacfd1c5732c6e06b                                                                      |
++------------+-------------------------------------------------------------------------------------------------------+
 ```
 
 ## Optional — UIs
@@ -141,10 +160,9 @@ Open <http://localhost:8080> and paste the token.
 **OpenBao** (root token from `openbao-init-keys`):
 
 ```bash
-kubectl port-forward svc/openbao -n openbao-system 8200:8200
-# in a second terminal:
 kubectl get secret openbao-init-keys -n openbao-system \
   -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token'
+kubectl port-forward svc/openbao -n openbao-system 8200:8200
 ```
 
 Open <https://localhost:8200/ui/>, accept the self-signed cert warning,
