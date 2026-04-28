@@ -8,6 +8,7 @@ package v1alpha1
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -575,4 +576,87 @@ func TestIntegration_UWSGIThreadsBelowMinimumRejected(t *testing.T) {
 		ContainSubstring("uwsgi"),
 		ContainSubstring("threads"),
 	))
+}
+
+// CC-0098 REQ-008: CRD schema must surface spec.logging with Format/Level enum constraints, Debug boolean, and PerLoggerLevels map<string,string>.
+func TestIntegration_CRDSchemaContainsLoggingSpec(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+
+	// enumStrings decodes a slice of apiextensionsv1.JSON enum entries (each
+	// holding a JSON-encoded literal) into a []string for set-equality
+	// assertions via Gomega's ConsistOf.
+	enumStrings := func(in []apiextensionsv1.JSON) []string {
+		out := make([]string, 0, len(in))
+		for _, j := range in {
+			var s string
+			g.Expect(json.Unmarshal(j.Raw, &s)).To(Succeed(),
+				fmt.Sprintf("enum value %q should decode as a JSON string", string(j.Raw)))
+			out = append(out, s)
+		}
+		return out
+	}
+
+	crd := &apiextensionsv1.CustomResourceDefinition{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "keystones.keystone.openstack.c5c3.io"}, crd)).
+		To(Succeed(), "keystones CRD should be installed by envtest")
+
+	// Locate the served+stored version. v1alpha1 is the only version today,
+	// but search by flags so the test is robust to future version additions.
+	var servedSchema *apiextensionsv1.JSONSchemaProps
+	for i := range crd.Spec.Versions {
+		v := &crd.Spec.Versions[i]
+		if v.Served && v.Storage {
+			g.Expect(v.Schema).NotTo(BeNil(), "served version %q must declare a schema", v.Name)
+			g.Expect(v.Schema.OpenAPIV3Schema).NotTo(BeNil(),
+				"served version %q must declare openAPIV3Schema", v.Name)
+			servedSchema = v.Schema.OpenAPIV3Schema
+			break
+		}
+	}
+	g.Expect(servedSchema).NotTo(BeNil(), "CRD must expose a served+stored version")
+
+	specSchema, ok := servedSchema.Properties["spec"]
+	g.Expect(ok).To(BeTrue(), "openAPIV3Schema must declare a spec property")
+
+	logging, ok := specSchema.Properties["logging"]
+	g.Expect(ok).To(BeTrue(), "spec.properties.logging must exist (CC-0098 REQ-008)")
+
+	format, ok := logging.Properties["format"]
+	g.Expect(ok).To(BeTrue(), "spec.logging.format must exist")
+	g.Expect(format.Type).To(Equal("string"), "spec.logging.format must be string-typed")
+	g.Expect(enumStrings(format.Enum)).To(ConsistOf("text", "json"),
+		"spec.logging.format enum must be exactly {text, json}")
+	g.Expect(format.Default).NotTo(BeNil(), "spec.logging.format must declare a default")
+	g.Expect(string(format.Default.Raw)).To(Equal(`"text"`),
+		"spec.logging.format default must be \"text\"")
+
+	level, ok := logging.Properties["level"]
+	g.Expect(ok).To(BeTrue(), "spec.logging.level must exist")
+	g.Expect(level.Type).To(Equal("string"), "spec.logging.level must be string-typed")
+	g.Expect(enumStrings(level.Enum)).
+		To(ConsistOf("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"),
+			"spec.logging.level enum must cover all oslo.log levels")
+	g.Expect(level.Default).NotTo(BeNil(), "spec.logging.level must declare a default")
+	g.Expect(string(level.Default.Raw)).To(Equal(`"INFO"`),
+		"spec.logging.level default must be \"INFO\"")
+
+	debug, ok := logging.Properties["debug"]
+	g.Expect(ok).To(BeTrue(), "spec.logging.debug must exist")
+	g.Expect(debug.Type).To(Equal("boolean"), "spec.logging.debug must be boolean-typed")
+	g.Expect(debug.Default).NotTo(BeNil(), "spec.logging.debug must declare a default")
+	g.Expect(string(debug.Default.Raw)).To(Equal(`false`),
+		"spec.logging.debug default must be false")
+
+	perLogger, ok := logging.Properties["perLoggerLevels"]
+	g.Expect(ok).To(BeTrue(), "spec.logging.perLoggerLevels must exist")
+	g.Expect(perLogger.Type).To(Equal("object"), "spec.logging.perLoggerLevels must be object-typed")
+	g.Expect(perLogger.AdditionalProperties).NotTo(BeNil(),
+		"spec.logging.perLoggerLevels must declare additionalProperties (map<string,string>)")
+	g.Expect(perLogger.AdditionalProperties.Schema).NotTo(BeNil(),
+		"spec.logging.perLoggerLevels.additionalProperties must carry a schema")
+	g.Expect(perLogger.AdditionalProperties.Schema.Type).To(Equal("string"),
+		"spec.logging.perLoggerLevels values must be string-typed")
 }

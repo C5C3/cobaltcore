@@ -107,6 +107,21 @@ All events follow these conventions:
 > **Note:** This event fires only during an active upgrade's rolling update phase.
 > Normal steady-state Deployment readiness does not emit an event.
 
+### Logging
+
+| Reason | Type | Trigger Condition | Example Message |
+| --- | --- | --- | --- |
+| `LoggingStderrDisabled` | Warning | `spec.extraConfig` overrides `[DEFAULT].use_stderr` to a non-`true` value, causing container logs to no longer reach `kubectl logs` | `spec.extraConfig overrode [DEFAULT].use_stderr to "false"; container logs will not reach kubectl logs` |
+
+**Source:** `reconcileConfig` in `reconcile_config.go`
+
+> **Note:** The event is gated on a state transition into the
+> `LoggingHealthy=False, Reason=StderrDisabled` status condition, so it fires
+> at most once per transition rather than on every reconcile poll. Restoring
+> `[DEFAULT].use_stderr=true` (e.g. by removing the `spec.extraConfig`
+> override) transitions the condition back to `LoggingHealthy=True,
+> Reason=StderrEnabled` without emitting an additional Warning event.
+
 ---
 
 ## Alerting Configuration
@@ -214,6 +229,10 @@ KeystoneReconciler.Reconcile()
   │
   ├── reconcileCredentialKeys()
   │     └─ Initial Secret created → Normal CredentialKeysGenerated
+  │
+  ├── reconcileConfig()
+  │     └─ spec.extraConfig overrides use_stderr → Warning LoggingStderrDisabled
+  │       (gated on transition into LoggingHealthy=False, Reason=StderrDisabled)
   │
   └── reconcileDeployment()
         └─ Ready during upgrade rollout → Normal DeploymentRolloutComplete

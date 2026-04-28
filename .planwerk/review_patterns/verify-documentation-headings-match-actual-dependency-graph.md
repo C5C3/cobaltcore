@@ -49,3 +49,8 @@ Misleading DAG documentation causes engineers to misunderstand which jobs are ga
 - **Feedback**: The chainsaw-test.yaml comment, CI workflow comment, and docs all claim the job 'fails the build before the cluster-bound e2e-operator job runs'. However, the verify-invalid-cr-fixtures job has no needs: block and is not listed in needs: of build-e2e-images or e2e-operator. They run in parallel; the only 'gating' is the overall PR fail status.
 - **What was missed**: For every claim in code comments, workflow comments, or docs that job A 'fails the build before job B runs' or 'gates' job B, verify job B (and any transitive dependents) actually has job A in its `needs:` list.
 - **Fix**: Added `verify-invalid-cr-fixtures` to the `needs:` of `build-e2e-images` so the documented gating of `e2e-operator` actually holds.
+
+### CC-0098 — berendt
+- **Feedback**: PR description Step 8 and the Acceptance Criteria explicitly list a cross-link in architecture/docs/.../02-logging.md as a deliverable, but `git diff origin/main...HEAD -- architecture/` is empty. The submodule pointer is unchanged in this branch and the PR description / commit log contains no link to an external commit/PR capturing the update.
+- **What was missed**: For each file or path the PR description promises to touch, confirm it appears in the diff. For submodule directories with empty diffs, require a commit-message link to the upstream PR/commit that captures the change.
+- **Fix**: Added commit `chore(CC-0098): link PR https://github.com/C5C3/forge/pull/298` (6618a8ca) pointing at the upstream architecture commit that captures the cross-link update.

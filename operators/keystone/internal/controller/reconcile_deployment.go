@@ -314,6 +314,11 @@ func buildPodDisruptionBudget(keystone *keystonev1alpha1.Keystone) *policyv1.Pod
 // timeout flag is silently dropped when keep-alive is disabled — the flag has
 // no meaning without the parent feature, and the webhook rejects this
 // combination at admission (REQ-011).
+//
+// Always-on uWSGI request logging (CC-0098, REQ-006): "--log-master" and
+// "--log-format <literal>" are appended unconditionally between the
+// --http-keepalive[-timeout] block and --wsgi-file so request lines reach
+// stderr in every configuration, including when keep-alive is disabled.
 func uwsgiCommand(uwsgi *keystonev1alpha1.UWSGISpec) []string {
 	processes := int32(2)
 	threads := int32(1)
@@ -335,6 +340,13 @@ func uwsgiCommand(uwsgi *keystonev1alpha1.UWSGISpec) []string {
 			cmd = append(cmd, "--http-keepalive-timeout", strconv.Itoa(int(*uwsgi.HTTPKeepAliveTimeout)))
 		}
 	}
+	// Unconditional: REQ-006 makes uWSGI master logging always-on so request
+	// lines reach stderr in every configuration, regardless of keep-alive
+	// (CC-0098, REQ-006).
+	cmd = append(cmd,
+		"--log-master",
+		"--log-format", "%(method) %(uri) => generated %(rsize) bytes in %(msecs) msecs (%(proto) %(status))",
+	)
 	cmd = append(cmd,
 		"--wsgi-file", "/var/lib/openstack/bin/keystone-wsgi-public",
 		"--master",

@@ -1,0 +1,153 @@
+{
+  "summary": "CC-0098 wires a new optional spec.logging field on the Keystone CRD that controls oslo.log routing (text/json), root level, debug, and per-logger overrides. It plumbs use_stderr/debug/default_log_levels into keystone.conf [DEFAULT], renders an optional logging.conf with oslo.log JSONFormatter wired to stderr when format=json, adds log_config_append accordingly, emits a Warning event LoggingStderrDisabled when extraConfig overrides use_stderr, and unconditionally appends --log-master + --log-format to the uWSGI command. The defaulting webhook materializes a LoggingSpec{text,INFO,false} when nil and partial-fills zero-valued sub-fields when non-nil. The validating webhook adds defense-in-depth checks for Format/Level enums, per-logger map values, and empty keys. CRD YAMLs in both helm and config/crd/bases are regenerated and in sync. Coverage: unit tests for renderer (defaults, debug propagation, text/json toggle producing different ConfigMap names, deterministic alphabetic ordering of perLoggerLevels, empty-map omission, Warning event), webhook unit tests (default/preserve/partial, valid+four invalid validation paths), uwsgi command tests (presence + deterministic index 6/7), envtest integration tests (CRD schema enum/default introspection, debug-toggle rolls Deployment, no-op spec re-Update is idempotent), and a chainsaw e2e suite covering oslo.log emission, debug rollout, JSON format roll + jq parse, and admission rejection of invalid perLoggerLevels.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (unit + integration)", "checked": true},
+    {"item": "Edge cases are covered (text/json toggle, deterministic ordering, empty map, no-op reconcile, extraConfig override warning)", "checked": true},
+    {"item": "TestValidateCreate_RunsAllValidations updated for new validation paths (CC-0098 Format/Level/PerLoggerLevels)", "checked": false},
+    {"item": "Combination test: format=json + perLoggerLevels exercises the interaction with log_config_append", "checked": false},
+    {"item": "E2E chainsaw suite mirrors the uwsgi suite catch/podLogs/events scaffolding", "checked": true},
+    {"item": "CRD schema introspection envtest (CC-0098 REQ-008) present", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (effectiveLogging mirrors UWSGI nil-tolerance; Default mirrors Resources-when-nil; Warning event mirrors kubernetes-event-emission pattern)", "checked": true},
+    {"item": "Deterministic rendering of map-typed inputs (sort.Strings before formatting default_log_levels)", "checked": true},
+    {"item": "No leftover 'Reviewer: please verify' comments before merge", "checked": false},
+    {"item": "Constants for repeated path strings (log_config_append target appears twice)", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "All user inputs validated at admission boundary (Format/Level enum, per-logger map values)", "checked": true},
+    {"item": "PerLoggerLevels values restricted to enum (rejects unknown like VERBOSE)", "checked": true},
+    {"item": "Empty-string logger keys rejected", "checked": true},
+    {"item": "No secrets logged or exposed", "checked": true},
+    {"item": "extraConfig override path explicitly surfaces silent log loss via Warning event", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible (single optional pointer field, sibling logging.conf in same ConfigMap, no new mount/sidecar/Service)", "checked": true},
+    {"item": "No new KeystoneStatus condition (logging surfaced via existing ConfigReady)", "checked": true},
+    {"item": "uwsgiCommand changes are LoggingSpec-independent (no LoggingSpec threaded into uwsgiCommand)", "checked": true},
+    {"item": "Existing immutable ConfigMap mount carries logging.conf — no new volume", "checked": true},
+    {"item": "ExtraConfig precedence preserved (override wins, Warning event emitted)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated rendering logic — renderDefaultLogLevels and renderLoggingConf are single-purpose helpers", "checked": true},
+    {"item": "effectiveLogging fallback handles nil pointer for CRs that bypass the webhook (operator-upgrade scenario)", "checked": true},
+    {"item": "log_config_append path '/etc/keystone/keystone.conf.d/logging.conf' duplicated in two places (line 107 and renderLoggingConf doc) — extract to a const", "checked": false}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Defense-in-depth webhook validation alongside CRD enum markers (Format/Level)", "checked": true},
+    {"item": "Cron-style empty-string guard pattern reused for per-logger empty key rejection", "checked": true},
+    {"item": "Errors propagated with %w wrapping where applicable", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs validated", "checked": true},
+    {"item": "effectiveLogging tolerates nil spec.logging", "checked": true},
+    {"item": "containerResources / uwsgiCommand handle nil spec gracefully", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "Q7",
+      "severity": "MAJOR",
+      "description": "Leftover 'Reviewer: please verify' comment in renderLoggingConf — this is a request for review that should not survive into a shipped commit. The DECISION block correctly explains why the file has six sections rather than the four mentioned in the plan brief; the trailing review-prompt sentence is the artifact to remove. Matches the external-review pattern resolve-ambiguous-commented-out-alternatives-before-merge (CC-0065 precedent: 'Reviewer: please verify' was flagged and removed once behaviour was codified and tests existed). Behaviour here is codified by TestReconcileConfig_LoggingJSONPathRendersLoggingConfAndAppend, so the prompt has no remaining purpose.",
+      "location": "operators/keystone/internal/controller/reconcile_config.go:337-338",
+      "fix": "Delete the final two sentences of the DECISION block ('Reviewer: please verify the six-section shape matches the intent of REQ-004.'). Keep the first part of the DECISION block — it usefully explains the four-vs-six-section divergence from the plan brief.",
+      "evidence": "// DECISION: the task brief describes a \"four-section\" file, but Python's\n// logging.config.fileConfig grammar requires six sections — three index\n// sections ([loggers], [handlers], [formatters]) plus one named subsection\n// per declared root-logger / handler / formatter. Emitting fewer would not\n// parse in oslo.log. Reviewer: please verify the six-section shape matches\n// the intent of REQ-004.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "TE2",
+      "severity": "MAJOR",
+      "description": "TestValidateCreate_RunsAllValidations is the explicit aggregate sentinel that proves no short-circuiting across every validation path — the test name and the recent CC-0084 expansion (lines 1369-1377) document this intent. CC-0098 introduces three new validation paths (Format enum, Level enum, PerLoggerLevels per-key value+empty-key) but does not extend the aggregate test, so a future regression that short-circuits before reaching k.Spec.Logging would not be caught here. This is the same gap the external review pattern update-aggregate-validation-tests-when-adding-new-validation-paths flagged in CC-0075 and CC-0084 (where the missing entries were added as a follow-up).",
+      "location": "operators/keystone/api/v1alpha1/keystone_webhook_test.go:1256-1378",
+      "fix": "Inject a broken LoggingSpec into the aggregate scenario — e.g. k.Spec.Logging = &LoggingSpec{Format: \"yaml\", Level: \"TRACE\", PerLoggerLevels: map[string]string{\"\": \"DEBUG\", \"keystone.middleware\": \"VERBOSE\"}} — and assert errMsg contains \"logging.format\", \"logging.level\", and \"logging.perLoggerLevels\". This pins error accumulation across the new CC-0098 paths and matches the CC-0084 pattern at lines 1369-1377.",
+      "evidence": "func TestValidateCreate_RunsAllValidations(t *testing.T) {\n  ...\n  // Many invalid fields set, but no k.Spec.Logging is exercised.\n  ...\n  g.Expect(errMsg).To(ContainSubstring(\"strategy\"))\n  // No assertion on \"logging\" / \"logging.format\" / \"logging.level\" / \"logging.perLoggerLevels\"\n}",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "FC1",
+      "severity": "MAJOR",
+      "description": "Plan task 6.4 ('Add a single one-sentence cross-link to architecture/docs/06-operations/02-observability/02-logging.md ... This is the ONLY edit to anything under architecture/ in this feature') is marked status='done' in the progress JSON, but `git diff main...HEAD -- architecture/docs/06-operations/02-observability/02-logging.md` is empty — no cross-link was added. The architecture aggregation-pipeline section therefore still has no pointer to docs/reference/keystone/keystone-crd.md#loggingspec as the on-pod prerequisite for `format: json`, breaking the bidirectional discoverability promised by REQ-010. The minor review criterion 'No edits to anything under architecture/ except the single cross-link sentence in 02-logging.md' confirms the cross-link is the expected single permitted edit.",
+      "location": ".planwerk/progress/CC-0098-expose-oslo-log-config-via-spec-logging-for.json (task 6.4) vs architecture/docs/06-operations/02-observability/02-logging.md",
+      "fix": "Add a single sentence (one-line) at the end of architecture/docs/06-operations/02-observability/02-logging.md's aggregation-pipeline section (around line 157) pointing to docs/reference/keystone/keystone-crd.md#loggingspec — e.g. 'On-pod prerequisite: enable JSON output with `spec.logging.format: json` per [keystone-crd.md#loggingspec](../../../../docs/reference/keystone/keystone-crd.md#loggingspec) (CC-0098).' Leave the CADF audit-logging TODO at line 186 untouched, as the plan explicitly forbids any other edits under architecture/.",
+      "evidence": "$ git diff main...HEAD -- architecture/docs/06-operations/02-observability/02-logging.md\n(no output — file unchanged)\n\nProgress JSON marks task 6.4 status='done' but the diff is empty.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "DA1",
+      "severity": "MAJOR",
+      "description": "Pre-existing reconciler doc table at line 1735 shows '[DEFAULT] log_config_append = /etc/keystone/logging.conf (hardcoded)' — but (a) the actual implementation now uses '/etc/keystone/keystone.conf.d/logging.conf' (different path) AND (b) the key is conditionally emitted only when spec.logging.format == 'json', not 'hardcoded'. The new section at line 1799-1807 added by THIS PR contradicts the table at line 1735, so the same file now ships two conflicting statements about log_config_append. The table row is in scope for this PR because the PR introduced the contradiction by adding the new section without reconciling the existing row.",
+      "location": "docs/reference/keystone/keystone-reconciler.md:1735 vs docs/reference/keystone/keystone-reconciler.md:1806",
+      "fix": "Either (a) update the row at line 1735 to '/etc/keystone/keystone.conf.d/logging.conf (only when spec.logging.format == json)' so it agrees with the new prose at line 1806, or (b) delete the row entirely and rely solely on the new prose section that describes the conditional emission. Option (a) is preferable because the table is the index readers scan first.",
+      "evidence": "Line 1735: | `DEFAULT` | `log_config_append` | `/etc/keystone/logging.conf` (hardcoded) |\nLine 1806: `[DEFAULT].log_config_append=/etc/keystone/keystone.conf.d/logging.conf` is appended\nso oslo.log loads it on startup (CC-0098).\n\nActual code: defaults[\"DEFAULT\"][\"log_config_append\"] = \"/etc/keystone/keystone.conf.d/logging.conf\"  // (set only when format==json)",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "TE3",
+      "severity": "MINOR",
+      "description": "No test exercises the combination spec.logging.format='json' + non-empty PerLoggerLevels. With log_config_append loaded, oslo.log applies fileConfig BEFORE default_log_levels, but only the root logger is declared in the rendered logging.conf — so per-logger overrides should still take effect. Without an explicit test, a future change to renderLoggingConf (e.g. declaring an explicit 'keystone' logger) could silently shadow PerLoggerLevels, and the JSON path's handling of perLoggerLevels would only surface as an e2e regression.",
+      "location": "operators/keystone/internal/controller/reconcile_config_test.go:1005-1036, 1075-1114",
+      "fix": "Add TestReconcileConfig_LoggingJSONPlusPerLoggerLevels that sets Format='json' AND PerLoggerLevels with two entries, then asserts both (a) cm.Data['logging.conf'] still contains 'keys = root' (no extra logger), and (b) cm.Data['keystone.conf'] contains the alphabetic default_log_levels CSV alongside log_config_append. Pins that the two CC-0098 features compose correctly.",
+      "evidence": "TestReconcileConfig_LoggingJSONPathRendersLoggingConfAndAppend uses LoggingSpec{Format: \"json\", Level: \"DEBUG\"} but never sets PerLoggerLevels.\nTestReconcileConfig_LoggingPerLoggerLevelsDeterministicOrder uses Format: \"text\" exclusively.\nThe REQ-005 ↔ REQ-004 interaction is therefore untested.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "Q6",
+      "severity": "MINOR",
+      "description": "The path literal '/etc/keystone/keystone.conf.d/logging.conf' is duplicated between reconcile_config.go:107 (where it is appended to [DEFAULT]) and the renderLoggingConf docstring. Extracting a package-level const loggingConfFilePath would make any future path change a single-site edit and remove the implicit coupling between two places.",
+      "location": "operators/keystone/internal/controller/reconcile_config.go:107,328",
+      "fix": "Add `const loggingConfFilePath = \"/etc/keystone/keystone.conf.d/logging.conf\"` near the existing dbConnectionPlaceholder constant and reference it from line 107. The renderLoggingConf docstring can keep the path literal in prose, or also reference the constant.",
+      "evidence": "Line 107: defaults[\"DEFAULT\"][\"log_config_append\"] = \"/etc/keystone/keystone.conf.d/logging.conf\"\nLine 328: // log_config_append when spec.logging.format == \"json\" (CC-0098, REQ-004).",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a single test that asserts toggling spec.logging.format from text→json→text reaches a stable second-text ConfigMap name equal to the original — confirms the content-hash is symmetric and that no hidden state is preserved.",
+    "The chainsaw step 5 script uses `grep -E '^\\{'` to filter JSON lines, but uWSGI access lines emitted via REQ-006 --log-format never start with '{', so the filter is correct. Worth a one-line comment in the script noting the filter exploits the REQ-006 invariant — useful for the next reader maintaining the regex.",
+    "renderLoggingConf hardcodes 'level = NOTSET' on the handler. NOTSET means the handler emits whatever the logger above it allows — this is correct, but a one-line comment would prevent a future reader from 'fixing' it to match the root logger level."
+  ],
+  "next_steps": [
+    "Remove the 'Reviewer: please verify' sentence from renderLoggingConf's DECISION block (Q7).",
+    "Extend TestValidateCreate_RunsAllValidations with broken Format/Level/PerLoggerLevels and assert the corresponding substrings (TE2).",
+    "Add the cross-link sentence to architecture/docs/06-operations/02-observability/02-logging.md per task 6.4 (FC1).",
+    "Reconcile the contradicting log_config_append row at keystone-reconciler.md:1735 with the new prose at line 1806 (DA1).",
+    "Optional: add TestReconcileConfig_LoggingJSONPlusPerLoggerLevels (TE3) and extract loggingConfFilePath const (Q6)."
+  ],
+  "detected_patterns": [
+    {
+      "name": "Optional-pointer spec field with webhook materialization and reconciler nil-tolerance",
+      "component": "operators/keystone/api/v1alpha1, operators/keystone/internal/controller",
+      "category": "configuration",
+      "applies_when": "Adding a new optional sub-spec on KeystoneSpec (or a future operator's CR spec) that needs documented production defaults applied at admission AND must remain safe when a CR observed by a freshly upgraded operator bypassed the webhook",
+      "description": "The CRD field is declared as a pointer (`*Logging`, `*UWSGI`, `*Resources`). The defaulting webhook materializes a baseline struct when the pointer is nil, and partial-fills zero-valued sub-fields when non-nil — with a documented carve-out for bool fields (because false is indistinguishable from explicit false). The reconciler additionally exposes a small `effectiveX(*Spec) Spec` helper that re-applies the same baseline when spec is nil, so downstream code can dereference unconditionally. This covers the pre-existing-CR-during-operator-upgrade scenario without the reconciler having to repeat the defaulting logic in every call site. The carve-out for bool defaulting and the dual webhook+reconciler defaulting are both explicit conventions used in this codebase.",
+      "examples": [
+        {
+          "location": "operators/keystone/api/v1alpha1/keystone_webhook.go:115-135",
+          "code": "// REQ-001 (CC-0098): Default zero-valued sub-fields of spec.logging.\n// When the pointer is nil, materialize the production baseline so downstream\n// reconciler code dereferences spec.logging unconditionally (mirrors the\n// Resources-when-nil pattern below). When non-nil, partial-fill zero values\n// (Format, Level) but leave Debug alone — bool's zero value is indistinguishable\n// from explicit false, so we cannot safely override it (mirrors the\n// UWSGISpec.HTTPKeepAlive carve-out documented above).\nif obj.Spec.Logging == nil {\n    obj.Spec.Logging = &LoggingSpec{\n        Format: \"text\",\n        Level:  \"INFO\",\n        Debug:  false,\n    }\n} else {\n    if obj.Spec.Logging.Format == \"\" {\n        obj.Spec.Logging.Format = \"text\"\n    }\n    if obj.Spec.Logging.Level == \"\" {\n        obj.Spec.Logging.Level = \"INFO\"\n    }\n}"
+        },
+        {
+          "location": "operators/keystone/internal/controller/reconcile_config.go:284-303",
+          "code": "// effectiveLogging returns the LoggingSpec to use for config rendering,\n// materializing the production defaults when spec.logging is nil. The\n// defaulting webhook materializes the same baseline at admission, so this\n// fallback only matters when a CR bypasses the webhook (e.g. a pre-existing\n// CR observed by a freshly upgraded operator). Mirrors the UWSGISpec\n// nil-tolerance pattern at reconcile_deployment.go:317 (CC-0098, REQ-001).\nfunc effectiveLogging(spec *keystonev1alpha1.LoggingSpec) keystonev1alpha1.LoggingSpec {\n    out := keystonev1alpha1.LoggingSpec{Format: \"text\", Level: \"INFO\"}\n    if spec == nil {\n        return out\n    }\n    out = *spec\n    if out.Format == \"\" {\n        out.Format = \"text\"\n    }\n    if out.Level == \"\" {\n        out.Level = \"INFO\"\n    }\n    return out\n}"
+        }
+      ]
+    },
+    {
+      "name": "Deterministic CSV rendering of map-typed CRD fields with empty-input omission",
+      "component": "operators/keystone/internal/controller",
+      "category": "data-access",
+      "applies_when": "Rendering a Go map[string]string from a CRD spec into a string-valued config key where Go's randomized map iteration order would otherwise break the immutable ConfigMap content-hash invariant",
+      "description": "Helper functions that flatten a map into a CSV/INI value sort the keys with sort.Strings before formatting `key=value` pairs, then strings.Join with a fixed separator. Empty-input maps return an empty string so the caller can omit the config key entirely (rather than emitting an empty CSV that would override compiled-in defaults of the consumer). Pinned by an explicit two-spec test that builds the same logical input from differently-ordered map literals and asserts identical ConfigMap names — the strongest available proxy for randomized iteration order under fake-client tests.",
+      "examples": [
+        {
+          "location": "operators/keystone/internal/controller/reconcile_config.go:305-325",
+          "code": "// renderDefaultLogLevels formats PerLoggerLevels as oslo.log's\n// default_log_levels CSV (\"name=LEVEL,...\"), with keys sorted alphabetically\n// so the rendered keystone.conf — and therefore the immutable ConfigMap\n// content hash — is independent of Go's randomized map iteration order\n// (CC-0098, REQ-005). Returns \"\" for empty input so the caller can omit the\n// key entirely rather than overriding oslo.log defaults with an empty list.\nfunc renderDefaultLogLevels(perLogger map[string]string) string {\n    if len(perLogger) == 0 {\n        return \"\"\n    }\n    keys := make([]string, 0, len(perLogger))\n    for k := range perLogger {\n        keys = append(keys, k)\n    }\n    sort.Strings(keys)\n    pairs := make([]string, 0, len(keys))\n    for _, k := range keys {\n        pairs = append(pairs, fmt.Sprintf(\"%s=%s\", k, perLogger[k]))\n    }\n    return strings.Join(pairs, \",\")\n}"
+        },
+        {
+          "location": "operators/keystone/internal/controller/reconcile_config_test.go:1075-1114",
+          "code": "func TestReconcileConfig_LoggingPerLoggerLevelsDeterministicOrder(t *testing.T) {\n    // ... two specs with the same logical PerLoggerLevels but different\n    // map-literal orderings ...\n    cmName, err := r.reconcileConfig(context.Background(), ks)\n    g.Expect(err).NotTo(HaveOccurred())\n    g.Expect(cm.Data[\"keystone.conf\"]).To(ContainSubstring(\n        \"default_log_levels = amqp=ERROR,keystone.middleware=DEBUG,sqlalchemy.engine=WARNING\"))\n\n    // Second reconcile with reordered map literal must produce the same name.\n    cm2Name, err := r.reconcileConfig(context.Background(), ks2)\n    g.Expect(err).NotTo(HaveOccurred())\n    g.Expect(cm2Name).To(Equal(cmName),\n        \"identical PerLoggerLevels with different map iteration order must yield the same ConfigMap name\")\n}"
+        }
+      ]
+    }
+  ]
+}

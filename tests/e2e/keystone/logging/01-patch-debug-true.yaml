@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch to flip spec.logging.debug to true (CC-0098, REQ-003, REQ-009).
+# The reconciler must roll a new immutable <name>-config-<hash> ConfigMap,
+# which in turn rolls a new ReplicaSet (config-hash annotation on the
+# Deployment.spec.template changes). The post-rollout pod must emit at least
+# one DEBUG-level oslo.log line.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-logging
+  namespace: openstack
+spec:
+  logging:
+    debug: true

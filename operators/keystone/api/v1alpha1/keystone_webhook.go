@@ -112,6 +112,27 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 			obj.Spec.UWSGI.Threads = 1
 		}
 	}
+	// REQ-001 (CC-0098): Default zero-valued sub-fields of spec.logging.
+	// When the pointer is nil, materialize the production baseline so downstream
+	// reconciler code dereferences spec.logging unconditionally (mirrors the
+	// Resources-when-nil pattern below). When non-nil, partial-fill zero values
+	// (Format, Level) but leave Debug alone — bool's zero value is indistinguishable
+	// from explicit false, so we cannot safely override it (mirrors the
+	// UWSGISpec.HTTPKeepAlive carve-out documented above).
+	if obj.Spec.Logging == nil {
+		obj.Spec.Logging = &LoggingSpec{
+			Format: "text",
+			Level:  "INFO",
+			Debug:  false,
+		}
+	} else {
+		if obj.Spec.Logging.Format == "" {
+			obj.Spec.Logging.Format = "text"
+		}
+		if obj.Spec.Logging.Level == "" {
+			obj.Spec.Logging.Level = "INFO"
+		}
+	}
 	// REQ-004 (CC-0042): Default resource requests and limits for Burstable QoS
 	// and HPA utilization calculations. Also defaults when Resources is non-nil
 	// but empty (e.g. `resources: {}`), which would otherwise produce BestEffort
@@ -333,6 +354,56 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 				*k.Spec.UWSGI.HTTPKeepAliveTimeout,
 				"httpKeepAliveTimeout may only be set when httpKeepAlive is true",
 			))
+		}
+	}
+
+	// REQ-002 (CC-0098): Defense-in-depth logging validation alongside the
+	// CRD enum markers on LoggingSpec.Format / .Level. Map values cannot be
+	// expressed as a CRD enum on additionalProperties, so the per-logger level
+	// check has no schema-layer counterpart — the webhook is the only enforcement
+	// point for that case.
+	if k.Spec.Logging != nil {
+		loggingPath := specPath.Child("logging")
+		validLevels := map[string]struct{}{
+			"DEBUG":    {},
+			"INFO":     {},
+			"WARNING":  {},
+			"ERROR":    {},
+			"CRITICAL": {},
+		}
+		if k.Spec.Logging.Format != "" && k.Spec.Logging.Format != "text" && k.Spec.Logging.Format != "json" {
+			allErrs = append(allErrs, field.NotSupported(
+				loggingPath.Child("format"),
+				k.Spec.Logging.Format,
+				[]string{"text", "json"},
+			))
+		}
+		if k.Spec.Logging.Level != "" {
+			if _, ok := validLevels[k.Spec.Logging.Level]; !ok {
+				allErrs = append(allErrs, field.NotSupported(
+					loggingPath.Child("level"),
+					k.Spec.Logging.Level,
+					[]string{"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"},
+				))
+			}
+		}
+		perLoggerPath := loggingPath.Child("perLoggerLevels")
+		for name, lvl := range k.Spec.Logging.PerLoggerLevels {
+			if name == "" {
+				allErrs = append(allErrs, field.Invalid(
+					perLoggerPath,
+					name,
+					"logger name must not be empty",
+				))
+				continue
+			}
+			if _, ok := validLevels[lvl]; !ok {
+				allErrs = append(allErrs, field.Invalid(
+					perLoggerPath.Key(name),
+					lvl,
+					"level must be one of DEBUG, INFO, WARNING, ERROR, CRITICAL",
+				))
+			}
 		}
 	}
 

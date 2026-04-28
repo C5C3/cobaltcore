@@ -3879,3 +3879,200 @@ func TestMetricsEndpointServesKeystoneOperatorCollectors(t *testing.T) {
 //
 // See: TestReconcileErrorsTotalIncrementsOnInducedFailure in
 // keystone_controller_test.go.
+
+// --- CC-0098: spec.logging end-to-end roll/no-op behaviour (REQ-007) ---
+
+// configVolumeConfigMapName extracts the ConfigMap name backing the "config"
+// volume on the keystone Deployment pod template. The reconciler always
+// emits the keystone-config ConfigMap as a volume named "config" so this
+// helper can be relied on by the CC-0098 logging tests below to detect a
+// content-hash-driven roll (CC-0098, REQ-007).
+func configVolumeConfigMapName(deploy *appsv1.Deployment) string {
+	for _, v := range deploy.Spec.Template.Spec.Volumes {
+		if v.Name == "config" && v.ConfigMap != nil {
+			return v.ConfigMap.Name
+		}
+	}
+	return ""
+}
+
+// TestIntegration_LoggingDebugTogglesRollsConfigMapAndDeployment verifies
+// that toggling spec.logging.debug from false to true causes the keystone
+// config ConfigMap to be re-emitted under a new content-hashed name and
+// that the Deployment's "config" volume is rewritten to reference the new
+// ConfigMap. This is the end-to-end "logging change rolls the pod" guarantee
+// that REQ-007 promises (CC-0098, REQ-007).
+//
+// The check on the new ConfigMap's keystone.conf data confirms the toggle
+// actually flowed through the renderer (debug=true), not just that some
+// arbitrary ConfigMap rewrite happened.
+func TestIntegration_LoggingDebugTogglesRollsConfigMapAndDeployment(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cc0098-logging-roll-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	// Default LoggingSpec materialised by the webhook: Debug=false. We rely on
+	// the defaulting webhook here (no explicit ks.Spec.Logging) so the test
+	// also pins the contract that the webhook-emitted baseline produces a
+	// stable starting ConfigMap.
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	deployKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name}
+	deploy := &appsv1.Deployment{}
+	g.Expect(c.Get(ctx, deployKey, deploy)).To(Succeed(), "Deployment must exist after Ready=True")
+
+	initialCMName := configVolumeConfigMapName(deploy)
+	g.Expect(initialCMName).To(HavePrefix(fmt.Sprintf("%s-config-", ks.Name)),
+		"initial config volume must reference a hashed config ConfigMap")
+	initialGen := deploy.Generation
+
+	// Patch spec.logging.debug to true. Use the typed Update path consistent
+	// with TestIntegration_PDBUpdatedOnReplicaChange / TestIntegration_HPAMaxReplicasUpdated.
+	updated := &keystonev1alpha1.Keystone{}
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
+	if updated.Spec.Logging == nil {
+		updated.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: "text", Level: "INFO"}
+	}
+	updated.Spec.Logging.Debug = true
+	g.Expect(c.Update(ctx, updated)).To(Succeed())
+
+	// The spec change makes the keystone-config ConfigMap re-emit under a new
+	// hashed name, which mutates the db_sync and schema-check pod specs (their
+	// "config" volume points at the new ConfigMap). RunJob detects the changed
+	// pod-spec hash, deletes the completed Jobs, and re-creates them — the
+	// reconciler then blocks on DBSyncInProgress until the replacements
+	// complete. Drive both replacement Jobs to completion so reconcileDatabase
+	// proceeds and reconcileDeployment is reached.
+	dbSyncKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-db-sync", ks.Name)}
+	g.Eventually(func(ig Gomega) {
+		j := &batchv1.Job{}
+		ig.Expect(c.Get(ctx, dbSyncKey, j)).To(Succeed(), "replacement db-sync Job should appear")
+		ig.Expect(j.Status.Conditions).To(BeEmpty(), "replacement db-sync Job should not yet be marked complete")
+	}, eventuallyTimeout, pollInterval).Should(Succeed())
+	g.Expect(simulators.SimulateJobComplete(ctx, c, dbSyncKey)).To(Succeed(), "simulate replacement db-sync Job completion")
+
+	schemaCheckKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-schema-check", ks.Name)}
+	g.Eventually(func(ig Gomega) {
+		j := &batchv1.Job{}
+		ig.Expect(c.Get(ctx, schemaCheckKey, j)).To(Succeed(), "replacement schema-check Job should appear")
+		ig.Expect(j.Status.Conditions).To(BeEmpty(), "replacement schema-check Job should not yet be marked complete")
+	}, eventuallyTimeout, pollInterval).Should(Succeed())
+	g.Expect(simulators.SimulateJobComplete(ctx, c, schemaCheckKey)).To(Succeed(), "simulate replacement schema-check Job completion")
+
+	// Eventually the Deployment's config volume should reference a new
+	// ConfigMap (content-hashed name changes because debug=true alters the
+	// rendered keystone.conf).
+	var newCMName string
+	g.Eventually(func(ig Gomega) {
+		d := &appsv1.Deployment{}
+		ig.Expect(c.Get(ctx, deployKey, d)).To(Succeed())
+		name := configVolumeConfigMapName(d)
+		ig.Expect(name).NotTo(BeEmpty(), "config volume must remain present")
+		ig.Expect(name).NotTo(Equal(initialCMName),
+			"toggling spec.logging.debug must rewrite the Deployment's config volume to a new hashed ConfigMap (CC-0098, REQ-007)")
+		newCMName = name
+	}, eventuallyTimeout, pollInterval).Should(Succeed())
+
+	// The Deployment's pod template was rewritten; its generation must have
+	// advanced. A new ReplicaSet would roll on a real cluster (CC-0098, REQ-007).
+	g.Expect(c.Get(ctx, deployKey, deploy)).To(Succeed())
+	g.Expect(deploy.Generation).To(BeNumerically(">", initialGen),
+		"Deployment.Generation must advance when the config volume rolls (CC-0098, REQ-007)")
+
+	// The new ConfigMap must exist and carry debug=true in keystone.conf,
+	// proving the toggle flowed through the renderer end-to-end.
+	newCM := &corev1.ConfigMap{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: newCMName}, newCM)).
+		To(Succeed(), "new hashed ConfigMap referenced by the rolled Deployment must exist")
+	g.Expect(newCM.Data["keystone.conf"]).To(ContainSubstring("debug = true"),
+		"rolled ConfigMap must carry the toggled spec.logging.debug=true (CC-0098, REQ-007)")
+}
+
+// TestIntegration_LoggingNoOpReconcileDoesNotRollDeployment is the stability
+// companion to TestIntegration_LoggingDebugTogglesRollsConfigMapAndDeployment:
+// once the Deployment+ConfigMap are stable, a no-op reconcile (re-Update with
+// an identical spec) MUST NOT rewrite the Deployment's config volume or
+// advance Deployment.Generation. This pins the idempotence guarantee under
+// REQ-007 — logging-driven config rolls fire only on actual logging changes,
+// not on routine reconciles (CC-0098, REQ-007).
+func TestIntegration_LoggingNoOpReconcileDoesNotRollDeployment(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cc0098-logging-noop-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	// Pin an explicit LoggingSpec so a re-Update with the same spec is a true
+	// no-op (rather than relying on the webhook to materialise the same
+	// defaults each round-trip).
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	ks.Spec.Logging = &keystonev1alpha1.LoggingSpec{
+		Format: "text",
+		Level:  "INFO",
+		Debug:  false,
+	}
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	deployKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name}
+	deploy := &appsv1.Deployment{}
+	g.Expect(c.Get(ctx, deployKey, deploy)).To(Succeed(), "Deployment must exist after Ready=True")
+
+	stableCMName := configVolumeConfigMapName(deploy)
+	g.Expect(stableCMName).To(HavePrefix(fmt.Sprintf("%s-config-", ks.Name)),
+		"stable config volume must reference a hashed config ConfigMap")
+	stableGen := deploy.Generation
+
+	// DECISION: there is no operator-supported "force reconcile" knob that is
+	// guaranteed to be a true no-op (changing an annotation enqueues a
+	// reconcile but is itself a metadata mutation). To exercise the no-op
+	// path we re-Get and re-Update the Keystone with an identical spec —
+	// this round-trips through the API server, advances ResourceVersion,
+	// and triggers a reconcile via the controller's CR watch, but
+	// metadata.generation MUST stay constant because no spec field changed.
+	// We then assert the Deployment's config volume reference and generation
+	// are unchanged via Consistently over a short observation window
+	// (shorter than the controller's periodic requeue cadence) — the
+	// counterpart to TestIntegration_UnrelatedSecretDoesNotTriggerReconcile.
+	current := &keystonev1alpha1.Keystone{}
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+	g.Expect(c.Get(ctx, key, current)).To(Succeed())
+	preGeneration := current.Generation
+	g.Expect(c.Update(ctx, current)).To(Succeed(),
+		"re-Update with the same spec must succeed (no-op reconcile path)")
+
+	// Sanity: the Keystone's spec generation must NOT advance (nothing in
+	// .spec changed). Without this guard the test would silently degenerate
+	// into a "did spec change" check.
+	post := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, key, post)).To(Succeed())
+	g.Expect(post.Generation).To(Equal(preGeneration),
+		"Keystone.Generation must not advance on a no-op spec re-Update (CC-0098, REQ-007)")
+
+	// The Deployment's config volume name and generation must remain stable
+	// across the no-op reconcile window.
+	g.Consistently(func(ig Gomega) {
+		d := &appsv1.Deployment{}
+		ig.Expect(c.Get(ctx, deployKey, d)).To(Succeed())
+		ig.Expect(configVolumeConfigMapName(d)).To(Equal(stableCMName),
+			"no-op reconcile must NOT rewrite the Deployment's config volume (CC-0098, REQ-007)")
+		ig.Expect(d.Generation).To(Equal(stableGen),
+			"no-op reconcile must NOT advance Deployment.Generation (CC-0098, REQ-007)")
+	}, 2*time.Second, pollInterval).Should(Succeed(),
+		"no-op spec reconcile must be idempotent on the Deployment pod template (CC-0098, REQ-007)")
+}

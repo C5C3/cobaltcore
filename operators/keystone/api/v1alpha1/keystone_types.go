@@ -136,6 +136,13 @@ type KeystoneSpec struct {
 	// +optional
 	UWSGI *UWSGISpec `json:"uwsgi,omitempty"`
 
+	// Logging configures oslo.log output for the Keystone API container (CC-0098).
+	// When unset, the defaulting webhook materializes a LoggingSpec with
+	// Format=text, Level=INFO, Debug=false — equivalent to the documented
+	// production baseline (stdout/stderr, oslo.log format, no debug noise).
+	// +optional
+	Logging *LoggingSpec `json:"logging,omitempty"`
+
 	// Note (CC-0084, internal design decision — kept out of the user-facing
 	// CRD description): Task 1.1 title mentions "default=30" but REQ-001's
 	// scenario explicitly requires "webhook Default() leaves the pointer nil
@@ -455,6 +462,39 @@ type KeystoneStatus struct {
 
 	// UpgradePhase is the current phase of a database upgrade (CC-0056).
 	UpgradePhase UpgradePhase `json:"upgradePhase,omitempty"`
+}
+
+// LoggingSpec configures oslo.log output for the Keystone API container (CC-0098, REQ-001).
+// Exposed as an optional pointer field on KeystoneSpec; the defaulting webhook
+// materializes a baseline LoggingSpec when the pointer is nil so downstream
+// reconciler code never sees a nil pointer (mirrors UWSGISpec / Resources precedent).
+type LoggingSpec struct {
+	// Format selects the on-wire layout of oslo.log records.
+	// "text" emits the standard oslo.log line format; "json" emits one
+	// JSON object per record for direct ingest by Loki/OpenSearch.
+	// +kubebuilder:validation:Enum=text;json
+	// +kubebuilder:default=text
+	Format string `json:"format,omitempty"`
+
+	// Level is the root logger level applied to oslo.log.
+	// +kubebuilder:validation:Enum=DEBUG;INFO;WARNING;ERROR;CRITICAL
+	// +kubebuilder:default=INFO
+	Level string `json:"level,omitempty"`
+
+	// Debug toggles oslo.log [DEFAULT] debug=true. Independent of Level
+	// because oslo.log gates several extra-verbose code paths on the
+	// debug flag specifically (SQL echo, auth-backend tracing).
+	// +kubebuilder:default=false
+	Debug bool `json:"debug,omitempty"`
+
+	// PerLoggerLevels overrides the level of named loggers, mirroring
+	// oslo.log's `default_log_levels`. Example:
+	// {"sqlalchemy.engine": "WARNING", "keystone.middleware": "DEBUG"}.
+	// Each value must be one of DEBUG/INFO/WARNING/ERROR/CRITICAL —
+	// enforced by the validating webhook, not the CRD enum (additionalProperties
+	// does not support enum constraints in CRD v1).
+	// +optional
+	PerLoggerLevels map[string]string `json:"perLoggerLevels,omitempty"`
 }
 
 func init() {

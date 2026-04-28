@@ -257,6 +257,63 @@ func TestDefault_UWSGIPreservesExplicitValues(t *testing.T) {
 	g.Expect(k.Spec.UWSGI.HTTPKeepAlive).To(BeTrue())
 }
 
+// --- Logging defaulting tests (CC-0098, REQ-001) ---
+
+func TestDefault_LoggingNilMaterializesDefaultSpec(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := &Keystone{}
+
+	g.Expect(w.Default(context.Background(), k)).To(Succeed())
+	g.Expect(k.Spec.Logging).NotTo(BeNil())
+	g.Expect(k.Spec.Logging.Format).To(Equal("text"))
+	g.Expect(k.Spec.Logging.Level).To(Equal("INFO"))
+	g.Expect(k.Spec.Logging.Debug).To(BeFalse())
+	g.Expect(k.Spec.Logging.PerLoggerLevels).To(BeNil())
+}
+
+func TestDefault_LoggingPreservesExplicitValues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := &Keystone{
+		Spec: KeystoneSpec{
+			Logging: &LoggingSpec{
+				Format:          "json",
+				Level:           "DEBUG",
+				Debug:           true,
+				PerLoggerLevels: map[string]string{"keystone.middleware": "DEBUG"},
+			},
+		},
+	}
+
+	g.Expect(w.Default(context.Background(), k)).To(Succeed())
+	g.Expect(k.Spec.Logging.Format).To(Equal("json"))
+	g.Expect(k.Spec.Logging.Level).To(Equal("DEBUG"))
+	g.Expect(k.Spec.Logging.Debug).To(BeTrue())
+	g.Expect(k.Spec.Logging.PerLoggerLevels).To(HaveKeyWithValue("keystone.middleware", "DEBUG"))
+}
+
+func TestDefault_LoggingPartialFillsZeroValuesOnly(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	// Mirrors TestDefault_UWSGIDefaultsProcessesAndThreadsOnly — when
+	// the pointer is non-nil but fields are zero-valued, fill the strings
+	// but leave Debug=false (bool zero is indistinguishable from explicit false).
+	k := &Keystone{
+		Spec: KeystoneSpec{
+			Logging: &LoggingSpec{
+				Format: "json",
+			},
+		},
+	}
+
+	g.Expect(w.Default(context.Background(), k)).To(Succeed())
+	g.Expect(k.Spec.Logging.Format).To(Equal("json"))
+	g.Expect(k.Spec.Logging.Level).To(Equal("INFO"))
+	g.Expect(k.Spec.Logging.Debug).To(BeFalse())
+	g.Expect(k.Spec.Logging.PerLoggerLevels).To(BeNil())
+}
+
 // --- Replicas validation tests (CC-0011, REQ-007) ---
 
 func TestValidate_ReplicasZeroRejected(t *testing.T) {
@@ -838,6 +895,96 @@ func TestValidate_UWSGIBoundaryValueOneAccepted(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
+// --- Logging validation tests (CC-0098, REQ-002) ---
+
+func TestValidate_LoggingNilSkipsValidation(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	// logging is nil by default in validKeystone()
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_LoggingValidAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Logging = &LoggingSpec{
+		Format:          "json",
+		Level:           "DEBUG",
+		Debug:           true,
+		PerLoggerLevels: map[string]string{"keystone.middleware": "DEBUG", "sqlalchemy.engine": "WARNING"},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_LoggingRejectsUnknownFormat(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Logging = &LoggingSpec{
+		Format: "yaml",
+		Level:  "INFO",
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("logging.format"))
+	g.Expect(err.Error()).To(ContainSubstring("yaml"))
+}
+
+func TestValidate_LoggingRejectsUnknownLevel(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Logging = &LoggingSpec{
+		Format: "text",
+		Level:  "TRACE",
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("logging.level"))
+	g.Expect(err.Error()).To(ContainSubstring("TRACE"))
+}
+
+func TestValidate_LoggingPerLoggerLevelsRejectsUnknownLevel(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Logging = &LoggingSpec{
+		Format:          "text",
+		Level:           "INFO",
+		PerLoggerLevels: map[string]string{"keystone.middleware": "VERBOSE"},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("logging.perLoggerLevels"))
+	g.Expect(err.Error()).To(ContainSubstring("keystone.middleware"))
+	g.Expect(err.Error()).To(ContainSubstring("VERBOSE"))
+}
+
+func TestValidate_LoggingPerLoggerLevelsRejectsEmptyKey(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Logging = &LoggingSpec{
+		Format:          "text",
+		Level:           "INFO",
+		PerLoggerLevels: map[string]string{"": "DEBUG"},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("logging.perLoggerLevels"))
+	g.Expect(err.Error()).To(ContainSubstring("must not be empty"))
+}
+
 // --- Autoscaling validation tests (CC-0038, REQ-001) ---
 
 func TestValidate_Autoscaling_Valid_CPUOnly(t *testing.T) {
@@ -1179,6 +1326,20 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 		Type:          appsv1.RecreateDeploymentStrategyType,
 		RollingUpdate: &appsv1.RollingUpdateDeployment{},
 	}
+	// REQ-002 (CC-0098): Break logging — invalid Format enum, invalid Level
+	// enum, an empty per-logger key, and an invalid per-logger value level.
+	// Every new logging validation hook must participate in the aggregated
+	// error, matching the CC-0075/CC-0084-style regression guard pattern so a
+	// future change that short-circuits before reaching k.Spec.Logging is
+	// caught here rather than only at e2e time.
+	k.Spec.Logging = &LoggingSpec{
+		Format: "yaml",
+		Level:  "TRACE",
+		PerLoggerLevels: map[string]string{
+			"":     "INFO",
+			"amqp": "VERBOSE",
+		},
+	}
 	// REQ-004 (CC-0075): Break PriorityClassName — nonexistent class.
 	pcn := "nonexistent-class"
 	k.Spec.PriorityClassName = &pcn
@@ -1228,6 +1389,13 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g.Expect(errMsg).To(ContainSubstring("harakiri"))
 	g.Expect(errMsg).To(ContainSubstring("httpKeepAliveTimeout"))
 	g.Expect(errMsg).To(ContainSubstring("strategy"))
+	// REQ-002 (CC-0098): every new logging validation path must participate
+	// in the aggregated error so a future short-circuit is caught here.
+	g.Expect(errMsg).To(ContainSubstring("logging"))
+	g.Expect(errMsg).To(ContainSubstring("format"))
+	g.Expect(errMsg).To(ContainSubstring("level"))
+	g.Expect(errMsg).To(ContainSubstring("perLoggerLevels"))
+	g.Expect(errMsg).To(ContainSubstring("logger name must not be empty"))
 }
 
 func TestValidateUpdate_RunsSameValidation(t *testing.T) {

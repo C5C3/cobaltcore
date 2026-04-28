@@ -334,6 +334,52 @@ spec:
                 - repository
                 - tag
                 type: object
+              logging:
+                description: |-
+                  Logging configures oslo.log output for the Keystone API container (CC-0098).
+                  When unset, the defaulting webhook materializes a LoggingSpec with
+                  Format=text, Level=INFO, Debug=false — equivalent to the documented
+                  production baseline (stdout/stderr, oslo.log format, no debug noise).
+                properties:
+                  debug:
+                    default: false
+                    description: |-
+                      Debug toggles oslo.log [DEFAULT] debug=true. Independent of Level
+                      because oslo.log gates several extra-verbose code paths on the
+                      debug flag specifically (SQL echo, auth-backend tracing).
+                    type: boolean
+                  format:
+                    default: text
+                    description: |-
+                      Format selects the on-wire layout of oslo.log records.
+                      "text" emits the standard oslo.log line format; "json" emits one
+                      JSON object per record for direct ingest by Loki/OpenSearch.
+                    enum:
+                    - text
+                    - json
+                    type: string
+                  level:
+                    default: INFO
+                    description: Level is the root logger level applied to oslo.log.
+                    enum:
+                    - DEBUG
+                    - INFO
+                    - WARNING
+                    - ERROR
+                    - CRITICAL
+                    type: string
+                  perLoggerLevels:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      PerLoggerLevels overrides the level of named loggers, mirroring
+                      oslo.log's `default_log_levels`. Example:
+                      {"sqlalchemy.engine": "WARNING", "keystone.middleware": "DEBUG"}.
+                      Each value must be one of DEBUG/INFO/WARNING/ERROR/CRITICAL —
+                      enforced by the validating webhook, not the CRD enum (additionalProperties
+                      does not support enum constraints in CRD v1).
+                    type: object
+                type: object
               middleware:
                 description: Middleware defines WSGI middleware filters for the api-paste.ini
                   pipeline.

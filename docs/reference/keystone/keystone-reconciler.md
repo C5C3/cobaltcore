@@ -1788,7 +1788,10 @@ The following INI sections are generated from CRD spec fields:
 
 | Section | Key | Value Source |
 | --- | --- | --- |
-| `DEFAULT` | `log_config_append` | `/etc/keystone/logging.conf` (hardcoded) |
+| `DEFAULT` | `use_stderr` | `true` (operator default) |
+| `DEFAULT` | `debug` | `spec.logging.debug` |
+| `DEFAULT` | `default_log_levels` | Deterministic CSV from `spec.logging.perLoggerLevels`, omitted when empty |
+| `DEFAULT` | `log_config_append` | `/etc/keystone/keystone.conf.d/logging.conf` — emitted only when `spec.logging.format == "json"` |
 | `token` | `provider` | `fernet` (hardcoded) |
 | `fernet_tokens` | `key_repository` | `/etc/keystone/fernet-keys` (hardcoded) |
 | `fernet_tokens` | `max_active_keys` | `spec.fernet.maxActiveKeys` |
@@ -1852,8 +1855,39 @@ operator defaults.
 | --- | --- |
 | Base name | `keystone-config` |
 | Actual name | `keystone-config-{8-char-sha256}` |
-| Data keys | `keystone.conf`, `api-paste.ini`, `policy.yaml` (if policyOverrides set) |
+| Data keys | `keystone.conf`, `api-paste.ini`, `policy.yaml` (if `spec.policyOverrides` set), `logging.conf` (if `spec.logging.format == "json"`) |
 | Immutable | `true` |
+
+When `spec.logging.format == "json"`, the `logging.conf` data key wires
+`oslo_log.formatters.JSONFormatter` to a stderr `StreamHandler` and Step 1 emits
+`[DEFAULT].log_config_append` pointing at the on-pod path so oslo.log loads it on
+startup. Toggling back to `format: "text"` drops both the data
+key and the `log_config_append` entry, changing the content hash and rolling the
+Deployment.
+
+#### `renderLoggingConf` template deviation
+
+`renderLoggingConf` (`reconcile_config.go:renderLoggingConf`) intentionally
+deviates from the template sketched in the design brief on two points,
+and the deviation is locked in by
+`TestReconcileConfig_LoggingJSONPlusPerLoggerLevels`:
+
+- The `[loggers]` section emits `keys = root` only — there is no
+  `[logger_keystone]` (or any other named-logger) subsection. This makes
+  `spec.logging.perLoggerLevels` (rendered as `[DEFAULT].default_log_levels`)
+  the single config surface that owns per-logger filtering. Splitting that
+  responsibility between a `[logger_<name>]` block in `logging.conf` and the
+  CSV in `keystone.conf` would create two interleaved sources of truth and
+  invite drift between them on future template edits.
+- `[handler_stderr]` pins `level = NOTSET` rather than mirroring the root
+  logger's level. The handler therefore emits every record the root logger
+  forwards; hardcoding the level here would silently shadow
+  `spec.logging.level` for all records that do not also clear an explicit
+  per-handler filter.
+
+These shape constraints are intentional and load-bearing — do not "fix" the
+renderer to match the original four-section template without first updating
+the corresponding test invariants.
 
 **Error handling:** All errors are wrapped with context and returned. No conditions
 are set by this sub-reconciler.

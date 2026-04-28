@@ -1,0 +1,68 @@
+{
+  "summary": "Review #2 of CC-0098 fix-up cycle addressing external reviewer berendt's review #1 (W-001..W-004, I-001, I-002). Changes: (1) reconcile_config.go now gates the LoggingStderrDisabled Warning event on a state transition into a new informational LoggingHealthy=False/StderrDisabled status condition via the new recordLoggingHealth helper, eliminating per-reconcile event flooding (CC-0091 pattern); (2) reconcile_config_test.go extends the REQ-003 test to assert the rendered ConfigMap carries use_stderr=false alongside the Warning event, and adds three new tests covering transition gating, the True/StderrEnabled happy path, and the back-transition; (3) reconcile_deployment_test.go replaces brittle absolute-index pins for --log-master/--log-format with relative-order assertions; (4) chainsaw-test.yaml adds a JSONFormatter contract-key check (name/levelname/message) per record after the parseability check; (5) docs/keystone-events.md catalogues the LoggingStderrDisabled event with its transition-gating note and adds it to the call graph; (6) docs/keystone-reconciler.md adds a renderLoggingConf template-deviation section explaining why [loggers] declares only the root logger and why [handler_stderr] pins level=NOTSET. The architecture submodule cross-link (W-001 from external review) was already addressed by the prior chore commit 6618a8ca on this branch. All tests pass; go vet and go build clean. The new LoggingHealthy condition is a deliberate divergence from the original plan's 'no new condition' constraint, requested by the external reviewer and applied as informational (not Ready-blocking) per REQ-007's spirit.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (go test ./operators/keystone/internal/controller/... — all green, including 3 new gating/transition tests)", "checked": true},
+    {"item": "Edge cases are covered: first-reconcile transition fires event; second reconcile suppresses event (gating); back-transition to True does not emit event; happy path writes True/StderrEnabled", "checked": true},
+    {"item": "REQ-003 test now asserts rendered key (use_stderr=false in keystone.conf) AND the Warning event, closing the W-003 gap", "checked": true},
+    {"item": "Chainsaw JSON step asserts oslo.log JSONFormatter contract keys (name/levelname/message), closing the W-004 gap", "checked": true},
+    {"item": "uwsgi flag-order test uses relative-position assertions (mirrors sibling test) instead of brittle absolute indices", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns: condition+event emission gated on transition mirrors the CC-0091 pattern documented in .planwerk/review_patterns/match-condition-reason-to-emitted-event-on-state-transitions.md", "checked": true},
+    {"item": "Constants extracted: conditionTypeLoggingHealthy, conditionReasonStderrDisabled, conditionReasonStderrEnabled — no inline string literals", "checked": true},
+    {"item": "recordLoggingHealth has a substantive package-internal docstring explaining the gating contract and the upsert-on-every-reconcile policy", "checked": true},
+    {"item": "Comment on the [logger_keystone] structural assertion was reworked from an incorrect Python-logging-precedence rationale to a correct single-source-of-truth structural argument", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No new external inputs introduced; merged config is internal-only state already validated by existing webhook", "checked": true},
+    {"item": "Event/condition messages use %q for the user-controlled use_stderr value, preventing format-string injection", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible given the constraint: one helper, one condition, three constants, gated-event invariant locked in by tests", "checked": true},
+    {"item": "LoggingHealthy is intentionally NOT in subConditionTypes — preserves REQ-007's intent that logging is not Ready-blocking even though a new condition was introduced (deviation justified by W-002 reviewer feedback and explicitly documented in code comment at reconcile_config.go:24-31)", "checked": true},
+    {"item": "No new Service, Mount, or sidecar; LoggingHealthy is status-only and surfaces only via kubectl describe", "checked": true},
+    {"item": "uwsgiCommand changes remain LoggingSpec-independent — no spec threaded through; flags added unconditionally for both text and json", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No code duplication: the condition/event constants live next to their consumer; recordLoggingHealth is the single owner of LoggingHealthy", "checked": true},
+    {"item": "No speculative future-proofing: only the StderrDisabled failure mode is tracked, with a comment noting it is the only currently-tracked mode", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early at admission via existing webhook for spec.logging.format/level/perLoggerLevels enums (unchanged by this PR)", "checked": true},
+    {"item": "use_stderr=false override is loud-but-honoured: warning event on transition + persistent LoggingHealthy=False condition surfaces the misconfiguration without breaking the escape-hatch contract", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "merged[\"DEFAULT\"] nil check before key access prevents nil-map panic", "checked": true},
+    {"item": "prev-pointer read happens before SetCondition slice mutation, avoiding any aliasing pitfall", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Optional: document the new LoggingHealthy informational status condition in docs/reference/keystone/keystone-crd.md (the file currently shows Ready and KeystoneAPIReady in its example status block but has no comprehensive condition table). Adding a one-line entry pointing readers at docs/reference/keystone/keystone-events.md#logging would close the discoverability loop. Not a blocker — keystone-events.md already covers the user-visible behavior end-to-end.",
+    "Optional: recordLoggingHealth currently takes the full merged map but only reads merged[\"DEFAULT\"][\"use_stderr\"]. Passing the resolved string directly would tighten the contract, but the current shape keeps the call site readable and the helper reusable should additional [DEFAULT] keys ever join the gated set."
+  ],
+  "next_steps": [
+    "Merge — all external-reviewer findings (W-001..W-004, I-001, I-002) are addressed, all unit tests pass, and no new defects were introduced by the fix-up cycle."
+  ],
+  "detected_patterns": [
+    {
+      "name": "Gated event emission via informational status-condition transition",
+      "component": "operators/keystone/internal/controller",
+      "category": "logging",
+      "applies_when": "Emitting a Warning/Normal event for a steady-state misconfiguration that is purely a function of user spec (so reconcile polling would otherwise re-emit the event indefinitely). Use an informational status condition (not Ready-blocking) as the transition gate.",
+      "description": "Maintain a status condition that mirrors the misconfiguration state (Healthy=True/False with stable Reason strings), upsert it on every reconcile so status reflects current state, and only emit the corresponding event when the condition transitions into the failure state (prev==nil || prev.Status!=False || prev.Reason!=expectedReason). The condition is intentionally excluded from subConditionTypes/Ready aggregation so it surfaces the issue without flipping the CR Ready=False — appropriate for explicit operator overrides where the controller honours the override but warns about its impact. Tests must cover four cases: (a) initial transition emits, (b) repeat reconcile suppresses, (c) back-transition to healthy does not emit a recovery event, (d) happy-path reconcile writes True with the matching Reason. Same pattern as the existing CredentialKeysRotated/FernetKeysRotated event-condition coupling.",
+      "examples": [
+        {
+          "location": "operators/keystone/internal/controller/reconcile_config.go:251-283",
+          "code": "func (r *KeystoneReconciler) recordLoggingHealth(\n\tkeystone *keystonev1alpha1.Keystone,\n\tmerged map[string]map[string]string,\n) {\n\tprev := conditions.GetCondition(keystone.Status.Conditions, conditionTypeLoggingHealthy)\n\n\tif merged[\"DEFAULT\"] != nil && merged[\"DEFAULT\"][\"use_stderr\"] != \"true\" {\n\t\tuseStderr := merged[\"DEFAULT\"][\"use_stderr\"]\n\t\tif prev == nil || prev.Status != metav1.ConditionFalse || prev.Reason != conditionReasonStderrDisabled {\n\t\t\tr.Recorder.Eventf(keystone, corev1.EventTypeWarning, \"LoggingStderrDisabled\",\n\t\t\t\t\"spec.extraConfig overrode [DEFAULT].use_stderr to %q; container logs will not reach kubectl logs (CC-0098)\",\n\t\t\t\tuseStderr)\n\t\t}\n\t\tconditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{\n\t\t\tType:               conditionTypeLoggingHealthy,\n\t\t\tStatus:             metav1.ConditionFalse,\n\t\t\tReason:             conditionReasonStderrDisabled,\n\t\t\tObservedGeneration: keystone.Generation,\n\t\t\tMessage: fmt.Sprintf(\n\t\t\t\t\"spec.extraConfig set [DEFAULT].use_stderr=%q; container logs will not reach kubectl logs (CC-0098)\",\n\t\t\t\tuseStderr),\n\t\t})\n\t\treturn\n\t}\n\n\tconditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{\n\t\tType:               conditionTypeLoggingHealthy,\n\t\tStatus:             metav1.ConditionTrue,\n\t\tReason:             conditionReasonStderrEnabled,\n\t\tObservedGeneration: keystone.Generation,\n\t\tMessage:            \"[DEFAULT].use_stderr is true; oslo.log records reach container stderr (CC-0098)\",\n\t})\n}"
+        },
+        {
+          "location": "operators/keystone/internal/controller/reconcile_config_test.go:986-1019",
+          "code": "func TestReconcileConfig_LoggingExtraConfigUseStderrFalseEventGatedOnTransition(t *testing.T) {\n\tg := NewGomegaWithT(t)\n\ts := configTestScheme()\n\n\tks := configTestKeystone()\n\tks.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: \"text\", Level: \"INFO\"}\n\tks.Spec.ExtraConfig = map[string]map[string]string{\n\t\t\"DEFAULT\": {\"use_stderr\": \"false\"},\n\t}\n\tsecret := dbCredentialsSecret(\"default\", \"keystone-db-credentials\", \"keystone\", \"pass\")\n\tr := newConfigTestReconciler(s, ks, secret)\n\n\t// First reconcile: transition into Status=False/Reason=StderrDisabled fires.\n\t_, err := r.reconcileConfig(context.Background(), ks)\n\tg.Expect(err).NotTo(HaveOccurred())\n\texpectEvent(g, r, \"Warning LoggingStderrDisabled\")\n\n\tcond := meta.FindStatusCondition(ks.Status.Conditions, \"LoggingHealthy\")\n\tg.Expect(cond).NotTo(BeNil(), \"first reconcile must set LoggingHealthy\")\n\tg.Expect(cond.Status).To(Equal(metav1.ConditionFalse))\n\tg.Expect(cond.Reason).To(Equal(\"StderrDisabled\"))\n\n\t// Second reconcile: gate suppresses; FakeRecorder channel must remain empty.\n\t_, err = r.reconcileConfig(context.Background(), ks)\n\tg.Expect(err).NotTo(HaveOccurred())\n\texpectNoEvent(g, r)\n}"
+        }
+      ]
+    }
+  ]
+}

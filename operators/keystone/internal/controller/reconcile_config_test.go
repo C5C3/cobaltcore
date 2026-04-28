@@ -14,6 +14,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -889,4 +890,440 @@ func TestPruneStaleConfigMaps_noopWithNoCandidates(t *testing.T) {
 	// The current ConfigMap must still exist.
 	cm := &corev1.ConfigMap{}
 	g.Expect(r.Client.Get(ctx, client.ObjectKey{Namespace: "default", Name: "test-keystone-config-current1"}, cm)).To(Succeed())
+}
+
+// TestReconcileConfig_LoggingDefaultsEmitUseStderr verifies that the default
+// LoggingSpec materialized by the webhook (Format=text, Level=INFO, Debug=false)
+// renders use_stderr=true and debug=false into the keystone.conf [DEFAULT]
+// section without emitting any Warning event (CC-0098, REQ-003).
+func TestReconcileConfig_LoggingDefaultsEmitUseStderr(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+
+	ks := configTestKeystone()
+	ks.Spec.Logging = &keystonev1alpha1.LoggingSpec{
+		Format: "text",
+		Level:  "INFO",
+		Debug:  false,
+	}
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+	r := newConfigTestReconciler(s, ks, secret)
+
+	configMapName, err := r.reconcileConfig(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	keystoneConf := cm.Data["keystone.conf"]
+	g.Expect(keystoneConf).To(ContainSubstring("use_stderr = true"))
+	g.Expect(keystoneConf).To(ContainSubstring("debug = false"))
+	expectNoEvent(g, r)
+}
+
+// TestReconcileConfig_LoggingDebugTruePropagates verifies that
+// spec.logging.debug=true propagates into the [DEFAULT].debug key of
+// keystone.conf (CC-0098, REQ-003).
+func TestReconcileConfig_LoggingDebugTruePropagates(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+
+	ks := configTestKeystone()
+	ks.Spec.Logging = &keystonev1alpha1.LoggingSpec{
+		Format: "text",
+		Level:  "INFO",
+		Debug:  true,
+	}
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+	r := newConfigTestReconciler(s, ks, secret)
+
+	configMapName, err := r.reconcileConfig(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	keystoneConf := cm.Data["keystone.conf"]
+	g.Expect(keystoneConf).To(ContainSubstring("debug = true"))
+}
+
+// TestReconcileConfig_LoggingExtraConfigUseStderrFalseEmitsWarningEvent
+// verifies the CC-0098 REQ-003 corner case: when spec.extraConfig overrides
+// [DEFAULT].use_stderr to a non-"true" value, the operator still writes the
+// merged ConfigMap (with use_stderr=false honoured) AND emits a Warning event
+// with reason=LoggingStderrDisabled to surface that container logs will no
+// longer reach kubectl logs. The test asserts both the rendered key and the
+// emitted Warning event so a regression that only swallows the override or
+// only swallows the event surfaces explicitly (REQ-003).
+func TestReconcileConfig_LoggingExtraConfigUseStderrFalseEmitsWarningEvent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+
+	ks := configTestKeystone()
+	ks.Spec.Logging = &keystonev1alpha1.LoggingSpec{
+		Format: "text",
+		Level:  "INFO",
+	}
+	ks.Spec.ExtraConfig = map[string]map[string]string{
+		"DEFAULT": {"use_stderr": "false"},
+	}
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+	r := newConfigTestReconciler(s, ks, secret)
+
+	configMapName, err := r.reconcileConfig(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cm.Data["keystone.conf"]).To(ContainSubstring("use_stderr = false"),
+		"spec.extraConfig override of [DEFAULT].use_stderr must be honoured in the rendered keystone.conf "+
+			"(REQ-003: the controller warns but does not swallow the override)")
+
+	expectEvent(g, r, "Warning LoggingStderrDisabled")
+}
+
+// TestReconcileConfig_LoggingExtraConfigUseStderrFalseEventGatedOnTransition
+// verifies the CC-0091 gated-event invariant for the LoggingStderrDisabled
+// Warning: a second reconcile pass with the same use_stderr=false override
+// must NOT re-emit the event because the LoggingHealthy condition is already
+// False with reason=StderrDisabled. The 10s requeue cadence
+// (RequeueDeploymentPolling) would otherwise flood the event stream
+// (CC-0091, CC-0098, REQ-003).
+func TestReconcileConfig_LoggingExtraConfigUseStderrFalseEventGatedOnTransition(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+
+	ks := configTestKeystone()
+	ks.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: "text", Level: "INFO"}
+	ks.Spec.ExtraConfig = map[string]map[string]string{
+		"DEFAULT": {"use_stderr": "false"},
+	}
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+	r := newConfigTestReconciler(s, ks, secret)
+
+	// First reconcile: the LoggingHealthy condition is absent, so this is a
+	// transition into Status=False/Reason=StderrDisabled and the event fires.
+	_, err := r.reconcileConfig(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	expectEvent(g, r, "Warning LoggingStderrDisabled")
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "LoggingHealthy")
+	g.Expect(cond).NotTo(BeNil(), "first reconcile must set LoggingHealthy")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("StderrDisabled"))
+
+	// Second reconcile: condition is already False/StderrDisabled, so the
+	// gate suppresses the event — the FakeRecorder channel must remain empty.
+	_, err = r.reconcileConfig(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	expectNoEvent(g, r)
+}
+
+// TestReconcileConfig_LoggingHealthyConditionTrueOnDefaults verifies that the
+// happy-path reconcile sets LoggingHealthy=True with Reason=StderrEnabled, so
+// status reflects logging health on every reconcile rather than only on the
+// failure path (CC-0098, REQ-003).
+func TestReconcileConfig_LoggingHealthyConditionTrueOnDefaults(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+
+	ks := configTestKeystone()
+	ks.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: "text", Level: "INFO"}
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+	r := newConfigTestReconciler(s, ks, secret)
+
+	_, err := r.reconcileConfig(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "LoggingHealthy")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("StderrEnabled"))
+	expectNoEvent(g, r)
+}
+
+// TestReconcileConfig_LoggingHealthyConditionTransitionsBackToTrue verifies
+// that removing the use_stderr=false override on a subsequent reconcile
+// transitions LoggingHealthy back to True/StderrEnabled without emitting an
+// additional Warning event — the gating is one-shot per transition into the
+// failure state (CC-0091, CC-0098, REQ-003).
+func TestReconcileConfig_LoggingHealthyConditionTransitionsBackToTrue(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+
+	ks := configTestKeystone()
+	ks.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: "text", Level: "INFO"}
+	ks.Spec.ExtraConfig = map[string]map[string]string{
+		"DEFAULT": {"use_stderr": "false"},
+	}
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+	r := newConfigTestReconciler(s, ks, secret)
+
+	_, err := r.reconcileConfig(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	expectEvent(g, r, "Warning LoggingStderrDisabled")
+
+	// Operator removes the override; the next reconcile must transition the
+	// condition back to True and must NOT emit a transition Warning event.
+	ks.Spec.ExtraConfig = nil
+	_, err = r.reconcileConfig(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	expectNoEvent(g, r)
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "LoggingHealthy")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("StderrEnabled"))
+}
+
+// TestReconcileConfig_LoggingTextPathOmitsLoggingConf verifies that when
+// spec.logging.format=="text" the ConfigMap contains no logging.conf data
+// key and keystone.conf [DEFAULT] does not contain log_config_append
+// (CC-0098, REQ-004).
+func TestReconcileConfig_LoggingTextPathOmitsLoggingConf(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+
+	ks := configTestKeystone()
+	ks.Spec.Logging = &keystonev1alpha1.LoggingSpec{
+		Format: "text",
+		Level:  "INFO",
+	}
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+	r := newConfigTestReconciler(s, ks, secret)
+
+	configMapName, err := r.reconcileConfig(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(cm.Data).NotTo(HaveKey("logging.conf"))
+	g.Expect(cm.Data["keystone.conf"]).NotTo(ContainSubstring("log_config_append"))
+}
+
+// TestReconcileConfig_LoggingJSONPathRendersLoggingConfAndAppend verifies
+// that when spec.logging.format=="json" the ConfigMap contains a logging.conf
+// data key wired to oslo_log.formatters.JSONFormatter on stderr and that
+// keystone.conf [DEFAULT] gains log_config_append pointing at the rendered
+// file (CC-0098, REQ-004).
+func TestReconcileConfig_LoggingJSONPathRendersLoggingConfAndAppend(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+
+	ks := configTestKeystone()
+	ks.Spec.Logging = &keystonev1alpha1.LoggingSpec{
+		Format: "json",
+		Level:  "DEBUG",
+	}
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+	r := newConfigTestReconciler(s, ks, secret)
+
+	configMapName, err := r.reconcileConfig(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(cm.Data).To(HaveKey("logging.conf"))
+	loggingConf := cm.Data["logging.conf"]
+	g.Expect(loggingConf).To(ContainSubstring("[loggers]"))
+	g.Expect(loggingConf).To(ContainSubstring("[handlers]"))
+	g.Expect(loggingConf).To(ContainSubstring("[formatters]"))
+	g.Expect(loggingConf).To(ContainSubstring("[logger_root]"))
+	g.Expect(loggingConf).To(ContainSubstring("oslo_log.formatters.JSONFormatter"))
+	g.Expect(loggingConf).To(ContainSubstring("sys.stderr"))
+	g.Expect(loggingConf).To(ContainSubstring("level = DEBUG"))
+
+	keystoneConf := cm.Data["keystone.conf"]
+	g.Expect(keystoneConf).To(ContainSubstring(
+		"log_config_append = /etc/keystone/keystone.conf.d/logging.conf"))
+}
+
+// TestReconcileConfig_LoggingJSONToTextDropsLoggingConf verifies that a
+// toggle from format=json back to format=text produces a new ConfigMap
+// (different content hash, different name) without the logging.conf data
+// key and without log_config_append in keystone.conf (CC-0098, REQ-004).
+func TestReconcileConfig_LoggingJSONToTextDropsLoggingConf(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+
+	ksJSON := configTestKeystone()
+	ksJSON.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: "json", Level: "INFO"}
+	r := newConfigTestReconciler(s, ksJSON, secret)
+	cmJSONName, err := r.reconcileConfig(context.Background(), ksJSON)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cmJSON, err := getCreatedConfigMap(context.Background(), r.Client, "default", cmJSONName)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cmJSON.Data).To(HaveKey("logging.conf"))
+
+	ksText := configTestKeystone()
+	ksText.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: "text", Level: "INFO"}
+	cmTextName, err := r.reconcileConfig(context.Background(), ksText)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cmTextName).NotTo(Equal(cmJSONName),
+		"format toggle must produce a new ConfigMap name to roll the Deployment")
+
+	cmText, err := getCreatedConfigMap(context.Background(), r.Client, "default", cmTextName)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cmText.Data).NotTo(HaveKey("logging.conf"))
+	g.Expect(cmText.Data["keystone.conf"]).NotTo(ContainSubstring("log_config_append"))
+}
+
+// TestReconcileConfig_LoggingPerLoggerLevelsDeterministicOrder verifies that
+// PerLoggerLevels is rendered as default_log_levels with alphabetically
+// sorted keys, and that two reconciles built from maps with different Go
+// iteration orders produce the same ConfigMap content hash (and therefore
+// the same ConfigMap name) — required for stable rollouts (CC-0098, REQ-005).
+func TestReconcileConfig_LoggingPerLoggerLevelsDeterministicOrder(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+
+	ks := configTestKeystone()
+	ks.Spec.Logging = &keystonev1alpha1.LoggingSpec{
+		Format: "text",
+		Level:  "INFO",
+		PerLoggerLevels: map[string]string{
+			"sqlalchemy.engine":   "WARNING",
+			"keystone.middleware": "DEBUG",
+			"amqp":                "ERROR",
+		},
+	}
+	r := newConfigTestReconciler(s, ks, secret)
+
+	cmName, err := r.reconcileConfig(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", cmName)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cm.Data["keystone.conf"]).To(ContainSubstring(
+		"default_log_levels = amqp=ERROR,keystone.middleware=DEBUG,sqlalchemy.engine=WARNING"))
+
+	ks2 := configTestKeystone()
+	ks2.Spec.Logging = &keystonev1alpha1.LoggingSpec{
+		Format: "text",
+		Level:  "INFO",
+		PerLoggerLevels: map[string]string{
+			"amqp":                "ERROR",
+			"sqlalchemy.engine":   "WARNING",
+			"keystone.middleware": "DEBUG",
+		},
+	}
+	cm2Name, err := r.reconcileConfig(context.Background(), ks2)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cm2Name).To(Equal(cmName),
+		"identical PerLoggerLevels with different map iteration order must yield the same ConfigMap name")
+}
+
+// TestReconcileConfig_LoggingPerLoggerLevelsEmptyOmitsKey verifies that an
+// empty PerLoggerLevels map omits the [DEFAULT].default_log_levels key
+// entirely (CC-0098, REQ-005). Including the key with an empty value would
+// override oslo.log's compiled-in defaults with nothing.
+func TestReconcileConfig_LoggingPerLoggerLevelsEmptyOmitsKey(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+
+	ks := configTestKeystone()
+	ks.Spec.Logging = &keystonev1alpha1.LoggingSpec{
+		Format:          "text",
+		Level:           "INFO",
+		PerLoggerLevels: map[string]string{},
+	}
+	r := newConfigTestReconciler(s, ks, secret)
+
+	cmName, err := r.reconcileConfig(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", cmName)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cm.Data["keystone.conf"]).NotTo(ContainSubstring("default_log_levels"))
+}
+
+// TestReconcileConfig_LoggingJSONPlusPerLoggerLevels verifies that the JSON
+// path and PerLoggerLevels coexist on a single ConfigMap surface: the rendered
+// ConfigMap must contain (a) keystone.conf with both log_config_append
+// pointing at the on-pod logging.conf and the deterministic
+// default_log_levels CSV from PerLoggerLevels, and (b) a logging.conf data
+// key whose [loggers] section declares only the root logger. The "keys = root"
+// invariant here is a structural contract — it pins
+// `spec.logging.perLoggerLevels` (rendered as [DEFAULT].default_log_levels)
+// as the single config surface that owns per-logger filtering. Allowing an
+// explicit [logger_<name>] section in renderLoggingConf would split that
+// responsibility across two surfaces (logging.conf fileConfig sections vs
+// keystone.conf [DEFAULT].default_log_levels) regardless of which one
+// oslo.log applies last, so this test catches the structural drift here
+// rather than only at e2e time (CC-0098, REQ-004 + REQ-005).
+func TestReconcileConfig_LoggingJSONPlusPerLoggerLevels(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+
+	ks := configTestKeystone()
+	ks.Spec.Logging = &keystonev1alpha1.LoggingSpec{
+		Format: "json",
+		Level:  "INFO",
+		PerLoggerLevels: map[string]string{
+			"sqlalchemy.engine":   "WARNING",
+			"keystone.middleware": "DEBUG",
+			"amqp":                "ERROR",
+		},
+	}
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+	r := newConfigTestReconciler(s, ks, secret)
+
+	cmName, err := r.reconcileConfig(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", cmName)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	keystoneConf := cm.Data["keystone.conf"]
+	g.Expect(keystoneConf).To(ContainSubstring(
+		"log_config_append = /etc/keystone/keystone.conf.d/logging.conf"))
+	g.Expect(keystoneConf).To(ContainSubstring(
+		"default_log_levels = amqp=ERROR,keystone.middleware=DEBUG,sqlalchemy.engine=WARNING"))
+
+	loggingConf := cm.Data["logging.conf"]
+	g.Expect(loggingConf).To(ContainSubstring("keys = root"),
+		"logging.conf must declare only the root logger so the per-logger level "+
+			"story is owned exclusively by spec.logging.perLoggerLevels (rendered as "+
+			"[DEFAULT].default_log_levels). Declaring an explicit [logger_<name>] "+
+			"section would split that responsibility across two config surfaces.")
+	g.Expect(loggingConf).NotTo(ContainSubstring("[logger_keystone]"))
+	g.Expect(loggingConf).NotTo(ContainSubstring("[logger_amqp]"))
+	g.Expect(loggingConf).NotTo(ContainSubstring("[logger_sqlalchemy"))
+}
+
+// TestReconcileConfig_LoggingFormatToggleSymmetricHash verifies that
+// toggling spec.logging.format text → json → text returns to the original
+// ConfigMap name, confirming that no hidden state is preserved across
+// transitions and that the content hash is symmetric for identical
+// LoggingSpecs (CC-0098, REQ-004).
+func TestReconcileConfig_LoggingFormatToggleSymmetricHash(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+
+	ks1 := configTestKeystone()
+	ks1.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: "text", Level: "INFO"}
+	r := newConfigTestReconciler(s, ks1, secret)
+	firstTextName, err := r.reconcileConfig(context.Background(), ks1)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	ks2 := configTestKeystone()
+	ks2.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: "json", Level: "INFO"}
+	jsonName, err := r.reconcileConfig(context.Background(), ks2)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(jsonName).NotTo(Equal(firstTextName),
+		"format=json must produce a different ConfigMap name than format=text")
+
+	ks3 := configTestKeystone()
+	ks3.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: "text", Level: "INFO"}
+	secondTextName, err := r.reconcileConfig(context.Background(), ks3)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(secondTextName).To(Equal(firstTextName),
+		"text→json→text must return to the original ConfigMap name (symmetric content hash)")
 }

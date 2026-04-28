@@ -1,0 +1,428 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for spec.logging propagation to oslo.log on the Keystone
+# API container (CC-0098). Validates four scenarios end-to-end:
+#
+#   (a) REQ-009 — A Keystone CR with no spec.logging block reaches Ready=True
+#       and `kubectl logs` returns at least one oslo.log-format application
+#       line within 60 s.
+#   (b) REQ-009 — Patching spec.logging.debug=true rolls a new immutable
+#       ConfigMap (the volume reference on the Deployment changes), the
+#       rollout completes, and the post-rollout pod emits at least one
+#       DEBUG-level oslo.log line from a keystone.* logger.
+#   (c) REQ-009 — Patching spec.logging.format=json rolls a new ConfigMap
+#       and every oslo.log record on the new pod's stderr parses as JSON
+#       via `jq -e .` (uWSGI access lines are excluded by line-prefix).
+#   (d) REQ-002 — A CR with spec.logging.perLoggerLevels[<key>]=VERBOSE is
+#       rejected at admission with a field.Invalid error at the precise
+#       field path.
+#
+# REQ-002, REQ-009 (CC-0098)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-logging
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+    exec: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR with no explicit spec.logging ────────────
+  - name: apply-cr
+    try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert Ready=True and Deployment carries default uWSGI flags
+  # propagated from CC-0098 REQ-006 (--log-master, --log-format) so uWSGI
+  # access lines are visually distinguishable from oslo.log records on the
+  # shared stderr stream.
+  - name: assert-ready
+    try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-logging
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-logging
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -40 || true
+  # ── Step 3 (a): Assert at least one oslo.log-format line on stderr ─────
+  # REQ-009: `^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} \d+ (DEBUG|INFO|
+  # WARNING|ERROR|CRITICAL) keystone\.` — the canonical oslo.log line shape.
+  # Polled for up to 60 s after Ready=True so the assertion is independent
+  # of the (variable) lag between the Ready transition and the first
+  # application-emitted log record.
+  #
+  # At default INFO level, the keystone /v3 version-listing endpoint hit by
+  # readiness probes does not call LOG.info(...), so a quiet idle pod emits
+  # only uWSGI master/access lines on stderr. Issuing one POST /v3/auth/tokens
+  # exercises the auth pipeline, which logs at INFO/WARNING from keystone.*
+  # loggers regardless of whether the credentials succeed — the assertion
+  # then validates that those records reach kubectl logs (i.e. that
+  # use_stderr=true is wired and uWSGI's master forwards worker stderr).
+  - name: keystone-logging-default-emits-osloline
+    try:
+    - script:
+        timeout: 90s
+        shell: bash
+        content: |
+          set -euo pipefail
+          POD=$(kubectl get pods -n openstack \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-logging \
+            -o jsonpath='{.items[0].metadata.name}')
+          # Trigger the auth pipeline so keystone.* emits at least one
+          # oslo.log record. The keystone image ships python3 but no curl;
+          # mirror the urllib pattern used by tests/e2e/keystone/fernet-rotation.
+          # Bad credentials are sufficient — the failure path logs from
+          # keystone.identity.* / keystone.server.flask.* on stderr.
+          kubectl exec -n openstack "$POD" -- python3 -c '
+          import json, urllib.request, urllib.error
+          body = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "nonexistent", "domain": {"id": "default"}, "password": "wrong"}}}}}).encode()
+          req = urllib.request.Request("http://localhost:5000/v3/auth/tokens", data=body, headers={"Content-Type": "application/json"})
+          try:
+              urllib.request.urlopen(req, timeout=5)
+          except urllib.error.HTTPError:
+              pass
+          except Exception:
+              pass
+          ' >/dev/null 2>&1 || true
+          DEADLINE=$(( $(date +%s) + 60 ))
+          PATTERN='^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3} [0-9]+ (DEBUG|INFO|WARNING|ERROR|CRITICAL) keystone\.'
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            LOGS=$(kubectl logs -n openstack \
+              -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-logging \
+              --tail=400 2>/dev/null || true)
+            if echo "$LOGS" | grep -E -q "$PATTERN"; then
+              echo "OK: oslo.log-format line observed"
+              # Diagnostic dump: tolerate SIGPIPE from `head -3` closing
+              # grep's stdout under `set -o pipefail` (CC-0098).
+              echo "$LOGS" | grep -E "$PATTERN" | head -3 || true
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "FAIL: no oslo.log-format line observed within 60 s"
+          echo "=== Last 200 log lines ==="
+          kubectl logs -n openstack \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-logging \
+            --tail=200 2>&1 || true
+          exit 1
+    catch:
+    - podLogs:
+        selector: app.kubernetes.io/instance=keystone-logging
+        namespace: openstack
+        tail: 100
+    - events:
+        namespace: openstack
+  # ── Step 4 (b): Toggle spec.logging.debug=true ─────────────────────────
+  # Captures the pre-patch ConfigMap name from the Deployment volume so the
+  # post-patch rollout can be detected by the volume reference flipping to a
+  # new immutable <name>-config-<hash> ConfigMap. Then asserts the rollout
+  # converges (updatedReplicas == replicas) and the new pod emits a
+  # DEBUG-level oslo.log line.
+  - name: keystone-logging-debug-toggle-rolls-and-emits-debug
+    try:
+    - script:
+        timeout: 30s
+        shell: bash
+        content: |
+          set -euo pipefail
+          BEFORE_CM=$(kubectl -n openstack get deploy keystone-logging \
+            -o jsonpath='{.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+          if [ -z "$BEFORE_CM" ]; then
+            echo "FAIL: could not read pre-patch ConfigMap name from Deployment"
+            exit 1
+          fi
+          echo "$BEFORE_CM" > /tmp/keystone-logging-cm-before
+          echo "BEFORE_CM=$BEFORE_CM"
+    - patch:
+        file: 01-patch-debug-true.yaml
+    - script:
+        timeout: 180s
+        shell: bash
+        content: |
+          set -euo pipefail
+          BEFORE_CM=$(cat /tmp/keystone-logging-cm-before)
+          # Wait for the Deployment volume reference to flip to a NEW immutable
+          # ConfigMap (CC-0077 retains BEFORE_CM as a historical revision; the
+          # rollout signal is the volume name, not BEFORE_CM disappearing).
+          DEADLINE=$(( $(date +%s) + 90 ))
+          AFTER_CM="$BEFORE_CM"
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            AFTER_CM=$(kubectl -n openstack get deploy keystone-logging \
+              -o jsonpath='{.spec.template.spec.volumes[?(@.name=="config")].configMap.name}' 2>/dev/null || true)
+            if [ -n "$AFTER_CM" ] && [ "$AFTER_CM" != "$BEFORE_CM" ]; then
+              break
+            fi
+            sleep 2
+          done
+          if [ "$AFTER_CM" = "$BEFORE_CM" ]; then
+            echo "FAIL: ConfigMap volume reference did not change after debug toggle"
+            echo "BEFORE_CM=$BEFORE_CM AFTER_CM=$AFTER_CM"
+            exit 1
+          fi
+          echo "OK: ConfigMap rolled BEFORE_CM=$BEFORE_CM AFTER_CM=$AFTER_CM"
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-logging
+            namespace: openstack
+          status:
+            availableReplicas: 1
+            (updatedReplicas == replicas): true
+    - script:
+        timeout: 180s
+        shell: bash
+        content: |
+          set -euo pipefail
+          # Wait for the rolling update to fully converge so the old debug=false
+          # pod is no longer in the keystone-logging selector — `rollout status`
+          # exits when status.replicas == updatedReplicas, which drops the old
+          # pod once it gets a deletionTimestamp.
+          kubectl -n openstack rollout status \
+            deployment/keystone-logging --timeout=120s
+          # Resolve the new debug=true pod and trigger an auth request from
+          # inside it so the keystone.* loggers emit at least one fresh DEBUG
+          # record on stderr regardless of how kubectl logs aggregates with the
+          # selector form. Mirror the urllib pattern used by the
+          # default-emits-osloline step (the keystone image ships python3 but
+          # no curl); bad credentials are sufficient because the failure path
+          # logs at DEBUG/INFO/WARNING from keystone.* under debug=true.
+          POD=$(kubectl get pods -n openstack \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-logging \
+            -o jsonpath='{.items[0].metadata.name}')
+          if [ -z "$POD" ]; then
+            echo "FAIL: could not resolve keystone-logging pod"
+            exit 1
+          fi
+          kubectl exec -n openstack "$POD" -- python3 -c '
+          import json, urllib.request, urllib.error
+          body = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "nonexistent", "domain": {"id": "default"}, "password": "wrong"}}}}}).encode()
+          req = urllib.request.Request("http://localhost:5000/v3/auth/tokens", data=body, headers={"Content-Type": "application/json"})
+          try:
+              urllib.request.urlopen(req, timeout=5)
+          except urllib.error.HTTPError:
+              pass
+          except Exception:
+              pass
+          ' >/dev/null 2>&1 || true
+          # Poll with `--prefix --all-containers --tail=600` — the same form
+          # the catch CMD uses, which has demonstrably surfaced the keystone
+          # container's stderr in this kind cluster post-rollout. The bare
+          # `--tail=N` form missed DEBUG records here even after rollout
+          # status returned (the FAIL diagnostic dump consistently *did*
+          # see them via `--prefix --all-containers`). Drop the `^` anchor
+          # so the regex matches lines whether or not kubectl prepends
+          # `[pod/<name>/<container>] ` — `--prefix` adds that lead.
+          # Match against $LOGS via a here-string instead of `echo "$LOGS" |
+          # grep -q`: under set -o pipefail, when grep -q matches early and
+          # closes the pipe, the bash builtin echo (mid-write of a >64 KiB
+          # $LOGS) returns non-zero on EPIPE, the pipeline inherits that
+          # non-zero status, and the if branch is silently skipped despite a
+          # match. At debug=true the pod emits enough DEBUG records that
+          # --tail=600 reliably exceeds the pipe buffer (CC-0098).
+          PATTERN='[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3} [0-9]+ DEBUG keystone\.'
+          DEADLINE=$(( $(date +%s) + 60 ))
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            LOGS=$(kubectl logs -n openstack \
+              -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-logging \
+              --prefix --all-containers --tail=600 2>/dev/null || true)
+            if grep -E -q "$PATTERN" <<<"$LOGS"; then
+              echo "OK: DEBUG oslo.log line observed after debug toggle on pod=$POD"
+              # Diagnostic dump: tolerate SIGPIPE from `head -3` closing
+              # grep's stdout under `set -o pipefail` (CC-0098).
+              grep -E "$PATTERN" <<<"$LOGS" | head -3 || true
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "FAIL: no DEBUG oslo.log line observed within 60 s on pod=$POD"
+          echo "=== Pods ==="
+          kubectl get pods -n openstack \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-logging \
+            -o wide 2>&1 || true
+          echo "=== Last 200 log lines from selector ==="
+          kubectl logs -n openstack \
+            -l app.kubernetes.io/instance=keystone-logging \
+            --prefix --all-containers --tail=200 2>&1 || true
+          exit 1
+    catch:
+    - podLogs:
+        selector: app.kubernetes.io/instance=keystone-logging
+        namespace: openstack
+        tail: 120
+    - events:
+        namespace: openstack
+  # ── Step 5 (c): Switch spec.logging.format=json ────────────────────────
+  # Asserts the format toggle rolls a new ConfigMap (its data now carries
+  # `logging.conf` and [DEFAULT].log_config_append per REQ-004) and every
+  # JSON-prefixed line on the post-rollout pod's stderr is parseable by
+  # `jq -e .`. Lines NOT starting with `{` (uWSGI access lines, master
+  # banner) are excluded — REQ-006's --log-format ensures they remain
+  # distinguishable from oslo.log JSON records on the shared stream.
+  - name: keystone-logging-json-format-rolls-and-parses
+    try:
+    - script:
+        timeout: 30s
+        shell: bash
+        content: |
+          set -euo pipefail
+          BEFORE_CM=$(kubectl -n openstack get deploy keystone-logging \
+            -o jsonpath='{.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+          echo "$BEFORE_CM" > /tmp/keystone-logging-cm-before
+          echo "BEFORE_CM=$BEFORE_CM"
+    - patch:
+        file: 02-patch-format-json.yaml
+    - script:
+        timeout: 180s
+        shell: bash
+        content: |
+          set -euo pipefail
+          BEFORE_CM=$(cat /tmp/keystone-logging-cm-before)
+          DEADLINE=$(( $(date +%s) + 90 ))
+          AFTER_CM="$BEFORE_CM"
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            AFTER_CM=$(kubectl -n openstack get deploy keystone-logging \
+              -o jsonpath='{.spec.template.spec.volumes[?(@.name=="config")].configMap.name}' 2>/dev/null || true)
+            if [ -n "$AFTER_CM" ] && [ "$AFTER_CM" != "$BEFORE_CM" ]; then
+              break
+            fi
+            sleep 2
+          done
+          if [ "$AFTER_CM" = "$BEFORE_CM" ]; then
+            echo "FAIL: ConfigMap volume reference did not change after format toggle"
+            exit 1
+          fi
+          # Verify the new ConfigMap actually carries logging.conf and that
+          # keystone.conf gained the log_config_append entry (REQ-004).
+          if ! kubectl -n openstack get cm "$AFTER_CM" \
+              -o jsonpath='{.data.logging\.conf}' | grep -q 'JSONFormatter'; then
+            echo "FAIL: new ConfigMap $AFTER_CM is missing logging.conf with JSONFormatter"
+            kubectl -n openstack get cm "$AFTER_CM" -o yaml || true
+            exit 1
+          fi
+          if ! kubectl -n openstack get cm "$AFTER_CM" \
+              -o jsonpath='{.data.keystone\.conf}' | grep -q 'log_config_append'; then
+            echo "FAIL: new ConfigMap $AFTER_CM keystone.conf missing log_config_append"
+            exit 1
+          fi
+          echo "OK: ConfigMap rolled with logging.conf+JSONFormatter and log_config_append"
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-logging
+            namespace: openstack
+          status:
+            availableReplicas: 1
+            (updatedReplicas == replicas): true
+    - script:
+        timeout: 120s
+        shell: bash
+        content: |
+          set -euo pipefail
+          # Allow application logs to accumulate after the new pod is ready.
+          DEADLINE=$(( $(date +%s) + 90 ))
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            LOGS=$(kubectl logs -n openstack \
+              -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-logging \
+              --tail=600 2>/dev/null || true)
+            # The '^\{' filter relies on the REQ-006 invariant that uWSGI
+            # access lines emitted via --log-format never start with '{', so
+            # only oslo.log JSONFormatter records survive the filter.
+            JSON_LINES=$(echo "$LOGS" | grep -E '^\{' || true)
+            COUNT=$(printf '%s\n' "$JSON_LINES" | grep -c '^{' || true)
+            if [ "$COUNT" -ge 1 ]; then
+              echo "Found $COUNT JSON-prefixed log line(s); validating with jq -e . and JSONFormatter contract keys"
+              # REQ-009 contract: each oslo.log JSONFormatter record exposes at
+              # minimum `name` (logger), `levelname`, and `message`. A
+              # parseable-JSON-only check would silently accept a renderer that
+              # produces JSON but loses these fields — exactly the kind of
+              # contract drift that breaks a downstream Loki/OpenSearch
+              # ingestion pipeline (CC-0098, REQ-009).
+              FAILED=0
+              while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                if ! printf '%s' "$line" | jq -e . >/dev/null 2>&1; then
+                  echo "FAIL: not parseable JSON: $line"
+                  FAILED=$((FAILED + 1))
+                  continue
+                fi
+                if ! printf '%s' "$line" | jq -e 'has("name") and has("levelname") and has("message")' >/dev/null 2>&1; then
+                  echo "FAIL: missing JSONFormatter contract keys (name/levelname/message): $line"
+                  FAILED=$((FAILED + 1))
+                fi
+              done <<<"$JSON_LINES"
+              if [ "$FAILED" -ne 0 ]; then
+                echo "FAIL: $FAILED JSON-prefixed lines did not satisfy the oslo.log JSONFormatter contract (REQ-009)"
+                exit 1
+              fi
+              echo "OK: $COUNT JSON oslo.log records parsed and exposed name/levelname/message"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "FAIL: no JSON-prefixed oslo.log records observed within 90 s"
+          kubectl logs -n openstack \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-logging \
+            --tail=200 2>&1 || true
+          exit 1
+    catch:
+    - podLogs:
+        selector: app.kubernetes.io/instance=keystone-logging
+        namespace: openstack
+        tail: 120
+    - events:
+        namespace: openstack
+  # ── Step 6 (d): Invalid perLoggerLevels rejected at admission ──────────
+  # REQ-002 scenario "Invalid per-logger level rejected": the validating
+  # webhook returns field.Invalid at spec.logging.perLoggerLevels[<key>]
+  # with a message naming the allowed enum.
+  - name: keystone-logging-invalid-perloggerlevel-rejected
+    try:
+    - apply:
+        file: 03-patch-invalid-perloggerlevel.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.logging.perLoggerLevels')): true
+            (contains($error, 'level must be one of DEBUG, INFO, WARNING, ERROR, CRITICAL')): true

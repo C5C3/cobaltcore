@@ -1409,9 +1409,97 @@ func TestUwsgiCommand_KeepAliveTimeoutIgnoredWhenKeepAliveDisabled(t *testing.T)
 	g.Expect(cmd).NotTo(ContainElement("--http-keepalive-timeout"))
 }
 
+// TestUwsgiCommand_IncludesLogMasterAndLogFormat verifies that uwsgiCommand
+// always emits --log-master and --log-format <literal> between the
+// --http-keepalive[-timeout] block and the --wsgi-file line, regardless of
+// HTTPKeepAlive/HTTPKeepAliveTimeout state. REQ-006 requires uWSGI master
+// logging to be unconditionally on so request lines reach stderr in every
+// configuration (CC-0098, REQ-006).
+func TestUwsgiCommand_IncludesLogMasterAndLogFormat(t *testing.T) {
+	const expectedFormat = "%(method) %(uri) => generated %(rsize) bytes in %(msecs) msecs (%(proto) %(status))"
+
+	timeout := int32(4)
+	cases := []struct {
+		name string
+		spec *keystonev1alpha1.UWSGISpec
+	}{
+		{
+			name: "keepalive enabled without timeout",
+			spec: &keystonev1alpha1.UWSGISpec{
+				Processes:     2,
+				Threads:       1,
+				HTTPKeepAlive: true,
+			},
+		},
+		{
+			name: "keepalive enabled with timeout",
+			spec: &keystonev1alpha1.UWSGISpec{
+				Processes:            2,
+				Threads:              1,
+				HTTPKeepAlive:        true,
+				HTTPKeepAliveTimeout: &timeout,
+			},
+		},
+		{
+			name: "keepalive disabled",
+			spec: &keystonev1alpha1.UWSGISpec{
+				Processes:     2,
+				Threads:       1,
+				HTTPKeepAlive: false,
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			cmd := uwsgiCommand(tc.spec)
+
+			logMasterIdx := indexOf(cmd, "--log-master")
+			logFormatIdx := indexOf(cmd, "--log-format")
+			wsgiFileIdx := indexOf(cmd, "--wsgi-file")
+
+			g.Expect(logMasterIdx).NotTo(Equal(-1), "--log-master must be present (CC-0098, REQ-006)")
+			g.Expect(logFormatIdx).NotTo(Equal(-1), "--log-format must be present (CC-0098, REQ-006)")
+			g.Expect(wsgiFileIdx).NotTo(Equal(-1))
+
+			// --log-format must be followed immediately by the exact literal value
+			// as a single argument (not split).
+			g.Expect(cmd[logFormatIdx+1]).To(Equal(expectedFormat),
+				"--log-format value must be the exact literal format string (CC-0098, REQ-006)")
+
+			// Insertion point: after --http-keepalive[-timeout] block (when
+			// present) and before --wsgi-file.
+			g.Expect(logMasterIdx).To(BeNumerically("<", wsgiFileIdx),
+				"--log-master must precede --wsgi-file")
+			g.Expect(logFormatIdx).To(BeNumerically("<", wsgiFileIdx),
+				"--log-format must precede --wsgi-file")
+
+			if tc.spec.HTTPKeepAlive {
+				keepAliveIdx := indexOf(cmd, "--http-keepalive")
+				g.Expect(keepAliveIdx).NotTo(Equal(-1))
+				g.Expect(logMasterIdx).To(BeNumerically(">", keepAliveIdx),
+					"--log-master must follow --http-keepalive")
+				if tc.spec.HTTPKeepAliveTimeout != nil {
+					timeoutIdx := indexOf(cmd, "--http-keepalive-timeout")
+					g.Expect(timeoutIdx).NotTo(Equal(-1))
+					g.Expect(logMasterIdx).To(BeNumerically(">", timeoutIdx),
+						"--log-master must follow --http-keepalive-timeout pair")
+				}
+			}
+		})
+	}
+}
+
 // TestUwsgiCommand_FlagOrderDeterministic verifies that the command ordering
 // is deterministic for the same input, so the pod template hash is stable
-// across reconciles (CC-0084, REQ-003, REQ-004).
+// across reconciles. The relative-order assertions intentionally mirror
+// TestUwsgiCommand_IncludesLogMasterAndLogFormat: pinning the canonical
+// indices (e.g. --log-master at 6, --log-format at 7) would make this test
+// brittle to any future flag inserted before --log-master even when the
+// layout is still semantically correct (CC-0084, CC-0098, REQ-003, REQ-004,
+// REQ-006).
 func TestUwsgiCommand_FlagOrderDeterministic(t *testing.T) {
 	g := NewGomegaWithT(t)
 	harakiri := int32(25)
@@ -1428,6 +1516,19 @@ func TestUwsgiCommand_FlagOrderDeterministic(t *testing.T) {
 	second := uwsgiCommand(spec)
 
 	g.Expect(first).To(Equal(second))
+
+	// Assert the layout invariant by relative position rather than absolute
+	// index: --log-master/--log-format must precede --wsgi-file, and
+	// --log-format must immediately follow --log-master so that --log-format's
+	// literal value is its argument (CC-0098, REQ-006).
+	g.Expect(indexOf(first, "--log-master")).NotTo(Equal(-1),
+		"--log-master must be present (CC-0098, REQ-006)")
+	g.Expect(indexOf(first, "--log-format")).NotTo(Equal(-1),
+		"--log-format must be present (CC-0098, REQ-006)")
+	g.Expect(indexOf(first, "--log-master")).To(BeNumerically("<", indexOf(first, "--wsgi-file")),
+		"--log-master must precede --wsgi-file (CC-0098, REQ-006)")
+	g.Expect(indexOf(first, "--log-format")).To(Equal(indexOf(first, "--log-master")+1),
+		"--log-format must immediately follow --log-master so its literal value is the next argv element (CC-0098, REQ-006)")
 }
 
 // TestBuildKeystoneDeployment_DefaultRollingUpdateStrategy verifies that when

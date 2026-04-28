@@ -142,6 +142,43 @@ The full catalogue is in [Keystone Controller Events](../reference/keystone/keys
 
 ---
 
+## Keystone application logs
+
+For the Keystone API itself (as opposed to the operator), tail the workload pods directly:
+
+```bash
+kubectl logs -n openstack -l app.kubernetes.io/name=keystone --tail=200 -f
+```
+
+Two distinct streams are interleaved on the same stdout/stderr:
+
+- **uWSGI access lines** — emitted per HTTP request via `--log-master --log-format`, e.g.
+  `GET /v3/auth/tokens => generated 1234 bytes in 12 msecs (HTTP/1.1 201)`.
+  Useful for traffic-shape questions (latency, status code distribution).
+- **oslo.log application records** — emitted by Keystone code paths (auth, federation,
+  middleware), formatted by `oslo.log` per `spec.logging`. Useful for "why did this
+  request fail" questions.
+
+Both streams honour `spec.logging.format`. The default is `text` (oslo.log line
+format, human-readable). Switch to JSON for direct ingest by Loki/OpenSearch:
+
+```bash
+kubectl patch keystone -n openstack keystone --type=merge \
+  -p '{"spec":{"logging":{"format":"json"}}}'
+
+# Wait for the rollout, then verify each oslo.log record is jq-parseable:
+kubectl logs -n openstack -l app.kubernetes.io/name=keystone --tail=20 \
+  | grep -v 'generated.*bytes in' \
+  | jq -e .
+```
+
+`jq -e .` exits non-zero if any input line is not valid JSON, giving a binary
+pass/fail signal for the format toggle. See
+[`spec.logging` in the CRD reference](../reference/keystone/keystone-crd.md#loggingspec)
+for the full field semantics, including `level`, `debug`, and `perLoggerLevels`.
+
+---
+
 ## Controller logs (last resort)
 
 If status and events don't explain a failure, read the operator logs directly:

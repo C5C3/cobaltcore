@@ -179,6 +179,7 @@ status:
 | `gateway` | [`*GatewaySpec`](#gatewayspec) | No | `nil` | Gateway API HTTPRoute configuration. When set, an HTTPRoute is created targeting the `{name}` Service on port 5000 and attached to the referenced pre-existing Gateway; `status.endpoint` is updated to `https://{hostname}/v3`. When removed, the HTTPRoute is deleted and `status.endpoint` reverts to the cluster-local Service URL. |
 | `resources` | [`*corev1.ResourceRequirements`](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#resources) | No | See below | CPU and memory requests and limits for the Keystone API container. When unset, the defaulting webhook injects sensible defaults to ensure Burstable QoS class and enable HPA utilization calculations. |
 | `uwsgi` | [`*UWSGISpec`](#uwsgispec) | No | `nil` | uWSGI application server parameters. When set, the operator uses these values for the Deployment container command. When `nil`, hardcoded defaults (processes=2, threads=1, httpKeepAlive=true) are used in the reconciler. |
+| `logging` | [`*LoggingSpec`](#loggingspec) | No | See below | oslo.log configuration for the Keystone API container. When `nil`, the defaulting webhook materializes a baseline (`format=text`, `level=INFO`, `debug=false`, no per-logger overrides) so downstream reconciler code never sees a nil pointer. When set, zero-valued sub-fields are partially filled with the same baseline. |
 | `topologySpreadConstraints` | [`[]corev1.TopologySpreadConstraint`](https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/) | No | See [below](#topologyspreadconstraints) | Scheduler hints for spreading pods across zones and nodes. `nil` injects two defaults (zone + hostname, MaxSkew=1, `ScheduleAnyway`); a non-nil value (including `[]`) is used verbatim. |
 | `priorityClassName` | `*string` | No | `nil` | PriorityClass attached to the Keystone API pod spec. When set, the webhook verifies the class exists; when unset, no priority class is configured. |
 | `terminationGracePeriodSeconds` | `*int64` | No | `nil` | Grace period (seconds) granted to Keystone API pods between SIGTERM and SIGKILL during rolling updates. When `nil`, the reconciler applies `30` (the CRD schema emits no `default:` so pre-existing CRs are not mutated on operator upgrade). Minimum: `10`. Must be strictly greater than `preStopSleepSeconds`. Drives the PodSpec `terminationGracePeriodSeconds`. See [Graceful-termination fields](#graceful-termination-fields) and the HA rollout sequence in `architecture/docs/04-architecture/04-high-availability.md`. |
@@ -452,6 +453,66 @@ spec:
     httpKeepAlive: true
     httpKeepAliveTimeout: 10
     harakiri: 45
+```
+
+---
+
+## LoggingSpec
+
+Configures oslo.log output for the Keystone API container. This is a
+pointer field (`*LoggingSpec`) on `KeystoneSpec`. When `nil`, the defaulting
+webhook materializes a baseline `LoggingSpec{Format: "text", Level: "INFO",
+Debug: false}` (no per-logger overrides) so downstream reconciler code never
+sees a nil pointer — matching the documented production baseline (stdout/stderr,
+oslo.log line format, no debug noise). When set (even as `logging: {}`), the
+webhook partially fills zero-valued sub-fields with the same baseline values
+and the validating webhook enforces the enum constraints described below.
+
+The reconciler always emits `[DEFAULT] use_stderr=true` and `[DEFAULT] debug=<spec.logging.debug>`
+into `keystone.conf`. When `spec.logging.format == "json"`, an additional
+`logging.conf` ConfigMap entry is rendered (oslo.log JSON formatter wired to a
+stderr StreamHandler) and `[DEFAULT] log_config_append=/etc/keystone/keystone.conf.d/logging.conf`
+is appended; toggling `format` back to `text` drops the `logging.conf` key.
+A `Warning` event with reason `LoggingStderrDisabled` is emitted when
+`spec.extraConfig` overrides `[DEFAULT].use_stderr` to a non-`true` value,
+because doing so silently breaks the cluster log-aggregation pipeline.
+The reconciler also surfaces this misconfiguration via an informational
+`LoggingHealthy` status condition (`Reason=StderrDisabled` when overridden,
+`Reason=StderrEnabled` otherwise). The condition is intentionally **not**
+aggregated into the top-level `Ready` condition so an explicit operator
+override is honoured rather than blocking the rollout; the gated event
+fires only on transition into `StderrDisabled`. See
+[keystone-events.md, Logging](keystone-events.md#logging) for the
+full event/condition contract.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `format` | `string` | No | `text` | On-wire layout of oslo.log records. `text` emits the standard oslo.log line format; `json` emits one JSON object per record for direct ingest by Loki/OpenSearch. Enforced as `+kubebuilder:validation:Enum=text;json`. |
+| `level` | `string` | No | `INFO` | Root logger level applied to oslo.log. One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Enforced as `+kubebuilder:validation:Enum=DEBUG;INFO;WARNING;ERROR;CRITICAL`. |
+| `debug` | `bool` | No | `false` | Toggles oslo.log `[DEFAULT] debug=true`. Independent of `level` because oslo.log gates several extra-verbose code paths on the debug flag specifically (SQL echo, auth-backend tracing). |
+| `perLoggerLevels` | `map[string]string` | No | `nil` | Overrides the level of named loggers, mirroring oslo.log's `default_log_levels`. Each value must be one of `DEBUG`/`INFO`/`WARNING`/`ERROR`/`CRITICAL` — enforced by the validating webhook (CRD v1 `additionalProperties` does not support enum constraints). Empty-string keys are rejected. Rendered into `[DEFAULT].default_log_levels` in deterministic alphabetical order to keep ConfigMap content-hashes stable across reconciles. |
+
+### Example
+
+```yaml
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone
+  namespace: openstack
+spec:
+  replicas: 3
+  image:
+    repository: c5c3/keystone
+    tag: "2025.1"
+  # ... other required fields ...
+  logging:
+    format: json
+    level: INFO
+    debug: false
+    perLoggerLevels:
+      sqlalchemy.engine: WARNING
+      keystone.middleware: DEBUG
 ```
 
 ---
