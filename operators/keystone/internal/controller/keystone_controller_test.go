@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -3255,6 +3256,341 @@ func TestSecretToKeystoneMapper_OwnerRefTransientGetErrorEnqueues(t *testing.T) 
 	g.Expect(reqs).To(HaveLen(1),
 		"transient (non-NotFound) Get errors must not drop the owner-ref")
 	g.Expect(reqs[0].NamespacedName.Name).To(Equal(ks.Name))
+}
+
+// --- pushSecretToKeystoneMapper behaviour (CC-0092) ---
+
+// pushSecretObj builds a minimal PushSecret client.Object with the given name
+// and namespace. The mapper only inspects name/namespace metadata — no spec or
+// status is needed to exercise its enqueue contract (CC-0092, REQ-002).
+func pushSecretObj(name, namespace string) client.Object {
+	return &esov1alpha1.PushSecret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+	}
+}
+
+// TestPushSecretToKeystoneMapper_FernetBackupEnqueuesKeystone verifies that a
+// PushSecret whose name matches the fernet backup for a Keystone in the same
+// namespace enqueues exactly one reconcile.Request for that Keystone
+// (CC-0092, REQ-001, REQ-002).
+func TestPushSecretToKeystoneMapper_FernetBackupEnqueuesKeystone(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+
+	c := newMapperFakeClient(ks)
+	mapper := pushSecretToKeystoneMapper(c)
+
+	ps := pushSecretObj(fmt.Sprintf("%s-fernet-keys-backup", ks.Name), ks.Namespace)
+	reqs := mapper(context.Background(), ps)
+
+	g.Expect(reqs).To(HaveLen(1),
+		"fernet backup PushSecret must enqueue its owning Keystone")
+	g.Expect(reqs[0].NamespacedName).To(Equal(types.NamespacedName{
+		Namespace: ks.Namespace,
+		Name:      ks.Name,
+	}))
+}
+
+// TestPushSecretToKeystoneMapper_CredentialBackupEnqueuesKeystone verifies the
+// same contract as the fernet case for the credential backup — both entries of
+// openBaoBackupPushSecretNames must be observed by the mapper
+// (CC-0092, REQ-002).
+func TestPushSecretToKeystoneMapper_CredentialBackupEnqueuesKeystone(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+
+	c := newMapperFakeClient(ks)
+	mapper := pushSecretToKeystoneMapper(c)
+
+	ps := pushSecretObj(fmt.Sprintf("%s-credential-keys-backup", ks.Name), ks.Namespace)
+	reqs := mapper(context.Background(), ps)
+
+	g.Expect(reqs).To(HaveLen(1),
+		"credential backup PushSecret must enqueue its owning Keystone")
+	g.Expect(reqs[0].NamespacedName).To(Equal(types.NamespacedName{
+		Namespace: ks.Namespace,
+		Name:      ks.Name,
+	}))
+}
+
+// TestPushSecretToKeystoneMapper_UnrelatedNameReturnsNil verifies that a
+// PushSecret whose name matches no openBaoBackupPushSecretNames entry for any
+// Keystone in its namespace is dropped by the mapper (CC-0092, REQ-002,
+// REQ-007).
+func TestPushSecretToKeystoneMapper_UnrelatedNameReturnsNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+
+	c := newMapperFakeClient(ks)
+	mapper := pushSecretToKeystoneMapper(c)
+
+	ps := pushSecretObj("some-other-pushsecret", ks.Namespace)
+	reqs := mapper(context.Background(), ps)
+
+	g.Expect(reqs).To(BeNil(),
+		"non-backup PushSecret name must yield no reconcile.Request")
+}
+
+// TestPushSecretToKeystoneMapper_MultipleKeystonesOnlyMatchingCREnqueued
+// verifies the shared-namespace no-op dedup contract: in a namespace with two
+// Keystone CRs, a backup PushSecret for one CR must not wake the other
+// (CC-0092, REQ-007).
+func TestPushSecretToKeystoneMapper_MultipleKeystonesOnlyMatchingCREnqueued(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ksA := testKeystone()
+	ksA.Name = "ks-a"
+	ksA.UID = "uid-a"
+
+	ksB := testKeystone()
+	ksB.Name = "ks-b"
+	ksB.UID = "uid-b"
+
+	c := newMapperFakeClient(ksA, ksB)
+	mapper := pushSecretToKeystoneMapper(c)
+
+	ps := pushSecretObj(fmt.Sprintf("%s-fernet-keys-backup", ksA.Name), ksA.Namespace)
+	reqs := mapper(context.Background(), ps)
+
+	g.Expect(reqs).To(HaveLen(1),
+		"only the Keystone whose backup pattern matches must be enqueued")
+	g.Expect(reqs[0].NamespacedName).To(Equal(types.NamespacedName{
+		Namespace: ksA.Namespace,
+		Name:      ksA.Name,
+	}))
+}
+
+// TestPushSecretToKeystoneMapper_NoKeystonesInNamespaceReturnsNil verifies
+// the empty-list path: when the event's (non-empty) namespace contains no
+// Keystone CR, the mapper returns nothing without erroring. PushSecret is a
+// namespaced resource, so the empty-namespace case is precluded by the
+// apiserver and is intentionally not covered here (CC-0092, REQ-003).
+func TestPushSecretToKeystoneMapper_NoKeystonesInNamespaceReturnsNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	c := newMapperFakeClient()
+	mapper := pushSecretToKeystoneMapper(c)
+
+	ps := pushSecretObj("anything-backup", "default")
+	reqs := mapper(context.Background(), ps)
+
+	g.Expect(reqs).To(BeEmpty(),
+		"empty Keystone list in namespace must produce no reconcile.Request")
+}
+
+// TestPushSecretToKeystoneMapper_CrossNamespaceReturnsNil verifies that the
+// Keystone List is namespace-scoped — a PushSecret in ns-b must not wake a
+// Keystone that only exists in ns-a, even if the PushSecret's name matches
+// that Keystone's backup pattern. The recording interceptor pins that the
+// List carries client.InNamespace(ps.Namespace) and never fans out
+// cluster-wide (CC-0092, REQ-002).
+func TestPushSecretToKeystoneMapper_CrossNamespaceReturnsNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ks := testKeystone()
+	ks.Namespace = "ns-a"
+
+	calls, ifuncs := recordingListInterceptor(nil)
+	c := newMapperFakeClientBuilder(ks).WithInterceptorFuncs(ifuncs).Build()
+	mapper := pushSecretToKeystoneMapper(c)
+
+	ps := pushSecretObj(fmt.Sprintf("%s-fernet-keys-backup", ks.Name), "ns-b")
+	reqs := mapper(context.Background(), ps)
+
+	g.Expect(reqs).To(BeEmpty(),
+		"namespace-scoped List must not cross namespaces")
+
+	g.Expect(*calls).To(HaveLen(1),
+		"mapper must issue exactly one List call")
+	g.Expect((*calls)[0].options.Namespace).To(Equal("ns-b"),
+		"List must be scoped to the PushSecret's namespace, never cluster-wide")
+}
+
+// TestPushSecretToKeystoneMapper_ListErrorIsSwallowed verifies that a List
+// error is logged and the mapper returns nil instead of propagating — matching
+// the log-and-swallow contract of secretToKeystoneMapper and the
+// handler.MapFunc signature which has no error return (CC-0092, REQ-003).
+func TestPushSecretToKeystoneMapper_ListErrorIsSwallowed(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+
+	injected := errors.New("boom")
+	calls, ifuncs := recordingListInterceptor(injected)
+	c := newMapperFakeClientBuilder(ks).WithInterceptorFuncs(ifuncs).Build()
+	mapper := pushSecretToKeystoneMapper(c)
+
+	ps := pushSecretObj(fmt.Sprintf("%s-fernet-keys-backup", ks.Name), ks.Namespace)
+
+	var reqs []reconcile.Request
+	g.Expect(func() { reqs = mapper(context.Background(), ps) }).ToNot(Panic())
+	g.Expect(reqs).To(BeNil(),
+		"List error must be swallowed: mapper returns nil per MapFunc contract")
+	g.Expect(*calls).To(HaveLen(1),
+		"exactly one List must be attempted before the error is swallowed")
+}
+
+// --- pushSecretRelevantChangePredicate behaviour (CC-0092, REQ-004) ---
+
+// pushSecretWithMeta builds a PushSecret carrying the supplied metadata fields
+// relevant to the predicate: Generation, Finalizers, and DeletionTimestamp.
+// Name/Namespace are fixed since the predicate is purely metadata-driven and
+// name-level filtering belongs to the mapper (CC-0092, REQ-004).
+func pushSecretWithMeta(generation int64, finalizers []string, deletionTS *metav1.Time) *esov1alpha1.PushSecret {
+	ps := &esov1alpha1.PushSecret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-ks-fernet-keys-backup",
+			Namespace:  "default",
+			Generation: generation,
+			Finalizers: append([]string(nil), finalizers...),
+		},
+	}
+	if deletionTS != nil {
+		dt := *deletionTS
+		ps.DeletionTimestamp = &dt
+	}
+	return ps
+}
+
+// TestPushSecretPredicate_FinalizerAddAdmitted verifies that gaining a
+// finalizer (ESO installing esoPushSecretFinalizer on first sync — the
+// Pass-0 adoption signal) passes the predicate so Keystone is re-reconciled
+// and can progress past WaitingForESOAdoption (CC-0092, REQ-004).
+func TestPushSecretPredicate_FinalizerAddAdmitted(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	oldObj := pushSecretWithMeta(1, nil, nil)
+	newObj := pushSecretWithMeta(1, []string{esoPushSecretFinalizer}, nil)
+
+	admitted := pushSecretRelevantChangePredicate.Update(event.UpdateEvent{
+		ObjectOld: oldObj,
+		ObjectNew: newObj,
+	})
+
+	g.Expect(admitted).To(BeTrue(),
+		"finalizer add (ESO adoption signal) must pass the predicate")
+}
+
+// TestPushSecretPredicate_FinalizerRemoveAdmitted verifies that losing a
+// finalizer (ESO dropping its cleanup finalizer after purging the target
+// Secret — the Pass-1 unblock signal) passes the predicate so Keystone can
+// remove its own openbao finalizer without waiting for the 15s periodic
+// requeue. Uses the package-level esoCleanupFinalizer constant declared in
+// reconcile_secrets.go as the single source of truth shared with the
+// integration tests (CC-0092, REQ-004).
+func TestPushSecretPredicate_FinalizerRemoveAdmitted(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	oldObj := pushSecretWithMeta(1, []string{esoCleanupFinalizer}, nil)
+	newObj := pushSecretWithMeta(1, nil, nil)
+
+	admitted := pushSecretRelevantChangePredicate.Update(event.UpdateEvent{
+		ObjectOld: oldObj,
+		ObjectNew: newObj,
+	})
+
+	g.Expect(admitted).To(BeTrue(),
+		"finalizer removal (ESO cleanup complete) must pass the predicate")
+}
+
+// TestPushSecretPredicate_DeletionTimestampSetAdmitted verifies that a
+// PushSecret transitioning from live to Terminating (DeletionTimestamp first
+// set) passes the predicate. This is the edge that kicks Pass-1 of the
+// Keystone delete path (CC-0092, REQ-004).
+func TestPushSecretPredicate_DeletionTimestampSetAdmitted(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	now := metav1.Now()
+	oldObj := pushSecretWithMeta(1, []string{esoPushSecretFinalizer}, nil)
+	newObj := pushSecretWithMeta(1, []string{esoPushSecretFinalizer}, &now)
+
+	admitted := pushSecretRelevantChangePredicate.Update(event.UpdateEvent{
+		ObjectOld: oldObj,
+		ObjectNew: newObj,
+	})
+
+	g.Expect(admitted).To(BeTrue(),
+		"DeletionTimestamp first set (live → Terminating) must pass the predicate")
+}
+
+// TestPushSecretPredicate_StatusOnlyUpdateSuppressed verifies the core
+// workqueue-quieting contract: an Update whose finalizers, DeletionTimestamp
+// presence, and Generation are unchanged (e.g. ESO bumping
+// status.syncedResourceVersion on every successful sync) must NOT wake the
+// Keystone reconciler. Without this filter the Keystone workqueue would
+// receive one wake-up per ESO sync tick per owned PushSecret
+// (CC-0092, REQ-004).
+func TestPushSecretPredicate_StatusOnlyUpdateSuppressed(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	finalizers := []string{esoPushSecretFinalizer}
+
+	oldObj := pushSecretWithMeta(3, finalizers, nil)
+	oldObj.ResourceVersion = "100"
+
+	newObj := pushSecretWithMeta(3, finalizers, nil)
+	// Simulate a status-only ESO tick: ResourceVersion bumped but nothing the
+	// predicate keys on has changed.
+	newObj.ResourceVersion = "101"
+
+	admitted := pushSecretRelevantChangePredicate.Update(event.UpdateEvent{
+		ObjectOld: oldObj,
+		ObjectNew: newObj,
+	})
+
+	g.Expect(admitted).To(BeFalse(),
+		"status-only update (no finalizer/DT/generation change) must be suppressed")
+}
+
+// TestPushSecretPredicate_CreateAndDeleteAlwaysAdmitted verifies that Create,
+// Delete, and Generic events are admitted unconditionally — including for a
+// PushSecret whose name does not match any Keystone backup pattern. The
+// predicate is deliberately name-agnostic; name-level filtering is the
+// mapper's responsibility and belongs on the Watches() MapFunc, not here
+// (CC-0092, REQ-004).
+func TestPushSecretPredicate_CreateAndDeleteAlwaysAdmitted(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	unrelated := &esov1alpha1.PushSecret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "unrelated-push-secret",
+			Namespace: "default",
+		},
+	}
+
+	g.Expect(pushSecretRelevantChangePredicate.Create(event.CreateEvent{
+		Object: unrelated,
+	})).To(BeTrue(),
+		"CreateEvent must pass unconditionally; name filtering is the mapper's job")
+
+	g.Expect(pushSecretRelevantChangePredicate.Delete(event.DeleteEvent{
+		Object: unrelated,
+	})).To(BeTrue(),
+		"DeleteEvent must pass unconditionally; name filtering is the mapper's job")
+
+	g.Expect(pushSecretRelevantChangePredicate.Generic(event.GenericEvent{
+		Object: unrelated,
+	})).To(BeTrue(),
+		"GenericEvent must pass unconditionally; name filtering is the mapper's job")
+}
+
+// TestPushSecretPredicate_GenerationChangeAdmitted verifies that a spec
+// mutation (observable as ObjectOld.Generation != ObjectNew.Generation)
+// passes the predicate. ESO would not normally mutate the PushSecret spec
+// itself, but a user or controller doing so must still re-trigger Keystone
+// reconciliation to re-evaluate adoption state (CC-0092, REQ-004).
+func TestPushSecretPredicate_GenerationChangeAdmitted(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	oldObj := pushSecretWithMeta(1, []string{esoPushSecretFinalizer}, nil)
+	newObj := pushSecretWithMeta(2, []string{esoPushSecretFinalizer}, nil)
+
+	admitted := pushSecretRelevantChangePredicate.Update(event.UpdateEvent{
+		ObjectOld: oldObj,
+		ObjectNew: newObj,
+	})
+
+	g.Expect(admitted).To(BeTrue(),
+		"Generation change (spec mutation) must pass the predicate")
 }
 
 // --- registerSecretNameIndex helper (CC-0087, REQ-001, REQ-006) ---

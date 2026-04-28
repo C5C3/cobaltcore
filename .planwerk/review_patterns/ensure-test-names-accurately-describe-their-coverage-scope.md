@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: When a test name contains universal quantifiers like 'All', 'Every', 'Runs all', or 'Full', verify that every branch or validation path in the function under test is actually exercised. Cross-reference the test setup with the production code's branches.
 **Severity**: WARNING
-**Occurrences**: 6
+**Occurrences**: 7
 
 ## What to check
 
@@ -44,3 +44,8 @@ Misleadingly named tests give false confidence that all paths are covered and th
 - **Feedback**: The Job `chaos-cron-test` is created via a `script` step, which means Chainsaw does not track it for automatic cleanup. After the test completes, this Job remains in the `openstack` namespace. On a subsequent test run, Step 4 will fail with `AlreadyExists`.
 - **What was missed**: When a test step creates a named resource via a shell script rather than through the test framework's declarative resource management, verify that (1) a pre-creation cleanup with --ignore-not-found or equivalent guards against stale leftovers, and (2) a post-test cleanup step exists. Without both, the test breaks on re-run.
 - **Fix**: Add `kubectl delete job chaos-cron-test -n $NAMESPACE --ignore-not-found` before `kubectl create job` to make the step idempotent.
+
+### CC-0092 — berendt
+- **Feedback**: The unit test TestPushSecretToKeystoneMapper_EmptyNamespaceReturnsNil was renamed to TestPushSecretToKeystoneMapper_NoKeystonesInNamespaceReturnsNil — the prior name asserted a behavior the code does not enforce.
+- **What was missed**: Test function names like TestX_EmptyNamespaceReturnsNil should actually exercise the empty-namespace path. If the input is precluded by an upstream invariant (apiserver, validation), the test name should describe what is really being asserted.
+- **Fix**: Renamed the test and updated the comment to clarify the empty-namespace case is precluded by the apiserver, so the test actually covers 'no Keystones in namespace returns nil'.

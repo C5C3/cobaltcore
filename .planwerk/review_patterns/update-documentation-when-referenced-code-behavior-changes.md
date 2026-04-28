@@ -2,7 +2,7 @@
 **Review-Area**: documentation
 **Detection-Hint**: When a PR modifies script logic (e.g., file paths, arguments, invocation requirements), search the docs/ directory for references to that script and verify descriptions still match the implementation.
 **Severity**: WARNING
-**Occurrences**: 7
+**Occurrences**: 8
 
 ## What to check
 
@@ -48,3 +48,8 @@ Stale documentation misleads users into invoking tools incorrectly, leading to s
 - **Feedback**: CC-0090 introduces a significant new chart feature (opt-in NetworkPolicy for operator pod hardening) and a new top-level values key (`networkPolicy`). The `artifacthub.io/changes` annotation is not updated, so Artifact Hub consumers will not see the new feature advertised. The chart version (`0.2.0`) is also not bumped despite the chart surface growing with a new top-level key.
 - **What was missed**: On any Helm chart change that introduces a new feature, new top-level values key, or otherwise grows the chart surface, verify the chart `version` is bumped per semver and that `artifacthub.io/changes` has a new entry describing the change.
 - **Fix**: Bumped Chart.yaml version from 0.2.0 to 0.3.0 and added a new `artifacthub.io/changes` entry for CC-0090 describing the opt-in NetworkPolicy feature.
+
+### CC-0092 — berendt
+- **Feedback**: The mapper docblock and docs/reference/keystone-reconciler.md claim the mapper 'never enqueues cross-namespace' and that an event with no namespace returns nil. The code uses client.InNamespace(obj.GetNamespace()) unconditionally; controller-runtime treats client.InNamespace("") as cluster-wide, so the docs describe a defensive behaviour the code does not actually enforce.
+- **What was missed**: For each docblock or reference doc that asserts a safety/defensive guarantee, verify the implementation enforces it explicitly. Watch for cases where the guarantee only holds incidentally (e.g. relying on apiserver invariants) but the docs imply the code itself enforces it.
+- **Fix**: Tightened the docblock and docs/reference/keystone-reconciler.md to state PushSecret is namespaced so the apiserver guarantees a non-empty namespace, removing the overstated 'returns nil on empty namespace' claim.

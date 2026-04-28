@@ -46,6 +46,14 @@ const keystoneOpenBaoFinalizer = "keystone.openstack.c5c3.io/openbao-finalizer"
 // for the handler and tests.
 const esoPushSecretFinalizer = "pushsecret.externalsecrets.io/finalizer"
 
+// esoCleanupFinalizer is the cleanup finalizer external-secrets installs on a
+// PushSecret while it purges the remote kv-v2 path (spec.deletionPolicy=Delete).
+// The operator does not add or remove this finalizer itself; it is declared
+// here as the single source of truth so both unit tests (default build) and
+// integration tests (//go:build integration) reference one identical string
+// rather than hard-coding the literal in two places (CC-0092, REQ-004).
+const esoCleanupFinalizer = "external-secrets.io/cleanup"
+
 // reconcileSecrets checks that ESO-provided Kubernetes Secrets exist before
 // proceeding. It verifies the DB credentials and admin credentials
 // ExternalSecrets are ready (CC-0013).

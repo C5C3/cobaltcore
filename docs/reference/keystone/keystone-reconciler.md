@@ -77,6 +77,7 @@ The controller watches the primary Keystone CR and all owned resources:
 | `Secret` | `Watches()` | Maps Secret events to referencing Keystone CRs via the `KeystoneSecretNameIndexKey` field indexer, with an owner-ref fallback for rotation staging Secrets (CC-0087) |
 | `MariaDB` | `Watches()` | Propagates upstream DB cluster health into `DatabaseReady` (CC-0047) |
 | `ClusterSecretStore` | `Watches()` | Propagates OpenBao-backend health into `SecretsReady` (CC-0047) |
+| `PushSecret` | `Watches()` | Maps backup PushSecret events to the owning Keystone CR via `pushSecretToKeystoneMapper` (name-match against `openBaoBackupPushSecretNames`). A predicate admits only the transitions that affect the [OpenBao Finalizer](#openbao-finalizer) state machine — `esoPushSecretFinalizer` set churn, `DeletionTimestamp` flip, or `Generation` bump — and suppresses ESO's status-only re-emits. Replaces the prior `Owns(PushSecret)` wiring (CC-0092). |
 
 Secrets use `Watches()` with a `MapFunc` instead of `Owns()` because some Secrets
 (ESO-provided credentials in `spec.database.secretRef` and
@@ -86,7 +87,13 @@ mapper therefore combines an indexed reverse lookup with an owner-ref fallback f
 rotation staging Secrets — see [Secret Field Indexer](#secret-field-indexer-cc-0087)
 below. The `MariaDB` and `ClusterSecretStore` watches exist so the operator reacts
 immediately to upstream dependency outages without waiting for the next periodic
-requeue (CC-0047).
+requeue (CC-0047). The `PushSecret` watch plays the same role for the
+OpenBao-backup finalizer loop: without it the finalizer would requeue at the
+`RequeueSecretPolling` (15s) cadence between each `esoPushSecretFinalizer`
+adoption check (Pass-0, CC-0091) and each `DeletionTimestamp` check (Pass-1,
+CC-0079); with it, each stage transition wakes on watch delivery instead
+(CC-0092) — see [PushSecret Name-Match Mapper](#pushsecret-name-match-mapper-cc-0092)
+below.
 
 #### Secret Field Indexer (CC-0087)
 
@@ -112,6 +119,59 @@ number of Secret events, not with the number of Keystone CRs (CC-0087, REQ-001).
 emit that field's name alongside the existing two, and add a corresponding
 unit-test case. The index key itself (`spec.secretRefs.name`) is intentionally
 named as a union key so new indexed fields do not require a new indexer.
+
+#### PushSecret Name-Match Mapper (CC-0092)
+
+The backup PushSecrets that the [OpenBao Finalizer](#openbao-finalizer)
+reconciles (the Fernet and credential key PushSecrets produced by
+`openBaoBackupPushSecretNames(keystone)`) are watched via an explicit
+name-matching mapper rather than `Owns()`. The mapper's contract mirrors the
+[Secret Field Indexer](#secret-field-indexer-cc-0087) mapper above but uses
+direct name matching instead of a field indexer (there are at most two backup
+PushSecret names per Keystone CR, so an indexer would not pay for itself).
+
+**Why not `Owns(PushSecret)`?** An earlier iteration wired the backup
+PushSecrets through the manager's `Owns(&esov1alpha1.PushSecret{})`. That
+form wakes the Keystone workqueue on every change to an owned PushSecret,
+including the status-only ticks ESO emits on every successful sync
+(`status.syncedResourceVersion` bump, condition `LastTransitionTime`,
+`observedGeneration` echo). In a typical deployment ESO syncs each adopted
+PushSecret on its configured `refreshInterval` (default 1h but often
+minutes), which under `Owns()` translates directly into reconcile wake-ups
+the finalizer state machine has nothing to do with — they do not change
+`Generation`, do not add or remove finalizers, and do not flip
+`DeletionTimestamp`, so each such wake-up is discarded after a Get + status
+diff. Replacing `Owns()` with an explicit `Watches()` plus
+`pushSecretRelevantChangePredicate` admits only the transitions the Pass-0
+adoption gate and Pass-1 delete step actually branch on, eliminating the
+per-sync-tick workqueue churn while preserving the sub-15s latency win the
+feature targets.
+
+| Aspect | Value |
+| --- | --- |
+| Name match | Namespace-scoped `client.List` of Keystone CRs in `obj.GetNamespace()`; for each CR, iterate `openBaoBackupPushSecretNames(keystone)` and compare against `obj.GetName()`. A PushSecret event whose namespace matches no Keystone returns `nil`. |
+| Namespace scope | The `List` always carries `client.InNamespace(obj.GetNamespace())`. PushSecret is a namespaced resource, so the apiserver guarantees `obj.GetNamespace()` is non-empty in practice and the List is always single-namespace; an event whose namespace matches no Keystone returns `nil`. |
+| List error handling | Logged via `log.FromContext(ctx).Error` and swallowed. The `handler.MapFunc` contract forbids returning errors, and a transient List blip must not panic or silently drop the event; on the next relevant PushSecret update the predicate will admit it again and the mapper will retry. |
+| Deduplication | Builds a `map[types.NamespacedName]struct{}` before emitting `[]reconcile.Request`, so even if both of a Keystone's backup PushSecrets changed in the same batch the owning CR is enqueued exactly once. |
+| Predicate (`pushSecretRelevantChangePredicate`) | `Create`, `Delete`, and `Generic` return `true` unconditionally. `Update` returns `true` iff (a) the finalizer set differs (typically `esoPushSecretFinalizer` added or removed), (b) `DeletionTimestamp` presence flips (`nil` vs non-`nil` between old and new), or (c) `GetGeneration()` differs. Status-only re-emits are filtered out. The presence check uses `== nil` rather than `.IsZero()` so the expression is obviously nil-safe without relying on `metav1.Time.IsZero`'s nil-receiver guard. |
+
+The motivating transitions are:
+
+- **Pass-0 adoption gate (CC-0091).** The operator waits for ESO to stamp
+  `esoPushSecretFinalizer` (declared in `reconcile_secrets.go`) onto each
+  backup PushSecret before allowing `Delete`; otherwise a racing `Delete`
+  could remove the object before ESO's cleanup finalizer runs. Under the
+  prior `Owns()` wiring this check requeued at `RequeueSecretPolling`
+  (15s); under CC-0092 it wakes on the `esoPushSecretFinalizer`-add update.
+- **Pass-1 delete step (CC-0079).** The operator issues `Delete` against
+  each backup PushSecret and then waits for `DeletionTimestamp` to be
+  non-zero and eventually for the object to disappear. Each of those
+  observations was a 15s requeue before CC-0092; they are now watch-driven.
+
+See [OpenBao Finalizer](#openbao-finalizer) for the full Pass-0/Pass-1
+state machine the watch feeds, and [RBAC Permissions](#rbac-permissions) for
+the `external-secrets.io/pushsecrets` verb set (`get, list, watch, create,
+update, patch, delete`, CC-0079).
 
 ---
 

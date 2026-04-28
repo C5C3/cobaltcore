@@ -2904,12 +2904,6 @@ func TestIntegration_RecreateDerivedSecretWhenDeleted(t *testing.T) {
 
 // --- Task CC-0079/4.1 and 4.2: OpenBao finalizer lifecycle tests ---
 
-// esoCleanupFinalizer matches the finalizer name that external-secrets adds to
-// PushSecret CRs while it purges the remote kv-v2 path. Using the real
-// finalizer string makes the tests exercise the same NotFound vs Terminating
-// semantics the production controller sees (CC-0079, REQ-002, REQ-004).
-const esoCleanupFinalizer = "external-secrets.io/cleanup"
-
 // addESOFinalizerToPushSecret simulates full ESO adoption of the PushSecret by
 // attaching both ESO-owned finalizers:
 //
