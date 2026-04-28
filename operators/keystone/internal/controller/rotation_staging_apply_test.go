@@ -325,6 +325,56 @@ func TestApplyRotationOutput_HappyPath(t *testing.T) {
 	expectEvent(g, r, "Normal FernetKeysRotated")
 }
 
+// TestApplyRotationOutput_StampsCompletionAnnotationOnProduction is the
+// regression guard for the M1 review finding (CC-0089): the
+// keystone_operator_key_rotation_age_seconds gauge needs a durable timestamp
+// so it can refresh on every reconcile after the staging Secret is deleted.
+// applyRotationOutput must therefore copy the staging Secret's
+// RotationCompletedAnnotation onto the production Secret (verbatim, so the
+// gauge measures wall-clock age rather than apply time) before the staging
+// Secret is removed (CC-0089, REQ-003).
+func TestApplyRotationOutput_StampsCompletionAnnotationOnProduction(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := applyTestKeystone()
+
+	completedAt := time.Now().Add(-30 * time.Minute).UTC().Truncate(time.Second).Format(time.RFC3339)
+	stagingData := makeValidFernetKeys(t, 3)
+	staging := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fernetStagingSecretName(ks),
+			Namespace: "default",
+			Annotations: map[string]string{
+				RotationCompletedAnnotation: completedAt,
+			},
+		},
+		Data: stagingData,
+	}
+	// Production has no rotation annotation yet — first successful apply must
+	// stamp it.
+	prod := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone-fernet-keys", Namespace: "default"},
+		Data:       map[string][]byte{"0": []byte("existing")},
+	}
+	r := newApplyTestReconciler(staging, prod)
+
+	applied, err := r.applyRotationOutput(
+		context.Background(), ks,
+		fernetStagingSecretName(ks),
+		"test-keystone-fernet-keys",
+		"FernetKeysRotated",
+		1, 10,
+	)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(applied).To(BeTrue())
+
+	var gotProd corev1.Secret
+	g.Expect(r.Get(context.Background(),
+		types.NamespacedName{Name: "test-keystone-fernet-keys", Namespace: "default"}, &gotProd)).To(Succeed())
+	g.Expect(gotProd.Annotations).To(HaveKeyWithValue(RotationCompletedAnnotation, completedAt),
+		"production Secret must carry the staging completion annotation verbatim "+
+			"so the rotation-age gauge stays accurate after staging is deleted (CC-0089, REQ-003)")
+}
+
 // TestApplyRotationOutput_ReplacesDisjointIndices asserts that a successful
 // apply fully replaces production Secret.Data with the staging payload, even
 // when production holds key indices that are NOT present in staging (e.g.

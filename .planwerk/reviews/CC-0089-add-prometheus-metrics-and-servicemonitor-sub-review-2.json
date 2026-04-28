@@ -1,0 +1,52 @@
+{
+  "summary": "Improvement cycle addressing prior external review (berendt) findings W-001 (one-directional drift guard), W-002 (db_sync metrics omit upgrade-phase and schema-check Jobs), W-003 (recordDBSyncTerminalState emit-before-persist), I-001 (Immutable-Secret coupling in induced-failure test), I-002 (values.schema.json regex rejects literal 0), and I-003 (no security/network considerations doc). Implementation is structurally sound: an UNKNOWN sentinel + bidirectional AST-based drift guard (TestSubReconcilerConditionTypesCoversAllCallSites) closes W-001; recordDBSyncTerminalState was generalised to recordDBJobTerminalState with a per-phase dbJobUIDAnnotationKey and is now called from reconcileExpand/Migrate/Contract and after schema-check, with reference doc and tests updated to match (W-002); the dedupe annotation Patch is now committed BEFORE metrics.RecordDBSync with a deferred-emission log line on failure, and TestRecordDBJobTerminalState_DefersOnPatchFailure pins the invariant (W-003); the induced-failure test moved to a unit test using interceptor.Funcs to deny derived-Secret writes regardless of method (Create/Update/Patch), keeping the assertion valid under a future SSA migration (I-001); the schema regex now accepts the literal 0 with a matching helm-template test case (I-002); and the how-to guide grew a Security & network considerations section (I-003). Tests pass cleanly; go vet is clean on the changed files.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass", "checked": true},
+    {"item": "Edge cases are covered (UNKNOWN fallback, patch failure, all 3 upgrade phases)", "checked": true},
+    {"item": "Drift guards enforced bidirectionally (subset + AST-call-site scan)", "checked": true},
+    {"item": "Idempotence per (phase, Job UID) tested", "checked": true},
+    {"item": "Test pattern for induced-failure is method-agnostic (Create/Update/Patch all denied)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (Get+Patch on DeepCopy, mirror RV back, log.FromContext V(1))", "checked": true},
+    {"item": "Naming consistent (recordDBJobTerminalState parallels other DB-named helpers)", "checked": true},
+    {"item": "Comments explain WHY (W-002, W-003, I-001 rationale captured at the call sites and on the helper)", "checked": true},
+    {"item": "No dead code (the removed currentSecretsErrorCount/labelValue helpers are properly excised, and the dto import they justified is dropped)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No new user inputs introduced", "checked": true},
+    {"item": "Security & network considerations section documents the plain-HTTP metrics endpoint exposure", "checked": true},
+    {"item": "Cardinality drift guard preserved (no per-CR labels added to reconcile_duration / reconcile_errors)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible (one parameterised helper instead of duplicating per-phase functions)", "checked": true},
+    {"item": "Patch-before-emit ordering preserves at-most-once-per-UID guarantee against transient apiserver failures", "checked": true},
+    {"item": "Per-phase dedupe annotations prevent cross-phase suppression while reusing the same metric", "checked": true},
+    {"item": "Bidirectional drift guard prevents future contributors from silently emitting empty condition_type labels", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code (recordDBJobTerminalState replaces the would-be 5 copy-pasted phase helpers)", "checked": true},
+    {"item": "Reference doc consolidates db_sync semantics for all 5 phases under one metric (avoids per-phase metric proliferation)", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "AST drift guard fails CI when an instrumentSubReconciler call site adds a new name without updating the map", "checked": true},
+    {"item": "Non-literal sub_reconciler arguments are rejected by the drift guard so they cannot escape static analysis", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "UNKNOWN sentinel surfaces drift in alerts even if both static guards are bypassed", "checked": true},
+    {"item": "Patch failure on dedupe annotation defers emission rather than dropping it silently in a way that double-counts", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Consider promoting the deferred-emission log in recordDBJobTerminalState from V(1) to Info (or emitting a warning event on the Keystone CR) so persistent apiserver Patch failures are visible at default log levels — under V(1) the at-most-once-per-UID degradation could persist invisibly until an alert fires for missing samples.",
+    "TestRecordDBJobTerminalState_DefersOnPatchFailure exercises only the db-sync phase; converting it to a table-driven test covering db-sync, db-expand, db-migrate, db-contract, and schema-check would lock in the W-003 ordering invariant for all five callers in a single regression net.",
+    "The Task 7.2 acceptance criterion in the plan specifies sub_reconciler=\"Secrets\" but the new TestReconcileErrorsTotalIncrementsOnInducedFailure asserts on sub_reconciler=\"DBConnectionSecret\". Both labels resolve to condition_type=\"SecretsReady\" so the spirit of the test is preserved, but consider updating the plan progress note (or adding a second assertion that the Secrets sub-reconciler counter is also non-zero when the upstream DB ExternalSecret is missing) so the task wording matches the assertion."
+  ],
+  "next_steps": [
+    "Merge — all three WARNINGs and three INFOs from the prior external review have been addressed with code, tests, and documentation."
+  ],
+  "detected_patterns": []
+}

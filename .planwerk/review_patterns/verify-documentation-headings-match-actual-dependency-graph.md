@@ -3,7 +3,7 @@
 **Review-Area**: documentation
 **Detection-Hint**: When CI workflow documentation groups jobs under a heading that implies a specific trigger mechanism (e.g., 'path-filtered'), cross-reference each listed job against the actual workflow YAML to confirm it truly uses that mechanism.
 **Severity**: WARNING
-**Occurrences**: 6
+**Occurrences**: 7
 
 ## What to check
 
@@ -39,6 +39,11 @@ Misleading DAG documentation causes engineers to misunderstand which jobs are ga
 - **Feedback**: The documentation describes a three-value return shape for finalizeOpenBaoSecrets that does not exist in the code. The actual signature is (done bool, err error) only; the stuck object's name is recorded as a side effect on keystone.Status.Conditions via setOpenBaoFinalizerBlockedCondition, not returned as a third value.
 - **What was missed**: Every function signature, return tuple, and parameter list mentioned in prose or code blocks in docs must match the current implementation. Watch for stale extra return values and side effects described as return values.
 - **Fix**: Rewrote the docs to describe the real (done bool, err error) signature and documented the stuck-name recording as a side effect on keystone.Status.Conditions via setOpenBaoFinalizerBlockedCondition.
+
+### CC-0089 — berendt
+- **Feedback**: The doc comment at line 70-72 claims the drift-guard prevents this fallback from firing in practice, but the drift guard does not actually catch this direction.
+- **What was missed**: When code comments reference safety guarantees provided by tests or guards (e.g., 'this fallback never fires because of test X'), verify the cited test actually enforces the claimed invariant in the relevant direction.
+- **Fix**: Doc comments on the constant, the map, and the helper were updated to describe the dual static-guard + runtime-sentinel strategy.
 
 ### CC-0094 — berendt
 - **Feedback**: The chainsaw-test.yaml comment, CI workflow comment, and docs all claim the job 'fails the build before the cluster-bound e2e-operator job runs'. However, the verify-invalid-cr-fixtures job has no needs: block and is not listed in needs: of build-e2e-images or e2e-operator. They run in parallel; the only 'gating' is the overall PR fail status.

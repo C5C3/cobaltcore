@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: Look for tests that create a struct, immediately assign values, then assert those same values are present — without invoking any production logic, transformation, or side effect.
 **Severity**: WARNING
-**Occurrences**: 3
+**Occurrences**: 4
 
 ## What to check
 
@@ -29,3 +29,8 @@ Useless tests inflate test counts, give false confidence in coverage, and add ma
 - **Feedback**: This `TestBuildKeystoneDeployment_NoHashAnnotations` test is pointless. We created the `fernet-keys-hash` and `credential-keys-hash` key mappings ourselves. We control what happens to the mapping. Now that we remove them again, there is no need to add a unit test which tests for their absence.
 - **What was missed**: Look for new test functions introduced alongside a deletion. If the test asserts the absence of keys, fields, or behavior that were removed in the same changeset and are fully under the author's control, the test adds no value and increases maintenance burden.
 - **Fix**: The test `TestBuildKeystoneDeployment_NoHashAnnotations` was deleted entirely.
+
+### CC-0089 — gndrmnn
+- **Feedback**: We are *absolutely* not going to test source code via literal string analysis. This is not acceptable remove lines 262-432
+- **What was missed**: Tests must exercise runtime behavior, not perform literal string analysis of source code or validate documentation against code. Flag any 'drift guard' or 'contract' test that reads source/docs files.
+- **Fix**: Deleted contract_test.go entirely and removed the AST-based literal-analysis drift guard plus its go/ast/parser/token imports from instrumentation_test.go.

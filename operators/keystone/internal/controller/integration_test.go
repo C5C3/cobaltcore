@@ -11,6 +11,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +22,7 @@ import (
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	. "github.com/onsi/gomega"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
@@ -36,6 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/forge/internal/common/testutil/simulators"
@@ -3815,3 +3820,68 @@ func TestIntegration_FreshReconcileEmitsNoLegacyApiSuffixedResources(t *testing.
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
 		"no legacy <cr-name>-api PodDisruptionBudget must exist after reconcile (CC-0095, REQ-004)") // CC-0095 legacy: assertion pins absence of the pre-rename name.
 }
+
+// --- Task 7.1: Metrics endpoint exposes Keystone operator collectors (CC-0089, REQ-008) ---
+
+// TestMetricsEndpointServesKeystoneOperatorCollectors proves the Keystone
+// operator's Prometheus collectors are reachable in Prometheus text format on
+// the controller-runtime metrics registry that the operator's metrics server
+// would serve in production (CC-0089, REQ-008).
+func TestMetricsEndpointServesKeystoneOperatorCollectors(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cc0089-metrics-endpoint-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	// Drive at least one full reconcile so that duration histogram samples
+	// (and other collectors) are populated and observable by a scrape.
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	// DECISION: the envtest manager runs with metrics BindAddress="0", which
+	// disables the manager's metrics HTTP server. We therefore cannot scrape
+	// mgr.GetMetricsServer() directly. Instead we serve the same registry
+	// the production metrics server uses — controller-runtime's package-level
+	// ctrlmetrics.Registry — through promhttp.HandlerFor via httptest. This
+	// is contract-equivalent because the production metrics server wraps the
+	// exact same Registry, so any series visible here is visible at the
+	// real /metrics endpoint (CC-0089, REQ-008).
+	srv := httptest.NewServer(promhttp.HandlerFor(ctrlmetrics.Registry, promhttp.HandlerOpts{}))
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/metrics", nil)
+	g.Expect(err).NotTo(HaveOccurred(), "build /metrics request")
+
+	resp, err := http.DefaultClient.Do(req)
+	g.Expect(err).NotTo(HaveOccurred(), "GET /metrics")
+	defer func() { _ = resp.Body.Close() }()
+
+	g.Expect(resp.StatusCode).To(Equal(http.StatusOK), "/metrics should return 200")
+
+	body, err := io.ReadAll(resp.Body)
+	g.Expect(err).NotTo(HaveOccurred(), "read /metrics body")
+
+	g.Expect(string(body)).To(ContainSubstring(
+		"# TYPE keystone_operator_reconcile_duration_seconds histogram"),
+		"Prometheus text exposition must declare the reconcile duration histogram")
+}
+
+// --- Task 7.2: Reconcile errors counter increments on induced failure (CC-0089, REQ-002, REQ-008) ---
+
+// The unit test that addresses Task 7.2 lives next to the other testReconciler
+// pattern tests in keystone_controller_test.go, where it can use a fake client
+// with interceptor.Funcs to inject a deterministic error from
+// reconcileDBConnectionSecret. The interceptor approach is independent of
+// whether the controller materializes the derived Secret via Update or
+// Server-Side Apply, so it survives a future SSA migration without silently
+// passing for the wrong reason (CC-0089 I-001 review feedback).
+//
+// See: TestReconcileErrorsTotalIncrementsOnInducedFailure in
+// keystone_controller_test.go.

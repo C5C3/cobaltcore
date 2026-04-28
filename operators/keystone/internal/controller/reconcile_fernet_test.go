@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	. "github.com/onsi/gomega"
 
@@ -28,6 +29,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -1112,4 +1114,115 @@ func TestEnsureFernetRotationRBAC_IsIdempotent_CC0081(t *testing.T) {
 	}, &second)).To(Succeed())
 
 	g.Expect(second.Rules).To(Equal(rulesFirst))
+}
+
+// TestFernetReconcileUpdatesRotationAgeGauge verifies that reconcileFernetKeys
+// publishes the keystone_operator_key_rotation_age_seconds gauge when the
+// staging Secret carries a parseable RFC3339 rotation-completed annotation
+// (CC-0089, REQ-003). The gauge is refreshed on each reconcile pass that
+// observes a valid annotation, regardless of whether the apply path fires.
+func TestFernetReconcileUpdatesRotationAgeGauge(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := fernetTestScheme()
+	ks := fernetTestKeystone()
+	// Unique per-test keystone/namespace so the gauge's (keystone, namespace)
+	// series is not shared with any other test in the package.
+	ks.Name = "rot-age-fernet-present"
+	ks.Namespace = "ns-rot-age-fernet-present"
+
+	// Production Secret must exist so reconcileFernetKeys proceeds past step 1.
+	prodSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ks.Name + "-fernet-keys",
+			Namespace: ks.Namespace,
+		},
+		Data: map[string][]byte{"0": []byte("placeholder-key")},
+	}
+
+	// Staging Secret with annotation but no data: applyRotationOutput rejects
+	// the payload and returns (false, nil), so the reconcile path continues
+	// past the apply step. The annotation must still drive the gauge.
+	completedAt := time.Now().Add(-1 * time.Hour).UTC().Truncate(time.Second)
+	stagingLabels := commonLabels(ks)
+	stagingLabels[StagingSecretLabelKey] = "fernet-keys"
+	stagingSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fernetStagingSecretName(ks),
+			Namespace: ks.Namespace,
+			Labels:    stagingLabels,
+			Annotations: map[string]string{
+				RotationCompletedAnnotation: completedAt.Format(time.RFC3339),
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks, prodSecret, stagingSecret).
+		Build()
+
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-cm")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	gaugeLabels := map[string]string{
+		"keystone":  ks.Name,
+		"namespace": ks.Namespace,
+		"key_type":  "fernet",
+	}
+	m := findMetricByLabels(t, ctrlmetrics.Registry, "keystone_operator_key_rotation_age_seconds", gaugeLabels)
+	g.Expect(m).NotTo(BeNil(),
+		"rotation-age gauge MUST be emitted when staging annotation is present (CC-0089, REQ-003)")
+	age := m.GetGauge().GetValue()
+	g.Expect(age).To(BeNumerically("~", (1*time.Hour).Seconds(), 120.0),
+		"gauge age must approximate time.Since(completedAt) within ±120s tolerance")
+}
+
+// TestFernetReconcileSkipsRotationAgeGaugeWhenAnnotationAbsent verifies that
+// reconcileFernetKeys does NOT publish the rotation-age gauge when the staging
+// Secret is missing the rotation-completed annotation (CC-0089, REQ-003).
+func TestFernetReconcileSkipsRotationAgeGaugeWhenAnnotationAbsent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := fernetTestScheme()
+	ks := fernetTestKeystone()
+	// Unique labels so we can assert absence without interference from the
+	// positive-case test above.
+	ks.Name = "rot-age-fernet-absent"
+	ks.Namespace = "ns-rot-age-fernet-absent"
+
+	prodSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ks.Name + "-fernet-keys",
+			Namespace: ks.Namespace,
+		},
+		Data: map[string][]byte{"0": []byte("placeholder-key")},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks, prodSecret).
+		Build()
+
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-cm")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	gaugeLabels := map[string]string{
+		"keystone":  ks.Name,
+		"namespace": ks.Namespace,
+		"key_type":  "fernet",
+	}
+	m := findMetricByLabels(t, ctrlmetrics.Registry, "keystone_operator_key_rotation_age_seconds", gaugeLabels)
+	g.Expect(m).To(BeNil(),
+		"rotation-age gauge MUST NOT be emitted when staging annotation is absent (CC-0089, REQ-003)")
 }

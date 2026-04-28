@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	. "github.com/onsi/gomega"
 
@@ -18,12 +19,14 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	"github.com/c5c3/forge/internal/common/job"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -144,11 +147,14 @@ func failedDBSyncJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 
 // completedSchemaCheckJob returns a schema-check Job that matches what
 // buildSchemaCheckJob produces for the given keystone and is marked as
-// complete with the correct pod-spec hash (CC-0064).
+// complete with the correct pod-spec hash (CC-0064). The UID is set so
+// recordDBJobTerminalState can dedupe the per-phase metric emission across
+// reconciles (CC-0089, REQ-005, W-002).
 func completedSchemaCheckJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 	desired := buildSchemaCheckJob(ks, "keystone-config-abc123")
 	now := metav1.Now()
 	j := desired.DeepCopy()
+	j.UID = types.UID(ks.Name + "-schema-check-complete-uid")
 	j.Annotations = map[string]string{
 		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
 	}
@@ -164,10 +170,13 @@ func completedSchemaCheckJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 }
 
 // failedSchemaCheckJob returns a schema-check Job that is marked as
-// permanently failed (CC-0064).
+// permanently failed (CC-0064). The UID is set so recordDBJobTerminalState
+// can dedupe the per-phase metric emission across reconciles (CC-0089,
+// REQ-005, W-002).
 func failedSchemaCheckJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 	desired := buildSchemaCheckJob(ks, "keystone-config-abc123")
 	j := desired.DeepCopy()
+	j.UID = types.UID(ks.Name + "-schema-check-failed-uid")
 	j.Annotations = map[string]string{
 		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
 	}
@@ -1044,6 +1053,7 @@ func completedUpgradeJob(ks *keystonev1alpha1.Keystone, configMapName, imageTag,
 	desired := buildUpgradeJob(ks, configMapName, imageTag, phase, flag)
 	now := metav1.Now()
 	j := desired.DeepCopy()
+	j.UID = types.UID(ks.Name + "-db-" + phase + "-complete-uid")
 	j.Annotations = map[string]string{
 		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
 	}
@@ -1058,6 +1068,7 @@ func completedUpgradeJob(ks *keystonev1alpha1.Keystone, configMapName, imageTag,
 func failedUpgradeJob(ks *keystonev1alpha1.Keystone, configMapName, imageTag, phase, flag string) *batchv1.Job {
 	desired := buildUpgradeJob(ks, configMapName, imageTag, phase, flag)
 	j := desired.DeepCopy()
+	j.UID = types.UID(ks.Name + "-db-" + phase + "-failed-uid")
 	j.Annotations = map[string]string{
 		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
 	}
@@ -2139,4 +2150,413 @@ func TestFinalizeDatabaseResources_DeleteErrorIsPropagated(t *testing.T) {
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("simulated API server error"))
+}
+
+// --- db_sync metrics tests (CC-0089, REQ-005) ---
+
+// dbSyncMetricsTestKeystone returns a brownfield Keystone CR with per-test
+// Name/Namespace so db_sync metric tests never share counter series.
+func dbSyncMetricsTestKeystone(name, ns string) *keystonev1alpha1.Keystone {
+	ks := brownfieldKeystone()
+	ks.Name = name
+	ks.Namespace = ns
+	ks.UID = types.UID(name + "-uid")
+	return ks
+}
+
+// TestDbSyncCompletionRecordsMetric verifies that reconcileDatabase records a
+// "succeeded" db_sync metric when the db_sync Job transitions to Complete=True.
+// Post-W-002 the same metric is also emitted for the post-sync schema-check
+// Job, so a single reconcile contributes one sample for each — both deduped
+// independently by per-phase Keystone CR annotation. The duration histogram
+// observes condition.LastTransitionTime minus Job.CreationTimestamp on the
+// db_sync sample. A second reconcile with the same per-phase Job UIDs must
+// not re-emit (CC-0089, REQ-005, W-002).
+func TestDbSyncCompletionRecordsMetric(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := dbSyncMetricsTestKeystone("dbsync-complete", "ns-dbsync-complete")
+
+	desired := buildDBSyncJob(ks, "keystone-config-abc123")
+	created := metav1.NewTime(time.Date(2026, 4, 22, 10, 0, 0, 0, time.UTC))
+	terminated := metav1.NewTime(time.Date(2026, 4, 22, 10, 0, 15, 0, time.UTC))
+	wantDBSyncDuration := 15 * time.Second
+
+	dbJob := desired.DeepCopy()
+	dbJob.UID = types.UID("dbsync-complete-job-uid")
+	dbJob.CreationTimestamp = created
+	dbJob.Annotations = map[string]string{
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+	}
+	dbJob.Status.Succeeded = 1
+	dbJob.Status.CompletionTime = &terminated
+	dbJob.Status.Conditions = []batchv1.JobCondition{{
+		Type:               batchv1.JobComplete,
+		Status:             corev1.ConditionTrue,
+		LastTransitionTime: terminated,
+	}}
+
+	r := newDBTestReconciler(s, ks, dbJob, completedSchemaCheckJob(ks))
+
+	counterLabels := map[string]string{
+		"keystone":  ks.Name,
+		"namespace": ks.Namespace,
+		"result":    "succeeded",
+	}
+	durationLabels := map[string]string{
+		"keystone":  ks.Name,
+		"namespace": ks.Namespace,
+	}
+
+	beforeCount := counterValue(t, "keystone_operator_db_sync_total", counterLabels)
+	beforeSamples := histogramSampleCount(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
+	beforeSum := histogramSampleSum(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
+
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	afterCount := counterValue(t, "keystone_operator_db_sync_total", counterLabels)
+	afterSamples := histogramSampleCount(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
+	afterSum := histogramSampleSum(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
+
+	// Two terminal transitions are observed in a single reconcile:
+	// db_sync (succeeded, 15 s) and the subsequent schema-check (succeeded,
+	// 0 s — its Job timestamps are unset in the test helper).
+	g.Expect(afterCount-beforeCount).To(Equal(2.0),
+		"succeeded counter must increment by 1 for db_sync and 1 for schema-check on a single reconcile (CC-0089, REQ-005, W-002)")
+	g.Expect(afterSamples-beforeSamples).To(Equal(uint64(2)),
+		"duration histogram must observe one sample per terminated DB-related Job (CC-0089, REQ-005, W-002)")
+	g.Expect(afterSum-beforeSum).To(BeNumerically("~", wantDBSyncDuration.Seconds(), 0.01),
+		"histogram sample_sum delta equals the db_sync duration (schema-check helper has zero-valued timestamps so contributes 0)")
+
+	// Idempotence: a second reconcile with the same per-phase Job UIDs must
+	// NOT re-emit (CC-0089, REQ-005). Each phase keeps an independent
+	// dedupe annotation, so neither db_sync nor schema-check should fire
+	// again.
+	_, _ = r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	finalCount := counterValue(t, "keystone_operator_db_sync_total", counterLabels)
+	g.Expect(finalCount).To(Equal(afterCount),
+		"metric MUST be emitted at-most-once per (phase, Job UID) (CC-0089, REQ-005, W-002)")
+}
+
+// TestDbSyncFailureRecordsMetric verifies that reconcileDatabase records a
+// "failed" db_sync metric when the db_sync Job transitions to Failed=True.
+// reconcileDatabase propagates the job.ErrJobFailed error to its caller; the
+// metric must still be emitted on the terminal-transition observation path
+// (CC-0089, REQ-005).
+func TestDbSyncFailureRecordsMetric(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := dbSyncMetricsTestKeystone("dbsync-failed", "ns-dbsync-failed")
+
+	desired := buildDBSyncJob(ks, "keystone-config-abc123")
+	created := metav1.NewTime(time.Date(2026, 4, 22, 11, 0, 0, 0, time.UTC))
+	terminated := metav1.NewTime(time.Date(2026, 4, 22, 11, 0, 7, 0, time.UTC))
+	wantDuration := 7 * time.Second
+
+	dbJob := desired.DeepCopy()
+	dbJob.UID = types.UID("dbsync-failed-job-uid")
+	dbJob.CreationTimestamp = created
+	dbJob.Annotations = map[string]string{
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+	}
+	dbJob.Status.Failed = 5
+	dbJob.Status.Conditions = []batchv1.JobCondition{{
+		Type:               batchv1.JobFailed,
+		Status:             corev1.ConditionTrue,
+		LastTransitionTime: terminated,
+	}}
+
+	r := newDBTestReconciler(s, ks, dbJob)
+
+	counterLabels := map[string]string{
+		"keystone":  ks.Name,
+		"namespace": ks.Namespace,
+		"result":    "failed",
+	}
+	durationLabels := map[string]string{
+		"keystone":  ks.Name,
+		"namespace": ks.Namespace,
+	}
+
+	beforeCount := counterValue(t, "keystone_operator_db_sync_total", counterLabels)
+	beforeSamples := histogramSampleCount(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
+
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).To(HaveOccurred(),
+		"reconcileDatabase must surface the job.ErrJobFailed error to the caller")
+
+	afterCount := counterValue(t, "keystone_operator_db_sync_total", counterLabels)
+	afterSamples := histogramSampleCount(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
+
+	g.Expect(afterCount-beforeCount).To(Equal(1.0),
+		"failed counter must increment by 1 on terminal Failed transition (CC-0089, REQ-005)")
+	g.Expect(afterSamples-beforeSamples).To(Equal(uint64(1)),
+		"duration histogram must observe exactly one sample on terminal Failed transition (CC-0089, REQ-005)")
+
+	m := findMetricByLabels(t, ctrlmetrics.Registry, "keystone_operator_db_sync_duration_seconds", durationLabels)
+	g.Expect(m).NotTo(BeNil())
+	g.Expect(m.GetHistogram().GetSampleSum()).To(BeNumerically("~", wantDuration.Seconds(), 0.01),
+		"histogram sample_sum must equal condition.LastTransitionTime minus Job.CreationTimestamp")
+}
+
+// TestDbSyncInProgressDoesNotRecord verifies that reconcileDatabase does NOT
+// emit a db_sync metric while the Job is still running (no terminal
+// condition). Polling an unfinished Job must not inflate the counter
+// (CC-0089, REQ-005).
+func TestDbSyncInProgressDoesNotRecord(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := dbSyncMetricsTestKeystone("dbsync-running", "ns-dbsync-running")
+
+	desired := buildDBSyncJob(ks, "keystone-config-abc123")
+	dbJob := desired.DeepCopy()
+	dbJob.UID = types.UID("dbsync-running-job-uid")
+	dbJob.CreationTimestamp = metav1.NewTime(time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC))
+	dbJob.Annotations = map[string]string{
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+	}
+	// Active Job: no terminal condition.
+	dbJob.Status.Active = 1
+
+	r := newDBTestReconciler(s, ks, dbJob)
+
+	successLabels := map[string]string{
+		"keystone":  ks.Name,
+		"namespace": ks.Namespace,
+		"result":    "succeeded",
+	}
+	failedLabels := map[string]string{
+		"keystone":  ks.Name,
+		"namespace": ks.Namespace,
+		"result":    "failed",
+	}
+	durationLabels := map[string]string{
+		"keystone":  ks.Name,
+		"namespace": ks.Namespace,
+	}
+
+	beforeSuccess := counterValue(t, "keystone_operator_db_sync_total", successLabels)
+	beforeFailed := counterValue(t, "keystone_operator_db_sync_total", failedLabels)
+	beforeSamples := histogramSampleCount(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
+
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	afterSuccess := counterValue(t, "keystone_operator_db_sync_total", successLabels)
+	afterFailed := counterValue(t, "keystone_operator_db_sync_total", failedLabels)
+	afterSamples := histogramSampleCount(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
+
+	g.Expect(afterSuccess-beforeSuccess).To(Equal(0.0),
+		"running Job must NOT increment the succeeded counter (CC-0089, REQ-005)")
+	g.Expect(afterFailed-beforeFailed).To(Equal(0.0),
+		"running Job must NOT increment the failed counter (CC-0089, REQ-005)")
+	g.Expect(afterSamples-beforeSamples).To(Equal(uint64(0)),
+		"running Job must NOT observe a duration sample (CC-0089, REQ-005)")
+}
+
+// TestUpgradePhaseFailureRecordsDBSyncMetric verifies that each
+// expand-migrate-contract phase Job contributes a `failed` increment to the
+// db_sync metric on terminal failure (CC-0089, REQ-005, W-002). Without this,
+// the dashboard panel and `keystone_operator_db_sync_total{result="failed"}`
+// alerts go blank for the duration of an upgrade.
+func TestUpgradePhaseFailureRecordsDBSyncMetric(t *testing.T) {
+	cases := []struct {
+		phaseTag  keystonev1alpha1.UpgradePhase
+		jobPhase  string
+		jobFlag   string
+		nsSuffix  string
+		nameSlug  string
+		failedKey string
+	}{
+		{keystonev1alpha1.UpgradePhaseExpanding, "expand", "--expand", "expand-failed", "upgrade-expand-failed", "ExpandFailed"},
+		{keystonev1alpha1.UpgradePhaseMigrating, "migrate", "--migrate", "migrate-failed", "upgrade-migrate-failed", "MigrateFailed"},
+		{keystonev1alpha1.UpgradePhaseContracting, "contract", "--contract", "contract-failed", "upgrade-contract-failed", "ContractFailed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.jobPhase, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			s := dbTestScheme()
+			ks := upgradingKeystone(tc.phaseTag)
+			ks.Name = tc.nameSlug
+			ks.Namespace = "ns-" + tc.nsSuffix
+			ks.UID = types.UID(tc.nameSlug + "-uid")
+
+			failedJob := failedUpgradeJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag, tc.jobPhase, tc.jobFlag)
+
+			r := newDBTestReconciler(s, ks, failedJob)
+
+			failedLabels := map[string]string{
+				"keystone":  ks.Name,
+				"namespace": ks.Namespace,
+				"result":    "failed",
+			}
+			durationLabels := map[string]string{
+				"keystone":  ks.Name,
+				"namespace": ks.Namespace,
+			}
+
+			beforeFailed := counterValue(t, "keystone_operator_db_sync_total", failedLabels)
+			beforeSamples := histogramSampleCount(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
+
+			_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+			g.Expect(err).To(HaveOccurred(),
+				"the failing upgrade-phase Job MUST surface as a reconcile error so callers retry")
+
+			afterFailed := counterValue(t, "keystone_operator_db_sync_total", failedLabels)
+			afterSamples := histogramSampleCount(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
+
+			g.Expect(afterFailed-beforeFailed).To(Equal(1.0),
+				"%s phase failure must contribute one increment to db_sync_total{result=failed} (CC-0089, REQ-005, W-002)", tc.jobPhase)
+			g.Expect(afterSamples-beforeSamples).To(Equal(uint64(1)),
+				"%s phase failure must contribute one duration sample (CC-0089, REQ-005, W-002)", tc.jobPhase)
+
+			cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Reason).To(Equal(tc.failedKey),
+				"DatabaseReady reason MUST identify the failing phase so operators can attribute the metric increment")
+		})
+	}
+}
+
+// TestRecordDBJobTerminalState_DefersOnPatchFailure verifies the W-003
+// ordering invariant: when the dedupe annotation patch fails, the metric is
+// NOT emitted on this pass. The next reconcile re-evaluates the same Job and
+// either emits then (after a successful patch) or defers again — but the
+// at-most-once-per-(phase, Job UID) guarantee documented in
+// docs/reference/keystone-operator-metrics.md is preserved against transient
+// apiserver failures (CC-0089, REQ-005, W-003).
+//
+// Table-driven across every phase that calls recordDBJobTerminalState
+// (CC-0089, review-2 suggestion 2): db-sync, db-expand, db-migrate,
+// db-contract, schema-check. A regression that re-orders Patch and
+// metrics.RecordDBSync in any single caller is then caught by this test
+// alone, locking the W-003 invariant for the full set of caller sites at
+// reconcile_database.go:329, :358, :546, :581, :626.
+func TestRecordDBJobTerminalState_DefersOnPatchFailure(t *testing.T) {
+	created := metav1.NewTime(time.Date(2026, 4, 22, 13, 0, 0, 0, time.UTC))
+	terminated := metav1.NewTime(time.Date(2026, 4, 22, 13, 0, 5, 0, time.UTC))
+
+	cases := []struct {
+		// jobSuffix is the per-phase suffix passed to
+		// recordDBJobTerminalState; it also selects the dedupe annotation
+		// key via dbJobUIDAnnotationKey.
+		jobSuffix string
+		// buildJob returns the Job that the operator would observe for the
+		// phase. Each case constructs the Job via the same builder used in
+		// production so the test breaks loudly if Job naming or labels
+		// drift.
+		buildJob func(*keystonev1alpha1.Keystone, string) *batchv1.Job
+		// nameSuffix isolates per-case Prometheus series so counter samples
+		// do not bleed across subtests.
+		nameSuffix string
+	}{
+		{
+			jobSuffix:  "db-sync",
+			buildJob:   buildDBSyncJob,
+			nameSuffix: "dbsync",
+		},
+		{
+			jobSuffix: "db-expand",
+			buildJob: func(ks *keystonev1alpha1.Keystone, cm string) *batchv1.Job {
+				return buildExpandJob(ks, cm, ks.Spec.Image.Tag)
+			},
+			nameSuffix: "dbexpand",
+		},
+		{
+			jobSuffix: "db-migrate",
+			buildJob: func(ks *keystonev1alpha1.Keystone, cm string) *batchv1.Job {
+				return buildMigrateJob(ks, cm, ks.Spec.Image.Tag)
+			},
+			nameSuffix: "dbmigrate",
+		},
+		{
+			jobSuffix: "db-contract",
+			buildJob: func(ks *keystonev1alpha1.Keystone, cm string) *batchv1.Job {
+				return buildContractJob(ks, cm, ks.Spec.Image.Tag)
+			},
+			nameSuffix: "dbcontract",
+		},
+		{
+			jobSuffix:  "schema-check",
+			buildJob:   buildSchemaCheckJob,
+			nameSuffix: "schemacheck",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.jobSuffix, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			s := dbTestScheme()
+			ks := dbSyncMetricsTestKeystone(
+				tc.nameSuffix+"-patch-failure",
+				"ns-"+tc.nameSuffix+"-patch-failure",
+			)
+
+			desired := tc.buildJob(ks, "keystone-config-abc123")
+			dbJob := desired.DeepCopy()
+			dbJob.UID = types.UID(tc.nameSuffix + "-patch-failure-job-uid")
+			dbJob.CreationTimestamp = created
+			dbJob.Annotations = map[string]string{
+				job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+			}
+			dbJob.Status.Succeeded = 1
+			dbJob.Status.CompletionTime = &terminated
+			dbJob.Status.Conditions = []batchv1.JobCondition{{
+				Type:               batchv1.JobComplete,
+				Status:             corev1.ConditionTrue,
+				LastTransitionTime: terminated,
+			}}
+
+			cb := fake.NewClientBuilder().
+				WithScheme(s).
+				WithObjects(ks, dbJob).
+				WithStatusSubresource(&keystonev1alpha1.Keystone{}, &mariadbv1alpha1.Database{}, &mariadbv1alpha1.User{}, &mariadbv1alpha1.Grant{}).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Patch: func(_ context.Context, _ client.WithWatch, obj client.Object, _ client.Patch, _ ...client.PatchOption) error {
+						if _, isKeystone := obj.(*keystonev1alpha1.Keystone); isKeystone {
+							return fmt.Errorf("simulated apiserver Patch failure (CC-0089 W-003, %s)", tc.jobSuffix)
+						}
+						return nil
+					},
+				})
+			recorder := record.NewFakeRecorder(10)
+			r := &KeystoneReconciler{
+				Client:   cb.Build(),
+				Scheme:   s,
+				Recorder: recorder,
+			}
+
+			successLabels := map[string]string{
+				"keystone":  ks.Name,
+				"namespace": ks.Namespace,
+				"result":    "succeeded",
+			}
+			durationLabels := map[string]string{
+				"keystone":  ks.Name,
+				"namespace": ks.Namespace,
+			}
+
+			beforeSuccess := counterValue(t, "keystone_operator_db_sync_total", successLabels)
+			beforeSamples := histogramSampleCount(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
+
+			r.recordDBJobTerminalState(context.Background(), ks, tc.jobSuffix)
+
+			afterSuccess := counterValue(t, "keystone_operator_db_sync_total", successLabels)
+			afterSamples := histogramSampleCount(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
+
+			g.Expect(afterSuccess-beforeSuccess).To(Equal(0.0),
+				"%s: metric MUST NOT be emitted when the dedupe annotation patch fails (CC-0089, REQ-005, W-003)", tc.jobSuffix)
+			g.Expect(afterSamples-beforeSamples).To(Equal(uint64(0)),
+				"%s: duration histogram MUST NOT receive a sample when the patch fails (CC-0089, REQ-005, W-003)", tc.jobSuffix)
+			g.Expect(ks.Annotations).NotTo(HaveKey(dbJobUIDAnnotationKey(tc.jobSuffix)),
+				"%s: failed Patch MUST NOT mirror the dedupe annotation back onto the in-memory CR", tc.jobSuffix)
+
+			// review-2 suggestion 1: persistent Patch failure surfaces a
+			// CR-visible Warning event so the at-most-once-per-UID
+			// degradation is not silent at default log levels.
+			g.Expect(recorder.Events).To(Receive(ContainSubstring("Warning DBSyncMetricEmissionDeferred")),
+				"%s: deferred-emission MUST raise a Warning event on the Keystone CR", tc.jobSuffix)
+		})
+	}
 }

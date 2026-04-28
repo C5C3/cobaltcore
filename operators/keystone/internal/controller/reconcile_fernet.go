@@ -79,6 +79,15 @@ func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
 		return ctrl.Result{}, err
 	}
 
+	// Refresh the key_rotation_age gauge from the rotation-completed
+	// annotation (CC-0089, REQ-003). The helper reads the production Secret
+	// first (durable across the inter-rotation steady state) and falls back
+	// to the staging Secret to cover the very-first-rotation pre-apply
+	// window. Called BEFORE applyRotationOutput so that, when the apply path
+	// runs and re-stamps the production annotation, the next reconcile picks
+	// up the freshest timestamp.
+	r.observeRotationAge(ctx, keystone, secretName, fernetStagingSecretName(keystone), "fernet")
+
 	// 3. Apply any completed rotation staged by the CronJob (CC-0081,
 	//    REQ-005, REQ-006). On a valid apply we short-circuit the rest of
 	//    the step chain and requeue so the next pass re-enters the happy

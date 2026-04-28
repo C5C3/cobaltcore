@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	. "github.com/onsi/gomega"
 
@@ -28,6 +29,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -1137,4 +1139,109 @@ func TestReconcileCredentialKeys_AppliesStagedKeysWhenAnnotationPresent(t *testi
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal("CredentialKeysRotated"))
 	g.Expect(cond.Message).To(Equal("rotation applied; staging secret cleared"))
+}
+
+// TestCredentialReconcileUpdatesRotationAgeGauge verifies that
+// reconcileCredentialKeys publishes the keystone_operator_key_rotation_age_seconds
+// gauge when the staging Secret carries a parseable RFC3339 rotation-completed
+// annotation (CC-0089, REQ-003).
+func TestCredentialReconcileUpdatesRotationAgeGauge(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := credentialTestScheme()
+	ks := credentialTestKeystone()
+	ks.Name = "rot-age-cred-present"
+	ks.Namespace = "ns-rot-age-cred-present"
+
+	prodSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ks.Name + "-credential-keys",
+			Namespace: ks.Namespace,
+		},
+		Data: map[string][]byte{"0": []byte("placeholder-key")},
+	}
+
+	// Staging Secret with annotation but no data so applyRotationOutput
+	// returns (false, nil) and the reconcile path continues.
+	completedAt := time.Now().Add(-90 * time.Minute).UTC().Truncate(time.Second)
+	stagingLabels := commonLabels(ks)
+	stagingLabels[StagingSecretLabelKey] = "credential-keys"
+	stagingSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      credentialStagingSecretName(ks),
+			Namespace: ks.Namespace,
+			Labels:    stagingLabels,
+			Annotations: map[string]string{
+				RotationCompletedAnnotation: completedAt.Format(time.RFC3339),
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks, prodSecret, stagingSecret).
+		Build()
+
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-cm")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	gaugeLabels := map[string]string{
+		"keystone":  ks.Name,
+		"namespace": ks.Namespace,
+		"key_type":  "credential",
+	}
+	m := findMetricByLabels(t, ctrlmetrics.Registry, "keystone_operator_key_rotation_age_seconds", gaugeLabels)
+	g.Expect(m).NotTo(BeNil(),
+		"rotation-age gauge MUST be emitted when credential staging annotation is present (CC-0089, REQ-003)")
+	age := m.GetGauge().GetValue()
+	g.Expect(age).To(BeNumerically("~", (90*time.Minute).Seconds(), 120.0),
+		"gauge age must approximate time.Since(completedAt) within ±120s tolerance")
+}
+
+// TestCredentialReconcileSkipsRotationAgeGaugeWhenAnnotationAbsent verifies
+// that reconcileCredentialKeys does NOT publish the rotation-age gauge when
+// the staging Secret is missing the rotation-completed annotation (CC-0089,
+// REQ-003).
+func TestCredentialReconcileSkipsRotationAgeGaugeWhenAnnotationAbsent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := credentialTestScheme()
+	ks := credentialTestKeystone()
+	ks.Name = "rot-age-cred-absent"
+	ks.Namespace = "ns-rot-age-cred-absent"
+
+	prodSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ks.Name + "-credential-keys",
+			Namespace: ks.Namespace,
+		},
+		Data: map[string][]byte{"0": []byte("placeholder-key")},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks, prodSecret).
+		Build()
+
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-cm")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	gaugeLabels := map[string]string{
+		"keystone":  ks.Name,
+		"namespace": ks.Namespace,
+		"key_type":  "credential",
+	}
+	m := findMetricByLabels(t, ctrlmetrics.Registry, "keystone_operator_key_rotation_age_seconds", gaugeLabels)
+	g.Expect(m).To(BeNil(),
+		"rotation-age gauge MUST NOT be emitted when credential staging annotation is absent (CC-0089, REQ-003)")
 }

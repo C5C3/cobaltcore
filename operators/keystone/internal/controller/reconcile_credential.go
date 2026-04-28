@@ -85,6 +85,13 @@ func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 		return ctrl.Result{}, err
 	}
 
+	// Refresh the key_rotation_age gauge from the rotation-completed
+	// annotation (CC-0089, REQ-003). The helper reads the production Secret
+	// first (durable across the inter-rotation steady state) and falls back
+	// to the staging Secret to cover the very-first-rotation pre-apply
+	// window.
+	r.observeRotationAge(ctx, keystone, secretName, credentialStagingSecretName(keystone), "credential")
+
 	// 3. Apply any completed staging rotation onto the production Secret
 	//    (CC-0081, REQ-005, REQ-006). When applyRotationOutput returns
 	//    applied=true, short-circuit and requeue so the next reconcile

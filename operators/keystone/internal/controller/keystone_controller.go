@@ -37,6 +37,7 @@ import (
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	"github.com/c5c3/forge/operators/keystone/internal/metrics"
 )
 
 // keystoneFinalizer is the name of the finalizer added to every Keystone CR so
@@ -228,7 +229,12 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	// Run sub-reconcilers in dependency order; independent groups run concurrently.
-	if result, err := r.reconcileSecrets(ctx, &keystone); !result.IsZero() || err != nil {
+	// Every sub-reconciler call is routed through instrumentSubReconciler so that
+	// duration samples and error counters are emitted under a stable
+	// sub_reconciler label (CC-0089, REQ-001, REQ-002).
+	if result, err := instrumentSubReconciler(ctx, "Secrets", func(ctx context.Context) (ctrl.Result, error) {
+		return r.reconcileSecrets(ctx, &keystone)
+	}); !result.IsZero() || err != nil {
 		return r.updateStatus(ctx, &keystone, result, err)
 	}
 
@@ -241,15 +247,23 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// Failures set SecretsReady=False — the same condition used by
 	// reconcileSecrets — so no new subConditionTypes entry is required
 	// (CC-0080, REQ-005).
-	if result, err := r.reconcileDBConnectionSecret(ctx, &keystone); !result.IsZero() || err != nil {
+	if result, err := instrumentSubReconciler(ctx, "DBConnectionSecret", func(ctx context.Context) (ctrl.Result, error) {
+		return r.reconcileDBConnectionSecret(ctx, &keystone)
+	}); !result.IsZero() || err != nil {
 		return r.updateStatus(ctx, &keystone, result, err)
 	}
 
 	// reconcileConfig must run before reconcileFernetKeys and reconcileDatabase
 	// because both the fernet rotation CronJob and the db_sync Job require the
-	// keystone.conf ConfigMap.
-	configMapName, err := r.reconcileConfig(ctx, &keystone)
-	if err != nil {
+	// keystone.conf ConfigMap. reconcileConfig returns (string, error) rather
+	// than the standard (ctrl.Result, error); wrap it so the helper can still
+	// emit duration/error metrics while we capture the name via closure.
+	var configMapName string
+	if _, err := instrumentSubReconciler(ctx, "Config", func(ctx context.Context) (ctrl.Result, error) {
+		var cmErr error
+		configMapName, cmErr = r.reconcileConfig(ctx, &keystone)
+		return ctrl.Result{}, cmErr
+	}); err != nil {
 		return r.updateStatus(ctx, &keystone, ctrl.Result{}, err)
 	}
 
@@ -260,18 +274,21 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// (CC-0039, CC-0071, REQ-001).
 	if result, err := r.reconcileParallelGroup(ctx, &keystone, []parallelSubReconciler{
 		{
+			name:          "FernetKeys",
 			conditionType: "FernetKeysReady",
 			fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 				return r.reconcileFernetKeys(ctx, ks, configMapName)
 			},
 		},
 		{
+			name:          "CredentialKeys",
 			conditionType: "CredentialKeysReady",
 			fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 				return r.reconcileCredentialKeys(ctx, ks, configMapName)
 			},
 		},
 		{
+			name:          "NetworkPolicy",
 			conditionType: "NetworkPolicyReady",
 			fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 				return r.reconcileNetworkPolicy(ctx, ks)
@@ -281,17 +298,23 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return r.updateStatus(ctx, &keystone, result, err)
 	}
 
-	if result, err := r.reconcileDatabase(ctx, &keystone, configMapName); !result.IsZero() || err != nil {
+	if result, err := instrumentSubReconciler(ctx, "Database", func(ctx context.Context) (ctrl.Result, error) {
+		return r.reconcileDatabase(ctx, &keystone, configMapName)
+	}); !result.IsZero() || err != nil {
 		return r.updateStatus(ctx, &keystone, result, err)
 	}
 
 	// Policy validation gates the Deployment: invalid oslo.policy overrides
 	// must be caught before reaching running pods (CC-0058).
-	if result, err := r.reconcilePolicyValidation(ctx, &keystone, configMapName); !result.IsZero() || err != nil {
+	if result, err := instrumentSubReconciler(ctx, "PolicyValidation", func(ctx context.Context) (ctrl.Result, error) {
+		return r.reconcilePolicyValidation(ctx, &keystone, configMapName)
+	}); !result.IsZero() || err != nil {
 		return r.updateStatus(ctx, &keystone, result, err)
 	}
 
-	if result, err := r.reconcileDeployment(ctx, &keystone, configMapName); !result.IsZero() || err != nil {
+	if result, err := instrumentSubReconciler(ctx, "Deployment", func(ctx context.Context) (ctrl.Result, error) {
+		return r.reconcileDeployment(ctx, &keystone, configMapName)
+	}); !result.IsZero() || err != nil {
 		return r.updateStatus(ctx, &keystone, result, err)
 	}
 
@@ -305,25 +328,35 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// HTTPRoute reconciliation runs after the Deployment/Service are ensured
 	// so that the backend Service is present before the Gateway controller
 	// resolves backendRefs (CC-0065, REQ-009, REQ-010).
-	if result, err := r.reconcileHTTPRoute(ctx, &keystone); !result.IsZero() || err != nil {
+	if result, err := instrumentSubReconciler(ctx, "HTTPRoute", func(ctx context.Context) (ctrl.Result, error) {
+		return r.reconcileHTTPRoute(ctx, &keystone)
+	}); !result.IsZero() || err != nil {
 		return r.updateStatus(ctx, &keystone, result, err)
 	}
 
 	// Health check runs after Deployment because it depends on
 	// Status.Endpoint which reconcileDeployment sets (CC-0067, REQ-007).
-	if result, err := r.reconcileHealthCheck(ctx, &keystone); !result.IsZero() || err != nil {
+	if result, err := instrumentSubReconciler(ctx, "HealthCheck", func(ctx context.Context) (ctrl.Result, error) {
+		return r.reconcileHealthCheck(ctx, &keystone)
+	}); !result.IsZero() || err != nil {
 		return r.updateStatus(ctx, &keystone, result, err)
 	}
 
-	if result, err := r.reconcileHPA(ctx, &keystone); !result.IsZero() || err != nil {
+	if result, err := instrumentSubReconciler(ctx, "HPA", func(ctx context.Context) (ctrl.Result, error) {
+		return r.reconcileHPA(ctx, &keystone)
+	}); !result.IsZero() || err != nil {
 		return r.updateStatus(ctx, &keystone, result, err)
 	}
 
-	if result, err := r.reconcileBootstrap(ctx, &keystone, configMapName); !result.IsZero() || err != nil {
+	if result, err := instrumentSubReconciler(ctx, "Bootstrap", func(ctx context.Context) (ctrl.Result, error) {
+		return r.reconcileBootstrap(ctx, &keystone, configMapName)
+	}); !result.IsZero() || err != nil {
 		return r.updateStatus(ctx, &keystone, result, err)
 	}
 
-	if result, err := r.reconcileTrustFlush(ctx, &keystone, configMapName); !result.IsZero() || err != nil {
+	if result, err := instrumentSubReconciler(ctx, "TrustFlush", func(ctx context.Context) (ctrl.Result, error) {
+		return r.reconcileTrustFlush(ctx, &keystone, configMapName)
+	}); !result.IsZero() || err != nil {
 		return r.updateStatus(ctx, &keystone, result, err)
 	}
 
@@ -375,6 +408,7 @@ func (r *KeystoneReconciler) reconcileDelete(ctx context.Context, keystone *keys
 	if err := r.Update(ctx, keystone); err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 	}
+	metrics.DeleteForKeystone(keystone.Name, keystone.Namespace)
 	return ctrl.Result{}, nil
 }
 
@@ -551,7 +585,12 @@ func mergeParallelConditions(dst, src *keystonev1alpha1.Keystone, conditionType 
 // parallelSubReconciler describes a sub-reconciler that runs in a parallel
 // group. Each sub-reconciler receives its own DeepCopy of the Keystone CR
 // and sets exactly one condition type (CC-0071, REQ-001).
+//
+// name is the sub_reconciler label value used by the metrics helper so that
+// duration/error series are attributed to the individual group member rather
+// than the group as a whole (CC-0089, REQ-001, REQ-002).
 type parallelSubReconciler struct {
+	name          string
 	conditionType string
 	fn            func(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error)
 }
@@ -582,7 +621,12 @@ func (r *KeystoneReconciler) reconcileParallelGroup(
 		ksCopy := keystone.DeepCopy()
 		outcomes[i].condType = sub.conditionType
 		g.Go(func() error {
-			res, err := sub.fn(gctx, ksCopy)
+			// Route through instrumentSubReconciler so each parallel member
+			// emits its own duration sample and — on failure — its own error
+			// counter tagged with sub.name (CC-0089, REQ-001, REQ-002).
+			res, err := instrumentSubReconciler(gctx, sub.name, func(ctx context.Context) (ctrl.Result, error) {
+				return sub.fn(ctx, ksCopy)
+			})
 			outcomes[i].result = res
 			outcomes[i].copy = ksCopy
 			outcomes[i].err = err

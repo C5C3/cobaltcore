@@ -1,0 +1,185 @@
+{
+  "feature_id": "CC-0089",
+  "title": "Add Prometheus metrics and ServiceMonitor sub-reconciler",
+  "review_number": 1,
+  "branch": "feature/CC-0089",
+  "reviewer_role": "reviewer",
+  "reviewed_at": "2026-04-23",
+  "verdict": "NEEDS_CHANGES",
+  "verdict_rationale": "Implementation is broad and correct in most respects — metrics package with bounded cardinality, drift-guard tests (TestSubReconcilerConditionTypesCoversAllNames, TestSubReconcilerMetricsHaveNoCRLabels, TestReferenceDocMatchesRegisteredMetrics, TestDashboardReferencesOnlyRegisteredMetrics), instrumentSubReconciler wrapping every sub-reconciler call (including parallel-group members), UID-guarded at-most-once db_sync emission, DeleteForKeystone invoked after finalizer removal, helm-unittest coverage, chainsaw e2e for ServiceMonitor toggle, reference + how-to docs. `go vet ./operators/keystone/...` is clean. However, three BLOCKING leftover 'Reviewer: please verify' comments ship in the merged code/tests (matching external-feedback pattern resolve-ambiguous-commented-out-alternatives-before-merge, severity BLOCKING), and one MAJOR functional issue (REQ-003 gauge refresh) prevents approval.",
+  "acceptance_criteria_check": {
+    "REQ-001_duration_histogram_per_sub_reconciler": "MET — HistogramVec with buckets [0.01,0.05,0.1,0.25,0.5,1,2.5,5,10,30] registered; instrumentSubReconciler emits a sample on every path (success/error/panic); buckets asserted by TestReconcileDurationHistogramRegistered (collectors_test.go:38).",
+    "REQ-002_error_counter_by_condition_type": "MET — CounterVec {sub_reconciler, condition_type} incremented only on err!=nil; parallel-group members emit per-member (keystone_controller.go:470); TestInstrumentSubReconciler_Error_RecordsDurationAndError (instrumentation_test.go:104) verifies.",
+    "REQ-003_key_rotation_age_gauge": "PARTIALLY MET — GaugeVec exposed and exercised; zero-time rejected. BUT see MAJOR finding below: the gauge is only refreshed when the staging Secret carries a non-empty completedAt annotation. applyRotationOutput deletes the staging Secret after apply, so between rotations the annotation is absent and observeRotationAge returns early (rotation_staging.go:69-71). The gauge is therefore frozen at its last-set value for the whole inter-rotation interval, which contradicts the story criterion 'Gauge value refreshes on every successful reconcile of the parent Keystone CR so age tracks wall-clock correctly' and breaks the `age > 14 days` alert promised in docs/reference/keystone-operator-metrics.md:137.",
+    "REQ-004_per_cr_series_cleanup": "MET — DeleteForKeystone called in reconcileDelete AFTER successful finalizer Update (keystone_controller.go:337); TestDeleteKeystoneSeriesRemovesGauge covers rotation_age + db_sync_total + db_sync_duration_seconds.",
+    "REQ-005_db_sync_metrics": "MET — RecordDBSync called on terminal Complete=True or Failed=True condition only (reconcile_database.go:117-140); at-most-once guarded by forge.c5c3.io/last-db-sync-job-uid CR annotation (reconcile_database.go:142-146). Non-terminal Job* conditions explicitly ignored (reconcile_database.go:128).",
+    "REQ-006_opt_in_servicemonitor": "PARTIALLY MET — Helm template gated by monitoring.serviceMonitor.enabled (defaults false), values.schema.json validates duration pattern, helm-unittest covers all five scenarios from the plan. The e2e chainsaw test asserts the ServiceMonitor render/unrender toggle but intentionally SKIPS the plan's `TestServiceMonitorDiscoversOperatorMetrics` 'poll Prometheus API until target=Up within 60s' step (see MAJOR finding #2 and chainsaw-test.yaml:13-26).",
+    "REQ-007_instrumentation_helper": "MET — instrumentSubReconciler is the single entry point; panic-safe via defer without recover (instrumentation.go:61-72); every call site in Reconcile and the parallel group is wrapped.",
+    "REQ-008_ctrlmetrics_registry": "MET — sync.Once registration in globalCollectors (collectors.go:122); integration test scrapes the same ctrlmetrics.Registry via promhttp.HandlerFor and asserts the TYPE line (integration_test.go:2866-2883).",
+    "REQ-009_reference_doc_exists_and_matches": "MET — docs/reference/keystone-operator-metrics.md exists, linked from docs/guides/observability.md:167, and TestReferenceDocMatchesRegisteredMetrics (contract_test.go:44) enforces bidirectional matching.",
+    "REQ-010_grafana_dashboard": "MET — operators/keystone/dashboards/keystone-operator.json ships 4+ panels; TestDashboardReferencesOnlyRegisteredMetrics (dashboard_test.go:116) enforces that every keystone_operator_* token in panel exprs maps to a registered collector.",
+    "REQ-011_howto_guide": "MET — docs/how-to/enable-keystone-operator-metrics.md follows Prerequisites → Steps → Verification → See Also, includes curl /metrics verification and sample PromQL.",
+    "REQ-012_bounded_cardinality": "MET — cardinality_test.go rejects keystone/namespace on reconcile_duration and reconcile_errors; drift guard in place."
+  },
+  "findings": {
+    "blocking": [
+      {
+        "id": "B1",
+        "severity": "BLOCKING",
+        "category": "sharp_edges",
+        "pattern": "resolve-ambiguous-commented-out-alternatives-before-merge",
+        "file": "operators/keystone/internal/controller/instrumentation.go",
+        "line_range": "30-34",
+        "evidence": "DECISION: reconcileConfig has no dedicated condition — choosing \"SecretsReady\" because config failures block every downstream secret/ reconciler path and SecretsReady is the earliest gate. Reviewer: please verify this condition_type is acceptable; an alternative is to add a \"ConfigReady\" condition type in a follow-up.",
+        "why": "External-review pattern matches directly (see CC-0065 sourcery-ai[bot] precedent: leftover 'Reviewer: please verify' in NetworkPolicy code was flagged as BLOCKING and stripped on fix). Shipping an open question in merged code means the next engineer to touch this file inherits an unresolved design decision, AND the semantic issue is real: a reconcileConfig failure increments keystone_operator_reconcile_errors_total{condition_type=\"SecretsReady\"} even though SecretsReady was already set True by reconcileSecrets on the same pass. Downstream alert 'SecretsReady is failing' is triggered by a config parse error that has no data-dependency on Secrets. Either (a) commit to SecretsReady as the intentional choice and delete the reviewer-addressed hedging, or (b) introduce conditionTypeConfigReady in subConditionTypes and map Config → ConfigReady. Option (b) is cleaner for operator-facing alerting.",
+        "suggested_fix": "Add `conditionTypeConfigReady = \"ConfigReady\"` (and set it in reconcileConfig via conditions.SetCondition), include it in subConditionTypes, and map \"Config\" → conditionTypeConfigReady in subReconcilerConditionTypes. Then delete the DECISION/Reviewer paragraph. If the team prefers option (a), replace the hedging with a one-line rationale and no 'Reviewer:' text.",
+        "tag": "[ASK]"
+      },
+      {
+        "id": "B2",
+        "severity": "BLOCKING",
+        "category": "sharp_edges",
+        "pattern": "resolve-ambiguous-commented-out-alternatives-before-merge",
+        "file": "operators/keystone/helm/keystone-operator/tests/servicemonitor_test.yaml",
+        "line_range": "2-15",
+        "evidence": "# DECISION: The CC-0089 task spec called for a Go test file (servicemonitor_test.go using helm template + sigs.k8s.io/yaml). Ambiguity: established chart-test convention is helm-unittest YAML ... Chose: helm-unittest YAML file matching existing suite structure. ... Reviewer: please verify this matches intent.",
+        "why": "Same pattern as B1 — merged code should not ship questions for reviewers. The substance of the DECISION is sound (helm-unittest is the chart's existing convention, exercised by CI per docs/reference/ci-workflow.md), but the 'Reviewer: please verify this matches intent' language belongs in the PR description, not the merged artefact.",
+        "suggested_fix": "Keep the 'DECISION / Reason' explanation lines (they justify the deviation from the plan) but drop the 'Reviewer: please verify this matches intent.' sentence. If the team still wants reviewer sign-off, lock it down in the PR body before merging.",
+        "tag": "[AUTO_FIX]"
+      },
+      {
+        "id": "B3",
+        "severity": "BLOCKING",
+        "category": "sharp_edges",
+        "pattern": "resolve-ambiguous-commented-out-alternatives-before-merge",
+        "file": "tests/e2e/keystone/metrics/chainsaw-test.yaml",
+        "line_range": "13-26",
+        "evidence": "# DECISION: Prometheus target-Up polling is intentionally NOT implemented here. The CC-0089 plan calls for 'poll Prometheus API until keystone_operator_reconcile_duration_seconds target is Up' ... Reviewer: please verify. TODO(CC-0089): once a Prometheus instance is deployed in the e2e cluster, add a third step that issues curl -sf http://prometheus.monitoring-system.svc:9090/api/v1/targets ...",
+        "why": "Two pattern hits in one block: (a) 'Reviewer: please verify' — same BLOCKING pattern as B1/B2; (b) the TODO references a missing e2e path that is part of the stated acceptance criterion `TestServiceMonitorDiscoversOperatorMetrics` (test_specifications[20], requirement_id REQ-006) 'Prometheus successfully scrapes keystone_operator_* metrics within 60s'. Shipping a TODO in an e2e test for a criterion that was explicitly promised under REQ-006 means the acceptance row for REQ-006 is only half-green. Cross-reference with review_patterns/validate-stated-acceptance-criteria-are-met.md.",
+        "suggested_fix": "Two options: (a) remove the 'Reviewer: please verify' phrase, keep the DECISION+TODO so the gap is honestly recorded, and explicitly note in the progress.json / PR body that REQ-006's 'target=Up within 60s' is deferred pending a Prometheus instance in the e2e cluster — this aligns with the codebase's honesty-about-sandbox-limits convention. (b) Deploy a Prometheus instance in the e2e cluster (larger scope) and add Step 3 as planned. Option (a) is the right call for this PR; pair it with a follow-up ticket.",
+        "tag": "[ASK]"
+      }
+    ],
+    "major": [
+      {
+        "id": "M1",
+        "severity": "MAJOR",
+        "category": "correctness",
+        "pattern": "validate-stated-acceptance-criteria-are-met",
+        "file": "operators/keystone/internal/controller/rotation_staging.go",
+        "line_range": "56-77",
+        "evidence": "observeRotationAge reads the rotation-completed-at annotation only from the staging Secret. applyRotationOutput (rotation_staging.go:228) DELETEs that staging Secret on a successful apply. Between rotations (the >99% steady state) the staging Secret is either absent or re-created empty by ensureStagingSecret — so the annotation is absent, observeRotationAge returns at rotation_staging.go:69-71 without calling SetKeyRotationAge, and the gauge is frozen at the value written during the apply-pass reconcile.",
+        "why": "Story-level acceptance criterion (progress.json, 'Security operator monitors fernet/credential key rotation freshness'): \"Gauge value refreshes on every successful reconcile of the parent Keystone CR so age tracks wall-clock correctly (CC-0089, REQ-003)\". The current implementation does NOT refresh per reconcile once apply has completed. Practical impact: the alert advertised in docs/reference/keystone-operator-metrics.md:136-140 (`keystone_operator_key_rotation_age_seconds > 14*86400`) never fires even if the rotation CronJob stops running for 14 days, because the gauge retains its apply-time value (typically a few seconds to minutes) indefinitely. This defeats the primary purpose of the gauge, which was to catch silent CronJob failures (REQ-003 rationale). The stale-value behavior is acknowledged in the reference doc ('Stale series therefore reflect the last-observed successful rotation, not a rotation failure') but that acknowledgement contradicts REQ-003 scenario 4 and the user story, not supports it.",
+        "suggested_fix": "Persist the last-observed completedAt on the Keystone CR status (or as an annotation on the production Secret that the operator already rewrites during apply), and have observeRotationAge compute time.Since(persisted_timestamp) on every reconcile regardless of staging-Secret state. Keep the staging-Secret fast path for immediate post-CronJob observations. Update docs/reference/keystone-operator-metrics.md to describe the correct semantics.",
+        "tag": "[ASK]"
+      },
+      {
+        "id": "M2",
+        "severity": "MAJOR",
+        "category": "acceptance_criteria",
+        "pattern": "validate-stated-acceptance-criteria-are-met",
+        "file": "tests/e2e/keystone/metrics/chainsaw-test.yaml",
+        "line_range": "87-90",
+        "evidence": "Step 3 (Prometheus target=Up polling) is documented as deferred. Acceptance spec (progress.json test_specifications, function TestServiceMonitorDiscoversOperatorMetrics, requirement REQ-006) requires 'Prometheus successfully scrapes keystone_operator_* metrics within 60s'.",
+        "why": "REQ-006 is only half-verified end-to-end: the ServiceMonitor CR is shape-asserted, but there is no proof that a real Prometheus actually scrapes the target. The rationale ('e2e cluster has no Prometheus instance') is honest (matches memory: project_sandbox_no_docker.md) and structural assertion is a legitimate subset of REQ-006, but this delta should be recorded in the acceptance-criteria checklist of the progress file rather than hidden in a TODO inside an e2e test. This prevents silent scope drift (pattern rationale).",
+        "suggested_fix": "Record the deferral in .planwerk/progress/CC-0089-*.json under the REQ-006 task (7.3) with a follow-up ticket number. Keep the chainsaw test as-is modulo the 'Reviewer: please verify' removal called out in B3.",
+        "tag": "[ASK]"
+      }
+    ],
+    "minor": [
+      {
+        "id": "N1",
+        "severity": "MINOR",
+        "category": "code_quality",
+        "file": "operators/keystone/internal/controller/instrumentation.go",
+        "line_range": "74-76",
+        "evidence": "// Every value in subReconcilerConditionTypes must appear in subConditionTypes —\n// the cardinality test in instrumentation_test.go asserts this relationship.",
+        "why": "This trailing comment block sits below the function body with no code attached. The invariant is already documented (instrumentation.go:22-24) and the test name is already cited there. The trailing block duplicates guidance and grows the surface area the drift-guard has to keep in sync.",
+        "suggested_fix": "Delete instrumentation.go:74-76; the package-level comment at :22-24 already carries the invariant.",
+        "tag": "[AUTO_FIX]"
+      },
+      {
+        "id": "N2",
+        "severity": "MINOR",
+        "category": "consistency",
+        "file": "operators/keystone/internal/controller/instrumentation_test.go",
+        "line_range": "78-102",
+        "evidence": "TestInstrumentSubReconciler_Success_RecordsDuration uses sub_reconciler=\"TestSuccessSub\" — a name not in subReconcilerConditionTypes, so condition_type resolves to the empty-string fallback. That path is tested, but the test is located in a file that shares the package with production code, so the fallback label leaks into ctrlmetrics.Registry (the package-global registry) and can survive across test binaries invoked in the same go test run.",
+        "why": "Not a correctness bug — integration_test.go TestReconcileErrorsTotalIncrementsOnInducedFailure already accounts for cross-test pollution via before/after deltas, and the test_specifications label the fallback path is required to exercise the empty-string branch. However, choosing a name that WILL remain in the global registry for the life of the process nibbles at the cardinality budget. Prefer using prometheus.NewRegistry() + newCollectorsForTest() (as cardinality_test.go and collectors_test.go do) to keep controller-runtime's production registry clean.",
+        "suggested_fix": "Refactor the three controller-runtime-registry tests in instrumentation_test.go to use newCollectorsForTest on a fresh prometheus.NewRegistry(), following the pattern in metrics/collectors_test.go. This also removes the test-registry leakage note in contract_test.go's registeredMetricNames.",
+        "tag": "[ASK]"
+      },
+      {
+        "id": "N3",
+        "severity": "MINOR",
+        "category": "documentation",
+        "file": "docs/reference/keystone-operator-metrics.md",
+        "line_range": "119-128",
+        "evidence": "The note 'Stale series therefore reflect the last-observed successful rotation, not a rotation failure' concedes the staleness bug called out in M1 but presents it as intended.",
+        "why": "The doc contradicts REQ-003 story criterion 4 ('Gauge value refreshes on every successful reconcile ... so age tracks wall-clock correctly'). Either the doc is wrong and the implementation needs fixing (M1), or REQ-003 is wrong and needs updating. Whichever is chosen, the asymmetry should be resolved rather than documented as a feature.",
+        "suggested_fix": "Resolve as part of M1 fix: once observeRotationAge refreshes per-reconcile, delete this paragraph. Until then, mark the doc text as a known limitation with link to the follow-up issue.",
+        "tag": "[ASK]"
+      }
+    ]
+  },
+  "detected_patterns": [
+    {
+      "pattern": "gomega-test-assertions-with-newgomegawitht",
+      "status": "FOLLOWED",
+      "evidence": "collectors_test.go, cardinality_test.go, instrumentation_test.go, contract_test.go, dashboard_test.go — every new test uses `g := NewGomegaWithT(t)` and gomega matchers."
+    },
+    {
+      "pattern": "require-tests-for-new-helm-template-resources",
+      "status": "FOLLOWED",
+      "evidence": "tests/servicemonitor_test.yaml covers render-by-default, render-when-enabled, custom interval, schema rejection of bad type, and rejection of unknown properties."
+    },
+    {
+      "pattern": "immutability-verification-test-for-map-returning-pure-functions",
+      "status": "FOLLOWED",
+      "evidence": "TestSubReconcilerConditionTypesCoversAllNames (instrumentation_test.go:163) asserts the map matches subConditionTypes — a drift guard on a package-level map."
+    },
+    {
+      "pattern": "sub-reconciler-condition-contract-with-observedgeneration",
+      "status": "FOLLOWED",
+      "evidence": "subConditionTypes is the single source of truth for Ready aggregation; subReconcilerConditionTypes drives metric labels; instrumentation_test.go enforces containment."
+    },
+    {
+      "pattern": "test-defaulting-and-validation-together-on-zero-value-objects",
+      "status": "FOLLOWED",
+      "evidence": "TestKeyRotationGaugeOmitsUnparseableTimestamp (collectors_test.go:136) asserts zero-time returns error AND does not set the gauge — validation+behavior in one assertion."
+    },
+    {
+      "pattern": "resolve-ambiguous-commented-out-alternatives-before-merge",
+      "status": "VIOLATED",
+      "evidence": "Three instances of 'Reviewer: please verify' shipped in merged code (see B1, B2, B3)."
+    },
+    {
+      "pattern": "validate-stated-acceptance-criteria-are-met",
+      "status": "VIOLATED",
+      "evidence": "REQ-003 gauge-refresh criterion (M1) and REQ-006 end-to-end target-Up criterion (M2) are not fully met."
+    },
+    {
+      "pattern": "cross-reference-documentation-examples-against-implementation",
+      "status": "PARTIALLY VIOLATED",
+      "evidence": "docs/reference/keystone-operator-metrics.md:136-140 PromQL example `age > 14*86400` is unreachable under current implementation (see M1)."
+    },
+    {
+      "pattern": "chainsaw-e2e-test-suite-structure-with-jmespath-condition-assertions",
+      "status": "FOLLOWED",
+      "evidence": "tests/e2e/keystone/metrics/chainsaw-test.yaml mirrors the enable→assert→disable→assert pattern used by sibling e2e tests (e.g. network-policy), with catch blocks that dump HelmRelease/ServiceMonitor/Pod diagnostics on failure."
+    }
+  ],
+  "scope_check": {
+    "within_scope": true,
+    "notes": "All changed files map to CC-0089 tasks 1.1–7.3 in progress.json. No unrelated commits on the branch; go.work.sum and go.mod bumps are consistent with adding prometheus/client_golang as a direct dep of the metrics package."
+  },
+  "tooling_checks": {
+    "go_vet": "PASSED — `go vet ./operators/keystone/...` is silent.",
+    "go_test": "NOT RUN — sandbox has no Kubernetes API server for envtest (see memory project_sandbox_no_docker.md). Recommend running `go test ./operators/keystone/...` in a cluster-available environment before merge."
+  },
+  "notes_for_author": [
+    "B1–B3 can likely be resolved in a single short follow-up commit: delete the 'Reviewer: please verify' phrases and, for B1, pick option (a) or (b) and stick to it.",
+    "M1 is the only finding that requires real engineering — the gauge-refresh semantics genuinely do not match REQ-003. If the team accepts a looser semantic (gauge reflects last observed rotation, staleness is intended), REQ-003 and docs must be updated to match; otherwise the implementation needs to persist completedAt outside the staging Secret.",
+    "M2 is a documentation / progress-tracking fix: the e2e deferral is reasonable given the sandbox has no Prometheus instance, but the deferral should be visible on the acceptance-criteria checklist rather than in an e2e TODO."
+  ]
+}

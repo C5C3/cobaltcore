@@ -1,0 +1,73 @@
+{
+  "feature_id": "CC-0089",
+  "title": "GitHub Review by gndrmnn",
+  "summary": "External review from gndrmnn",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "gndrmnn",
+  "date": "2026-04-27T13:42:12Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 2,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "Move this test to `collectors_test.go`",
+      "path": "operators/keystone/internal/metrics/cardinality_test.go",
+      "line": 1,
+      "author": "gndrmnn",
+      "created_at": "2026-04-27T12:11:20Z",
+      "id": null,
+      "resolution": "Deleted cardinality_test.go and re-added the equivalent TestSubReconcilerMetricsHaveNoCRLabels (plus its newCollectorsForTest helper) in operators/keystone/internal/metrics/collectors_test.go."
+    },
+    {
+      "body": "If this constructor is test-only, move it to the test file `collectors_test.go`",
+      "path": "operators/keystone/internal/metrics/collectors.go",
+      "line": 109,
+      "author": "gndrmnn",
+      "created_at": "2026-04-27T12:14:52Z",
+      "id": null,
+      "resolution": "Removed newCollectorsForTest from collectors.go (lines ~96-108) and moved it into collectors_test.go; inlined its body into NewTestRecorder so collectors.go no longer carries a test-only constructor."
+    },
+    {
+      "body": "If your internal methods are solely used in tests, move their definition to the test file `collectors_test.go`. ",
+      "path": "operators/keystone/internal/metrics/collectors.go",
+      "line": 236,
+      "author": "gndrmnn",
+      "created_at": "2026-04-27T12:26:49Z",
+      "id": null,
+      "resolution": "Kept the internal *collectors methods in collectors.go because they are invoked by the public package-level helpers (ObserveReconcileDuration, RecordReconcileError, SetKeyRotationAge, RecordDBSync, DeleteForKeystone), and rewrote the section comment to make clear they are production code that tests also exercise directly, not test-only code."
+    },
+    {
+      "body": "No, we are not going to unit test documentation against code. Remove `contract_test.go`",
+      "path": "operators/keystone/internal/metrics/contract_test.go",
+      "line": 1,
+      "author": "gndrmnn",
+      "created_at": "2026-04-27T12:58:57Z",
+      "id": null,
+      "resolution": "Deleted operators/keystone/internal/metrics/contract_test.go in full (172 lines)."
+    },
+    {
+      "body": "We are *absolutely* not going to test source code via literal string analysis. This is not acceptable remove lines 262-432",
+      "path": "operators/keystone/internal/controller/instrumentation_test.go",
+      "line": 433,
+      "author": "gndrmnn",
+      "created_at": "2026-04-27T13:20:46Z",
+      "id": null,
+      "resolution": "Removed the AST-based TestSubReconcilerConditionTypesCoversAllCallSites test and its helpers (collectSubReconcilerCallSiteNames, isIdent, isParallelSubFanOut, stringLiteral) from instrumentation_test.go along with the associated go/ast, go/parser, go/token, path/filepath, sort, strconv, and strings imports — 180 lines deleted from the file."
+    }
+  ],
+  "resolution_summary": "All five review comments were addressed by deleting and relocating test code. The cardinality test was merged into collectors_test.go (as TestSubReconcilerMetricsHaveNoCRLabels), the test-only newCollectorsForTest constructor was moved out of collectors.go into collectors_test.go, contract_test.go was deleted entirely, and the AST-based literal-analysis drift guard (plus its helpers and go/ast/parser/token imports) was removed from instrumentation_test.go. For comment [2], the internal methods on *collectors were kept in collectors.go because they are not test-only — each public package-level helper (ObserveReconcileDuration, RecordReconcileError, etc.) forwards to them — and the surrounding comment was rewritten to document this; the supporting code-comment in collectors.go was also updated to drop the stale reference to newCollectorsForTest.",
+  "github_review_id": 4180758093
+}

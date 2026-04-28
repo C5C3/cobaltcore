@@ -36,12 +36,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/forge/internal/common/job"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	"github.com/c5c3/forge/operators/keystone/internal/metrics"
 )
 
 // testScheme returns a runtime.Scheme with the types needed for controller tests.
@@ -3308,4 +3310,249 @@ func TestRegisterSecretNameIndex_WrapsErrorWithKey(t *testing.T) {
 		"wrapped error must mention the index key for debuggability")
 	g.Expect(err.Error()).To(ContainSubstring("boom"),
 		"wrapped error must preserve the underlying IndexField error")
+}
+
+// TestReconcileEmitsDurationForEverySubReconciler runs a single happy-path
+// Reconcile pass and asserts that the reconcile-duration histogram observed at
+// least one sample for every sub_reconciler name registered in
+// subReconcilerConditionTypes. This is the wiring check for CC-0089 REQ-001:
+// every sub-reconciler call site in Reconcile must flow through
+// instrumentSubReconciler (CC-0089, REQ-001).
+func TestReconcileEmitsDurationForEverySubReconciler(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	configMapName := testComputeConfigMapName(t)
+	objs := append(
+		[]runtime.Object{
+			ks,
+			testCompletedDBSyncJob(configMapName),
+			testCompletedSchemaCheckJob(configMapName),
+			testCompletedBootstrapJob(configMapName),
+			testDBCredentialsSecret(),
+			testAdminCredentialsSecret(),
+			testReadyKeystoneDeployment(),
+			testFernetKeysSecret(),
+			testCredentialKeysSecret(),
+		},
+		testReadyExternalSecrets()...,
+	)
+	r := newTestReconciler(objs...)
+	r.HTTPClient = testHealthyHTTPClient()
+
+	// Capture a baseline per sub_reconciler so the test tolerates counts from
+	// prior tests sharing the global controller-runtime registry.
+	baseline := make(map[string]uint64, len(subReconcilerConditionTypes))
+	for name := range subReconcilerConditionTypes {
+		baseline[name] = histogramSampleCount(t, "keystone_operator_reconcile_duration_seconds",
+			map[string]string{"sub_reconciler": name})
+	}
+
+	_, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace},
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	for name := range subReconcilerConditionTypes {
+		after := histogramSampleCount(t, "keystone_operator_reconcile_duration_seconds",
+			map[string]string{"sub_reconciler": name})
+		g.Expect(after-baseline[name]).To(BeNumerically(">=", uint64(1)),
+			"sub_reconciler %q must emit at least one duration sample per Reconcile pass (CC-0089 REQ-001)", name)
+	}
+}
+
+// TestReconcileErrorsTotalIncrementsOnInducedFailure proves that a real
+// sub-reconciler error in the SecretsReady chain advances the
+// keystone_operator_reconcile_errors_total counter (CC-0089, REQ-002).
+//
+// The induction mechanism uses interceptor.Funcs to fail every write attempt
+// (Create, Update, Patch) on the derived <name>-db-connection Secret with a
+// deterministic Forbidden error. This is intentionally write-method-agnostic
+// so the test stays valid regardless of whether reconcileDBConnectionSecret
+// materializes the Secret via Update (current code) or Server-Side Apply (a
+// possible future migration). Earlier versions of this test relied on the
+// apiserver rejecting an Update to an Immutable=true Secret, which would have
+// silently passed for the wrong reason after an SSA migration — the I-001
+// review feedback explicitly called out that fragility.
+//
+// NOTE: ctrlmetrics.Registry is process-global and shared across every test
+// in this package. The before/after delta tolerates other tests in the same
+// package contributing to the same counter while this test is running.
+func TestReconcileErrorsTotalIncrementsOnInducedFailure(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	derivedName := ks.Name + "-db-connection"
+
+	s := testScheme()
+	objs := append(
+		[]runtime.Object{
+			ks,
+			testDBCredentialsSecret(),
+			testAdminCredentialsSecret(),
+			testFernetKeysSecret(),
+			testCredentialKeysSecret(),
+		},
+		testReadyExternalSecrets()...,
+	)
+	cb := fake.NewClientBuilder().WithScheme(s)
+	for _, obj := range objs {
+		cb = cb.WithRuntimeObjects(obj)
+	}
+	cb = cb.WithStatusSubresource(&keystonev1alpha1.Keystone{}, &esov1.ExternalSecret{})
+
+	denyDerivedSecretWrite := apierrors.NewForbidden(
+		corev1.Resource("secrets"),
+		derivedName,
+		fmt.Errorf("simulated apiserver rejection (CC-0089 I-001)"),
+	)
+	isDerivedSecret := func(obj client.Object) bool {
+		sec, ok := obj.(*corev1.Secret)
+		return ok && sec.GetName() == derivedName
+	}
+	cb = cb.WithInterceptorFuncs(interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if isDerivedSecret(obj) {
+				return denyDerivedSecretWrite
+			}
+			return c.Create(ctx, obj, opts...)
+		},
+		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			if isDerivedSecret(obj) {
+				return denyDerivedSecretWrite
+			}
+			return c.Update(ctx, obj, opts...)
+		},
+		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			if isDerivedSecret(obj) {
+				return denyDerivedSecretWrite
+			}
+			return c.Patch(ctx, obj, patch, opts...)
+		},
+	})
+
+	r := &KeystoneReconciler{
+		Client:   cb.Build(),
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	errLabels := map[string]string{
+		"sub_reconciler": "DBConnectionSecret",
+		"condition_type": "SecretsReady",
+	}
+	before := counterValue(t, "keystone_operator_reconcile_errors_total", errLabels)
+
+	_, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace},
+	})
+	g.Expect(err).To(HaveOccurred(),
+		"the induced derived-Secret write rejection MUST surface as a reconcile error so instrumentSubReconciler increments the counter")
+	g.Expect(strings.Contains(err.Error(), "simulated apiserver rejection")).To(BeTrue(),
+		"reconcile error MUST preserve the underlying interceptor message so the failure path is unambiguous (got: %v)", err)
+
+	after := counterValue(t, "keystone_operator_reconcile_errors_total", errLabels)
+	g.Expect(after-before).To(BeNumerically(">=", 1.0),
+		"keystone_operator_reconcile_errors_total{sub_reconciler=\"DBConnectionSecret\","+
+			"condition_type=\"SecretsReady\"} must advance by at least 1 after the induced "+
+			"DBConnectionSecret failure (CC-0089, REQ-002)")
+}
+
+// TestReconcileParallelGroupErrorCountsAreAttributed exercises
+// reconcileParallelGroup with a failing CredentialKeys member and asserts that
+// the error counter is attributed to CredentialKeys (not FernetKeys or
+// NetworkPolicy). This is the wiring check for CC-0089 REQ-002 on the parallel
+// group: each member must emit its own sub_reconciler label.
+func TestReconcileParallelGroupErrorCountsAreAttributed(t *testing.T) {
+	g := NewGomegaWithT(t)
+	r := newTestReconciler()
+	ks := testKeystone()
+
+	credLabels := map[string]string{"sub_reconciler": "CredentialKeys", "condition_type": "CredentialKeysReady"}
+	fernetLabels := map[string]string{"sub_reconciler": "FernetKeys", "condition_type": "FernetKeysReady"}
+	netLabels := map[string]string{"sub_reconciler": "NetworkPolicy", "condition_type": "NetworkPolicyReady"}
+
+	baseCred := counterValue(t, "keystone_operator_reconcile_errors_total", credLabels)
+	baseFernet := counterValue(t, "keystone_operator_reconcile_errors_total", fernetLabels)
+	baseNet := counterValue(t, "keystone_operator_reconcile_errors_total", netLabels)
+
+	subs := []parallelSubReconciler{
+		{
+			name:          "FernetKeys",
+			conditionType: "FernetKeysReady",
+			fn: func(_ context.Context, _ *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+				return ctrl.Result{}, nil
+			},
+		},
+		{
+			name:          "CredentialKeys",
+			conditionType: "CredentialKeysReady",
+			fn: func(_ context.Context, _ *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+				return ctrl.Result{}, errors.New("boom")
+			},
+		},
+		{
+			name:          "NetworkPolicy",
+			conditionType: "NetworkPolicyReady",
+			fn: func(_ context.Context, _ *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+				return ctrl.Result{}, nil
+			},
+		},
+	}
+
+	_, err := r.reconcileParallelGroup(context.Background(), ks, subs)
+	g.Expect(err).To(HaveOccurred())
+
+	afterCred := counterValue(t, "keystone_operator_reconcile_errors_total", credLabels)
+	afterFernet := counterValue(t, "keystone_operator_reconcile_errors_total", fernetLabels)
+	afterNet := counterValue(t, "keystone_operator_reconcile_errors_total", netLabels)
+
+	g.Expect(afterCred-baseCred).To(Equal(1.0),
+		"failing CredentialKeys member must increment reconcile_errors with its own sub_reconciler label")
+	g.Expect(afterFernet-baseFernet).To(Equal(0.0),
+		"FernetKeys succeeded; it must NOT be credited with an error")
+	g.Expect(afterNet-baseNet).To(Equal(0.0),
+		"NetworkPolicy succeeded; it must NOT be credited with an error")
+}
+
+// TestReconcileDeleteRemovesRotationAgeSeries verifies that reconcileDelete
+// drops every per-CR metric series (key_rotation_age gauges, db_sync counters
+// and duration samples) after it releases the Keystone finalizer, so a
+// deleted CR never lingers in Prometheus output and a replacement CR with the
+// same name starts with a clean slate (CC-0089, REQ-004, REQ-012).
+func TestReconcileDeleteRemovesRotationAgeSeries(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	ks.Name = "rot-delete-cleanup"
+	ks.Namespace = "ns-rot-delete-cleanup"
+
+	r := newTestReconciler(ks)
+	ctx := context.Background()
+	_ = markKeystoneTerminating(t, r.Client, ks)
+
+	// Seed the gauge on the global registry for both key types.
+	completedAt := time.Now().Add(-30 * time.Minute)
+	g.Expect(metrics.SetKeyRotationAge(ks.Name, ks.Namespace, "fernet", completedAt)).To(Succeed())
+	g.Expect(metrics.SetKeyRotationAge(ks.Name, ks.Namespace, "credential", completedAt)).To(Succeed())
+
+	fernetLabels := map[string]string{
+		"keystone": ks.Name, "namespace": ks.Namespace, "key_type": "fernet",
+	}
+	credLabels := map[string]string{
+		"keystone": ks.Name, "namespace": ks.Namespace, "key_type": "credential",
+	}
+	g.Expect(findMetricByLabels(t, ctrlmetrics.Registry, "keystone_operator_key_rotation_age_seconds", fernetLabels)).
+		NotTo(BeNil(), "precondition: fernet gauge series must exist before reconcileDelete runs")
+	g.Expect(findMetricByLabels(t, ctrlmetrics.Registry, "keystone_operator_key_rotation_age_seconds", credLabels)).
+		NotTo(BeNil(), "precondition: credential gauge series must exist before reconcileDelete runs")
+
+	// Refresh the terminating CR so the reconciler sees the in-etcd state.
+	var terminating keystonev1alpha1.Keystone
+	g.Expect(r.Get(ctx, client.ObjectKeyFromObject(ks), &terminating)).To(Succeed())
+
+	_, err := r.reconcileDelete(ctx, &terminating)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(findMetricByLabels(t, ctrlmetrics.Registry, "keystone_operator_key_rotation_age_seconds", fernetLabels)).
+		To(BeNil(), "reconcileDelete MUST remove the fernet rotation-age gauge series (CC-0089, REQ-004)")
+	g.Expect(findMetricByLabels(t, ctrlmetrics.Registry, "keystone_operator_key_rotation_age_seconds", credLabels)).
+		To(BeNil(), "reconcileDelete MUST remove the credential rotation-age gauge series (CC-0089, REQ-004)")
 }

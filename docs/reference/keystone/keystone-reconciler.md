@@ -2743,3 +2743,104 @@ operators/keystone/
     └── testutil/
         └── envtest_setup.go                    Keystone-specific envtest helper
 ```
+
+---
+
+## Metrics Instrumentation (CC-0089)
+
+Every sub-reconciler invocation is instrumented for Prometheus via a
+single helper, `instrumentSubReconciler`, defined in
+`operators/keystone/internal/controller/instrumentation.go` (CC-0089,
+REQ-001, REQ-002, REQ-007). The orchestration `Reconcile` wraps every
+sub-reconciler call with this helper; direct calls that bypass it are a
+contract violation.
+
+For the authoritative catalogue of registered metrics — names, labels,
+and histogram buckets — see
+[Keystone Operator Prometheus Metrics](../keystone-operator-metrics.md).
+
+### The `instrumentSubReconciler` helper
+
+```go
+func instrumentSubReconciler(
+    ctx context.Context,
+    name string,
+    fn  func(context.Context) (ctrl.Result, error),
+) (ctrl.Result, error)
+```
+
+Behavioural contract:
+
+- **Always** records one observation in
+  `keystone_operator_reconcile_duration_seconds{sub_reconciler=name}`
+  via `defer` — the observation is emitted on the success path, the
+  error path, and even when `fn` panics (the deferred call runs before
+  the stack unwinds).
+- **Only** increments
+  `keystone_operator_reconcile_errors_total{sub_reconciler=name, condition_type=…}`
+  when `fn` returns a non-nil error.
+- Does **not** recover from panics — the caller sees the same
+  `panic`/error that `fn` produced.
+- Carries no per-CR labels. The `sub_reconciler` label is bounded by
+  the number of sub-reconciler names, keeping series count
+  fleet-independent (CC-0089, REQ-012).
+
+### Name → `condition_type` lookup
+
+The `condition_type` label on the error counter is resolved from the
+package-private table `subReconcilerConditionTypes` in
+`instrumentation.go`. Each entry maps a sub-reconciler name to the
+Ready sub-condition whose `True` transition that sub-reconciler is
+responsible for driving:
+
+| `sub_reconciler` | `condition_type` |
+| --- | --- |
+| `Secrets`, `DBConnectionSecret`, `Config` | `SecretsReady` |
+| `FernetKeys` | `FernetKeysReady` |
+| `CredentialKeys` | `CredentialKeysReady` |
+| `NetworkPolicy` | `NetworkPolicyReady` |
+| `Database` | `DatabaseReady` |
+| `PolicyValidation` | `PolicyValidReady` |
+| `Deployment` | `DeploymentReady` |
+| `HTTPRoute` | `HTTPRouteReady` |
+| `HealthCheck` | `KeystoneAPIReady` |
+| `HPA` | `HPAReady` |
+| `Bootstrap` | `BootstrapReady` |
+| `TrustFlush` | `TrustFlushReady` |
+
+The collapsed `SecretsReady` mapping for `Secrets`, `DBConnectionSecret`,
+and `Config` is intentional — those three sub-reconcilers form the
+earliest readiness gate and share a single condition type. The
+cardinality drift-guard
+`TestSubReconcilerConditionTypesCoversAllNames` asserts that every
+value in this table appears in `subConditionTypes`, so a rename in one
+place without the other fails CI.
+
+### Contract: wrap every new sub-reconciler
+
+Whenever a new sub-reconciler is added to `Reconcile` (sequential
+section or `reconcileParallelGroup` member), it MUST be:
+
+1. Invoked through `instrumentSubReconciler(ctx, "<Name>", fn)` rather
+   than called directly.
+2. Added to `subConditionTypes` in `keystone_controller.go` (so its
+   readiness participates in the aggregate `Ready`).
+3. Added to `subReconcilerConditionTypes` in `instrumentation.go` with
+   a `condition_type` that is a member of `subConditionTypes`.
+
+Three regression tests guard this contract:
+
+- `TestReconcileEmitsDurationForEverySubReconciler` — every name
+  registered in `subReconcilerConditionTypes` must emit at least one
+  duration sample per `Reconcile` pass.
+- `TestReconcileParallelGroupErrorCountsAreAttributed` — an induced
+  failure in a parallel-group member must increment the error counter
+  with the correct `sub_reconciler` label (not the group's).
+- `TestSubReconcilerConditionTypesCoversAllNames` — every mapped
+  `condition_type` must exist in `subConditionTypes`.
+
+For CR lifecycle hygiene, `reconcileDelete` calls
+`metrics.DeleteForKeystone(name, namespace)` after the finalizer is
+removed so per-CR series (`key_rotation_age_seconds`, `db_sync_*`) do
+not leak across the lifetime of a cluster (CC-0089, REQ-004).
+

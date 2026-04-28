@@ -152,6 +152,31 @@
         }
       }
     },
+    "monitoring": {
+      "type": "object",
+      "description": "Observability integration configuration (CC-0089)",
+      "additionalProperties": false,
+      "properties": {
+        "serviceMonitor": {
+          "type": "object",
+          "description": "Prometheus Operator ServiceMonitor settings (CC-0089, REQ-006). Requires the monitoring.coreos.com CRDs in-cluster when enabled.",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Render a ServiceMonitor targeting the operator metrics port",
+              "default": false
+            },
+            "interval": {
+              "type": "string",
+              "description": "Scrape interval (Go duration: e.g., 15s, 30s, 1m, or 0 to use the global default)",
+              "default": "30s",
+              "pattern": "^(0|([0-9]+(ns|us|\u00b5s|ms|s|m|h))+)$"
+            }
+          }
+        }
+      }
+    },
     "serviceAccount": {
       "type": "object",
       "description": "Service account configuration",

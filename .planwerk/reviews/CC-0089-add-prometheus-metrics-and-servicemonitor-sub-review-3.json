@@ -1,0 +1,58 @@
+{
+  "summary": "Iteration 3 of CC-0089 (Prometheus metrics + ServiceMonitor) addressing external review #2 (gndrmnn). Five test-organisation findings were resolved by: (1) merging cardinality_test.go into collectors_test.go as TestSubReconcilerMetricsHaveNoCRLabels, (2) moving the test-only newCollectorsForTest constructor out of collectors.go into collectors_test.go, (3) deleting contract_test.go (doc-vs-code drift guard) entirely, (4) deleting the AST-based literal-analysis drift guard from instrumentation_test.go, and (5) keeping the internal *collectors methods in collectors.go with a corrected comment because they are forwarded to by every public package-level helper (not test-only). Tests pass (metrics + controller), go vet is clean, and gosec/lint find no issues on the changed files.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass", "checked": true},
+    {"item": "Edge cases are covered", "checked": true},
+    {"item": "Test tier completeness preserved (unit + cardinality drift guard retained)", "checked": true},
+    {"item": "Cardinality drift guard still enforced as runtime test (TestSubReconcilerMetricsHaveNoCRLabels)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns", "checked": true},
+    {"item": "No dead code introduced", "checked": true},
+    {"item": "Function comments updated to reflect new structure (collectors.go:37-40 and 199-205)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "All user inputs validated", "checked": true},
+    {"item": "No hardcoded secrets", "checked": true},
+    {"item": "gosec clean on changed files", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible", "checked": true},
+    {"item": "Test-only code relocated out of production file (newCollectorsForTest)", "checked": true},
+    {"item": "Cross-package test helper (NewTestRecorder) intentionally retained in production file because Go cannot expose _test.go symbols across packages — a constraint, not a smell", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code", "checked": false},
+    {"item": "No speculative abstractions", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Errors detected early (panic on duplicate registration)", "checked": true},
+    {"item": "Zero-time guard on SetKeyRotationAge preserved (REQ-003)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "All external inputs validated", "checked": true},
+    {"item": "Cardinality drift guard (REQ-012) still enforced", "checked": true},
+    {"item": "subReconcilerConditionTypes runtime drift guard (TestSubReconcilerConditionTypesCoversAllNames) retained", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "Q3",
+      "severity": "MINOR",
+      "description": "Minor 7-line duplication between metrics/collectors.go:112-120 (NewTestRecorder) and metrics/collectors_test.go:28-37 (newCollectorsForTest). Both call newCollectors(), then c.register(reg), and panic with the same message on registration error. newCollectorsForTest could be implemented as `return NewTestRecorder(reg).c` since it lives in the same package and has access to the unexported field. Not a bug, not a regression — just a small DRY opportunity.",
+      "location": "operators/keystone/internal/metrics/collectors.go:112-120 and operators/keystone/internal/metrics/collectors_test.go:28-37",
+      "fix": "Replace the body of newCollectorsForTest with `return NewTestRecorder(reg).c` to forward through the public constructor and eliminate the duplicated register+panic block.",
+      "evidence": "collectors.go:112-120:\nfunc NewTestRecorder(reg prometheus.Registerer) *TestRecorder {\n\tc := newCollectors()\n\tif err := c.register(reg); err != nil {\n\t\tpanic(fmt.Sprintf(\"metrics: test registry rejected collectors: %v\", err))\n\t}\n\treturn &TestRecorder{c: c}\n}\n\ncollectors_test.go:28-37:\nfunc newCollectorsForTest(reg prometheus.Registerer) *collectors {\n\tc := newCollectors()\n\tif err := c.register(reg); err != nil {\n\t\tpanic(fmt.Sprintf(\"metrics: test registry rejected collectors: %v\", err))\n\t}\n\treturn c\n}",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider folding newCollectorsForTest into a one-line wrapper around NewTestRecorder to remove the small block of duplicated registration logic. Cosmetic only; functionality is identical."
+  ],
+  "next_steps": [
+    "No blocking changes required. Optional: collapse the duplicated register+panic block as described above before merge."
+  ],
+  "detected_patterns": []
+}

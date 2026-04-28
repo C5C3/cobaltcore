@@ -32,6 +32,14 @@ webhook:
 metrics:
   port: 8080
 
+# CC-0089, REQ-006: Prometheus ServiceMonitor integration.
+# When enabled, renders a monitoring.coreos.com/v1 ServiceMonitor targeting the
+# operator's metrics port; prometheus-operator CRDs must be installed in-cluster.
+monitoring:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+
 serviceAccount:
   create: true
   name: ""
