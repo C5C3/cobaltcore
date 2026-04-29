@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-26T19:27:28.125106+00:00",
+  "feature_id": "CC-0096",
+  "task_type": "commit",
+  "session_key": "CC-0096",
+  "model": "claude-opus-4-7",
+  "prompt": "Generate a detailed git commit body for this commit.\nSubject: fix(CC-0096): address review #2 feedback from berendt\n\nReview feedback is in: /worktrees/CC-0096/.planwerk/reviews/CC-0096-github-review-by-berendt-external-2.json\nUse `git diff --cached -- ':(exclude).planwerk'` to see the full staged diff.\n\nDiff stat:\ndocs/reference/keystone-reconciler.md              | 14 ++++---\n docs/reference/keystone-upgrade-flow.md            | 14 ++++---\n .../internal/controller/reconcile_trustflush.go    | 29 +++++++++----\n .../controller/reconcile_trustflush_test.go        | 22 ++++++----\n tests/e2e/keystone/trust-flush/chainsaw-test.yaml  | 49 ++++++++++++++++------\n 5 files changed, 91 insertions(+), 37 deletions(-)\n\nWrite ONLY the body text, no subject line, no markdown.\nFor each changed file, write a bullet point: '- path/to/file: what was changed'\nDo NOT mention .planwerk directory changes.\nOutput ONLY plain text — no tool_call tags, no XML, no code blocks.",
+  "prompt_length": 964,
+  "caller": "run_claude_cli"
+}

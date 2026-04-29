@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-29T13:35:46.008938+00:00",
+  "feature_id": "CC-0096",
+  "task_type": "structure-review",
+  "session_key": "CC-0096",
+  "model": "claude-opus-4-7",
+  "prompt": "Convert this human code review feedback into a structured prompt for an AI coding agent.\n\nFeature: CC-0096 - Enable Trust Flush by default for expired delegations\nReviewer: gndrmnn\n\nRaw feedback:\n\n\n## Inline Comments\n- `operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml:1008` — \"This project has never had a stable release yet. The definitions are fine to break. Nobody uses this productively yet. Remove the comment about backwards compatibility.\"\n- `operators/keystone/helm/keystone-operator/crds/keystone.openstack.c5c3.io_keystones.yaml:1011` — \"This project has never had a stable release yet. The definitions are fine to break. Nobody uses this productively yet. Remove the comment about backwards compatibility.\"\n- `operators/keystone/api/v1alpha1/keystone_types.go:84` — \"This project has never had a stable release yet. The definitions are fine to break. Nobody uses this productively yet. Remove the comment about backwards compatibility.\"\n\nIMPORTANT: Preserve the reviewer's original scope exactly.\nIf the reviewer commented on specific files/lines, the structured prompt must target ONLY those locations.\nDo NOT broaden or generalize the reviewer's intent to other files.\n\nOutput a structured prompt in this format:\n\nPlease address the comments from this code review:\n## Overall Comments\n- (list each overall concern)\n## Individual Comments\n### Comment N\n<location path=\"...\" line_range=\"...\" />\n(description of change needed)\n\nBe specific about file paths and line numbers where available.\nOnly output the structured prompt, nothing else.",
+  "prompt_length": 1579,
+  "caller": "run_claude_cli"
+}
