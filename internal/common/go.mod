@@ -6,7 +6,7 @@ require (
 	github.com/cert-manager/cert-manager v1.17.1
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260305123308-c0251c8d3184
 	github.com/mariadb-operator/mariadb-operator v0.38.1
-	github.com/onsi/gomega v1.39.1
+	github.com/onsi/gomega v1.40.0
 	k8s.io/api v0.35.4
 	k8s.io/apiextensions-apiserver v0.35.4
 	k8s.io/apimachinery v0.35.4

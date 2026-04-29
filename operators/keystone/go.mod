@@ -7,7 +7,7 @@ require (
 	github.com/cert-manager/cert-manager v1.17.1
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260305123308-c0251c8d3184
 	github.com/mariadb-operator/mariadb-operator v0.38.1
-	github.com/onsi/gomega v1.39.1
+	github.com/onsi/gomega v1.40.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/robfig/cron/v3 v3.0.1
