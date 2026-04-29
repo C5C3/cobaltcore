@@ -12,6 +12,14 @@
 # `${{ env.WITH_CHAOS_MESH }}` resolves to an empty string and
 # hack/deploy-infra.sh's `${WITH_CHAOS_MESH:-false}` default keeps Chaos
 # Mesh out of the install.
+#
+# CC-0100: WITH_PROMETHEUS is threaded the same way as WITH_CHAOS_MESH so
+# callers (e.g. the e2e-prometheus job) can opt in to installing the
+# kube-prometheus-stack on top of the otherwise minimal Quick Start. When
+# the calling job leaves WITH_PROMETHEUS unset, `${{ env.WITH_PROMETHEUS }}`
+# resolves to an empty string and hack/deploy-infra.sh's
+# `${WITH_PROMETHEUS:-false}` default keeps the monitoring stack out of
+# the install.
 
 name: Setup E2E infrastructure
 description: >
@@ -21,7 +29,9 @@ description: >
   solely so `hack/ci-dump-diagnostics.sh` can call `flux logs` on failed
   runs. Assumes a kind cluster already exists (SKIP_KIND_CREATE is set
   automatically). Set WITH_CHAOS_MESH=true on the calling step to opt in to
-  Chaos Mesh installation (CC-0097); default is to skip it.
+  Chaos Mesh installation (CC-0097); default is to skip it. Set
+  WITH_PROMETHEUS=true on the calling step to opt in to kube-prometheus-stack
+  installation (CC-0100); default is to skip it.
 
 runs:
   using: composite
@@ -41,4 +51,6 @@ runs:
         SKIP_KIND_CREATE: "true"
         # CC-0097: opt-in flag — empty when caller does not set it; deploy-infra.sh defaults to false.
         WITH_CHAOS_MESH: ${{ env.WITH_CHAOS_MESH }}
+        # CC-0100: opt-in flag — empty when caller does not set it; deploy-infra.sh defaults to false.
+        WITH_PROMETHEUS: ${{ env.WITH_PROMETHEUS }}
       run: make deploy-infra

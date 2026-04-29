@@ -3,7 +3,7 @@
 **Review-Area**: documentation
 **Detection-Hint**: When a kustomize overlay patch changes multiple default behaviors (disables features, overrides resource limits, changes runtime settings), check whether the base configuration's defaults are intentional for non-overlayed environments and whether this divergence is documented. The strongest form of divergence is moving a component out of the production base entirely into a kind-only opt-in overlay — verify that the production omission and the opt-in flag are both documented.
 **Severity**: WARNING
-**Occurrences**: 2
+**Occurrences**: 3
 
 ## What to check
 
@@ -43,3 +43,53 @@ to chaos-mesh today, look in:
 The pattern still applies to any future component where the kind overlay
 diverges from production — and now, even more strongly, to any component
 that is moved out of the production base entirely.
+
+## CC-0100 follow-up
+
+CC-0100 added a third worked example of this pattern: the kube-prometheus-stack
+is **never** installed in production overlays (production clusters are
+expected to run their own Prometheus with `serviceMonitorSelector` widened
+to pick up the operator's `ServiceMonitor`), but the kind Quick Start can
+opt in to a tuned-down stack via `WITH_PROMETHEUS=true make deploy-infra`.
+This sits alongside the chaos-mesh opt-in (CC-0097, `WITH_CHAOS_MESH=true`),
+the kind-only Envoy demo settings on the Envoy Gateway, and the kind-only
+OpenBao Web UI (`ui = true` in the Raft config) — each of those is a
+slightly different shape of the same divergence:
+
+- **CC-0097 (chaos-mesh):** component moved out of production base into a
+  `WITH_CHAOS_MESH=true` overlay.
+- **CC-0100 (kube-prometheus-stack):** new component added kind-only via
+  `WITH_PROMETHEUS=true` overlay; production overlay contains no reference
+  at all (deliberately).
+- **OpenBao UI:** kind overlay flips `ui = true` in the standalone Raft
+  config; production overlay keeps `ui = false`.
+- **Envoy Gateway demo settings:** kind overlay relaxes settings for the
+  shared `openstack-gw`; production overlay keeps tighter defaults.
+
+When applying this pattern to the CC-0100 prometheus stack today, look in:
+
+- `deploy/kind/prometheus/kustomization.yaml` — overlay + kind-tuned values
+  (alertmanager off, node-exporter off, kube-state-metrics off, 6h
+  retention, ≤100m CPU / ≤256Mi memory caps) + dashboard configMapGenerator
+- `deploy/flux-system/kustomization.yaml` — production overlay (no
+  kube-prometheus-stack entry; deliberately omitted)
+- `hack/deploy-infra.sh` — `WITH_PROMETHEUS=true` flag, opt-in `kubectl
+  apply -k`, and the post-Ready `kubectl patch` that flips
+  `monitoring.serviceMonitor.enabled=true` on the keystone-operator
+  HelmRelease
+- `docs/quick-start-extended.md` — `::: tip Enabling Prometheus & Grafana
+  (CC-0100)` block in Step 3 and the new
+  `## Step 4c — Open the Grafana UI` section
+- `docs/quick-start.md` — single-line pointer back to Step 4c
+- `docs/guides/enable-keystone-operator-metrics.md` — `::: tip On kind`
+  callout reframing the rest of the guide as the canonical non-kind path
+- `docs/reference/infrastructure/infrastructure-manifests.md` —
+  `### kube-prometheus-stack (kind-only opt-in, CC-0100)` subsection
+  under `## Kind Overlay Demo Addons`, sitting alongside the existing
+  `### Chaos Mesh (kind-only opt-in)` example
+
+Reviewers checking new kind-only opt-ins should confirm the production
+omission is explicit, the opt-in flag has a single name documented in both
+the Quick Start callout and the reference doc set, and the kind overlay
+does not silently re-introduce the component into the production
+kustomization root.

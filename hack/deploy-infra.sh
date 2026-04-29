@@ -68,6 +68,12 @@ KIND_HOST_PORT="${KIND_HOST_PORT:-443}"
 # (CC-0097).
 WITH_CHAOS_MESH="${WITH_CHAOS_MESH:-false}"
 
+# Gates the opt-in kube-prometheus-stack kind overlay (deploy/kind/prometheus)
+# which installs Prometheus + Grafana for visualising keystone-operator
+# metrics. Defaults to false so the kind Quick Start stays minimal; set
+# WITH_PROMETHEUS=true to install the monitoring stack (CC-0100, REQ-005).
+WITH_PROMETHEUS="${WITH_PROMETHEUS:-false}"
+
 # Gateway API CRD release installed before the keystone-operator HelmRelease so
 # the operator's HTTPRoute watch has a registered kind at startup (CC-0065).
 # Keep aligned with sigs.k8s.io/gateway-api in operators/keystone/go.mod.
@@ -594,6 +600,52 @@ load_chaos_mesh_kernel_modules() {
 }
 
 # ---------------------------------------------------------------------------
+# enable_keystone_operator_servicemonitor — Toggle the operator chart's
+# `monitoring.serviceMonitor.enabled` value to true so the kube-prometheus-stack
+# Prometheus instance can scrape the operator metrics endpoint via the
+# rendered ServiceMonitor (CC-0089, REQ-006 / CC-0100, REQ-005).
+#
+# Callable only when WITH_PROMETHEUS=true. Patches spec.values via
+# strategic-merge so any other values set on the HelmRelease (including the
+# kind-base suspend patch) are preserved.
+#
+# DECISION: handle suspended HelmRelease in kind
+# Ambiguity: deploy/kind/base/kustomization.yaml suspends the keystone-operator
+#   HelmRelease (lines 87-106) so CI can `helm install` it manually with a
+#   locally built image. A suspended HelmRelease never reconciles, so a
+#   wait-for-Ready against it would always time out.
+# Chose: patch spec.values regardless of suspend state, then read the current
+#   spec.suspend; skip the wait when suspended (logging the rationale) and
+#   wait for Ready otherwise. The patch remains durable: when ci-deploy-
+#   operator.sh later installs the chart, its callers can read the value, and
+#   if the suspend patch is removed the HelmRelease will reconcile on the new
+#   values without further action.
+# Reason: matches the task contract literally for non-kind callers while
+#   keeping the kind path green; the suspend semantics are owned by Flux, not
+#   by this script.
+# ---------------------------------------------------------------------------
+enable_keystone_operator_servicemonitor() {
+  local timeout="${1:-${HELMRELEASE_TIMEOUT}}"
+
+  log "Enabling keystone-operator ServiceMonitor (CC-0100, REQ-005)..."
+  kubectl patch helmrelease keystone-operator -n openstack --type=merge \
+    -p '{"spec":{"values":{"monitoring":{"serviceMonitor":{"enabled":true}}}}}'
+
+  local suspended
+  suspended=$(kubectl get helmrelease keystone-operator -n openstack \
+    -o jsonpath='{.spec.suspend}' 2>/dev/null || true)
+  if [[ "${suspended}" == "true" ]]; then
+    log "keystone-operator HelmRelease is suspended (kind base patch); skipping reconcile wait."
+    log "  spec.values patch is durable — re-enable Flux management or run ci-deploy-operator.sh"
+    log "  with monitoring.serviceMonitor.enabled=true to render the ServiceMonitor (CC-0100, REQ-005)."
+    return 0
+  fi
+
+  wait_for_helmreleases "${timeout}" keystone-operator
+  log "keystone-operator HelmRelease reconciled with monitoring.serviceMonitor.enabled=true."
+}
+
+# ---------------------------------------------------------------------------
 # openbao_kube_exec — Execute a command inside the openbao-0 pod.
 # Does NOT pass BAO_TOKEN (used for init/unseal before the token exists).
 # ---------------------------------------------------------------------------
@@ -797,6 +849,7 @@ main() {
   log "ExternalSecret timeout : ${EXTERNALSECRET_TIMEOUT}s"
   log "Kind host port      : ${KIND_HOST_PORT} → 31443 (override via KIND_HOST_PORT)"
   log "Chaos Mesh         : ${WITH_CHAOS_MESH} (set WITH_CHAOS_MESH=true to install)"
+  log "Prometheus stack    : ${WITH_PROMETHEUS} (set WITH_PROMETHEUS=true to install)"
   log ""
 
   # Pre-flight checks
@@ -902,6 +955,28 @@ main() {
     log "Chaos Mesh kind overlay applied (WITH_CHAOS_MESH=true)."
   fi
 
+  # Opt-in kube-prometheus-stack overlay (CC-0100, REQ-005). Layered on top of
+  # the base so the default Quick Start stays minimal; enable with
+  # WITH_PROMETHEUS=true. The overlay is self-contained (no `../../` parent-dir
+  # references), so kubectl's embedded kustomize renders it under the default
+  # LoadRestrictionsRootOnly security check — same contract as the chaos-mesh
+  # overlay (no `--load-restrictor` flag required, kubernetes/kubectl#948).
+  #
+  # The dashboard JSON copy step (CC-0100, REQ-004) stages the Grafana
+  # dashboard from operators/keystone/dashboards/ into the overlay root so
+  # configMapGenerator can reference it without a parent-dir traversal. The
+  # single source of truth lives at operators/keystone/dashboards/; the
+  # destination is git-ignored as a build artifact, and the copy is idempotent
+  # so `git status` after `make deploy-infra` shows no unexpected modifications.
+  # The copy MUST run immediately before `kubectl apply -k` so the file exists
+  # when kustomize renders the ConfigMap.
+  if [[ "${WITH_PROMETHEUS}" == "true" ]]; then
+    cp -f "${REPO_ROOT}/operators/keystone/dashboards/keystone-operator.json" "${REPO_ROOT}/deploy/kind/prometheus/keystone-operator.json"
+    log "Dashboard JSON copied into deploy/kind/prometheus/ for kustomize configMapGenerator (WITH_PROMETHEUS=true; CC-0100, REQ-004)."
+    kubectl apply -k "${REPO_ROOT}/deploy/kind/prometheus"
+    log "Prometheus kind overlay applied (WITH_PROMETHEUS=true; CC-0100, REQ-005)."
+  fi
+
   # Force-reconcile HelmRepository sources so chart indexes are available
   # before HelmReleases attempt to resolve charts. Without this, the
   # helm-controller may see unindexed sources and wait until the next
@@ -937,7 +1012,20 @@ main() {
   if [[ "${WITH_CHAOS_MESH}" == "true" ]]; then
     helm_releases+=(chaos-mesh)
   fi
+  # CC-0100, REQ-005: kube-prometheus-stack is appended last so the relative
+  # ordering of the seven base releases (and chaos-mesh) is preserved exactly.
+  if [[ "${WITH_PROMETHEUS}" == "true" ]]; then
+    helm_releases+=(kube-prometheus-stack)
+  fi
   wait_for_helmreleases "${HELMRELEASE_TIMEOUT}" "${helm_releases[@]}"
+
+  # CC-0100, REQ-005: with kube-prometheus-stack Ready, flip the operator
+  # chart's monitoring.serviceMonitor.enabled to true so Prometheus picks up
+  # the metrics target. Runs only when WITH_PROMETHEUS=true to keep the
+  # default Quick Start free of monitoring-coreos-com CRD lookups.
+  if [[ "${WITH_PROMETHEUS}" == "true" ]]; then
+    enable_keystone_operator_servicemonitor "${HELMRELEASE_TIMEOUT}"
+  fi
 
   # Step 5: Apply infrastructure kustomize overlay (CRD-dependent resources)
   log "=== Step 5/8: Apply infrastructure kustomize overlay ==="

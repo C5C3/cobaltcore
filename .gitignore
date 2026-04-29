@@ -33,3 +33,8 @@ docs/.vitepress/dist/
 # Local developer scratch
 keystone.yaml
 keystone-ca.crt
+
+# CC-0100 — Build artifact: copied at deploy time from operators/keystone/dashboards/
+# (WITH_PROMETHEUS=true) so kustomize's configMapGenerator can reference it from
+# the overlay root without a `../../` parent traversal (LoadRestrictionsRootOnly).
+deploy/kind/prometheus/keystone-operator.json

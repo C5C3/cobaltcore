@@ -1,0 +1,83 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# kube-prometheus-stack HelmRelease — opt-in observability for the kind Quick Start.
+# References the existing prometheus-community HelmRepository in flux-system; no
+# new source is introduced (CC-0100, REQ-001).
+# Kind-tuned values (CC-0100, REQ-002): crds.enabled=false because the
+# prometheus-operator-crds HelmRelease at deploy/flux-system/releases/prometheus-operator-crds.yaml
+# is the single CRD owner — avoids dual-owner reconcile flap. Alertmanager, nodeExporter,
+# and kubeStateMetrics are disabled since a single-node kind cluster does not need
+# cluster-wide kubelet/cadvisor scraping for this demo, and retention is capped at 6h
+# to fit the small kind PV.
+# Selector tuning (CC-0100, REQ-003): serviceMonitorSelectorNilUsesHelmValues=false
+# and an empty serviceMonitorSelector ensure the keystone-operator's
+# app.kubernetes.io/*-labelled ServiceMonitor is picked up cross-namespace, sidestepping
+# the `release: <stack-name>` selector mismatch documented in
+# docs/guides/enable-keystone-operator-metrics.md:40-49.
+# Feature: CC-0100
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kube-prometheus-stack
+  namespace: monitoring
+spec:
+  interval: 30m
+  dependsOn:
+    - name: cert-manager
+      namespace: cert-manager
+  chart:
+    spec:
+      chart: kube-prometheus-stack
+      version: ">=65.0.0 <70.0.0"
+      sourceRef:
+        kind: HelmRepository
+        name: prometheus-community
+        namespace: flux-system
+  # CC-0100: install.crds=CreateReplace and upgrade.crds=CreateReplace are
+  # set for symmetry with every other HelmRelease under deploy/flux-system/
+  # (FluxCD-HelmRelease-common pattern). They have no effect here because
+  # values.crds.enabled=false (below) makes the chart render zero CRDs —
+  # the always-on prometheus-operator-crds HelmRelease is the single owner
+  # of monitoring.coreos.com/v1 CRDs (avoids dual-owner reconcile flap).
+  # Kept as a no-op so a future chart bump that flips the meaning of
+  # crds.enabled does not catch this overlay out of pattern.
+  install:
+    crds: CreateReplace
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  values:
+    crds:
+      enabled: false
+    alertmanager:
+      enabled: false
+    nodeExporter:
+      enabled: false
+    kubeStateMetrics:
+      enabled: false
+    prometheus:
+      prometheusSpec:
+        retention: 6h
+        serviceMonitorSelectorNilUsesHelmValues: false
+        serviceMonitorSelector: {}
+        serviceMonitorNamespaceSelector: {}
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            memory: 512Mi
+    grafana:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          memory: 256Mi

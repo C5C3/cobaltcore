@@ -166,10 +166,11 @@ chainsaw-lint:
 # test-shell runs every shell-script unit test under tests/unit/ (CC-0085, REQ-003/REQ-005/REQ-007).
 # Each test is a self-contained bash script that uses tests/lib/assertions.sh.
 # CC-0088: added tests/unit/docs/ for documentation-coverage shell tests (tasks 3.6-3.8).
+# CC-0100, REQ-010: added tests/unit/ci/ for CI workflow path-filter completeness lints.
 test-shell:
 	@echo "Running shell unit tests..."
 	@status=0; \
-	for t in tests/unit/hack/*_test.sh tests/unit/deploy/*_test.sh tests/unit/renovate/*_test.sh tests/unit/docs/*_test.sh; do \
+	for t in tests/unit/hack/*_test.sh tests/unit/deploy/*_test.sh tests/unit/renovate/*_test.sh tests/unit/docs/*_test.sh tests/unit/ci/*_test.sh; do \
 		[ -f "$$t" ] || continue; \
 		echo "=== $$t ==="; \
 		bash "$$t" || status=1; \
@@ -365,6 +366,23 @@ e2e-chaos:
 	@kubectl get ns chaos-mesh >/dev/null 2>&1 || { echo 'chaos-mesh is not installed; run `WITH_CHAOS_MESH=true make deploy-infra` first' >&2; exit 1; }
 	chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml tests/e2e-chaos/
 
+.PHONY: e2e-prometheus
+# e2e-prometheus runs the kube-prometheus-stack chainsaw suite against a deployed
+# kind cluster (CC-0100, REQ-011). The Prometheus + Grafana stack is opt-in in the
+# kind Quick Start (CC-0100, REQ-005); fail fast with a clear remediation hint when
+# the monitoring namespace is missing instead of letting chainsaw attempt the suite
+# against a cluster that lacks the dependency. The two preflights are kept separate
+# so the kubectl/cluster-reachability failure is not conflated with the
+# prometheus-not-installed failure — see review pattern
+# .planwerk/review_patterns/distinguish-collapsed-failure-modes-in-preflight-checks.md
+# (CC-0100). This Makefile target also satisfies the CI-to-Makefile parity expected
+# by .planwerk/review_patterns/maintain-ci-to-makefile-parity-for-new-jobs.md so
+# developers can reproduce the e2e-prometheus CI job locally without reading YAML.
+e2e-prometheus:
+	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
+	@kubectl get ns monitoring >/dev/null 2>&1 || { echo 'kube-prometheus-stack is not installed; run `WITH_PROMETHEUS=true make deploy-infra` first' >&2; exit 1; }
+	chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/keystone/prometheus-stack/
+
 .PHONY: tempest-test
 # tempest-test runs Tempest API tests against a deployed OpenStack service (CC-0035 REQ-007).
 # Requires a running kind cluster with the service deployed.
@@ -372,6 +390,23 @@ e2e-chaos:
 tempest-test:
 	$(if $(SERVICE),,$(error tempest-test requires SERVICE, e.g. make tempest-test SERVICE=keystone))
 	SERVICE=$(SERVICE) hack/run-tempest.sh
+
+.PHONY: stage-prometheus-dashboard
+# stage-prometheus-dashboard copies the canonical Keystone Operator Grafana
+# dashboard JSON into deploy/kind/prometheus/ so that local kustomize flows
+# (kustomize build, kubectl apply -k, chainsaw lint) can render the
+# configMapGenerator without a parent-dir traversal (CC-0100, REQ-004).
+#
+# The destination file is git-ignored — the canonical source is
+# operators/keystone/dashboards/keystone-operator.json. `make deploy-infra`
+# (with WITH_PROMETHEUS=true) performs the same copy automatically; this
+# target exists for developers who want to validate the overlay without
+# running the full deploy script. See
+# docs/reference/infrastructure/infrastructure-manifests.md for the
+# overlay's staging contract.
+stage-prometheus-dashboard:
+	cp -f operators/keystone/dashboards/keystone-operator.json deploy/kind/prometheus/keystone-operator.json
+	@echo "Staged dashboard JSON into deploy/kind/prometheus/ (CC-0100, REQ-004)."
 
 .PHONY: deploy-infra
 deploy-infra:

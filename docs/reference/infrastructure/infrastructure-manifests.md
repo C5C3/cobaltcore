@@ -716,3 +716,119 @@ WITH_CHAOS_MESH=true make deploy-infra
 
 This is the prerequisite for `make e2e-chaos`. See
 [Chaos E2E Tests](../testing/chaos-e2e-tests.md) for the full workflow.
+
+### kube-prometheus-stack (kind-only opt-in, CC-0100)
+
+**File:** `deploy/kind/prometheus/kustomization.yaml`
+
+[`kube-prometheus-stack`](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack)
+ships as a separate **opt-in** kind overlay (CC-0100). The default
+`make deploy-infra` flow does **not** install it — the `monitoring`
+namespace stays absent, and Prometheus / Grafana / the prometheus-operator
+pods do not consume any of the kind node's CPU or memory budget unless a
+contributor explicitly opts in. The production `deploy/flux-system/` overlay
+also does not install the stack: production clusters are expected to run
+their own Prometheus and widen its `serviceMonitorSelector` to pick up the
+keystone-operator chart's `ServiceMonitor` (see
+[Enable Keystone Operator Metrics](../../guides/enable-keystone-operator-metrics.md)
+for that wiring path).
+
+The overlay is self-contained: the `Namespace` and `HelmRelease` live in
+`deploy/kind/prometheus/namespace.yaml` and
+`deploy/kind/prometheus/release.yaml`, and the upstream `prometheus-community`
+HelmRepository in `deploy/flux-system/sources/prometheus-community.yaml` is
+**reused** (it is already present for the `prometheus-operator-crds`
+HelmRelease in the production base, so no new source manifest is added to
+the production tree). The overlay bundles the resources with:
+
+| Property | Value |
+| --- | --- |
+| Target namespace | `monitoring` (created inline; no PodSecurity label override required) |
+| Chart | `kube-prometheus-stack` |
+| Version constraint | `>=65.0.0 <70.0.0` |
+| Source | `prometheus-community` HelmRepository (reused from `deploy/flux-system/sources/`) |
+| Dependencies | `cert-manager` in `cert-manager` namespace |
+
+**Kind-tuned values** (deliberately too lean for a real workload — they exist
+so the stack fits in a single-node kind cluster alongside Flux, the operators,
+and the OpenStack control plane — CC-0100, REQ-002, REQ-003):
+
+| Helm value | Override | Purpose |
+| --- | --- | --- |
+| `crds.enabled` | `false` | The `monitoring.coreos.com` CRDs are already installed by the production-base `prometheus-operator-crds` HelmRelease — re-installing them from the chart would fight that release on every reconcile |
+| `alertmanager.enabled` | `false` | No alert routing in a developer cluster |
+| `nodeExporter.enabled` | `false` | Single-node kind has no meaningful node-level metrics worth scraping |
+| `kubeStateMetrics.enabled` | `false` | Kube-state-metrics adds noise the kind dashboards do not consume |
+| `prometheus.prometheusSpec.retention` | `6h` | Short retention keeps the Prometheus PVC tiny on kind |
+| `prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues` | `false` | Allow the operator chart's `ServiceMonitor` to be scraped without forcing a `release: kube-prometheus-stack` label on it |
+| `prometheus.prometheusSpec.serviceMonitorSelector` | `{}` | Match every `ServiceMonitor` in the cluster (kind only — production overlays should use a tighter selector) |
+| `prometheus.prometheusSpec.serviceMonitorNamespaceSelector` | `{}` | Match every namespace (kind only — see above) |
+| `prometheus.prometheusSpec.resources` / `grafana.resources` | `100m CPU / 256Mi mem` caps | Hard cap on kind resource use |
+
+**Dashboard provisioning** (CC-0100, REQ-004). The overlay also adds a
+`configMapGenerator` that bundles the keystone-operator dashboard JSON
+(`operators/keystone/dashboards/keystone-operator.json` — the **single source
+of truth**, never forked into the overlay) with the
+`grafana_dashboard: "1"` and `app.kubernetes.io/part-of: kube-prometheus-stack`
+labels. Grafana's sidecar discovers the labelled ConfigMap on startup and
+imports it into the **Dashboards → Keystone Operator** entry without any
+manual API call. Because the dashboard JSON lives outside the overlay
+directory, `hack/deploy-infra.sh` performs an idempotent copy
+into `deploy/kind/prometheus/keystone-operator.json` immediately before
+`kubectl apply -k` runs — this satisfies kustomize's default
+`LoadRestrictionsRootOnly` constraint (the overlay has no `../` references)
+without requiring `--load-restrictor=LoadRestrictionsNone`.
+
+**Local validation (`make stage-prometheus-dashboard`).** The staged
+`deploy/kind/prometheus/keystone-operator.json` is git-ignored — the
+canonical file lives only at `operators/keystone/dashboards/keystone-operator.json`.
+Developers who want to run `kustomize build deploy/kind/prometheus/`,
+`kubectl apply -k deploy/kind/prometheus/`, or `chainsaw lint` against the
+overlay **without** running `WITH_PROMETHEUS=true make deploy-infra` first
+must stage the dashboard manually:
+
+```bash
+make stage-prometheus-dashboard
+```
+
+The target performs the same `cp -f` that `hack/deploy-infra.sh` runs at
+deploy time, so local renders match CI exactly. `make deploy-infra`
+re-runs the copy on every invocation, so explicit staging is not needed
+when going through the full deploy path.
+
+**ServiceMonitor enablement** (CC-0100, REQ-005). The keystone-operator
+chart defaults to `monitoring.serviceMonitor.enabled=false` so production
+overlays inherit the safe default. When `WITH_PROMETHEUS=true`,
+`hack/deploy-infra.sh` waits for the `kube-prometheus-stack` HelmRelease to
+become Ready, then runs:
+
+```bash
+kubectl patch helmrelease keystone-operator -n openstack --type=merge \
+  -p '{"spec":{"values":{"monitoring":{"serviceMonitor":{"enabled":true}}}}}'
+```
+
+…and waits for the keystone-operator HelmRelease to reconcile back to
+`Ready=True` on the new values. The patch is **only applied when
+`WITH_PROMETHEUS=true`** — the chart values themselves are never modified,
+which keeps the production posture unchanged.
+
+**Opt-in usage:**
+
+```bash
+WITH_PROMETHEUS=true make deploy-infra
+```
+
+This is the prerequisite for `make e2e-prometheus` (see
+[CI / e2e-prometheus job](../ci-cd/ci-workflow#e2e-prometheus) for the workflow). For the kind UI
+walkthrough — port-forward, default Grafana credentials, the bundled
+`Keystone Operator` dashboard, and a Prometheus targets sanity-check — see
+[Extended Quick Start — Step 4c](../../quick-start-extended.md#step-4c-grafana-ui).
+
+**Posture summary.** Reviewers checking new kind-only opt-ins should treat
+this entry as a parallel of the `Chaos Mesh (kind-only opt-in)` example
+above: the production omission is explicit, the opt-in flag has a single
+documented name (`WITH_PROMETHEUS`), and the kind overlay is self-contained
+under `deploy/kind/prometheus/` so the production kustomization root is
+untouched. The
+[`document-intentional-environment-divergence-in-overlays`](https://github.com/c5c3/forge/blob/main/.planwerk/review_patterns/document-intentional-environment-divergence-in-overlays.md)
+review pattern's CC-0100 follow-up section catalogues the full surface area.

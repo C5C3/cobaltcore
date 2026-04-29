@@ -85,7 +85,7 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 
 ## Job Dependency DAG
 
-The workflow defines 22 jobs organised in a directed acyclic graph:
+The workflow defines 24 jobs organised in a directed acyclic graph:
 
 ```
 Gate Jobs (always run):
@@ -111,6 +111,8 @@ E2E Jobs (depends on build-e2e-images):
   e2e-infra ──────> needs: [changes], if: needs.changes.outputs.e2e-infra == 'true'
   e2e-operator ───> needs: [changes, build-e2e-images]
   e2e-chaos ──────> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
+  e2e-prometheus ─> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
+                     if: needs.changes.outputs.e2e-prometheus == 'true'
   tempest ────────> needs: [changes, build-e2e-images]
 
 Publish Jobs (main/tags only, depends on E2E):
@@ -122,9 +124,9 @@ Release Job (v* tags only, depends on publish):
   github-release ──> needs: [changes, merge-operator-images, helm-push], if: v* tag
 ```
 
-The four E2E jobs (`e2e-infra`, `e2e-operator`, `e2e-chaos`, `tempest`) share infrastructure
-setup via the `setup-e2e-infra` composite action and diagnostic teardown via
-`hack/ci-dump-diagnostics.sh`.
+The five E2E jobs (`e2e-infra`, `e2e-operator`, `e2e-chaos`, `e2e-prometheus`,
+`tempest`) share infrastructure setup via the `setup-e2e-infra` composite action
+and diagnostic teardown via `hack/ci-dump-diagnostics.sh`.
 
 ## Jobs
 
@@ -246,6 +248,26 @@ the `setup-test-deps` composite action, the same one consumed internally by
 | 3 | `make chainsaw-lint` | Runs `chainsaw lint test -f` and `chainsaw lint configuration -f` over every matching file under `tests/` |
 
 Timeout: 5 minutes.
+
+### shell-unit-tests-cc-0100
+
+Sub-second shell unit-test suite that pins down the `WITH_PROMETHEUS` gating
+contract. The suite is its own job (rather than steps folded into another
+job) because the tests are scoped to the kind-only opt-in plumbing —
+keeping them isolated keeps their failure signal unambiguous. The job runs
+unconditionally on every PR, so a regression in the gating contract is
+caught even when no prometheus paths have changed.
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 2 | `bash tests/unit/hack/deploy_infra_prometheus_flag_test.sh` | Asserts `hack/deploy-infra.sh` stages `keystone-operator.json`, applies `deploy/kind/prometheus/`, and invokes `enable_keystone_operator_servicemonitor` only when `WITH_PROMETHEUS=true` |
+| 3 | `bash tests/unit/ci/ci_path_filters_e2e_prometheus_test.sh` | Asserts `hack/ci-resolve-changes.sh` emits `e2e-prometheus=true` for the documented trigger inputs |
+
+Timeout: 5 minutes.
+
+A future cleanup will fold these tests into the existing `make test-shell`
+target once the unrelated docs-test bug is resolved.
 
 ### test
 
@@ -613,6 +635,54 @@ fault recovery.
 — operator-specific (e.g., `operators/keystone/**/*.go`) or shared (`internal/common/**/*.go`
 via `go_common`) — triggers the job via `go_changed` in `ci-resolve-changes.sh`, since chaos
 tests validate operator resilience against the current codebase.
+
+### e2e-prometheus
+
+End-to-end kube-prometheus-stack tests using kind cluster, Flux-managed
+`kube-prometheus-stack` HelmRelease, and Chainsaw. Builds the
+keystone operator image, deploys it alongside the monitoring stack, and runs
+the prometheus suite under `tests/e2e/keystone/prometheus-stack/` to verify
+HelmRelease readiness, ServiceMonitor presence, and live Prometheus scraping
+of the operator metrics endpoint.
+
+**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
+**Condition:** Runs only when `e2e-prometheus == 'true'`, the upstream
+`build-e2e-images` job succeeded, and no dependency failed or was cancelled.
+
+The `setup-e2e-infra` composite action is invoked with `WITH_PROMETHEUS: "true"`
+in its step `env`, which threads through to `hack/deploy-infra.sh` and gates the
+`kube-prometheus-stack` overlay (`deploy/kind/prometheus/`) plus the
+post-deploy `enable_keystone_operator_servicemonitor` patch. The Deploy
+operator step runs `hack/ci-deploy-operator.sh` with `WITH_PROMETHEUS: "true"`
+in its step `env`, which adds `--set monitoring.serviceMonitor.enabled=true`
+to the Helm install command — without this flag the chart's gated
+`ServiceMonitor` template renders nothing and the chainsaw step
+`servicemonitor-exists` (and the dependent `prometheus-target-up`) cannot
+pass. The kind base kustomization keeps the keystone-operator HelmRelease
+suspended, so the runtime `kubectl patch` cannot reactively enable the
+ServiceMonitor — the install-time flag is the single source of truth.
+
+Unlike `e2e-chaos`, `e2e-prometheus` runs with `continue-on-error: false`:
+the kube-prometheus stack is deterministic on kind, so any failure is a
+genuine regression of the kind-only Quick Start observability story.
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 2 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge-e2e`) |
+| 3 | `load-e2e-images` composite | Restores prebuilt operator and service images from the build-e2e-images artifact |
+| 4 | `kind load docker-image` | Loads operator and service images into kind |
+| 5 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack with `WITH_PROMETHEUS: "true"` |
+| 6 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys keystone operator via Helm with `WITH_PROMETHEUS: "true"` (gates `--set monitoring.serviceMonitor.enabled=true`) |
+| 7 | `chainsaw test` | Runs the prometheus E2E suite from `tests/e2e/keystone/prometheus-stack/` |
+| 8 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs with `OPERATOR=keystone` |
+| 9 | Upload JUnit report | Uploads `_output/reports/` as `e2e-prometheus-junit-report` artifact (14-day retention) |
+
+**Path filter:** `deploy/kind/prometheus/**`, `tests/e2e/keystone/prometheus-stack/**`,
+`hack/**`, `deploy/**`, `.github/workflows/ci.yaml`, `.github/actions/**`. As
+with `e2e-chaos`, any Go code change (`go_changed`) or any E2E test change
+(`any_e2e_tests`) also triggers the job via `ci-resolve-changes.sh`, since
+the prometheus suite scrapes live operator metrics.
 
 ### tempest
 

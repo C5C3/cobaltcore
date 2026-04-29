@@ -14,7 +14,11 @@
 #   IMAGE_REPO  — Full image repository (e.g. ghcr.io/c5c3/keystone-operator)
 #
 # Optional env vars:
-#   IMAGE_TAG   — Image tag (default: dev)
+#   IMAGE_TAG          — Image tag (default: dev)
+#   WITH_PROMETHEUS    — When "true", enables the chart's gated ServiceMonitor
+#                        template via --set monitoring.serviceMonitor.enabled=true
+#                        (default: false). Used by the e2e-prometheus CI job
+#                        (CC-0100, REQ-001).
 #
 # REQ-003: Reusable operator deployment script.
 # REQ-007: set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
@@ -35,6 +39,7 @@ if [[ ! "${OPERATOR}" =~ ^[a-z][a-z0-9-]*$ ]]; then
 fi
 IMAGE_REPO="${IMAGE_REPO:?IMAGE_REPO is required (e.g. ghcr.io/c5c3/keystone-operator)}"
 IMAGE_TAG="${IMAGE_TAG:-dev}"
+WITH_PROMETHEUS="${WITH_PROMETHEUS:-false}"
 
 CHART_PATH="operators/${OPERATOR}/helm/${OPERATOR}-operator"
 
@@ -47,11 +52,29 @@ kubectl wait crd --all --for condition=Established --timeout=60s
 # ---------------------------------------------------------------------------
 # 2. Deploy operator via Helm
 # ---------------------------------------------------------------------------
+# Build the Helm --set arguments. The ServiceMonitor template is gated on
+# monitoring.serviceMonitor.enabled and only enabled when the caller opts in
+# via WITH_PROMETHEUS=true (CC-0100, REQ-001). Without this flag the
+# kube-prometheus-stack chainsaw suite cannot observe the operator's metrics
+# because the ServiceMonitor never renders.
+#
+# Echo the resolved flag value into the CI log mirroring deploy-infra.sh's
+# banner line ("Prometheus stack : ${WITH_PROMETHEUS} ...") so a reader can
+# pinpoint at which step the gate flipped without grepping back to the
+# workflow YAML (CC-0100).
+echo "Prometheus stack    : ${WITH_PROMETHEUS} (set WITH_PROMETHEUS=true to enable ServiceMonitor)"
+helm_args=(
+  --set "image.repository=${IMAGE_REPO}"
+  --set "image.tag=${IMAGE_TAG}"
+  --set image.pullPolicy=Never
+)
+if [[ "${WITH_PROMETHEUS}" == "true" ]]; then
+  helm_args+=(--set "monitoring.serviceMonitor.enabled=true")
+fi
+
 helm install "${OPERATOR}-operator" \
   "${CHART_PATH}/" \
-  --set "image.repository=${IMAGE_REPO}" \
-  --set "image.tag=${IMAGE_TAG}" \
-  --set image.pullPolicy=Never \
+  "${helm_args[@]}" \
   --wait --timeout 120s
 
 # ---------------------------------------------------------------------------

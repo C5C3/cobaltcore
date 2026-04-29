@@ -23,6 +23,7 @@
 #   FILTER_helm               — paths-filter output for helm paths
 #   FILTER_e2e_infra          — paths-filter output for e2e-infra paths
 #   FILTER_e2e_chaos          — paths-filter output for e2e-chaos paths (CC-0054)
+#   FILTER_e2e_prometheus     — paths-filter output for e2e-prometheus paths (CC-0100)
 #   FILTER_tests_e2e_operator — paths-filter output for tests/e2e/** (CC-0054 follow-up)
 #   FILTER_tests_tempest      — paths-filter output for tests/tempest/** (CC-0054 follow-up)
 #   FILTER_go_common          — paths-filter output for go_common paths
@@ -108,6 +109,17 @@ if [[ "$go_changed" == "true" || "${FILTER_e2e_chaos:-false}" == "true" || "$any
   echo "e2e-chaos=true" >> "$GITHUB_OUTPUT"
 else
   echo "e2e-chaos=false" >> "$GITHUB_OUTPUT"
+fi
+
+# CC-0100, REQ-010: Prometheus stack E2E tests run when prometheus paths change
+# (kind overlay, suite, deploy/composite/operator wiring), when any Go code
+# changes (so the suite re-validates the current operator metrics surface), or
+# when any other E2E test definition changes (so refactoring shared test infra
+# runs the full E2E suite end-to-end).
+if [[ "$go_changed" == "true" || "${FILTER_e2e_prometheus:-false}" == "true" || "$any_e2e_tests" == "true" ]]; then
+  echo "e2e-prometheus=true" >> "$GITHUB_OUTPUT"
+else
+  echo "e2e-prometheus=false" >> "$GITHUB_OUTPUT"
 fi
 
 # Emit operator matrix — single codepath for both tag and non-tag.

@@ -48,6 +48,7 @@ jobs:
       helm: ${{ steps.result.outputs.helm }}
       e2e-infra: ${{ steps.result.outputs.e2e-infra }}
       e2e-chaos: ${{ steps.result.outputs.e2e-chaos }}
+      e2e-prometheus: ${{ steps.result.outputs.e2e-prometheus }}
       has-e2e-operators: ${{ steps.result.outputs.has-e2e-operators }}
       e2e-operators: ${{ steps.result.outputs.e2e-operators }}
       tempest-releases: ${{ steps.tempest-matrix.outputs.tempest-releases }}
@@ -100,6 +101,23 @@ jobs:
               - 'deploy/**'
               - '.github/workflows/ci.yaml'
               - '.github/actions/**'
+            # CC-0100, REQ-010: Prometheus stack E2E tests — separate filter so
+            # the e2e-prometheus job runs only when the kind-only monitoring
+            # stack, the keystone-operator ServiceMonitor wiring, the operator
+            # values surface that toggles it, the dashboard JSON consumed by
+            # the overlay, the deploy script that opts in, the composite
+            # action that threads WITH_PROMETHEUS, the workflow file, or the
+            # Makefile target that mirrors the CI invocation actually change.
+            e2e_prometheus:
+              - 'deploy/kind/prometheus/**'
+              - 'tests/e2e/keystone/prometheus-stack/**'
+              - 'hack/deploy-infra.sh'
+              - 'operators/keystone/helm/keystone-operator/templates/servicemonitor.yaml'
+              - 'operators/keystone/helm/keystone-operator/values.yaml'
+              - 'operators/keystone/dashboards/keystone-operator.json'
+              - '.github/actions/setup-e2e-infra/action.yaml'
+              - '.github/workflows/ci.yaml'
+              - 'Makefile'
             # CC-0054 follow-up: Any E2E test-definition change forces all E2E
             # jobs to run. Kept separate from go_common so pure test edits do
             # not also trigger lint/unit/format/vuln jobs.
@@ -118,6 +136,7 @@ jobs:
           FILTER_helm: ${{ steps.filter.outputs.helm }}
           FILTER_e2e_infra: ${{ steps.filter.outputs.e2e_infra }}
           FILTER_e2e_chaos: ${{ steps.filter.outputs.e2e_chaos }}
+          FILTER_e2e_prometheus: ${{ steps.filter.outputs.e2e_prometheus }}
           FILTER_tests_e2e_operator: ${{ steps.filter.outputs.tests_e2e_operator }}
           FILTER_tests_tempest: ${{ steps.filter.outputs.tests_tempest }}
           FILTER_go_common: ${{ steps.filter.outputs.go_common }}
@@ -201,6 +220,33 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Run shellcheck on hack/*.sh and operator rotation scripts
         run: make shellcheck
+
+  # CC-0100, REQ-010: Run the CC-0100 shell unit tests in CI.
+  #
+  # Why a sibling job and not `make test-shell`:
+  #   `make test-shell` globs every shell test under tests/unit/, including
+  #   tests/unit/docs/reference_cross_links_test.sh which currently
+  #   references the pre-PR-293 location of docs/reference/keystone-crd.md
+  #   (the file was moved to docs/reference/keystone/keystone-crd.md by
+  #   the docs-grouping commit dd583904). Wiring `make test-shell` into
+  #   CI would fail every PR on that pre-existing breakage — fixing the
+  #   docs-cross-links test belongs to the docs-grouping follow-up, not
+  #   CC-0100, per the rule-4 minimal-changes constraint. Once the
+  #   unrelated docs-test bug is fixed, this job can be replaced with
+  #   `make test-shell` to cover every shell test in tests/unit/. The
+  #   decision is recorded as a CC-0100 follow-up in the progress JSON.
+  #
+  # The tests below read repo files only (no untrusted input consumed),
+  # so this adds no injection surface and is sub-second on a cold runner.
+  shell-unit-tests-cc-0100:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Run CC-0100 deploy-infra prometheus-flag unit test
+        run: bash tests/unit/hack/deploy_infra_prometheus_flag_test.sh
+      - name: Run CC-0100 CI path-filter completeness lint
+        run: bash tests/unit/ci/ci_path_filters_e2e_prometheus_test.sh
 
   # CC-0094: Enforce the canonical-scaffold contract for the invalid-CR
   # Chainsaw fixtures (sourcery-ai review #1, FC1 from review #2). Runs
@@ -498,7 +544,7 @@ jobs:
     # the 5-minute download-artifact timeouts that GH-310 fixed.
     if: |
       always() &&
-      (needs.changes.outputs.has-e2e-operators == 'true' || needs.changes.outputs.e2e-chaos == 'true') &&
+      (needs.changes.outputs.has-e2e-operators == 'true' || needs.changes.outputs.e2e-chaos == 'true' || needs.changes.outputs.e2e-prometheus == 'true') &&
       github.event.pull_request.head.repo.fork != true &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
@@ -829,6 +875,93 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-chaos-junit-report-${{ matrix.suite }}
+          path: _output/reports/
+          retention-days: 14
+
+  # CC-0100, REQ-010: End-to-end Prometheus stack tests using kind cluster,
+  # kube-prometheus-stack, and Chainsaw.  Builds the keystone operator image,
+  # deploys it with the monitoring stack (WITH_PROMETHEUS=true on the shared
+  # composite action), enables the keystone-operator ServiceMonitor via the
+  # post-deploy patch baked into hack/deploy-infra.sh, and runs the
+  # prometheus-stack chainsaw suite (HelmRelease readiness, ServiceMonitor
+  # presence in openstack, Prometheus target health for keystone-operator,
+  # Grafana dashboard presence).
+  #
+  # CC-0100, REQ-011: Single matrix entry on the Blacksmith runner — the
+  # kube-prometheus stack is deterministic, so unlike e2e-chaos this job runs
+  # `continue-on-error: false`.  Inherits the e2e-chaos `needs:` chain so the
+  # same upstream Go gate applies and an operator code change re-runs the
+  # prometheus suite alongside e2e-chaos.
+  e2e-prometheus:
+    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
+    # always(): allow the job to run when upstream Go jobs are skipped
+    # (e.g. pure E2E test-definition PRs where go=false). The explicit
+    # failure/cancelled guard still blocks if any upstream actually failed.
+    if: |
+      always() &&
+      needs.changes.outputs.e2e-prometheus == 'true' &&
+      needs.build-e2e-images.result == 'success' &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 45
+    continue-on-error: false
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Create kind cluster
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          config: hack/kind-config.yaml
+          cluster_name: forge-e2e
+      # GH-310: Pull pre-built images from GHCR (run-scoped tag).
+      - name: Load E2E images
+        uses: ./.github/actions/load-e2e-images
+        with:
+          images: |
+            ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
+            ${{ env.IMAGE_PREFIX }}/keystone:2025.2
+      - name: Load images into kind
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name forge-e2e
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name forge-e2e
+      # CC-0050: Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
+      # CC-0100: Opt in to kube-prometheus-stack — required for the prometheus suite.
+      - name: Setup E2E infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+        env:
+          WITH_PROMETHEUS: "true"
+      # CC-0050: Use shared operator deployment script.
+      # CC-0100: WITH_PROMETHEUS=true gates --set monitoring.serviceMonitor.enabled=true
+      # on the helm install. Without it, the chart's gated ServiceMonitor template
+      # renders nothing and chainsaw step 2 (servicemonitor-exists) plus step 3
+      # (prometheus-target-up) cascade-fail. The kind/base kustomization keeps the
+      # keystone-operator HelmRelease suspended, so the patch in deploy-infra.sh
+      # cannot enable the ServiceMonitor reactively (CC-0100, REQ-001).
+      - name: Deploy operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: keystone
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
+          WITH_PROMETHEUS: "true"
+      - name: Run prometheus E2E tests
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            tests/e2e/keystone/prometheus-stack/
+      # CC-0050: Use shared diagnostic dump script.
+      - name: Dump diagnostic info
+        if: always()
+        run: hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: keystone
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-prometheus-junit-report
           path: _output/reports/
           retention-days: 14
 

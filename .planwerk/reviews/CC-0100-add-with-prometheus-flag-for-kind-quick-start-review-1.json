@@ -1,0 +1,141 @@
+{
+  "feature_id": "CC-0100",
+  "title": "Add WITH_PROMETHEUS flag for kind Quick Start",
+  "date": "2026-04-28",
+  "summary": "CC-0100 adds an opt-in `WITH_PROMETHEUS=true` flag to `hack/deploy-infra.sh` that installs `kube-prometheus-stack` via a new self-contained `deploy/kind/prometheus/` overlay (Namespace + HelmRelease + dashboard ConfigMap via configMapGenerator), staging the canonical dashboard JSON from `operators/keystone/dashboards/keystone-operator.json` at deploy time so kustomize's `LoadRestrictionsRootOnly` is preserved. The deploy script gates three sites (kustomize apply + dashboard copy, helm-release wait append, post-Ready `enable_keystone_operator_servicemonitor` patch) with strict `== \"true\"` comparisons. Documentation adds Step 4c — Open the Grafana UI to the Extended Quick Start, a sibling Step-3 tip, an updated architecture snapshot, a kind-only callout in the metrics enablement guide, a one-line pointer in the compact Quick Start, a new `### kube-prometheus-stack (kind-only opt-in, CC-0100)` reference subsection, and a CC-0100 follow-up in the environment-divergence review pattern. CI gets a new `e2e-prometheus` job mirroring `e2e-chaos`, a path filter, and Makefile parity (`make e2e-prometheus`) with a fail-fast preflight. Tests delivered: a 10-test shell unit suite (`tests/unit/hack/deploy_infra_prometheus_flag_test.sh`) covering the runtime default, banner line, and four gate sites, plus a 4-step chainsaw suite under `tests/e2e/keystone/prometheus-stack/` (HelmRelease Ready / ServiceMonitor exists / Prometheus target up / Grafana dashboard discovered) with belt-and-braces gating (label `overlay: kind` + per-step monitoring-namespace presence guards). Production-stack non-regression is verified via git diff (zero changes under `deploy/flux-system/`, `deploy/kind/base/`, operator chart values/schema, and dashboard JSON).",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Shell unit test for the WITH_PROMETHEUS flag default + banner + four gate sites (tests/unit/hack/deploy_infra_prometheus_flag_test.sh) — 24 assertions pass locally", "checked": true},
+    {"item": "Chainsaw e2e suite for the WITH_PROMETHEUS=true happy path (tests/e2e/keystone/prometheus-stack/chainsaw-test.yaml) covers HelmRelease Ready, ServiceMonitor exists, target up, dashboard discovered", "checked": true},
+    {"item": "Default-state non-regression chainsaw suite tests/e2e/infrastructure/no-prometheus-when-disabled exists (BLOCKER per review criteria)", "checked": false},
+    {"item": "REQ-010 path filter completeness lint test tests/lint/test_ci_path_filters.py exists (CRITICAL per review criteria)", "checked": false},
+    {"item": "Production stack files (deploy/flux-system/**, deploy/kind/base/, operator chart values/schema) byte-identical vs main", "checked": true},
+    {"item": "Dashboard JSON operators/keystone/dashboards/keystone-operator.json unchanged (single source of truth)", "checked": true},
+    {"item": "Chainsaw suite worst-case loop duration fits inside per-step timeouts", "checked": false},
+    {"item": "Shell unit test wired into CI (make test-shell is not invoked by any GitHub Actions job — pre-existing repo gap, not specific to CC-0100)", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Strict-equality opt-in flag pattern (WITH_PROMETHEUS=\"${WITH_PROMETHEUS:-false}\") with three gates following the WITH_CHAOS_MESH precedent", "checked": true},
+    {"item": "SPDX Apache-2.0 header + CC-0100 feature ID + REQ-IDs on every new file", "checked": true},
+    {"item": "Self-contained kind overlay with no `../../` parent-dir references — kubectl-embedded-kustomize compatible", "checked": true},
+    {"item": "Dashboard JSON staged via deploy-time copy (idempotent, git-ignored) rather than forked into the overlay", "checked": true},
+    {"item": "FluxCD HelmRelease common install/upgrade settings (interval 30m, install.crds CreateReplace, upgrade.remediation.retries 3, dependsOn cert-manager) followed", "checked": true},
+    {"item": "Deploy-script orchestration follows the 8-step / log() / wait_for_helmreleases pattern", "checked": true},
+    {"item": "Composite action env-threading mirrors WITH_CHAOS_MESH precedent in setup-e2e-infra/action.yaml", "checked": true},
+    {"item": "Makefile target preflights distinguish kubectl-unreachable from monitoring-not-installed (per .planwerk/review_patterns/distinguish-collapsed-failure-modes-in-preflight-checks.md)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No hardcoded secrets — Grafana default credentials (admin/prom-operator) only documented for kind, with explicit \"do not reuse beyond your laptop\" warning in Step 4c", "checked": true},
+    {"item": "kubectl patch payload is a static JSON literal — no user-controlled string interpolation", "checked": true},
+    {"item": "Dashboard JSON path is a fixed repo-relative constant — no shell injection risk in `cp -f`", "checked": true},
+    {"item": "kubectl run --image references a pinned-tag external image (nicolaka/netshoot:latest) — kind-only test artifact, but pinning by digest would harden against upstream tag retargeting", "checked": false}
+  ],
+  "architecture_checklist": [
+    {"item": "Production overlay deploy/flux-system/ does NOT install kube-prometheus-stack — kind-only opt-in posture matches CC-0097 / OpenBao UI / Envoy precedent", "checked": true},
+    {"item": "CRD ownership ceded to existing prometheus-operator-crds HelmRelease via crds.enabled=false — no dual-owner reconcile flap", "checked": true},
+    {"item": "ServiceMonitor selector tuning (serviceMonitorSelector: {} / Namespace selector: {}) avoids the documented kube-prometheus-stack `release: <name>` selector mismatch", "checked": true},
+    {"item": "Existing prometheus-community HelmRepository reused — no duplicate source under deploy/flux-system/sources/", "checked": true},
+    {"item": "Operator chart default values.yaml (monitoring.serviceMonitor.enabled: false) preserved — flip is via runtime kubectl patch, only when WITH_PROMETHEUS=true", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "Reuses existing prometheus-community HelmRepository instead of duplicating the source", "checked": true},
+    {"item": "Reuses existing dashboard JSON via configMapGenerator — no fork", "checked": true},
+    {"item": "Mirrors WITH_CHAOS_MESH gating shape exactly — no novel pattern", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "make e2e-prometheus prints distinct preflight messages for `kubectl unreachable` vs `monitoring namespace absent`", "checked": true},
+    {"item": "Strict `== \"true\"` comparison rejects WITH_PROMETHEUS=yes / 1 — verified by Test 4 of the shell unit suite", "checked": true},
+    {"item": "Chainsaw step-level scripts use `set -euo pipefail` (and `bash` shell pin to permit pipefail)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Per-step presence guard inside chainsaw scripts (kubectl get ns monitoring) for default-safe behavior even without --selector", "checked": true},
+    {"item": "Pre-delete leftover probe pods before kubectl run to avoid `--rm` leaking on prior failure", "checked": true},
+    {"item": "enable_keystone_operator_servicemonitor handles suspended HelmRelease (kind base patch) — does not block on a never-reconciling release", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "FC1",
+      "severity": "BLOCKING",
+      "description": "Missing chainsaw suite `tests/e2e/infrastructure/no-prometheus-when-disabled/chainsaw-test.yaml` that the review criteria explicitly call out as the BLOCKER-level verification of the default-state non-regression: `Default make deploy-infra (WITH_PROMETHEUS unset) creates no monitoring namespace, no kube-prometheus-stack HelmRelease, and no ServiceMonitor/keystone-operator — verified by the new tests/e2e/infrastructure/no-prometheus-when-disabled chainsaw suite running in the default e2e-operator lane`. The shell unit test exercises the gating logic at the source-script level and the prometheus-stack chainsaw suite SKIPs when `monitoring` is absent — neither positively asserts that a default cluster has no monitoring namespace, no kube-prometheus-stack HelmRelease, and no ServiceMonitor in `openstack`. A regression that accidentally creates the namespace (e.g., a stray `kubectl apply -k` outside the WITH_PROMETHEUS gate) would slip through. The progress test plan also lists this file under REQ-006.",
+      "location": "tests/e2e/infrastructure/no-prometheus-when-disabled/chainsaw-test.yaml (file does not exist)",
+      "fix": "Add a single-step chainsaw test under tests/e2e/infrastructure/no-prometheus-when-disabled/ that runs in the default e2e-operator lane (no `overlay: kind` selector exclusion needed since the lane runs without WITH_PROMETHEUS) and asserts: (1) `kubectl get ns monitoring` returns NotFound, (2) no HelmRelease named kube-prometheus-stack exists in any namespace, (3) no ServiceMonitor/keystone-operator exists in `openstack`. Mirror the structural pattern of tests/e2e/infrastructure/chaos-mesh-health/chainsaw-test.yaml but inverted (assert absence). The catch block can dump `kubectl get ns,helmrelease,servicemonitor -A` for triage.",
+      "evidence": "tree command on tests/e2e/infrastructure/ shows: chaos-mesh-health/, flux-web-health/, infra-stack-health/ — no `no-prometheus-when-disabled/` directory. Progress file (.planwerk/progress/CC-0100-...json:830) lists the file under the REQ-006 test plan but it was never created.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "TE3",
+      "severity": "CRITICAL",
+      "description": "Missing CI-path-filter completeness lint test `tests/lint/test_ci_path_filters.py` that the review criteria call out as the CRITICAL-level verification of REQ-010: `The e2e-prometheus GitHub Actions job runs only when relevant paths change (REQ-010 path filter completeness verified by tests/lint/test_ci_path_filters.py)`. Without an automated check, a future contributor who adds (say) a new file under operators/keystone/dashboards/ without updating the e2e_prometheus filter list will silently disable the job's trigger for that path. The path filter list in .github/workflows/ci.yaml:111-120 is human-maintained and prone to drift. The progress file lists this lint test under REQ-010.",
+      "location": "tests/lint/test_ci_path_filters.py (file does not exist; no tests/lint/ directory exists in the repo)",
+      "fix": "Either (a) add a small shell-based lint under tests/unit/ci/ (matching the existing tests/unit/docs/ shell-test convention this repo already uses) that parses .github/workflows/ci.yaml with yq, extracts the e2e_prometheus filter list, and asserts every documented path entry is present (deploy/kind/prometheus/**, tests/e2e/keystone/prometheus-stack/**, hack/deploy-infra.sh, the operator helm + dashboard paths, .github/actions/setup-e2e-infra/action.yaml, .github/workflows/ci.yaml, Makefile); or (b) introduce tests/lint/test_ci_path_filters.py per the progress plan and wire pytest into make test-shell. Option (a) is closer to the repo's existing conventions.",
+      "evidence": "find tests -name 'test_ci_path_filters*' returns nothing; ls /worktrees/CC-0100/tests/lint/ returns 'No such file or directory'. Progress file (.planwerk/progress/CC-0100-...json:851) lists the file under the REQ-010 test plan but it was never created.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "TE2",
+      "severity": "MAJOR",
+      "description": "Chainsaw step 3 (`prometheus-target-up`) and step 4 (`grafana-dashboard-loaded`) have script-level `timeout` budgets below the worst-case loop wall-clock, making catastrophic failures surface as a confusing chainsaw-killed-the-script timeout rather than the documented FAIL message + catch-block dump. Matches the established review pattern `test-script-timeout-must-exceed-worst-case-loop-duration.md`. Step 3 loop is `for i in $(seq 1 12); do curl -m 5 ...; sleep 10; done` → worst case 12×(5s curl + 10s sleep) ≈ 180s, plus pod startup of ~10–20s on a cold kind node, against a `timeout: 3m` (180s). Step 4 loop is `for i in $(seq 1 12); do curl -m 5 ...; sleep 5; done` → worst case 12×(5s + 5s) = 120s, plus pod startup, against a `timeout: 90s`. Step 4 is guaranteed to be killed mid-loop on any failure, hiding the FAIL line and the catch-block diagnostics behind chainsaw's own timeout error.",
+      "location": "tests/e2e/keystone/prometheus-stack/chainsaw-test.yaml:187 (Step 3 timeout: 3m, loop ~180s+startup) and :261 (Step 4 timeout: 90s, loop ~120s+startup)",
+      "fix": "Either tighten the loop bounds (e.g. step 3: 8 iterations × (5s + 10s) = 120s + startup, fits cleanly in 3m; step 4: 6 iterations × (5s + 5s) = 60s + startup, fits cleanly in 90s) or raise the timeouts (step 3 → 4m; step 4 → 3m). The header comment block already states the worst-case budget as `~8m worst case ... timeouts.exec ... 10m, leaving safety margin` — but the per-step timeouts contradict that calculation for steps 3 and 4 specifically. The aggregate `timeouts.exec: 10m` does not protect against the per-script `timeout:` override.",
+      "evidence": "chainsaw-test.yaml lines 187/261 set per-step timeouts of 3m/90s. Steps 3 and 4 each run 12 iterations of curl+sleep with sleep 10s/5s respectively, plus the kubectl-run pod startup (~10–20s) before the loop even begins.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "DA1",
+      "severity": "MAJOR",
+      "description": "Step 4c documents `kubectl port-forward svc/kube-prometheus-stack-prometheus -n monitoring 9090:9090` in the sanity-check section, but Prometheus from the chart actually exposes port 9090 on a Service whose port name and number depend on the chart version. The chainsaw suite hits the Service at port 9090 directly (`http://kube-prometheus-stack-prometheus.monitoring.svc:9090/...`), confirming that's correct, but the docs example uses `9090:9090` (host:service), which assumes the Service exposes 9090 as the named port. For kube-prometheus-stack ≥65 the Prometheus Service does expose 9090, so the example works — but the local-port-forward sample in the doc would benefit from the same `localhost:9090/api/v1/targets?state=active` URL the chainsaw suite uses verbatim, to avoid drift if the chart's Service port name ever changes. Lower-priority cosmetic gap; flagging because the doc explicitly promises the Step 4c sanity-check matches what CI exercises.",
+      "location": "docs/quick-start-extended.md:417-419",
+      "fix": "Either (a) leave as-is (kube-prometheus-stack 65–69 stably exposes 9090 — pin the constraint range as documentation context, or) (b) make the Step 4c sample explicitly mirror the chainsaw suite's URL string verbatim so there is one canonical curl command that ops/CI/docs all share.",
+      "evidence": "docs/quick-start-extended.md:417 'kubectl port-forward svc/kube-prometheus-stack-prometheus -n monitoring 9090:9090' vs chainsaw-test.yaml:219 'http://kube-prometheus-stack-prometheus.monitoring.svc:9090/api/v1/targets?state=active'.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "Q1",
+      "severity": "MINOR",
+      "description": "The release.yaml HelmRelease sets `install.crds: CreateReplace` and `upgrade.crds: CreateReplace` while also setting `values.crds.enabled: false`. With `crds.enabled=false` the chart renders zero CRDs, so the `install.crds` directive is moot — but harmless. This follows the FluxCD-HelmRelease-common pattern (every other HelmRelease in the repo also sets `install.crds: CreateReplace`), so consistency wins over the small footgun risk that a future chart bump changes the meaning of `crds.enabled`. Worth a one-line comment noting the redundancy is intentional for pattern consistency.",
+      "location": "deploy/kind/prometheus/release.yaml:39-47",
+      "fix": "Add a `# CC-0100: install.crds=CreateReplace is moot with crds.enabled=false in values, but kept for symmetry with deploy/flux-system/releases/*` comment, or alternatively drop `install.crds`/`upgrade.crds` since they have no effect when the chart renders no CRDs.",
+      "evidence": "release.yaml:40 `crds: CreateReplace` and :49 `crds: { enabled: false }` — the second renders the first inert.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "S3",
+      "severity": "MINOR",
+      "description": "The chainsaw probes use `nicolaka/netshoot:latest` — a mutable tag for a third-party image. For a kind-only test pod this is low-risk (no production exposure, isolated cluster), but it does mean a future upstream tag retargeting could change the curl/jq behavior under us. Pinning by digest (e.g. `nicolaka/netshoot:latest@sha256:<digest>`) would harden the test surface against upstream supply-chain shifts and follow the same SHA-pinning discipline already applied to GitHub Actions in this repo.",
+      "location": "tests/e2e/keystone/prometheus-stack/chainsaw-test.yaml:212, :245, :284, :316",
+      "fix": "Pin nicolaka/netshoot to a specific tag + sha256 digest, or move it to a small project-controlled image (debian:bookworm-slim with curl+jq pre-installed) hosted in ghcr.io/c5c3 alongside the existing test images.",
+      "evidence": "chainsaw-test.yaml uses `--image=nicolaka/netshoot:latest` four times.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "DA3",
+      "severity": "MINOR",
+      "description": "Task 6.7 asks to add a kind-only-monitoring posture entry under architecture/docs/09-implementation/ (or extend 10-chaos-e2e-testing.md). The progress file marks 6.7 as done, but I could not find a corresponding architecture/ doc change in the diff. The architecture/ tree is read-only per CLAUDE rules, so this may have been intentionally elided — but if the task contract needs a posture record, the divergence-pattern follow-up at .planwerk/review_patterns/document-intentional-environment-divergence-in-overlays.md does cover the same ground in CC-0100-follow-up form. Confirm whether the architecture/ doc was deliberately skipped (architecture/ is read-only per project rules) and if so, document the decision in the progress file.",
+      "location": "architecture/docs/09-implementation/ (no CC-0100 doc found); .planwerk/review_patterns/document-intentional-environment-divergence-in-overlays.md was extended instead",
+      "fix": "Either add a short note to architecture/docs/09-implementation/10-chaos-e2e-testing.md describing the kind-only monitoring opt-in alongside the chaos opt-in (matches task 6.7 literal wording), or formalize the decision in the progress JSON that the review_pattern follow-up substitutes for the architecture entry because architecture/ is read-only in this repo.",
+      "evidence": "git diff main..HEAD --stat shows no entry under architecture/; the divergence pattern file was extended (CC-0100 follow-up section) and the reference doc docs/reference/infrastructure/infrastructure-manifests.md got a new `### kube-prometheus-stack (kind-only opt-in, CC-0100)` subsection. Task 6.7 contract asked for an entry under architecture/docs/09-implementation/ specifically.",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "Wire `make test-shell` into the existing CI shellcheck job (or a sibling `test-shell` job) so tests/unit/hack/deploy_infra_prometheus_flag_test.sh actually runs in CI alongside the existing chaos-flag and other tests under tests/unit/. The Makefile target exists but is currently invoked nowhere in .github/. This is a pre-existing repo gap, not specific to CC-0100, but the CC-0100 shell test inherits the gap.",
+    "Consider replacing nicolaka/netshoot:latest with a small project-controlled curl+jq image to remove the third-party `:latest` dependency from the chainsaw suite.",
+    "Add a single hardened curl-helper bash function in the chainsaw suite to deduplicate the four `kubectl run ... nicolaka/netshoot ... -- sh -c 'set -eu; for i in $(seq 1 N); do curl -fsS -m 5 ...; done'` blocks across step 3 try, step 3 catch, step 4 try, step 4 catch.",
+    "Pin a kube-prometheus-stack chart version range below the next major (e.g. >=65.0.0 <70.0.0 is fine for now, but document the upgrade-trigger criterion — Grafana sidecar API change, Prometheus selector default, etc.) in a code comment so future Renovate bumps do not silently cross a breaking-change boundary."
+  ],
+  "next_steps": [
+    "BLOCKING: Add the missing tests/e2e/infrastructure/no-prometheus-when-disabled/ chainsaw suite (asserts default cluster has no `monitoring` namespace, no kube-prometheus-stack HelmRelease, and no ServiceMonitor/keystone-operator) and wire it into the default e2e-operator lane.",
+    "CRITICAL: Add a CI-path-filter completeness lint (under tests/unit/ matching the repo's existing shell-test pattern, or as the planned tests/lint/test_ci_path_filters.py + pytest wiring) that asserts every REQ-010 path entry is present in .github/workflows/ci.yaml's e2e_prometheus filter list.",
+    "MAJOR: Tighten chainsaw step 3/step 4 loop bounds (or raise their per-script timeouts) so the worst-case wall-clock fits cleanly inside the timeout budget — currently step 4 will be killed mid-loop on any failure, hiding the FAIL line and catch-block dumps.",
+    "MINOR: Decide whether the architecture/docs/09-implementation/ entry promised by task 6.7 should exist (and add it) or whether the .planwerk/review_patterns/document-intentional-environment-divergence-in-overlays.md follow-up substitutes for it (and record the decision in the progress JSON)."
+  ],
+  "detected_patterns": [],
+  "metadata": {
+    "feature_id": "CC-0100",
+    "title": "Add WITH_PROMETHEUS flag for kind Quick Start",
+    "date": "2026-04-28",
+    "verdict": "NEEDS_CHANGES"
+  }
+}

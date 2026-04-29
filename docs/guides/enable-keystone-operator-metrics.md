@@ -19,6 +19,30 @@ For the authoritative metric catalogue (names, labels, buckets), see
 For the controller-side instrumentation contract, see
 [Keystone Reconciler — Metrics Instrumentation](../reference/keystone/keystone-reconciler.md#metrics-instrumentation).
 
+::: tip On kind (CC-0100)
+If you are running the kind Quick Start, the prometheus-operator CRDs,
+Prometheus, Grafana, and the bundled `Keystone Operator` dashboard are
+already wrapped behind a single opt-in flag — none of the manual steps
+below are required:
+
+```bash
+WITH_PROMETHEUS=true make deploy-infra
+```
+
+`make deploy-infra` will install `kube-prometheus-stack` from the kind
+overlay (`deploy/kind/prometheus/`), patch the keystone-operator
+HelmRelease to flip `monitoring.serviceMonitor.enabled=true`, and wait
+for the scrape targets to come up. See
+[Extended Quick Start — Step 4c](../quick-start-extended.md#step-4c-grafana-ui)
+for the port-forward, default credentials, and the Prometheus targets
+sanity-check.
+
+The remainder of this guide is the **canonical non-kind path** —
+production overlays (`deploy/flux-system/`) deliberately omit the
+stack so production clusters can wire their own Prometheus, and the
+sections below cover that wiring end-to-end.
+:::
+
 ---
 
 ## Prerequisites

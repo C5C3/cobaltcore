@@ -168,6 +168,8 @@ kubectl port-forward svc/openbao -n openbao-system 8200:8200
 Open <https://localhost:8200/ui/>, accept the self-signed cert warning,
 paste the token.
 
+> **Grafana (kind-only, opt-in):** for the keystone-operator metrics dashboard, run `WITH_PROMETHEUS=true make deploy-infra` and follow [Extended Quick Start — Step 4c](./quick-start-extended.md#step-4c-grafana-ui). The compact path stays Grafana-free by default.
+
 ## Teardown
 
 ```bash

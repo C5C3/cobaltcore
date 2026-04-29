@@ -2,8 +2,8 @@
   "feature_id": "CC-0100",
   "title": "Add WITH_PROMETHEUS flag for kind Quick Start",
   "slug": "add-with-prometheus-flag-for-kind-quick-start",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #302: Add opt-in WITH_PROMETHEUS flag to install kube-prometheus-stack with the pre-provisioned Keystone Operator dashboard in the kind Quick Start\n\n**Category**: enhancement | **Scope**: Medium\n\n**Description**: CC-0089 (#270) shipped a full Prometheus instrumentation surface — five collectors registered on the controller-runtime registry, a `monitoring.coreos.com/v1` ServiceMonitor template gated by `monitoring.serviceMonitor.enabled` (`operators/keystone/helm/keystone-operator/templates/servicemonitor.yaml`), and a reference Grafana dashboard at `operators/keystone/dashboards/keystone-operator.json` covering reconcile p95 / error rate / rotation age / `db_sync` outcomes. Today none of that is reachable from a default kind Quick Start: `make deploy-infra` installs only `prometheus-operator-crds` (`deploy/flux-system/releases/prometheus-operator-crds.yaml`), there is no Prometheus scraping the operator's `:8080` endpoint, and the dashboard JSON sits unused on disk. The CC-0089 enablement how-to (`docs/guides/enable-keystone-operator-metrics.md`) tells the operator to \"install Prometheus separately and import the dashboard into your Grafana\" — fine for a real cluster, but for the kind Quick Start path that the README and the Extended Quick Start (`docs/quick-start-extended.md`) advertise as a five-minutes-to-first-`openstack-token-issue` experience, the metrics feature is invisible. Add an opt-in `WITH_PROMETHEUS=true` flag — the same shape as `WITH_CHAOS_MESH` (#284, CC-0097, `hack/deploy-infra.sh:65-69`) — that installs `kube-prometheus-stack` from the already-vendored `prometheus-community` HelmRepository (`deploy/flux-system/sources/prometheus-community.yaml`), pre-provisions the operator's Grafana dashboard via the Grafana sidecar's ConfigMap discovery, flips the keystone-operator chart's `monitoring.serviceMonitor.enabled` to `true`, and ships a \"Step 4c — Open the Grafana UI\" section in the Extended Quick Start alongside the existing kind-only demo UIs (Headlamp Step 4, Flux Web UI Step 4a, OpenBao UI Step 4b).\n\nConcrete steps: (1) Add a new opt-in kind overlay at `deploy/kind/prometheus/kustomization.yaml` mirroring the layout of `deploy/kind/chaos-mesh/`. The overlay declares the `monitoring` Namespace inline (`namespace.yaml`), references the existing `flux-system/prometheus-community` HelmRepository by `sourceRef.name`/`sourceRef.namespace` (no need to redeclare it — the source is already always-on for `prometheus-operator-crds`), and ships a single `HelmRelease/kube-prometheus-stack` in the `monitoring` namespace pinned to `>=65.0.0 <70.0.0` with `dependsOn: cert-manager` for webhook certs. (2) Bake the kind-tuning into the HelmRelease values (analogous to the chaos-mesh kind-tuning patch at `deploy/kind/chaos-mesh/kustomization.yaml:55-87`): set `crds.enabled=false` (the always-on `prometheus-operator-crds` HelmRelease at `deploy/flux-system/releases/prometheus-operator-crds.yaml` remains the single source of truth for `monitoring.coreos.com/v1` CRDs — avoids the dual-owner reconcile flap), `alertmanager.enabled=false`, `nodeExporter.enabled=false`, `kubeStateMetrics.enabled=false` (a single-node kind cluster does not need cluster-wide kubelet/cadvisor/kube-state-metrics scraping for this demo), and trim Prometheus + Grafana resource requests to ≤100m CPU / ≤256Mi memory each, with `prometheus.prometheusSpec.retention=6h` so the on-disk PV stays small. (3) In the same HelmRelease, set `prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false` and `serviceMonitorSelector: {}` so the keystone-operator's ServiceMonitor (which carries `app.kubernetes.io/*` labels but NOT `release: <stack-name>`) is actually picked up — this is the exact selector mismatch the CC-0089 how-to warns about at `docs/guides/enable-keystone-operator-metrics.md:40-49`. (4) Pre-provision the Keystone Operator dashboard: add a kustomize `configMapGenerator` in the overlay that wraps `operators/keystone/dashboards/keystone-operator.json` into a ConfigMap in `monitoring` with the labels `grafana_dashboard: \\\"1\\\"` and `app.kubernetes.io/part-of: kube-prometheus-stack` — the Grafana sidecar (`grafana.sidecar.dashboards.enabled=true`, default in kube-prometheus-stack) auto-discovers labelled ConfigMaps and reloads Grafana, so no manual import is needed. The overlay must reference the JSON via a relative path that stays inside `deploy/kind/prometheus/` to keep the overlay `LoadRestrictionsRootOnly`-clean for `kubectl apply -k` (matching the chaos-mesh REQ-003 rationale at `deploy/kind/chaos-mesh/kustomization.yaml:20-27`); copy or symlink-via-build-step the dashboard, or generate the ConfigMap at script time from `hack/deploy-infra.sh`. (5) Flip the operator chart's `monitoring.serviceMonitor.enabled` to `true` only when `WITH_PROMETHEUS=true`. Two options — pick (a): (a) one `kubectl patch helmrelease keystone-operator -n openstack --type=merge -p '{\\\"spec\\\":{\\\"values\\\":{\\\"monitoring\\\":{\\\"serviceMonitor\\\":{\\\"enabled\\\":true}}}}}'` from `hack/deploy-infra.sh` after the kind/prometheus overlay applies, gated on the flag — keeps the overlay self-contained, mirrors the chaos-mesh `WITH_CHAOS_MESH=true` post-apply step at `:893-902`. Or (b) flip the chart default to `true` in `operators/keystone/helm/keystone-operator/values.yaml:38-42` and `values.schema.json:155-178` — defensible because the always-on flux-system stack already installs `prometheus-operator-crds`, so the ServiceMonitor renders cleanly even without a Prometheus running, but this is a wider chart-API change and should be its own decision. Go with (a) for this issue. (6) Add `WITH_PROMETHEUS` (default `false`) to `hack/deploy-infra.sh`, mirroring the `WITH_CHAOS_MESH` block at `:65-69`. When `true`: log it in the configuration banner at `:799`, apply `kubectl apply -k deploy/kind/prometheus` after the base overlay (insert after the chaos-mesh apply at `:899-902`), append `kube-prometheus-stack` to the Phase 3 `wait_for_helmreleases` list at `:932-940` (between `chaos-mesh` and the end), and run the `kubectl patch` from step (5). When `false`: do nothing — the cluster comes up exactly as today. (7) Add Step 4c — Open the Grafana UI to `docs/quick-start-extended.md` alongside Steps 4 / 4a / 4b. Pattern matches the OpenBao UI section at `:317-349`: `kubectl port-forward svc/kube-prometheus-stack-grafana -n monitoring 3000:80`, document the default admin credentials (`admin` / `prom-operator` for the chart's stock value, or override via `grafana.adminPassword` in the overlay if a known-good kind password is preferred), open `http://localhost:3000`, navigate to **Dashboards → Keystone Operator** which is already loaded by the sidecar. Note the kind-only nature explicitly — production overlays do not install kube-prometheus-stack and operators must wire up their existing Prometheus per `docs/guides/enable-keystone-operator-metrics.md`. (8) Add a `::: tip Enabling Prometheus & Grafana` block in `docs/quick-start-extended.md` Step 3 (next to the existing chaos-mesh tip at `:229-248`) that documents `WITH_PROMETHEUS=true make deploy-infra` and the use cases (visualising CC-0089 metrics, seeing reconcile p95 / error rate live during local development). (9) Update the architecture snapshot in `docs/quick-start-extended.md:192-211` to add the kind-only `monitoring` namespace pods (kube-prometheus-stack-prometheus-*, kube-prometheus-stack-grafana-*, kube-prometheus-stack-operator-*) — gated on the flag, same style as the chaos-mesh / Headlamp / Envoy entries. (10) Add a verification snippet under Step 4c — port-forward `:9090` to confirm the `keystone-operator` scrape target is `Up` (the exact check from `docs/guides/enable-keystone-operator-metrics.md:111-130`), so a reader can debug a stuck dashboard without flipping back to the reference doc. (11) Cross-link: in `docs/guides/enable-keystone-operator-metrics.md` add a top-level note that on kind, `WITH_PROMETHEUS=true make deploy-infra` is the shortest path and the rest of the guide is for non-kind clusters. (12) Add an opt-in CI lane: a `tests/e2e/keystone/prometheus-stack/chainsaw-test.yaml` suite that asserts (a) the kube-prometheus-stack HelmRelease becomes Ready, (b) `kubectl exec` into the Prometheus pod confirms a target with `job=\\\"keystone-operator\\\"` reports `health=\\\"up\\\"`, (c) the Grafana sidecar mounted the dashboard ConfigMap (assert via the Grafana `/api/search?query=Keystone+Operator` endpoint via a one-shot `curl` job). The suite runs only when `WITH_PROMETHEUS=true`, mirroring how the chaos suite is gated. (13) GitHub Actions: add a new `e2e-prometheus` job to `.github/workflows/ci.yaml` that exports `WITH_PROMETHEUS=true` in the `Setup E2E infrastructure` step and runs the new chainsaw suite — symmetric to the existing `e2e-chaos` job at `:678-761` and the operator job at `:474`. The default `e2e-operator` job stays on `WITH_PROMETHEUS=false`. (14) Optional polish — add `make e2e-prometheus` to the Makefile mirroring the `make e2e-chaos` target at `:354-366`, with the same fail-fast guard (`kubectl get ns monitoring >/dev/null 2>&1 || { echo 'kube-prometheus-stack is not installed; run \\\\\\`WITH_PROMETHEUS=true make deploy-infra\\\\\\` first' >&2; exit 1; }`).\n\n**Motivation**: CC-0089 is the operator's first end-to-end observability surface — without it there is no SLI dashboard, no per-sub-reconciler latency view, and no rotation-age alerting story. Today, exercising the feature on a fresh kind cluster requires the developer to (a) read `docs/guides/enable-keystone-operator-metrics.md`, (b) install kube-prometheus-stack manually, (c) work around the `serviceMonitorSelector` mismatch documented at `:40-49`, (d) flip `monitoring.serviceMonitor.enabled=true` in their helm values, and (e) manually upload the dashboard JSON via the Grafana **Dashboards → Import** flow (`docs/guides/enable-keystone-operator-metrics.md:96-108`). For the Quick Start audience that is a forty-minute side quest before they see a single panel; for code review of CC-0089-adjacent PRs (e.g., a new metric, a labelling change) it is friction every reviewer pays repeatedly. The asymmetry with the existing kind-only demo UIs — Headlamp (CC-0017), Flux Web UI (CC-0086 / #257), OpenBao UI (CC-0082 / #246) — is explicit: those features got a \"Step 4*\" section in the Quick Start the moment they shipped, and Quick Start readers actually click through them. Prometheus + Grafana for CC-0089 deserves the same treatment so the metrics catalogue is more than a `# HELP` line at `:8080/metrics`. Cost: the opt-in path adds ~3 image pulls (Prometheus, Grafana, prometheus-operator manager) on first run for users who set the flag, and one extra HelmRelease wait (~30–60s on a warm-cache laptop, longer in cold CI). With CRD ownership ceded to the always-on `prometheus-operator-crds` chart and Alertmanager / node-exporter / kube-state-metrics turned off, the HelmRelease's footprint is comparable to the chaos-mesh opt-in path. The `WITH_FLUX_CLI` (`hack/install-test-deps.sh:289-294`) and `WITH_CHAOS_MESH` (CC-0097, `hack/deploy-infra.sh:65-69`) prior art makes the deploy-script change a copy-paste-and-adjust exercise rather than a structural rework. Net: a small overlay + a shell flag + a documentation step turn an invisible feature into a clickable demo, without slowing the default Quick Start by a single second.\n\n**Affected Areas**:\n- `deploy/kind/prometheus/kustomization.yaml` (new — declares the `monitoring` Namespace, the `kube-prometheus-stack` HelmRelease, and the dashboard ConfigMap; references the existing `flux-system/prometheus-community` HelmRepository by name)\n- `deploy/kind/prometheus/namespace.yaml` (new — the `monitoring` Namespace, kept inline so the overlay is self-contained per the chaos-mesh REQ-003 rationale at `deploy/kind/chaos-mesh/kustomization.yaml:20-27`)\n- `deploy/kind/prometheus/release.yaml` (new — `HelmRelease/kube-prometheus-stack` with kind-tuned values: `crds.enabled=false`, `alertmanager.enabled=false`, `nodeExporter.enabled=false`, `kubeStateMetrics.enabled=false`, `serviceMonitorSelectorNilUsesHelmValues=false`, `serviceMonitorSelector: {}`, trimmed resource requests, `prometheus.prometheusSpec.retention=6h`)\n- `deploy/kind/prometheus/dashboard.configmap.yaml` (new — generated via `configMapGenerator` from `operators/keystone/dashboards/keystone-operator.json`, labelled `grafana_dashboard: \\\"1\\\"` for sidecar discovery)\n- `hack/deploy-infra.sh:65-69` (add `WITH_PROMETHEUS=\\\"${WITH_PROMETHEUS:-false}\\\"` next to `WITH_CHAOS_MESH`)\n- `hack/deploy-infra.sh:799` (extend the configuration banner with `Prometheus stack    : ${WITH_PROMETHEUS} (set WITH_PROMETHEUS=true to install)`)\n- `hack/deploy-infra.sh:899-902` (after the chaos-mesh `kubectl apply -k`, add a parallel `if [[ \\\"${WITH_PROMETHEUS}\\\" == \\\"true\\\" ]]; then kubectl apply -k \\\"${REPO_ROOT}/deploy/kind/prometheus\\\"; fi`)\n- `hack/deploy-infra.sh:932-940` (extend the dynamic `helm_releases` list to append `kube-prometheus-stack` when `WITH_PROMETHEUS=true`, between the existing chaos-mesh append and the `wait_for_helmreleases` call)\n- `hack/deploy-infra.sh` new function (after the WITH_PROMETHEUS apply + wait, run `kubectl patch helmrelease keystone-operator -n openstack --type=merge -p '{\\\"spec\\\":{\\\"values\\\":{\\\"monitoring\\\":{\\\"serviceMonitor\\\":{\\\"enabled\\\":true}}}}}'` and wait for the operator HelmRelease to settle to `Ready=True` again on the new values)\n- `docs/quick-start-extended.md:192-211` (architecture snapshot — add `monitoring` namespace pods as kind-only entries gated on the flag)\n- `docs/quick-start-extended.md:229-248` (add a `::: tip Enabling Prometheus & Grafana` block parallel to the chaos-mesh tip)\n- `docs/quick-start-extended.md` after Step 4b at `:317-349` (new Step 4c — Open the Grafana UI section: port-forward, default admin credentials, dashboard navigation, Prometheus targets sanity check)\n- `docs/quick-start-extended.md:252-253, 277` (cross-link the new Step 4c from the Step 4 paragraph that lists \"Steps 4–4b\" so readers find it)\n- `docs/quick-start.md` (compact Quick Start — single-line tip pointing at the Extended Quick Start's Step 4c; do NOT inline the full UI tour to keep the compact path compact)\n- `docs/guides/enable-keystone-operator-metrics.md:23-54` (top-level note: \"On kind, `WITH_PROMETHEUS=true make deploy-infra` is the shortest path; the steps below cover non-kind clusters\")\n- `tests/e2e/keystone/prometheus-stack/chainsaw-test.yaml` (new — asserts HelmRelease Ready, `keystone-operator` Prometheus target up, Grafana dashboard discovered)\n- `.github/workflows/ci.yaml` (new `e2e-prometheus` matrix entry mirroring `e2e-chaos` at `:678-761`; the existing `e2e-operator` job at `:474` stays on the default flag)\n- `.github/actions/setup-e2e-infra/action.yml` (thread `WITH_PROMETHEUS` through the env if the action wraps the variable list — same shape as `WITH_CHAOS_MESH` should already be threaded)\n- `Makefile` (optional `make e2e-prometheus` target with the same fail-fast guard pattern as `make e2e-chaos` at `:354-366`)\n- `architecture/docs/09-implementation/` (new short doc — or an addition to the CC-0089 implementation note — that records the kind opt-in posture: production users wire their own Prometheus, kind users opt-in via the flag; explicitly NOT added to the production `deploy/flux-system/` stack)\n- `.planwerk/review_patterns/document-intentional-environment-divergence-in-overlays.md` (extend with the prometheus opt-in as another worked example alongside the existing chaos-mesh / Envoy / OpenBao UI references)\n\n**Acceptance Criteria**:\n- [ ] `make deploy-infra` on a fresh kind cluster (no `WITH_PROMETHEUS` set) finishes without ever creating a `monitoring` namespace, kube-prometheus-stack HelmRelease, or Prometheus/Grafana pod; `kubectl get ns monitoring` returns `NotFound`; default deploy time is identical to before (no measurable regression)\n- [ ] `WITH_PROMETHEUS=true make deploy-infra` reaches the following end state: `HelmRelease/kube-prometheus-stack` `Ready=True` in `monitoring`, `Deployment/kube-prometheus-stack-grafana` `Available`, `StatefulSet/prometheus-kube-prometheus-stack-prometheus` `Ready`, the `keystone-operator` HelmRelease's rendered chart sets `monitoring.serviceMonitor.enabled=true` and the resulting `ServiceMonitor/keystone-operator` is present in `openstack`\n- [ ] Inside the kind cluster, the Prometheus instance reports the `keystone-operator` job as `Up`: `curl -sf http://localhost:9090/api/v1/targets?state=active | jq '.data.activeTargets[] | select(.labels.job==\\\"keystone-operator\\\") | .health'` returns `\\\"up\\\"` (asserted by the new chainsaw suite)\n- [ ] Grafana auto-discovers the Keystone Operator dashboard via the sidecar — `curl -sfu admin:<password> http://localhost:3000/api/search?query=Keystone+Operator | jq 'length'` returns at least `1` (asserted by the new chainsaw suite); a human opening `http://localhost:3000` finds **Dashboards → Keystone Operator** without manual import\n- [ ] The Quick Start's existing CC-0089 metric queries (`docs/guides/enable-keystone-operator-metrics.md:137-157`) all return non-empty data after the cluster has been Ready for ≥5 minutes — verified manually once and recorded in the PR description\n- [ ] The Extended Quick Start (`docs/quick-start-extended.md`) has a Step 4c — Open the Grafana UI section that mirrors the OpenBao Step 4b pattern (port-forward command, credentials block, screenshot-or-CLI-equivalent verification, kind-only disclaimer); the Step 3 architecture snapshot lists the new `monitoring` namespace pods gated on the flag; the existing Steps 4 / 4a / 4b paragraphs cross-link to 4c\n- [ ] `docs/guides/enable-keystone-operator-metrics.md` has a top-level note that points kind readers at the new flag and keeps the rest of the guide as the canonical non-kind path\n- [ ] `kube-prometheus-stack` does NOT create or update `monitoring.coreos.com/v1` CRDs (verified by `kubectl describe crd servicemonitors.monitoring.coreos.com` showing the existing `app.kubernetes.io/managed-by` label from `prometheus-operator-crds`, NOT a flap); `crds.enabled=false` is set in the rendered HelmRelease values\n- [ ] Default kind cluster bring-up wall-clock with `WITH_PROMETHEUS=true` does not exceed `WITH_CHAOS_MESH=true` by more than 30s on a warm-cache laptop (target: parity ±30s; recorded in the PR description as evidence)\n- [ ] `make e2e-prometheus` against a `WITH_PROMETHEUS=true` cluster passes the new chainsaw suite; against a default cluster the target fails fast with the message `kube-prometheus-stack is not installed; run \\`WITH_PROMETHEUS=true make deploy-infra\\` first`\n- [ ] The new `e2e-prometheus` GitHub Actions job runs the chainsaw suite against a `WITH_PROMETHEUS=true` cluster; the existing `e2e-operator` job's wall-clock time on the Blacksmith runner is unchanged (no regression — it stays on the default flag)\n- [ ] `deploy/flux-system/kustomization.yaml` is unchanged: the production overlay does NOT install kube-prometheus-stack — that is a customer-side decision, identical to the chaos-mesh / Envoy / Headlamp posture\n- [ ] The Grafana dashboard JSON in `operators/keystone/dashboards/keystone-operator.json` remains the single source of truth — the kind overlay references it via `configMapGenerator`, NOT a fork; `operators/keystone/dashboards/dashboard_test.go` continues to pass against the same file\n\n**Non-Goals**:\n- Installing Prometheus / Grafana / Alertmanager on the production `deploy/flux-system/` overlay. CC-0089 deliberately ships only the operator-side instrumentation surface; the choice of monitoring stack is a customer-side decision (kube-prometheus-stack, VictoriaMetrics-operator, Grafana Cloud Agent, …) and forge does not pick one. The kind overlay is a kind-only convenience, identical to the Envoy Gateway / Headlamp / OpenBao UI posture.\n- Enabling Alertmanager, node-exporter, or kube-state-metrics. The kind opt-in is scoped to \"see the Keystone Operator metrics in Grafana\"; cluster-wide observability is out of scope for the demo and only adds image pulls + memory pressure on a single-node kind cluster.\n- Wiring up Prometheus alerts on the CC-0089 metrics (rotation-age threshold, db_sync failure rate, reconcile p95 SLO). Alerting needs a customer-side Alertmanager target, which is exactly the decision this issue declines to make.\n- Exposing Grafana via the `openstack-gw` Gateway with a `grafana.127-0-0-1.nip.io` route. The OpenBao UI (Step 4b) and the Flux Web UI (Step 4a) both ship as port-forward-only kind conveniences — Grafana follows the same pattern. A nip.io Gateway route can come later if there is demand.\n- Changing the keystone-operator chart's `monitoring.serviceMonitor.enabled` default to `true` for everyone. That is option (b) under step (5) above and is intentionally out of scope; the kind overlay flips it via `kubectl patch` so external chart consumers see no behavioural change.\n- Migrating away from `prometheus-operator-crds` (the always-on chart) to letting kube-prometheus-stack manage its own CRDs. That would create a CRD-ownership conflict the moment a user installs kube-prometheus-stack twice (e.g., once via this overlay, once on their own); ceding CRD ownership to the always-on chart keeps the model simple.\n- Adding a new `kube-prometheus-stack` HelmRepository in `deploy/flux-system/sources/`. The existing `prometheus-community` source (`deploy/flux-system/sources/prometheus-community.yaml`, OCI from `ghcr.io/prometheus-community/charts`) already serves both the always-on `prometheus-operator-crds` chart and the new kube-prometheus-stack — re-use, do not duplicate.\n- Auto-detecting whether the user is \"about to\" run a metrics demo and toggling the flag. Explicit opt-in mirrors the established `WITH_FLUX_CLI` / `WITH_CHAOS_MESH` pattern and avoids a magic coupling between the deploy script and the developer's intent.\n\n**References**:\n- CC-0089 / #270 — original Prometheus instrumentation + ServiceMonitor + dashboard PR; commit `c185c33` introduces all five collectors and the dashboard JSON consumed by this issue\n- CC-0089 enablement how-to: `docs/guides/enable-keystone-operator-metrics.md` (the existing non-kind path that this issue shortens for kind)\n- CC-0089 metric catalogue: `docs/reference/keystone-operator-metrics.md`\n- Existing kind-only addon prior art: CC-0082 / #246 (OpenBao UI), CC-0086 / #257 (Flux Web UI), CC-0088 / #265 (Envoy Gateway + `openstack-gw`), CC-0097 / #284 (Chaos Mesh opt-in — the closest structural analog for this issue)\n- Opt-in flag pattern: `WITH_FLUX_CLI` at `hack/install-test-deps.sh:289-294`, `WITH_CHAOS_MESH` at `hack/deploy-infra.sh:65-69` and the `kubectl apply -k` gate at `:893-902`\n- Existing prometheus-community HelmRepository (always-on, OCI): `deploy/flux-system/sources/prometheus-community.yaml`\n- Existing CRD ownership: `deploy/flux-system/releases/prometheus-operator-crds.yaml` (the always-on chart that owns `monitoring.coreos.com/v1` CRDs — kept as the single owner)\n- Reference Grafana dashboard JSON: `operators/keystone/dashboards/keystone-operator.json` and the drift-guard test at `operators/keystone/dashboards/dashboard_test.go`\n- Operator chart's existing ServiceMonitor template: `operators/keystone/helm/keystone-operator/templates/servicemonitor.yaml`, gated by the default-`false` value at `operators/keystone/helm/keystone-operator/values.yaml:36-42`\n- Chaos Mesh overlay structure that this issue mirrors: `deploy/kind/chaos-mesh/kustomization.yaml`, `deploy/kind/chaos-mesh/release.yaml`, `deploy/kind/chaos-mesh/source.yaml`, `deploy/kind/chaos-mesh/namespace.yaml`\n- Architecture posture for kind-only addons: `architecture/docs/09-implementation/10-chaos-e2e-testing.md`, `.planwerk/review_patterns/document-intentional-environment-divergence-in-overlays.md`\n\n**Labels:** enhancement\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/302",
   "stories": [
@@ -472,6 +472,7 @@
       "title": "Create `deploy/kind/prometheus/namespace.yaml` declaring the `monitoring` Namespace inline (CC-0100, REQ-001). Mirror the chaos-mesh `namespace.yaml` style — SPDX header + minimal metadata, no PodSecurity label needed for Prometheus/Grafana.",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-001"
       ]
@@ -481,6 +482,7 @@
       "title": "Create `deploy/kind/prometheus/release.yaml` with `HelmRelease/kube-prometheus-stack` in `monitoring`, version `>=65.0.0 <70.0.0`, `dependsOn: cert-manager`, sourceRef pointing at `prometheus-community` in `flux-system`. Bake kind-tuned values: `crds.enabled=false`, `alertmanager.enabled=false`, `nodeExporter.enabled=false`, `kubeStateMetrics.enabled=false`, `prometheus.prometheusSpec.retention=6h`, `serviceMonitorSelectorNilUsesHelmValues=false`, `serviceMonitorSelector: {}`, `serviceMonitorNamespaceSelector: {}`, Prometheus + Grafana resources ≤100m CPU / ≤256Mi mem (CC-0100, REQ-001, REQ-002, REQ-003).",
       "level": 1,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -492,6 +494,7 @@
       "title": "Create `deploy/kind/prometheus/kustomization.yaml` mirroring `deploy/kind/chaos-mesh/kustomization.yaml`: list `namespace.yaml` + `release.yaml` under `resources`, set `namespace: monitoring`, and add a `configMapGenerator` for the dashboard with labels `grafana_dashboard: \"1\"` and `app.kubernetes.io/part-of: kube-prometheus-stack`. Add a top-of-file comment documenting the `LoadRestrictionsRootOnly` constraint and the dashboard-as-single-source-of-truth rationale (CC-0100, REQ-001, REQ-004).",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-004"
@@ -502,6 +505,7 @@
       "title": "Wire the dashboard JSON into the overlay without a parent-dir traversal: add a step to `hack/deploy-infra.sh` (gated on WITH_PROMETHEUS=true) that copies `operators/keystone/dashboards/keystone-operator.json` into `deploy/kind/prometheus/keystone-operator.json` immediately before `kubectl apply -k` runs, OR add a Make target / pre-apply hook that performs the same copy. Keep the copy idempotent and ensure `git status` after `make deploy-infra` shows no unexpected modifications. Document the choice with a comment referencing REQ-004 (CC-0100, REQ-004).",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -511,6 +515,7 @@
       "title": "Add `WITH_PROMETHEUS=\"${WITH_PROMETHEUS:-false}\"` to `hack/deploy-infra.sh` next to the `WITH_CHAOS_MESH` block (`:65-69`) with a 3-4 line comment matching the style of the chaos-mesh comment. Append `Prometheus stack    : ${WITH_PROMETHEUS} (set WITH_PROMETHEUS=true to install)` to the configuration banner at `:799` (CC-0100, REQ-005).",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -520,6 +525,7 @@
       "title": "In `hack/deploy-infra.sh`, after the chaos-mesh `kubectl apply -k` block (`:893-902`), add a parallel `if [[ \"${WITH_PROMETHEUS}\" == \"true\" ]]; then kubectl apply -k \"${REPO_ROOT}/deploy/kind/prometheus\"; log \"Prometheus kind overlay applied (WITH_PROMETHEUS=true).\"; fi`. Place the dashboard-copy step from task 1.4 immediately before the apply (CC-0100, REQ-005).",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -529,6 +535,7 @@
       "title": "Extend the dynamic Phase 3 `helm_releases` list in `hack/deploy-infra.sh:932-940` to append `kube-prometheus-stack` when WITH_PROMETHEUS=true, after the existing chaos-mesh append and before `wait_for_helmreleases` is invoked. Verify ordering does not break the existing chaos-mesh case (CC-0100, REQ-005).",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -538,6 +545,7 @@
       "title": "Add a new helper function in `hack/deploy-infra.sh` (e.g. `enable_keystone_operator_servicemonitor`) that runs after the Prometheus HelmRelease becomes Ready: `kubectl patch helmrelease keystone-operator -n openstack --type=merge -p '{\"spec\":{\"values\":{\"monitoring\":{\"serviceMonitor\":{\"enabled\":true}}}}}'`, then waits for the keystone-operator HelmRelease to reconcile back to Ready=True on the new values. Call it from `main()` only when WITH_PROMETHEUS=true (CC-0100, REQ-005).",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -547,6 +555,7 @@
       "title": "Add a unit-style assertion (shellcheck-clean shell test or `shellspec` snippet, depending on existing repo conventions discoverable via `Glob` in `hack/`/`tests/`) that exercises `WITH_PROMETHEUS=` defaulting and the banner line. If no shell-test framework exists in the repo, add a documented `bash -n` + `shellcheck` invocation to the relevant Makefile/lint target (CC-0100, REQ-005).",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -556,6 +565,7 @@
       "title": "Verify and document non-regression of the production stack: confirm `deploy/flux-system/kustomization.yaml`, `deploy/flux-system/sources/`, `deploy/flux-system/releases/`, `deploy/kind/base/kustomization.yaml`, `operators/keystone/helm/keystone-operator/values.yaml`, and `operators/keystone/helm/keystone-operator/values.schema.json` are byte-identical vs main; add a 5-line note to the CC-0100 progress file recording this. (CC-0100, REQ-006).",
       "level": 3,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -565,6 +575,7 @@
       "title": "Create `tests/e2e/keystone/prometheus-stack/chainsaw-test.yaml`. Step 1: assert `HelmRelease/kube-prometheus-stack` Ready=True (with a `try`/`catch` that dumps `helm status` + pod logs on failure). Skip the rest of the suite if the `monitoring` namespace is absent (mirror `tests/e2e/infrastructure/chaos-mesh-health`'s presence-guard pattern). (CC-0100, REQ-009).",
       "level": 4,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -574,6 +585,7 @@
       "title": "Extend the chainsaw suite from 4.1 with Step 2: assert `ServiceMonitor/keystone-operator` exists in `openstack` after the deploy script's WITH_PROMETHEUS=true patch ran. Catch block dumps `kubectl get servicemonitor -n openstack` + the operator HelmRelease values (CC-0100, REQ-005, REQ-009).",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-009"
@@ -584,6 +596,7 @@
       "title": "Extend the chainsaw suite with Step 3: poll `http://kube-prometheus-stack-prometheus.monitoring.svc:9090/api/v1/targets?state=active` from a one-shot in-cluster pod (curl + jq image) and assert `.data.activeTargets[] | select(.labels.job==\"keystone-operator\") | .health == \"up\"`. Use a 10s × 12 retry budget. Catch dumps the full target list. (CC-0100, REQ-003, REQ-009).",
       "level": 4,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-009"
@@ -594,6 +607,7 @@
       "title": "Extend the chainsaw suite with Step 4: hit Grafana's `/api/search?query=Keystone+Operator` from a one-shot in-cluster pod (using the chart's default `admin:prom-operator`) and assert `length >= 1`. Catch dumps the raw response and the labelled ConfigMaps in `monitoring` (CC-0100, REQ-004, REQ-009).",
       "level": 4,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-009"
@@ -604,6 +618,7 @@
       "title": "Add `make e2e-prometheus` to `Makefile` next to `e2e-chaos` (`:354-366`). Two preflights: (a) `kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }`; (b) `kubectl get ns monitoring >/dev/null 2>&1 || { echo 'kube-prometheus-stack is not installed; run \\`WITH_PROMETHEUS=true make deploy-infra\\` first' >&2; exit 1; }`. Then `chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/keystone/prometheus-stack/`. Reference review patterns `distinguish-collapsed-failure-modes-in-preflight-checks` and `maintain-ci-to-makefile-parity-for-new-jobs` in the comment block (CC-0100, REQ-011).",
       "level": 4,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-011"
       ]
@@ -613,6 +628,7 @@
       "title": "Thread `WITH_PROMETHEUS` through `.github/actions/setup-e2e-infra/action.yaml` `env:` block, mirroring how `WITH_CHAOS_MESH` is threaded today. Update the doc comment block in the action describing the threading (CC-0100, REQ-010).",
       "level": 5,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-010"
       ]
@@ -622,6 +638,7 @@
       "title": "Add an `e2e-prometheus` job to `.github/workflows/ci.yaml`, modelled on `e2e-chaos` (`:678-761`). Single matrix entry on the Blacksmith runner, `WITH_PROMETHEUS: \"true\"` set on the `Setup E2E infrastructure` step, `chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/keystone/prometheus-stack/` for the test step, JUnit upload + `ci-dump-diagnostics.sh` on failure, `continue-on-error: false` (it's a deterministic stack — chaos non-determinism does not apply). Inherit the `needs:` chain from `e2e-chaos` (CC-0100, REQ-010).",
       "level": 5,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-010"
       ]
@@ -631,6 +648,7 @@
       "title": "Extend the `changes` job's path filters in `.github/workflows/ci.yaml` to emit `e2e-prometheus=true` when any of the following change: `deploy/kind/prometheus/**`, `tests/e2e/keystone/prometheus-stack/**`, `hack/deploy-infra.sh`, `operators/keystone/helm/keystone-operator/templates/servicemonitor.yaml`, `operators/keystone/helm/keystone-operator/values.yaml`, `operators/keystone/dashboards/keystone-operator.json`, `.github/actions/setup-e2e-infra/action.yaml`, `.github/workflows/ci.yaml`, `Makefile` (CC-0100, REQ-010).",
       "level": 5,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-010"
       ]
@@ -640,6 +658,7 @@
       "title": "Edit `docs/quick-start-extended.md`: in the Step 3 `::: details What gets deployed` block (`:192-211`), add 3 lines for `monitoring` namespace pods (kube-prometheus-stack-prometheus-*, kube-prometheus-stack-grafana-*, kube-prometheus-stack-operator-*) annotated as `Ready (kind-only; WITH_PROMETHEUS=true; see Step 4c)`. Match the comment style of the existing Headlamp / Flux Web UI / Envoy entries (CC-0100, REQ-007).",
       "level": 6,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -649,6 +668,7 @@
       "title": "Edit `docs/quick-start-extended.md`: directly under the existing `::: tip Enabling Chaos Mesh` block (`:229-248`), add a sibling `::: tip Enabling Prometheus & Grafana (CC-0100)` block. Document `WITH_PROMETHEUS=true make deploy-infra`, the use cases (visualising CC-0089 metrics, seeing reconcile p95 / error rate live), and link to Step 4c. Mirror the style and length of the chaos-mesh tip exactly (CC-0100, REQ-007).",
       "level": 6,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -658,6 +678,7 @@
       "title": "Edit `docs/quick-start-extended.md`: insert a new `## Step 4c — Open the Grafana UI {#step-4c-grafana-ui}` section after Step 4b (`:317-349`). Sections: kind-only disclaimer, port-forward command (`kubectl port-forward svc/kube-prometheus-stack-grafana -n monitoring 3000:80`), default credentials block (admin / prom-operator), `Dashboards → Keystone Operator` navigation, and a Prometheus targets sanity-check snippet (port-forward `:9090`, curl `/api/v1/targets?state=active`). Cross-link to `docs/guides/enable-keystone-operator-metrics.md` for non-kind clusters (CC-0100, REQ-007).",
       "level": 6,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -667,6 +688,7 @@
       "title": "Edit `docs/quick-start-extended.md`: in the Step 4 / 4a / 4b paragraphs (`:252-253`, `:277`, `:317`), add cross-links to Step 4c so readers scanning Step 4 find the Grafana section. Keep edits minimal — one short clause per paragraph (CC-0100, REQ-007).",
       "level": 6,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -676,6 +698,7 @@
       "title": "Edit `docs/quick-start.md` (compact Quick Start): add a single-line tip under the existing chaos-mesh tip pointing readers at Extended Quick Start Step 4c. Do NOT inline the full UI tour — keep the compact path compact (CC-0100, REQ-007).",
       "level": 6,
       "estimate_minutes": 5,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -685,6 +708,7 @@
       "title": "Edit `docs/guides/enable-keystone-operator-metrics.md`: insert a top-level `::: tip On kind` callout immediately after the H1 (around `:23-54`) pointing readers at `WITH_PROMETHEUS=true make deploy-infra` and Extended Quick Start Step 4c. Reframe the rest of the guide as the canonical non-kind path. Do NOT delete or reorder the existing Prerequisites / Steps / Verification sections (CC-0100, REQ-008).",
       "level": 6,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -694,6 +718,7 @@
       "title": "Add or extend an architecture doc under `architecture/docs/09-implementation/` (e.g. extend `10-chaos-e2e-testing.md`'s `Infrastructure Setup` section, or add a short `11-kind-monitoring-stack.md`) recording the kind-only posture: production users wire their own Prometheus, kind users opt in via WITH_PROMETHEUS=true. Reference `WITH_PROMETHEUS` by name and link to Step 4c (CC-0100, REQ-012).",
       "level": 6,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-012"
       ]
@@ -703,6 +728,7 @@
       "title": "Edit `.planwerk/review_patterns/document-intentional-environment-divergence-in-overlays.md` to add a `## CC-0100 follow-up` section listing the prometheus opt-in alongside the existing chaos-mesh / Envoy / OpenBao UI worked examples; bump the `Occurrences` count (CC-0100, REQ-012).",
       "level": 6,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-012"
       ]
@@ -886,8 +912,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-28T17:52:55.635472"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-28T19:00:20.607034"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-29T08:18:31.130481"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/303",
+  "pr_number": 303,
   "execution_history": [
     {
       "run_id": "72df5951-afa2-4e83-9f35-f8545ab5c53a",
@@ -899,6 +935,68 @@
           "name": "prepare",
           "duration": 489.1037094593048,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "ca59d419-d8c6-49e1-a0df-2e0028a1b9a8",
+      "timestamp": "2026-04-28T20:07:54.670460",
+      "total_duration": 3781.236570119858,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (4 tasks)",
+          "duration": 452.7911329269409,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (5 tasks)",
+          "duration": 434.10999846458435,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (1 tasks)",
+          "duration": 125.50828647613525,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (5 tasks)",
+          "duration": 429.42723202705383,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 5 (3 tasks)",
+          "duration": 356.284964799881,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 6 (8 tasks)",
+          "duration": 565.1573996543884,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0100] Code Review",
+          "duration": 481.8935983181,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0100] Improvements",
+          "duration": 710.656085729599,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0100] Simplify",
+          "duration": 225.40787172317505,
+          "type": "simplify",
           "status": "done"
         }
       ]

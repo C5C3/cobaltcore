@@ -1,0 +1,66 @@
+{
+  "feature_id": "CC-0100",
+  "title": "Add WITH_PROMETHEUS flag for kind Quick Start",
+  "date": "2026-04-28",
+  "summary": "Round-2 review of CC-0100 after addressing external reviewer berendt's review #1. The current diff (08cc262b..HEAD) addresses the BLOCKING/CRITICAL findings (B-001, C-001) by threading WITH_PROMETHEUS through hack/ci-deploy-operator.sh: the script now reads the optional env var, builds a helm_args array, and conditionally appends --set monitoring.serviceMonitor.enabled=true; the e2e-prometheus job exports WITH_PROMETHEUS=true on the Deploy operator step. Warning-level fixes: removed the leftover 'Reviewer: please verify' comment in hack/deploy-infra.sh:626 (W-001); added Makefile target stage-prometheus-dashboard with documented prerequisite for kustomize-build flows in docs/reference/infrastructure/infrastructure-manifests.md (W-002); updated docs/reference/ci-cd/ci-workflow.md with the new e2e-prometheus and shell-unit-tests-cc-0100 jobs, bumped count 22→24, switched 'four E2E jobs' to 'five E2E jobs' (W-003); chainsaw suite gained Step 1b (HelmRelease values render the kind tuning, alertmanager/node-exporter/kube-state-metrics absent, servicemonitors CRD owned by prometheus-operator-crds — REQ-002) and Step 4b (sha256 byte-identical dashboard ConfigMap vs canonical source — REQ-004); netshoot probe pods pinned by digest (docker.io/nicolaka/netshoot:v0.13@sha256:a20c2531…) at all four call sites. Three new review patterns persist the lessons: audit-suspended-helmrelease-patches-for-inert-overrides, check-chart-default-values-match-e2e-job-expectations, verify-feature-flags-propagate-end-to-end-through-deployment-chain. The fixes are minimal, mechanical, and consistent with established patterns (CI-script env-var bridge, helm_args array idiom). No new bugs introduced; the in-pod sha256 check correctly relies on jsonpath emitting raw value bytes (configMapGenerator preserves trailing newline so source/CM hashes match), and the kind-posture grep regex correctly detects the three excluded workload kinds without false-matching the Prometheus StatefulSet.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Step 1b chainsaw assertion verifies HelmRelease.spec.values renders crds/alertmanager/nodeExporter/kubeStateMetrics disabled and retention=6h", "checked": true},
+    {"item": "Step 1b chainsaw assertion verifies alertmanager/node-exporter/kube-state-metrics workloads are absent in the monitoring namespace", "checked": true},
+    {"item": "Step 1b chainsaw assertion verifies the servicemonitors.monitoring.coreos.com CRD is owned by prometheus-operator-crds (no flap with kube-prometheus-stack)", "checked": true},
+    {"item": "Step 4b chainsaw assertion verifies the keystone-operator-dashboard ConfigMap content is sha256 byte-identical to operators/keystone/dashboards/keystone-operator.json", "checked": true},
+    {"item": "Per-step monitoring-namespace presence guard preserved across new Step 1b and Step 4b for default-safe behavior", "checked": true},
+    {"item": "netshoot probe images pinned by digest at all four kubectl run call sites (lines 338, 371, 422, 454)", "checked": true},
+    {"item": "Worst-case loop wall-clock fits inside per-step chainsaw timeouts (Step 1b/4b each 60s budget vs <2s expected)", "checked": true},
+    {"item": "Step 4b sha256 check accounts for jsonpath emitting raw bytes including trailing newline (kustomize configMapGenerator preserves the file's trailing newline, sha256sum sees identical input on both sides)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "ci-deploy-operator.sh helm_args array follows shellcheck-clean array-expansion idiom (\"${helm_args[@]}\" preserves quoting, no word-splitting)", "checked": true},
+    {"item": "ci-deploy-operator.sh WITH_PROMETHEUS default uses ${WITH_PROMETHEUS:-false} consistent with the WITH_CHAOS_MESH precedent in deploy-infra.sh:65-69", "checked": true},
+    {"item": "Strict equality `[[ \"${WITH_PROMETHEUS}\" == \"true\" ]]` rejects accidental yes/1/True values (mirrors deploy-infra.sh)", "checked": true},
+    {"item": "CC-0100 + REQ-IDs cited in every new comment block (ci-deploy-operator.sh, ci.yaml step env, Makefile, infrastructure-manifests.md, chainsaw Step 1b/4b headers)", "checked": true},
+    {"item": "DECISION block in deploy-infra.sh:612-625 rewritten as stable rationale; the leftover 'Reviewer: please verify' line is gone", "checked": true},
+    {"item": "Three new review patterns added under .planwerk/review_patterns/ documenting the suspended-HelmRelease/chart-default/feature-flag-propagation lessons for future reviews", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "WITH_PROMETHEUS env var is a boolean toggle — no shell-injection surface in helm_args or ci.yaml step env", "checked": true},
+    {"item": "Helm --set value is a static literal `monitoring.serviceMonitor.enabled=true` — no user-controlled interpolation", "checked": true},
+    {"item": "netshoot probe image now pinned by sha256 digest — protects against upstream tag retargeting (resolves the prior review's MINOR S3 / I-001)", "checked": true},
+    {"item": "Step 1b/4b scripts read kubectl output into shell vars without exec/eval — no command injection", "checked": true},
+    {"item": "Step 4b sha256 comparison uses fixed repo-relative source path (operators/keystone/dashboards/keystone-operator.json) — no path traversal", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Install-time helm --set is the single source of truth for ServiceMonitor enablement on the kind path; the kubectl patch on the suspended Flux HelmRelease remains durable but is no longer load-bearing for the e2e-prometheus suite", "checked": true},
+    {"item": "Production overlay (deploy/flux-system/) untouched — kind-only opt-in posture preserved", "checked": true},
+    {"item": "Three new review patterns address structural classes of bugs (suspended-HelmRelease patches, chart-default-vs-e2e-expectation mismatch, end-to-end feature-flag propagation) — generalisable beyond CC-0100", "checked": true},
+    {"item": "Step 1b CRD ownership assertion locks in the design contract that prometheus-operator-crds is the sole owner of monitoring.coreos.com/v1 CRDs (no dual-owner reconcile flap)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "Makefile stage-prometheus-dashboard target performs the same cp -f as deploy-infra.sh (no logic duplication; both call the same canonical path)", "checked": true},
+    {"item": "Step 4b sha256 check is content-addressed (no need to enumerate dashboard fields)", "checked": true},
+    {"item": "ci-deploy-operator.sh helm_args array is the minimal change vs the previous flat --set chain", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Step 1b jq -e exits non-zero on predicate failure, surfaces immediately under set -e", "checked": true},
+    {"item": "Step 1b workload-absence check exits 1 explicitly with diagnostic message on regression", "checked": true},
+    {"item": "Step 4b sha256 mismatch prints both hashes and exits 1 — diagnostic-rich failure", "checked": true},
+    {"item": "ci-deploy-operator.sh fails fast on missing OPERATOR/IMAGE_REPO via :? expansion (unchanged)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Step 1b CRD-ownership kubectl get tolerates absent CRD via 2>/dev/null || echo \"\" — empty owner triggers the explicit FAIL message rather than a cryptic kubectl error", "checked": true},
+    {"item": "Step 4b SKIP guard at top of script (kubectl get ns monitoring) keeps the test default-safe on clusters without WITH_PROMETHEUS", "checked": true},
+    {"item": "ci-deploy-operator.sh does not set --set monitoring.serviceMonitor.enabled=false explicitly — relies on chart default to remain false (preserves the conservative chart default for non-kind chart consumers)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Optional polish: the kind-posture grep regex in chainsaw Step 1b uses a single-character class `(...|...|...)` — splitting into three explicit kubectl get -o name calls (one per excluded workload) would yield clearer failure diagnostics, but the current form is correct and the catch block already dumps the full namespace contents for triage.",
+    "Optional polish: ci-deploy-operator.sh could log which value of WITH_PROMETHEUS it observed at the top of step 2, mirroring deploy-infra.sh's banner line, for symmetric CI-log debuggability."
+  ],
+  "next_steps": [
+    "Merge: review #1 BLOCKING/CRITICAL items (B-001, C-001) plus all five WARNING items targeting test gaps (W-001 helmrelease values, W-002 workload absence, W-003 CRD ownership, W-004 dashboard byte equality) and the docs gaps (W-001 stale comment, W-002 kustomize prerequisite, W-003 ci-workflow.md) are addressed.",
+    "After merge: monitor the e2e-prometheus job's first cold-cache CI run to confirm the digest-pinned netshoot image pulls within the worst-case 30s pod-startup margin baked into Step 3/4 timeouts."
+  ],
+  "detected_patterns": []
+}

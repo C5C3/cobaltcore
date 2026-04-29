@@ -208,6 +208,9 @@ openbao-system        openbao-0              Ready (unsealed; kind overlay enabl
 openstack             openstack-db-*         Ready (MariaDB cluster)
 openstack             openstack-memcached-*  Ready (Memcached cluster)
 headlamp-system       headlamp-*             Starting (kind-only demo UI, not waited on)
+monitoring            kube-prometheus-stack-prometheus-*   Ready (kind-only; WITH_PROMETHEUS=true; see Step 4c)
+monitoring            kube-prometheus-stack-grafana-*      Ready (kind-only; WITH_PROMETHEUS=true; see Step 4c)
+monitoring            kube-prometheus-stack-operator-*     Ready (kind-only; WITH_PROMETHEUS=true; see Step 4c)
 ```
 
 Headlamp is deployed asynchronously and is **not** part of the `deploy-infra` wait list — a
@@ -247,12 +250,34 @@ before running the chaos E2E suites — see
 list and `make e2e-chaos` workflow.
 :::
 
+::: tip Enabling Prometheus & Grafana
+The kube-prometheus-stack is **not installed by default** in the kind Quick Start. The default
+`make deploy-infra` flow leaves the `monitoring` namespace absent so first-run
+deployments stay lean and do not pin extra CPU/memory on a developer laptop.
+Production overlays (`deploy/flux-system/`) also omit the stack — production
+clusters wire their own Prometheus.
+
+Opt in by setting `WITH_PROMETHEUS=true` before `make deploy-infra`:
+
+```bash
+WITH_PROMETHEUS=true make deploy-infra
+```
+
+This applies the kind-only overlay at `deploy/kind/prometheus/`, waits for the
+`kube-prometheus-stack` HelmRelease to become Ready, and patches the
+keystone-operator HelmRelease to enable its `ServiceMonitor`. Use it when you
+want to visualise the keystone-operator metrics live (reconcile p95,
+error rate) — see [Step 4c — Open the Grafana UI](#step-4c-grafana-ui) for the
+port-forward and the bundled `Keystone Operator` dashboard.
+:::
+
 ---
 
 ## Step 4 — Open the Headlamp UI
 
 The kind overlay ships [Headlamp](https://headlamp.dev/) with the Flux plugin preloaded, so
-you can watch Steps 5–9 reconcile live. Wait for the HelmRelease to become Ready, then
+you can watch Steps 5–9 reconcile live (and, if you enabled `WITH_PROMETHEUS=true`, jump to
+[Step 4c](#step-4c-grafana-ui) for the Grafana UI). Wait for the HelmRelease to become Ready, then
 get a token, port-forward, and open the UI:
 
 ```bash
@@ -294,7 +319,8 @@ Kubernetes events that produced it.
 ## Step 4a — Open the Flux Web UI {#step-4a-flux-web-ui}
 
 The kind overlay also ships the flux-operator's own
-[Flux Web UI](https://fluxoperator.dev/web-ui/) as a demo surface.
+[Flux Web UI](https://fluxoperator.dev/web-ui/) as a demo surface (and, alongside it,
+the optional Grafana UI from [Step 4c](#step-4c-grafana-ui) when `WITH_PROMETHEUS=true`).
 This is a kind-only convenience — the production `deploy/flux-system/` overlay keeps the
 Web UI disabled (no token, no TLS, no Ingress) until the upstream project ships token
 auth, TLS termination, and an Ingress story suitable for a shared cluster. Forward the
@@ -316,7 +342,8 @@ and `ResourceSetInputProvider` (the operator's templating primitives) and `FluxR
 
 ## Step 4b — Open the OpenBao UI {#step-4b-openbao-ui}
 
-The kind overlay enables the OpenBao web UI as a demo surface. This is a
+The kind overlay enables the OpenBao web UI as a demo surface (the optional
+Grafana UI is covered separately in [Step 4c](#step-4c-grafana-ui)). This is a
 kind-only convenience — the production flux-system overlay keeps `ui = false` in the HA
 Raft config. Forward the client port and log in with the root token that
 `make deploy-infra` already seeded into the cluster:
@@ -347,6 +374,64 @@ Open `https://localhost:8200/ui/` and paste the token to sign in.
 For the full token lifecycle, secret engines, auth methods, and the bootstrap sequence that
 produced this token, see
 [OpenBao Bootstrap Procedure — Running the Full Bootstrap](./reference/infrastructure/openbao-bootstrap.md#running-the-full-bootstrap).
+
+---
+
+## Step 4c — Open the Grafana UI {#step-4c-grafana-ui}
+
+The kind overlay can ship a slimmed-down `kube-prometheus-stack` (Prometheus +
+Grafana + the prometheus-operator) under the `monitoring` namespace. This is a
+**kind-only opt-in** — production overlays (`deploy/flux-system/`) deliberately
+omit the stack so production clusters can wire their own Prometheus. If you
+have not already opted in, see the
+[Enabling Prometheus & Grafana](#enabling-prometheus--grafana-cc-0100) tip in
+Step 3 (`WITH_PROMETHEUS=true make deploy-infra`).
+
+Forward the Grafana service port:
+
+```bash
+kubectl port-forward svc/kube-prometheus-stack-grafana -n monitoring 3000:80
+```
+
+Open `http://localhost:3000` and sign in with the chart's default credentials:
+
+```
+username: admin
+password: prom-operator
+```
+
+> **Default credentials only:** these are the upstream `kube-prometheus-stack`
+> defaults baked into the kind overlay for convenience. Do not reuse them in
+> any cluster reachable beyond your laptop.
+
+Once signed in, navigate to **Dashboards → Keystone Operator** to see the
+bundled dashboard sourced from `operators/keystone/dashboards/keystone-operator.json`
+(reconcile p95, error rate, and the keystone-operator metrics).
+
+### Sanity-check: Prometheus targets
+
+In a second terminal, port-forward Prometheus and confirm the keystone-operator
+ServiceMonitor scrape target is `up`. The query path
+(`/api/v1/targets?state=active`) is the same one the chainsaw suite
+issues against the in-cluster Service — so a green local check matches what
+CI exercises:
+
+```bash
+kubectl port-forward svc/kube-prometheus-stack-prometheus -n monitoring 9090:9090
+curl -fsS 'http://localhost:9090/api/v1/targets?state=active' \
+  | jq '.data.activeTargets[] | select(.labels.job=="keystone-operator") | {health, lastScrape: .lastScrape}'
+```
+
+A healthy target reports `"health": "up"`; an empty result means the
+keystone-operator HelmRelease has not been patched yet — re-run
+`WITH_PROMETHEUS=true make deploy-infra` so the deploy script can flip
+`monitoring.serviceMonitor.enabled=true`.
+
+For non-kind clusters (production overlays, shared dev clusters, anything that
+already runs Prometheus), follow
+[Enable Keystone Operator Metrics](./guides/enable-keystone-operator-metrics.md)
+instead — that guide covers wiring an externally-managed Prometheus to the
+operator's ServiceMonitor and is the canonical non-kind path.
 
 ---
 
