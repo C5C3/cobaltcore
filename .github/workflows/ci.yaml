@@ -572,6 +572,20 @@ jobs:
             echo "::endgroup::"
           done
 
+      # Mount a Blacksmith sticky disk at _output/e2e-images so the consumer
+      # jobs (e2e-operator, tempest, e2e-chaos pod) can pick up the tarballs
+      # directly off Blacksmith-local storage instead of round-tripping
+      # through GitHub artifact storage. The matching mount in
+      # .github/actions/load-e2e-images keys off ${github.run_id} so each run
+      # gets a fresh disk; Blacksmith GCs them after 7 days of inactivity.
+      # The artifact upload below stays as the fallback for the e2e-chaos
+      # network suite, which runs on a GitHub-hosted ubuntu-24.04 runner.
+      - name: Mount E2E images sticky disk
+        uses: useblacksmith/stickydisk@41873b1513bb679f9c115504cbd13d3660432504 # v1
+        with:
+          key: ${{ github.repository }}-e2e-images-${{ github.run_id }}
+          path: _output/e2e-images
+
       # Save each image as an individually zstd-compressed tarball.
       # zstd -T0 uses all available cores; -3 is the default level (fast).
       - name: Save images
@@ -760,8 +774,13 @@ jobs:
           cluster_name: forge-e2e
       # Load pre-built images from shared artifact instead of rebuilding.
       # build-e2e-images is in needs, so the artifact is guaranteed to exist.
+      # Blacksmith Sticky Disk on the pod-suite runner; the network suite
+      # runs on GitHub-hosted ubuntu-24.04 where Sticky Disks are unavailable
+      # and must use the artifact path.
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
+        with:
+          use-sticky-disk: ${{ startsWith(matrix.runner, 'blacksmith') }}
       - name: Load images into kind
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name forge-e2e
