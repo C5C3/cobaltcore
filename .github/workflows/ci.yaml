@@ -470,34 +470,56 @@ jobs:
           retention-days: 14
 
   # Centralized image build for E2E test jobs.
-  # Builds all Docker images (operator, service, tempest) once and uploads them
-  # as zstd-compressed tarballs.  e2e-operator and tempest download and load
-  # the artifact instead of rebuilding, saving ~5-10 min per CI run.
+  # Builds all Docker images (operator, service, tempest) once and pushes them
+  # to GHCR with run-scoped tags (e2e-${run_id}-<tag>).  e2e-operator,
+  # e2e-chaos and tempest pull from GHCR via load-e2e-images instead of
+  # rebuilding, saving ~5-10 min per CI run.
+  #
+  # GH-310: Replaces the previous docker-save → zstd → upload-artifact path.
+  # Layer-level pull retries plus the GHCR CDN avoid the 5-minute
+  # download-artifact timeouts that flaked the artifact-based transport.
   build-e2e-images:
     needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures, chainsaw-lint]
     # always(): allow the job to run when upstream Go jobs are skipped
     # (e.g. pure E2E test-definition PRs where go=false). The explicit
     # failure/cancelled guard still blocks if any upstream actually failed.
+    #
+    # Fork guard: push to GHCR requires a writable GITHUB_TOKEN, which forks
+    # do not get on pull_request events. The downstream consumer jobs
+    # (e2e-operator, e2e-chaos, tempest) all gate on
+    # `needs.build-e2e-images.result == 'success'` and pull from GHCR via
+    # `load-e2e-images`, so without the push there is nothing for them to
+    # consume. We explicitly skip the whole E2E pipeline for fork PRs and
+    # accept the tradeoff: forks still get full pre-flight signal (lint,
+    # format-check, shellcheck, test, test-integration, test-race,
+    # govulncheck, verify-codegen, helm-validate, e2e-infra), and a
+    # maintainer can run E2E by pushing the change to a same-repo branch.
+    # Reintroducing an artifact-based fallback for forks would bring back
+    # the 5-minute download-artifact timeouts that GH-310 fixed.
     if: |
       always() &&
       (needs.changes.outputs.has-e2e-operators == 'true' || needs.changes.outputs.e2e-chaos == 'true') &&
+      github.event.pull_request.head.repo.fork != true &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    env:
+      RUN_TAG: e2e-${{ github.run_id }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       # Enable BuildKit (required for type=gha cache) as the default builder.
       - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
 
-      - name: Verify zstd is available
-        run: |
-          if ! command -v zstd &>/dev/null; then
-            echo "::error::zstd is not installed on this runner"
-            exit 1
-          fi
-          echo "zstd version: $(zstd --version)"
+      - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       # Tempest always tests keystone, so keystone must be built regardless
       # of which operator triggered the pipeline.  Union the changed-operator
@@ -565,45 +587,44 @@ jobs:
             release="${release_dir%/}"
             release="${release##*/}"
             echo "::group::Building tempest:${release}"
-            RELEASE="${release}" TEMPEST_IMAGE="c5c3/tempest:${release}" \
+            RELEASE="${release}" TEMPEST_IMAGE="${IMAGE_PREFIX}/tempest:${release}" \
               DOCKER_BUILD_CACHE_FROM="type=gha,scope=e2e-tempest-${release}" \
               DOCKER_BUILD_CACHE_TO="type=gha,mode=max,scope=e2e-tempest-${release}" \
               hack/ci-build-tempest-image.sh
             echo "::endgroup::"
           done
 
-      # Save each image as an individually zstd-compressed tarball.
-      # zstd -T0 uses all available cores; -3 is the default level (fast).
-      - name: Save images
+      # GH-310: Push every E2E image to GHCR under a run-scoped tag so consumer
+      # jobs can `docker pull` instead of downloading a 355 MB single-blob
+      # artifact (which intermittently times out at the 5-minute mark).
+      # Tags use the form e2e-${run_id}-<original-tag>; cleanup-e2e-tags
+      # prunes them at the end of the run, with a nightly safety net for
+      # cancelled workflows in cleanup-images.yaml.
+      - name: Push E2E images to GHCR
         run: |
-          mkdir -p _output/e2e-images
+          push_image() {
+            local local_ref="$1"     # e.g. ghcr.io/c5c3/keystone:2025.2
+            local repo="${local_ref%:*}"
+            local tag="${local_ref##*:}"
+            local run_ref="${repo}:${RUN_TAG}-${tag}"
+            echo "::group::Push ${run_ref}"
+            docker tag "${local_ref}" "${run_ref}"
+            docker push "${run_ref}"
+            echo "::endgroup::"
+          }
           for op in $BUILD_OPERATORS; do
-            docker save "${IMAGE_PREFIX}/${op}-operator:dev" \
-              | zstd -T0 -3 -o "_output/e2e-images/${op}-operator-dev.tar.zst"
+            push_image "${IMAGE_PREFIX}/${op}-operator:dev"
             for release_dir in releases/*/; do
               release="${release_dir%/}"
               release="${release##*/}"
-              docker save "${IMAGE_PREFIX}/${op}:${release}" \
-                | zstd -T0 -3 -o "_output/e2e-images/${op}-${release}.tar.zst"
+              push_image "${IMAGE_PREFIX}/${op}:${release}"
             done
           done
           for release_dir in releases/*/; do
             release="${release_dir%/}"
             release="${release##*/}"
-            docker save "c5c3/tempest:${release}" \
-              | zstd -T0 -3 -o "_output/e2e-images/tempest-${release}.tar.zst"
+            push_image "${IMAGE_PREFIX}/tempest:${release}"
           done
-          echo "Saved images:"
-          ls -lh _output/e2e-images/
-
-      - name: Upload E2E images
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: e2e-images
-          path: _output/e2e-images/
-          retention-days: 1
-          if-no-files-found: error
-          compression-level: 0  # already compressed with zstd
 
   # CC-0018, REQ-005: End-to-end operator tests using kind cluster and Chainsaw.
   # Loads pre-built images from the build-e2e-images artifact, deploys via Helm,
@@ -620,6 +641,9 @@ jobs:
       !contains(needs.*.result, 'cancelled')
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.changes.outputs.e2e-operators) }}
@@ -633,9 +657,14 @@ jobs:
         with:
           config: hack/kind-config.yaml
           cluster_name: forge-e2e
-      # Load pre-built images from shared artifact instead of building.
+      # GH-310: Pull pre-built images from GHCR (run-scoped tag).
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
+        with:
+          images: |
+            ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator:dev
+            ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2025.2
+            ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2026.1
       - name: Load images into kind
         run: |
           # Tag the service image with the upgrade tag used by the image-upgrade E2E test.
@@ -751,6 +780,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     continue-on-error: true
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Create kind cluster
@@ -758,10 +790,13 @@ jobs:
         with:
           config: hack/kind-config.yaml
           cluster_name: forge-e2e
-      # Load pre-built images from shared artifact instead of rebuilding.
-      # build-e2e-images is in needs, so the artifact is guaranteed to exist.
+      # GH-310: Pull pre-built images from GHCR (run-scoped tag).
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
+        with:
+          images: |
+            ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
+            ${{ env.IMAGE_PREFIX }}/keystone:2025.2
       - name: Load images into kind
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name forge-e2e
@@ -812,6 +847,9 @@ jobs:
       !contains(needs.*.result, 'cancelled')
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.changes.outputs.tempest-releases) }}
@@ -826,9 +864,14 @@ jobs:
           config: hack/kind-config.yaml
           cluster_name: forge-e2e
       # -- Keystone --------------------------------------------------------
-      # Load pre-built images from shared artifact instead of building.
+      # GH-310: Pull pre-built images from GHCR (run-scoped tag).
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
+        with:
+          images: |
+            ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
+            ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }}
+            ${{ env.IMAGE_PREFIX }}/tempest:${{ matrix.release }}
       - name: Load images into kind
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name forge-e2e
@@ -852,7 +895,7 @@ jobs:
         run: hack/ci-run-tempest.sh
         env:
           CONFIG_DIR: ${{ matrix.config-dir }}
-          TEMPEST_IMAGE: c5c3/tempest:${{ matrix.release }}
+          TEMPEST_IMAGE: ${{ env.IMAGE_PREFIX }}/tempest:${{ matrix.release }}
           SERVICE_K8S_NAME: ${{ matrix.service-k8s-name }}
       - name: Upload Tempest results
         if: always()
@@ -867,6 +910,37 @@ jobs:
         run: hack/ci-dump-diagnostics.sh
         env:
           OPERATOR: keystone
+
+  # GH-310: Prune the run-scoped GHCR tags pushed by build-e2e-images.
+  # Runs as soon as every consumer that might still pull the images has
+  # finished (success, failure, cancelled, or skipped) so leftover
+  # e2e-${run_id}-* tags don't accumulate on the package page. The
+  # nightly cleanup-images workflow has a safety-net job that catches
+  # tags that survive a cancelled run before this one fires.
+  cleanup-e2e-tags:
+    needs: [build-e2e-images, e2e-operator, e2e-chaos, tempest]
+    if: |
+      always() &&
+      needs.build-e2e-images.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [keystone-operator, keystone, tempest]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Delete run-scoped tags for ${{ matrix.package }}
+        uses: ./.github/actions/cleanup-ghcr-package
+        with:
+          package: ${{ matrix.package }}
+          delete-tags: "e2e-${{ github.run_id }}-*"
+          keep-n-tagged: "0"
+          older-than: "0 seconds"
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   # CC-0018, REQ-006: Build operator container images per platform on native runners.
   # Each platform is pushed by digest; merge-operator-images assembles the manifest list.

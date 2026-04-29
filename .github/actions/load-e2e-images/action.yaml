@@ -2,37 +2,86 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Composite action to download and load pre-built E2E images.
-# Shared between e2e-operator and tempest jobs to avoid duplicating the
-# artifact download + zstd decompress + docker load sequence.
+# Composite action to fetch pre-built E2E images from GHCR.
+# Shared between e2e-operator, e2e-chaos and tempest jobs.
+#
+# GH-310: Pulls each image from a run-scoped GHCR tag
+# (e2e-${run_id}-<tag>) and re-tags it back to its canonical local
+# reference so downstream `kind load docker-image` calls work
+# unchanged. Replaces the previous download-artifact + zstd | docker
+# load path, which timed out at the 5-minute mark for the 355 MB
+# single-blob artifact.
 
 name: Load E2E images
 description: >
-  Download pre-built E2E images from the shared artifact, verify zstd
-  is available, and load all images into the local Docker daemon.
+  Pull pre-built E2E images from GHCR by run-scoped tag and re-tag
+  them to their canonical local references. The build-e2e-images job
+  pushes each image as ghcr.io/c5c3/<name>:e2e-${run_id}-<tag>; this
+  action reverses the rewrite so consumers can keep using the
+  release-scoped local refs.
+
+inputs:
+  run-id:
+    description: GitHub run ID used as the run-scoped tag prefix.
+    required: false
+    default: ${{ github.run_id }}
+  images:
+    description: >
+      Multiline list of canonical local image refs to materialise
+      locally (one per line, e.g. "ghcr.io/c5c3/keystone:2025.2").
+      For each line the action pulls
+      <repo>:e2e-<run-id>-<tag> from GHCR and re-tags it to the
+      provided ref. Blank lines and lines starting with `#` are
+      ignored.
+    required: true
+  registry:
+    description: Container registry to authenticate against.
+    required: false
+    default: ghcr.io
+  username:
+    description: Username for the registry login.
+    required: false
+    default: ${{ github.actor }}
+  password:
+    description: >
+      Token for the registry login. Defaults to the workflow's
+      GITHUB_TOKEN, which has packages:read for the same repo and
+      packages:write when the calling job grants it.
+    required: false
+    default: ${{ github.token }}
 
 runs:
   using: composite
   steps:
-    - name: Download E2E images
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+    - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
       with:
-        name: e2e-images
-        path: _output/e2e-images/
+        registry: ${{ inputs.registry }}
+        username: ${{ inputs.username }}
+        password: ${{ inputs.password }}
 
-    - name: Verify zstd is available
+    - name: Pull and re-tag E2E images
       shell: bash
+      env:
+        IMAGES: ${{ inputs.images }}
+        RUN_ID: ${{ inputs.run-id }}
       run: |
-        if ! command -v zstd &>/dev/null; then
-          echo "::error::zstd is not installed on this runner"
-          exit 1
-        fi
-        echo "zstd version: $(zstd --version)"
+        set -euo pipefail
+        run_tag="e2e-${RUN_ID}"
+        while IFS= read -r raw; do
+          # Strip trailing line comments and surrounding whitespace.
+          ref=""
+          read -r ref _ <<< "${raw%%#*}" || true
+          [[ -z "${ref}" ]] && continue
 
-    - name: Load E2E images
-      shell: bash
-      run: |
-        for f in _output/e2e-images/*.tar.zst; do
-          echo "Loading ${f}..."
-          zstd -d --stdout "${f}" | docker load
-        done
+          if [[ "${ref}" != *:* ]]; then
+            echo "::error::Image ref '${ref}' has no :tag suffix"
+            exit 1
+          fi
+          repo="${ref%:*}"
+          tag="${ref##*:}"
+          src="${repo}:${run_tag}-${tag}"
+          echo "::group::Pull ${src} → ${ref}"
+          docker pull "${src}"
+          docker tag "${src}" "${ref}"
+          echo "::endgroup::"
+        done <<< "${IMAGES}"

@@ -14,11 +14,14 @@ composite GitHub Action (`.github/actions/setup-e2e-infra/`), reducing duplicati
 the `e2e-infra`, `e2e-operator`, and `tempest` jobs.
 
 The `build-e2e-images` job centralises E2E image builds: it builds all Docker images
-(operator, service, tempest) once and uploads them as zstd-compressed tarballs. The
-`e2e-operator` and `tempest` jobs download and load the shared artifact via the
-`load-e2e-images` composite action instead of rebuilding, saving ~5-10 min per CI run.
-The build always includes `keystone` (required by tempest) regardless of which operator
-triggered the pipeline.
+(operator, service, tempest) once and pushes them to GHCR with run-scoped tags
+(`e2e-${run_id}-<orig_tag>`). The `e2e-operator`, `e2e-chaos`, and `tempest` jobs
+`docker pull` from GHCR via the `load-e2e-images` composite action and re-tag the
+images to their canonical local references, saving ~5-10 min per CI run versus
+rebuilding. The build always includes `keystone` (required by tempest) regardless of
+which operator triggered the pipeline. The `cleanup-e2e-tags` job prunes the
+run-scoped tags at the end of the workflow, with a nightly safety net in
+`cleanup-images.yaml` for cancelled runs (GH-310).
 
 ## File Location
 
@@ -482,49 +485,63 @@ Timeout: 20 minutes.
 ### build-e2e-images
 
 Centralised image build for E2E test jobs. Builds all Docker images (base, operator,
-service, tempest) once and uploads them as zstd-compressed tarballs. The `e2e-operator`
-and `tempest` jobs download the artifact instead of rebuilding, saving ~5-10 min per CI run.
+service, tempest) once and pushes them to GHCR under run-scoped tags
+(`e2e-${run_id}-<orig_tag>`). The `e2e-operator`, `e2e-chaos`, and `tempest` jobs
+`docker pull` from GHCR via the `load-e2e-images` composite action instead of
+rebuilding, saving ~5-10 min per CI run.
 
-**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]`
-**Condition:** Runs only when `has-e2e-operators == 'true'` and no gate job failed. Uses
-`always()` so the job runs when upstream Go jobs are skipped (e.g. pure E2E test-definition
-PRs where `go=false`).
+**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures, chainsaw-lint]`
+
+**Condition:** Runs only when `has-e2e-operators == 'true'` (or `e2e-chaos == 'true'`)
+and no gate job failed. Uses `always()` so the job runs when upstream Go jobs are
+skipped (e.g. pure E2E test-definition PRs where `go=false`). Skipped on PRs from
+forks (the workflow's `GITHUB_TOKEN` is read-only on `packages:` for forked
+`pull_request` events, so GHCR push would fail) — see `github.event.pull_request.head.repo.fork`
+guard.
+
+**Permissions:** `contents: read`, `packages: write` (required for GHCR push).
 
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
-| 2 | Verify zstd | Fails fast if `zstd` is not available on the runner |
-| 3 | Resolve build operators | Unions `e2e-operators` with a fixed `keystone` entry (required by tempest) |
-| 4 | Build base images | Builds `python-base` and `venv-builder` (reused by subsequent builds) |
-| 5 | Build operator images | Builds `<IMAGE_PREFIX>/<op>-operator:dev` for each resolved operator |
-| 6 | Build service images | Builds `<IMAGE_PREFIX>/<op>:<release>` for each operator x release combination |
-| 7 | Build Tempest images | Builds `c5c3/tempest:<release>` for all releases |
-| 8 | Save images | Compresses each image as a zstd tarball (`zstd -T0 -3`) |
-| 9 | Upload artifact | Uploads `_output/e2e-images/` as `e2e-images` (1-day retention, no additional compression) |
+| 2 | `docker/setup-buildx-action@v4` | Sets up BuildKit for `type=gha` cache support |
+| 3 | `docker/login-action@v4` | Authenticates to GHCR with `GITHUB_TOKEN` |
+| 4 | Resolve build operators | Unions `e2e-operators` with a fixed `keystone` entry (required by tempest) |
+| 5 | Build base images | Builds `python-base` and `venv-builder` (reused by subsequent builds) |
+| 6 | Build operator images | Builds `<IMAGE_PREFIX>/<op>-operator:dev` for each resolved operator |
+| 7 | Build service images | Builds `<IMAGE_PREFIX>/<op>:<release>` for each operator x release combination |
+| 8 | Build Tempest images | Builds `<IMAGE_PREFIX>/tempest:<release>` for all releases |
+| 9 | Push E2E images to GHCR | For each image, `docker tag` to `<repo>:e2e-${run_id}-<orig_tag>` and `docker push` |
 
 The "Resolve build operators" step guarantees that `keystone` is always in the build set.
 This is required because the `tempest` job hardcodes `keystone-operator:dev` and
 `keystone:<release>` — without the union, a pipeline triggered by a different operator
 (e.g. glance) would fail tempest due to missing keystone images.
 
+GH-310 replaced the previous `docker save | zstd | upload-artifact` transport with
+GHCR push/pull because the 355 MB single-blob artifact intermittently timed out at
+the 5-minute `actions/download-artifact` window. Layer-level pull retries plus the
+GHCR CDN dramatically reduce the failure rate.
+
 Timeout: 30 minutes.
 
 ### e2e-operator
 
 End-to-end operator test using kind cluster and Chainsaw.
-Loads pre-built images from the `build-e2e-images` artifact via the `load-e2e-images`
+Pulls pre-built images from GHCR via the `load-e2e-images`
 composite action, deploys the infrastructure stack and operator via Helm, and runs
 Chainsaw E2E test suites.
 
 **Dependencies:** `needs: [changes, build-e2e-images]`
 **Condition:** Runs only when `has-e2e-operators == 'true'` and `build-e2e-images` succeeded.
+**Permissions:** `contents: read`, `packages: read` (required for GHCR pull).
 
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
 | 3 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge-e2e`) |
-| 4 | `load-e2e-images` composite action | Downloads shared artifact and loads all zstd-compressed images into Docker |
+| 4 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs |
 | 5 | `kind load docker-image` | Loads operator, 2025.2 service, 2025.2-upgraded, and 2026.1 service images into kind |
 | 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack |
 | 7 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm |
@@ -546,13 +563,16 @@ kind-loaded image is used instead of attempting a registry pull. Timeout: 45 min
 
 ### e2e-chaos
 
-End-to-end chaos tests using kind cluster, Chaos Mesh, and Chainsaw. Builds the
-keystone operator image, deploys it alongside Chaos Mesh infrastructure, and runs the chaos
-test suites (MariaDB pod kill, Memcached pod kill, OpenBao pod kill, MariaDB network partition, MariaDB network latency). See
+End-to-end chaos tests using kind cluster, Chaos Mesh, and Chainsaw. Pulls the
+keystone operator and service images from GHCR via the `load-e2e-images` composite
+action, deploys them alongside Chaos Mesh infrastructure, and runs the chaos test
+suites (MariaDB pod kill, Memcached pod kill, OpenBao pod kill, MariaDB network
+partition, MariaDB network latency). See
 [Chaos E2E Test Suites](../testing/chaos-e2e-tests.md) for test suite details.
 
-**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen]`
-**Condition:** Runs only when `e2e-chaos == 'true'` or the PR has a `run-chaos` label, and no dependency failed or was cancelled.
+**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
+**Condition:** Runs only when `e2e-chaos == 'true'` or the PR has a `run-chaos` label, `build-e2e-images` succeeded, and no dependency failed or was cancelled.
+**Permissions:** `contents: read`, `packages: read` (required for GHCR pull).
 
 The `e2e-chaos` job depends on the standard gate jobs. The `e2e-operator` dependency was
 removed so chaos tests run in parallel with operator E2E tests, reducing
@@ -562,16 +582,14 @@ being proven in CI — failures are visible but do not block merges or the publi
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
-| 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
-| 3 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge-e2e`) |
-| 4 | `make docker-build` | Builds keystone operator image with tag `<IMAGE_PREFIX>/keystone-operator:dev` |
-| 5 | `hack/ci-build-service-image.sh` | Builds the OpenStack 2025.2 keystone service image |
-| 6 | `kind load docker-image` | Loads operator and service images into kind |
-| 7 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack |
-| 8 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys keystone operator via Helm |
-| 9 | `chainsaw test` | Runs chaos E2E tests from `tests/e2e-chaos/` with `tests/e2e-chaos/chainsaw-config.yaml` |
-| 10 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs with `OPERATOR=keystone` |
-| 11 | Upload JUnit report | Uploads `_output/reports/` as `e2e-chaos-junit-report` artifact (14-day retention) |
+| 2 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge-e2e`) |
+| 3 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs |
+| 4 | `kind load docker-image` | Loads keystone operator and 2025.2 service images into kind |
+| 5 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack with `WITH_CHAOS_MESH=true` |
+| 6 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys keystone operator via Helm |
+| 7 | `chainsaw test` | Runs chaos E2E tests from `tests/e2e-chaos/` with `tests/e2e-chaos/chainsaw-config.yaml` |
+| 8 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs with `OPERATOR=keystone` |
+| 9 | Upload JUnit report | Uploads `_output/reports/` as `e2e-chaos-junit-report-<suite>` artifact (14-day retention) |
 
 **Key differences from `e2e-operator`:**
 
@@ -600,11 +618,12 @@ tests validate operator resilience against the current codebase.
 
 Tempest API integration tests. Deploys services into a kind
 cluster and runs the OpenStack Tempest test suite against them. Uses a release matrix to validate each OpenStack release independently, with per-release Tempest
-configuration, Keystone CRs, and K8s service names. Loads pre-built images from the
-`build-e2e-images` artifact via the `load-e2e-images` composite action.
+configuration, Keystone CRs, and K8s service names. Pulls pre-built images from
+GHCR (run-scoped tag) via the `load-e2e-images` composite action.
 
 **Dependencies:** `needs: [changes, build-e2e-images]`
 **Condition:** Runs only when `has-e2e-operators == 'true'` and `build-e2e-images` succeeded.
+**Permissions:** `contents: read`, `packages: read` (required for GHCR pull).
 
 **Matrix strategy:**
 
@@ -633,7 +652,7 @@ these via `matrix.release`, `matrix.config-dir`, `matrix.cr-name`, and
 | 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
 | 3 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge-e2e`) |
-| 4 | `load-e2e-images` composite action | Downloads shared artifact and loads all zstd-compressed images into Docker |
+| 4 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs |
 | 5 | `kind load docker-image` | Loads keystone operator and service images into kind |
 | 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack |
 | 7 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm |
@@ -643,6 +662,25 @@ these via `matrix.release`, `matrix.config-dir`, `matrix.cr-name`, and
 | 11 | `hack/ci-dump-diagnostics.sh` (always) | Dumps diagnostic info with `OPERATOR=keystone` |
 
 Timeout: 45 minutes.
+
+### cleanup-e2e-tags
+
+GH-310. Prunes the run-scoped GHCR tags pushed by `build-e2e-images`
+(`e2e-${run_id}-*`) so they don't accumulate on the package page. Runs as a
+matrix over each E2E target package (`keystone-operator`, `keystone`, `tempest`)
+after every consumer that might still pull the images has finished. The
+`always() && needs.build-e2e-images.result == 'success'` condition means the
+cleanup runs on success, failure, cancelled, or skipped consumer outcomes — but
+only when `build-e2e-images` actually pushed something.
+
+**Dependencies:** `needs: [build-e2e-images, e2e-operator, e2e-chaos, tempest]`
+**Permissions:** `contents: read`, `packages: write`
+
+The nightly `cleanup-e2e-stale-tags` job in `cleanup-images.yaml` is the safety
+net: if a workflow is cancelled before `cleanup-e2e-tags` fires, that job
+deletes any `e2e-*` tag older than one day across the same package set.
+
+Timeout: 10 minutes.
 
 ### build-and-push
 
@@ -940,26 +978,40 @@ environment variables.
 
 `.github/actions/load-e2e-images/action.yaml`
 
-A composite GitHub Action that downloads the pre-built E2E image artifact from the
-`build-e2e-images` job and loads all images into the local Docker daemon. Shared between
-`e2e-operator` and `tempest` jobs to avoid duplicating the artifact download + zstd
-decompress + docker load sequence.
+A composite GitHub Action that pulls pre-built E2E images from GHCR (under the
+run-scoped tag pushed by `build-e2e-images`) and re-tags them to their canonical
+local references so downstream `kind load docker-image` calls work unchanged.
+Shared between `e2e-operator`, `e2e-chaos`, and `tempest` jobs.
 
 | Step | Description |
 | --- | --- |
-| 1 | Downloads the `e2e-images` artifact to `_output/e2e-images/` via `actions/download-artifact@v8` (SHA-pinned) |
-| 2 | Verifies `zstd` is available on the runner (fails fast with `::error::` annotation if missing) |
-| 3 | Decompresses each `.tar.zst` file and pipes into `docker load` |
+| 1 | `docker/login-action@v4` authenticates to GHCR using the workflow's `GITHUB_TOKEN` |
+| 2 | For each input ref, `docker pull <repo>:e2e-${run_id}-<orig_tag>` then `docker tag` to the canonical local ref |
+
+| Input | Default | Description |
+| --- | --- | --- |
+| `run-id` | `${{ github.run_id }}` | Run ID used as the tag prefix (`e2e-<run-id>-`) |
+| `images` | (required) | Multiline list of canonical local refs (e.g. `ghcr.io/c5c3/keystone:2025.2`); blank/comment lines are ignored |
+| `registry` | `ghcr.io` | Registry to authenticate against |
+| `username` | `${{ github.actor }}` | Login user |
+| `password` | `${{ github.token }}` | Login token |
 
 Usage in a workflow job:
 
 ```yaml
 - name: Load E2E images
   uses: ./.github/actions/load-e2e-images
+  with:
+    images: |
+      ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
+      ${{ env.IMAGE_PREFIX }}/keystone:2025.2
 ```
 
-The action takes no inputs. It assumes the `e2e-images` artifact was uploaded by a prior
-`build-e2e-images` job in the same workflow run.
+GH-310 replaced the previous `actions/download-artifact` + `zstd | docker load`
+sequence: the 355 MB single-blob artifact intermittently timed out at the
+five-minute window (`actions/download-artifact` has no built-in retry on a stalled
+download). Layer-level pull retries plus the GHCR CDN dramatically reduce the
+failure rate.
 
 ## How the Pieces Fit Together
 
@@ -967,7 +1019,7 @@ The E2E jobs follow a common pattern with shared components:
 
 ```
 1. Checkout + Go setup + kind cluster creation     (workflow steps)
-2. Load pre-built images from artifact              (load-e2e-images composite action)
+2. Pull pre-built images from GHCR                  (load-e2e-images composite action)
 3. Load images into kind                            (workflow steps)
 4. Deploy infrastructure                            (setup-e2e-infra composite action)
 5. Deploy operator                                  (hack/ci-deploy-operator.sh)
@@ -976,14 +1028,15 @@ The E2E jobs follow a common pattern with shared components:
 8. Upload artifacts                                 (workflow steps)
 ```
 
-Image building is centralised in `build-e2e-images`, which runs once before the E2E jobs.
-The `e2e-infra` job uses steps 1, 4, 6-8 (no operator or service images needed). The
-`e2e-operator` and `tempest` jobs use all steps, loading images from the shared artifact.
-The `e2e-chaos` job still builds its own images locally (it does not depend on
-`build-e2e-images`) and uses a chaos-specific Chainsaw config
+Image building is centralised in `build-e2e-images`, which runs once before the E2E jobs
+and pushes every image to GHCR under a run-scoped tag. The `e2e-infra` job uses steps 1,
+4, 6-8 (no operator or service images needed). The `e2e-operator`, `e2e-chaos`, and
+`tempest` jobs use all steps, pulling their required images from GHCR via
+`load-e2e-images`. The `e2e-chaos` job uses a chaos-specific Chainsaw config
 (`tests/e2e-chaos/chainsaw-config.yaml`) and test directory (`tests/e2e-chaos/`). The
 `tempest` job additionally deploys a Keystone CR before running `hack/ci-run-tempest.sh`
-instead of Chainsaw.
+instead of Chainsaw. The `cleanup-e2e-tags` job prunes the run-scoped tags after every
+consumer finishes.
 
 ## Go Setup Convention
 
@@ -1178,7 +1231,8 @@ The CI workflow depends on the following artifacts:
 | `hack/ci-run-tempest.sh` | `tempest` job | Runs Tempest API tests |
 | `.github/actions/setup-test-deps/` | `chainsaw-lint` job, `setup-e2e-infra` composite action | Composite action for testdeps cache + `make install-test-deps` |
 | `.github/actions/setup-e2e-infra/` | `e2e-infra`, `e2e-operator`, `e2e-chaos`, `tempest` jobs | Composite action for infra setup |
-| `.github/actions/load-e2e-images/` | `e2e-operator`, `tempest` jobs | Composite action for artifact download + zstd decompress + docker load |
+| `.github/actions/load-e2e-images/` | `e2e-operator`, `e2e-chaos`, `tempest` jobs | Composite action that pulls run-scoped GHCR tags and re-tags them to canonical local refs (GH-310) |
+| `.github/actions/cleanup-ghcr-package/` | `cleanup-e2e-tags` job, `cleanup-images.yaml` | Wraps `dataaxiom/ghcr-cleanup-action` for delete-by-pattern and delete-by-exclusion modes |
 | `tests/e2e-chaos/chainsaw-config.yaml` | `e2e-chaos` job | Chaos-specific Chainsaw configuration |
 
 :::
