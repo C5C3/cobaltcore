@@ -1,0 +1,43 @@
+{
+  "summary": "Improvement cycle addressing three sourcery-ai[bot] comments on PR #289: (1) replace hardcoded '0 * * * *' literals in Go test files with the keystonev1alpha1.DefaultTrustFlushSchedule constant introduced as the single source of truth, (2) tighten TestIntegration_TrustFlush_SuspendTruePreservesCronJob to assert the CronJob's Schedule remains unchanged when toggling Suspend (pause-without-changing-cadence), (3) tighten TestReconcileTrustFlush_WebhookDefaulted_CreatesCronJobAndReportsReady to assert cronJob.Spec.Schedule equals the webhook-defaulted spec and Suspend is nil-or-false, and (4) fix an article-grammar issue in docs/reference/keystone-crd.md ('a hourly' -> 'an hourly'). Changes are confined to three Go test files and one docs row plus three new review_pattern entries; no production code is altered. Build, go vet, golangci-lint (on changed files) and the keystone unit-test suite all pass.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass", "checked": true},
+    {"item": "Edge cases are covered", "checked": true},
+    {"item": "All hardcoded '0 * * * *' literals that should reuse the constant have been migrated; intentionally different values ('*/30 * * * *' for update tests, '60 * * * *' for invalid-cron tests) correctly remain literal", "checked": true},
+    {"item": "Suspend integration test asserts both Suspend toggling AND Schedule preservation", "checked": true},
+    {"item": "WebhookDefaulted unit test asserts both CronJob existence AND Schedule/Suspend match the defaulted spec", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (constant reuse, gomega matchers, NewGomegaWithT)", "checked": true},
+    {"item": "Test names remain accurate after assertion-strengthening", "checked": true},
+    {"item": "Review pattern files added for the three external-feedback categories", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No security-relevant changes (test/doc only)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible — pure constant-substitution + two extra Expect() lines + one-character article fix", "checked": true},
+    {"item": "DefaultTrustFlushSchedule is exported from operators/keystone/api/v1alpha1/keystone_webhook.go and consumed by both api/v1alpha1 and internal/controller test packages — single source of truth preserved", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code; the single-source-of-truth constant is now consistently referenced from all Go test files", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "New assertions strengthen failure detection (regressions that mutate Schedule on suspend, or render CronJob with stale defaults, now fail loudly)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Suspend nil-vs-*false check in TestReconcileTrustFlush_WebhookDefaulted_CreatesCronJobAndReportsReady tolerates both K8s representations of 'unsuspended', so the test does not become brittle if defaulting normalizes the field differently", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Consider whether the `if cronJob.Spec.Suspend != nil { g.Expect(*cronJob.Spec.Suspend).To(BeFalse()) }` pattern in reconcile_trustflush_test.go:643-645 should also assert `BeFalse()` directly on a non-nil pointer via a custom matcher to avoid the conditional — current form is fine but slightly weaker than asserting suspend is unambiguously off.",
+    "The trust-flush comment block in integration_test.go:1768 still embeds the literal '0 * * * *' inside a Go comment ('&TrustFlushSpec{Schedule:\"0 * * * *\", Suspend:false}'). It is in prose, not enforced, so drift risk is low — but if you want fully constant-driven docs you could rephrase as '&TrustFlushSpec{Schedule: DefaultTrustFlushSchedule, Suspend: false}'."
+  ],
+  "next_steps": [
+    "Mark progress phase back to awaiting_external_review (or whatever the next sourcery-ai cycle phase is) so the bot re-runs against the new commits."
+  ],
+  "detected_patterns": []
+}

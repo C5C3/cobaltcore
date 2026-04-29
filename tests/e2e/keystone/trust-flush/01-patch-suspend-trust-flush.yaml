@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch to pause trust flush via spec.trustFlush.suspend: true (CC-0057, CC-0096, REQ-006).
+# Under CC-0096 the trust flush field is materialized by the defaulting webhook and
+# nil-back is no longer the documented disable path; suspend: true is the supported
+# pause posture and preserves the CronJob for resume without churn.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-trust-flush
+  namespace: openstack
+spec:
+  trustFlush:
+    suspend: true

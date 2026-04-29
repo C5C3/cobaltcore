@@ -168,7 +168,7 @@ status:
 | `cache` | [`CacheSpec`](#cachespec) | Yes | — | Memcached cache configuration. |
 | `fernet` | [`FernetSpec`](#fernetspec) | No | See below | Fernet key rotation configuration. |
 | `credentialKeys` | [`CredentialKeysSpec`](#credentialkeysspec) | No | See below | Credential-key rotation configuration. Drives the per-CR CronJob that rotates and `credential_migrate`s the credential keys used for encrypting application credentials. |
-| `trustFlush` | [`*TrustFlushSpec`](#trustflushspec) | No | `nil` | Trust flush CronJob configuration. When set, the operator creates a CronJob running `keystone-manage trust_flush` on the specified schedule. When removed, the CronJob is deleted. |
+| `trustFlush` | [`*TrustFlushSpec`](#trustflushspec) | No | `{schedule: "0 * * * *", suspend: false}` (materialized by the defaulting webhook) | Trust flush CronJob configuration. Default-on: when the field is omitted, the defaulting webhook populates an hourly schedule so `keystone-manage trust_flush` runs by default; there is no nil-back path on a webhook-enabled cluster (a `kubectl patch ... 'spec/trustFlush'='null'` round-trips through admission and is re-materialized). To pause without deleting the CronJob, set `suspend: true` — the resource and `TrustFlushReady=True` condition are preserved. |
 | `federation` | [`*FederationSpec`](#federationspec) | No | `nil` | Federation configuration (optional). |
 | `bootstrap` | [`BootstrapSpec`](#bootstrapspec) | Yes | — | Initial Keystone bootstrap parameters. |
 | `middleware` | `[]MiddlewareSpec` | No | `nil` | WSGI middleware filters for api-paste.ini. |
@@ -486,12 +486,31 @@ ServiceAccount. The Secret is also mirrored to OpenBao through a `PushSecret`.
 
 ## TrustFlushSpec
 
-Configures periodic purging of expired trust delegations. This is a
-pointer field (`*TrustFlushSpec`) on `KeystoneSpec` — when `nil`, no trust-flush
-CronJob is created and the `TrustFlushReady` condition is set to `True` with reason
-`TrustFlushNotRequired`. When set, the operator creates a CronJob named
-`{name}-trust-flush` running `keystone-manage trust_flush`. Removing the field
-deletes the existing CronJob.
+Configures periodic purging of expired trust delegations. This is a pointer
+field (`*TrustFlushSpec`) on `KeystoneSpec`, but on a webhook-enabled cluster
+it is **default-on**: the defaulting webhook materializes
+`{schedule: "0 * * * *", suspend: false}` whenever the field is omitted (or
+patched to `null`), so the operator always creates a CronJob named
+`{name}-trust-flush` running `keystone-manage trust_flush` and the
+`TrustFlushReady` condition is set to `True` with reason `TrustFlushReady`.
+
+There is no nil-back path on a webhook-enabled cluster — a
+`kubectl patch ... 'spec/trustFlush'='null'` round-trips through admission and
+is re-materialized, preserving the existing CronJob (no delete/recreate). To
+pause the schedule without deleting the CronJob, set `suspend: true` — the
+resource and `TrustFlushReady=True` condition are preserved while suspended.
+
+The pointer shape is retained for envtest fixtures and other webhook-less
+clusters where the defaulting webhook is not wired up. In that legacy bypass
+posture the reconciler logs a warning, deletes any existing CronJob, and sets
+`TrustFlushReady=True` with reason `TrustFlushNotRequired` and a message
+identifying the bypass — see [`reconcileTrustFlush`](./keystone-reconciler.md#reconciletrustflush).
+
+For brownfield CRs that omit `spec.trustFlush` at the time of an operator
+upgrade and the recommended pre-upgrade actions on clusters with very large
+trust tables, see
+[Default-on Trust Flush at Upgrade Time](./keystone-upgrade-flow.md#default-on-trust-flush-at-upgrade-time)
+in the upgrade-flow reference.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
@@ -501,14 +520,18 @@ deletes the existing CronJob.
 
 ### CronJob Resource Mapping
 
-The CronJob created from this spec has the following shape:
+The CronJob created from this spec has the following shape. Field values
+sourced from `trustFlush.*` are populated either by the user or — when the
+field was omitted on submission — by the defaulting webhook, which
+materializes `{schedule: "0 * * * *", suspend: false}` before the reconciler
+ever sees the object.
 
 | CronJob Field | Value |
 | --- | --- |
 | `metadata.name` | `{name}-trust-flush` |
 | `metadata.labels` | `commonLabels` (same as Deployment) |
-| `spec.schedule` | `trustFlush.schedule` |
-| `spec.suspend` | `&trustFlush.suspend` (pointer to bool) |
+| `spec.schedule` | `trustFlush.schedule` (webhook-defaulted to `"0 * * * *"` when omitted) |
+| `spec.suspend` | `&trustFlush.suspend` (pointer to bool; webhook-defaulted to `false` when omitted) |
 | `spec.jobTemplate.spec.template.spec.restartPolicy` | `OnFailure` |
 | Container name | `trust-flush` |
 | Container image | `{spec.image.repository}:{spec.image.tag}` |

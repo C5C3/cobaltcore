@@ -1,0 +1,111 @@
+{
+  "summary": "CC-0096 flips Trust Flush from opt-in to default-on by adding a defaulting-webhook block that materializes spec.trustFlush={schedule:'0 * * * *', suspend:false} when the field is nil (operators/keystone/api/v1alpha1/keystone_webhook.go:104-109). The reconciler's nil-branch is reframed as a legacy-bypass path that logs a structured info message, deletes any stray CronJob, and reports TrustFlushReady=True/TrustFlushNotRequired (operators/keystone/internal/controller/reconcile_trustflush.go:39-56). Field godoc on KeystoneSpec.TrustFlush and TrustFlushSpec is rewritten and the regenerated CRD YAML is in sync. Tests: webhook tests TestDefault_TrustFlushNil_MaterializesDefaultSpec, TestDefault_TrustFlushSet_PreservesExplicitValues, TestValidate_TrustFlushDefaulted_AcceptsHourlySchedule; controller tests TestReconcileTrustFlush_BypassNil_LogsWarning, TestReconcileTrustFlush_WebhookDefaulted_CreatesCronJobAndReportsReady, TestReconcileTrustFlush_SuspendTrue_PreservesCronJobAndReason; integration tests TestIntegration_TrustFlush_OmittedFieldMaterializedAndCronJobCreated, TestIntegration_TrustFlush_PatchToNullReDefaultsAndPreservesCronJob, TestIntegration_TrustFlush_SuspendTruePreservesCronJob. E2E: trust-flush/01-patch-disable-trust-flush.yaml now patches suspend:true and chainsaw-test.yaml asserts CronJob preservation + no owned Jobs created while suspended; new sibling suite trust-flush-default/ exercises the omitted-field happy path. Docs: keystone-crd.md, keystone-reconciler.md, keystone-e2e-tests.md, quick-start.md, observability.md, advanced-configuration.md, and a new CC-0096 section in keystone-upgrade-flow.md cover the new posture, the suspend opt-out, the no-nil-back contract, and the brownfield-upgrade callout. Unit + controller tests pass locally; envtest integration and chainsaw runs require KUBEBUILDER_ASSETS/kind which the sandbox lacks.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Unit tests in api/v1alpha1 pass (go test ./api/v1alpha1/ -count=1 -> ok 0.073s)", "checked": true},
+    {"item": "Unit tests in internal/controller pass (go test ./internal/controller/ -count=1 -> ok 1.463s)", "checked": true},
+    {"item": "TestDefault_TrustFlushNil_MaterializesDefaultSpec asserts schedule, suspend, and empty Args after Default() (keystone_webhook_test.go:151-164)", "checked": true},
+    {"item": "TestDefault_TrustFlushSet_PreservesExplicitValues asserts user-provided schedule, suspend, args survive Default() (keystone_webhook_test.go:168-186)", "checked": true},
+    {"item": "TestValidate_TrustFlushDefaulted_AcceptsHourlySchedule confirms the webhook->validate handoff accepts the hourly default (keystone_webhook_test.go:1599-1612)", "checked": true},
+    {"item": "TestReconcileTrustFlush_BypassNil_LogsWarning verifies the bypass log carries the legacy bypass sentinel + namespace + name (reconcile_trustflush_test.go:585-610)", "checked": true},
+    {"item": "TestReconcileTrustFlush_WebhookDefaulted_CreatesCronJobAndReportsReady covers the production happy path (reconcile_trustflush_test.go:617-639)", "checked": true},
+    {"item": "TestReconcileTrustFlush_SuspendTrue_PreservesCronJobAndReason proves CronJob is created with Suspend=true and reason stays TrustFlushReady (reconcile_trustflush_test.go:646-669)", "checked": true},
+    {"item": "TestIntegration_TrustFlush_OmittedFieldMaterializedAndCronJobCreated asserts persisted spec.trustFlush + CronJob + reason via the real defaulting webhook (integration_test.go:1768-1810)", "checked": true},
+    {"item": "TestIntegration_TrustFlush_PatchToNullReDefaultsAndPreservesCronJob proves nil-back round-trips and CronJob UID is preserved (integration_test.go:1819-1882)", "checked": true},
+    {"item": "TestIntegration_TrustFlush_SuspendTruePreservesCronJob replaces the deletion test with the suspend semantics (integration_test.go:1702-1760)", "checked": true},
+    {"item": "Legacy bypass-path tests are renamed/annotated to reflect their new envtest-only role (reconcile_trustflush_test.go:171-192, :291-296)", "checked": true},
+    {"item": "Existing trust-flush chainsaw suite re-asserts suspend posture and verifies no CronJob-owned Jobs are created while suspended (tests/e2e/keystone/trust-flush/chainsaw-test.yaml:139-193)", "checked": true},
+    {"item": "New trust-flush-default chainsaw suite asserts persisted webhook-defaulted spec, CronJob, reason, and a manual flush job (tests/e2e/keystone/trust-flush-default/chainsaw-test.yaml)", "checked": true},
+    {"item": "envtest integration suite executed end-to-end on a real envtest binary", "checked": false},
+    {"item": "Chainsaw kind-cluster run executed", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Webhook defaulting block matches the existing Replicas/Bootstrap.Region/AdminUser/Cache.Backend style (keystone_webhook.go:81-109)", "checked": true},
+    {"item": "Reconciler nil-branch keeps deleteCronJob() helper intact and unchanged for finalizer/legacy paths (reconcile_trustflush.go:148-156)", "checked": true},
+    {"item": "Status condition reasons are consistent: TrustFlushReady on the production path, TrustFlushNotRequired only on legacy bypass (reconcile_trustflush.go:48-69)", "checked": true},
+    {"item": "Godoc on KeystoneSpec.TrustFlush + TrustFlushSpec describes default-on posture, suspend opt-out, and no nil-back path (keystone_types.go:75-86, :342-362)", "checked": true},
+    {"item": "Generated CRD YAML in operators/keystone/config/crd/bases and operators/keystone/helm/keystone-operator/crds is regenerated and matches", "checked": true},
+    {"item": "Every changed file references CC-0096 in comments/tests/docs per project rule 11", "checked": true},
+    {"item": "No new TrustFlushSuspended reason introduced — suspend keeps reason TrustFlushReady, mirroring the autoscaling-suspended-HPA precedent", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No new external inputs introduced — defaulting webhook only writes server-controlled values", "checked": true},
+    {"item": "No secret material exposed in log keys (only namespace/name)", "checked": true},
+    {"item": "RBAC unchanged — sub-reconciler keeps its existing CronJob verbs (no new privileges)", "checked": true},
+    {"item": "Cron expression continues to be parsed via cron.ParseStandard with explicit empty-string guard (keystone_webhook.go:251-263)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Pointer shape preserved — spec.trustFlush remains *TrustFlushSpec, no breaking API shape change", "checked": true},
+    {"item": "+kubebuilder:default markers on Schedule and Suspend retained as defense-in-depth (keystone_types.go:352, :356)", "checked": true},
+    {"item": "Single source of truth for the production default lives in the webhook; CRD markers serve only the webhook-bypass path", "checked": true},
+    {"item": "deleteCronJob is retained for envtest/finalizer paths and not made unreachable", "checked": true},
+    {"item": "No scope creep: the diff is confined to keystone webhook/types/reconciler + their tests + the relevant docs and e2e suites", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated default values across the webhook block — the schedule/suspend literal is co-located with the materialization (keystone_webhook.go:104-109)", "checked": true},
+    {"item": "Existing helpers (commonLabels, restrictedSecurityContext, buildDBConnectionEnvVar, EnsureCronJob) are reused unchanged", "checked": true},
+    {"item": "No premature abstraction — schedule constant is not extracted because it appears in only one Go call site (the webhook block); the validation error message uses a string literal already", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "validate() rejects empty/invalid cron strings before the reconciler ever sees the object (keystone_webhook.go:251-263)", "checked": true},
+    {"item": "Reconciler fails fast on EnsureCronJob errors with wrapped 'ensuring trust flush CronJob' context (reconcile_trustflush.go:60-62)", "checked": true},
+    {"item": "Bypass-path delete errors are wrapped with 'deleting trust flush CronJob' context (reconcile_trustflush.go:45-47)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Webhook tolerates a nil Spec.TrustFlush and never overwrites a user-set value (keystone_webhook.go:104-109; TestDefault_TrustFlushSet_PreservesExplicitValues)", "checked": true},
+    {"item": "Reconciler gracefully handles spec.TrustFlush == nil (legacy bypass) instead of nil-derefing", "checked": true},
+    {"item": "Integration test forces a literal `null` patch via client.RawPatch with MergePatchType to exercise the JSON-null path (integration_test.go:1849-1855)", "checked": true},
+    {"item": "Chainsaw suspend-step asserts no Jobs are created with the trust-flush CronJob as owner while suspend is true (chainsaw-test.yaml:185-193)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "Q4",
+      "severity": "MINOR",
+      "description": "Bypass-path log structured-keys are missing the explicit reason key called out in the review criteria. The criteria say the bypass log MUST include `\"reason\":\"webhook-bypass\"` so it is greppable by log pipelines; the implementation only emits `namespace` and `name` keys, with the bypass sentinel embedded in the human-readable message. A `reason` key is the established convention for differentiating bypass vs production paths in greppable form.",
+      "location": "operators/keystone/internal/controller/reconcile_trustflush.go:40-44",
+      "fix": "Append a `reason` structured key to the Info call, e.g. `log.FromContext(ctx).Info(\"trust flush legacy bypass: ...\", \"namespace\", keystone.Namespace, \"name\", keystone.Name, \"reason\", \"webhook-bypass\")` and update TestReconcileTrustFlush_BypassNil_LogsWarning to assert the substring `\"reason\":\"webhook-bypass\"` (or equivalent funcr-rendered form).",
+      "evidence": "log.FromContext(ctx).Info(\n    \"trust flush legacy bypass: spec.trustFlush is nil — webhook defaulting did not run; deleting any existing CronJob (CC-0096, REQ-002)\",\n    \"namespace\", keystone.Namespace,\n    \"name\", keystone.Name,\n)",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "Q4",
+      "severity": "MINOR",
+      "description": "The fixture filename `01-patch-disable-trust-flush.yaml` is now a misnomer. The file no longer disables (nil) trust flush — it patches `spec.trustFlush.suspend: true`. The header comment, doc table (docs/reference/keystone-e2e-tests.md:845), and chainsaw step comments correctly describe the new behavior, but the filename still reads as a 'disable' patch. This is a minor naming inconsistency that future readers will find confusing when they grep for 'suspend' patches.",
+      "location": "tests/e2e/keystone/trust-flush/01-patch-disable-trust-flush.yaml:1",
+      "fix": "Rename the file to `01-patch-suspend-trust-flush.yaml` and update the corresponding `patch.file:` reference in tests/e2e/keystone/trust-flush/chainsaw-test.yaml:144 and the row in docs/reference/keystone-e2e-tests.md:845.",
+      "evidence": "tests/e2e/keystone/trust-flush/01-patch-disable-trust-flush.yaml header now reads:\n# Patch to pause trust flush via spec.trustFlush.suspend: true (CC-0057, CC-0096, REQ-006).\n...\nspec:\n  trustFlush:\n    suspend: true",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "P2",
+      "severity": "MINOR",
+      "description": "The hourly schedule literal `\"0 * * * *\"` appears in three places: the +kubebuilder:default marker on TrustFlushSpec.Schedule (keystone_types.go:352), the webhook materialization block (keystone_webhook.go:106), and the `validate()` Required-error message (keystone_webhook.go:255). This mirrors the CC-0084 pattern — DefaultTerminationGracePeriodSeconds and DefaultPreStopSleepSeconds are exported package-level constants explicitly described as 'single source of truth used by both the validating webhook ... and the reconciler' (keystone_webhook.go:28-38). Extracting `DefaultTrustFlushSchedule = \"0 * * * *\"` would align with that pattern and prevent drift if the cadence is ever revisited.",
+      "location": "operators/keystone/api/v1alpha1/keystone_webhook.go:104-109",
+      "fix": "Add `DefaultTrustFlushSchedule = \"0 * * * *\"` to the existing const block (next to DefaultTerminationGracePeriodSeconds), reference it in Default() and the Required error message, and update test assertions to use the constant.",
+      "evidence": "keystone_webhook.go:104:\n\tif obj.Spec.TrustFlush == nil {\n\t\tobj.Spec.TrustFlush = &TrustFlushSpec{\n\t\t\tSchedule: \"0 * * * *\",\n\t\t\tSuspend:  false,\n\t\t}\n\t}\n\nkeystone_webhook.go:255: \"schedule must be set; default is \\\"0 * * * *\\\"\"",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "D2",
+      "severity": "MINOR",
+      "description": "The `deleteCronJob` doc comment is still tagged `(CC-0057, REQ-002)` only. After CC-0096 reframed the nil-branch as legacy bypass, this helper is invoked solely from the bypass path and is preserved 'for envtest/legacy callers'. The comment should cite CC-0096 alongside CC-0057 so future readers see the reframed contract without having to git-blame.",
+      "location": "operators/keystone/internal/controller/reconcile_trustflush.go:146-148",
+      "fix": "Update the doc comment to read e.g. `// deleteCronJob ... (CC-0057, CC-0096, REQ-002 — invoked only on the legacy bypass path post-CC-0096).`",
+      "evidence": "// deleteCronJob deletes the CronJob identified by namespace and name. It is a\n// no-op if the CronJob does not exist (CC-0057, REQ-002).",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider asserting on the materialized spec.trustFlush.schedule + spec.trustFlush.suspend in TestReconcile_SetsAllSubConditionsTrue once a webhook-enabled envtest fixture is available there — today the test only loops over condition types and uses a fake client (keystone_controller_test.go:354).",
+    "If staggered rollout becomes a real concern, follow up with a Chainsaw upgrade-fixture suite that exercises the brownfield path (operator upgrade -> kubectl patch '{}' -> CronJob created) end-to-end. The current upgrade-flow doc covers the steps but no automated test verifies the timing.",
+    "The bypass log uses Info level. logr has no Warning level, but if structured log pipelines key off severity, switching to `Error(nil, ...)` would be the closest equivalent to a warning. Today's Info is acceptable — flagged as a potential follow-up only."
+  ],
+  "next_steps": [
+    "Run the integration suite on a host with KUBEBUILDER_ASSETS pointing at envtest binaries to confirm the three new TestIntegration_TrustFlush_* cases pass against a real defaulting webhook.",
+    "Run the Chainsaw E2E suite against a kind cluster to confirm both trust-flush/ and trust-flush-default/ pass and do not collide (distinct CR names, distinct keystone DB names already verified).",
+    "Optionally apply the four MINOR fixes (structured `reason` log key, fixture rename, DefaultTrustFlushSchedule constant, deleteCronJob comment) before merge."
+  ],
+  "detected_patterns": []
+}

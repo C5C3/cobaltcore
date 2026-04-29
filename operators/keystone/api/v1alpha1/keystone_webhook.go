@@ -35,6 +35,15 @@ const (
 	DefaultTerminationGracePeriodSeconds int64 = 30
 	// DefaultPreStopSleepSeconds is applied when KeystoneSpec.PreStopSleepSeconds is nil.
 	DefaultPreStopSleepSeconds int64 = 5
+
+	// DefaultTrustFlushSchedule is the cron expression materialized by the
+	// defaulting webhook when KeystoneSpec.TrustFlush is nil (CC-0096, REQ-001).
+	// It is the single source of truth used by the webhook (Default + validate
+	// error message) so the cadence cannot drift across call sites. The
+	// +kubebuilder:default marker on TrustFlushSpec.Schedule must be kept in
+	// sync with this constant — kubebuilder markers require a string literal
+	// and cannot reference Go constants.
+	DefaultTrustFlushSchedule = "0 * * * *"
 )
 
 // Default resource requests and limits for the Keystone API container (CC-0042).
@@ -95,6 +104,17 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 	}
 	if obj.Spec.Bootstrap.Region == "" {
 		obj.Spec.Bootstrap.Region = "RegionOne"
+	}
+	// REQ-001 (CC-0096): Materialize spec.trustFlush so trust delegations are
+	// purged by default. The leaf +kubebuilder:default markers on Schedule and
+	// Suspend remain as defense-in-depth for callers that bypass this webhook
+	// (envtest without the defaulter wired up); we set them explicitly here so
+	// the webhook is the single source of truth in the production admission path.
+	if obj.Spec.TrustFlush == nil {
+		obj.Spec.TrustFlush = &TrustFlushSpec{
+			Schedule: DefaultTrustFlushSchedule,
+			Suspend:  false,
+		}
 	}
 	// REQ-002 (CC-0040): Default zero-valued sub-fields of spec.uwsgi when non-nil.
 	// When the pointer is nil, do nothing — the reconciler uses hardcoded defaults.
@@ -241,7 +261,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		if k.Spec.TrustFlush.Schedule == "" {
 			allErrs = append(allErrs, field.Required(
 				specPath.Child("trustFlush", "schedule"),
-				"schedule must be set; default is \"0 * * * *\"",
+				fmt.Sprintf("schedule must be set; default is %q", DefaultTrustFlushSchedule),
 			))
 		} else if _, err := cron.ParseStandard(k.Spec.TrustFlush.Schedule); err != nil {
 			allErrs = append(allErrs, field.Invalid(

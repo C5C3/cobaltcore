@@ -996,9 +996,13 @@ spec:
                 type: array
               trustFlush:
                 description: |-
-                  TrustFlush configures periodic purging of expired trust delegations (CC-0057).
-                  When set, the operator creates a CronJob running keystone-manage trust_flush
-                  on the specified schedule. When removed (nil), the CronJob is deleted.
+                  TrustFlush configures periodic purging of expired trust delegations
+                  (CC-0057, CC-0096). The defaulting webhook materializes a populated
+                  TrustFlushSpec when the field is unset so that the operator runs
+                  keystone-manage trust_flush hourly by default — there is no nil-back
+                  path on a webhook-enabled cluster, because admission re-defaults the
+                  pointer if a user patches it to null. To pause the schedule without
+                  removing the CronJob, set suspend: true.
                 properties:
                   args:
                     description: Args provides additional CLI flags passed to keystone-manage

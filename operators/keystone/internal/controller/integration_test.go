@@ -1704,43 +1704,55 @@ func TestIntegration_TrustFlush_CronJobCreated(t *testing.T) {
 	g.Expect(cond.Message).To(Equal("Trust flush CronJob is configured"))
 }
 
-func TestIntegration_TrustFlush_CronJobDeleted(t *testing.T) {
+func TestIntegration_TrustFlush_SuspendTruePreservesCronJob(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
 
 	c, ctx, _ := setupEnvTestWithController(t)
 
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-trustflush-delete-"}}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-trustflush-suspend-"}}
 	g.Expect(c.Create(ctx, ns)).To(Succeed())
 
 	createPrerequisites(t, ctx, c, ns.Name)
 
-	// Create Keystone CR with trustFlush configured (CC-0057, REQ-001).
-	ks := integrationBrownfieldKeystoneWithTrustFlush("test-keystone", ns.Name, "0 * * * *")
+	// Create Keystone CR with trustFlush configured (CC-0057, CC-0096, REQ-006).
+	ks := integrationBrownfieldKeystoneWithTrustFlush("test-keystone", ns.Name, keystonev1alpha1.DefaultTrustFlushSchedule)
 	g.Expect(c.Create(ctx, ks)).To(Succeed())
 
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 
-	// Verify CronJob exists before removal (CC-0057, REQ-001).
+	// Verify CronJob exists before suspend (CC-0057, CC-0096, REQ-006).
 	cronJobKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-trust-flush"}
 	g.Eventually(func() error {
 		return c.Get(ctx, cronJobKey, &batchv1.CronJob{})
-	}, eventuallyTimeout, pollInterval).Should(Succeed(), "CronJob should exist before trustFlush removal")
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "CronJob should exist before suspend")
 
-	// Remove spec.trustFlush (CC-0057, REQ-002).
+	// Pause the CronJob by setting spec.trustFlush.suspend=true. The CronJob
+	// must be preserved (not deleted) — Suspend is the operator-supported way
+	// to pause trust flushing without losing the resource (CC-0057, CC-0096, REQ-006).
 	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
 	updated := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
-	updated.Spec.TrustFlush = nil
+	updated.Spec.TrustFlush.Suspend = true
 	g.Expect(c.Update(ctx, updated)).To(Succeed())
 
-	// Wait for the CronJob to be deleted (CC-0057, REQ-002).
+	// Wait for the CronJob's *spec.Suspend to become true; the CronJob must
+	// remain present AND the schedule must remain unchanged — pausing must not
+	// alter cadence (CC-0057, CC-0096, REQ-006).
+	cj := &batchv1.CronJob{}
 	g.Eventually(func() bool {
-		err := c.Get(ctx, cronJobKey, &batchv1.CronJob{})
-		return err != nil
-	}, eventuallyTimeout, pollInterval).Should(BeTrue(), "CronJob should be deleted when trustFlush is removed")
+		if err := c.Get(ctx, cronJobKey, cj); err != nil {
+			return false
+		}
+		return cj.Spec.Suspend != nil && *cj.Spec.Suspend
+	}, eventuallyTimeout, pollInterval).Should(BeTrue(),
+		"CronJob *spec.Suspend should become true and the CronJob must be preserved (not deleted)")
+	g.Expect(cj.Spec.Schedule).To(Equal(keystonev1alpha1.DefaultTrustFlushSchedule),
+		"toggling spec.trustFlush.suspend must not change spec.trustFlush.schedule (CC-0057, CC-0096, REQ-006)")
 
-	// Verify TrustFlushReady=True with reason TrustFlushNotRequired (CC-0057, REQ-002).
+	// Verify TrustFlushReady=True with reason TrustFlushReady — the same
+	// reason string as the condition type, matching the convention in
+	// reconcile_trustflush.go (CC-0057, CC-0096, REQ-006).
 	g.Eventually(func() string {
 		ksState := &keystonev1alpha1.Keystone{}
 		if err := c.Get(ctx, key, ksState); err != nil {
@@ -1751,39 +1763,137 @@ func TestIntegration_TrustFlush_CronJobDeleted(t *testing.T) {
 			return ""
 		}
 		return cond.Reason
-	}, eventuallyTimeout, pollInterval).Should(Equal("TrustFlushNotRequired"),
-		"TrustFlushReady reason should be TrustFlushNotRequired after removal")
+	}, eventuallyTimeout, pollInterval).Should(Equal("TrustFlushReady"),
+		"TrustFlushReady reason should be TrustFlushReady when CronJob is suspended (still configured, just paused)")
 }
 
-func TestIntegration_TrustFlush_OmittedDoesNotCreateCronJob(t *testing.T) {
+// TestIntegration_TrustFlush_OmittedFieldMaterializedAndCronJobCreated verifies
+// the new default behaviour introduced by CC-0096: when a user omits
+// spec.trustFlush, the defaulting webhook materializes
+// &TrustFlushSpec{Schedule: DefaultTrustFlushSchedule, Suspend: false} on
+// admission, the reconciler creates the trust-flush CronJob, and the
+// TrustFlushReady condition reports the configured posture (CC-0096, REQ-001).
+func TestIntegration_TrustFlush_OmittedFieldMaterializedAndCronJobCreated(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
 
 	c, ctx, _ := setupEnvTestWithController(t)
 
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-trustflush-omit-"}}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-trustflush-default-"}}
 	g.Expect(c.Create(ctx, ns)).To(Succeed())
 
 	createPrerequisites(t, ctx, c, ns.Name)
 
-	// Create Keystone CR without trustFlush (nil) (CC-0057, REQ-003).
+	// Create Keystone CR without trustFlush (nil); the defaulting webhook
+	// registered in setupEnvTestWithController materializes spec.trustFlush
+	// on admission (CC-0096, REQ-001).
 	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
 	g.Expect(c.Create(ctx, ks)).To(Succeed())
 
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 
-	// Verify TrustFlushReady=True with reason TrustFlushNotRequired (CC-0057, REQ-003).
+	// Re-fetch the CR and assert the webhook defaulted spec.trustFlush to
+	// the documented hourly schedule with Suspend=false (CC-0096, REQ-001).
 	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
-	cond := waitForCondition(t, ctx, c, key, "TrustFlushReady", metav1.ConditionTrue, eventuallyTimeout)
-	g.Expect(cond.Reason).To(Equal("TrustFlushNotRequired"))
+	ksState := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, key, ksState)).To(Succeed())
+	g.Expect(ksState.Spec.TrustFlush).NotTo(BeNil(),
+		"defaulting webhook must materialize spec.trustFlush when omitted")
+	g.Expect(ksState.Spec.TrustFlush.Schedule).To(Equal(keystonev1alpha1.DefaultTrustFlushSchedule),
+		"defaulting webhook must populate spec.trustFlush.schedule with the hourly default")
+	g.Expect(ksState.Spec.TrustFlush.Suspend).To(BeFalse(),
+		"defaulting webhook must populate spec.trustFlush.suspend=false by default")
 
-	// Consistently verify no trust-flush CronJob is created (CC-0057, REQ-003).
+	// Assert the trust-flush CronJob EXISTS — the new default contract is
+	// "trust flushing on by default" (CC-0096, REQ-001).
 	cronJobKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-trust-flush"}
-	g.Consistently(func() bool {
-		err := c.Get(ctx, cronJobKey, &batchv1.CronJob{})
-		return err != nil
-	}, 2*time.Second, pollInterval).Should(BeTrue(),
-		"trust-flush CronJob should not exist when trustFlush is omitted")
+	g.Eventually(func() error {
+		return c.Get(ctx, cronJobKey, &batchv1.CronJob{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(),
+		"trust-flush CronJob should exist when spec.trustFlush is defaulted by the webhook")
+
+	// Assert TrustFlushReady=True with Reason=TrustFlushReady (CC-0096, REQ-001).
+	cond := waitForCondition(t, ctx, c, key, "TrustFlushReady", metav1.ConditionTrue, eventuallyTimeout)
+	g.Expect(cond.Reason).To(Equal("TrustFlushReady"),
+		"TrustFlushReady reason should be TrustFlushReady when the webhook defaults spec.trustFlush")
+}
+
+// TestIntegration_TrustFlush_PatchToNullReDefaultsAndPreservesCronJob verifies
+// that patching spec.trustFlush back to JSON null re-runs the defaulting
+// webhook on update (re-materializing the populated TrustFlushSpec) and that
+// the existing CronJob is preserved (same UID, not delete-and-recreated)
+// because the reconciler's EnsureCronJob path treats the same desired spec as
+// a no-op (CC-0096, REQ-001).
+func TestIntegration_TrustFlush_PatchToNullReDefaultsAndPreservesCronJob(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-trustflush-patch-null-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	// Create Keystone CR without trustFlush; the defaulting webhook
+	// materializes spec.trustFlush on admission (CC-0096, REQ-001).
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	// Capture the CronJob's UID for the post-patch identity check (CC-0096, REQ-001).
+	cronJobKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-trust-flush"}
+	originalCronJob := &batchv1.CronJob{}
+	g.Eventually(func() error {
+		return c.Get(ctx, cronJobKey, originalCronJob)
+	}, eventuallyTimeout, pollInterval).Should(Succeed(),
+		"trust-flush CronJob should exist after initial reconciliation")
+	originalUID := originalCronJob.UID
+	g.Expect(originalUID).NotTo(BeEmpty(), "captured CronJob UID must be non-empty")
+
+	// Patch spec.trustFlush back to literal JSON null via a JSON merge patch.
+	// MergePatchType honours `null` as "remove this field", which the
+	// defaulting webhook then re-materializes on the update admission pass
+	// (CC-0096, REQ-001). RawPatch keeps the literal `null` on the wire —
+	// using client.MergeFrom with an in-memory object would round-trip
+	// through Go's omitempty and never emit the null sentinel.
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+	target := &keystonev1alpha1.Keystone{
+		ObjectMeta: metav1.ObjectMeta{Name: ks.Name, Namespace: ns.Name},
+	}
+	g.Expect(c.Patch(ctx, target, client.RawPatch(
+		types.MergePatchType,
+		[]byte(`{"spec":{"trustFlush":null}}`),
+	))).To(Succeed(), "patching spec.trustFlush to null must succeed")
+
+	// Re-fetch the CR and assert the webhook re-defaulted spec.trustFlush on
+	// the update admission pass (CC-0096, REQ-001).
+	g.Eventually(func() *keystonev1alpha1.TrustFlushSpec {
+		ksState := &keystonev1alpha1.Keystone{}
+		if err := c.Get(ctx, key, ksState); err != nil {
+			return nil
+		}
+		return ksState.Spec.TrustFlush
+	}, eventuallyTimeout, pollInterval).ShouldNot(BeNil(),
+		"defaulting webhook must re-materialize spec.trustFlush after a patch-to-null on update")
+
+	ksAfter := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, key, ksAfter)).To(Succeed())
+	g.Expect(ksAfter.Spec.TrustFlush).NotTo(BeNil())
+	g.Expect(ksAfter.Spec.TrustFlush.Schedule).To(Equal(keystonev1alpha1.DefaultTrustFlushSchedule),
+		"webhook must re-default spec.trustFlush.schedule to the hourly default after patch-to-null")
+
+	// Assert the CronJob still exists AND its UID matches the original —
+	// proving the reconciler did not delete-and-recreate it (CC-0096, REQ-001).
+	g.Consistently(func() types.UID {
+		cj := &batchv1.CronJob{}
+		if err := c.Get(ctx, cronJobKey, cj); err != nil {
+			return ""
+		}
+		return cj.UID
+	}, 2*time.Second, pollInterval).Should(Equal(originalUID),
+		"trust-flush CronJob must be preserved with the same UID across patch-to-null/re-default")
 }
 
 // TestIntegration_GracefulShutdownSpec verifies that the preStop lifecycle hook,

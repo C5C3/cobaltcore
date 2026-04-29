@@ -63,10 +63,10 @@ namespace, enabling parallel execution.
 │  │ schema-drift-     │  │ topology-spread   │  │ trust-flush           │   │
 │  │  detection        │  │                   │  │                       │   │
 │  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
-│  ┌───────────────────┐  ┌───────────────────┐                              │
-│  │ upgrade-flow      │  │ uwsgi             │                              │
-│  │                   │  │                   │                              │
-│  └───────────────────┘  └───────────────────┘                              │
+│  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
+│  │ trust-flush-      │  │ upgrade-flow      │  │ uwsgi                 │   │
+│  │  default          │  │                   │  │                       │   │
+│  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
 │                                                                            │
 │  All tests run in: namespace openstack                                     │
 │  Infrastructure: MariaDB, Memcached, ESO, OpenBao (pre-deployed)           │
@@ -838,8 +838,11 @@ tests/e2e/keystone/
 │   └── 02-patch-empty-tsc.yaml         Patch with empty TSC (disable)
 ├── trust-flush/
 │   ├── chainsaw-test.yaml              Trust flush CronJob
-│   ├── 00-keystone-cr.yaml             Keystone CR with trustFlush config
-│   └── 01-patch-disable-trust-flush.yaml Patch to disable trust flush
+│   ├── 00-keystone-cr.yaml             Keystone CR with explicit trustFlush config
+│   └── 01-patch-suspend-trust-flush.yaml Patch suspending trust flush via spec.trustFlush.suspend=true
+├── trust-flush-default/
+│   ├── chainsaw-test.yaml              Default-on trust flush via webhook materialization
+│   └── 00-keystone-cr.yaml             Keystone CR omitting trustFlush — webhook injects hourly schedule
 ├── upgrade-flow/
 │   ├── chainsaw-test.yaml              Expand-migrate-contract upgrade
 │   ├── 00-keystone-cr.yaml             Keystone CR with initial release

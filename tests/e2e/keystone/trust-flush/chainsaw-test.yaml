@@ -2,16 +2,19 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for trust flush CronJob feature (CC-0057).
+# Chainsaw E2E test for trust flush CronJob feature (CC-0057, CC-0096).
 # Verifies:
 #   - CronJob creation when spec.trustFlush is set
 #   - CronJob schedule and suspend match spec.trustFlush
 #   - TrustFlushReady condition set with reason TrustFlushReady
 #   - Manual trigger via kubectl create job --from=cronjob executes successfully
-#   - CronJob deletion when spec.trustFlush is removed
-#   - TrustFlushReady condition updated to reason TrustFlushNotRequired
+#   - Pausing trust flush via spec.trustFlush.suspend: true preserves the CronJob
+#     with spec.suspend == true and keeps reason TrustFlushReady (CC-0096, REQ-006)
+#   - No new Job pods are created while suspended
 #
 # REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-006 (CC-0057)
+# REQ-006 (CC-0096) — suspend: true is the documented pause path; nil-back is no
+# longer asserted because the defaulting webhook re-materializes the field.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -133,11 +136,16 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
-  # ── Step 7: Disable trust flush (set spec.trustFlush to null) ──────────
+  # ── Step 7: Pause trust flush (set spec.trustFlush.suspend: true) ──────
+  # CC-0096, REQ-006: suspend: true is the supported pause path. The defaulting
+  # webhook re-materializes spec.trustFlush, so nil-back is no longer exercised.
   - try:
     - patch:
-        file: 01-patch-disable-trust-flush.yaml
-  # ── Step 8: Assert TrustFlushReady=True with reason TrustFlushNotRequired
+        file: 01-patch-suspend-trust-flush.yaml
+  # ── Step 8: Assert TrustFlushReady=True with reason TrustFlushReady ────
+  # CC-0096, REQ-006: pausing via suspend keeps the CronJob and the
+  # TrustFlushReady reason; TrustFlushNotRequired is now the legacy bypass-only
+  # reason for nil-spec posture (envtest / webhook-less clusters).
   - try:
     - assert:
         resource:
@@ -149,14 +157,66 @@ spec:
           status:
             (conditions[?type == 'TrustFlushReady']):
             - status: "True"
-              reason: TrustFlushNotRequired
-  # ── Step 9: Assert CronJob deleted ─────────────────────────────────────
+              reason: TrustFlushReady
+  # ── Step 9: Assert CronJob preserved with spec.suspend == true ─────────
+  # CC-0096, REQ-006: the CronJob persists across pause/resume so resume is a
+  # no-churn operation and the next scheduled tick fires immediately.
+  - try:
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: keystone-trust-flush-trust-flush
+            namespace: openstack
+          spec:
+            schedule: "0 * * * *"
+            suspend: true
+  # ── Step 10: Assert no new Job pods created AFTER suspend was applied ──
+  # CC-0096, REQ-006: while suspend is true the controller MUST NOT create new
+  # Jobs from the CronJob. The hourly schedule "0 * * * *" can race with the
+  # earlier steps if Step 1 ran before a `:00` minute boundary and Step 7
+  # (suspend patch) ran after — a legitimate pre-suspend Job may then exist
+  # and would falsely fail a naive "no owned jobs" assertion. Filter on
+  # `creationTimestamp > $SUSPEND_TIME` so only Jobs created strictly after
+  # the suspend patch count as failures.
   - try:
     - script:
         content: |
-          # Verify CronJob no longer exists (CC-0057, REQ-002).
-          if kubectl get cronjob keystone-trust-flush-trust-flush -n $NAMESPACE 2>/dev/null; then
-            echo "FAIL: CronJob should have been deleted"
+          set -eu
+
+          # Canonical "when did suspend become true" timestamp: the time of the
+          # CronJob managedFields entry that owns spec.suspend (Step 7's patch).
+          # kubectl >= 1.21 strips metadata.managedFields from -o json output by
+          # default, so --show-managed-fields=true is required for the jq filter
+          # below to see anything.
+          SUSPEND_TIME=$(kubectl get cronjob keystone-trust-flush-trust-flush \
+            -n "$NAMESPACE" --show-managed-fields=true -o json 2>/dev/null \
+            | jq -r '[(.metadata.managedFields // [])[]
+                      | select(.fieldsV1.["f:spec"].["f:suspend"] != null)
+                      | .time] | sort | last // ""')
+          if [ -z "$SUSPEND_TIME" ]; then
+            echo "FAIL: could not determine suspend-patch timestamp from CronJob managedFields"
+            kubectl get cronjob keystone-trust-flush-trust-flush -n "$NAMESPACE" \
+              --show-managed-fields=true \
+              -o jsonpath='{.metadata.managedFields}' 2>&1 || true
             exit 1
           fi
-          echo "PASS: CronJob correctly deleted"
+          echo "Suspend was applied at $SUSPEND_TIME; filtering CronJob-owned Jobs created strictly after."
+
+          # ISO 8601 / RFC 3339 timestamps sort lexicographically, so jq's
+          # string comparison gives a correct strict-greater-than filter.
+          POST_SUSPEND=$(kubectl get jobs -n "$NAMESPACE" -o json 2>/dev/null \
+            | jq -r --arg t "$SUSPEND_TIME" '
+                [.items[]
+                  | select((.metadata.ownerReferences // [])[0].name == "keystone-trust-flush-trust-flush")
+                  | select(.metadata.creationTimestamp > $t)
+                  | .metadata.name]
+                | join("\n")')
+
+          if [ -n "$POST_SUSPEND" ]; then
+            echo "FAIL: CronJob created Jobs after suspend was applied:"
+            echo "$POST_SUSPEND"
+            exit 1
+          fi
+          echo "PASS: No CronJob-owned Jobs created after suspend"

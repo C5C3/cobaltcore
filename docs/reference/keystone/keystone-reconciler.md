@@ -339,7 +339,7 @@ Fernet and credential sub-reconciler sections for the full contract.
 │           │                                                                  │
 │           ▼                                                                  │
 │  ┌────────────────────────┐                                                  │
-│  │ reconcileTrustFlush    │  Create/delete trust_flush CronJob               │
+│  │ reconcileTrustFlush    │  Ensure trust_flush CronJob (default-on)         │
 │  │                        │  Sets: TrustFlushReady                           │
 │  └────────┬───────────────┘  Requeue: none                                   │
 │           │                                                                  │
@@ -2461,12 +2461,27 @@ func (r *KeystoneReconciler) reconcileTrustFlush(ctx context.Context,
 **Purpose:** Manage the trust flush CronJob that periodically purges expired trust
 delegations from the Keystone database. Three lifecycle paths:
 
-1. **Trust flush disabled** (`spec.trustFlush` is nil): Delete any existing
-   `{name}-trust-flush` CronJob and set `TrustFlushReady=True` with reason
-   `TrustFlushNotRequired`.
-2. **Trust flush enabled** (`spec.trustFlush` is set): Build the desired CronJob via
-   `trustFlushCronJob()` and call `job.EnsureCronJob()` to create or update it.
-   Set `TrustFlushReady=True` with reason `TrustFlushReady`.
+1. **Trust flush configured** (`spec.trustFlush` is set — the production path,
+   including default-on objects materialized by the webhook): Build the desired
+   CronJob via `trustFlushCronJob()` and call `job.EnsureCronJob()` to create or
+   update it. Set `TrustFlushReady=True` with reason `TrustFlushReady`. On a
+   webhook-enabled cluster the CR always reaches the reconciler in this state
+   because the defaulting webhook materializes
+   `spec.trustFlush = {schedule: "0 * * * *", suspend: false}` whenever the
+   field is unset. Setting `spec.trustFlush.suspend: true` keeps this path:
+   the CronJob is ensured with `spec.suspend: true` and the condition reason
+   remains `TrustFlushReady`.
+2. **Legacy bypass — webhook did not run** (`spec.trustFlush` is nil): Reachable
+   only on envtest fixtures or other clusters where the defaulting webhook is
+   not wired up, or when programmatic callers (envtest/unit tests) invoke
+   `reconcileTrustFlush` directly without going through admission. The
+   reconciler emits (a) a structured log entry with `reason=webhook-bypass`
+   plus the CR's `namespace`/`name` for log pipelines and (b) a Kubernetes
+   Warning Event of reason `TrustFlushBypass` on the Keystone CR so the
+   bypass surfaces in `kubectl describe`. It then deletes any existing
+   `{name}-trust-flush` CronJob and sets `TrustFlushReady=True` with reason
+   `TrustFlushNotRequired` and a message identifying the bypass posture.
+   Production CRs never enter this branch.
 3. **Error**: Propagate errors from ensure/delete operations with descriptive context.
 
 > **Note:** This sub-reconciler accepts the `configMapName` returned by
@@ -2497,17 +2512,18 @@ delegations from the Keystone database. Three lifecycle paths:
 
 **Deletion Helper (`deleteCronJob`):**
 
-When `spec.trustFlush` is `nil`, `deleteCronJob()` issues a `client.Delete` for the
-CronJob by name. It uses `client.IgnoreNotFound` so the operation is a no-op if the
-CronJob does not exist (e.g., first reconciliation of a CR that never had trust flush
-enabled).
+Invoked only on the legacy-bypass path (`spec.trustFlush` is `nil`).
+`deleteCronJob()` issues a `client.Delete` for the CronJob by name
+and uses `client.IgnoreNotFound` so the operation is a no-op if the CronJob
+does not exist (e.g., first reconciliation of an envtest CR that never had a
+trust-flush CronJob).
 
 **Condition Contract:**
 
-| Status | Reason | Message | RequeueAfter |
-| --- | --- | --- | --- |
-| `True` | `TrustFlushNotRequired` | "Trust flush is not configured" | — |
-| `True` | `TrustFlushReady` | "Trust flush CronJob is configured" | — |
+| Status | Reason | Message | RequeueAfter | Path |
+| --- | --- | --- | --- | --- |
+| `True` | `TrustFlushNotRequired` | "Trust flush bypass: spec.trustFlush is nil (webhook did not default this object)" | — | Legacy bypass only — `spec.trustFlush == nil` |
+| `True` | `TrustFlushReady` | "Trust flush CronJob is configured" | — | Production path (default-on or explicit) |
 
 **Error handling:** Errors from `job.EnsureCronJob()` are wrapped with
 "ensuring trust flush CronJob" context. Errors from `deleteCronJob()` are wrapped
@@ -2683,7 +2699,7 @@ operator. Containers that use the env var include:
 | `Deployment` | `buildKeystoneDeployment` (`reconcile_deployment.go`) | Keystone API pods |
 | `Job` `{name}-bootstrap` | `buildBootstrapJob` (`reconcile_bootstrap.go`) | Initial bootstrap of admin user/project/roles |
 | `Job` `keystone-db-sync` and variants (expand, migrate, contract, schema-check) | `buildDBJob` (`reconcile_database.go`) | Database schema provisioning and drift checks |
-| `CronJob` `{name}-trust-flush` | `trustFlushCronJob` (`reconcile_trustflush.go`) | Periodic expired trust cleanup |
+| `CronJob` `{name}-trust-flush` | `trustFlushCronJob` (`reconcile_trustflush.go`) | Periodic expired trust cleanup — default-on hourly via webhook materialization |
 | `CronJob` `{name}-fernet-rotate` | `fernetRotationCronJob` (`reconcile_fernet.go`) | Fernet key rotation — appended alongside the pre-existing `OS_fernet_tokens__max_active_keys` override |
 | `CronJob` `{name}-credential-rotate` | `credentialRotationCronJob` (`reconcile_credential.go`) | Credential key rotation |
 

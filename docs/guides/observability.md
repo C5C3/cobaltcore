@@ -57,7 +57,7 @@ openstack   keystone   True    http://keystone.openstack.svc.cluster.local:5000 
 | `HPAReady` | HorizontalPodAutoscaler created (if `spec.autoscaling` is set) |
 | `NetworkPolicyReady` | NetworkPolicy created (if `spec.networkPolicy` is set) |
 | `BootstrapReady` | Bootstrap Job completed (admin user, region, endpoints) |
-| `TrustFlushReady` | Trust-flush CronJob created (if `spec.trustFlush` is set) |
+| `TrustFlushReady` | Trust-flush CronJob created — defaults to hourly |
 | `Ready` | All of the above are `True` |
 
 Read them as a tree:

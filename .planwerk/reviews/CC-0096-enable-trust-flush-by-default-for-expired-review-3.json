@@ -1,0 +1,50 @@
+{
+  "summary": "Improvement cycle addressing external reviewer feedback (berendt review #2). Five WARNING items and two AUTO_FIX INFO items were correctly fixed: (W-001) the upgrade-flow runbook now uses a literal ISO 8601 date instead of GNU-only `date -d '7 days ago'`, with a comment explaining the rationale; (W-002) the bypass-log assertion now matches the structured-key form `\"namespace\"=\"default\"` / `\"name\"=\"test-keystone\"` rather than a substring that collided with the message text; (W-003) the bypass branch now emits a real `corev1.EventTypeWarning` Event of reason `TrustFlushBypass` on the Keystone CR via `r.Recorder.Event`, the test was renamed from `LogsWarning` to `EmitsWarningEvent` and now also asserts the Event via the existing `expectEvent` helper, and the reconciler doc was updated to describe both the structured log AND the Warning Event; (W-004) the self-negating bullet in keystone-upgrade-flow.md was replaced with a callout `Note:` block; (I-001) the in-function comments now read `Production path` / `Legacy bypass` instead of inverted Path 1/Path 2 numbering; (I-003) the bypass-branch comment now acknowledges that programmatic callers (envtest/unit tests) also reach this branch, not only webhook-misconfigured clusters. (I-002) the hourly-tick race in the chainsaw suspend test was fixed via a managedFields-based SUSPEND_TIME extraction that filters Jobs to those created strictly after the suspend patch — robust and correct. Trust-flush unit tests pass; `go vet` is clean across the keystone module.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (go test ./operators/keystone/... → ok)", "checked": true},
+    {"item": "Bypass-log assertion now validates structured keys, not message-text substring (W-002)", "checked": true},
+    {"item": "New event-emission assertion via expectEvent helper (W-003)", "checked": true},
+    {"item": "Chainsaw timestamp-based filter eliminates the hourly-tick race (I-002)", "checked": true},
+    {"item": "Renamed test name accurately reflects what it tests (W-003)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Recorder.Event call follows the existing pattern in reconcile_database.go", "checked": true},
+    {"item": "Comments and godoc match the implementation (production path / legacy bypass)", "checked": true},
+    {"item": "No dead code or scope creep", "checked": true},
+    {"item": "No new abstractions or wrappers introduced unnecessarily", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No new attack surface (warning Event is internal-only)", "checked": true},
+    {"item": "No secrets in event message or log", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Bypass posture surfaced via two complementary channels (log + Event)", "checked": true},
+    {"item": "Reuses existing event-emission pattern (Kubernetes Event alongside condition-setting)", "checked": true},
+    {"item": "No CRD-shape change; spec.trustFlush remains *TrustFlushSpec", "checked": true},
+    {"item": "Path naming inversion resolved without numeric ordering", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "expectEvent helper reused instead of building a new assertion path", "checked": true},
+    {"item": "Recorder field already on KeystoneReconciler — no new wiring needed", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Chainsaw script exits 1 with diagnostic dump if SUSPEND_TIME cannot be derived", "checked": true},
+    {"item": "Doc snippet uses literal date — fails loudly if date is not updated, instead of silently mis-flushing", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "jq filter handles missing ownerReferences via `(.metadata.ownerReferences // [])`", "checked": true},
+    {"item": "Bypass branch uses Recorder.Event (no panic risk — Recorder is always wired in production and in test reconciler)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "(non-blocking, AC-only) W-005 from the external review is not addressed in code — the brownfield-upgrade acceptance criterion in the PR description still claims materialization happens 'within one reconcile' on upgrade, while the implementation correctly relies on a CREATE/UPDATE admission round-trip. Consider rewording the AC in the PR body or the planwerk progress JSON to match the documented reality (or open a follow-up issue for controller-driven materialization). Not a code defect."
+  ],
+  "next_steps": [
+    "Reword W-005 acceptance criterion in PR description to match implemented behavior, or scope a follow-up issue for controller-driven materialization on first reconcile",
+    "Run the chainsaw trust-flush suite once on a kind cluster to confirm the managedFields timestamp extraction works against the live API server (only static review possible in sandbox)"
+  ],
+  "detected_patterns": []
+}

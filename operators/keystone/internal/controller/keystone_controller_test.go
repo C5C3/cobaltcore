@@ -354,6 +354,7 @@ func TestReconcile_SetsAllSubConditionsTrue(t *testing.T) {
 	var updated keystonev1alpha1.Keystone
 	g.Expect(r.Get(context.Background(), types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
 
+	// CC-0096: TrustFlushReady reason is TrustFlushNotRequired here because tests use a fake client that bypasses the defaulting webhook.
 	for _, condType := range []string{"SecretsReady", "FernetKeysReady", "CredentialKeysReady", "DatabaseReady", conditionTypePolicyValidReady, "DeploymentReady", conditionTypeKeystoneAPIReady, "HPAReady", "NetworkPolicyReady", "BootstrapReady", "TrustFlushReady"} {
 		cond := meta.FindStatusCondition(updated.Status.Conditions, condType)
 		g.Expect(cond).NotTo(BeNil(), "condition %s should exist", condType)

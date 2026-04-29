@@ -14,25 +14,53 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/job"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
-// Feature: CC-0057
+// Feature: CC-0057, CC-0096
 
 // reconcileTrustFlush ensures the trust flush CronJob matches the desired state.
 // Two lifecycle paths:
-//   - spec.trustFlush set: create or update CronJob running keystone-manage trust_flush (CC-0057, REQ-001)
-//   - spec.trustFlush nil: delete any existing CronJob (CC-0057, REQ-002)
+//   - spec.trustFlush set (production): create or update CronJob running
+//     keystone-manage trust_flush (CC-0057, REQ-001).
+//   - spec.trustFlush nil (legacy bypass): admission webhooks did not materialize
+//     the field — either the cluster has no webhook configured, or a programmatic
+//     caller (envtest/unit test) invoked reconcileTrustFlush directly without
+//     going through admission. Delete any existing CronJob and emit a Warning
+//     Event so the bypass posture is visible in `kubectl describe`
+//     (CC-0057, CC-0096, REQ-002).
 func (r *KeystoneReconciler) reconcileTrustFlush(ctx context.Context,
 	keystone *keystonev1alpha1.Keystone, configMapName string,
 ) (ctrl.Result, error) {
 	cronJobName := fmt.Sprintf("%s-trust-flush", keystone.Name)
 
-	// Path 2: trust flush not configured — delete any existing CronJob (CC-0057, REQ-002).
+	// Legacy bypass: runs when admission webhooks did not materialize the field —
+	// either the cluster has no webhook configured, or a programmatic caller
+	// (envtest/unit test) invoked reconcileTrustFlush directly without going
+	// through admission. Delete any existing CronJob, log the bypass for log
+	// pipelines, and emit a Warning Event for operator-visible signal in
+	// `kubectl describe` (CC-0057, CC-0096, REQ-002).
 	if keystone.Spec.TrustFlush == nil {
+		// reason="webhook-bypass" is the greppable sentinel for log pipelines that
+		// differentiate the bypass path from the production (defaulted) path
+		// (CC-0096, REQ-002).
+		log.FromContext(ctx).Info(
+			"trust flush legacy bypass: spec.trustFlush is nil — webhook defaulting did not run; deleting any existing CronJob (CC-0096, REQ-002)",
+			"reason", "webhook-bypass",
+			"namespace", keystone.Namespace,
+			"name", keystone.Name,
+		)
+		// logr has no Warning level, so surface the operationally significant
+		// bypass as a Kubernetes Warning Event on the Keystone CR. This matches
+		// the pattern used by other reconcilers in this package (see
+		// reconcile_database.go) and makes the bypass visible via
+		// `kubectl describe keystone <name>` (CC-0096, REQ-002).
+		r.Recorder.Event(keystone, corev1.EventTypeWarning, "TrustFlushBypass",
+			"Trust flush legacy bypass: spec.trustFlush is nil (webhook defaulting did not run); existing CronJob deleted")
 		if err := deleteCronJob(ctx, r.Client, keystone.Namespace, cronJobName); err != nil {
 			return ctrl.Result{}, fmt.Errorf("deleting trust flush CronJob: %w", err)
 		}
@@ -41,12 +69,12 @@ func (r *KeystoneReconciler) reconcileTrustFlush(ctx context.Context,
 			Status:             metav1.ConditionTrue,
 			ObservedGeneration: keystone.Generation,
 			Reason:             "TrustFlushNotRequired",
-			Message:            "Trust flush is not configured",
+			Message:            "Trust flush bypass: spec.trustFlush is nil (webhook did not default this object)",
 		})
 		return ctrl.Result{}, nil
 	}
 
-	// Path 1: trust flush configured — create or update CronJob (CC-0057, REQ-001).
+	// Production path: trust flush configured — create or update CronJob (CC-0057, REQ-001).
 	cronJob := trustFlushCronJob(keystone, configMapName)
 	if err := job.EnsureCronJob(ctx, r.Client, r.Scheme, keystone, cronJob); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring trust flush CronJob: %w", err)
@@ -135,7 +163,10 @@ func trustFlushCronJob(keystone *keystonev1alpha1.Keystone, configMapName string
 }
 
 // deleteCronJob deletes the CronJob identified by namespace and name. It is a
-// no-op if the CronJob does not exist (CC-0057, REQ-002).
+// no-op if the CronJob does not exist (CC-0057, REQ-002). After CC-0096 reframed
+// the reconciler's nil-spec branch as a legacy bypass for envtest/webhook-less
+// callers, this helper is invoked solely from that bypass path to clear any
+// stray CronJob left over before the webhook materialized spec.trustFlush.
 func deleteCronJob(ctx context.Context, c client.Client, namespace, name string) error {
 	cj := &batchv1.CronJob{}
 	cj.SetName(name)

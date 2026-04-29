@@ -89,15 +89,24 @@ func TestDefault_ZeroValueObjectRemainsInvalid(t *testing.T) {
 	k := &Keystone{}
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 
-	// After Default() the 5 mutable fields are set, but Cache, Database,
-	// and RotationSchedule (CRD-schema-defaulted, not webhook-defaulted)
+	// After Default() the webhook-managed fields are set — including
+	// Spec.TrustFlush, which CC-0096 (REQ-005) now materializes to a populated
+	// struct so the trust-flush CronJob is created by default. Cache, Database,
+	// and the rotationSchedule fields (CRD-schema-defaulted, not webhook-defaulted)
 	// are still zero-valued — the spec must not pass validation.
+	g.Expect(k.Spec.TrustFlush).NotTo(BeNil(),
+		"CC-0096 REQ-005: defaulting webhook materializes spec.trustFlush")
+	g.Expect(k.Spec.TrustFlush.Schedule).To(Equal(DefaultTrustFlushSchedule))
+
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("cache"))
 	g.Expect(err.Error()).To(ContainSubstring("database"))
 	g.Expect(err.Error()).To(ContainSubstring("rotationSchedule"))
 	g.Expect(err.Error()).To(ContainSubstring("credentialKeys"))
+	// CC-0096 REQ-005: the validating webhook must accept the webhook-defaulted
+	// trust-flush schedule (DefaultTrustFlushSchedule), so no trustFlush error is raised.
+	g.Expect(err.Error()).NotTo(ContainSubstring("trustFlush"))
 }
 
 func TestDefault_PreservesExplicitValues(t *testing.T) {
@@ -132,6 +141,47 @@ func TestDefault_PreservesExplicitValues(t *testing.T) {
 	g.Expect(k.Spec.Cache.Backend).To(Equal("dogpile.cache.memcache"))
 	g.Expect(k.Spec.Bootstrap.AdminUser).To(Equal("custom-admin"))
 	g.Expect(k.Spec.Bootstrap.Region).To(Equal("EU-West"))
+}
+
+// TestDefault_TrustFlushNil_MaterializesDefaultSpec verifies that the defaulting
+// webhook materializes a populated TrustFlushSpec when the pointer is nil so the
+// trust-flush CronJob is created by default (CC-0096, REQ-001). The leaf
+// +kubebuilder:default markers on Schedule and Suspend remain in place as
+// defense-in-depth for callers that bypass the webhook.
+func TestDefault_TrustFlushNil_MaterializesDefaultSpec(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := &Keystone{}
+
+	g.Expect(w.Default(context.Background(), k)).To(Succeed())
+
+	g.Expect(k.Spec.TrustFlush).NotTo(BeNil())
+	g.Expect(k.Spec.TrustFlush.Schedule).To(Equal(DefaultTrustFlushSchedule))
+	g.Expect(k.Spec.TrustFlush.Suspend).To(BeFalse())
+	g.Expect(k.Spec.TrustFlush.Args).To(BeEmpty())
+}
+
+// TestDefault_TrustFlushSet_PreservesExplicitValues verifies that the defaulting
+// webhook never overwrites a user-supplied TrustFlushSpec (CC-0096, REQ-001).
+func TestDefault_TrustFlushSet_PreservesExplicitValues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := &Keystone{
+		Spec: KeystoneSpec{
+			TrustFlush: &TrustFlushSpec{
+				Schedule: "*/30 * * * *",
+				Suspend:  true,
+				Args:     []string{"--date", "2026-01-01"},
+			},
+		},
+	}
+
+	g.Expect(w.Default(context.Background(), k)).To(Succeed())
+
+	g.Expect(k.Spec.TrustFlush).NotTo(BeNil())
+	g.Expect(k.Spec.TrustFlush.Schedule).To(Equal("*/30 * * * *"))
+	g.Expect(k.Spec.TrustFlush.Suspend).To(BeTrue())
+	g.Expect(k.Spec.TrustFlush.Args).To(Equal([]string{"--date", "2026-01-01"}))
 }
 
 func TestDefault_CacheBackendAppliedWhenEmpty(t *testing.T) {
@@ -1481,10 +1531,10 @@ func TestValidate_ResourcesRequestsOnlyAccepted(t *testing.T) {
 func TestValidate_TrustFlush_ValidCronAccepted(t *testing.T) {
 	w := &KeystoneWebhook{}
 	expressions := []string{
-		"0 * * * *",   // hourly (default)
-		"*/5 * * * *", // every 5 minutes
-		"30 2 * * 0",  // 2:30 AM on Sundays
-		"0 0 1 * *",   // midnight on the 1st of each month
+		DefaultTrustFlushSchedule, // hourly (default)
+		"*/5 * * * *",             // every 5 minutes
+		"30 2 * * 0",              // 2:30 AM on Sundays
+		"0 0 1 * *",               // midnight on the 1st of each month
 	}
 
 	for _, expr := range expressions {
@@ -1537,6 +1587,25 @@ func TestValidate_TrustFlush_NilPassesValidation(t *testing.T) {
 	w := &KeystoneWebhook{}
 	k := validKeystone()
 	k.Spec.TrustFlush = nil
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidate_TrustFlushDefaulted_AcceptsHourlySchedule verifies that the
+// hourly schedule injected by the defaulting webhook (CC-0096, REQ-001) passes
+// the cron-parsing block in validate(). Together with the Default() materialization
+// test, this protects the webhook → validate handoff against any future change
+// that would otherwise reject the defaulted value (CC-0096, REQ-005).
+func TestValidate_TrustFlushDefaulted_AcceptsHourlySchedule(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.TrustFlush = nil
+
+	g.Expect(w.Default(context.Background(), k)).To(Succeed())
+	g.Expect(k.Spec.TrustFlush).NotTo(BeNil())
+	g.Expect(k.Spec.TrustFlush.Schedule).To(Equal(DefaultTrustFlushSchedule))
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())

@@ -72,9 +72,13 @@ type KeystoneSpec struct {
 	// CredentialKeys configures credential key rotation.
 	CredentialKeys CredentialKeysSpec `json:"credentialKeys,omitempty"`
 
-	// TrustFlush configures periodic purging of expired trust delegations (CC-0057).
-	// When set, the operator creates a CronJob running keystone-manage trust_flush
-	// on the specified schedule. When removed (nil), the CronJob is deleted.
+	// TrustFlush configures periodic purging of expired trust delegations
+	// (CC-0057, CC-0096). The defaulting webhook materializes a populated
+	// TrustFlushSpec when the field is unset so that the operator runs
+	// keystone-manage trust_flush hourly by default — there is no nil-back
+	// path on a webhook-enabled cluster, because admission re-defaults the
+	// pointer if a user patches it to null. To pause the schedule without
+	// removing the CronJob, set suspend: true.
 	// +optional
 	TrustFlush *TrustFlushSpec `json:"trustFlush,omitempty"`
 
@@ -332,11 +336,19 @@ type CredentialKeysSpec struct {
 	MaxActiveKeys int32 `json:"maxActiveKeys,omitempty"`
 }
 
-// TrustFlushSpec configures periodic purging of expired trust delegations (CC-0057).
-// Exposed as an optional pointer field on KeystoneSpec so that existing CRs
-// without spec.trustFlush continue to work — the reconciler skips CronJob
-// creation when the pointer is nil.
+// TrustFlushSpec configures periodic purging of expired trust delegations
+// (CC-0057, CC-0096). The defaulting webhook materializes the parent struct on
+// KeystoneSpec.TrustFlush when unset, so the leaf +kubebuilder:default markers
+// on Schedule and Suspend below fire deterministically and the trust-flush
+// CronJob is created with the documented hourly schedule by default. The
+// markers are kept as defense-in-depth for callers that bypass the webhook
+// (e.g. envtest without the defaulter wired up). To pause without removing
+// the CronJob, set Suspend: true — the condition reason remains TrustFlushReady.
 type TrustFlushSpec struct {
+	// The kubebuilder default literal below must stay in sync with
+	// DefaultTrustFlushSchedule in keystone_webhook.go (kubebuilder markers
+	// require a string literal and cannot reference Go constants).
+
 	// Schedule is a cron expression controlling when keystone-manage trust_flush runs.
 	// +kubebuilder:default="0 * * * *"
 	Schedule string `json:"schedule,omitempty"`

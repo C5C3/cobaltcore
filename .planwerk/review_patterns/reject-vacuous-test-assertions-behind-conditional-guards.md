@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: Look for test assertions wrapped in `if err != nil` or similar conditionals. If the happy path means the condition is false, the assertion body is never executed and the test passes without proving anything.
 **Severity**: BLOCKING
-**Occurrences**: 5
+**Occurrences**: 6
 
 ## What to check
 
@@ -39,3 +39,8 @@ A vacuous test gives false confidence — it always passes regardless of whether
 - **Feedback**: That's too implementation specific. You can remove these checks
 - **What was missed**: In tests, check whether assertions verify observable behavior/contract or whether they pin the test to a specific implementation detail (exact substrings, specific function names, internal ordering). Flag assertions that would need updating purely due to a refactor that preserves behavior.
 - **Fix**: Removed `isoformat(timespec="seconds")` substring checks and the `migrateIdx < patchIdx` ordering assertion from embedded-script tests, keeping only behavior-level assertions.
+
+### CC-0096 — berendt
+- **Feedback**: The bypass log message contains the literal string "defaulting" inside "webhook defaulting did not run". So `ContainSubstring("default")` matches the message text itself, not the namespace value. The assertion would pass even if the keystone.Namespace field were never logged.
+- **What was missed**: For every substring/contains assertion on log output: (1) read the actual log statement being asserted against, (2) confirm the substring uniquely identifies the dynamic field, not boilerplate text in the message. Prefer asserting on the structured key/value pair or the exact field value rather than a short fragment.
+- **Fix**: Asserted against the structured namespace key/value rather than a short substring that collides with the log message template.

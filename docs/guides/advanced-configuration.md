@@ -189,7 +189,7 @@ a link to the full reference.
 | Feature | Field | What it does | Reference |
 |---------|-------|--------------|-----------|
 | Credential-key rotation | `spec.credentialKeys` | Separate rotation schedule for the credential encryption key | [CredentialKeysSpec](../reference/keystone/keystone-crd.md#credentialkeysspec) |
-| Trust flush | `spec.trustFlush` | CronJob running `keystone-manage trust_flush` on a schedule | [TrustFlushSpec](../reference/keystone/keystone-crd.md#trustflushspec) |
+| Trust flush | `spec.trustFlush` | CronJob running `keystone-manage trust_flush` on a schedule. Default-on (hourly) — to pause without deleting the CronJob, set `spec.trustFlush.suspend: true` rather than removing the field | [TrustFlushSpec](../reference/keystone/keystone-crd.md#trustflushspec) |
 | uWSGI tuning | `spec.uwsgi` | Worker processes, threads, HTTP keep-alive | [UWSGISpec](../reference/keystone/keystone-crd.md#uwsgispec) |
 | Topology spread | `spec.topologySpreadConstraints` | Pod spread across zones/hostnames | [TopologySpreadConstraints](../reference/keystone/keystone-crd.md#topologyspreadconstraints) |
 | Priority class | `spec.priorityClassName` | Scheduling priority and preemption class | [PriorityClassName](../reference/keystone/keystone-crd.md#priorityclassname) |

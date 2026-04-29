@@ -327,6 +327,98 @@ because all state is persisted in the Keystone CR status:
 
 ---
 
+## Default-on Trust Flush at Upgrade Time
+
+Starting with the release that ships default-on trust flush, the defaulting
+webhook materializes `spec.trustFlush` whenever the field is omitted, so every Keystone
+CR ends up running `keystone-manage trust_flush` hourly by default. This
+applies to both fresh deployments and brownfield CRs whose original manifests
+never set the field. For the CRD-level shape and `suspend: true` opt-out, see
+[`TrustFlushSpec`](./keystone-crd.md#trustflushspec).
+
+### Materialization on the Next Admission Round-trip
+
+The webhook does not mutate stored objects in etcd at the moment the operator
+upgrade completes — Kubernetes admission webhooks only run on `CREATE` and
+`UPDATE` requests. As a result, an existing brownfield CR that lacks
+`spec.trustFlush` retains that shape in etcd until something writes the
+object. The trust-flush CronJob is created on the next admission round-trip,
+which can happen via any of:
+
+- A fresh `kubectl apply -f` (or GitOps reconciliation) of the CR manifest.
+- A `kubectl edit` or `kubectl patch` on the same object.
+
+> **Note:** Status subresource writes (which the controller does on its own)
+> bypass the defaulting webhook, so the operator's reconciliation alone will
+> not trigger materialization. Use one of the spec writes above, or see
+> "Forcing Materialization" below.
+
+### CronJob Creation Timeline
+
+| Time | Cluster State |
+| --- | --- |
+| `t0` | New operator (with the default-on trust-flush webhook) is installed and Ready. Existing brownfield CR with no `spec.trustFlush` is unchanged in etcd. No `{name}-trust-flush` CronJob exists. |
+| `t1` | A spec write occurs (apply / edit / patch). The webhook materializes `spec.trustFlush = {schedule: "0 * * * *", suspend: false}`; the persisted CR now carries the field. |
+| `t1+ε` | The reconciler observes the updated CR and calls `job.EnsureCronJob` on the trust-flush spec. The `{name}-trust-flush` CronJob appears and `TrustFlushReady=True/TrustFlushReady` is set. |
+| First `:00` minute after `t1+ε` | The Kubernetes CronJob controller creates the first Job pod, which runs `keystone-manage trust_flush` against the database. |
+
+### Forcing Materialization
+
+If you want to materialize the field immediately after an operator upgrade
+without waiting for the next GitOps sync, trigger an empty patch through the
+defaulting webhook:
+
+```bash
+kubectl patch keystone <name> --type=merge -p '{}'
+```
+
+The webhook still runs on this admission round-trip and materializes
+`spec.trustFlush`. The reconciler then ensures the CronJob.
+
+### Pre-upgrade Recommendation for Large Trust Tables
+
+The first `trust_flush` execution on a cluster that has never run the command
+walks the full `trust` table, deleting expired delegations in a single
+transaction. On clusters with very large trust tables (hundreds of thousands
+of expired rows or more), this first run can hold MariaDB locks long enough
+to disturb concurrent Keystone API workloads.
+
+To smooth the transition, either:
+
+1. **Pre-flush before upgrade.** Run a one-shot trust flush against the old
+   release with a recent `--date` so the bulk of the historical purge happens
+   in a controlled maintenance window:
+
+   ```bash
+   # Replace 2026-04-19T00:00:00Z with a date 7 days before today (UTC, ISO 8601).
+   # The literal date is used here instead of $(date -u -d '7 days ago' +%FT%TZ)
+   # because GNU `date -d` is not available on macOS/BSD shells.
+   kubectl exec -n openstack deploy/<name>-api -- \
+     keystone-manage trust_flush --date 2026-04-19T00:00:00Z
+   ```
+
+2. **Stagger the rollout.** Roll the operator upgrade out one Keystone CR at a
+   time on multi-CR clusters, and pause between CRs to confirm the first
+   `{name}-trust-flush` Job pod completes within the SLO before continuing.
+   Each CR's first run happens independently — staggering caps the
+   concurrent database load.
+
+After the first successful run, subsequent hourly runs only delete rows whose
+`expires_at` fell within the previous hour, and lock pressure returns to
+steady-state levels.
+
+### Opting Out per CR
+
+To keep an individual CR off the hourly cadence after upgrade — for example,
+because that environment never issues trusts — set
+`spec.trustFlush.suspend: true` rather than removing the field. The CronJob
+resource is preserved with `spec.suspend: true` and can be unsuspended later
+without a delete/recreate. Removing the field is not effective on a
+webhook-enabled cluster: the next admission round-trip re-materializes the
+hourly schedule.
+
+---
+
 ## Troubleshooting
 
 ### Checking Upgrade Status

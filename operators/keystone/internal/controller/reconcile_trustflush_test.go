@@ -7,8 +7,10 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
+	"github.com/go-logr/logr/funcr"
 	. "github.com/onsi/gomega"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -22,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -81,7 +84,7 @@ func TestReconcileTrustFlush_TrustFlushSet_CreatesCronJob(t *testing.T) {
 	s := trustFlushTestScheme()
 	ks := trustFlushTestKeystone()
 	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
-		Schedule: "0 * * * *",
+		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 	r := newTrustFlushTestReconciler(s, ks)
 
@@ -109,7 +112,7 @@ func TestReconcileTrustFlush_TrustFlushSet_CronJobUpdated(t *testing.T) {
 	s := trustFlushTestScheme()
 	ks := trustFlushTestKeystone()
 	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
-		Schedule: "0 * * * *",
+		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 	r := newTrustFlushTestReconciler(s, ks)
 	ctx := context.Background()
@@ -139,7 +142,7 @@ func TestReconcileTrustFlush_ConditionObservedGeneration(t *testing.T) {
 	ks := trustFlushTestKeystone()
 	ks.Generation = 7
 	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
-		Schedule: "0 * * * *",
+		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 	r := newTrustFlushTestReconciler(s, ks)
 
@@ -165,7 +168,11 @@ func TestReconcileTrustFlush_ConditionObservedGeneration(t *testing.T) {
 
 // --- Path 2: trust flush disabled — delete CronJob (REQ-002) ---
 
-func TestReconcileTrustFlush_TrustFlushNil_NoExistingCronJob_SetsTrustFlushNotRequired(t *testing.T) {
+// TestReconcileTrustFlush_TrustFlushNilBypass_NoExistingCronJob_SetsTrustFlushNotRequired
+// exercises the legacy bypass path that runs only when the defaulting webhook is absent
+// (CC-0096). In production the defaulting webhook materializes spec.trustFlush so this
+// branch only fires for envtest / webhook-less / legacy callers.
+func TestReconcileTrustFlush_TrustFlushNilBypass_NoExistingCronJob_SetsTrustFlushNotRequired(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := trustFlushTestScheme()
 	ks := trustFlushTestKeystone()
@@ -182,7 +189,11 @@ func TestReconcileTrustFlush_TrustFlushNil_NoExistingCronJob_SetsTrustFlushNotRe
 	g.Expect(cond.Reason).To(Equal("TrustFlushNotRequired"))
 }
 
-func TestReconcileTrustFlush_TrustFlushNil_ExistingCronJob_DeletesCronJob(t *testing.T) {
+// TestReconcileTrustFlush_TrustFlushNilBypass_ExistingCronJob_DeletesCronJob exercises the
+// legacy bypass path that runs only when the defaulting webhook is absent (CC-0096). In
+// production the defaulting webhook materializes spec.trustFlush so this branch only fires
+// for envtest / webhook-less / legacy callers.
+func TestReconcileTrustFlush_TrustFlushNilBypass_ExistingCronJob_DeletesCronJob(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := trustFlushTestScheme()
 	ks := trustFlushTestKeystone()
@@ -194,7 +205,7 @@ func TestReconcileTrustFlush_TrustFlushNil_ExistingCronJob_DeletesCronJob(t *tes
 			Namespace: "default",
 		},
 		Spec: batchv1.CronJobSpec{
-			Schedule: "0 * * * *",
+			Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 			JobTemplate: batchv1.JobTemplateSpec{
 				Spec: batchv1.JobSpec{
 					Template: defaultPodTemplate(),
@@ -251,7 +262,7 @@ func TestReconcileTrustFlush_EnsureError_Propagated(t *testing.T) {
 	s := trustFlushTestScheme()
 	ks := trustFlushTestKeystone()
 	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
-		Schedule: "0 * * * *",
+		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 
 	c := fake.NewClientBuilder().
@@ -280,6 +291,10 @@ func TestReconcileTrustFlush_EnsureError_Propagated(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("simulated CronJob creation error"))
 }
 
+// TestReconcileTrustFlush_DeleteError_Propagated exercises the legacy bypass error path
+// (CC-0096) — the deleteCronJob failure case is only reachable when the defaulting webhook
+// did not default Spec.TrustFlush (i.e. in envtest / webhook-less clusters or legacy
+// callers).
 func TestReconcileTrustFlush_DeleteError_Propagated(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := trustFlushTestScheme()
@@ -292,7 +307,7 @@ func TestReconcileTrustFlush_DeleteError_Propagated(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: batchv1.CronJobSpec{
-			Schedule: "0 * * * *",
+			Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 			JobTemplate: batchv1.JobTemplateSpec{
 				Spec: batchv1.JobSpec{
 					Template: defaultPodTemplate(),
@@ -345,7 +360,7 @@ func TestTrustFlushCronJob_Suspend(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := trustFlushTestKeystone()
 	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
-		Schedule: "0 * * * *",
+		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 		Suspend:  true,
 	}
 
@@ -365,7 +380,7 @@ func TestTrustFlushCronJob_ArgsIncluded(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := trustFlushTestKeystone()
 	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
-		Schedule: "0 * * * *",
+		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 		Args:     []string{"--date", "2026-01-01"},
 	}
 
@@ -382,7 +397,7 @@ func TestTrustFlushCronJob_NoArgs(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := trustFlushTestKeystone()
 	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
-		Schedule: "0 * * * *",
+		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 
 	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
@@ -397,7 +412,7 @@ func TestTrustFlushCronJob_Labels(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := trustFlushTestKeystone()
 	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
-		Schedule: "0 * * * *",
+		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 
 	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
@@ -416,7 +431,7 @@ func TestTrustFlushCronJob_Image(t *testing.T) {
 	ks := trustFlushTestKeystone()
 	ks.Spec.Image = commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"}
 	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
-		Schedule: "0 * * * *",
+		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 
 	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
@@ -429,7 +444,7 @@ func TestTrustFlushCronJob_Volumes(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := trustFlushTestKeystone()
 	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
-		Schedule: "0 * * * *",
+		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 
 	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
@@ -454,7 +469,7 @@ func TestTrustFlushCronJob_VolumeMounts(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := trustFlushTestKeystone()
 	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
-		Schedule: "0 * * * *",
+		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 
 	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
@@ -479,7 +494,7 @@ func TestTrustFlushCronJob_SecurityContext(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := trustFlushTestKeystone()
 	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
-		Schedule: "0 * * * *",
+		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 
 	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
@@ -498,7 +513,7 @@ func TestTrustFlushCronJob_DBConnectionEnv(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := trustFlushTestKeystone()
 	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
-		Schedule: "0 * * * *",
+		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 
 	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
@@ -517,7 +532,7 @@ func TestTrustFlushCronJob_PriorityClassNameSet(t *testing.T) {
 	pcn := "system-cluster-critical"
 	ks.Spec.PriorityClassName = &pcn
 	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
-		Schedule: "0 * * * *",
+		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 
 	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
@@ -531,7 +546,7 @@ func TestTrustFlushCronJob_PriorityClassNameNil(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := trustFlushTestKeystone()
 	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
-		Schedule: "0 * * * *",
+		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 
 	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
@@ -543,7 +558,7 @@ func TestTrustFlushCronJob_RestartPolicy(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := trustFlushTestKeystone()
 	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
-		Schedule: "0 * * * *",
+		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 
 	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
@@ -555,11 +570,119 @@ func TestTrustFlushCronJob_Name(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := trustFlushTestKeystone()
 	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
-		Schedule: "0 * * * *",
+		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 
 	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
 
 	g.Expect(cronJob.Name).To(Equal("test-keystone-trust-flush"))
 	g.Expect(cronJob.Namespace).To(Equal("default"))
+}
+
+// Feature: CC-0096
+
+// TestReconcileTrustFlush_BypassNil_EmitsWarningEvent verifies that the legacy bypass
+// path emits (a) a structured log entry naming the CR's namespace and name and (b) a
+// Kubernetes Warning Event on the Keystone CR, so operators can detect when the
+// defaulting webhook did not run for a given Keystone — both via log pipelines and
+// via `kubectl describe` (CC-0096, REQ-002).
+func TestReconcileTrustFlush_BypassNil_EmitsWarningEvent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := trustFlushTestScheme()
+	ks := trustFlushTestKeystone()
+	// Spec.TrustFlush is nil — exercises the legacy bypass branch.
+	r := newTrustFlushTestReconciler(s, ks)
+
+	var logs []string
+	logger := funcr.New(func(prefix, args string) {
+		logs = append(logs, prefix+" "+args)
+	}, funcr.Options{Verbosity: 1})
+	ctx := log.IntoContext(context.Background(), logger)
+
+	_, err := r.reconcileTrustFlush(ctx, ks, "test-keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	combined := strings.Join(logs, "\n")
+	g.Expect(combined).To(ContainSubstring("legacy bypass"),
+		"bypass log message must contain the 'legacy bypass' sentinel (CC-0096, REQ-002)")
+	g.Expect(combined).To(ContainSubstring("\"namespace\"=\"default\""),
+		"bypass log must include the CR namespace as a structured key (CC-0096, REQ-002)")
+	g.Expect(combined).To(ContainSubstring("\"name\"=\"test-keystone\""),
+		"bypass log must include the CR name as a structured key (CC-0096, REQ-002)")
+	g.Expect(combined).To(ContainSubstring("\"reason\"=\"webhook-bypass\""),
+		"bypass log must emit reason=webhook-bypass as a structured key so log pipelines can distinguish bypass from production paths (CC-0096, REQ-002)")
+
+	// A Kubernetes Warning Event must surface the bypass for `kubectl describe`
+	// readers, since logr has no Warning level (CC-0096, REQ-002).
+	expectEvent(g, r, "Warning TrustFlushBypass")
+}
+
+// TestReconcileTrustFlush_WebhookDefaulted_CreatesCronJobAndReportsReady verifies that
+// when the defaulting webhook has materialized Spec.TrustFlush (Schedule + Suspend:false),
+// the reconciler creates the trust-flush CronJob and reports the TrustFlushReady condition
+// with reason=TrustFlushReady (CC-0096, REQ-003).
+func TestReconcileTrustFlush_WebhookDefaulted_CreatesCronJobAndReportsReady(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := trustFlushTestScheme()
+	ks := trustFlushTestKeystone()
+	// Simulate the post-webhook state: webhook defaulted Schedule + Suspend:false.
+	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
+		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
+		Suspend:  false,
+	}
+	r := newTrustFlushTestReconciler(s, ks)
+
+	_, err := r.reconcileTrustFlush(context.Background(), ks, "test-keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var cronJob batchv1.CronJob
+	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
+		Name: "test-keystone-trust-flush", Namespace: "default",
+	}, &cronJob)).To(Succeed())
+
+	// Tie the CronJob configuration to the webhook-defaulted spec rather than
+	// only its existence: the rendered Schedule MUST equal Spec.TrustFlush.Schedule
+	// and Suspend MUST be unambiguously off (non-nil pointer to false, as
+	// trustFlushCronJob always materialises Suspend via ptr.To) so a regression
+	// that re-renders the CronJob with stale or default-only values is caught
+	// (CC-0096, REQ-003).
+	g.Expect(cronJob.Spec.Schedule).To(Equal(ks.Spec.TrustFlush.Schedule))
+	g.Expect(cronJob.Spec.Suspend).NotTo(BeNil())
+	g.Expect(*cronJob.Spec.Suspend).To(BeFalse())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "TrustFlushReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("TrustFlushReady"))
+}
+
+// TestReconcileTrustFlush_SuspendTrue_PreservesCronJobAndReason verifies that when
+// Spec.TrustFlush.Suspend is true the reconciler still creates the CronJob (with
+// Suspend=true) and reports reason=TrustFlushReady (NOT TrustFlushNotRequired).
+// Suspend semantics are preserved by Kubernetes itself; the operator's job is only to
+// keep the CronJob in sync (CC-0096, REQ-003).
+func TestReconcileTrustFlush_SuspendTrue_PreservesCronJobAndReason(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := trustFlushTestScheme()
+	ks := trustFlushTestKeystone()
+	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
+		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
+		Suspend:  true,
+	}
+	r := newTrustFlushTestReconciler(s, ks)
+
+	_, err := r.reconcileTrustFlush(context.Background(), ks, "test-keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var cronJob batchv1.CronJob
+	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
+		Name: "test-keystone-trust-flush", Namespace: "default",
+	}, &cronJob)).To(Succeed())
+
+	g.Expect(cronJob.Spec.Suspend).NotTo(BeNil())
+	g.Expect(*cronJob.Spec.Suspend).To(BeTrue())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "TrustFlushReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Reason).To(Equal("TrustFlushReady"))
 }

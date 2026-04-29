@@ -1,0 +1,54 @@
+{
+  "feature_id": "CC-0096",
+  "title": "GitHub Review by sourcery-ai[bot]",
+  "summary": "<promise>IMPLEMENTATION_COMPLETE</promise>",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "sourcery-ai[bot]",
+  "date": "2026-04-26T17:23:47Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "Hey - I've found 3 issues, and left some high level feedback:\n\n- You’ve introduced DefaultTrustFlushSchedule as the single source of truth, but a lot of tests and docs still hardcode \"0 * * * *\"; consider reusing the constant (where possible in Go code) to reduce the risk of drift if the default is ever changed.\n\n<details>\n<summary>Prompt for AI Agents</summary>\n\n~~~markdown\nPlease address the comments from this code review:\n\n## Overall Comments\n- You’ve introduced DefaultTrustFlushSchedule as the single source of truth, but a lot of tests and docs still hardcode \"0 * * * *\"; consider reusing the constant (where possible in Go code) to reduce the risk of drift if the default is ever changed.\n\n## Individual Comments\n\n### Comment 1\n<location path=\"operators/keystone/internal/controller/integration_test.go\" line_range=\"1702-1711\" />\n<code_context>\n+func TestIntegration_TrustFlush_SuspendTruePreservesCronJob(t *testing.T) {\n</code_context>\n<issue_to_address>\n**suggestion (testing):** Consider also asserting the CronJob schedule remains unchanged when suspending\n\nTo better enforce the \"pause without changing cadence\" behavior, also assert that the CronJob’s `spec.schedule` remains equal to the original value (e.g. `0 * * * *`). This will help catch regressions where the reconciliation logic might accidentally change the schedule when toggling suspend.\n\nSuggested implementation:\n\n```golang\n\tcreatePrerequisites(t, ctx, c, ns.Name)\n\n\t// Assert that the trust flush CronJob schedule is preserved when suspending\n\tcronJob := &batchv1.CronJob{}\n\tg.Expect(c.Get(ctx, client.ObjectKey{\n\t\tNamespace: ns.Name,\n\t\t// NOTE: adjust this name if the CronJob resource is created with a different name\n\t\tName: \"trust-flush\",\n\t}, cronJob)).To(Succeed())\n\tg.Expect(cronJob.Spec.Schedule).To(Equal(\"0 * * * *\"))\n\n```\n\n1. Ensure the following imports are present at the top of `integration_test.go`:\n   - `batchv1 \"k8s.io/api/batch/v1\"`\n   - `sigs.k8s.io/controller-runtime/pkg/client`\n2. If the trust flush CronJob is created with a different name (e.g. including a prefix/suffix), update `\"trust-flush\"` in the `ObjectKey` to match the actual name or use the same naming helper used in the controller/tests.\n3. If this test already retrieves the CronJob later in the function, you may instead reuse that `CronJob` object and only add the `g.Expect(cronJob.Spec.Schedule).To(Equal(\"0 * * * *\"))` assertion next to the existing suspend-related assertions to avoid duplicate `Get` calls.\n</issue_to_address>\n\n### Comment 2\n<location path=\"operators/keystone/internal/controller/reconcile_trustflush_test.go\" line_range=\"618-627\" />\n<code_context>\n+func TestReconcileTrustFlush_WebhookDefaulted_CreatesCronJobAndReportsReady(t *testing.T) {\n</code_context>\n<issue_to_address>\n**suggestion (testing):** Assert CronJob spec reflects the webhook-defaulted TrustFlushSpec (schedule/suspend)\n\nTo better guard against regressions, also assert that `cronJob.Spec.Schedule` equals `ks.Spec.TrustFlush.Schedule` and that `cronJob.Spec.Suspend` is nil or `false`, so the CronJob configuration is explicitly tied to the defaulted spec rather than only its existence.\n</issue_to_address>\n\n### Comment 3\n<location path=\"docs/reference/keystone-crd.md\" line_range=\"144\" />\n<code_context>\n+| `trustFlush` | [`*TrustFlushSpec`](#trustflushspec) | No | `{schedule: \"0 * * * *\", suspend: false}` (materialized by the defaulting webhook) | Trust flush CronJob configuration. Default-on: when the field is omitted, the defaulting webhook populates a hourly schedule so `keystone-manage trust_flush` runs by default; there is no nil-back path on a webhook-enabled cluster (a `kubectl patch ... 'spec/trustFlush'='null'` round-trips through admission and is re-materialized). To pause without deleting the CronJob, set `suspend: true` — the resource and `TrustFlushReady=True` condition are preserved (CC-0057, CC-0096). |\n</code_context>\n<issue_to_address>\n**suggestion (typo):** Use \"an hourly\" instead of \"a hourly\" for correct grammar.\n\nSince \"hourly\" begins with a vowel sound, the article should be \"an\". Please update the phrase to \"populates an hourly schedule\".\n\n```suggestion\n| `trustFlush` | [`*TrustFlushSpec`](#trustflushspec) | No | `{schedule: \"0 * * * *\", suspend: false}` (materialized by the defaulting webhook) | Trust flush CronJob configuration. Default-on: when the field is omitted, the defaulting webhook populates an hourly schedule so `keystone-manage trust_flush` runs by default; there is no nil-back path on a webhook-enabled cluster (a `kubectl patch ... 'spec/trustFlush'='null'` round-trips through admission and is re-materialized). To pause without deleting the CronJob, set `suspend: true` — the resource and `TrustFlushReady=True` condition are preserved (CC-0057, CC-0096). |\n```\n</issue_to_address>\n~~~\n\n</details>\n\n***\n\n<details>\n<summary>Sourcery is free for open source - if you like our reviews please consider sharing them ✨</summary>\n\n- [X](https://twitter.com/intent/tweet?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [Mastodon](https://mastodon.social/share?text=I%20just%20got%20an%20instant%20code%20review%20from%20%40SourceryAI%2C%20and%20it%20was%20brilliant%21%20It%27s%20free%20for%20open%20source%20and%20has%20a%20free%20trial%20for%20private%20code.%20Check%20it%20out%20https%3A//sourcery.ai)\n- [LinkedIn](https://www.linkedin.com/sharing/share-offsite/?url=https://sourcery.ai)\n- [Facebook](https://www.facebook.com/sharer/sharer.php?u=https://sourcery.ai)\n\n</details>\n\n<sub>\nHelp me be more useful! Please click 👍 or 👎 on each comment and I'll use the feedback to improve your reviews.\n</sub>",
+  "code_comments": [
+    {
+      "body": "**suggestion (testing):** Consider also asserting the CronJob schedule remains unchanged when suspending\n\nTo better enforce the \"pause without changing cadence\" behavior, also assert that the CronJob’s `spec.schedule` remains equal to the original value (e.g. `0 * * * *`). This will help catch regressions where the reconciliation logic might accidentally change the schedule when toggling suspend.\n\nSuggested implementation:\n\n```golang\n\tcreatePrerequisites(t, ctx, c, ns.Name)\n\n\t// Assert that the trust flush CronJob schedule is preserved when suspending\n\tcronJob := &batchv1.CronJob{}\n\tg.Expect(c.Get(ctx, client.ObjectKey{\n\t\tNamespace: ns.Name,\n\t\t// NOTE: adjust this name if the CronJob resource is created with a different name\n\t\tName: \"trust-flush\",\n\t}, cronJob)).To(Succeed())\n\tg.Expect(cronJob.Spec.Schedule).To(Equal(\"0 * * * *\"))\n\n```\n\n1. Ensure the following imports are present at the top of `integration_test.go`:\n   - `batchv1 \"k8s.io/api/batch/v1\"`\n   - `sigs.k8s.io/controller-runtime/pkg/client`\n2. If the trust flush CronJob is created with a different name (e.g. including a prefix/suffix), update `\"trust-flush\"` in the `ObjectKey` to match the actual name or use the same naming helper used in the controller/tests.\n3. If this test already retrieves the CronJob later in the function, you may instead reuse that `CronJob` object and only add the `g.Expect(cronJob.Spec.Schedule).To(Equal(\"0 * * * *\"))` assertion next to the existing suspend-related assertions to avoid duplicate `Get` calls.",
+      "path": "operators/keystone/internal/controller/integration_test.go",
+      "line": 1711,
+      "author": "sourcery-ai[bot]",
+      "created_at": "2026-04-26T17:23:47Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "**suggestion (testing):** Assert CronJob spec reflects the webhook-defaulted TrustFlushSpec (schedule/suspend)\n\nTo better guard against regressions, also assert that `cronJob.Spec.Schedule` equals `ks.Spec.TrustFlush.Schedule` and that `cronJob.Spec.Suspend` is nil or `false`, so the CronJob configuration is explicitly tied to the defaulted spec rather than only its existence.",
+      "path": "operators/keystone/internal/controller/reconcile_trustflush_test.go",
+      "line": 627,
+      "author": "sourcery-ai[bot]",
+      "created_at": "2026-04-26T17:23:47Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "**suggestion (typo):** Use \"an hourly\" instead of \"a hourly\" for correct grammar.\n\nSince \"hourly\" begins with a vowel sound, the article should be \"an\". Please update the phrase to \"populates an hourly schedule\".\n\n```suggestion\n| `trustFlush` | [`*TrustFlushSpec`](#trustflushspec) | No | `{schedule: \"0 * * * *\", suspend: false}` (materialized by the defaulting webhook) | Trust flush CronJob configuration. Default-on: when the field is omitted, the defaulting webhook populates an hourly schedule so `keystone-manage trust_flush` runs by default; there is no nil-back path on a webhook-enabled cluster (a `kubectl patch ... 'spec/trustFlush'='null'` round-trips through admission and is re-materialized). To pause without deleting the CronJob, set `suspend: true` — the resource and `TrustFlushReady=True` condition are preserved (CC-0057, CC-0096). |\n```",
+      "path": "docs/reference/keystone-crd.md",
+      "line": 144,
+      "author": "sourcery-ai[bot]",
+      "created_at": "2026-04-26T17:23:47Z",
+      "id": null,
+      "resolution": ""
+    }
+  ],
+  "github_review_id": 4177211699
+}

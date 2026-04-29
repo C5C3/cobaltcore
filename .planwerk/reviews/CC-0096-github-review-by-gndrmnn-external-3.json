@@ -1,0 +1,55 @@
+{
+  "feature_id": "CC-0096",
+  "title": "GitHub Review by gndrmnn",
+  "summary": "The reviewer wants the backwards-compatibility comments removed from three locations (the two CRD YAMLs and `keystone_types.go:84`), since the project has no stable release and breaking changes are acceptable.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "gndrmnn",
+  "date": "2026-04-29T11:00:04Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 3,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "This project has never had a stable release yet. The definitions are fine to break. Nobody uses this productively yet. Remove the comment about backwards compatibility.",
+      "path": "operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml",
+      "line": 1008,
+      "author": "gndrmnn",
+      "created_at": "2026-04-29T10:18:21Z",
+      "id": null,
+      "resolution": "Removed the 'preserved for backwards compatibility with envtest fixtures... legacy bypass-only path' sentences from the trustFlush description block in operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml; the description now ends at 'set suspend: true.'"
+    },
+    {
+      "body": "This project has never had a stable release yet. The definitions are fine to break. Nobody uses this productively yet. Remove the comment about backwards compatibility.",
+      "path": "operators/keystone/helm/keystone-operator/crds/keystone.openstack.c5c3.io_keystones.yaml",
+      "line": 1011,
+      "author": "gndrmnn",
+      "created_at": "2026-04-29T10:18:29Z",
+      "id": null,
+      "resolution": "Removed the same backwards-compatibility sentences from the trustFlush description block in operators/keystone/helm/keystone-operator/crds/keystone.openstack.c5c3.io_keystones.yaml so the helm-shipped CRD matches the config/crd/bases copy."
+    },
+    {
+      "body": "This project has never had a stable release yet. The definitions are fine to break. Nobody uses this productively yet. Remove the comment about backwards compatibility.",
+      "path": "operators/keystone/api/v1alpha1/keystone_types.go",
+      "line": 84,
+      "author": "gndrmnn",
+      "created_at": "2026-04-29T10:59:56Z",
+      "id": null,
+      "resolution": "Removed the trailing backwards-compatibility sentences from the TrustFlush godoc on KeystoneSpec.TrustFlush in operators/keystone/api/v1alpha1/keystone_types.go; the comment now ends at 'set suspend: true.', which is the source of the regenerated CRD YAMLs."
+    }
+  ],
+  "resolution_summary": "Removed the trailing sentences about preserving the pointer shape 'for backwards compatibility with envtest fixtures' from the TrustFlush field's godoc in operators/keystone/api/v1alpha1/keystone_types.go. The two CRD YAMLs (config/crd/bases and helm/keystone-operator/crds) are generated from that godoc, so the same paragraph was regenerated/edited there as well, addressing all three review comments at once. No additional unrelated files were touched.",
+  "github_review_id": 4195979789
+}

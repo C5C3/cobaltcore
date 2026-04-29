@@ -1,0 +1,136 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the trust-flush default-on posture (CC-0096, REQ-007).
+# Verifies that when a Keystone CR OMITS spec.trustFlush, the defaulting webhook
+# materializes spec.trustFlush = {schedule: "0 * * * *", suspend: false} and the
+# reconciler creates the trust-flush CronJob with matching settings.
+# Companion suite to tests/e2e/keystone/trust-flush which exercises explicit
+# trustFlush configuration and the suspend: true pause path (REQ-006).
+#
+# REQ-001, REQ-007 (CC-0096)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-trust-flush-default
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR omitting spec.trustFlush ─────────────────
+  # CC-0096, REQ-001: the defaulting webhook must materialize spec.trustFlush
+  # on admission so the persisted CR carries the canonical hourly schedule.
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Wait for Ready=True ────────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-trust-flush-default
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Assert persisted spec.trustFlush was materialized by webhook
+  # CC-0096, REQ-001/REQ-007: read-back must show the canonical defaults.
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-trust-flush-default
+            namespace: openstack
+          spec:
+            trustFlush:
+              schedule: "0 * * * *"
+              suspend: false
+  # ── Step 4: Assert CronJob created with materialized schedule ──────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: keystone-trust-flush-default-trust-flush
+            namespace: openstack
+          spec:
+            schedule: "0 * * * *"
+            suspend: false
+  # ── Step 5: Assert TrustFlushReady=True with reason TrustFlushReady ────
+  # CC-0096, REQ-007: defaulted CRs traverse the standard reconcile path; the
+  # legacy TrustFlushNotRequired bypass reason MUST NOT appear here.
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-trust-flush-default
+            namespace: openstack
+          status:
+            (conditions[?type == 'TrustFlushReady']):
+            - status: "True"
+              reason: TrustFlushReady
+  # ── Step 6: Trigger manual trust flush and verify job completes ────────
+  - try:
+    - script:
+        timeout: 180s
+        content: |
+          set -eu
+          kubectl create job keystone-trust-flush-default-manual-flush \
+            --from=cronjob/keystone-trust-flush-default-trust-flush -n openstack
+          kubectl wait --for=condition=complete \
+            job/keystone-trust-flush-default-manual-flush -n openstack --timeout=120s
+          echo "OK: Trust flush job completed successfully"
+    catch:
+    - script:
+        content: |
+          echo "=== Trust flush Job pods ==="
+          kubectl get pods -n $NAMESPACE -l job-name=keystone-trust-flush-default-manual-flush -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name=keystone-trust-flush-default-manual-flush -o name 2>/dev/null); do
+            echo "--- $pod logs ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 2>&1 || true
+            echo "--- $pod previous logs ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 --previous 2>&1 || true
+            echo "--- $pod describe ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -20 || true
+  # ── Step 7: Assert Ready=True maintained after manual flush ────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-trust-flush-default
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
