@@ -1,15 +1,14 @@
 ---
 title: Chaos E2E Test Suites
 quadrant: operator
-feature: CC-0047, CC-0048, CC-0049, CC-0054, CC-0066
 ---
 
 # Chaos E2E Test Suites
 
-Reference documentation for the chaos E2E test suites (CC-0047, CC-0048, CC-0049, CC-0066). These
+Reference documentation for the chaos E2E test suites. These
 tests verify that OpenStack operators correctly detect infrastructure dependency failures
-via status conditions and recover autonomously when dependencies return. Phase 2 (CC-0048)
-extends the suite with operator resilience and workload chaos scenarios. Phase 3 (CC-0066)
+via status conditions and recover autonomously when dependencies return. Phase 2
+extends the suite with operator resilience and workload chaos scenarios. Phase 3
 adds operator pod kill with leader re-election and post-failover reconciliation verification.
 
 For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md).
@@ -17,10 +16,10 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 ## Overview
 
 The 9 chaos test suites validate operator behavior during and after fault injection.
-Phase 1 (CC-0047) covers infrastructure dependency pod kills. Phase 2 (CC-0048) adds
+Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability guarantee
-scenarios. Phase 3 (CC-0066) adds an all-pod operator kill with leader re-election
-verification. Phase 4 (CC-0049) adds network chaos scenarios (partition and latency).
+scenarios. Phase 3 adds an all-pod operator kill with leader re-election
+verification. Phase 4 adds network chaos scenarios (partition and latency).
 Each suite deploys a Keystone CR, asserts a healthy baseline, injects a
 [Chaos Mesh](https://chaos-mesh.org/) `PodChaos` or `NetworkChaos` fault, asserts the expected degradation
 (or stability), removes the fault, and asserts full recovery. Tests use
@@ -30,7 +29,7 @@ Each suite deploys a Keystone CR, asserts a healthy baseline, injects a
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │  Chainsaw Chaos E2E Runner (parallel: 1)                                     │
 │                                                                              │
-│  Phase 1 (CC-0047): Dependency Pod Kill                                      │
+│  Phase 1: Dependency Pod Kill                                                │
 │  ┌──────────────────────┐  ┌──────────────────────┐  ┌────────────────────┐  │
 │  │ mariadb-pod-kill     │  │ memcached-pod-kill   │  │ openbao-pod-kill   │  │
 │  │ SC-CHAOS-001         │  │ SC-CHAOS-002         │  │ SC-CHAOS-003       │  │
@@ -41,7 +40,7 @@ Each suite deploys a Keystone CR, asserts a healthy baseline, injects a
 │  │                      │  │                      │  │ recovery           │  │
 │  └──────────────────────┘  └──────────────────────┘  └────────────────────┘  │
 │                                                                              │
-│  Phase 2 (CC-0048): Operator Resilience and Workload Chaos                   │
+│  Phase 2: Operator Resilience and Workload Chaos                             │
 │  ┌──────────────────────┐  ┌──────────────────────┐  ┌────────────────────┐  │
 │  │ operator-pod-crash   │  │ cronjob-rotation-    │  │ api-pod-kill-pdb   │  │
 │  │ SC-CHAOS-004         │  │ failure              │  │ SC-CHAOS-008       │  │
@@ -53,7 +52,7 @@ Each suite deploys a Keystone CR, asserts a healthy baseline, injects a
 │  │                      │  │ fault tolerance      │  │ guarantee          │  │
 │  └──────────────────────┘  └──────────────────────┘  └────────────────────┘  │
 │                                                                              │
-│  Phase 3 (CC-0066): Concurrent Conflicts and Failover                        │
+│  Phase 3: Concurrent Conflicts and Failover                                  │
 │  ┌──────────────────────┐                                                    │
 │  │ operator-pod-kill    │                                                    │
 │  │ SC-CHAOS-009         │                                                    │
@@ -64,7 +63,7 @@ Each suite deploys a Keystone CR, asserts a healthy baseline, injects a
 │  │ failover reconcile   │                                                    │
 │  └──────────────────────┘                                                    │
 │                                                                              │
-│  Phase 4 (CC-0049): Network Chaos                                            │
+│  Phase 4: Network Chaos                                                      │
 │  ┌──────────────────────┐  ┌──────────────────────┐                          │
 │  │ mariadb-network-     │  │ mariadb-network-     │                          │
 │  │ partition            │  │ latency              │                          │
@@ -88,7 +87,7 @@ Each suite deploys a Keystone CR, asserts a healthy baseline, injects a
 All 9 test suites require the infrastructure stack and Chaos Mesh to be deployed and
 healthy.
 
-::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first (CC-0097)
+::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
 Chaos Mesh is **opt-in** in the kind Quick Start — the default `make deploy-infra`
 flow leaves the `chaos-mesh` namespace absent. Run
 `WITH_CHAOS_MESH=true make deploy-infra` before `make e2e-chaos`, or `make e2e-chaos`
@@ -99,7 +98,7 @@ for the rationale.
 
 | Prerequisite | Details |
 | --- | --- |
-| Infrastructure stack | Deployed via `WITH_CHAOS_MESH=true make deploy-infra` (CC-0097 — opt-in path; see [Infrastructure E2E Deployment](../infrastructure/e2e-deployment.md)) |
+| Infrastructure stack | Deployed via `WITH_CHAOS_MESH=true make deploy-infra` (opt-in path; see [Infrastructure E2E Deployment](../infrastructure/e2e-deployment.md)) |
 | Chaos Mesh | Installed in `chaos-mesh` namespace by the kind-only opt-in overlay at `deploy/kind/chaos-mesh/` (or by `chaos-mesh/chaos-mesh-action` in CI) |
 | Keystone operator | Deployed to the cluster with CRDs installed |
 | ESO ExternalSecrets | `keystone-admin`, `keystone-db` synced in `openstack` namespace |
@@ -137,7 +136,7 @@ Individual test suites override the assert timeout to 5 minutes (`5m`) at the sp
 
 ## CI Trigger Policy
 
-Chaos tests run as a separate `e2e-chaos` GitHub Actions job in the CI workflow (CC-0054).
+Chaos tests run as a separate `e2e-chaos` GitHub Actions job in the CI workflow.
 The job is path-filtered and non-blocking while stability is being proven. See
 [CI Workflow — e2e-chaos](../ci-cd/ci-workflow.md#e2e-chaos) for full job documentation.
 
@@ -153,14 +152,14 @@ active regardless of which files were touched.
 | Event | Runs when |
 | --- | --- |
 | Push to `main` | Path filter matches or Go code changed (always on `v*` tags) |
-| Pull request | Path filter matches, Go code changed, **or `run-chaos` label present** (CC-0049 REQ-007) |
+| Pull request | Path filter matches, Go code changed, **or `run-chaos` label present** |
 
 **Dependencies:** The job depends on all gate jobs (`lint`, `shellcheck`, `test`,
 `test-integration`, `verify-codegen`). It only runs if no dependency failed or was
 cancelled.
 
 **Non-blocking (`continue-on-error: true`):** Chaos test failures are visible in the CI
-status but do not block merges or the publish pipeline (CC-0054 REQ-004). This is
+status but do not block merges or the publish pipeline. This is
 intentional while chaos test stability is being proven in CI. The setting will be revisited
 after 2–4 weeks of successful CI runs to consider making the job blocking.
 
@@ -169,17 +168,17 @@ assertion windows.
 
 ## Test Suite Inventory
 
-| Suite | Scenario ID | CR Name | Test Pattern | Condition Assertions | Requirements |
-| --- | --- | --- | --- | --- | --- |
-| [mariadb-pod-kill](#mariadb-pod-kill) | SC-CHAOS-001 | `keystone-chaos-db` | Degradation and recovery | `DatabaseReady=False` → `DatabaseReady=True`, `Ready=True` | REQ-003, REQ-004, REQ-008, REQ-009 |
-| [memcached-pod-kill](#memcached-pod-kill) | SC-CHAOS-002 | `keystone-chaos-mc` | No-regression | All 6 conditions remain `True` during outage | REQ-005, REQ-008, REQ-009 |
-| [openbao-pod-kill](#openbao-pod-kill) | SC-CHAOS-003 | `keystone-chaos-bao` | Degradation and recovery | `SecretsReady=False` → `SecretsReady=True`, `Ready=True` | REQ-006, REQ-007, REQ-008, REQ-009 |
-| [operator-pod-crash](#operator-pod-crash) | SC-CHAOS-004 | `keystone-chaos-op` | Operator self-recovery (no-regression) | Operator pod `Ready=false` → `Ready=true`, CR `Ready=True` maintained | REQ-001, REQ-005, REQ-006, REQ-008 (CC-0048) |
-| [cronjob-rotation-failure](#cronjob-rotation-failure) | SC-CHAOS-005 | `keystone-chaos-cron` | Workload fault tolerance | `FernetKeysReady=True` maintained, `Ready=True` maintained | REQ-002, REQ-006, REQ-008 (CC-0048) |
-| [mariadb-network-partition](#mariadb-network-partition) | SC-CHAOS-006 | `keystone-chaos-net-part` | Degradation and recovery (NetworkChaos) | `DatabaseReady=False` → `DatabaseReady=True`, `Ready=True` | REQ-001, REQ-002, REQ-008 (CC-0049) |
-| [mariadb-network-latency](#mariadb-network-latency) | SC-CHAOS-007 | `keystone-chaos-net-lat` | Latency tolerance (no-regression) | `Ready=True` maintained, operator `restartCount=0` | REQ-003, REQ-004, REQ-008 (CC-0049) |
-| [api-pod-kill-pdb](#api-pod-kill-pdb) | SC-CHAOS-008 | `keystone-chaos-api` | PDB availability guarantee | PDB `minAvailable: 1`, `DeploymentReady=True` maintained, `Ready=True` maintained | REQ-003, REQ-004, REQ-006, REQ-008 (CC-0048) |
-| [operator-pod-kill](#operator-pod-kill) | SC-CHAOS-009 | `keystone-chaos-opk` | Operator pod kill (all) with failover reconciliation | All 6 conditions `True` maintained, replica patch reconciled by new leader | REQ-005, REQ-006, REQ-007, REQ-008 (CC-0066) |
+| Suite | Scenario ID | CR Name | Test Pattern | Condition Assertions |
+| --- | --- | --- | --- | --- |
+| [mariadb-pod-kill](#mariadb-pod-kill) | SC-CHAOS-001 | `keystone-chaos-db` | Degradation and recovery | `DatabaseReady=False` → `DatabaseReady=True`, `Ready=True` |
+| [memcached-pod-kill](#memcached-pod-kill) | SC-CHAOS-002 | `keystone-chaos-mc` | No-regression | All 6 conditions remain `True` during outage |
+| [openbao-pod-kill](#openbao-pod-kill) | SC-CHAOS-003 | `keystone-chaos-bao` | Degradation and recovery | `SecretsReady=False` → `SecretsReady=True`, `Ready=True` |
+| [operator-pod-crash](#operator-pod-crash) | SC-CHAOS-004 | `keystone-chaos-op` | Operator self-recovery (no-regression) | Operator pod `Ready=false` → `Ready=true`, CR `Ready=True` maintained |
+| [cronjob-rotation-failure](#cronjob-rotation-failure) | SC-CHAOS-005 | `keystone-chaos-cron` | Workload fault tolerance | `FernetKeysReady=True` maintained, `Ready=True` maintained |
+| [mariadb-network-partition](#mariadb-network-partition) | SC-CHAOS-006 | `keystone-chaos-net-part` | Degradation and recovery (NetworkChaos) | `DatabaseReady=False` → `DatabaseReady=True`, `Ready=True` |
+| [mariadb-network-latency](#mariadb-network-latency) | SC-CHAOS-007 | `keystone-chaos-net-lat` | Latency tolerance (no-regression) | `Ready=True` maintained, operator `restartCount=0` |
+| [api-pod-kill-pdb](#api-pod-kill-pdb) | SC-CHAOS-008 | `keystone-chaos-api` | PDB availability guarantee | PDB `minAvailable: 1`, `DeploymentReady=True` maintained, `Ready=True` maintained |
+| [operator-pod-kill](#operator-pod-kill) | SC-CHAOS-009 | `keystone-chaos-opk` | Operator pod kill (all) with failover reconciliation | All 6 conditions `True` maintained, replica patch reconciled by new leader |
 
 ---
 
@@ -248,7 +247,7 @@ namespace events.
 `kubectl wait` with label selectors. The original `kubectl wait` approach raced with pod
 deletion — when Chaos Mesh deletes a pod, the watch errors with `NotFound` because it
 resolves the label selector once and watches the specific pod object rather than
-re-resolving onto the replacement pod (CC-0076, issue #214). Deployment-level polling
+re-resolving onto the replacement pod. Deployment-level polling
 watches the persistent Deployment object and is resilient to pod replacements, matching
 the pattern used by `operator-pod-crash` and `api-pod-kill-pdb`.
 
@@ -292,7 +291,7 @@ and namespace events.
 
 **File:** `tests/e2e-chaos/operator-pod-crash/chainsaw-test.yaml`
 
-**Scenario:** SC-CHAOS-004 (CC-0048)
+**Scenario:** SC-CHAOS-004
 
 **Purpose:** Validates that the Keystone operator self-recovers after its own pod is killed
 mid-reconcile. The Deployment controller restarts the operator pod, controller-runtime
@@ -329,7 +328,7 @@ for mitigation guidance if CI flakiness occurs.
 
 **File:** `tests/e2e-chaos/cronjob-rotation-failure/chainsaw-test.yaml`
 
-**Scenario:** SC-CHAOS-005 (CC-0048)
+**Scenario:** SC-CHAOS-005
 
 **Purpose:** Validates that the Keystone operator maintains `FernetKeysReady=True` and
 `Ready=True` when a manually triggered fernet rotation Job's pods are killed by PodChaos.
@@ -370,7 +369,7 @@ ensures every pod spawned by the targeted Job is affected.
 
 **File:** `tests/e2e-chaos/mariadb-network-partition/chainsaw-test.yaml`
 
-**Scenario:** SC-CHAOS-006 (CC-0049)
+**Scenario:** SC-CHAOS-006
 
 **Purpose:** Validates that the Keystone operator detects a MariaDB network partition
 (unidirectional traffic block from keystone to mariadb), transitions `DatabaseReady` to
@@ -412,7 +411,7 @@ mode (`baseline`/`chaos`) and `--dep-label=app.kubernetes.io/name=mariadb`.
 
 **File:** `tests/e2e-chaos/mariadb-network-latency/chainsaw-test.yaml`
 
-**Scenario:** SC-CHAOS-007 (CC-0049)
+**Scenario:** SC-CHAOS-007
 
 **Purpose:** Validates that the Keystone operator tolerates slow MariaDB responses (10s
 latency, 2s jitter) without crash-looping or losing Ready status, confirming adequate
@@ -442,7 +441,7 @@ appropriate mode (`baseline`/`chaos`) and `--dep-label=app.kubernetes.io/name=ma
   because latency should be tolerated by the operator's database client timeouts.
 - `duration: 180s` acts as a safety net for auto-expiry.
 - Step 4 uses `kubectl wait --for=condition=AllInjected` to confirm injection is active
-  before checking operator stability, replacing a fixed sleep for determinism (CC-0049).
+  before checking operator stability, replacing a fixed sleep for determinism.
 - Restart count is checked by container name (`manager`) rather than by array index to
   avoid false negatives if container ordering changes.
 
@@ -452,7 +451,7 @@ appropriate mode (`baseline`/`chaos`) and `--dep-label=app.kubernetes.io/name=ma
 
 **File:** `tests/e2e-chaos/api-pod-kill-pdb/chainsaw-test.yaml`
 
-**Scenario:** SC-CHAOS-008 (CC-0048)
+**Scenario:** SC-CHAOS-008
 
 **Purpose:** Validates that the Keystone operator creates a PodDisruptionBudget with
 `minAvailable: 1` for Keystone API pods when `replicas > 1`, and that at least one API
@@ -471,9 +470,9 @@ PDB assertion step and a script-based availability check.
 | 1 | Apply Keystone CR (replicas: 3) | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-chaos-api` with database `keystone_chaos_api`, replicas: 3 |
 | 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady |
 | 3 | Assert PDB exists | `assert` (5m) | PDB `keystone-chaos-api` with `spec.minAvailable: 1` (apiVersion: `policy/v1`) |
-| 4 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml` — PodChaos `kill-keystone-api` targeting `app.kubernetes.io/name: keystone` AND `app.kubernetes.io/instance: keystone-chaos-api` in `openstack` (the PodChaos resource name retains its historical `kill-keystone-api` label as a chaos-test identifier; the chaos still targets the bare-name `keystone-chaos-api` Pods, since CC-0095) | <!-- CC-0095 legacy: chaos-test fixture identifier intentionally retained -->
+| 4 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml` — PodChaos `kill-keystone-api` targeting `app.kubernetes.io/name: keystone` AND `app.kubernetes.io/instance: keystone-chaos-api` in `openstack` (the PodChaos resource name retains its historical `kill-keystone-api` label as a chaos-test identifier; the chaos still targets the bare-name `keystone-chaos-api` Pods) |
 | 5 | Verify PDB enforcement and assert conditions | `script` (120s) + `assert` (5m) | Script polls until `readyReplicas < 3` (kill took effect), then asserts `availableReplicas >= 1`; Chainsaw asserts `DeploymentReady=True` and `Ready=True` with reason AllReady |
-| 6 | Delete PodChaos | `delete` | Removes PodChaos `kill-keystone-api` to clean up | <!-- CC-0095 legacy: chaos-test fixture identifier intentionally retained -->
+| 6 | Delete PodChaos | `delete` | Removes PodChaos `kill-keystone-api` to clean up |
 | 7 | Assert Ready=True after recovery | `assert` (5m) | Ready=True with reason AllReady — full replica count restored |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-podchaos.yaml`
@@ -486,7 +485,7 @@ Steps 5 and 7 catch with `diagnostics.sh chaos` using
 `wait` with a label selector waits for ALL matching pods, which does not work when the goal
 is to verify that NOT ALL pods are down. The script polls `readyReplicas < 3` (confirming
 the kill took effect) then asserts `availableReplicas >= 1`. The PDB name follows the
-naming convention `subResourceName(keystone)` = `{cr-name}` (bare CR name since CC-0095),
+naming convention `subResourceName(keystone)` = `{cr-name}` (bare CR name),
 so for CR `keystone-chaos-api`, the PDB is `keystone-chaos-api`.
 
 ---
@@ -495,7 +494,7 @@ so for CR `keystone-chaos-api`, the PDB is `keystone-chaos-api`.
 
 **File:** `tests/e2e-chaos/operator-pod-kill/chainsaw-test.yaml`
 
-**Scenario:** SC-CHAOS-009 (CC-0066)
+**Scenario:** SC-CHAOS-009
 
 **Purpose:** Validates that the Keystone operator recovers after ALL operator pods are killed
 simultaneously (`mode: all`), forcing the Deployment controller to restart every pod and
@@ -809,7 +808,7 @@ SC-CHAOS-005 additionally collects CronJob/Job-specific diagnostics in Steps 4 a
 
 ```text
 tests/e2e-chaos/
-├── chainsaw-config.yaml              Chaos-specific Chainsaw configuration (CC-0047)
+├── chainsaw-config.yaml              Chaos-specific Chainsaw configuration
 ├── diagnostics.sh                    Shared diagnostic collection script
 ├── README.md                         Quick-start documentation
 ├── mariadb-pod-kill/                 SC-CHAOS-001: MariaDB pod kill
@@ -824,27 +823,27 @@ tests/e2e-chaos/
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-bao)
 │   ├── 01-podchaos.yaml              PodChaos targeting openbao in openbao-system
 │   └── chainsaw-test.yaml            Test: SecretsReady=False → recovery
-├── operator-pod-crash/               SC-CHAOS-004: Operator self-recovery (CC-0048)
+├── operator-pod-crash/               SC-CHAOS-004: Operator self-recovery
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-op)
 │   ├── 01-podchaos.yaml              PodChaos targeting keystone-operator in openstack
 │   └── chainsaw-test.yaml            Test: Ready=True maintained after operator restart
-├── cronjob-rotation-failure/         SC-CHAOS-005: CronJob fault tolerance (CC-0048)
+├── cronjob-rotation-failure/         SC-CHAOS-005: CronJob fault tolerance
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-cron)
 │   ├── 01-podchaos.yaml              PodChaos pod-failure targeting job pods
 │   └── chainsaw-test.yaml            Test: FernetKeysReady=True maintained
-├── mariadb-network-partition/        SC-CHAOS-006: MariaDB network partition (CC-0049)
+├── mariadb-network-partition/        SC-CHAOS-006: MariaDB network partition
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-net-part)
 │   ├── 01-networkchaos.yaml          NetworkChaos partitioning keystone→mariadb traffic
 │   └── chainsaw-test.yaml            Test: DatabaseReady=False → recovery
-├── mariadb-network-latency/          SC-CHAOS-007: MariaDB network latency (CC-0049)
+├── mariadb-network-latency/          SC-CHAOS-007: MariaDB network latency
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-net-lat)
 │   ├── 01-networkchaos.yaml          NetworkChaos injecting 10s latency on keystone→mariadb
 │   └── chainsaw-test.yaml            Test: Ready=True maintained, no crash-loop
-├── api-pod-kill-pdb/                 SC-CHAOS-008: PDB availability guarantee (CC-0048)
+├── api-pod-kill-pdb/                 SC-CHAOS-008: PDB availability guarantee
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-api, replicas: 3)
 │   ├── 01-podchaos.yaml              PodChaos targeting keystone API pods (multi-label)
 │   └── chainsaw-test.yaml            Test: PDB minAvailable=1, availability maintained
-└── operator-pod-kill/                SC-CHAOS-009: Operator pod kill all + failover (CC-0066)
+└── operator-pod-kill/                SC-CHAOS-009: Operator pod kill all + failover
     ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-opk)
     ├── 01-podchaos.yaml              PodChaos targeting keystone-operator (mode: all)
     ├── 02-patch-replicas.yaml        Patch replicas 1→2 for post-failover reconciliation
@@ -861,8 +860,8 @@ tests/e2e-chaos/
 6. All files must include the `SPDX-License-Identifier: Apache-2.0` header
 
 ## Related Resources
-- [Keystone E2E Test Suites](./keystone-e2e-tests.md) — Happy-path E2E tests (CC-0016)
-- [Keystone Reconciler Architecture](../keystone/keystone-reconciler.md) — Sub-reconciler contracts and condition semantics (CC-0013, CC-0015)
-- [Infrastructure E2E Deployment](../infrastructure/e2e-deployment.md) — Infrastructure stack deployment (CC-0010)
+- [Keystone E2E Test Suites](./keystone-e2e-tests.md) — Happy-path E2E tests
+- [Keystone Reconciler Architecture](../keystone/keystone-reconciler.md) — Sub-reconciler contracts and condition semantics
+- [Infrastructure E2E Deployment](../infrastructure/e2e-deployment.md) — Infrastructure stack deployment
 - `tests/e2e-chaos/chainsaw-config.yaml` — Chaos-specific Chainsaw configuration
 - `tests/e2e-chaos/README.md` — Quick-start guide

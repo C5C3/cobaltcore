@@ -1,12 +1,11 @@
 ---
 title: OpenBao Bootstrap Procedure
 quadrant: infrastructure
-feature: CC-0009
 ---
 
 # OpenBao Bootstrap Procedure
 
-Reference documentation for the OpenBao deployment and bootstrap procedure (CC-0009).
+Reference documentation for the OpenBao deployment and bootstrap procedure.
 OpenBao is deployed as a 3-replica HA Raft cluster via FluxCD HelmRelease, then
 initialized and configured through a sequence of idempotent bootstrap scripts. The
 scripts provision secret engines, authentication backends, least-privilege policies, and
@@ -180,7 +179,7 @@ export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n openbao-system \
 > **Note:** For a kind-only walkthrough that uses the same `BAO_TOKEN` extraction to open
 > the OpenBao web UI, see
 > [Quick Start (Extended) — Step 4b: Open the OpenBao UI](../../quick-start-extended.md#step-4b-openbao-ui)
-> (CC-0082). The UI is disabled in the production flux-system overlay.
+>. The UI is disabled in the production flux-system overlay.
 
 ## Script Reference
 
@@ -559,7 +558,7 @@ Common causes:
 
 ## Related Resources
 
-- [Infrastructure Manifests](./infrastructure-manifests.md) — FluxCD base deployment (CC-0008)
+- [Infrastructure Manifests](./infrastructure-manifests.md) — FluxCD base deployment
 - `deploy/flux-system/releases/openbao.yaml` — OpenBao HelmRelease
 - `deploy/flux-system/infrastructure/openbao-tls-cert.yaml` — TLS Certificate
 - `deploy/eso/clustersecretstore.yaml` — ClusterSecretStore configuration

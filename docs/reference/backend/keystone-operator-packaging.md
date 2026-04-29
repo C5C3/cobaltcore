@@ -1,12 +1,11 @@
 ---
 title: Keystone Operator Packaging
 quadrant: backend
-feature: CC-0017
 ---
 
 # Keystone Operator Packaging
 
-Reference documentation for the Keystone operator packaging artifacts (CC-0017). This covers
+Reference documentation for the Keystone operator packaging artifacts. This covers
 the multi-stage Dockerfile, Helm chart configuration, FluxCD HelmRelease integration,
 dependency chain, and CRD installation behavior. These artifacts package the Keystone
 operator for deployment into Kubernetes clusters via the GitOps pipeline.
@@ -20,7 +19,7 @@ operators/keystone/
 │   └── keystone-operator/
 │       ├── Chart.yaml                  Helm chart metadata (v0.1.0)
 │       ├── values.yaml                 Default configuration values
-│       ├── values.schema.json          JSON Schema for values validation (CC-0069)
+│       ├── values.schema.json          JSON Schema for values validation
 │       ├── crds/
 │       │   └── keystone.openstack.c5c3.io_keystones.yaml   CRD (auto-installed by Helm)
 │       └── templates/

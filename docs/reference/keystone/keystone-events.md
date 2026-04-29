@@ -1,13 +1,11 @@
 ---
 title: Keystone Controller Events
 quadrant: operator
-feature: CC-0070
 ---
 
 # Keystone Controller Events
 
-Reference documentation for Kubernetes events emitted by the Keystone controller
-(CC-0070). The controller emits events on key lifecycle transitions to provide
+Reference documentation for Kubernetes events emitted by the Keystone controller. The controller emits events on key lifecycle transitions to provide
 observability via `kubectl describe keystone` and `kubectl get events` without
 requiring access to controller logs.
 

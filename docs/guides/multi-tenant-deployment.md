@@ -1,12 +1,11 @@
 ---
 title: Multi-Tenant Deployment
 quadrant: operator
-feature: CC-0043
 ---
 
 # Multi-Tenant Deployment
 
-Guide for deploying the Keystone operator in namespace-scoped mode (CC-0043).
+Guide for deploying the Keystone operator in namespace-scoped mode.
 In this mode the operator uses a `Role` / `RoleBinding` instead of
 `ClusterRole` / `ClusterRoleBinding` and restricts its cache, watches, and
 reconciliation to a single namespace.

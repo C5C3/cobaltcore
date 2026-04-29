@@ -226,7 +226,7 @@ openstack   keystone-db           (database credentials from OpenBao)
 ```
 :::
 
-::: tip Enabling Chaos Mesh (CC-0097)
+::: tip Enabling Chaos Mesh
 Chaos Mesh is **not installed by default** in the kind Quick Start. The default
 `make deploy-infra` flow leaves the `chaos-mesh` namespace absent so first-run
 deployments are faster and do not require the `chaos-daemon` privileged

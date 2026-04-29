@@ -1,19 +1,18 @@
 ---
 title: Tempest Test Infrastructure
 quadrant: infrastructure
-feature: CC-0035, CC-0051
 ---
 
 ::: v-pre
 
 # Tempest Test Infrastructure
 
-Reference documentation for the Tempest API test infrastructure (CC-0035, CC-0051). This
+Reference documentation for the Tempest API test infrastructure. This
 covers the Tempest container image, version management, per-service test configuration,
 the image verification script, local execution via `hack/run-tempest.sh`, the `make
 tempest-test` target, and CI integration in both `ci.yaml` and `build-images.yaml`.
-CC-0051 extended the infrastructure with multi-release support: the `tempest` job in
-`ci.yaml` now uses a release matrix to validate each OpenStack release independently,
+The infrastructure supports multiple releases: the `tempest` job in
+`ci.yaml` uses a release matrix to validate each OpenStack release independently,
 and `build-images.yaml` dynamically discovers releases for the Tempest image pipeline.
 
 ## File Locations
@@ -23,15 +22,15 @@ and `build-images.yaml` dynamically discovers releases for the Tempest image pip
 | `images/tempest/Dockerfile` | Two-stage Tempest container image (venv-builder → python-base) |
 | `releases/<release>/test-refs.yaml` | PyPI version pins for test tooling (single source of truth), per release |
 | `tests/tempest/keystone-2025-2/` | Keystone 2025.2 Tempest configuration (`tempest.conf`, `include-tests.txt`, `exclude-tests.txt`) |
-| `tests/tempest/keystone-2026-1/` | Keystone 2026.1 Tempest configuration (CC-0051) |
+| `tests/tempest/keystone-2026-1/` | Keystone 2026.1 Tempest configuration |
 | `tests/container-images/verify_tempest.sh` | Image verification script (PASS/FAIL counters) |
 | `hack/run-tempest.sh` | Local orchestration script for running Tempest against a kind cluster |
-| `hack/ci-run-tempest.sh` | CI-specific Tempest wrapper with port-forwarding and config generation (CC-0050) |
+| `hack/ci-run-tempest.sh` | CI-specific Tempest wrapper with port-forwarding and config generation |
 | `hack/tempest/extract-failed.py` | Print anchored regex patterns for failed testcases in a JUnit report (used to build the retry include-list) |
 | `hack/tempest/merge-retry-junit.py` | Merge a retry subunit stream into a JUnit report, rewriting resolved failures as flakes |
 | `hack/tempest/run-tests.sh` | Shared in-container runner invoked by both runners; holds the phase + retry + exit-code logic so it stays identical between CI and local runs |
 | `Makefile` | `tempest-test` target delegates to `hack/run-tempest.sh` |
-| `.github/workflows/ci.yaml` | `tempest` job with release matrix (CC-0051) |
+| `.github/workflows/ci.yaml` | `tempest` job with release matrix |
 | `.github/workflows/build-images.yaml` | `build-tempest` and `merge-tempest-image` jobs (release-parameterized via `generate-matrix`) |
 
 ## Architecture
@@ -118,7 +117,7 @@ in three ways: (1) it installs from PyPI instead of mounting a git source tree,
 
 - Copies `/var/lib/openstack` virtualenv from the build stage via `COPY --from=build --link`
 - Sets static OCI labels (title, description, licenses, vendor) following the
-  two-layer annotation pattern (CC-0031)
+  two-layer annotation pattern
 - Runs as `openstack` user (UID 42424, GID 42424)
 
 **Final image properties:**
@@ -423,12 +422,12 @@ Omitting `SERVICE` produces an error message:
 
 ### ci.yaml — tempest Job
 
-The `tempest` job (CC-0050, CC-0051) is a dedicated job that deploys services into a kind
-cluster and runs the OpenStack Tempest test suite. CC-0051 added a release matrix so each
-OpenStack release is validated independently with its own Tempest configuration, Keystone
+The `tempest` job is a dedicated job that deploys services into a kind
+cluster and runs the OpenStack Tempest test suite. A release matrix lets each
+OpenStack release be validated independently with its own Tempest configuration, Keystone
 CR, and K8s service name.
 
-**Release matrix (CC-0051):**
+**Release matrix:**
 
 | Release | Config directory | CR name | K8s service name |
 | --- | --- | --- | --- |
@@ -461,7 +460,7 @@ CR, and K8s service name.
 ### build-images.yaml — build-tempest Job
 
 Builds the Tempest container image per release and per platform, runs verification on PRs,
-and pushes by digest on push events. CC-0051 parameterized this job by release via the
+and pushes by digest on push events. The job is parameterized by release via the
 `generate-matrix` job, which discovers all releases from `releases/*/` directories.
 
 **Dependencies:** `needs: [lint-dockerfiles, merge-base-images, verify-base-images, generate-matrix]`
@@ -473,11 +472,11 @@ and pushes by digest on push events. CC-0051 parameterized this job by release v
 | Step | Condition | Description |
 | --- | --- | --- |
 | Resolve Tempest versions | Always | Reads `releases/<release>/test-refs.yaml` via `yq` |
-| Generate metadata | Always | OCI labels via `docker/metadata-action` (CC-0031) |
+| Generate metadata | Always | OCI labels via `docker/metadata-action` |
 | Build Tempest image | PR: amd64 only; push: both platforms | `docker/build-push-action` with named build contexts, `upper-constraints` from `releases/<release>/` |
 | Export digest | Push only | Writes digest to `/tmp/digests/` for merge job |
 | Upload digest artifact | Push only | `digests-tempest-<release>-<platform-pair>`, 1-day retention |
-| Scan for vulnerabilities | PR, amd64 only | Grype scan against loaded image (CC-0032) |
+| Scan for vulnerabilities | PR, amd64 only | Grype scan against loaded image |
 | Upload SARIF | PR, if scan produced output | GitHub Security tab under `grype-tempest-<release>-<platform>` |
 | Verify Tempest image | PR, amd64 only | Runs `verify_tempest.sh` against the built image |
 
@@ -493,7 +492,7 @@ and pushes by digest on push events. CC-0051 parameterized this job by release v
 ### build-images.yaml — merge-tempest-image Job
 
 Assembles per-platform digests into a multi-arch manifest list with full supply chain
-security. CC-0051 parameterized this job by release via the `generate-matrix` job.
+security. The job is parameterized by release via the `generate-matrix` job.
 
 **Dependencies:** `needs: [build-tempest, generate-matrix]`
 **Condition:** `if: github.event_name != 'pull_request'`
@@ -505,9 +504,9 @@ security. CC-0051 parameterized this job by release via the `generate-matrix` jo
 | --- | --- |
 | `contents: read` | Repository checkout |
 | `packages: write` | Push manifest list to GHCR |
-| `id-token: write` | Sigstore OIDC signing for cosign and build provenance (CC-0030) |
-| `attestations: write` | GitHub Attestations API (CC-0029) |
-| `security-events: write` | SARIF upload to GitHub Security tab (CC-0032) |
+| `id-token: write` | Sigstore OIDC signing for cosign and build provenance |
+| `attestations: write` | GitHub Attestations API |
+| `security-events: write` | SARIF upload to GitHub Security tab |
 
 **Image tags applied:**
 
@@ -538,8 +537,7 @@ strategy:
       - images/python-base/Dockerfile
       - images/venv-builder/Dockerfile
       - images/keystone/Dockerfile
-      - images/tempest/Dockerfile      # CC-0035
-      - operators/keystone/Dockerfile
+      - images/tempest/Dockerfile
 ```
 
 Hadolint runs with `failure-threshold: warning` and the project's `.hadolint.yaml`
@@ -596,14 +594,14 @@ releases/<release>/test-refs.yaml ──yq──▶ TEMPEST_VERSION + KEYSTONE_T
 
 ## Dependencies on Prior Features
 
-| Feature | Artifact | Used by Tempest infrastructure |
-| --- | --- | --- |
-| CC-0006 | `images/python-base/Dockerfile`, `images/venv-builder/Dockerfile` | Base images for the Tempest Dockerfile build chain |
-| CC-0006 | `releases/<release>/upper-constraints.txt` | Dependency constraints for PyPI installs |
-| CC-0028 | `tests/lib/assertions.sh` | Assertion helpers sourced by `verify_tempest.sh` |
-| CC-0029 | SBOM attestation pattern in `build-images.yaml` | Reused by `merge-tempest-image` for Tempest SBOM |
-| CC-0030 | Cosign signing pattern in `build-images.yaml` | Reused by `merge-tempest-image` for Tempest signing |
-| CC-0031 | Two-layer OCI annotation pattern | Static Dockerfile labels + CI metadata-action |
-| CC-0032 | Grype scanning pattern in `build-images.yaml` | Reused by `build-tempest` and `merge-tempest-image` |
+| Artifact | Used by Tempest infrastructure |
+| --- | --- |
+| `images/python-base/Dockerfile`, `images/venv-builder/Dockerfile` | Base images for the Tempest Dockerfile build chain |
+| `releases/<release>/upper-constraints.txt` | Dependency constraints for PyPI installs |
+| `tests/lib/assertions.sh` | Assertion helpers sourced by `verify_tempest.sh` |
+| SBOM attestation pattern in `build-images.yaml` | Reused by `merge-tempest-image` for Tempest SBOM |
+| Cosign signing pattern in `build-images.yaml` | Reused by `merge-tempest-image` for Tempest signing |
+| Two-layer OCI annotation pattern | Static Dockerfile labels + CI metadata-action |
+| Grype scanning pattern in `build-images.yaml` | Reused by `build-tempest` and `merge-tempest-image` |
 
 :::

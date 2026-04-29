@@ -1,12 +1,11 @@
 ---
 title: Keystone Schema Drift Detection
 quadrant: operator
-feature: CC-0064
 ---
 
 # Keystone Schema Drift Detection
 
-Reference documentation for the Keystone schema drift detection feature (CC-0064).
+Reference documentation for the Keystone schema drift detection feature.
 After the `db_sync` Job completes successfully, the operator runs a read-only
 schema-check Job that verifies the database schema matches the expected Alembic
 migration head. This detects drift caused by manual DDL changes, partial migration
@@ -55,7 +54,7 @@ reconcileDatabase()
   |     +-- running --> DatabaseReady=False/DBSyncInProgress, requeue 30s
   |     +-- done    --> proceed to schema check
   |
-  +-- schema-check Job (CC-0064)
+  +-- schema-check Job
   |     |
   |     +-- failed  --> DatabaseReady=False/SchemaDriftDetected, return error
   |     +-- running --> DatabaseReady=False/SchemaCheckInProgress, requeue 30s
@@ -184,7 +183,7 @@ All conditions include `ObservedGeneration` set to `keystone.Generation`.
 ## Interaction with Upgrade Flow
 
 The schema-check Job runs only on the **non-upgrade** (simple `db_sync`) path. The
-expand-migrate-contract upgrade flow (CC-0056) has its own validation through Alembic's
+expand-migrate-contract upgrade flow has its own validation through Alembic's
 `_validate_upgrade_order` check, which ensures expand, migrate, and contract steps
 execute in the correct order.
 
@@ -313,7 +312,7 @@ period.
    built-in validation.
 
 3. **No resource limits on schema-check Jobs.** The schema-check Job inherits no
-   resource requests/limits (BestEffort QoS). This is tracked under CC-0042.
+   resource requests/limits (BestEffort QoS).
 
 4. **Transient connectivity failures.** The `backoffLimit: 2` provides limited retry
    for transient database connectivity issues. If the database is temporarily

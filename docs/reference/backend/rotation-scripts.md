@@ -1,7 +1,6 @@
 ---
 title: Rotation Scripts
 quadrant: backend
-feature: CC-0073
 ---
 
 # Rotation Scripts
@@ -30,8 +29,8 @@ see the sub-reconciler sections in
 ```text
 operators/keystone/internal/controller/
 ├── scripts/
-│   ├── fernet_rotate.sh          # Fernet key rotation (CC-0073)
-│   └── credential_rotate.sh      # Credential key rotation (CC-0073)
+│   ├── fernet_rotate.sh          # Fernet key rotation
+│   └── credential_rotate.sh      # Credential key rotation
 ├── reconcile_fernet.go           # go:embed + ConfigMap creation
 └── reconcile_credential.go       # go:embed + ConfigMap creation
 ```

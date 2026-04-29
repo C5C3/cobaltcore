@@ -1,16 +1,14 @@
 ---
 title: Keystone Operator NetworkPolicy
 quadrant: operator
-feature: CC-0090
 ---
 
 # Keystone Operator NetworkPolicy
 
 Reference documentation for the chart-level NetworkPolicy that restricts the
-egress and ingress of the keystone-operator pod itself (CC-0090). This is
+egress and ingress of the keystone-operator pod itself. This is
 distinct from the per-CR NetworkPolicy emitted by
-[`reconcileNetworkPolicy`](./keystone-reconciler.md#sub-reconciler-contracts)
-(CC-0039), which protects Keystone API pods rendered *from* a `Keystone` CR.
+[`reconcileNetworkPolicy`](./keystone-reconciler.md#sub-reconciler-contracts), which protects Keystone API pods rendered *from* a `Keystone` CR.
 
 - **Scope:** the operator Deployment pod selected by
   `keystone-operator.selectorLabels`.
@@ -36,7 +34,7 @@ When `networkPolicy.enabled=true`, the chart renders one `networking.k8s.io/v1`
    ingress on the metrics port from the listed peers (opt-in).
 
 Two failure modes are explicitly refused by the template at render time
-(fail-closed — REQ-006): an empty `kubeApiServer.cidrs` or an empty
+(fail-closed): an empty `kubeApiServer.cidrs` or an empty
 `kubeApiServer.ports` list while `enabled=true`. Either condition triggers
 `{{ fail }}` rather than rendering a NetworkPolicy that would block all
 controller traffic or open every port.
@@ -77,7 +75,7 @@ All rules below are emitted on a single `NetworkPolicy` object named after
 > `egress` entry with all CIDRs under `to:` and all ports under `ports:`. By
 > NetworkPolicy semantics this permits every (cidr, port) combination — one
 > rule with three CIDRs and two ports covers six tuples. Do not expand the
-> list into one rule per tuple (REQ-004).
+> list into one rule per tuple.
 
 ### Ingress
 
@@ -96,7 +94,7 @@ is not subject to `NetworkPolicy` in the standard CNIs
 — see the upstream
 [Kubernetes NetworkPolicy "what you can't do" list](https://kubernetes.io/docs/concepts/services-networking/network-policies/#what-you-can-t-do-with-network-policies-at-least-not-yet).
 Therefore the template renders **no ingress rule for 8081**, and adding one
-is unnecessary (REQ-009). Probes continue to work with the default-deny
+is unnecessary. Probes continue to work with the default-deny
 ingress posture.
 
 ## Values snippet: kind cluster
@@ -117,8 +115,7 @@ networkPolicy:
 ```
 
 This same snippet is the fixture used by the chart-level E2E test at
-`tests/e2e/keystone-operator/network-policy-egress/00-install-operator.yaml`
-(CC-0090, REQ-010) and is the minimum viable configuration on kind.
+`tests/e2e/keystone-operator/network-policy-egress/00-install-operator.yaml` and is the minimum viable configuration on kind.
 
 ### Production example
 
@@ -148,7 +145,7 @@ networkPolicy:
           app.kubernetes.io/name: prometheus
 ```
 
-## Fail-closed guards (REQ-006)
+## Fail-closed guards
 
 The template mirrors the defensive guard convention from the per-CR
 NetworkPolicy sub-reconciler
@@ -160,14 +157,12 @@ or `kubeApiServer.ports` is empty, Helm render aborts with one of:
 Error: execution error at (keystone-operator/templates/networkpolicy.yaml):
 networkPolicy.kubeApiServer.cidrs must not be empty when networkPolicy.enabled=true:
 refusing to render a NetworkPolicy that would block all kube-apiserver egress
-(CC-0090, REQ-006)
 ```
 
 ```
 Error: execution error at (keystone-operator/templates/networkpolicy.yaml):
 networkPolicy.kubeApiServer.ports must not be empty when networkPolicy.enabled=true:
 refusing to render a NetworkPolicy that would open all ports to kube-apiserver
-(CC-0090, REQ-006)
 ```
 
 The JSON schema (`values.schema.json`) also enforces `minItems: 1` on both
@@ -179,9 +174,9 @@ defense-in-depth backstop that catches that case.
 
 | File | Scope |
 | --- | --- |
-| `operators/keystone/helm/keystone-operator/tests/networkpolicy_test.yaml` | helm-unittest suite: default-off, enabled-on, DNS rule, kube-apiserver rule, webhook ingress, metrics ingress, no 8081 rule, fail-closed guards (CC-0090, REQ-001..REQ-009) |
-| `operators/keystone/helm/keystone-operator/tests/schema_validation_test.yaml` | Schema tests for `networkPolicy` (invalid CIDR, out-of-range port, non-boolean `enabled`) (CC-0090, REQ-005) |
-| `tests/e2e/keystone-operator/network-policy-egress/chainsaw-test.yaml` | Chainsaw E2E: operator installed with `networkPolicy.enabled=true` on kind still reconciles a minimal Keystone CR to `Ready=True` (CC-0090, REQ-010) |
+| `operators/keystone/helm/keystone-operator/tests/networkpolicy_test.yaml` | helm-unittest suite: default-off, enabled-on, DNS rule, kube-apiserver rule, webhook ingress, metrics ingress, no 8081 rule, fail-closed guards |
+| `operators/keystone/helm/keystone-operator/tests/schema_validation_test.yaml` | Schema tests for `networkPolicy` (invalid CIDR, out-of-range port, non-boolean `enabled`) |
+| `tests/e2e/keystone-operator/network-policy-egress/chainsaw-test.yaml` | Chainsaw E2E: operator installed with `networkPolicy.enabled=true` on kind still reconciles a minimal Keystone CR to `Ready=True` |
 
 Run the helm-unittest suite locally with:
 
@@ -197,7 +192,7 @@ helm unittest operators/keystone/helm/keystone-operator \
 - [Keystone Reconciler Architecture](./keystone-reconciler.md) —
   including the per-CR
   [`reconcileNetworkPolicy`](./keystone-reconciler.md#sub-reconciler-contracts)
-  sub-reconciler (CC-0039), which protects Keystone API pods (not the
+  sub-reconciler, which protects Keystone API pods (not the
   operator itself).
 - Upstream:
   [Kubernetes NetworkPolicy concepts](https://kubernetes.io/docs/concepts/services-networking/network-policies/).

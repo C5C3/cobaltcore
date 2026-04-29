@@ -1,20 +1,19 @@
 ---
 title: Enable the Keystone Operator NetworkPolicy
 quadrant: operator
-feature: CC-0090
 ---
 
 # How-to: Enable the Keystone Operator NetworkPolicy
 
 This guide walks an operator through opting in to the chart-level
 NetworkPolicy that restricts the keystone-operator pod's egress and ingress
-to the minimum required for correct reconciliation (CC-0090). For the
+to the minimum required for correct reconciliation. For the
 authoritative rule table, failure modes, and schema contract, see
 [Keystone Operator NetworkPolicy](../reference/keystone/keystone-operator-networkpolicy.md).
 
 > **Scope.** This guide covers the NetworkPolicy that protects the
 > **operator pod itself**. For the per-CR NetworkPolicy that protects
-> Keystone API pods (CC-0039), see the
+> Keystone API pods, see the
 > [reconcileNetworkPolicy sub-reconciler](../reference/keystone/keystone-reconciler.md#sub-reconciler-contracts).
 
 ---
@@ -283,7 +282,7 @@ networkPolicy.kubeApiServer.cidrs must not be empty ...
 ```
 
 **Diagnosis:** you set `networkPolicy.enabled=true` but left `cidrs` or
-`ports` empty. This is the fail-closed guard (CC-0090, REQ-006) — the
+`ports` empty. This is the fail-closed guard — the
 template refuses to render a policy that would break the operator.
 
 **Fix:** populate both lists from step 1 and re-run the upgrade.
@@ -315,8 +314,8 @@ without a pod restart.
 ## See also
 
 - [Keystone Operator NetworkPolicy](../reference/keystone/keystone-operator-networkpolicy.md) —
-  authoritative rule table and schema contract (CC-0090).
+  authoritative rule table and schema contract.
 - [Keystone Reconciler Architecture](../reference/keystone/keystone-reconciler.md) —
-  the CR-scoped `reconcileNetworkPolicy` sub-reconciler (CC-0039) for the
+  the CR-scoped `reconcileNetworkPolicy` sub-reconciler for the
   Keystone API pod NetworkPolicy (different scope from this guide).
 - [Kubernetes NetworkPolicy concepts](https://kubernetes.io/docs/concepts/services-networking/network-policies/).

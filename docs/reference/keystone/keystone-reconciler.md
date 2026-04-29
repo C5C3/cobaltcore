@@ -1,13 +1,11 @@
 ---
 title: Keystone Reconciler Architecture
 quadrant: operator
-feature: CC-0013, CC-0015, CC-0038, CC-0057, CC-0058, CC-0064, CC-0065, CC-0067, CC-0068, CC-0071, CC-0072, CC-0073, CC-0074, CC-0077, CC-0078, CC-0079, CC-0080, CC-0081, CC-0087, CC-0095
 ---
 
 # Keystone Reconciler Architecture
 
-Reference documentation for the KeystoneReconciler and its sub-reconciler contracts
-(CC-0013). The KeystoneReconciler implements the control loop that drives a Keystone
+Reference documentation for the KeystoneReconciler and its sub-reconciler contracts. The KeystoneReconciler implements the control loop that drives a Keystone
 CR from desired state to a fully operational Keystone Identity Service deployment.
 
 For CRD type definitions and webhooks, see
@@ -18,7 +16,7 @@ used by sub-reconcilers, see
 For the NetworkPolicy that hardens the **keystone-operator pod itself**
 (distinct from the per-CR NetworkPolicy emitted by
 [`reconcileNetworkPolicy`](#sub-reconciler-contracts) below), see
-[Keystone Operator NetworkPolicy](./keystone-operator-networkpolicy.md) (CC-0090).
+[Keystone Operator NetworkPolicy](./keystone-operator-networkpolicy.md).
 
 ## Controller Registration
 
@@ -74,28 +72,27 @@ The controller watches the primary Keystone CR and all owned resources:
 | `HorizontalPodAutoscaler` | `Owns()` | Triggers reconciliation when owned HPA changes |
 | `CronJob` | `Owns()` | Triggers reconciliation when owned CronJob changes |
 | `HTTPRoute` | `Owns()` (optional) | Registered only when the `gateway.networking.k8s.io/v1` CRD is installed; detected at startup via the manager's `RESTMapper`. Triggers reconciliation when owned HTTPRoute changes (only created when `spec.gateway` is set). |
-| `Secret` | `Watches()` | Maps Secret events to referencing Keystone CRs via the `KeystoneSecretNameIndexKey` field indexer, with an owner-ref fallback for rotation staging Secrets (CC-0087) |
-| `MariaDB` | `Watches()` | Propagates upstream DB cluster health into `DatabaseReady` (CC-0047) |
-| `ClusterSecretStore` | `Watches()` | Propagates OpenBao-backend health into `SecretsReady` (CC-0047) |
-| `PushSecret` | `Watches()` | Maps backup PushSecret events to the owning Keystone CR via `pushSecretToKeystoneMapper` (name-match against `openBaoBackupPushSecretNames`). A predicate admits only the transitions that affect the [OpenBao Finalizer](#openbao-finalizer) state machine — `esoPushSecretFinalizer` set churn, `DeletionTimestamp` flip, or `Generation` bump — and suppresses ESO's status-only re-emits. Replaces the prior `Owns(PushSecret)` wiring (CC-0092). |
+| `Secret` | `Watches()` | Maps Secret events to referencing Keystone CRs via the `KeystoneSecretNameIndexKey` field indexer, with an owner-ref fallback for rotation staging Secrets |
+| `MariaDB` | `Watches()` | Propagates upstream DB cluster health into `DatabaseReady` |
+| `ClusterSecretStore` | `Watches()` | Propagates OpenBao-backend health into `SecretsReady` |
+| `PushSecret` | `Watches()` | Maps backup PushSecret events to the owning Keystone CR via `pushSecretToKeystoneMapper` (name-match against `openBaoBackupPushSecretNames`). A predicate admits only the transitions that affect the [OpenBao Finalizer](#openbao-finalizer) state machine — `esoPushSecretFinalizer` set churn, `DeletionTimestamp` flip, or `Generation` bump — and suppresses ESO's status-only re-emits. Replaces the prior `Owns(PushSecret)` wiring. |
 
 Secrets use `Watches()` with a `MapFunc` instead of `Owns()` because some Secrets
 (ESO-provided credentials in `spec.database.secretRef` and
 `spec.bootstrap.adminPasswordSecretRef`) are owned by the ExternalSecret controller,
 not by the Keystone CR, so an owner-reference filter would never match them. The
 mapper therefore combines an indexed reverse lookup with an owner-ref fallback for
-rotation staging Secrets — see [Secret Field Indexer](#secret-field-indexer-cc-0087)
+rotation staging Secrets — see [Secret Field Indexer](#secret-field-indexer)
 below. The `MariaDB` and `ClusterSecretStore` watches exist so the operator reacts
 immediately to upstream dependency outages without waiting for the next periodic
-requeue (CC-0047). The `PushSecret` watch plays the same role for the
+requeue. The `PushSecret` watch plays the same role for the
 OpenBao-backup finalizer loop: without it the finalizer would requeue at the
 `RequeueSecretPolling` (15s) cadence between each `esoPushSecretFinalizer`
-adoption check (Pass-0, CC-0091) and each `DeletionTimestamp` check (Pass-1,
-CC-0079); with it, each stage transition wakes on watch delivery instead
-(CC-0092) — see [PushSecret Name-Match Mapper](#pushsecret-name-match-mapper-cc-0092)
+adoption check (Pass-0) and each `DeletionTimestamp` check (Pass-1);
+with it, each stage transition wakes on watch delivery instead — see [PushSecret Name-Match Mapper](#pushsecret-name-match-mapper)
 below.
 
-#### Secret Field Indexer (CC-0087)
+#### Secret Field Indexer
 
 The Keystone controller registers a controller-runtime field indexer on the
 `Keystone` kind so that a Secret event is resolved to the referencing Keystone
@@ -103,15 +100,15 @@ CR(s) via an O(1) cache lookup instead of an unfiltered namespace-scoped List.
 Without the indexer, every Secret create/update/delete event in a namespace
 containing ESO-managed Secrets would force the mapper to List every Keystone CR
 in that namespace — producing API server load that scales linearly with the
-number of Secret events, not with the number of Keystone CRs (CC-0087, REQ-001).
+number of Secret events, not with the number of Keystone CRs.
 
 | Aspect | Value |
 | --- | --- |
 | Index key | `KeystoneSecretNameIndexKey = "spec.secretRefs.name"` (exported package-level constant in `operators/keystone/internal/controller/keystone_controller.go`) |
 | Indexed fields | `spec.database.secretRef.name` **and** `spec.bootstrap.adminPasswordSecretRef.name` — the deduplicated union of both is emitted by the extractor; empty strings are skipped so unset optional fields do not pollute the index. |
-| Registration site | `SetupWithManager` → `registerSecretNameIndex(ctx, mgr.GetFieldIndexer())`, invoked **before** the `Watches(Secret, …)` chain. Any error from `IndexField` is wrapped with the index key and propagated, so manager startup aborts loudly if registration fails (REQ-006). |
+| Registration site | `SetupWithManager` → `registerSecretNameIndex(ctx, mgr.GetFieldIndexer())`, invoked **before** the `Watches(Secret, …)` chain. Any error from `IndexField` is wrapped with the index key and propagated, so manager startup aborts loudly if registration fails. |
 | Lookup site | `secretToKeystoneMapper(mgr.GetClient())` — performs a namespace-scoped `client.List` with `client.MatchingFields{KeystoneSecretNameIndexKey: secret.Name}`. On List error, the error is logged and swallowed (the `handler.MapFunc` contract forbids returning errors) so the owner-ref fallback still runs. |
-| Owner-ref fallback | For each `ownerReference` on the Secret where `Kind == "Keystone"` and the parsed group of `APIVersion` equals `keystonev1alpha1.GroupVersion.Group` (`keystone.openstack.c5c3.io`, any version), the mapper enqueues `{Namespace: secret.Namespace, Name: ownerRef.Name}`. A cached `Get` against the informer cache drops owner-refs whose target Keystone no longer exists (stale or spurious refs); any non-`NotFound` error falls through and enqueues anyway so a transient cache blip cannot swallow a legitimate event. Group-only matching means existing Secrets continue to resolve after a future API version bump (CC-0087 review #1). This preserves the enqueue path for rotation staging Secrets (`{name}-fernet-keys-rotation`, `{name}-credential-keys-rotation`; see [Key Rotation RBAC Split](#key-rotation-rbac-split-cc-0081)) which are owned by the Keystone CR but not referenced by name from the spec (CC-0081). |
+| Owner-ref fallback | For each `ownerReference` on the Secret where `Kind == "Keystone"` and the parsed group of `APIVersion` equals `keystonev1alpha1.GroupVersion.Group` (`keystone.openstack.c5c3.io`, any version), the mapper enqueues `{Namespace: secret.Namespace, Name: ownerRef.Name}`. A cached `Get` against the informer cache drops owner-refs whose target Keystone no longer exists (stale or spurious refs); any non-`NotFound` error falls through and enqueues anyway so a transient cache blip cannot swallow a legitimate event. Group-only matching means existing Secrets continue to resolve after a future API version bump. This preserves the enqueue path for rotation staging Secrets (`{name}-fernet-keys-rotation`, `{name}-credential-keys-rotation`; see [Key Rotation RBAC Split](#key-rotation-rbac-split)) which are owned by the Keystone CR but not referenced by name from the spec. |
 | Deduplication | The indexed-lookup and owner-ref paths are unioned by `types.NamespacedName` before returning, so a Secret that is both name-referenced and owner-referenced to the same Keystone yields exactly one `reconcile.Request`. |
 
 **Adding new Secret references.** When a future change introduces another
@@ -120,13 +117,13 @@ emit that field's name alongside the existing two, and add a corresponding
 unit-test case. The index key itself (`spec.secretRefs.name`) is intentionally
 named as a union key so new indexed fields do not require a new indexer.
 
-#### PushSecret Name-Match Mapper (CC-0092)
+#### PushSecret Name-Match Mapper
 
 The backup PushSecrets that the [OpenBao Finalizer](#openbao-finalizer)
 reconciles (the Fernet and credential key PushSecrets produced by
 `openBaoBackupPushSecretNames(keystone)`) are watched via an explicit
 name-matching mapper rather than `Owns()`. The mapper's contract mirrors the
-[Secret Field Indexer](#secret-field-indexer-cc-0087) mapper above but uses
+[Secret Field Indexer](#secret-field-indexer) mapper above but uses
 direct name matching instead of a field indexer (there are at most two backup
 PushSecret names per Keystone CR, so an indexer would not pay for itself).
 
@@ -157,21 +154,21 @@ feature targets.
 
 The motivating transitions are:
 
-- **Pass-0 adoption gate (CC-0091).** The operator waits for ESO to stamp
+- **Pass-0 adoption gate.** The operator waits for ESO to stamp
   `esoPushSecretFinalizer` (declared in `reconcile_secrets.go`) onto each
   backup PushSecret before allowing `Delete`; otherwise a racing `Delete`
   could remove the object before ESO's cleanup finalizer runs. Under the
   prior `Owns()` wiring this check requeued at `RequeueSecretPolling`
-  (15s); under CC-0092 it wakes on the `esoPushSecretFinalizer`-add update.
-- **Pass-1 delete step (CC-0079).** The operator issues `Delete` against
+  (15s); now it wakes on the `esoPushSecretFinalizer`-add update.
+- **Pass-1 delete step.** The operator issues `Delete` against
   each backup PushSecret and then waits for `DeletionTimestamp` to be
   non-zero and eventually for the object to disappear. Each of those
-  observations was a 15s requeue before CC-0092; they are now watch-driven.
+  observations was a 15s requeue earlier; they are now watch-driven.
 
 See [OpenBao Finalizer](#openbao-finalizer) for the full Pass-0/Pass-1
 state machine the watch feeds, and [RBAC Permissions](#rbac-permissions) for
 the `external-secrets.io/pushsecrets` verb set (`get, list, watch, create,
-update, patch, delete`, CC-0079).
+update, patch, delete`).
 
 ---
 
@@ -191,7 +188,7 @@ type KeystoneReconciler struct {
 | `Client` | `client.Client` | Kubernetes API client for CRUD operations |
 | `Scheme` | `*runtime.Scheme` | Runtime scheme for owner reference resolution |
 | `Recorder` | `record.EventRecorder` | Records Kubernetes events for state transitions |
-| `HTTPClient` | `HTTPDoer` | Injectable HTTP client for health checks; falls back to `http.DefaultClient` when nil (CC-0067) |
+| `HTTPClient` | `HTTPDoer` | Injectable HTTP client for health checks; falls back to `http.DefaultClient` when nil |
 
 ---
 
@@ -209,12 +206,12 @@ RBAC markers on the reconciler generate the required ClusterRole:
 | `batch` | `jobs`, `cronjobs` | get, list, watch, create, update, patch, delete |
 | `k8s.mariadb.com` | `databases`, `users`, `grants` | get, list, watch, create, update, patch, delete |
 | `k8s.mariadb.com` | `mariadbs` | get, list, watch |
-| `external-secrets.io` | `externalsecrets`, `pushsecrets` | get, list, watch, create, update, patch, delete (CC-0079) |
+| `external-secrets.io` | `externalsecrets`, `pushsecrets` | get, list, watch, create, update, patch, delete |
 | `external-secrets.io` | `clustersecretstores` | get, list, watch |
 | `policy` | `poddisruptionbudgets` | get, list, watch, create, update, patch, delete |
 | `autoscaling` | `horizontalpodautoscalers` | get, list, watch, create, update, patch, delete |
-| `gateway.networking.k8s.io` | `httproutes` | get, list, watch, create, update, patch, delete (CC-0065) |
-| `gateway.networking.k8s.io` | `httproutes/status` | get (CC-0065) |
+| `gateway.networking.k8s.io` | `httproutes` | get, list, watch, create, update, patch, delete |
+| `gateway.networking.k8s.io` | `httproutes/status` | get |
 
 ---
 
@@ -226,20 +223,20 @@ resource. In addition, the following forge-specific metadata keys carry
 controller-observable semantics and are stable across releases — consumers
 (watch predicates, chainsaw tests, dashboards) may rely on them:
 
-| Key | Kind | Applied to | Value | Feature | Purpose |
-| --- | --- | --- | --- | --- | --- |
-| `forge.c5c3.io/rotation-target` | Label | Staging Secrets (`{name}-fernet-keys-rotation`, `{name}-credential-keys-rotation`) | `fernet-keys`, `credential-keys` | CC-0081 | Distinguishes rotation staging Secrets from production key Secrets so the operator's Secret→Keystone mapper can enqueue the owning Keystone on staging PATCHes. |
-| `forge.c5c3.io/rotation-completed-at` | Annotation | Staging Secrets (written by the rotation CronJob) | RFC3339 UTC timestamp (e.g. `2026-04-18T12:34:56Z`) | CC-0081 | Single-shot commit marker. The operator only applies a staging Secret's data to the production Secret when this annotation is present and parses cleanly; the annotation is removed implicitly when the staging Secret is deleted at the end of a successful apply. |
+| Key | Kind | Applied to | Value | Purpose |
+| --- | --- | --- | --- | --- |
+| `forge.c5c3.io/rotation-target` | Label | Staging Secrets (`{name}-fernet-keys-rotation`, `{name}-credential-keys-rotation`) | `fernet-keys`, `credential-keys` | Distinguishes rotation staging Secrets from production key Secrets so the operator's Secret→Keystone mapper can enqueue the owning Keystone on staging PATCHes. |
+| `forge.c5c3.io/rotation-completed-at` | Annotation | Staging Secrets (written by the rotation CronJob) | RFC3339 UTC timestamp (e.g. `2026-04-18T12:34:56Z`) | Single-shot commit marker. The operator only applies a staging Secret's data to the production Secret when this annotation is present and parses cleanly; the annotation is removed implicitly when the staging Secret is deleted at the end of a successful apply. |
 
 The Go constants backing these keys are exported from
 `operators/keystone/internal/controller/rotation_staging.go`:
 
 ```go
-const StagingSecretLabelKey       = "forge.c5c3.io/rotation-target"        // CC-0081
-const RotationCompletedAnnotation = "forge.c5c3.io/rotation-completed-at"  // CC-0081
+const StagingSecretLabelKey       = "forge.c5c3.io/rotation-target"
+const RotationCompletedAnnotation = "forge.c5c3.io/rotation-completed-at"
 ```
 
-See [Key Rotation RBAC Split](#key-rotation-rbac-split-cc-0081) under the
+See [Key Rotation RBAC Split](#key-rotation-rbac-split) under the
 Fernet and credential sub-reconciler sections for the full contract.
 
 ---
@@ -259,7 +256,7 @@ Fernet and credential sub-reconciler sections for the full contract.
 │         ▼                                    ┌─────────────────────────────┐ │
 │  ┌──────────────────┐                        │         LEGEND              │ │
 │  │ reconcileSecrets │  Check ESO synced      │  ───── Sequential           │ │
-│  │                  │  Sets: SecretsReady    │  ═════ Parallel (CC-0071)   │ │
+│  │                  │  Sets: SecretsReady    │  ═════ Parallel             │ │
 │  └────────┬─────────┘  Requeue: 15s          └─────────────────────────────┘ │
 │           │                                                                  │
 │           ▼                                                                  │
@@ -270,13 +267,13 @@ Fernet and credential sub-reconciler sections for the full contract.
 │           │                                                                  │
 │           ▼                                                                  │
 │  ╔═════════════════════════════════════════════════════════════════════════╗ │
-│  ║  reconcileParallelGroup (CC-0071)                                       ║ │
+│  ║  reconcileParallelGroup                                                 ║ │
 │  ║                                                                         ║ │
 │  ║  errgroup.WithContext — each goroutine receives a DeepCopy of the CR    ║ │
 │  ║                                                                         ║ │
 │  ║  ┌──────────────────────┐  ┌──────────────────────────┐                 ║ │
 │  ║  │ reconcileFernetKeys  │  │ reconcileCredentialKeys  │  (concurrent)   ║ │
-│  ║  │ + script ConfigMap   │  │ + script ConfigMap       │  (CC-0073)      ║ │
+│  ║  │ + script ConfigMap   │  │ + script ConfigMap       │                 ║ │
 │  ║  │ Sets: FernetKeysReady│  │ Sets: CredentialKeysReady│                 ║ │
 │  ║  └──────────────────────┘  └──────────────────────────┘                 ║ │
 │  ║  ┌─────────────────────────┐                                            ║ │
@@ -292,7 +289,7 @@ Fernet and credential sub-reconciler sections for the full contract.
 │  ┌───────────────────┐                                                       │
 │  │ reconcileDatabase │  Managed mode: verify MariaDB cluster health first,   │
 │  │                   │  then ensure Database/User/Grant CRs + run db_sync    │
-│  │                   │  Job + run schema-check Job (CC-0064)                 │
+│  │                   │  Job + run schema-check Job                           │
 │  │                   │  Sets: DatabaseReady                                  │
 │  └────────┬──────────┘  Requeue: 30s                                         │
 │           │                                                                  │
@@ -312,7 +309,7 @@ Fernet and credential sub-reconciler sections for the full contract.
 │           ▼                                                                  │
 │  ┌─────────────────────────┐                                                 │
 │  │ pruneStaleConfigMaps    │  Delete old {name}-config-{hash} ConfigMaps     │
-│  │                         │  Retain 3 historical + current (CC-0077)        │
+│  │                         │  Retain 3 historical + current                  │
 │  └────────┬────────────────┘  No condition, no requeue                       │
 │           │                                                                  │
 │           ▼                                                                  │
@@ -320,13 +317,13 @@ Fernet and credential sub-reconciler sections for the full contract.
 │  │ reconcileHTTPRoute      │  Create/update/delete HTTPRoute based on        │
 │  │                         │  spec.gateway; reflect parent Accepted status   │
 │  │                         │  Sets: HTTPRouteReady                           │
-│  └────────┬────────────────┘  Requeue: 10s while not Accepted (CC-0065)      │
+│  └────────┬────────────────┘  Requeue: 10s while not Accepted                │
 │           │                                                                  │
 │           ▼                                                                  │
 │  ┌────────────────────────┐                                                  │
 │  │ reconcileHealthCheck   │  HTTP GET to Status.Endpoint                     │
 │  │                        │  Sets: KeystoneAPIReady                          │
-│  └────────┬───────────────┘  Requeue: 10s (CC-0067)                          │
+│  └────────┬───────────────┘  Requeue: 10s                                    │
 │           │                                                                  │
 │           ▼                                                                  │
 │  ┌──────────────┐                                                            │
@@ -355,7 +352,7 @@ Fernet and credential sub-reconciler sections for the full contract.
 
 ### Execution Model
 
-Sub-reconcilers execute in a defined order using two execution modes (CC-0071):
+Sub-reconcilers execute in a defined order using two execution modes:
 
 1. **Sequential sub-reconcilers** run one at a time. Each is called only if all
    previous sub-reconcilers succeeded without requesting a requeue.
@@ -389,7 +386,7 @@ sub-reconcilers are merged even on partial failure.
 
 `updateStatus()` persists all condition changes via `r.Status().Update()` and returns
 the provided `(result, error)` pair unchanged. If the status update itself fails, the
-behavior depends on whether a reconcile error is also present (CC-0068):
+behavior depends on whether a reconcile error is also present:
 
 | reconcileErr | Status().Update() | Returned error |
 | --- | --- | --- |
@@ -424,7 +421,7 @@ clients can detect stale status.
 
 Three sub-reconcilers — `reconcileFernetKeys`, `reconcileCredentialKeys`, and
 `reconcileNetworkPolicy` — run concurrently via `reconcileParallelGroup` after
-`reconcileConfig` completes and before `reconcileDatabase` begins (CC-0071). These
+`reconcileConfig` completes and before `reconcileDatabase` begins. These
 sub-reconcilers are eligible for parallelization because they have no data
 dependencies on each other (see [Dependency Graph](#dependency-graph) below).
 
@@ -566,7 +563,7 @@ the group.
 The KeystoneReconciler installs a finalizer on every Keystone CR so that the
 MariaDB `Database`, `User`, and `Grant` CRs owned by the Keystone are
 deterministically torn down **before** the Keystone CR itself is removed from
-etcd (CC-0078). Without a finalizer, the Keystone CR would be deleted
+etcd. Without a finalizer, the Keystone CR would be deleted
 immediately on `kubectl delete keystone <name>` and the controller would have
 no opportunity to clean up the MariaDB resources it orchestrated — leaving them
 orphaned when redeploying or tearing down the service.
@@ -752,7 +749,7 @@ cleanup, captured via `record.EventRecorder`:
 | `FinalizingDatabase` | `Normal` | `"Cleaning up MariaDB Database, User, and Grant before removing Keystone"` | First terminating reconcile pass where at least one MariaDB CR is still live (not emitted for brownfield CRs or when all CRs are already gone) |
 | `DatabaseFinalized` | `Normal` | `"MariaDB Database, User, and Grant removed; releasing finalizer"` | Once per termination, immediately before `RemoveFinalizer` + `Update` |
 
-> **Note (CC-0078):** The two Events are intentionally asymmetric. A
+> **Note:** The two Events are intentionally asymmetric. A
 > brownfield-terminating CR (or a managed CR whose MariaDB resources were
 > already removed externally before deletion) emits only `DatabaseFinalized`,
 > **not** `FinalizingDatabase`, because there is no real cleanup work to
@@ -795,7 +792,7 @@ ordering and observability on top of GC's eventual-consistency guarantee.
 
 In addition to the MariaDB finalizer, every Keystone CR carries a dedicated
 finalizer that drives cleanup of the backup PushSecrets ESO uses to persist
-the Fernet and credential signing keys to OpenBao (CC-0079). Without this
+the Fernet and credential signing keys to OpenBao. Without this
 finalizer, deleting a Keystone CR would garbage-collect the PushSecret CRs
 via owner references **without** triggering the remote delete on the KV-v2
 path — leaving stale cryptographic material in OpenBao after the Keystone
@@ -841,19 +838,19 @@ The finalizer does **not** touch any other Keystone-owned resource
 built-in Kubernetes garbage collector via owner references — see
 [Owned Resources](#owned-resources).
 
-> **Path scoping (CC-0093):** Both KV-v2 paths are per-CR-scoped via
+> **Path scoping:** Both KV-v2 paths are per-CR-scoped via
 > `openstack/keystone/{keystone.Name}/<leaf>` (where `<leaf>` is `fernet-keys`
 > or `credential-keys`), so multiple Keystone CRs in the same namespace write
 > to disjoint paths and cannot collide. See
-> [Migration note: legacy flat paths (CC-0093)](#migration-note-legacy-flat-paths-cc-0093)
-> for upgrade behaviour and recommended cleanup of orphaned pre-CC-0093 paths.
+> [Migration note: legacy flat paths](#migration-note-legacy-flat-paths)
+> for upgrade behaviour and recommended cleanup of orphaned legacy paths.
 
-### Migration note: legacy flat paths (CC-0093)
+### Migration note: legacy flat paths
 
-Before CC-0093, both backup PushSecrets wrote to the cluster-global, flat
+Earlier, both backup PushSecrets wrote to the cluster-global, flat
 KV-v2 paths `kv-v2/openstack/keystone/fernet-keys` and
-`kv-v2/openstack/keystone/credential-keys`. Starting with CC-0093 the
-operator writes to the per-CR-scoped paths
+`kv-v2/openstack/keystone/credential-keys`. The operator now writes to the
+per-CR-scoped paths
 `kv-v2/openstack/keystone/{keystone.Name}/fernet-keys` and
 `kv-v2/openstack/keystone/{keystone.Name}/credential-keys`.
 
@@ -869,7 +866,7 @@ is re-run; for production clusters managed outside the bootstrap flow the
 equivalent is a single `bao policy write push-keystone-keys …` against the
 updated HCL file.
 
-The pre-CC-0093 flat paths are **orphaned but harmless** after upgrade:
+The legacy flat paths are **orphaned but harmless** after upgrade:
 the live Keystone control plane reads its Fernet and credential keys from
 the local Kubernetes `Secret` (`{name}-fernet-keys`, `{name}-credential-keys`),
 not from the OpenBao backup. The OpenBao copy is a disaster-recovery
@@ -894,8 +891,8 @@ operation and the right inverse of the now-superseded write.
 The Keystone operator has no OpenBao credentials and does not talk to the
 OpenBao API directly. Remote purge of the KV-v2 path is delegated to ESO
 via the PushSecret field `Spec.DeletionPolicy`. The `RemoteKey` follows the
-per-CR layout `openstack/keystone/{keystone.Name}/<leaf>` introduced by
-CC-0093, so each Keystone CR writes to its own KV-v2 prefix:
+per-CR layout `openstack/keystone/{keystone.Name}/<leaf>`,
+so each Keystone CR writes to its own KV-v2 prefix:
 
 ```go
 Spec: esov1alpha1.PushSecretSpec{
@@ -970,7 +967,7 @@ func (r *KeystoneReconciler) reconcileDeleteOpenBao(
 The deletion handler proceeds as follows:
 
 1. **No-op guard.** If the Keystone CR does not carry
-   `keystoneOpenBaoFinalizer` (e.g. a CR that pre-dates CC-0079, or whose
+   `keystoneOpenBaoFinalizer` (e.g. a CR that predates the finalizer, or whose
    finalizer was already released on a prior pass), `reconcileDeleteOpenBao`
    returns `(ctrl.Result{}, nil)` immediately — no Delete calls, no Events.
 2. **Cleanup-work announcement.** `hasLiveOpenBaoBackupPushSecrets` probes
@@ -981,8 +978,8 @@ The deletion handler proceeds as follows:
    requeues observe no live PushSecret and suppress the emit, giving
    exactly-once semantics per termination across requeue loops.
 3. **Cleanup.** `finalizeOpenBaoSecrets` runs in **three** sequential
-   passes over the backup PushSecret names (CC-0091 extended the original
-   CC-0079 two-pass design with a Pass-0 adoption wait):
+   passes over the backup PushSecret names (the two-pass design was
+   extended with a Pass-0 adoption wait):
    - **Pass-0 — adoption wait.** For each backup PushSecret that still
      exists and is not already Terminating, verify that ESO's cleanup
      finalizer (`pushsecret.externalsecrets.io/finalizer`)
@@ -1103,7 +1100,7 @@ The three passes execute in strict order:
    and returns `(done=false, nil)`. Release of the openbao-finalizer
    requires **all** PushSecrets to return `NotFound`.
 
-#### Motivating race (CC-0091)
+#### Motivating race
 
 Without Pass-0, a Keystone CR deleted within 1–2 s of creation can outrun
 ESO's first reconcile: the operator calls `Delete` on the PushSecret
@@ -1111,9 +1108,9 @@ before ESO has installed its own cleanup finalizer, the API server
 immediately garbage-collects the PushSecret object, and ESO never observes
 the `DeletionTimestamp` — so `DeletionPolicy=Delete` never runs and the
 referenced kv-v2 path is orphaned in OpenBao. The observed stuck path now
-takes the per-CR form `kv-v2/openstack/keystone/{name}/fernet-keys` (CC-0093);
-this was originally seen in CI run 24842115250, which predated CC-0093 and
-therefore observed the now-legacy flat path
+takes the per-CR form `kv-v2/openstack/keystone/{name}/fernet-keys`;
+this was originally seen in CI run 24842115250 against the
+now-legacy flat path
 `kv-v2/openstack/keystone/fernet-keys`. The race itself is path-shape
 independent — the only difference is the kv-v2 key that would be left
 orphaned without Pass-0. Pass-0 gates the operator's `Delete` on ESO having
@@ -1185,9 +1182,9 @@ The message names the specific PushSecret (first stuck one encountered)
 so `kubectl get keystone -o yaml` surfaces which backup is wedged without
 attaching a debugger. Reusing `SecretsReady` (instead of introducing a new
 condition type) keeps the status surface coherent — any secret-store
-lifecycle concern appears under the same condition type
-(CC-0013 for initial ExternalSecret sync, CC-0047 for ClusterSecretStore
-health, CC-0079 for finalizer teardown). The condition is persisted through
+lifecycle concern (initial ExternalSecret sync, ClusterSecretStore
+health, finalizer teardown) appears under the same condition type.
+The condition is persisted through
 the existing `updateStatus` path so the message stays fresh across
 requeues at the `RequeueSecretPolling` (15s) interval.
 
@@ -1269,7 +1266,7 @@ sub-reconciler is responsible for:
 
 Every `conditions.SetCondition` call **must** include `ObservedGeneration: keystone.Generation`
 so that external tooling (ArgoCD health checks, status controllers) can distinguish whether
-a condition reflects the current spec or a stale generation (CC-0072). This applies to both
+a condition reflects the current spec or a stale generation. This applies to both
 `True` and `False` condition paths — no condition may omit the field.
 
 ```go
@@ -1299,16 +1296,16 @@ after a full reconcile loop, every condition in the status carries the correct
 | --- | --- | --- |
 | `SecretsReady` | `reconcileSecrets` | ESO-provided credentials are synced |
 | `DatabaseReady` | `reconcileDatabase` | MariaDB CRs ready and db_sync complete |
-| `FernetKeysReady` | `reconcileFernetKeys` | Fernet Secret, script ConfigMap, CronJob, and PushSecret ensured (CC-0073) |
-| `CredentialKeysReady` | `reconcileCredentialKeys` | Credential keys Secret, script ConfigMap, CronJob, and PushSecret ensured (CC-0036, CC-0073) |
-| `NetworkPolicyReady` | `reconcileNetworkPolicy` | NetworkPolicy configured or not required (CC-0039) |
-| `PolicyValidReady` | `reconcilePolicyValidation` | Policy override validation passed or not required (CC-0058) |
+| `FernetKeysReady` | `reconcileFernetKeys` | Fernet Secret, script ConfigMap, CronJob, and PushSecret ensured |
+| `CredentialKeysReady` | `reconcileCredentialKeys` | Credential keys Secret, script ConfigMap, CronJob, and PushSecret ensured |
+| `NetworkPolicyReady` | `reconcileNetworkPolicy` | NetworkPolicy configured or not required |
+| `PolicyValidReady` | `reconcilePolicyValidation` | Policy override validation passed or not required |
 | `DeploymentReady` | `reconcileDeployment` | Deployment available and Service created |
-| `KeystoneAPIReady` | `reconcileHealthCheck` | Keystone API responding to HTTP health check (CC-0067) |
+| `KeystoneAPIReady` | `reconcileHealthCheck` | Keystone API responding to HTTP health check |
 | `HTTPRouteReady` | `reconcileHTTPRoute` | HTTPRoute accepted by Gateway, not required (no `spec.gateway`), or Gateway API CRD missing (reason `GatewayAPINotInstalled`) |
 | `HPAReady` | `reconcileHPA` | HPA configured or not required |
 | `BootstrapReady` | `reconcileBootstrap` | Bootstrap Job completed successfully |
-| `TrustFlushReady` | `reconcileTrustFlush` | Trust flush CronJob configured or not required (CC-0057) |
+| `TrustFlushReady` | `reconcileTrustFlush` | Trust flush CronJob configured or not required |
 
 ---
 
@@ -1331,14 +1328,14 @@ ExternalSecrets managed by the External Secrets Operator.
 
 | Step | Resource | Source |
 | --- | --- | --- |
-| 0 | `ClusterSecretStore openbao-cluster-store` | Ready condition (CC-0047) |
+| 0 | `ClusterSecretStore openbao-cluster-store` | Ready condition |
 | 1 | DB credentials `ExternalSecret` | `spec.database.secretRef.name` |
 | 2 | Admin credentials `ExternalSecret` | `spec.bootstrap.adminPasswordSecretRef.name` |
 
 The `ClusterSecretStore` check runs first so upstream OpenBao outages surface
 as `SecretsReady=False` immediately. Per-ExternalSecret `Ready` conditions
 alone would mask outages up to the ESO `refreshInterval` (1h) because the
-cached Secret remains valid (CC-0047).
+cached Secret remains valid.
 
 **Condition Contract:**
 
@@ -1374,9 +1371,9 @@ Supports two modes:
 
 - **Managed mode** (`spec.database.clusterRef` set): Creates MariaDB Database, User,
   and Grant CRs within the referenced cluster, then runs `db_sync`, then runs
-  schema-check (CC-0064).
+  schema-check.
 - **Brownfield mode** (`spec.database.host` set): Skips MariaDB CRs entirely and runs
-  `db_sync` directly against the external database, then runs schema-check (CC-0064).
+  `db_sync` directly against the external database, then runs schema-check.
 
 After `db_sync` completes successfully, a schema-check Job verifies that the database
 schema matches the expected Alembic migration head. See
@@ -1418,7 +1415,7 @@ context and returned. The `DBSyncFailed` condition is set before returning the e
 so that the failure reason is visible in the CR status.
 
 **Shared library calls:** `database.EnsureDatabase()`, `database.EnsureDatabaseUser()`,
-`database.RunDBSyncJob()`, `job.RunJob()` (schema-check, CC-0064)
+`database.RunDBSyncJob()`, `job.RunJob()` (schema-check)
 
 ---
 
@@ -1444,7 +1441,7 @@ and disaster recovery backup to OpenBao.
    RoleBinding (`{name}-fernet-rotate`) for the rotation CronJob.
 3. **Create script ConfigMap** — Create an immutable, versioned ConfigMap
    `{name}-fernet-rotate-script-{hash}` containing the embedded
-   `fernet_rotate.sh` script (CC-0073). Uses `config.CreateImmutableConfigMap()`
+   `fernet_rotate.sh` script. Uses `config.CreateImmutableConfigMap()`
    which appends a content-hash suffix and sets `immutable: true`.
 4. **Ensure rotation CronJob** — Create or update `{name}-fernet-rotate` CronJob
    with the schedule from `spec.fernet.rotationSchedule`.
@@ -1470,12 +1467,12 @@ and disaster recovery backup to OpenBao.
 | Schedule | `spec.fernet.rotationSchedule` |
 | ServiceAccount | `{name}-fernet-rotate` |
 | Init container | Copies keys from `fernet-keys-src` (Secret) to `fernet-keys` (emptyDir) |
-| Command | `/scripts/fernet_rotate.sh` (CC-0073) |
+| Command | `/scripts/fernet_rotate.sh` |
 | Volume `fernet-keys-src` | Secret `{name}-fernet-keys` (read-only source) |
 | Volume `fernet-keys` | emptyDir (writable working copy) |
 | Volume `credential-keys` | Secret `{name}-credential-keys` (read-only, required by config) |
 | Volume `config` | ConfigMap `{configMapName}` |
-| Volume `scripts` | ConfigMap `{name}-fernet-rotate-script-{hash}` (`defaultMode: 0555`) (CC-0073) |
+| Volume `scripts` | ConfigMap `{name}-fernet-rotate-script-{hash}` (`defaultMode: 0555`) |
 
 **PushSecret:**
 
@@ -1494,7 +1491,7 @@ and disaster recovery backup to OpenBao.
 | `True` | `FernetKeysRotated` | "rotation applied; staging secret cleared" | — (transient: apply-success short-circuit at `reconcile_fernet.go:97-103`; operators see this immediately after a rotation apply via `kubectl describe`, before the next reconcile transitions to the steady-state Reason) |
 | `True` | `FernetKeysAvailable` | "Fernet keys Secret exists and rotation CronJob is configured" | — |
 
-**Versioned Script ConfigMap (CC-0073):**
+**Versioned Script ConfigMap:**
 
 The rotation script is embedded in the Go binary via `go:embed` and mounted into the
 CronJob pod through a versioned, immutable ConfigMap. The ConfigMap name includes a
@@ -1516,7 +1513,7 @@ creating a new one.
 **Shared library calls:** `config.CreateImmutableConfigMap()`, `job.EnsureCronJob()`,
 `secrets.EnsurePushSecret()`
 
-#### Key Rotation RBAC Split (CC-0081)
+#### Key Rotation RBAC Split
 
 The Fernet rotation path separates the **compute** of new keys (performed by
 the rotation CronJob) from the **write** onto the production Secret
@@ -1570,7 +1567,7 @@ controller-owned `ResourceVersion`, which guarantees optimistic concurrency
 The Update fully replaces the map — stale key indices absent from the staging
 payload (e.g. those renumbered by `keystone-manage fernet_rotate` or trimmed
 by a reduction in `spec.fernet.maxActiveKeys`) are removed, which is the
-atomic-swap semantic REQ-006 requires. A strategic-merge PATCH on this field
+atomic-swap semantic the rotation flow requires. A strategic-merge PATCH on this field
 would merge by key and allow decommissioned keys to accumulate, so it is
 intentionally avoided.
 
@@ -1603,7 +1600,7 @@ func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 ```
 
 **Purpose:** Manage credential encryption keys — initial generation, rotation schedule
-with credential migration, and disaster recovery backup to OpenBao (CC-0036).
+with credential migration, and disaster recovery backup to OpenBao.
 
 **Steps (in order):**
 
@@ -1613,7 +1610,7 @@ with credential migration, and disaster recovery backup to OpenBao (CC-0036).
    RoleBinding (`{name}-credential-rotate`) for the rotation CronJob.
 3. **Create script ConfigMap** — Create an immutable, versioned ConfigMap
    `{name}-credential-rotate-script-{hash}` containing the embedded
-   `credential_rotate.sh` script (CC-0073). Uses `config.CreateImmutableConfigMap()`
+   `credential_rotate.sh` script. Uses `config.CreateImmutableConfigMap()`
    which appends a content-hash suffix and sets `immutable: true`.
 4. **Ensure rotation CronJob** — Create or update `{name}-credential-rotate` CronJob
    with the schedule from `spec.credentialKeys.rotationSchedule`.
@@ -1639,17 +1636,17 @@ with credential migration, and disaster recovery backup to OpenBao (CC-0036).
 | Schedule | `spec.credentialKeys.rotationSchedule` |
 | ServiceAccount | `{name}-credential-rotate` |
 | Init container | Copies keys from `credential-keys-src` (Secret) to `credential-keys` (emptyDir) |
-| Command | `/scripts/credential_rotate.sh` (CC-0073) |
+| Command | `/scripts/credential_rotate.sh` |
 | Volume `credential-keys-src` | Secret `{name}-credential-keys` (read-only source) |
 | Volume `credential-keys` | emptyDir (writable working copy) |
 | Volume `fernet-keys` | Secret `{name}-fernet-keys` (read-only, required by config) |
 | Volume `config` | ConfigMap `{configMapName}` |
-| Volume `scripts` | ConfigMap `{name}-credential-rotate-script-{hash}` (`defaultMode: 0555`) (CC-0073) |
+| Volume `scripts` | ConfigMap `{name}-credential-rotate-script-{hash}` (`defaultMode: 0555`) |
 
 > **Note:** The `credential_rotate.sh` script runs both `credential_rotate` and
 > `credential_migrate`. The migrate step re-encrypts existing credentials in the
 > database with the new primary key, which is critical to prevent data loss when
-> old keys are eventually purged (CC-0036).
+> old keys are eventually purged.
 
 **PushSecret:**
 
@@ -1668,7 +1665,7 @@ with credential migration, and disaster recovery backup to OpenBao (CC-0036).
 | `True` | `CredentialKeysRotated` | "rotation applied; staging secret cleared" | — (transient: apply-success short-circuit at `reconcile_credential.go:107-113`; operators see this immediately after a rotation apply via `kubectl describe`, before the next reconcile transitions to the steady-state Reason) |
 | `True` | `CredentialKeysAvailable` | "Credential keys Secret exists and rotation CronJob is configured" | — |
 
-**Versioned Script ConfigMap (CC-0073):**
+**Versioned Script ConfigMap:**
 
 Uses the same versioned, immutable ConfigMap pattern as `reconcileFernetKeys`. See the
 description in that section for details on content-hash naming and immutability.
@@ -1683,7 +1680,7 @@ modified. This prevents overwriting keys that have been rotated by the CronJob.
 **Shared library calls:** `config.CreateImmutableConfigMap()`, `job.EnsureCronJob()`,
 `secrets.EnsurePushSecret()`
 
-#### Key Rotation RBAC Split (CC-0081)
+#### Key Rotation RBAC Split
 
 The credential rotation path mirrors the Fernet split exactly: the
 `{name}-credential-rotate` CronJob computes rotated keys, PATCHes them into
@@ -1723,22 +1720,21 @@ verbatim, issues an `Update`, deletes the staging Secret, and emits a
 Normal event `CredentialKeysRotated`. Because the CronJob already ran
 `credential_migrate` before PATCHing staging, every credential row in the
 database is re-encrypted with the new primary by the time the operator
-commits the Secret swap — no data loss when old keys age out (CC-0036).
+commits the Secret swap — no data loss when old keys age out.
 
-> **Key-rollover window (pre-existing, not introduced by CC-0081).** There
+> **Key-rollover window.** There
 > is a ~60s window between `credential_migrate` completion and the kubelet
-> refreshing the in-place Secret projection (CC-0074). During that window,
+> refreshing the in-place Secret projection. During that window,
 > running Keystone pods still have the old credential keyset mounted —
 > database rows are already encrypted under the new primary, but the pods
-> cannot decrypt them yet. This is a pre-existing property of the rotation
-> flow and is not a regression introduced by CC-0081; it is tracked
-> separately under CC-0074 and should be considered when sizing the
-> rotation schedule against request volume.
+> cannot decrypt them yet. This is an inherent property of the rotation
+> flow and is tracked as a known limitation; it should be considered when
+> sizing the rotation schedule against request volume.
 
 **Production `Secret.Data` field ownership.** Same contract as Fernet: the
 operator owns the production `.data` map, writes are `Update`-based under
 the controller-owned `ResourceVersion`, and the Update fully replaces the
-map so stale indices are removed atomically (REQ-006). Strategic-merge PATCH
+map so stale indices are removed atomically. Strategic-merge PATCH
 is intentionally avoided here for the same merge-vs-replace reason
 documented in the Fernet section.
 
@@ -1882,7 +1878,7 @@ func (r *KeystoneReconciler) reconcilePolicyValidation(ctx context.Context,
 ```
 
 **Purpose:** Validate custom oslo.policy overrides via `oslopolicy-validator` before the
-Deployment is updated (CC-0058). This sub-reconciler gates the Deployment rollout:
+Deployment is updated. This sub-reconciler gates the Deployment rollout:
 invalid policy overrides are caught before reaching running pods. Two lifecycle paths:
 
 1. **No policy overrides** (`spec.policyOverrides` is nil): Delete any existing
@@ -1916,7 +1912,7 @@ invalid policy overrides are caught before reaching running pods. Two lifecycle 
 **Error Extraction (`getValidationErrorMessage`):**
 
 When a validation Job fails, the reconciler extracts a descriptive error message from the
-failed Pod's termination message (CC-0058, REQ-006):
+failed Pod's termination message:
 
 1. Lists Pods by `job-name` label selector in the Job's namespace.
 2. Sorts by creation timestamp (most recent first).
@@ -1959,7 +1955,7 @@ spec. Sets `status.endpoint` when the Deployment becomes available.
 > **Note:** This sub-reconciler accepts the `configMapName` returned by
 > `reconcileConfig` to reference the correct immutable ConfigMap in volume mounts.
 
-**In-Place Key Rotation (CC-0074):**
+**In-Place Key Rotation:**
 
 Fernet and credential key rotation is handled in-place via kubelet Secret
 projection. When the rotation CronJob updates a Secret, the kubelet
@@ -1978,13 +1974,13 @@ CronJob rotates keys → Secret data changes → kubelet projects new keys
 
 | Field | Value |
 | --- | --- |
-| Name | `{name}` (bare CR name; since CC-0095) |
+| Name | `{name}` (bare CR name) |
 | Replicas | `spec.replicas` |
 | Labels | `app.kubernetes.io/name=keystone`, `app.kubernetes.io/instance={name}`, `app.kubernetes.io/managed-by=keystone-operator` |
 | Selector | `app.kubernetes.io/name=keystone`, `app.kubernetes.io/instance={name}` |
-| Container name | `keystone` (since CC-0095) |
+| Container name | `keystone` |
 | Image | `{spec.image.repository}:{spec.image.tag}` |
-| Port | 5000 (named `keystone`; since CC-0095) |
+| Port | 5000 (named `keystone`) |
 
 **Probes:**
 
@@ -1993,7 +1989,7 @@ CronJob rotates keys → Secret data changes → kubelet projects new keys
 | Liveness | TCPSocket | — | 5000 | 15s | 20s |
 | Readiness | HTTPGet | `/v3` | 5000 | 5s | 10s |
 
-The liveness and readiness probes are intentionally separated (CC-0062). The liveness probe uses a TCP socket check that only verifies the uWSGI process is accepting connections, without exercising the database code path. This prevents the kubelet from killing pods during transient database outages (e.g., MariaDB maintenance), avoiding CrashLoopBackOff cascades and thundering-herd restarts. The readiness probe continues to use HTTP GET `/v3`, which exercises the full stack including the database. When the database is unavailable, the readiness probe fails and the pod is removed from Service endpoints, preventing HTTP 500 responses to clients. Once the database recovers, the pod re-enters Service endpoints within one readiness probe period (10s).
+The liveness and readiness probes are intentionally separated. The liveness probe uses a TCP socket check that only verifies the uWSGI process is accepting connections, without exercising the database code path. This prevents the kubelet from killing pods during transient database outages (e.g., MariaDB maintenance), avoiding CrashLoopBackOff cascades and thundering-herd restarts. The readiness probe continues to use HTTP GET `/v3`, which exercises the full stack including the database. When the database is unavailable, the readiness probe fails and the pod is removed from Service endpoints, preventing HTTP 500 responses to clients. Once the database recovers, the pod re-enters Service endpoints within one readiness probe period (10s).
 
 **Volume Mounts:**
 
@@ -2007,15 +2003,14 @@ The liveness and readiness probes are intentionally separated (CC-0062). The liv
 
 | Field | Value |
 | --- | --- |
-| Name | `{name}` (bare CR name; since CC-0095) |
+| Name | `{name}` (bare CR name) |
 | Selector | `app.kubernetes.io/name=keystone`, `app.kubernetes.io/instance={name}` |
 | Port | 5000 TCP |
 
 **Status Endpoint:**
 
 When the Deployment becomes ready, `status.endpoint` is set via the
-`keystoneStatusEndpoint` helper (defined in `reconcile_httproute.go`, CC-0065,
-REQ-004):
+`keystoneStatusEndpoint` helper (defined in `reconcile_httproute.go`):
 
 | `spec.gateway` | Resulting `status.endpoint` |
 | --- | --- |
@@ -2027,7 +2022,7 @@ The helper is owned by `reconcile_httproute.go` but invoked from
 `reconcileHealthCheck` step reads it. `reconcileHTTPRoute` runs later in the
 sequence and does not mutate `status.endpoint`.
 
-**PodDisruptionBudget (CC-0037):**
+**PodDisruptionBudget:**
 
 After ensuring the Deployment and Service, `reconcileDeployment` creates or updates
 a PodDisruptionBudget via `deployment.EnsurePDB()`. The PDB uses a replica-aware
@@ -2073,7 +2068,7 @@ func (r *KeystoneReconciler) pruneStaleConfigMaps(ctx context.Context,
 
 **Purpose:** Remove historical immutable ConfigMaps that exceed the retain count
 after the Deployment has rolled out successfully. This prevents unbounded accumulation
-of `{name}-config-{hash}` ConfigMaps in the namespace (CC-0077).
+of `{name}-config-{hash}` ConfigMaps in the namespace.
 
 > **Note:** This is not a sub-reconciler — it does not set any status condition and
 > returns only `error`. It is a thin wrapper around `config.PruneImmutableConfigMaps`
@@ -2141,10 +2136,9 @@ func (r *KeystoneReconciler) reconcileHTTPRoute(ctx context.Context,
 ```
 
 **Purpose:** Manage the optional Gateway API `HTTPRoute` that exposes the
-Keystone API outside the cluster via a pre-existing `Gateway` (CC-0065). The
+Keystone API outside the cluster via a pre-existing `Gateway`. The
 Gateway is owned by the platform team; this sub-reconciler only ensures the
-route that attaches the Keystone Service to it. Four lifecycle paths
-(REQ-001, REQ-002, REQ-005):
+route that attaches the Keystone Service to it. Four lifecycle paths:
 
 0. **Gateway API not installed** (`r.gatewayAPIAvailable` is false): The
    CRD presence check in `SetupWithManager` found no mapping for
@@ -2176,7 +2170,7 @@ references it, and before `reconcileHealthCheck` reads `status.endpoint`. The
 route is deliberately not part of `reconcileParallelGroup` because it has a
 transitive dependency on the Service created by `reconcileDeployment`.
 
-**HTTPRoute Construction (`buildKeystoneHTTPRoute`, REQ-001, REQ-003, REQ-006):**
+**HTTPRoute Construction (`buildKeystoneHTTPRoute`):**
 
 | HTTPRoute Field | Source |
 | --- | --- |
@@ -2204,7 +2198,7 @@ re-asserted. `apiequality.Semantic.DeepEqual` guards against no-op writes —
 references actually changed. Empty maps are normalized to nil via
 `hrNormalizeMap` so nil-vs-empty does not trigger a spurious diff.
 
-**Acceptance Detection (`isHTTPRouteAccepted`, REQ-005):** Iterates
+**Acceptance Detection (`isHTTPRouteAccepted`):** Iterates
 `status.parents[*].conditions` and returns `true` as soon as any parent reports
 `Accepted=True`. An empty `Parents` slice (Gateway controller has not yet
 observed the route) is treated as "not yet accepted", yielding a `False`
@@ -2226,7 +2220,7 @@ condition with a short requeue rather than a permanent error.
 | `keystoneAPIPort` | `gatewayv1.PortNumber(5000)` | Backend Service port targeted by the route |
 | `defaultHTTPRoutePath` | `"/"` | Path prefix applied when `spec.gateway.path` is empty |
 
-**`status.endpoint` Derivation (REQ-004):** The gateway-aware helper
+**`status.endpoint` Derivation:** The gateway-aware helper
 `keystoneStatusEndpoint()` is defined alongside this sub-reconciler but called
 from `reconcileDeployment`. When `spec.gateway.hostname` is set, the helper
 returns `https://{hostname}/v3`; otherwise it returns the cluster-local
@@ -2236,7 +2230,7 @@ appended to `status.endpoint`. The `https` scheme is emitted unconditionally
 when a gateway hostname is configured — gateways are the public-ingress hop
 and terminate TLS.
 
-**Interaction with `reconcileNetworkPolicy` (REQ-008):** When `spec.gateway`
+**Interaction with `reconcileNetworkPolicy`:** When `spec.gateway`
 is set, `reconcileNetworkPolicy` appends an extra ingress peer that selects
 the gateway's namespace by the well-known label
 `kubernetes.io/metadata.name={parentRef.namespace or CR namespace}`. This lets
@@ -2271,7 +2265,7 @@ func (r *KeystoneReconciler) reconcileHealthCheck(ctx context.Context,
 ```
 
 **Purpose:** Perform an HTTP GET to the Keystone `/v3` endpoint after the Deployment
-reports ready, verifying that the API is actually responding to requests (CC-0067).
+reports ready, verifying that the API is actually responding to requests.
 This catches cases where pods pass their readiness probe but the API is not
 functionally healthy.
 
@@ -2352,8 +2346,7 @@ func (r *KeystoneReconciler) reconcileHPA(ctx context.Context,
     keystone *keystonev1alpha1.Keystone) (ctrl.Result, error)
 ```
 
-**Purpose:** Manage the HorizontalPodAutoscaler for the Keystone API Deployment
-(CC-0038). Three lifecycle paths:
+**Purpose:** Manage the HorizontalPodAutoscaler for the Keystone API Deployment. Three lifecycle paths:
 
 1. **Autoscaling disabled** (`spec.autoscaling` is nil): Delete any existing HPA
    and set `HPAReady=True` with reason `HPANotRequired`.
@@ -2466,7 +2459,7 @@ func (r *KeystoneReconciler) reconcileTrustFlush(ctx context.Context,
 ```
 
 **Purpose:** Manage the trust flush CronJob that periodically purges expired trust
-delegations from the Keystone database (CC-0057). Three lifecycle paths:
+delegations from the Keystone database. Three lifecycle paths:
 
 1. **Trust flush disabled** (`spec.trustFlush` is nil): Delete any existing
    `{name}-trust-flush` CronJob and set `TrustFlushReady=True` with reason
@@ -2538,9 +2531,9 @@ controller-runtime for exponential backoff.
 | `reconcileConfig` | — | — | Secret read failure, render failure → exponential backoff |
 | `reconcilePolicyValidation` | Job running | 15s | `ErrJobFailed` from validation → descriptive error |
 | `reconcileDeployment` | Deployment not available | 10s | API error → exponential backoff |
-| `pruneStaleConfigMaps` | — | — | List/delete failure → exponential backoff (CC-0077) |
-| `reconcileHTTPRoute` | Gateway has not yet set `Accepted=True` on parent status | 10s | API error on ensure/get/delete → exponential backoff (CC-0065) |
-| `reconcileHealthCheck` | Non-2xx, timeout, DNS, connection refused | 10s | Malformed URL → exponential backoff (CC-0067) |
+| `pruneStaleConfigMaps` | — | — | List/delete failure → exponential backoff |
+| `reconcileHTTPRoute` | Gateway has not yet set `Accepted=True` on parent status | 10s | API error on ensure/get/delete → exponential backoff |
+| `reconcileHealthCheck` | Non-2xx, timeout, DNS, connection refused | 10s | Malformed URL → exponential backoff |
 | `reconcileHPA` | — | — | API error → exponential backoff |
 | `reconcileBootstrap` | Job running | 60s | `ErrJobFailed` from bootstrap |
 | `reconcileTrustFlush` | — | — | API error → exponential backoff |
@@ -2564,40 +2557,40 @@ Keystone CR via `controllerutil.SetControllerReference()`. This enables:
 | Resource | Name | Owner |
 | --- | --- | --- |
 | Secret | `{name}-fernet-keys` | Keystone CR |
-| Secret | `{name}-fernet-keys-rotation` | Keystone CR (rotation staging, CC-0081) |
+| Secret | `{name}-fernet-keys-rotation` | Keystone CR (rotation staging) |
 | CronJob | `{name}-fernet-rotate` | Keystone CR |
 | PushSecret | `{name}-fernet-keys-backup` | Keystone CR |
 | Secret | `{name}-credential-keys` | Keystone CR |
-| Secret | `{name}-credential-keys-rotation` | Keystone CR (rotation staging, CC-0081) |
+| Secret | `{name}-credential-keys-rotation` | Keystone CR (rotation staging) |
 | CronJob | `{name}-credential-rotate` | Keystone CR |
 | PushSecret | `{name}-credential-keys-backup` | Keystone CR |
 | ConfigMap | `{name}-config-{hash}` | Keystone CR |
-| Job | `keystone-db-sync` | Keystone CR | <!-- TODO: align to {name}-* pattern (pre-existing, CC-0073 W-002) -->
-| Job | `keystone-bootstrap` | Keystone CR | <!-- TODO: align to {name}-* pattern (pre-existing, CC-0073 W-002) -->
-| Deployment | `{name}` | Keystone CR (bare CR name since CC-0095) |
-| Service | `{name}` | Keystone CR (bare CR name since CC-0095) |
-| PodDisruptionBudget | `{name}` | Keystone CR (bare CR name since CC-0095) |
-| HorizontalPodAutoscaler | `{name}` | Keystone CR (only when `spec.autoscaling` is set; bare CR name since CC-0095) |
-| HTTPRoute | `{name}` | Keystone CR (only when `spec.gateway` is set, CC-0065; bare CR name since CC-0095) |
+| Job | `keystone-db-sync` | Keystone CR | <!-- TODO: align to {name}-* pattern -->
+| Job | `keystone-bootstrap` | Keystone CR | <!-- TODO: align to {name}-* pattern -->
+| Deployment | `{name}` | Keystone CR (bare CR name) |
+| Service | `{name}` | Keystone CR (bare CR name) |
+| PodDisruptionBudget | `{name}` | Keystone CR (bare CR name) |
+| HorizontalPodAutoscaler | `{name}` | Keystone CR (only when `spec.autoscaling` is set; bare CR name) |
+| HTTPRoute | `{name}` | Keystone CR (only when `spec.gateway` is set; bare CR name) |
 | Job | `{name}-policy-validation` | Keystone CR (only when `spec.policyOverrides` is set) |
 | CronJob | `{name}-trust-flush` | Keystone CR (only when `spec.trustFlush` is set) |
-| ConfigMap | `{name}-fernet-rotate-script-{hash}` | Keystone CR (CC-0073) |
-| ConfigMap | `{name}-credential-rotate-script-{hash}` | Keystone CR (CC-0073) |
-| Database | `keystone` | Keystone CR (managed mode only; additionally cleaned up by the finalizer — CC-0078) |
-| User | `keystone` | Keystone CR (managed mode only; additionally cleaned up by the finalizer — CC-0078) |
-| Grant | `keystone` | Keystone CR (managed mode only; additionally cleaned up by the finalizer — CC-0078) |
+| ConfigMap | `{name}-fernet-rotate-script-{hash}` | Keystone CR |
+| ConfigMap | `{name}-credential-rotate-script-{hash}` | Keystone CR |
+| Database | `keystone` | Keystone CR (managed mode only; additionally cleaned up by the finalizer) |
+| User | `keystone` | Keystone CR (managed mode only; additionally cleaned up by the finalizer) |
+| Grant | `keystone` | Keystone CR (managed mode only; additionally cleaned up by the finalizer) |
 
 ---
 
-## Database credentials and oslo.config env-var overrides (CC-0080)
+## Database credentials and oslo.config env-var overrides
 
 Keystone's `[database] connection` URL embeds the MySQL username and password.
-Prior to CC-0080, the rendered URL was written directly into `keystone.conf`
+Earlier, the rendered URL was written directly into `keystone.conf`
 inside the operator-managed immutable ConfigMap. ConfigMaps lack encryption at
 rest and are routinely granted broad `get` RBAC for observability workflows,
 which caused production database credentials to be readable by any actor with
-`get configmap` on the Keystone namespace. CC-0080 replaces that design by (1)
-writing a non-secret placeholder into the ConfigMap and (2) materialising the
+`get configmap` on the Keystone namespace. The current design replaces that
+by (1) writing a non-secret placeholder into the ConfigMap and (2) materialising the
 real connection URL into a derived Kubernetes `Secret` which every pod consumes
 through the oslo.config `OS_<GROUP>__<OPTION>` environment-variable override
 mechanism.
@@ -2717,7 +2710,7 @@ readable through the `get configmap` verb.
 
 The reconciler has comprehensive unit tests using `gomega` with `NewGomegaWithT(t)`.
 For end-to-end Chainsaw tests that validate the reconciler in a real cluster, see
-[Keystone E2E Test Suites](../testing/keystone-e2e-tests.md) (CC-0016).
+[Keystone E2E Test Suites](../testing/keystone-e2e-tests.md).
 
 ### Running Tests
 
@@ -2729,7 +2722,7 @@ For end-to-end Chainsaw tests that validate the reconciler in a real cluster, se
 ### ObservedGeneration Test Convention
 
 Every sub-reconciler test file that sets conditions includes a dedicated
-`TestReconcile{SubReconciler}_ConditionObservedGeneration` test function (CC-0072).
+`TestReconcile{SubReconciler}_ConditionObservedGeneration` test function.
 This test exercises at least one `True` and one `False` condition path with distinct,
 non-default generation values to verify that `ObservedGeneration` is propagated on
 every code path. When adding a new sub-reconciler, copy this test pattern from any
@@ -2739,21 +2732,21 @@ existing file (e.g. `reconcile_hpa_test.go`).
 
 | File | Coverage |
 | --- | --- |
-| `keystone_controller_test.go` | Reconcile() orchestration, sequential execution, parallel group (CC-0071), early return, Ready aggregation, idempotency, benchmark, finalizer install/remove and termination branching + Events (CC-0078) |
-| `reconcile_secrets_test.go` | DB/admin credential readiness, error propagation, condition messages, ObservedGeneration (CC-0072) |
-| `reconcile_database_test.go` | Managed/brownfield modes, MariaDB CRs, db_sync lifecycle, stale Job detection, ObservedGeneration (CC-0072), finalizeDatabaseResources cleanup + idempotency (CC-0078) |
-| `reconcile_fernet_test.go` | Key generation, Secret idempotency, script ConfigMap creation, CronJob schedule/volumes, PushSecret, key validity (CC-0073), ObservedGeneration (CC-0072) |
-| `reconcile_credential_test.go` | Key generation, Secret idempotency, script ConfigMap creation, CronJob schedule/volumes, PushSecret, RBAC, key validity (CC-0036, CC-0073), ObservedGeneration (CC-0072) |
-| `reconcile_networkpolicy_test.go` | NetworkPolicy creation, update, deletion, ingress rules, condition contract (CC-0039) |
+| `keystone_controller_test.go` | Reconcile() orchestration, sequential execution, parallel group, early return, Ready aggregation, idempotency, benchmark, finalizer install/remove and termination branching + Events |
+| `reconcile_secrets_test.go` | DB/admin credential readiness, error propagation, condition messages, ObservedGeneration |
+| `reconcile_database_test.go` | Managed/brownfield modes, MariaDB CRs, db_sync lifecycle, stale Job detection, ObservedGeneration, finalizeDatabaseResources cleanup + idempotency |
+| `reconcile_fernet_test.go` | Key generation, Secret idempotency, script ConfigMap creation, CronJob schedule/volumes, PushSecret, key validity, ObservedGeneration |
+| `reconcile_credential_test.go` | Key generation, Secret idempotency, script ConfigMap creation, CronJob schedule/volumes, PushSecret, RBAC, key validity, ObservedGeneration |
+| `reconcile_networkpolicy_test.go` | NetworkPolicy creation, update, deletion, ingress rules, condition contract |
 | `reconcile_config_test.go` | INI generation, extraConfig merge, plugin config, policy overrides, ConfigMap hashing |
-| `reconcile_policyvalidation_test.go` | Policy validation lifecycle, condition contract, error extraction, Job spec (CC-0058), ObservedGeneration |
-| `reconcile_deployment_test.go` | Deployment spec, Service creation, readiness, endpoint, owner references, stable pod template (CC-0074), ObservedGeneration (CC-0072) |
-| `reconcile_healthcheck_test.go` | Health check happy/unhealthy paths, timeout, DNS, connection refused, empty endpoint, response body close, HTTPDoer injection (CC-0067), ObservedGeneration |
-| `reconcile_hpa_test.go` | HPA creation, update, deletion, metrics (CPU/memory), minReplicas defaulting, condition contract, error propagation (CC-0038), ObservedGeneration |
-| `reconcile_httproute_test.go` | HTTPRoute creation, update, deletion, gateway namespace defaulting, PathPrefix match, backend Service port 5000, parent Accepted reflection, status.endpoint derivation, condition contract (CC-0065), ObservedGeneration |
-| `reconcile_trustflush_test.go` | CronJob creation, deletion, schedule/suspend/args, security context, volume mounts, condition contract, error propagation (CC-0057), ObservedGeneration |
-| `reconcile_bootstrap_test.go` | Job creation, completion, failure, stale detection, TTL/backoff, ObservedGeneration (CC-0072) |
-| `integration_test.go` | Full reconciliation envtest: CronJob spec, bootstrap Job spec, brownfield mode, condition progression (CC-0015), ObservedGeneration (CC-0072, pre-existing) |
+| `reconcile_policyvalidation_test.go` | Policy validation lifecycle, condition contract, error extraction, Job spec, ObservedGeneration |
+| `reconcile_deployment_test.go` | Deployment spec, Service creation, readiness, endpoint, owner references, stable pod template, ObservedGeneration |
+| `reconcile_healthcheck_test.go` | Health check happy/unhealthy paths, timeout, DNS, connection refused, empty endpoint, response body close, HTTPDoer injection, ObservedGeneration |
+| `reconcile_hpa_test.go` | HPA creation, update, deletion, metrics (CPU/memory), minReplicas defaulting, condition contract, error propagation, ObservedGeneration |
+| `reconcile_httproute_test.go` | HTTPRoute creation, update, deletion, gateway namespace defaulting, PathPrefix match, backend Service port 5000, parent Accepted reflection, status.endpoint derivation, condition contract, ObservedGeneration |
+| `reconcile_trustflush_test.go` | CronJob creation, deletion, schedule/suspend/args, security context, volume mounts, condition contract, error propagation, ObservedGeneration |
+| `reconcile_bootstrap_test.go` | Job creation, completion, failure, stale detection, TTL/backoff, ObservedGeneration |
+| `integration_test.go` | Full reconciliation envtest: CronJob spec, bootstrap Job spec, brownfield mode, condition progression, ObservedGeneration |
 
 ---
 
@@ -2772,46 +2765,45 @@ operators/keystone/
     │   ├── reconcile_secrets.go                reconcileSecrets sub-reconciler
     │   ├── reconcile_database.go               reconcileDatabase sub-reconciler
     │   ├── reconcile_fernet.go                 reconcileFernetKeys sub-reconciler
-    │   ├── reconcile_credential.go             reconcileCredentialKeys sub-reconciler (CC-0036)
-    │   ├── reconcile_networkpolicy.go          reconcileNetworkPolicy sub-reconciler (CC-0039)
-    │   ├── reconcile_config.go                 reconcileConfig + pruneStaleConfigMaps (CC-0077)
-    │   ├── reconcile_policyvalidation.go        reconcilePolicyValidation sub-reconciler (CC-0058)
+    │   ├── reconcile_credential.go             reconcileCredentialKeys sub-reconciler
+    │   ├── reconcile_networkpolicy.go          reconcileNetworkPolicy sub-reconciler
+    │   ├── reconcile_config.go                 reconcileConfig + pruneStaleConfigMaps
+    │   ├── reconcile_policyvalidation.go        reconcilePolicyValidation sub-reconciler
     │   ├── reconcile_deployment.go             reconcileDeployment sub-reconciler
-    │   ├── reconcile_healthcheck.go           reconcileHealthCheck sub-reconciler (CC-0067)
-    │   ├── reconcile_hpa.go                   reconcileHPA sub-reconciler (CC-0038)
-    │   ├── reconcile_httproute.go             reconcileHTTPRoute sub-reconciler + keystoneStatusEndpoint helper (CC-0065)
-    │   ├── reconcile_trustflush.go            reconcileTrustFlush sub-reconciler (CC-0057)
+    │   ├── reconcile_healthcheck.go           reconcileHealthCheck sub-reconciler
+    │   ├── reconcile_hpa.go                   reconcileHPA sub-reconciler
+    │   ├── reconcile_httproute.go             reconcileHTTPRoute sub-reconciler + keystoneStatusEndpoint helper
+    │   ├── reconcile_trustflush.go            reconcileTrustFlush sub-reconciler
     │   ├── reconcile_bootstrap.go              reconcileBootstrap sub-reconciler
     │   ├── scripts/
-    │   │   ├── fernet_rotate.sh               Fernet key rotation script (CC-0073)
-    │   │   └── credential_rotate.sh           Credential key rotation script (CC-0073)
+    │   │   ├── fernet_rotate.sh               Fernet key rotation script
+    │   │   └── credential_rotate.sh           Credential key rotation script
     │   ├── keystone_controller_test.go         Orchestration tests
     │   ├── reconcile_secrets_test.go           Secrets tests
     │   ├── reconcile_database_test.go          Database tests
-    │   ├── reconcile_fernet_test.go            Fernet tests (CC-0073)
-    │   ├── reconcile_credential_test.go        Credential keys tests (CC-0036, CC-0073)
-    │   ├── reconcile_networkpolicy_test.go     NetworkPolicy tests (CC-0039)
+    │   ├── reconcile_fernet_test.go            Fernet tests
+    │   ├── reconcile_credential_test.go        Credential keys tests
+    │   ├── reconcile_networkpolicy_test.go     NetworkPolicy tests
     │   ├── reconcile_config_test.go            Config tests
-    │   ├── reconcile_policyvalidation_test.go   Policy validation tests (CC-0058)
+    │   ├── reconcile_policyvalidation_test.go   Policy validation tests
     │   ├── reconcile_deployment_test.go        Deployment tests
-    │   ├── reconcile_healthcheck_test.go      Health check tests (CC-0067)
-    │   ├── reconcile_hpa_test.go              HPA tests (CC-0038)
-    │   ├── reconcile_httproute_test.go        HTTPRoute tests (CC-0065)
-    │   ├── reconcile_trustflush_test.go       Trust flush tests (CC-0057)
+    │   ├── reconcile_healthcheck_test.go      Health check tests
+    │   ├── reconcile_hpa_test.go              HPA tests
+    │   ├── reconcile_httproute_test.go        HTTPRoute tests
+    │   ├── reconcile_trustflush_test.go       Trust flush tests
     │   ├── reconcile_bootstrap_test.go         Bootstrap tests
-    │   └── integration_test.go                 Envtest integration tests (CC-0015)
+    │   └── integration_test.go                 Envtest integration tests
     └── testutil/
         └── envtest_setup.go                    Keystone-specific envtest helper
 ```
 
 ---
 
-## Metrics Instrumentation (CC-0089)
+## Metrics Instrumentation
 
 Every sub-reconciler invocation is instrumented for Prometheus via a
 single helper, `instrumentSubReconciler`, defined in
-`operators/keystone/internal/controller/instrumentation.go` (CC-0089,
-REQ-001, REQ-002, REQ-007). The orchestration `Reconcile` wraps every
+`operators/keystone/internal/controller/instrumentation.go`. The orchestration `Reconcile` wraps every
 sub-reconciler call with this helper; direct calls that bypass it are a
 contract violation.
 
@@ -2843,7 +2835,7 @@ Behavioural contract:
   `panic`/error that `fn` produced.
 - Carries no per-CR labels. The `sub_reconciler` label is bounded by
   the number of sub-reconciler names, keeping series count
-  fleet-independent (CC-0089, REQ-012).
+  fleet-independent.
 
 ### Name → `condition_type` lookup
 
@@ -2902,5 +2894,5 @@ Three regression tests guard this contract:
 For CR lifecycle hygiene, `reconcileDelete` calls
 `metrics.DeleteForKeystone(name, namespace)` after the finalizer is
 removed so per-CR series (`key_rotation_age_seconds`, `db_sync_*`) do
-not leak across the lifetime of a cluster (CC-0089, REQ-004).
+not leak across the lifetime of a cluster.
 

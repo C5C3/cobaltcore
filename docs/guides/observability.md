@@ -164,7 +164,7 @@ kubectl logs -n openstack -l app.kubernetes.io/name=keystone-operator --tail=500
 
 - [Keystone Controller Events](../reference/keystone/keystone-events.md) — full event reason catalogue with example messages and alerting templates
 - [Keystone Reconciler Architecture](../reference/keystone/keystone-reconciler.md) — sub-reconciler contracts and watches
-- [Keystone Operator Prometheus Metrics](../reference/keystone-operator-metrics.md) — metric catalogue, labels, buckets, and sample PromQL (CC-0089)
-- [Enable the Keystone operator metrics endpoint](./enable-keystone-operator-metrics.md) — ServiceMonitor enablement and Grafana import walk-through (CC-0089)
+- [Keystone Operator Prometheus Metrics](../reference/keystone-operator-metrics.md) — metric catalogue, labels, buckets, and sample PromQL
+- [Enable the Keystone operator metrics endpoint](./enable-keystone-operator-metrics.md) — ServiceMonitor enablement and Grafana import walk-through
 - [Keystone Upgrade Flow](../reference/keystone/keystone-upgrade-flow.md) — state machine that drives upgrade conditions
 - [Day 2 Operations](./day-2-operations.md) — putting this observability into practice during scale, upgrade, rotation

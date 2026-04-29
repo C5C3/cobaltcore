@@ -1,13 +1,12 @@
 ---
 title: Kubernetes-Interacting Packages
 quadrant: shared-library
-feature: CC-0005, CC-0077
 ---
 
 # Kubernetes-Interacting Packages
 
 Reference documentation for the `internal/common/` packages that interact with the
-Kubernetes API server (CC-0005). These packages provide reconciler building blocks for
+Kubernetes API server. These packages provide reconciler building blocks for
 managing external operator CRDs (MariaDB, External Secrets Operator, cert-manager) and
 core Kubernetes resources (Deployments, Services, Jobs, CronJobs, ConfigMaps).
 
@@ -52,8 +51,8 @@ These packages import typed Go structs from external operator modules:
 
 ## Package: `config`
 
-Implements the INI configuration rendering pipeline for CobaltCore operators (CC-0004).
-CC-0005 adds the `CreateImmutableConfigMap` function for Kubernetes-interacting config
+Implements the INI configuration rendering pipeline for CobaltCore operators.
+The `CreateImmutableConfigMap` function provides Kubernetes-interacting config
 management.
 
 ### CreateImmutableConfigMap
@@ -129,7 +128,7 @@ Deletes stale immutable ConfigMaps that were previously created by
 `CreateImmutableConfigMap`, retaining the newest `retain` historical ConfigMaps
 (by `CreationTimestamp`) plus the currently active one identified by `currentName`.
 This prevents unbounded accumulation of immutable ConfigMaps across reconcile
-cycles (CC-0077).
+cycles.
 
 **Parameters:**
 
@@ -187,7 +186,7 @@ cycles (CC-0077).
 | `retain=0` | All historical ConfigMaps deleted, only `currentName` survives |
 | ConfigMap deleted between list and delete | `NotFound` silently ignored |
 | Overlapping prefix (e.g., `test-config-` vs `test-config-extra-`) | Strict `baseName + "-"` prefix prevents false matches |
-| Pre-existing ConfigMaps without `forge.c5c3.io/config-base` label | Not pruned — invisible to server-side selector. Bounded in number and GC'd on CR deletion via owner reference (CC-0077). |
+| Pre-existing ConfigMaps without `forge.c5c3.io/config-base` label | Not pruned — invisible to server-side selector. Bounded in number and GC'd on CR deletion via owner reference. |
 
 **Example:**
 
@@ -461,8 +460,7 @@ indicating the Job has permanently failed (e.g. exceeded its backoffLimit).
 
 ## Package: `policy`
 
-Provides pure functions for OpenStack oslo.policy rule rendering, merging, and validation
-(CC-0004). CC-0005 adds the `LoadPolicyFromConfigMap` function for reading policy from
+Provides pure functions for OpenStack oslo.policy rule rendering, merging, and validation. The `LoadPolicyFromConfigMap` function reads policy from
 Kubernetes ConfigMaps.
 
 ### LoadPolicyFromConfigMap
@@ -686,7 +684,7 @@ database/ ──depends-on──▶ job/
 ```
 
 The `database` package imports `job` to delegate `RunDBSyncJob` to `job.RunJob`. All other
-CC-0005 packages are independent of each other.
+packages are independent of each other.
 
 ## Reconciler Integration Pattern
 

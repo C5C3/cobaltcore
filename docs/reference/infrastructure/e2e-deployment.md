@@ -1,12 +1,11 @@
 ---
 title: Infrastructure E2E Deployment
 quadrant: infrastructure
-feature: CC-0010
 ---
 
 # Infrastructure E2E Deployment
 
-Reference documentation for the infrastructure E2E deployment automation (CC-0010).
+Reference documentation for the infrastructure E2E deployment automation.
 This feature provides shell-based orchestration to deploy the full infrastructure stack
 (cert-manager, OpenBao, ESO, MariaDB Operator, Memcached Operator, infrastructure CRs,
 ExternalSecrets) into a local kind cluster and validate it with Chainsaw E2E tests.
@@ -58,7 +57,7 @@ ExternalSecrets) into a local kind cluster and validate it with Chainsaw E2E tes
 | Docker | Running Docker daemon (kind uses Docker containers as nodes) |
 | kubectl | Kubernetes CLI for cluster interaction |
 | kind | Kubernetes IN Docker for local cluster creation |
-| flux | **Optional** — the Flux CLI is no longer required by `make deploy-infra`; bootstrap uses flux-operator + FluxInstance (CC-0085). Opt in with `WITH_FLUX_CLI=true make install-test-deps` for ad-hoc `flux logs` debugging. |
+| flux | **Optional** — the Flux CLI is no longer required by `make deploy-infra`; bootstrap uses flux-operator + FluxInstance. Opt in with `WITH_FLUX_CLI=true make install-test-deps` for ad-hoc `flux logs` debugging. |
 | chainsaw | Kyverno Chainsaw for E2E test execution |
 | jq | JSON processor used by deployment scripts |
 
@@ -96,7 +95,7 @@ Produces JUnit XML reports in `_output/reports/`.
 ```text
 Step 1 ── Create kind cluster (hack/kind-config.yaml)
      │
-Step 2 ── Install flux-operator + apply FluxInstance (CC-0085)
+Step 2 ── Install flux-operator + apply FluxInstance
      │         kubectl apply -f flux-operator install.yaml
      │         kubectl apply -f deploy/flux-system/fluxinstance.yaml
      │         wait_for_fluxinstance polls Ready condition
@@ -106,7 +105,7 @@ Step 2 ── Install flux-operator + apply FluxInstance (CC-0085)
      │         Required by the keystone-operator HTTPRoute watch; version
      │         pinned via GATEWAY_API_VERSION, default matches go.mod.
      │
-     ├── Install Envoy Gateway + Gateway/openstack-gw (kind-only) (CC-0088)
+     ├── Install Envoy Gateway + Gateway/openstack-gw (kind-only)
      │         Installed as part of the deploy/kind/base/ overlay applied
      │         in Step 3: the `envoy-gateway` HelmRelease brings up the
      │         control plane, and deploy/kind/base/openstack-gateway.yaml
@@ -117,7 +116,7 @@ Step 2 ── Install flux-operator + apply FluxInstance (CC-0085)
      │         polls Programmed=True after Phase 3.
      │         The production deploy/flux-system/ overlay does NOT ship
      │         these resources — operators pick their own Gateway
-     │         implementation in production (CC-0088, REQ-011/REQ-012).
+     │         implementation in production.
      │
 Step 3 ── Apply base kustomize overlay (deploy/kind/base/)
      │         Namespaces, HelmRepositories, HelmReleases
@@ -201,7 +200,7 @@ The deployment script supports configurable timeouts via environment variables:
 | Variable | Default | Description |
 | --- | --- | --- |
 | `CLUSTER_NAME` | `forge-e2e` | Kind cluster name |
-| `FLUX_OPERATOR_VERSION` | _pinned in script_ | Tag of the flux-operator `install.yaml` release applied in Step 2 (CC-0085); kept in sync by Renovate via a `customManager` on `hack/deploy-infra.sh` |
+| `FLUX_OPERATOR_VERSION` | _pinned in script_ | Tag of the flux-operator `install.yaml` release applied in Step 2; kept in sync by Renovate via a `customManager` on `hack/deploy-infra.sh` |
 | `HELMRELEASE_TIMEOUT` | `600` | Seconds to wait for HelmReleases Ready (also bounds the `wait_for_fluxinstance` poll in Step 2) |
 | `POD_TIMEOUT` | `300` | Seconds to wait for OpenBao pods Ready |
 | `EXTERNALSECRET_TIMEOUT` | `120` | Seconds to wait for ExternalSecrets synced |
@@ -297,8 +296,8 @@ make teardown-infra
 
 ## Related Resources
 
-- [OpenBao Bootstrap Procedure](openbao-bootstrap.md) — OpenBao deployment and bootstrap (CC-0009)
-- `deploy/flux-system/` — Production FluxCD base manifests (CC-0008)
-- `deploy/kind/` — Kind-specific kustomize overlays (CC-0010)
-- `tests/e2e/infrastructure/` — Chainsaw E2E test files (CC-0010)
-- `.github/workflows/ci.yaml` — CI workflow with `e2e-infra` job (CC-0010)
+- [OpenBao Bootstrap Procedure](openbao-bootstrap.md) — OpenBao deployment and bootstrap
+- `deploy/flux-system/` — Production FluxCD base manifests
+- `deploy/kind/` — Kind-specific kustomize overlays
+- `tests/e2e/infrastructure/` — Chainsaw E2E test files
+- `.github/workflows/ci.yaml` — CI workflow with `e2e-infra` job

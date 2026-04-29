@@ -1,12 +1,11 @@
 ---
 title: Helm Values Schema
 quadrant: backend
-feature: CC-0069
 ---
 
 # Helm Values Schema
 
-Reference documentation for the `values.schema.json` JSON Schema (CC-0069) that validates
+Reference documentation for the `values.schema.json` JSON Schema that validates
 Helm chart values for the keystone-operator chart. Helm enforces this schema automatically
 during `helm install`, `helm upgrade`, `helm lint`, and `helm template`.
 
@@ -66,9 +65,9 @@ the Kubernetes quantity grammar does not allow combining both.
 | --- | --- | --- | --- |
 | `rbac.namespaceScoped` | `boolean` | conditional: requires `webhook.enabled=false` | `false` |
 
-**Conditional constraint (REQ-010):** When `rbac.namespaceScoped` is `true`, the schema
+**Conditional constraint:** When `rbac.namespaceScoped` is `true`, the schema
 requires `webhook.enabled` to be `false`. This is enforced via a top-level `if`/`then`
-rule. Namespace-scoped RBAC (CC-0043) cannot coexist with webhooks because
+rule. Namespace-scoped RBAC cannot coexist with webhooks because
 `ValidatingWebhookConfiguration` and `MutatingWebhookConfiguration` are cluster-scoped
 resources that require a `ClusterRole` to manage.
 
@@ -142,23 +141,23 @@ Schema validation is tested with helm-unittest in
 
 ### Negative Tests (rejection)
 
-| Category | Example | Requirement |
-| --- | --- | --- |
-| Type violations | `replicas: "abc"` (string instead of integer) | REQ-001, REQ-002 |
-| Enum violations | `image.pullPolicy: "InvalidPolicy"` | REQ-003 |
-| Range violations | `replicas: 0`, `metrics.port: 65536` | REQ-004 |
-| Unknown properties | `image.digest: "sha256:abc"` | REQ-008 |
-| Invalid quantities | `resources.limits.cpu: "not-valid"` | REQ-009 |
-| Exponent+suffix | `cpu: "1e3m"`, `memory: "1e3Ki"` | REQ-009 |
-| Conditional constraint | `rbac.namespaceScoped=true` with `webhook.enabled=true` | REQ-010 |
+| Category | Example |
+| --- | --- |
+| Type violations | `replicas: "abc"` (string instead of integer) |
+| Enum violations | `image.pullPolicy: "InvalidPolicy"` |
+| Range violations | `replicas: 0`, `metrics.port: 65536` |
+| Unknown properties | `image.digest: "sha256:abc"` |
+| Invalid quantities | `resources.limits.cpu: "not-valid"` |
+| Exponent+suffix | `cpu: "1e3m"`, `memory: "1e3Ki"` |
+| Conditional constraint | `rbac.namespaceScoped=true` with `webhook.enabled=true` |
 
 ### Positive Tests (acceptance)
 
-| Category | Example | Requirement |
-| --- | --- | --- |
-| Custom replicas | `replicas: 5` | CC-0069 |
-| Custom metrics port | `metrics.port: 9090` | CC-0069 |
-| String resource quantities | `cpu: "2"`, `memory: "1Gi"` | CC-0069 |
-| Numeric resource quantities | `cpu: 0.5` | CC-0069 |
-| Exponent-only quantities | `cpu: "1e3"` | CC-0069 |
-| Conditional constraint | `rbac.namespaceScoped=true` with `webhook.enabled=false` | CC-0069 |
+| Category | Example |
+| --- | --- |
+| Custom replicas | `replicas: 5` |
+| Custom metrics port | `metrics.port: 9090` |
+| String resource quantities | `cpu: "2"`, `memory: "1Gi"` |
+| Numeric resource quantities | `cpu: 0.5` |
+| Exponent-only quantities | `cpu: "1e3"` |
+| Conditional constraint | `rbac.namespaceScoped=true` with `webhook.enabled=false` |

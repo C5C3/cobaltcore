@@ -1,19 +1,18 @@
 ---
 title: Rotate Keystone Fernet and Credential Keys
 quadrant: operator
-feature: CC-0073, CC-0081
 ---
 
 # Rotate Keystone Fernet and Credential Keys
 
 This guide walks an operator through triggering a manual rotation of a
 Keystone instance's Fernet or credential-encryption keys, verifying each
-stage of the split-compute-write rotation pipeline introduced by CC-0081,
+stage of the split-compute-write rotation pipeline,
 and recovering when the operator rejects a staged rotation.
 
 For the reconciler-side contract (RBAC split, staging-Secret naming,
 validation rules, event reasons), see
-[Key Rotation RBAC Split](../reference/keystone/keystone-reconciler.md#key-rotation-rbac-split-cc-0081)
+[Key Rotation RBAC Split](../reference/keystone/keystone-reconciler.md#key-rotation-rbac-split)
 under the Fernet and credential sub-reconciler sections in
 [Keystone Reconciler Architecture](../reference/keystone/keystone-reconciler.md).
 
@@ -26,8 +25,8 @@ under the Fernet and credential sub-reconciler sections in
 
 ## Background: Who Writes What
 
-Before CC-0081 the rotation CronJob wrote directly to the production
-`{ks}-fernet-keys` Secret with `patch` RBAC. CC-0081 split that path:
+Earlier the rotation CronJob wrote directly to the production
+`{ks}-fernet-keys` Secret with `patch` RBAC. The current design splits that path:
 
 | Actor | Writes to | Reads from |
 | --- | --- | --- |
@@ -147,7 +146,7 @@ kubectl -n <ns> get secret <ks>-fernet-keys \
   -o jsonpath='{range .data.*}{@}{"\n"}{end}' | sha256sum
 ```
 
-Thanks to the kubelet's in-place Secret projection (CC-0074), running
+Thanks to the kubelet's in-place Secret projection, running
 Keystone pods pick up the new keys on their next projection refresh
 (~60 seconds) without a Deployment rollout. A token minted before the
 rotation remains valid until its native TTL expires, because the old key
@@ -188,7 +187,7 @@ kubectl -n <ns> get secret <ks>-fernet-keys-rotation -o yaml
 ```
 
 Match the event message against the operator's validation contract
-(see [Operator validation rules](../reference/keystone/keystone-reconciler.md#key-rotation-rbac-split-cc-0081)):
+(see [Operator validation rules](../reference/keystone/keystone-reconciler.md#key-rotation-rbac-split)):
 
 | Event message contains | Likely cause |
 | --- | --- |
@@ -217,8 +216,8 @@ The recovery sequence is always:
 3. Confirm apply by repeating steps 2-4 above.
 
 > **Production safety note.** The production Secret is never modified
-> during a rejected rotation — that is the whole point of the CC-0081
-> split. You can inspect a `RotationRejected` state as long as you like
+> during a rejected rotation — that is the whole point of the
+> staging/production split. You can inspect a `RotationRejected` state as long as you like
 > without impacting running Keystone pods; they continue to serve tokens
 > with the previous key set.
 
@@ -241,20 +240,20 @@ One additional step runs inside the credential CronJob: after
 **before** the staging PATCH. This re-encrypts existing stored credentials
 with the new primary key, so by the time the operator applies the Secret
 swap there is no surviving plaintext encrypted under a key scheduled for
-aging-out (CC-0036).
+aging-out.
 
-> **Key-rollover window (pre-existing, not introduced by CC-0081).** There
+> **Key-rollover window.** There
 > is a ~60s window between `credential_migrate` completion and the kubelet
-> refreshing the in-place Secret projection (CC-0074). During this window,
+> refreshing the in-place Secret projection. During this window,
 > running Keystone pods still have the old keyset mounted and cannot decrypt
-> rows already re-encrypted under the new primary. This is a pre-existing
-> property of the rotation flow, not a regression introduced by CC-0081.
+> rows already re-encrypted under the new primary. This is an inherent
+> property of the rotation flow, not a regression.
 
 ---
 
 ## Related reference
 
-- [Key Rotation RBAC Split](../reference/keystone/keystone-reconciler.md#key-rotation-rbac-split-cc-0081) — the authoritative contract for the Fernet sub-reconciler (CC-0081).
-- [Labels and Annotations](../reference/keystone/keystone-reconciler.md#labels-and-annotations) — stable metadata keys observable by consumers (CC-0081).
-- [Rotation Scripts](../reference/backend/rotation-scripts.md) — the embedded `fernet_rotate.sh` / `credential_rotate.sh` contract (CC-0073).
+- [Key Rotation RBAC Split](../reference/keystone/keystone-reconciler.md#key-rotation-rbac-split) — the authoritative contract for the Fernet sub-reconciler.
+- [Labels and Annotations](../reference/keystone/keystone-reconciler.md#labels-and-annotations) — stable metadata keys observable by consumers.
+- [Rotation Scripts](../reference/backend/rotation-scripts.md) — the embedded `fernet_rotate.sh` / `credential_rotate.sh` contract.
 - Chainsaw tests: `tests/e2e/keystone/fernet-rotation/chainsaw-test.yaml` and `tests/e2e/keystone/credential-rotation/chainsaw-test.yaml` assert this guide's happy path and the RBAC verb split end-to-end.

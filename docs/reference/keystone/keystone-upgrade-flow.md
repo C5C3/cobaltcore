@@ -1,13 +1,12 @@
 ---
 title: Keystone Upgrade Flow
 quadrant: operator
-feature: CC-0056, CC-0095
 ---
 
 # Keystone Upgrade Flow
 
 Reference documentation for the Keystone expand-migrate-contract database upgrade
-flow (CC-0056). The operator automatically performs phased database migrations when
+flow. The operator automatically performs phased database migrations when
 `spec.image.tag` changes to a new OpenStack release, maintaining API availability
 throughout the upgrade.
 
@@ -492,17 +491,17 @@ recover automatically.
 
 ---
 
-## Sub-Resource Rename (CC-0095)
+## Sub-Resource Rename
 
-CC-0095 dropped the `-api` suffix from operator-managed sub-resources. Clusters
-deployed before this change have sub-resources named `<cr-name>-api`; clusters <!-- CC-0095 legacy: pre-rename name referenced for traceability. -->
-deployed after that change carry sub-resources named `<cr-name>` (bare CR name).
-When the operator is upgraded across this boundary, the rename takes effect on
-the next reconcile that touches each sub-resource.
+A previous change dropped the `-api` suffix from operator-managed sub-resources.
+Clusters deployed before this change have sub-resources named `<cr-name>-api`;
+clusters deployed after that change carry sub-resources named `<cr-name>` (bare CR
+name). When the operator is upgraded across this boundary, the rename takes effect
+on the next reconcile that touches each sub-resource.
 
 ### Affected Sub-Resources
 
-The following sub-resources are renamed from `<cr-name>-api` to `<cr-name>`: <!-- CC-0095 legacy: pre-rename name referenced for traceability. -->
+The following sub-resources are renamed from `<cr-name>-api` to `<cr-name>`:
 
 - `Deployment`
 - `Service` (ClusterIP)
@@ -513,10 +512,10 @@ The following sub-resources are renamed from `<cr-name>-api` to `<cr-name>`: <!-
 - Container name and named container port (`5000`) inside the Deployment Pod template
 
 The cluster-internal Service DNS therefore changes from
-`http://<cr-name>-api.<namespace>.svc.cluster.local:5000/v3` to <!-- CC-0095 legacy: pre-rename DNS form referenced for traceability. -->
+`http://<cr-name>-api.<namespace>.svc.cluster.local:5000/v3` to
 `http://<cr-name>.<namespace>.svc.cluster.local:5000/v3`. This is reflected
 in `status.endpoint` once the controller re-reconciles. See the
-[Keystone CRD Sub-Resource Naming Convention section](./keystone-crd.md#sub-resource-naming-convention-cc-0095).
+[Keystone CRD Sub-Resource Naming Convention section](./keystone-crd.md#sub-resource-naming-convention).
 
 ### Catalog Self-Heal via `keystone-manage bootstrap`
 
@@ -552,22 +551,22 @@ Two paths are supported for the post-upgrade catalog refresh:
    Repeat for the `admin` and `internal` interfaces. The `public` interface
    typically resolves through the Gateway and is unaffected by the rename.
 
-### Manual Cleanup of Legacy `<cr-name>-api` Sub-Resources <!-- CC-0095 legacy: heading names the pre-rename form for traceability. -->
+### Manual Cleanup of Legacy `<cr-name>-api` Sub-Resources
 
 The renamed sub-resources are new objects with new `metadata.uid` values and
-fresh `ownerReferences` to the Keystone CR. The legacy `<cr-name>-api` <!-- CC-0095 legacy: pre-rename name referenced for traceability. -->
-sub-resources from the pre-CC-0095 operator carry their own owner references
-to the same Keystone CR, but the post-CC-0095 reconciler does **not** issue
+fresh `ownerReferences` to the Keystone CR. The legacy `<cr-name>-api`
+sub-resources from earlier operator releases carry their own owner references
+to the same Keystone CR, but the current reconciler does **not** issue
 `Delete` calls for them — it simply stops reconciling those names. As a
 result, on an upgraded cluster the legacy objects persist alongside the new
 bare-name objects until an operator removes them.
 
 ::: danger Cleanup is operator-driven, not automatic
-There is currently no controller-side garbage collection of pre-CC-0095
-sub-resources (CC-0095, REQ-004). Because the legacy objects retain valid
+There is currently no controller-side garbage collection of pre
+sub-resources. Because the legacy objects retain valid
 `ownerReferences` to the still-existing Keystone CR, the Kubernetes garbage
 collector will not delete them on its own. Operators upgrading across the
-CC-0095 boundary must remove them by hand. Skipping this step leaves stale
+rename boundary must remove them by hand. Skipping this step leaves stale
 Deployments/Services/PDBs/HPAs/HTTPRoutes/NetworkPolicies in the namespace,
 which can confuse `kubectl get`, score against `ResourceQuota`, and — in
 the case of the legacy Service — keep an unused ClusterIP routable.
@@ -580,18 +579,18 @@ the deletes idempotent, so re-applying the runbook on a partially cleaned
 namespace is a no-op for already-removed objects.
 
 ```bash
-# Core API sub-resources (always present on a pre-CC-0095 cluster).
-kubectl -n <namespace> delete deployment              <cr-name>-api --ignore-not-found  # CC-0095 legacy: targets the pre-rename Deployment.
-kubectl -n <namespace> delete service                 <cr-name>-api --ignore-not-found  # CC-0095 legacy: targets the pre-rename Service.
-kubectl -n <namespace> delete poddisruptionbudget     <cr-name>-api --ignore-not-found  # CC-0095 legacy: targets the pre-rename PodDisruptionBudget.
+# Core API sub-resources (always present on a pre-rename cluster).
+kubectl -n <namespace> delete deployment              <cr-name>-api --ignore-not-found  # legacy: targets the pre-rename Deployment.
+kubectl -n <namespace> delete service                 <cr-name>-api --ignore-not-found  # legacy: targets the pre-rename Service.
+kubectl -n <namespace> delete poddisruptionbudget     <cr-name>-api --ignore-not-found  # legacy: targets the pre-rename PodDisruptionBudget.
 
 # Optional sub-resources — delete only if the corresponding spec.* field
 # was set on the pre-upgrade CR. Running them unconditionally is safe
 # because of --ignore-not-found.
-kubectl -n <namespace> delete horizontalpodautoscaler <cr-name>-api --ignore-not-found  # CC-0095 legacy: targets the pre-rename HPA.
-kubectl -n <namespace> delete networkpolicy           <cr-name>-api --ignore-not-found  # CC-0095 legacy: targets the pre-rename NetworkPolicy.
+kubectl -n <namespace> delete horizontalpodautoscaler <cr-name>-api --ignore-not-found  # legacy: targets the pre-rename HPA.
+kubectl -n <namespace> delete networkpolicy           <cr-name>-api --ignore-not-found  # legacy: targets the pre-rename NetworkPolicy.
 kubectl -n <namespace> delete httproute.gateway.networking.k8s.io \
-                                                      <cr-name>-api --ignore-not-found  # CC-0095 legacy: targets the pre-rename HTTPRoute.
+                                                      <cr-name>-api --ignore-not-found  # legacy: targets the pre-rename HTTPRoute.
 ```
 
 Deleting the legacy `Deployment` cascades to its `ReplicaSet`s and `Pod`s
@@ -611,10 +610,10 @@ A clean upgrade shows exactly one row per kind, all named `<cr-name>`
 missed delete — re-run the corresponding `kubectl delete` above.
 
 ::: warning Until a cleanup sub-reconciler exists
-A future change may add an automated cleanup step to the operator (tracked
-as a follow-up to CC-0095). Until then, the manual runbook above is the
-only supported path for removing pre-CC-0095 leftovers; observed legacy
-objects on a live cluster will **not** disappear on subsequent reconciles.
+A future change may add an automated cleanup step to the operator. Until then,
+the manual runbook above is the only supported path for removing legacy
+leftovers; observed legacy objects on a live cluster will **not** disappear on
+subsequent reconciles.
 :::
 
 ---
@@ -632,7 +631,7 @@ objects on a live cluster will **not** disappear on subsequent reconciles.
    c5c3-operator.
 
 4. **No resource limits on upgrade Jobs.** Upgrade Jobs inherit no resource
-   requests/limits (BestEffort QoS). This is tracked under CC-0042.
+   requests/limits (BestEffort QoS).
 
 5. **Image compatibility required.** The `db_sync --expand`, `--migrate`, and
    `--contract` flags must be supported by the Keystone container image. If the

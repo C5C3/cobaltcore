@@ -5,17 +5,16 @@ SPDX-License-Identifier: Apache-2.0
 ---
 title: Keystone Operator Prometheus Metrics
 quadrant: operator
-feature: CC-0089
+
 ---
 
 # Keystone Operator Prometheus Metrics
 
 Reference catalogue for every Prometheus collector the Keystone operator
-exposes on the controller-runtime metrics endpoint (CC-0089, REQ-008,
-REQ-009). Every metric name, label set, and histogram bucket list below
+exposes on the controller-runtime metrics endpoint. Every metric name, label set, and histogram bucket list below
 is authoritative — the contract test
 `operators/keystone/internal/metrics/contract_test.go` fails the build if
-this document drifts from the registered collectors (CC-0089, REQ-009).
+this document drifts from the registered collectors.
 
 All metrics are registered via the process-wide `sync.Once` initializer
 `globalCollectors()` in
@@ -40,8 +39,7 @@ for cluster-side wiring.
 
 ## `keystone_operator_reconcile_duration_seconds`
 
-Wall-clock duration of a single sub-reconciler invocation in seconds
-(CC-0089, REQ-001).
+Wall-clock duration of a single sub-reconciler invocation in seconds.
 
 | Attribute | Value |
 | --- | --- |
@@ -54,7 +52,7 @@ Wall-clock duration of a single sub-reconciler invocation in seconds
 set of 14 strings — the keys of `subReconcilerConditionTypes` — so the
 series count is bounded regardless of how many Keystone CRs exist. The
 metric deliberately omits a `keystone`/`namespace` label to keep
-cardinality fleet-independent (CC-0089, REQ-012); per-CR attribution is
+cardinality fleet-independent; per-CR attribution is
 available via logs.
 
 **Example PromQL.** p95 per sub-reconciler over the last 5 minutes:
@@ -73,8 +71,7 @@ histogram_quantile(
 ## `keystone_operator_reconcile_errors_total`
 
 Count of sub-reconciler errors, partitioned by the offending sub-reconciler
-and the `status.conditions[]` type it failed to drive to `True`
-(CC-0089, REQ-002).
+and the `status.conditions[]` type it failed to drive to `True`.
 
 | Attribute | Value |
 | --- | --- |
@@ -107,7 +104,7 @@ sum by (sub_reconciler) (
 
 Age in seconds of the most recent successful key rotation for a given
 Keystone CR and key type, measured as `time.Since(rotation-completed-at)`
-at reconcile time (CC-0089, REQ-003).
+at reconcile time.
 
 | Attribute | Value |
 | --- | --- |
@@ -126,7 +123,7 @@ as `time.Since(completedAt)` on every reconcile) tracks wall-clock age
 correctly even after the staging Secret has been deleted. If the
 production Secret has no annotation yet — i.e. the very-first rotation
 has not been applied — the lookup falls back to the staging Secret to
-cover the post-CronJob-PATCH/pre-apply window (CC-0089, REQ-003).
+cover the post-CronJob-PATCH/pre-apply window.
 
 **When the gauge is NOT set.** Both lookups skip the gauge on absent or
 malformed `forge.c5c3.io/rotation-completed-at` annotations: a missing
@@ -140,7 +137,7 @@ staging payload are tracked via the `RotationRejected` event (see
 **Series lifecycle.** When a Keystone CR is deleted, every rotation-age
 series tagged with that (keystone, namespace) pair is dropped by
 `DeleteForKeystone` in `reconcileDelete`, preventing orphan series
-from accumulating over the CR lifetime (CC-0089, REQ-004).
+from accumulating over the CR lifetime.
 
 **Example PromQL.** Alert if any rotation is older than 14 days:
 
@@ -155,7 +152,7 @@ max by (keystone, namespace, key_type) (
 ## `keystone_operator_db_sync_total`
 
 Count of DB-related Job terminal transitions per Keystone CR, labelled
-by the terminal state (CC-0089, REQ-005).
+by the terminal state.
 
 | Attribute | Value |
 | --- | --- |
@@ -167,12 +164,12 @@ by the terminal state (CC-0089, REQ-005).
 DB-related Job the operator runs against the Keystone CR:
 
 - `<keystone>-db-sync` — non-upgrade schema sync (`reconcileDatabase`).
-- `<keystone>-schema-check` — post-`db_sync` drift detection (CC-0064).
+- `<keystone>-schema-check` — post-`db_sync` drift detection.
 - `<keystone>-db-expand` / `-db-migrate` / `-db-contract` — the three
-  phases of the expand-migrate-contract upgrade flow (CC-0056).
+  phases of the expand-migrate-contract upgrade flow.
 
 This deliberate aggregation keeps the dashboard panel and failure-rate
-alerts populated during upgrades (CC-0089, REQ-005). The counter does
+alerts populated during upgrades. The counter does
 NOT carry a per-phase label; use the matching `DatabaseReady` condition
 reasons (`DBSyncFailed`, `ExpandFailed`, `MigrateFailed`, `ContractFailed`,
 `SchemaDriftDetected`) on the CR to attribute a failure to a specific
@@ -192,8 +189,7 @@ double-count the same Job UID; on patch failure the metric is deferred
 to the next reconcile, an Info-level log line is emitted, and a
 `Warning` event with reason `DBSyncMetricEmissionDeferred` is recorded
 on the Keystone CR so persistent apiserver failures are visible at
-default log verbosity and via `kubectl describe keystone` (CC-0089,
-W-003, review-2 suggestion 1).
+default log verbosity and via `kubectl describe keystone`.
 
 **Series lifecycle.** Deleted alongside the per-CR rotation-age gauge
 in `DeleteForKeystone` when the Keystone CR is removed.
@@ -211,7 +207,7 @@ sum by (keystone, namespace) (
 ## `keystone_operator_db_sync_duration_seconds`
 
 Duration in seconds of terminated DB-related Jobs, measured as
-`condition.LastTransitionTime − Job.CreationTimestamp` (CC-0089, REQ-005).
+`condition.LastTransitionTime − Job.CreationTimestamp`.
 
 | Attribute | Value |
 | --- | --- |
@@ -241,8 +237,7 @@ histogram_quantile(
 
 ## Enabling the ServiceMonitor
 
-The Helm chart ships an opt-in `monitoring.coreos.com/v1` ServiceMonitor
-(CC-0089, REQ-006). Enable it via `values.yaml`:
+The Helm chart ships an opt-in `monitoring.coreos.com/v1` ServiceMonitor. Enable it via `values.yaml`:
 
 ```yaml
 # values.yaml fragment
@@ -264,7 +259,7 @@ see
 
 ## Related
 
-- [Keystone Reconciler Architecture — Metrics Instrumentation](./keystone/keystone-reconciler.md#metrics-instrumentation-cc-0089) — the `instrumentSubReconciler` contract and the rule that every new sub-reconciler must be wrapped.
+- [Keystone Reconciler Architecture — Metrics Instrumentation](./keystone/keystone-reconciler.md#metrics-instrumentation) — the `instrumentSubReconciler` contract and the rule that every new sub-reconciler must be wrapped.
 - [Observability & Diagnostics](../guides/observability.md) — human-facing status, conditions, and events.
 - [How to enable the Keystone operator metrics endpoint](../guides/enable-keystone-operator-metrics.md) — cluster-side Prometheus/Grafana wiring.
 - [`operators/keystone/dashboards/keystone-operator.json`](../../operators/keystone/dashboards/keystone-operator.json) — reference Grafana dashboard consuming the metrics above.

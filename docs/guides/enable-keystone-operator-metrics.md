@@ -5,20 +5,19 @@ SPDX-License-Identifier: Apache-2.0
 ---
 title: Enable the Keystone Operator Metrics Endpoint
 quadrant: operator
-feature: CC-0089
+
 ---
 
 # How-to: Enable the Keystone Operator Metrics Endpoint
 
 This guide walks an operator through turning on the Prometheus
-ServiceMonitor shipped with the `keystone-operator` Helm chart
-(CC-0089, REQ-011), importing the reference Grafana dashboard, and
+ServiceMonitor shipped with the `keystone-operator` Helm chart, importing the reference Grafana dashboard, and
 verifying that scrape targets transition to `Up`.
 
 For the authoritative metric catalogue (names, labels, buckets), see
 [Keystone Operator Prometheus Metrics](../reference/keystone-operator-metrics.md).
 For the controller-side instrumentation contract, see
-[Keystone Reconciler — Metrics Instrumentation](../reference/keystone/keystone-reconciler.md#metrics-instrumentation-cc-0089).
+[Keystone Reconciler — Metrics Instrumentation](../reference/keystone/keystone-reconciler.md#metrics-instrumentation).
 
 ---
 
@@ -99,7 +98,7 @@ The repository ships a reference dashboard in
 [`operators/keystone/dashboards/keystone-operator.json`](../../operators/keystone/dashboards/keystone-operator.json)
 covering the four core SLIs: reconcile p95 per sub-reconciler, error
 rate per condition type, rotation age per key, and `db_sync` duration
-p95 with failure count (CC-0089, REQ-010).
+p95 with failure count.
 
 1. In Grafana: **Dashboards → New → Import**.
 2. Upload `keystone-operator.json` or paste its contents.
@@ -174,7 +173,7 @@ Expected: `# TYPE` and `# HELP` lines for every metric in the
 example:
 
 ```
-# HELP keystone_operator_reconcile_duration_seconds Wall-clock duration of a Keystone sub-reconciler invocation, in seconds (CC-0089, REQ-001).
+# HELP keystone_operator_reconcile_duration_seconds Wall-clock duration of a Keystone sub-reconciler invocation, in seconds.
 # TYPE keystone_operator_reconcile_duration_seconds histogram
 ```
 
@@ -245,7 +244,7 @@ ServiceMonitor (and therefore the Prometheus scrape) is removed.
 
 ## See also
 
-- [Keystone Operator Prometheus Metrics](../reference/keystone-operator-metrics.md) — authoritative metric catalogue (CC-0089).
-- [Keystone Reconciler — Metrics Instrumentation](../reference/keystone/keystone-reconciler.md#metrics-instrumentation-cc-0089) — how sub-reconcilers are instrumented.
+- [Keystone Operator Prometheus Metrics](../reference/keystone-operator-metrics.md) — authoritative metric catalogue.
+- [Keystone Reconciler — Metrics Instrumentation](../reference/keystone/keystone-reconciler.md#metrics-instrumentation) — how sub-reconcilers are instrumented.
 - [Observability & Diagnostics](../guides/observability.md) — conditions, events, and logs.
 - [`operators/keystone/dashboards/keystone-operator.json`](../../operators/keystone/dashboards/keystone-operator.json) — reference Grafana dashboard.

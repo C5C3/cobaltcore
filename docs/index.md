@@ -1,6 +1,5 @@
 ---
 layout: home
-
 hero:
   name: CobaltCore Forge
   text: Kubernetes-native OpenStack
@@ -12,7 +11,6 @@ hero:
     - theme: alt
       text: Reference Docs
       link: /reference/keystone/keystone-crd
-
 features:
   - title: Operators
     details: Service operators following a shared sub-reconciler pattern, with Keystone as the reference implementation and c5c3-operator as the ControlPlane orchestration layer.
