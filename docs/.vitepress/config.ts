@@ -38,8 +38,10 @@ export default defineConfig({
         items: [
           {
             text: 'Keystone',
+            link: '/reference/keystone/',
             collapsed: true,
             items: [
+              { text: 'Overview', link: '/reference/keystone/' },
               { text: 'CRD', link: '/reference/keystone/keystone-crd' },
               { text: 'Controller Events', link: '/reference/keystone/keystone-events' },
               { text: 'Reconciler Architecture', link: '/reference/keystone/keystone-reconciler' },

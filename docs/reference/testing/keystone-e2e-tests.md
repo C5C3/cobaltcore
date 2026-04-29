@@ -25,53 +25,53 @@ suite is independent and creates its own Keystone CR with a unique name in the `
 namespace, enabling parallel execution.
 
 ```text
-┌─────────────────────────────────────────────────────────────────────────────┐
+┌────────────────────────────────────────────────────────────────────────────┐
 │  Chainsaw E2E Runner (parallel: 4)                                         │
-│                                                                             │
+│                                                                            │
 │  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ autoscaling        │  │ basic-deployment  │  │ basic-deployment-     │   │
-│  │                    │  │                   │  │  2026-1               │   │
+│  │ autoscaling       │  │ basic-deployment  │  │ basic-deployment-     │   │
+│  │                   │  │                   │  │  2026-1               │   │
 │  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
 │  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ brownfield-        │  │ concurrent-cr-    │  │ config-pruning        │   │
-│  │  database          │  │  conflicts        │  │                       │   │
+│  │ brownfield-       │  │ concurrent-cr-    │  │ config-pruning        │   │
+│  │  database         │  │  conflicts        │  │                       │   │
 │  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
 │  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ credential-        │  │ deletion-cleanup  │  │ events                │   │
-│  │  rotation          │  │                   │  │                       │   │
+│  │ credential-       │  │ deletion-cleanup  │  │ events                │   │
+│  │  rotation         │  │                   │  │                       │   │
 │  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
 │  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ fernet-rotation    │  │ graceful-shutdown │  │ healthcheck           │   │
-│  │                    │  │                   │  │                       │   │
+│  │ fernet-rotation   │  │ graceful-shutdown │  │ healthcheck           │   │
+│  │                   │  │                   │  │                       │   │
 │  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
 │  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ image-upgrade      │  │ invalid-cr        │  │ middleware-config     │   │
-│  │                    │  │                   │  │                       │   │
+│  │ image-upgrade     │  │ invalid-cr        │  │ middleware-config     │   │
+│  │                   │  │                   │  │                       │   │
 │  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
 │  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ missing-secret     │  │ namespace-scoped- │  │ network-policy        │   │
-│  │                    │  │  rbac             │  │                       │   │
+│  │ missing-secret    │  │ namespace-scoped- │  │ network-policy        │   │
+│  │                   │  │  rbac             │  │                       │   │
 │  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
 │  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ policy-overrides   │  │ policy-validation │  │ priority-class        │   │
-│  │                    │  │                   │  │                       │   │
+│  │ policy-overrides  │  │ policy-validation │  │ priority-class        │   │
+│  │                   │  │                   │  │                       │   │
 │  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
 │  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ release-upgrade    │  │ resources         │  │ scale                 │   │
-│  │                    │  │                   │  │                       │   │
+│  │ release-upgrade   │  │ resources         │  │ scale                 │   │
+│  │                   │  │                   │  │                       │   │
 │  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
 │  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ schema-drift-      │  │ topology-spread   │  │ trust-flush           │   │
-│  │  detection         │  │                   │  │                       │   │
+│  │ schema-drift-     │  │ topology-spread   │  │ trust-flush           │   │
+│  │  detection        │  │                   │  │                       │   │
 │  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
 │  ┌───────────────────┐  ┌───────────────────┐                              │
-│  │ upgrade-flow       │  │ uwsgi             │                              │
-│  │                    │  │                   │                              │
+│  │ upgrade-flow      │  │ uwsgi             │                              │
+│  │                   │  │                   │                              │
 │  └───────────────────┘  └───────────────────┘                              │
-│                                                                             │
-│  All tests run in: namespace openstack                                      │
+│                                                                            │
+│  All tests run in: namespace openstack                                     │
 │  Infrastructure: MariaDB, Memcached, ESO, OpenBao (pre-deployed)           │
-└─────────────────────────────────────────────────────────────────────────────┘
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Prerequisites
