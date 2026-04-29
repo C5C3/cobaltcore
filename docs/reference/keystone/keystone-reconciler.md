@@ -248,7 +248,7 @@ Fernet and credential sub-reconciler sections for the full contract.
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                       KEYSTONE RECONCILIATION FLOW                          │
+│                       KEYSTONE RECONCILIATION FLOW                           │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
 │  Keystone CR changed (or requeue timer fires)                                │
@@ -259,33 +259,33 @@ Fernet and credential sub-reconciler sections for the full contract.
 │         ▼                                    ┌─────────────────────────────┐ │
 │  ┌──────────────────┐                        │         LEGEND              │ │
 │  │ reconcileSecrets │  Check ESO synced      │  ───── Sequential           │ │
-│  │                  │  Sets: SecretsReady     │  ═════ Parallel (CC-0071)   │ │
+│  │                  │  Sets: SecretsReady    │  ═════ Parallel (CC-0071)   │ │
 │  └────────┬─────────┘  Requeue: 15s          └─────────────────────────────┘ │
 │           │                                                                  │
 │           ▼                                                                  │
 │  ┌──────────────────┐                                                        │
 │  │ reconcileConfig  │  Render keystone.conf + api-paste.ini                  │
-│  │                  │  Create immutable ConfigMap                             │
+│  │                  │  Create immutable ConfigMap                            │
 │  └────────┬─────────┘  Returns: configMapName                                │
 │           │                                                                  │
 │           ▼                                                                  │
-│  ╔══════════════════════════════════════════════════════════════════════════╗ │
-│  ║  reconcileParallelGroup (CC-0071)                                      ║ │
-│  ║                                                                        ║ │
-│  ║  errgroup.WithContext — each goroutine receives a DeepCopy of the CR   ║ │
-│  ║                                                                        ║ │
-│  ║  ┌─────────────────────┐  ┌──────────────────────────┐                 ║ │
-│  ║  │ reconcileFernetKeys │  │ reconcileCredentialKeys   │  (concurrent)  ║ │
-│  ║  │ + script ConfigMap  │  │ + script ConfigMap        │  (CC-0073)     ║ │
-│  ║  │ Sets: FernetKeysReady│ │ Sets: CredentialKeysReady │                ║ │
-│  ║  └─────────────────────┘  └──────────────────────────┘                 ║ │
-│  ║  ┌────────────────────────┐                                            ║ │
-│  ║  │ reconcileNetworkPolicy │  (concurrent)                              ║ │
+│  ╔═════════════════════════════════════════════════════════════════════════╗ │
+│  ║  reconcileParallelGroup (CC-0071)                                       ║ │
+│  ║                                                                         ║ │
+│  ║  errgroup.WithContext — each goroutine receives a DeepCopy of the CR    ║ │
+│  ║                                                                         ║ │
+│  ║  ┌──────────────────────┐  ┌──────────────────────────┐                 ║ │
+│  ║  │ reconcileFernetKeys  │  │ reconcileCredentialKeys  │  (concurrent)   ║ │
+│  ║  │ + script ConfigMap   │  │ + script ConfigMap       │  (CC-0073)      ║ │
+│  ║  │ Sets: FernetKeysReady│  │ Sets: CredentialKeysReady│                 ║ │
+│  ║  └──────────────────────┘  └──────────────────────────┘                 ║ │
+│  ║  ┌─────────────────────────┐                                            ║ │
+│  ║  │ reconcileNetworkPolicy  │  (concurrent)                              ║ │
 │  ║  │ Sets: NetworkPolicyReady│                                            ║ │
-│  ║  └────────────────────────┘                                            ║ │
-│  ║                                                                        ║ │
-│  ║  g.Wait() → mergeParallelConditions → shortestRequeue                  ║ │
-│  ╚═══════════════════════════════╤════════════════════════════════════════╝ │
+│  ║  └─────────────────────────┘                                            ║ │
+│  ║                                                                         ║ │
+│  ║  g.Wait() → mergeParallelConditions → shortestRequeue                   ║ │
+│  ╚═══════════════════════════════╤═════════════════════════════════════════╝ │
 │                                  │                                           │
 │           ┌──────────────────────┘                                           │
 │           ▼                                                                  │
@@ -337,7 +337,7 @@ Fernet and credential sub-reconciler sections for the full contract.
 │           ▼                                                                  │
 │  ┌─────────────────────┐                                                     │
 │  │ reconcileBootstrap  │  Run keystone-manage bootstrap Job                  │
-│  │                     │  Sets: BootstrapReady                                │
+│  │                     │  Sets: BootstrapReady                               │
 │  └────────┬────────────┘  Requeue: 60s                                       │
 │           │                                                                  │
 │           ▼                                                                  │

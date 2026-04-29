@@ -17,10 +17,10 @@ ExternalSecrets) into a local kind cluster and validate it with Chainsaw E2E tes
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  Developer / CI Runner                                                  │
 │                                                                         │
-│  make install-test-deps   ──▶  Installs chainsaw, flux, kind, kubectl  │
-│  make deploy-infra        ──▶  8-step deployment into kind cluster     │
-│  make e2e                 ──▶  Chainsaw E2E tests against the cluster  │
-│  make teardown-infra      ──▶  Deletes the kind cluster                │
+│  make install-test-deps   ──▶  Installs chainsaw, flux, kind, kubectl   │
+│  make deploy-infra        ──▶  8-step deployment into kind cluster      │
+│  make e2e                 ──▶  Chainsaw E2E tests against the cluster   │
+│  make teardown-infra      ──▶  Deletes the kind cluster                 │
 │                                                                         │
 └──────────────────────────────┬──────────────────────────────────────────┘
                                │
@@ -28,26 +28,26 @@ ExternalSecrets) into a local kind cluster and validate it with Chainsaw E2E tes
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  Kind Cluster (forge-e2e)                                               │
 │                                                                         │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                  │
-│  │ cert-manager │  │   OpenBao    │  │     ESO      │                  │
-│  │  (Deployment)│  │ (StatefulSet)│  │ (Deployment) │                  │
-│  └──────────────┘  └──────────────┘  └──────────────┘                  │
-│  ┌──────────────┐  ┌──────────────┐                                    │
-│  │   MariaDB    │  │  Memcached   │                                    │
-│  │  Operator    │  │  Operator    │                                    │
-│  │ (Deployment) │  │ (Deployment) │                                    │
-│  └──────┬───────┘  └──────┬───────┘                                    │
-│         │                  │                                            │
-│  ┌──────▼───────┐  ┌──────▼───────┐  ┌──────────────────────┐         │
-│  │  MariaDB CR  │  │ Memcached CR │  │ ClusterIssuer        │         │
-│  │ (openstack-  │  │ (openstack-  │  │ (selfsigned-cluster- │         │
-│  │  db)         │  │  memcached)  │  │  issuer)             │         │
-│  └──────────────┘  └──────────────┘  └──────────────────────┘         │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                   │
+│  │ cert-manager │  │   OpenBao    │  │     ESO      │                   │
+│  │  (Deployment)│  │ (StatefulSet)│  │ (Deployment) │                   │
+│  └──────────────┘  └──────────────┘  └──────────────┘                   │
+│  ┌──────────────┐  ┌──────────────┐                                     │
+│  │   MariaDB    │  │  Memcached   │                                     │
+│  │  Operator    │  │  Operator    │                                     │
+│  │ (Deployment) │  │ (Deployment) │                                     │
+│  └──────┬───────┘  └──────┬───────┘                                     │
+│         │                 │                                             │
+│  ┌──────▼───────┐  ┌──────▼───────┐  ┌──────────────────────┐           │
+│  │  MariaDB CR  │  │ Memcached CR │  │ ClusterIssuer        │           │
+│  │ (openstack-  │  │ (openstack-  │  │ (selfsigned-cluster- │           │
+│  │  db)         │  │  memcached)  │  │  issuer)             │           │
+│  └──────────────┘  └──────────────┘  └──────────────────────┘           │
 │                                                                         │
-│  ┌──────────────────────────────────────────────────────────┐          │
-│  │ ExternalSecrets: keystone-admin, keystone-db,            │          │
+│  ┌───────────────────────────────────────────────────────────┐          │
+│  │ ExternalSecrets: keystone-admin, keystone-db,             │          │
 │  │                  mariadb-root-password                    │          │
-│  └──────────────────────────────────────────────────────────┘          │
+│  └───────────────────────────────────────────────────────────┘          │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 

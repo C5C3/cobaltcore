@@ -31,7 +31,7 @@ Each suite deploys a Keystone CR, asserts a healthy baseline, injects a
 │  Chainsaw Chaos E2E Runner (parallel: 1)                                     │
 │                                                                              │
 │  Phase 1 (CC-0047): Dependency Pod Kill                                      │
-│  ┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐  │
+│  ┌──────────────────────┐  ┌──────────────────────┐  ┌────────────────────┐  │
 │  │ mariadb-pod-kill     │  │ memcached-pod-kill   │  │ openbao-pod-kill   │  │
 │  │ SC-CHAOS-001         │  │ SC-CHAOS-002         │  │ SC-CHAOS-003       │  │
 │  │ (keystone-chaos-db)  │  │ (keystone-chaos-mc)  │  │ (keystone-chaos-   │  │
@@ -39,43 +39,43 @@ Each suite deploys a Keystone CR, asserts a healthy baseline, injects a
 │  │ Pattern: degradation │  │ Pattern: no-         │  │ Pattern:           │  │
 │  │ and recovery         │  │ regression           │  │ degradation and    │  │
 │  │                      │  │                      │  │ recovery           │  │
-│  └─────────────────────┘  └─────────────────────┘  └─────────────────────┘  │
+│  └──────────────────────┘  └──────────────────────┘  └────────────────────┘  │
 │                                                                              │
 │  Phase 2 (CC-0048): Operator Resilience and Workload Chaos                   │
-│  ┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐  │
-│  │ operator-pod-crash   │  │ cronjob-rotation-   │  │ api-pod-kill-pdb   │  │
-│  │ SC-CHAOS-004         │  │ failure             │  │ SC-CHAOS-008       │  │
-│  │ (keystone-chaos-op)  │  │ SC-CHAOS-005        │  │ (keystone-chaos-   │  │
-│  │                      │  │ (keystone-chaos-    │  │  api)              │  │
-│  │ Pattern: operator    │  │  cron)              │  │                    │  │
-│  │ self-recovery        │  │                     │  │ Pattern: PDB       │  │
-│  │ (no-regression)      │  │ Pattern: workload   │  │ availability       │  │
-│  │                      │  │ fault tolerance     │  │ guarantee          │  │
-│  └─────────────────────┘  └─────────────────────┘  └─────────────────────┘  │
+│  ┌──────────────────────┐  ┌──────────────────────┐  ┌────────────────────┐  │
+│  │ operator-pod-crash   │  │ cronjob-rotation-    │  │ api-pod-kill-pdb   │  │
+│  │ SC-CHAOS-004         │  │ failure              │  │ SC-CHAOS-008       │  │
+│  │ (keystone-chaos-op)  │  │ SC-CHAOS-005         │  │ (keystone-chaos-   │  │
+│  │                      │  │ (keystone-chaos-     │  │  api)              │  │
+│  │ Pattern: operator    │  │  cron)               │  │                    │  │
+│  │ self-recovery        │  │                      │  │ Pattern: PDB       │  │
+│  │ (no-regression)      │  │ Pattern: workload    │  │ availability       │  │
+│  │                      │  │ fault tolerance      │  │ guarantee          │  │
+│  └──────────────────────┘  └──────────────────────┘  └────────────────────┘  │
 │                                                                              │
 │  Phase 3 (CC-0066): Concurrent Conflicts and Failover                        │
-│  ┌─────────────────────┐                                                     │
-│  │ operator-pod-kill    │                                                     │
-│  │ SC-CHAOS-009         │                                                     │
-│  │ (keystone-chaos-opk) │                                                     │
-│  │                      │                                                     │
-│  │ Pattern: operator    │                                                     │
-│  │ pod kill (all) with  │                                                     │
-│  │ failover reconcile   │                                                     │
-│  └─────────────────────┘                                                     │
+│  ┌──────────────────────┐                                                    │
+│  │ operator-pod-kill    │                                                    │
+│  │ SC-CHAOS-009         │                                                    │
+│  │ (keystone-chaos-opk) │                                                    │
+│  │                      │                                                    │
+│  │ Pattern: operator    │                                                    │
+│  │ pod kill (all) with  │                                                    │
+│  │ failover reconcile   │                                                    │
+│  └──────────────────────┘                                                    │
 │                                                                              │
 │  Phase 4 (CC-0049): Network Chaos                                            │
-│  ┌─────────────────────┐  ┌─────────────────────┐                            │
-│  │ mariadb-network-     │  │ mariadb-network-     │                            │
-│  │ partition            │  │ latency              │                            │
-│  │ SC-CHAOS-006         │  │ SC-CHAOS-007         │                            │
-│  │ (keystone-chaos-     │  │ (keystone-chaos-     │                            │
-│  │  net-part)           │  │  net-lat)            │                            │
-│  │                      │  │                      │                            │
-│  │ Pattern: degradation │  │ Pattern: latency     │                            │
-│  │ and recovery         │  │ tolerance            │                            │
-│  │ (NetworkChaos)       │  │ (no-regression)      │                            │
-│  └─────────────────────┘  └─────────────────────┘                            │
+│  ┌──────────────────────┐  ┌──────────────────────┐                          │
+│  │ mariadb-network-     │  │ mariadb-network-     │                          │
+│  │ partition            │  │ latency              │                          │
+│  │ SC-CHAOS-006         │  │ SC-CHAOS-007         │                          │
+│  │ (keystone-chaos-     │  │ (keystone-chaos-     │                          │
+│  │  net-part)           │  │  net-lat)            │                          │
+│  │                      │  │                      │                          │
+│  │ Pattern: degradation │  │ Pattern: latency     │                          │
+│  │ and recovery         │  │ tolerance            │                          │
+│  │ (NetworkChaos)       │  │ (no-regression)      │                          │
+│  └──────────────────────┘  └──────────────────────┘                          │
 │                                                                              │
 │  All tests run in: namespace openstack                                       │
 │  Fault injection: Chaos Mesh PodChaos and NetworkChaos CRDs                  │
