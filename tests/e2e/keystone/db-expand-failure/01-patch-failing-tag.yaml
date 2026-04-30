@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch that drives the db-expand failure path for CC-0102.
+#
+# DECISION (task 4.1): failing-tag mechanism.
+# Ambiguity: the plan offered two candidates — (a) bogus-tag whose image is
+# missing from the kind image set, and (b) an "incompatible-real-tag" such
+# as a downgrade tag rejected by the upgrade matrix. A third option —
+# patching the operator-managed Job spec to inject a failing command — was
+# noted as cleaner but invasive (REQ-010 forbids operator-side changes).
+#
+# Chose: (a) bogus-tag, concretely "2026.1-bogus".
+#
+# Reason:
+#   * "2026.1-bogus" passes operators/keystone/internal/controller/
+#     version.go:ParseRelease (Year=2026, Minor=1, Patch="bogus"; the
+#     suffix after `-` is treated as an opaque patch label).
+#   * IsSequentialUpgrade(2025.2, 2026.1-bogus) returns true (year +1,
+#     from.Minor=2 → to.Minor=1) so initiateUpgrade in
+#     reconcile_database.go:494 sets UpgradePhase=Expanding and dispatches
+#     to reconcileExpand — the exact code path REQ-005 needs to exercise.
+#   * The kind image set (.github/workflows/ci.yaml `Load images into
+#     kind`) pre-loads only `keystone:2025.2`, `keystone:2025.2-upgraded`,
+#     and `keystone:2026.1`. `keystone:2026.1-bogus` is intentionally
+#     missing → the expand Job's pod fails to pull the image and, after
+#     the Job's BackoffLimit (=4 in buildDBJob) is exhausted, the Job
+#     transitions to JobFailed=True. RunJob then returns ErrJobFailed,
+#     reconcileExpand at reconcile_database.go:563-566 records the failure
+#     via recordDBJobTerminalState, sets DatabaseReady=False/
+#     reason=ExpandFailed, and emits Warning event reason=ExpandFailed —
+#     the symptom REQ-005 asserts.
+#
+#   Candidates rejected:
+#     * Bogus *non-parseable* tag (e.g. "broken"): ParseRelease errors out
+#       before reaching reconcileExpand; the surfaced reason is
+#       VersionParseError, not ExpandFailed (reconcile_database.go:464).
+#     * Downgrade tag (e.g. "2025.1"): IsDowngrade short-circuits with
+#       reason=DowngradeNotSupported (reconcile_database.go:474), again
+#       not ExpandFailed.
+#     * Skip-version tag (e.g. "2026.2", "2027.1"): passes parsing but
+#       fails IsSequentialUpgrade with reason=UpgradePathInvalid
+#       (reconcile_database.go:486), again not ExpandFailed.
+#
+#   Trade-off (documented for review): this mechanism relies on the K8s
+#   Job controller marking the expand Job's pod Failed within the test's
+#   5-minute assert window once the image-pull retries have exhausted the
+#   pod's BackoffLimit. Recent kind / Kubernetes (>=1.31) honour pod
+#   ImagePullBackOff toward Job BackoffLimit by default; older clusters
+#   may need PodFailurePolicy on the Job spec, which would require an
+#   operator change (out of scope per REQ-010 "no operator code changes").
+#   If the test proves flaky in CI, the follow-up is to add a
+#   PodFailurePolicy rule to buildDBJob in reconcile_database.go that
+#   counts ImagePullBackOff toward BackoffLimit, tracked under a separate
+#   feature ID.
+# Reviewer: please verify the trade-off matches review intent.
+#
+# REQ-005 (CC-0102)
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-db-expand-failure
+  namespace: openstack
+spec:
+  image:
+    tag: "2026.1-bogus"

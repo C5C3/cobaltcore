@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR fixture for the db-expand-failure E2E test (CC-0102).
+#
+# Managed mode: database via clusterRef to openstack-db, cache via clusterRef
+# to openstack-memcached. Modelled on tests/e2e/keystone/basic-deployment/
+# 00-keystone-cr.yaml so the test inherits the operator-managed
+# MariaDB User/Database/Grant chain for free (REQ-009).
+#
+# Initial spec.image.tag is "2025.2" (a tag known to be present in the test
+# image set; see .github/workflows/ci.yaml `Load images into kind`). The
+# failing tag is applied separately via 01-patch-failing-tag.yaml so the
+# test first observes a healthy Keystone CR before injecting the upgrade
+# failure (REQ-009 scenario "Image tag pinned per test").
+#
+# Unique name (keystone-db-expand-failure) and database
+# (keystone_db_expand_failure) avoid collisions with other tests sharing
+# the openstack namespace under chainsaw parallel:4 (REQ-009 scenario
+# "Distinct CR names").
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-db-expand-failure
+  namespace: openstack
+spec:
+  replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_db_expand_failure
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne

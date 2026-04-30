@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Recovery patch for the db-expand-failure E2E test (CC-0102).
+#
+# Reverts spec.image.tag to the original "2025.2" so the operator can
+# resume the non-upgrade reconcile loop after the Expand failure has been
+# observed and the test has cleared the active upgrade state via a status
+# subresource patch (see chainsaw-test.yaml step 6) and deleted the failed
+# `<name>-db-expand` Job (REQ-005 scenario "Recovery requires Job deletion
+# + tag revert").
+#
+# REQ-005 (CC-0102)
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-db-expand-failure
+  namespace: openstack
+spec:
+  image:
+    tag: "2025.2"

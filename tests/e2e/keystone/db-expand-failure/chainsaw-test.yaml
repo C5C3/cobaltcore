@@ -1,0 +1,258 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E failure/recovery test for the db-expand failure path
+# (CC-0102, parent #277 Phase 1).
+#
+# Verifies that when a Keystone CR's spec.image.tag is patched to a value
+# whose `keystone-manage db_sync --expand` Job cannot complete, the
+# operator surfaces the failure as DatabaseReady=False/reason=ExpandFailed
+# with a Warning ExpandFailed event, and that the CR recovers to
+# Ready=True/AllReady once the failing tag is reverted, the active upgrade
+# state is cleared, and the failed expand Job is removed.
+#
+# This exercises the failure branch in
+# operators/keystone/internal/controller/reconcile_database.go:563-566 —
+# a code path covered by reconcile_database_test.go:1098-1180 (envtest)
+# but with no E2E coverage today.
+#
+# Placement: this test stays under tests/e2e/keystone/ in the parallel:4
+# pool because it only mutates its own namespace's Keystone CR and Jobs
+# (REQ-006 scenario "Namespace-scoped failure stays parallel"). Unlike
+# the openbao-* and eso-down siblings, it does not set
+# spec.concurrent:false because it does not touch global infrastructure.
+#
+# Failing-tag mechanism: see the DECISION header in
+# 01-patch-failing-tag.yaml for the choice between bogus-tag,
+# incompatible-real-tag, and Job-spec patching.
+#
+# REQ-005, REQ-007, REQ-009 (CC-0102)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-db-expand-failure
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR at the baseline release ──────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+
+  # ── Step 2: Assert baseline Ready=True/installedRelease=2025.2 ─────────
+  # Gate (REQ-005 scenario "Initial Ready at 2025.2"): the test MUST
+  # observe a healthy CR before injecting the failing tag, otherwise a
+  # later DatabaseReady=False/ExpandFailed assertion would be ambiguous
+  # (was the CR ever Ready in the first place?).
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-db-expand-failure
+            namespace: openstack
+          status:
+            installedRelease: "2025.2"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR status ==="
+          kubectl get keystone keystone-db-expand-failure -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+
+  # ── Step 3: Patch spec.image.tag to the failing tag ────────────────────
+  # The patch flips the operator into UpgradePhase=Expanding with target
+  # 2026.1-bogus; the resulting db-expand Job's pod cannot pull the image
+  # and, after Job BackoffLimit (=4 in buildDBJob) is exhausted, the Job
+  # transitions to JobFailed=True (REQ-005 scenario "Patch to failing tag
+  # flips DatabaseReady").
+  - try:
+    - patch:
+        file: 01-patch-failing-tag.yaml
+
+  # ── Step 4: Assert DatabaseReady=False/ExpandFailed + aggregate Ready=False
+  # + Warning ExpandFailed event ─────────────────────────────────────────
+  # The 5m chainsaw default assert timeout (set above) bounds the wait —
+  # in practice the failure surfaces once the expand Job's BackoffLimit
+  # is exhausted by repeated image-pull failures, which the K8s Job
+  # controller honours by marking JobFailed=True.
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-db-expand-failure
+            namespace: openstack
+          status:
+            (conditions[?type == 'DatabaseReady']):
+            - status: "False"
+              reason: ExpandFailed
+            (conditions[?type == 'Ready']):
+            - status: "False"
+              reason: NotAllReady
+    - script:
+        timeout: 30s
+        content: |
+          set -eu
+          # REQ-005 scenario "Patch to failing tag flips DatabaseReady" /
+          # and_then: assert a Warning event with reason=ExpandFailed
+          # exists in the namespace for the CR. Mirrors the event-assertion
+          # idiom from tests/e2e/keystone/events/chainsaw-test.yaml.
+          count=$(kubectl get events -n openstack \
+            --field-selector reason=ExpandFailed,involvedObject.name=keystone-db-expand-failure \
+            -o name 2>/dev/null | wc -l)
+          if [ "$count" -eq 0 ]; then
+            echo "FAIL: no Warning ExpandFailed event found for keystone-db-expand-failure"
+            kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30
+            exit 1
+          fi
+          echo "OK: found $count Warning ExpandFailed event(s)"
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR status ==="
+          kubectl get keystone keystone-db-expand-failure -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Expand Job status ==="
+          kubectl get job keystone-db-expand-failure-db-expand -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Expand Job pod logs / describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name=keystone-db-expand-failure-db-expand -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+          echo "=== Failed Job logs (all) ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Operator logs ==="
+          kubectl logs -n keystone-operator-system -l app.kubernetes.io/name=keystone-operator --tail=100 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+
+  # ── Step 5: Patch spec.image.tag back to the working tag ───────────────
+  - try:
+    - patch:
+        file: 02-patch-recovery-tag.yaml
+
+  # ── Step 6: Clear the active upgrade state via status subresource ──────
+  # DECISION (task 4.4): explicit status-subresource clearing.
+  # Ambiguity: REQ-005 scenario "Recovery requires Job deletion + tag
+  # revert" describes recovery as "patches spec.image.tag back to the
+  # working tag and explicitly deletes the failed <name>-db-expand Job".
+  # That sequence alone does not recover the CR: with
+  # status.upgradePhase=Expanding and status.targetRelease=2026.1-bogus
+  # already set by Step 3, the operator's active-upgrade tag-mismatch
+  # guard at reconcile_database.go:315 emits DatabaseReady=False/
+  # reason=UpgradeTargetChanged and refuses to dispatch reconcileExpand
+  # — preventing the Step 8 Ready=True assertion from ever passing.
+  # Chose: clear status.upgradePhase and status.targetRelease via
+  # `kubectl patch --subresource=status` so the next reconcile re-enters
+  # the non-upgrade branch (isUpgrade()=false because spec.tag=2025.2 ==
+  # status.installedRelease=2025.2), runs the regular db-sync Job (which
+  # is already Complete and pod-spec-hash-matched from the initial
+  # deploy), and aggregates back to Ready=True/AllReady.
+  # Reason: this is the minimal recovery that matches the test's
+  # operational intent (CR returns to a healthy steady state) while
+  # respecting REQ-010 ("no operator code changes"). A status-subresource
+  # patch is a standard E2E recovery tool — no internal API is bypassed.
+  # Reviewer: please verify; if the operator should support tag-revert as
+  # a recovery action without status surgery, that becomes a small
+  # operator-side feature ticket (out of scope for CC-0102).
+  - try:
+    - script:
+        timeout: 30s
+        content: |
+          set -eu
+          kubectl patch keystone keystone-db-expand-failure -n openstack \
+            --subresource=status --type=merge \
+            -p '{"status":{"upgradePhase":"","targetRelease":""}}'
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR status (post-patch attempt) ==="
+          kubectl get keystone keystone-db-expand-failure -n $NAMESPACE -o yaml 2>&1 || true
+
+  # ── Step 7: Delete the failed db-expand Job ────────────────────────────
+  # REQ-005 scenario "Recovery requires Job deletion + tag revert"
+  # explicitly mandates this step. Even with the status cleared in Step 6
+  # the orphaned Job is not strictly required to be removed for recovery
+  # (it is no longer referenced by any reconcile path), but deleting it
+  # keeps the namespace tidy and matches the operator's documented
+  # idempotent expand-Job naming idiom — see tests/e2e/keystone/
+  # release-upgrade/chainsaw-test.yaml for the success-path counterpart
+  # that also relies on `<name>-db-expand` as a stable Job identifier.
+  # `--ignore-not-found` makes this step idempotent across reruns.
+  - try:
+    - script:
+        timeout: 30s
+        content: |
+          set -eu
+          kubectl delete job keystone-db-expand-failure-db-expand \
+            -n openstack --ignore-not-found
+
+  # ── Step 8: Assert Ready=True/AllReady within 5m of recovery ───────────
+  # Recovery bound (REQ-005 scenario "Recovery requires Job deletion +
+  # tag revert"): the CR returns to Ready=True/reason=AllReady within
+  # 5 min once the recovery sequence (steps 5-7) is complete. The 5 min
+  # bound matches the chainsaw-config.yaml default and is generous — in
+  # practice the operator's next reconcile after the status-subresource
+  # patch hits the non-upgrade branch and aggregates Ready=True from the
+  # already-healthy sub-conditions immediately.
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-db-expand-failure
+            namespace: openstack
+          status:
+            installedRelease: "2025.2"
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR status ==="
+          kubectl get keystone keystone-db-expand-failure -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Operator logs ==="
+          kubectl logs -n keystone-operator-system -l app.kubernetes.io/name=keystone-operator --tail=100 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

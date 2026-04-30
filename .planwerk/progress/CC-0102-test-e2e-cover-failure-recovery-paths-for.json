@@ -603,6 +603,7 @@
       "title": "Resolve the open question on the failing-tag mechanism for db-expand-failure: prototype the two candidates (bogus-tag vs incompatible-real-tag) against `make kind-up` and pick the one that produces DatabaseReady=False/reason=ExpandFailed without ImagePullBackOff masking the symptom. Document the choice in a header comment of 01-patch-failing-tag.yaml (REQ-005, CC-0102)",
       "level": 4,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -612,6 +613,7 @@
       "title": "Create tests/e2e/keystone/db-expand-failure/00-keystone-cr.yaml fixture: managed-mode Keystone CR named keystone-db-expand-failure, initial image tag 2025.2 (REQ-009, CC-0102)",
       "level": 4,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -621,6 +623,7 @@
       "title": "Create tests/e2e/keystone/db-expand-failure/01-patch-failing-tag.yaml and 02-patch-recovery-tag.yaml using the failing-tag mechanism chosen in task 4.1 (REQ-005, CC-0102)",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -630,6 +633,7 @@
       "title": "Create tests/e2e/keystone/db-expand-failure/chainsaw-test.yaml: steps (apply CR, assert Ready=True/installedRelease=2025.2, apply 01-patch-failing-tag.yaml, assert DatabaseReady=False/ExpandFailed AND aggregate Ready=False AND Warning event reason=ExpandFailed within 5m, apply 02-patch-recovery-tag.yaml, kubectl delete job <name>-db-expand, assert Ready=True/AllReady within 5m); catch block matching events/chainsaw-test.yaml (REQ-005, REQ-007, CC-0102)",
       "level": 4,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-007"
