@@ -23,6 +23,15 @@ scaling, key rotation, image upgrades, cross-release upgrades, and deletion clea
 suite is independent and creates its own Keystone CR with a unique name in the `openstack`
 namespace, enabling parallel execution.
 
+A small **failure & recovery** sub-suite (introduced by CC-0102 as part of parent
+issue #277 Phase 1) covers external-dependency failure paths that pod-kill chaos tests
+under [`tests/e2e-chaos/`](./chaos-e2e-tests.md) do not exercise: OpenBao seal-all,
+OpenBao policy revocation, ESO Deployment scaled to zero, and an upgrade
+`db-expand` Job failure. These suites carry the `phase1-failure: "true"` Chainsaw
+label and the three global-state members opt out of the parallel pool via
+`spec.concurrent: false`. See [Running the Failure & Recovery Suite](#running-the-failure-and-recovery-suite)
+below.
+
 ```text
 ┌────────────────────────────────────────────────────────────────────────────┐
 │  Chainsaw E2E Runner (parallel: 4)                                         │
@@ -99,6 +108,66 @@ chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/keystone/
 chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/keystone/basic-deployment/
 ```
 
+### Running the Failure and Recovery Suite
+
+The failure/recovery suite (CC-0102, parent #277 Phase 1) carries the
+`phase1-failure: "true"` Chainsaw test label. Use a label selector to run only those
+suites locally — handy when you are iterating on a new failure-path test or
+investigating a flake without paying the cost of the full happy-path pool:
+
+```bash
+# Run every test labelled phase1-failure (recommended)
+chainsaw test --config tests/e2e/chainsaw-config.yaml \
+  --selector phase1-failure=true \
+  tests/e2e/keystone/
+
+# Equivalent path-based form (useful when you also want to add a new
+# unlabelled directory for ad-hoc debugging)
+chainsaw test --config tests/e2e/chainsaw-config.yaml \
+  tests/e2e/keystone/openbao-sealed/ \
+  tests/e2e/keystone/openbao-policy-revoked/ \
+  tests/e2e/keystone/eso-down/ \
+  tests/e2e/keystone/db-expand-failure/
+
+# Soak run: 3 sequential iterations to catch leaked global state (sealed
+# OpenBao, missing push policy, ESO at 0 replicas). Each iteration MUST
+# leave the cluster in the same state it started — every test in the
+# suite has a `cleanup:` block that enforces this invariant (REQ-007).
+for i in 1 2 3; do
+  echo "=== iteration ${i}/3 ==="
+  chainsaw test --config tests/e2e/chainsaw-config.yaml \
+    --selector phase1-failure=true \
+    tests/e2e/keystone/ || break
+done
+```
+
+**Convention for new failure-path tests:** add the label to the test's `metadata`
+block so the test joins the suite automatically:
+
+```yaml
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: <my-failure-test>
+  labels:
+    phase1-failure: "true"
+spec:
+  # If your test mutates global infrastructure (sealing OpenBao, scaling
+  # ESO, deleting cluster-scoped policy etc.), opt out of the parallel:4
+  # pool — otherwise it will race with concurrent happy-path tests:
+  concurrent: false
+  ...
+  # Always include a test-level cleanup block that restores the
+  # infrastructure invariant unconditionally (REQ-007).
+  cleanup:
+  - script:
+      content: ./restore-state.sh
+```
+
+See [openbao-sealed](#openbao-sealed) for a worked example of the full pattern
+(idempotent recovery script + per-step `cleanup:` defence-in-depth + test-level
+`cleanup:` outer net).
+
 ## Chainsaw Configuration
 
 All tests use the shared configuration at `tests/e2e/chainsaw-config.yaml`:
@@ -143,6 +212,21 @@ Deployment rollout, bootstrap Job).
 | [priority-class](#priority-class) | `keystone-pc` | `spec.priorityClassName` propagation: unset → empty, set → applied, patched empty → removed |
 | [schema-drift-detection](#schema-drift-detection) | `keystone-schema-drift` | `DatabaseReady=True` with message "revision verified"; schema-check Job runs and completes |
 | [topology-spread](#topology-spread) | `keystone-tsc` | `spec.topologySpreadConstraints`: `nil` injects 2 defaults; non-empty slice passes through verbatim; `[]` disables all constraints |
+
+### Failure & Recovery Suite (CC-0102, #277 Phase 1)
+
+The four suites below all carry the Chainsaw test label `phase1-failure: "true"`.
+Three of them mutate global infrastructure (OpenBao seal state, OpenBao policies,
+ESO Deployment) and opt out of the parallel pool via `spec.concurrent: false`. Each
+includes a test-level `cleanup:` block that restores the failure-injection target
+unconditionally so consecutive runs and the rest of the suite remain stable.
+
+| Suite | CR Name | Failure Mode | Asserted Reason | Recovery Step |
+| --- | --- | --- | --- | --- |
+| [openbao-sealed](#openbao-sealed) | `keystone-openbao-sealed` | All three OpenBao replicas sealed via `bao operator seal` | `SecretsReady=False/SecretStoreNotReady`, aggregate `Ready=False/NotAllReady` | `unseal-all.sh` re-applies the threshold keys from `openbao-system/openbao-init-keys`; recovery to `Ready=True/AllReady` within 2 m |
+| [openbao-policy-revoked](#openbao-policy-revoked) | `keystone-policy-revoked` | `push-keystone-keys` policy deleted; manual fernet rotation forces ESO push that OpenBao denies with HTTP 403 | PushSecret `Ready=False` with message containing `403`; CR `SecretsReady=True` (read path unaffected) | `restore-policy.sh` re-applies the captured policy; PushSecret recovers to `Ready=True` |
+| [eso-down](#eso-down) | `keystone-eso-down` | `external-secrets` Deployment scaled to 0 replicas | `SecretsReady=False/WaitingForDBCredentials`, aggregate `Ready=False/NotAllReady`, sustained for ≥60 s across 6 samples | `scale-eso.sh` restores original replica count; recovery to `Ready=True/AllReady` within 3 m |
+| [db-expand-failure](#db-expand-failure) | `keystone-db-expand-failure` | `spec.image.tag` patched to `2026.1-bogus` (parseable, sequential, but unloadable in the kind image set) → expand Job exhausts BackoffLimit | `DatabaseReady=False/ExpandFailed`, aggregate `Ready=False/NotAllReady`, Warning event `reason=ExpandFailed` | Patch tag back to `2025.2`, clear `status.upgradePhase`/`status.targetRelease` via subresource patch, delete the failed `<name>-db-expand` Job; recovery to `Ready=True/AllReady` |
 
 ---
 
@@ -625,6 +709,202 @@ an empty slice explicitly disables all constraints.
 
 ---
 
+### openbao-sealed
+
+**File:** `tests/e2e/keystone/openbao-sealed/chainsaw-test.yaml`
+
+**Failure mode:** All three OpenBao replicas (`openbao-{0,1,2}` in `openbao-system`)
+are sealed with `bao operator seal`. ESO marks the `ClusterSecretStore` `Ready=False`
+once every backend rejects authenticated requests with HTTP 503, and
+`reconcileSecrets` ([`reconcile_secrets.go:66`](https://github.com/C5C3/forge/blob/main/operators/keystone/internal/controller/reconcile_secrets.go))
+records `SecretsReady=False/SecretStoreNotReady`. Sealing only one replica is
+insufficient — Raft elects a new leader and the `ClusterSecretStore` stays Ready —
+so `seal-all.sh` must hit every replica.
+
+**Asserted condition:** `SecretsReady=False/SecretStoreNotReady` and aggregate
+`Ready=False/NotAllReady` while sealed; `SecretsReady=True` and `Ready=True/AllReady`
+within 2 m of unseal.
+
+**Recovery:** `unseal-all.sh` reads the threshold keys from
+`Secret openbao-system/openbao-init-keys` and applies the first three
+`unseal_keys_b64` to each replica (mirrors `deploy/openbao/bootstrap/init-unseal.sh`).
+Idempotent — already-Ready pods are fast-path skipped. The script runs twice as a
+defence-in-depth measure: once in the test body's recovery step and again in the
+test-level `cleanup:` block, so an aborted Step 4 still leaves the cluster usable.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` | `00-keystone-cr.yaml` — managed-mode CR `keystone-openbao-sealed` (image `2025.2`) |
+| 2 | Assert baseline `Ready=True` | `assert` (5m) | `Ready=True/AllReady` and `SecretsReady=True` — gate so Step 4 is unambiguous |
+| 3 | Seal all OpenBao replicas | `script` (60s) | Runs `seal-all.sh`; idempotent; per-step `cleanup:` runs `unseal-all.sh` if a later step aborts |
+| 4 | Assert `SecretsReady=False/SecretStoreNotReady` | `assert` (5m) | Aggregate `Ready=False/NotAllReady` |
+| 5 | Unseal all OpenBao replicas | `script` (240s) | Runs `unseal-all.sh`; idempotent on already-Ready pods |
+| 6 | Assert recovery within 2 m | `assert` (2m) | `SecretsReady=True`, `Ready=True/AllReady` |
+
+**Fixtures:** `00-keystone-cr.yaml`, `seal-all.sh`, `unseal-all.sh`
+
+**Concurrency:** `spec.concurrent: false` — sealing OpenBao globally would race
+every other Keystone CR running in the parallel-4 happy-path pool.
+
+**Test label:** `phase1-failure: "true"` (CC-0102, parent #277 Phase 1).
+
+---
+
+### openbao-policy-revoked
+
+**File:** `tests/e2e/keystone/openbao-policy-revoked/chainsaw-test.yaml`
+
+**Failure mode:** The `push-keystone-keys` OpenBao policy is deleted via
+`bao policy delete push-keystone-keys`, then a manual fernet rotation Job is
+created via `kubectl create job --from=cronjob/<name>-fernet-rotate`. The rotation
+Job itself succeeds (it only writes the production Secret) but ESO's PushSecret
+controller observes the Secret-data change, attempts to push to OpenBao, and is
+denied with HTTP 403. The Keystone CR's `SecretsReady` stays `True` because the
+*read*-side ClusterSecretStore (bound to `eso-management`, untouched) is
+unaffected — this asymmetry is the central invariant the test guards.
+
+**Asserted condition:** PushSecret `<name>-fernet-keys-backup`
+`Ready=False` with `message` containing `403`; Keystone CR
+`SecretsReady=True` throughout. Recovery: PushSecret `Ready=True` after the
+policy is restored.
+
+**Recovery:** `restore-policy.sh` re-applies the snapshot captured by
+`capture-policy.sh` in Step 3 (`bao policy write` is upsert). ESO retries on its
+built-in error backoff. The policy MUST be present after the test exits, otherwise
+every subsequent test relying on PushSecret writes (`basic-deployment`,
+`deletion-cleanup`, etc.) would fail spuriously — enforced by both Step 7 and an
+unconditional test-level `cleanup:` block.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` | `00-keystone-cr.yaml` — managed-mode CR `keystone-policy-revoked` |
+| 2 | Assert baseline | `assert` (5m) | CR `Ready=True/AllReady`, PushSecret `<name>-fernet-keys-backup` `Ready=True` |
+| 3 | Capture live policy | `script` (60s) | `capture-policy.sh` snapshots `push-keystone-keys` to `/tmp` |
+| 4 | Revoke policy | `script` (60s) | `revoke-policy.sh`; idempotent; per-step `cleanup:` runs `restore-policy.sh` |
+| 5 | Trigger fernet rotation | `script` (60s) | `kubectl create job --from=cronjob/<name>-fernet-rotate <name>-manual-rotate`; waits for `condition=complete` |
+| 6 | Assert PushSecret `Ready=False` (403) and CR `SecretsReady=True` | `assert` (5m) | Two-part assertion: write path broken, read path healthy |
+| 7 | Restore policy | `script` (60s) | `restore-policy.sh`; idempotent (`bao policy write` is upsert) |
+| 8 | Assert PushSecret recovers | `assert` (5m) | `Ready=True` after ESO retry backoff converges |
+
+**Fixtures:** `00-keystone-cr.yaml`, `capture-policy.sh`, `revoke-policy.sh`,
+`restore-policy.sh`
+
+**Concurrency:** `spec.concurrent: false` — the `push-keystone-keys` policy is
+cluster-global; deleting it would race every other Keystone CR running in
+parallel.
+
+**Test label:** `phase1-failure: "true"` (CC-0102, parent #277 Phase 1).
+
+---
+
+### eso-down
+
+**File:** `tests/e2e/keystone/eso-down/chainsaw-test.yaml`
+
+**Failure mode:** The `external-secrets` Deployment in the `external-secrets`
+namespace is scaled to 0 replicas via `scale-eso.sh 0`. With no ESO controller
+running, `ExternalSecret` CRs are not synced and the operator's
+`reconcileSecrets` reaches the `WaitForExternalSecret == false` branch
+([`reconcile_secrets.go:86`](https://github.com/C5C3/forge/blob/main/operators/keystone/internal/controller/reconcile_secrets.go))
+and records `SecretsReady=False/WaitingForDBCredentials`. The CR is applied
+*after* ESO is fully drained so there is no sync-race window.
+
+**Asserted condition:** `SecretsReady=False/WaitingForDBCredentials` and
+aggregate `Ready=False/NotAllReady`, **sustained continuously** for ≥60 s across 6
+evenly-spaced samples — this guards against a `Ready=True` flicker that a
+single point-in-time `assert` would not catch. Recovery: `Ready=True/AllReady`
+within 3 m of ESO scale-up.
+
+**Recovery:** `scale-eso.sh <captured-replicas>` restores the pre-test replica
+count. The original count is captured to `/tmp/eso-down-original-replicas` in
+Step 1 so a non-default deployment (e.g. an HA values change) recovers correctly.
+Idempotent — `kubectl scale --replicas=N` is a no-op when status already matches.
+A test-level `cleanup:` block re-runs the scale-up unconditionally.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Capture ESO replica count | `script` (30s) | Reads `external-secrets` `.spec.replicas`, writes to `/tmp` (defaults to 1 if unset) |
+| 2 | Scale ESO to 0 | `script` (180s) | `scale-eso.sh 0`; idempotent; per-step `cleanup:` re-scales to captured count |
+| 3 | Apply Keystone CR | `apply` | `00-keystone-cr.yaml` — managed-mode CR `keystone-eso-down` with unique secretRefs (`eso-down-keystone-db`, `eso-down-keystone-admin`) so the test observes a from-zero ExternalSecret sync |
+| 4a | Convergence gate — first failure observation | `assert` (5m) | `SecretsReady=False/WaitingForDBCredentials` and `Ready=False/NotAllReady` |
+| 4b | Sustained-window assertion | `script` (90s) | 6 samples × 11 s interval (>60 s total); fails on any sample where `Ready` is not `False` or `SecretsReady` reason ≠ `WaitingForDBCredentials` |
+| 5 | Scale ESO back to original | `script` (180s) | `scale-eso.sh <captured>`; idempotent |
+| 6 | Assert recovery within 3 m | `assert` (3m) | `SecretsReady=True`, `Ready=True/AllReady` |
+
+**Fixtures:** `00-keystone-cr.yaml`, `scale-eso.sh`
+
+**Concurrency:** `spec.concurrent: false` — scaling ESO globally would
+race every other Keystone CR running in parallel.
+
+**Test label:** `phase1-failure: "true"` (CC-0102, parent #277 Phase 1).
+
+---
+
+### db-expand-failure
+
+**File:** `tests/e2e/keystone/db-expand-failure/chainsaw-test.yaml`
+
+**Failure mode:** `spec.image.tag` is patched to `2026.1-bogus` — a tag chosen so
+that `ParseRelease` succeeds (`Year=2026, Minor=1, Patch="bogus"`),
+`IsSequentialUpgrade(2025.2, 2026.1-bogus) == true`, but the kind image set does
+not pre-load `keystone:2026.1-bogus`. The operator dispatches
+`reconcileExpand`, the resulting `<name>-db-expand` Job's pod cycles through
+`ImagePullBackOff` until the Job's `BackoffLimit` (=4) is exhausted, at which
+point the Job controller marks `JobFailed=True`. `recordDBJobTerminalState`
+sets `DatabaseReady=False/ExpandFailed` and emits a Warning event with reason
+`ExpandFailed` ([`reconcile_database.go:563-566`](https://github.com/C5C3/forge/blob/main/operators/keystone/internal/controller/reconcile_database.go)).
+
+The DECISION header in `01-patch-failing-tag.yaml` documents why other candidates
+were rejected: a non-parseable tag surfaces `VersionParseError`, a downgrade
+surfaces `DowngradeNotSupported`, and a skip-version surfaces
+`UpgradePathInvalid` — none exercise the `ExpandFailed` branch.
+
+**Asserted condition:** `DatabaseReady=False/ExpandFailed` and aggregate
+`Ready=False/NotAllReady`; a Kubernetes Warning event with
+`reason=ExpandFailed,involvedObject.name=keystone-db-expand-failure` exists.
+Recovery: `Ready=True/AllReady` with `installedRelease=2025.2`.
+
+**Recovery:** Three operations are required (see the DECISION header in
+chainsaw-test.yaml Step 6):
+
+1. Patch `spec.image.tag` back to `2025.2` (`02-patch-recovery-tag.yaml`).
+2. Clear `status.upgradePhase` and `status.targetRelease` via a
+   `kubectl patch --subresource=status --type=merge` patch — without this, the
+   active-upgrade tag-mismatch guard at `reconcile_database.go:315` emits
+   `DatabaseReady=False/UpgradeTargetChanged` and refuses to dispatch
+   `reconcileExpand`.
+3. Delete the failed `<name>-db-expand` Job (`--ignore-not-found`) so the next
+   reconcile is not blocked by the orphaned terminal-state Job.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` | `00-keystone-cr.yaml` — managed-mode CR `keystone-db-expand-failure` with `image.tag: 2025.2` |
+| 2 | Assert baseline `Ready=True/installedRelease=2025.2` | `assert` (5m) | Gate so Step 4 is unambiguous |
+| 3 | Patch to failing tag | `patch` | `01-patch-failing-tag.yaml` — `spec.image.tag: 2026.1-bogus` |
+| 4 | Assert `DatabaseReady=False/ExpandFailed` + Warning event | `assert` + `script` (5m) | Two-part: condition assertion plus `kubectl get events --field-selector reason=ExpandFailed,involvedObject.name=...` |
+| 5 | Patch back to recovery tag | `patch` | `02-patch-recovery-tag.yaml` — `spec.image.tag: 2025.2` |
+| 6 | Clear active upgrade state | `script` (30s) | `kubectl patch ... --subresource=status --type=merge -p '{"status":{"upgradePhase":"","targetRelease":""}}'` |
+| 7 | Delete failed expand Job | `script` (30s) | `kubectl delete job <name>-db-expand --ignore-not-found` |
+| 8 | Assert recovery within 5 m | `assert` (5m) | `installedRelease=2025.2`, `DatabaseReady=True`, `Ready=True/AllReady` |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-patch-failing-tag.yaml`,
+`02-patch-recovery-tag.yaml`
+
+**Concurrency:** Parallel — this test only mutates its own namespace's CR and
+Jobs and is safe to run alongside the rest of the parallel-4 pool.
+
+**Test label:** `phase1-failure: "true"` (CC-0102, parent #277 Phase 1).
+
+---
+
 ## Assertion Patterns
 
 The test suites use three Chainsaw assertion patterns:
@@ -749,9 +1029,18 @@ tests/e2e/keystone/
 ├── credential-rotation/
 │   ├── chainsaw-test.yaml              Credential key rotation
 │   └── 00-keystone-cr.yaml             Keystone CR with rotation schedule
+├── db-expand-failure/                  CC-0102 / #277 Phase 1 — failure & recovery
+│   ├── chainsaw-test.yaml              ExpandFailed surface + recovery via tag revert
+│   ├── 00-keystone-cr.yaml             Keystone CR (image.tag: 2025.2)
+│   ├── 01-patch-failing-tag.yaml       Patch image.tag → 2026.1-bogus
+│   └── 02-patch-recovery-tag.yaml      Patch image.tag → 2025.2 (recovery)
 ├── deletion-cleanup/
 │   ├── chainsaw-test.yaml              Garbage collection
 │   └── 00-keystone-cr.yaml             Keystone CR for cleanup test
+├── eso-down/                           CC-0102 / #277 Phase 1 — failure & recovery
+│   ├── chainsaw-test.yaml              ESO scaled-to-zero → sustained-False window
+│   ├── 00-keystone-cr.yaml             Keystone CR with unique secretRefs
+│   └── scale-eso.sh                    Idempotent scale helper for external-secrets
 ├── events/
 │   ├── chainsaw-test.yaml              Kubernetes event emission
 │   └── 00-keystone-cr.yaml             Keystone CR for event test
@@ -799,6 +1088,17 @@ tests/e2e/keystone/
 │   ├── 00-keystone-cr.yaml             Keystone CR with ingress policy
 │   ├── 01-patch-update-ingress.yaml    Patch ingress rule
 │   └── 02-patch-disable-networkpolicy.yaml Patch to disable NetworkPolicy
+├── openbao-policy-revoked/             CC-0102 / #277 Phase 1 — failure & recovery
+│   ├── chainsaw-test.yaml              push-keystone-keys revoke → 403 push + read-path stays True
+│   ├── 00-keystone-cr.yaml             Keystone CR with weekly fernet rotation
+│   ├── capture-policy.sh               Snapshots the live policy to /tmp
+│   ├── revoke-policy.sh                bao policy delete push-keystone-keys (idempotent)
+│   └── restore-policy.sh               bao policy write (upsert; idempotent)
+├── openbao-sealed/                     CC-0102 / #277 Phase 1 — failure & recovery
+│   ├── chainsaw-test.yaml              Seal-all OpenBao → SecretStoreNotReady → unseal-all
+│   ├── 00-keystone-cr.yaml             Keystone CR for sealed-openbao test
+│   ├── seal-all.sh                     Iterates openbao-{0,1,2}, runs bao operator seal
+│   └── unseal-all.sh                   Re-applies threshold keys from openbao-init-keys
 ├── policy-overrides/
 │   ├── chainsaw-test.yaml              oslo.policy integration
 │   ├── 00-policy-cm.yaml               Policy source ConfigMap
@@ -858,6 +1158,7 @@ tests/e2e/keystone/
 
 - [Keystone CRD API Reference](../keystone/keystone-crd.md) — CRD types, webhooks, and `invalid-cr` E2E tests
 - [Keystone Reconciler Architecture](../keystone/keystone-reconciler.md) — Sub-reconciler contracts and unit tests
+- [Chaos E2E Test Suites](./chaos-e2e-tests.md) — Pod-kill, network-partition, and operator-resilience chaos tests (complementary to the failure & recovery suite documented here)
 - [Infrastructure E2E Deployment](../infrastructure/e2e-deployment.md) — Infrastructure stack deployment and `infra-stack-health` test
 - `tests/e2e/chainsaw-config.yaml` — Shared Chainsaw configuration
 - `.github/workflows/ci.yaml` — CI workflow with E2E job

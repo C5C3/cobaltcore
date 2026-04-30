@@ -39,6 +39,12 @@ apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
   name: keystone-openbao-sealed
+  # phase1-failure label scopes the failure/recovery suite for selective
+  # local runs — see docs/reference/testing/keystone-e2e-tests.md
+  # "Running the Failure & Recovery Suite". Convention introduced by
+  # CC-0102 (parent #277 Phase 1) for new failure-path tests.
+  labels:
+    phase1-failure: "true"
 spec:
   namespace: openstack
   # Opt out of the parallel:4 happy-path pool — sealing OpenBao globally

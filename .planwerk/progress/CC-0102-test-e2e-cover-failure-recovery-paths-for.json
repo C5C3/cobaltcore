@@ -676,6 +676,7 @@
       "title": "Reference doc: extend docs/reference/testing/keystone-e2e-tests.md (or chaos-e2e-tests.md, depending on placement decided in 1.1) with one entry per new test — failure mode, asserted condition reason, recovery step, references to CC-0102 and parent #277 Phase 1 (REQ-011, CC-0102)",
       "level": 6,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-011"
       ]
@@ -685,6 +686,7 @@
       "title": "How-to: extend docs/reference/testing/keystone-e2e-tests.md (or add a small how-to under docs/guides/) describing how to run only the failure suite locally (e.g. `chainsaw test --selector phase1-failure`) for contributors adding new failure-path tests (REQ-011, CC-0102)",
       "level": 6,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-011"
       ]
