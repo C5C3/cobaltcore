@@ -644,6 +644,7 @@
       "title": "If the global-state tests landed under tests/e2e/keystone/ with concurrent:false (vs being moved to e2e-chaos/), verify by manual local run that they do not race with parallel:4 happy-path tests; otherwise, register the tests with the e2e-chaos config so they run under parallel:1 (REQ-006, CC-0102)",
       "level": 5,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -653,6 +654,7 @@
       "title": "Run `make e2e` (or e2e-chaos) twice consecutively against `make kind-up`; investigate and fix any new flake before merge (REQ-006, REQ-010, CC-0102)",
       "level": 5,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-010"
@@ -663,6 +665,7 @@
       "title": "Soak run: invoke the four new tests three times in sequence (e.g. via a Chainsaw label selector) and assert OpenBao ends each iteration unsealed with the policy intact and ESO scaled to 1 (REQ-006, REQ-010, CC-0102)",
       "level": 5,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-010"
