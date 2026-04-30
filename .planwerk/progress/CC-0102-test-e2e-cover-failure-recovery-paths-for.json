@@ -462,6 +462,7 @@
       "title": "Decide test placement (tests/e2e/keystone/ vs tests/e2e-chaos/) for the three global-state tests (openbao-sealed, openbao-policy-revoked, eso-down) and document the decision in a one-line header comment in each new chainsaw-test.yaml. The fourth test (db-expand-failure) stays in tests/e2e/keystone/ unconditionally (REQ-006, CC-0102)",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-010"
@@ -472,6 +473,7 @@
       "title": "Create tests/e2e/keystone/openbao-sealed/00-keystone-cr.yaml fixture: managed-mode Keystone CR named keystone-openbao-sealed in namespace openstack, image tag 2025.2, clusterRef to openstack-db and openstack-memcached, modelled on tests/e2e/keystone/basic-deployment/00-keystone-cr.yaml (REQ-009, CC-0102)",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -481,6 +483,7 @@
       "title": "Create tests/e2e/keystone/openbao-sealed/seal-all.sh: idempotent helper that iterates openbao-{0,1,2} in openbao-system and runs `kubectl exec ... -- bao operator seal` (already-sealed pod is a no-op, exit 0). Include header comment explaining why all three replicas must be sealed (Raft leadership) (REQ-001, REQ-008, CC-0102)",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-008"
@@ -491,6 +494,7 @@
       "title": "Create tests/e2e/keystone/openbao-sealed/unseal-all.sh: idempotent helper modelled on tests/e2e-chaos/unseal-openbao.sh — reads init-output Secret, applies first KEY_THRESHOLD=3 unseal_keys_b64 to each of openbao-{0,1,2}, fast-path skip on already-Ready pods, hard-fails on missing init Secret (REQ-002, REQ-008, CC-0102)",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-008"
@@ -501,6 +505,7 @@
       "title": "Create tests/e2e/keystone/openbao-sealed/chainsaw-test.yaml: 6 steps (apply CR, assert Ready=True, run seal-all.sh, assert SecretsReady=False/SecretStoreNotReady, run unseal-all.sh, assert Ready=True/AllReady within 2m); add catch block matching events/chainsaw-test.yaml; finally/cleanup runs unseal-all.sh unconditionally (REQ-001, REQ-002, REQ-007, CC-0102)",
       "level": 1,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",

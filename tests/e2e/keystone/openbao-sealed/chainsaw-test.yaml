@@ -1,0 +1,224 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E failure/recovery test for OpenBao seal-all (CC-0102).
+# Verifies the Keystone operator surfaces SecretsReady=False with
+# reason=SecretStoreNotReady when *every* OpenBao replica is sealed,
+# and recovers to Ready=True/AllReady after the replicas are unsealed.
+#
+# This exercises the ClusterSecretStore probing branch in
+# operators/keystone/internal/controller/reconcile_secrets.go:66 — a code
+# path that has unit and integration coverage but no E2E coverage today.
+#
+# DECISION (task 1.1): Test placement.
+# Ambiguity: REQ-006 says global-state tests must be serialised. Two
+# alternatives — place under tests/e2e-chaos/ (parallel:1 globally) or
+# under tests/e2e/keystone/ with spec.concurrent:false.
+# Chose: tests/e2e/keystone/ with spec.concurrent:false, because (a) the
+# test does not depend on Chaos Mesh CRDs (no PodChaos/NetworkChaos) and
+# its operational mechanism (`bao operator seal`) is a steady-state
+# OpenBao admin command rather than chaos-engineering fault injection;
+# (b) keeping happy-path and failure-path tests for the same condition
+# (SecretsReady) co-located in tests/e2e/keystone/ aids discovery and
+# matches the placement of tests/e2e/keystone/missing-secret/ (CC-0016)
+# which is itself a Secret-side failure path; (c) spec.concurrent:false
+# is the per-test serialisation knob Chainsaw provides and adds zero
+# infrastructure (no new chainsaw-config.yaml, no new make targets).
+# Reviewer: please verify the trade-off matches review intent.
+#
+# NOTE on topology: production runs OpenBao 3-replica HA Raft (PLAN.md
+# Phase 4 / S009). seal-all.sh and unseal-all.sh iterate openbao-{0,1,2};
+# both helpers tolerate single-replica kind topologies (a missing pod is
+# logged and skipped rather than failing). Sealing only one of three
+# replicas is insufficient — Raft elects a new leader and the
+# ClusterSecretStore stays Ready (REQ-001 documentation scenario).
+#
+# REQ-001, REQ-002, REQ-006, REQ-007 (CC-0102)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-openbao-sealed
+spec:
+  namespace: openstack
+  # Opt out of the parallel:4 happy-path pool — sealing OpenBao globally
+  # would race with every other Keystone CR running concurrently.
+  concurrent: false
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR ──────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+
+  # ── Step 2: Assert baseline Ready=True before sealing ──────────────────
+  # Gate: the test MUST observe a healthy Keystone CR before injecting
+  # the failure, otherwise a Step 4 SecretsReady=False assertion would be
+  # ambiguous (was the CR ever Ready?).
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-openbao-sealed
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR status ==="
+          kubectl get keystone keystone-openbao-sealed -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== OpenBao pod status ==="
+          kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao -o wide 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+
+  # ── Step 3: Seal every OpenBao replica ─────────────────────────────────
+  # Idempotent: an already-sealed replica is a no-op (REQ-008). Tolerates
+  # 1- or 3-replica kind topologies; missing pods are skipped.
+  - name: seal-all
+    cleanup:
+    # Defence-in-depth cleanup: even if a later step fails before Step 5
+    # runs, this step's cleanup runs unseal-all.sh so the cluster is left
+    # in a usable state for subsequent tests (REQ-002 idempotent cleanup).
+    - script:
+        timeout: 240s
+        content: ./unseal-all.sh
+    try:
+    - script:
+        timeout: 60s
+        content: ./seal-all.sh
+    catch:
+    - script:
+        content: |
+          echo "=== OpenBao pod status ==="
+          kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao -o wide 2>&1 || true
+          echo "=== OpenBao bao status (per replica) ==="
+          for pod in openbao-0 openbao-1 openbao-2; do
+            echo "--- $pod ---"
+            kubectl exec -n openbao-system "$pod" -- \
+              env BAO_ADDR=https://127.0.0.1:8200 VAULT_CACERT=/openbao/tls/ca.crt \
+              bao status -format=json 2>&1 || true
+          done
+
+  # ── Step 4: Assert SecretsReady=False/SecretStoreNotReady ──────────────
+  # The ClusterSecretStore Ready condition is set to False by ESO once
+  # every backend OpenBao replica refuses authenticated requests (sealed
+  # state returns 503). reconcileSecrets observes the CSS NotReady and
+  # records SecretsReady=False/reason=SecretStoreNotReady; the aggregate
+  # Ready condition flips to False/reason=NotAllReady.
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-openbao-sealed
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "False"
+              reason: SecretStoreNotReady
+            (conditions[?type == 'Ready']):
+            - status: "False"
+              reason: NotAllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR status ==="
+          kubectl get keystone keystone-openbao-sealed -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== ClusterSecretStore status ==="
+          kubectl get clustersecretstore -o wide 2>&1 || true
+          for css in $(kubectl get clustersecretstore -o name 2>/dev/null); do
+            echo "--- $css ---"
+            kubectl get "$css" -o jsonpath='{.status.conditions}' 2>&1 || true
+            echo
+          done
+          echo "=== ExternalSecret conditions ==="
+          kubectl get externalsecrets -n $NAMESPACE -o wide 2>&1 || true
+          for es in $(kubectl get externalsecrets -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $es ---"
+            kubectl get -n $NAMESPACE "$es" -o jsonpath='{.status.conditions}' 2>&1 || true
+            echo
+          done
+          echo "=== OpenBao pod status ==="
+          kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao -o wide 2>&1 || true
+          echo "=== Operator logs ==="
+          kubectl logs -n keystone-operator-system -l app.kubernetes.io/name=keystone-operator --tail=100 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+
+  # ── Step 5: Re-unseal every OpenBao replica ────────────────────────────
+  # Symmetric recovery to Step 3 (REQ-002). Idempotent: pods that are
+  # already Ready (unsealed, fast-path via readiness probe) are skipped.
+  - try:
+    - script:
+        timeout: 240s
+        content: ./unseal-all.sh
+    catch:
+    - script:
+        content: |
+          echo "=== OpenBao pod status ==="
+          kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao -o wide 2>&1 || true
+          echo "=== openbao-init-keys Secret presence ==="
+          kubectl get secret openbao-init-keys -n openbao-system 2>&1 || true
+
+  # ── Step 6: Assert Ready=True/AllReady within 2m of unsealing ──────────
+  # Recovery bound: REQ-002 says SecretsReady should return to True and
+  # the aggregate Ready/AllReady within 2 minutes of unseal completion.
+  # The chainsaw default assert timeout is 5m which gives a generous
+  # upper bound while still catching regressions where the operator
+  # caches the SecretStoreNotReady state past CSS recovery.
+  - try:
+    - assert:
+        timeout: 2m
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-openbao-sealed
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR status ==="
+          kubectl get keystone keystone-openbao-sealed -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== ClusterSecretStore status ==="
+          kubectl get clustersecretstore -o wide 2>&1 || true
+          for css in $(kubectl get clustersecretstore -o name 2>/dev/null); do
+            echo "--- $css ---"
+            kubectl get "$css" -o jsonpath='{.status.conditions}' 2>&1 || true
+            echo
+          done
+          echo "=== ExternalSecret conditions ==="
+          kubectl get externalsecrets -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== OpenBao pod status ==="
+          kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao -o wide 2>&1 || true
+          echo "=== Operator logs ==="
+          kubectl logs -n keystone-operator-system -l app.kubernetes.io/name=keystone-operator --tail=100 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
