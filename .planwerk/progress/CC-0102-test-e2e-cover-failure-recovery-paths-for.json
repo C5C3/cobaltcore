@@ -571,6 +571,7 @@
       "title": "Create tests/e2e/keystone/eso-down/scale-eso.sh: helper that scales the external-secrets Deployment in the external-secrets namespace to a given replica count and waits for spec.replicas == status.replicas; idempotent (REQ-004, REQ-008, CC-0102)",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-008"
@@ -581,6 +582,7 @@
       "title": "Create tests/e2e/keystone/eso-down/00-keystone-cr.yaml fixture: managed-mode Keystone CR named keystone-eso-down (no DB/admin Secrets pre-materialized so reconcileSecrets reaches the WaitForExternalSecret==false branch) (REQ-009, CC-0102)",
       "level": 3,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -590,6 +592,7 @@
       "title": "Create tests/e2e/keystone/eso-down/chainsaw-test.yaml: steps (scale-eso.sh 0 + wait for replicas:0, apply CR, sustained-poll Ready=False/WaitingForDBCredentials for >=60s with 6+ evenly-spaced samples, scale-eso.sh 1, assert Ready=True/AllReady within 3m); catch block; finally always runs scale-eso.sh with original replica count (REQ-004, REQ-007, CC-0102)",
       "level": 3,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-007"

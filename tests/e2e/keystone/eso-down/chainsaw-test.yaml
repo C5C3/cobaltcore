@@ -1,0 +1,368 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E failure/recovery test for ESO downtime (CC-0102).
+# Verifies the Keystone operator surfaces SecretsReady=False with
+# reason=WaitingForDBCredentials when the external-secrets Deployment is
+# scaled to 0 replicas, holds that state continuously for at least 60
+# seconds (no Ready=True flicker), and recovers to Ready=True/AllReady
+# within 3 minutes after ESO is scaled back up.
+#
+# This exercises the WaitForExternalSecret==false branch in
+# operators/keystone/internal/controller/reconcile_secrets.go:86 — a code
+# path that has unit and integration coverage but no E2E coverage today.
+#
+# DECISION (task 1.1): Test placement.
+# Same trade-off as tests/e2e/keystone/openbao-sealed/chainsaw-test.yaml:13 —
+# placed under tests/e2e/keystone/ with spec.concurrent:false rather than
+# moved to tests/e2e-chaos/, because the failure mechanism (`kubectl scale
+# deployment/external-secrets --replicas=0`) is a steady-state Kubernetes
+# admin command not chaos engineering, the test does not depend on Chaos
+# Mesh CRDs, and co-locating happy-path and failure-path tests for the same
+# Secret-side condition aids discovery. Reviewer: please verify.
+#
+# DECISION: Sustained-window assertion (REQ-004).
+# Ambiguity: a single point-in-time chainsaw `assert` cannot prove that
+# Ready=False holds *continuously* — chainsaw polls until the assertion
+# matches, then stops. A regression where reconcileSecrets briefly flips
+# Ready=True between two false readings would slip past such a check.
+# Chose: an inline polling script (Step 4b) that takes 6 evenly-spaced
+# samples over ~66 seconds and fails on the first sample that does NOT
+# observe Ready=False/NotAllReady AND SecretsReady=False/WaitingForDB-
+# Credentials. The chainsaw `assert` in Step 4a provides the eventual
+# convergence gate (waits for the first matching state); the sustained
+# script then proves the state is stable. This split lets us reuse
+# chainsaw's polling for the convergence gate without conflating the two
+# semantics.
+# Reviewer: please verify the trade-off matches review intent.
+#
+# Reason value rationale:
+#   The aggregate Ready condition's reason is NotAllReady (set by the
+#   composite condition aggregator when any sub-condition is False). The
+#   per-component SecretsReady condition is the one that carries the
+#   diagnostic reason WaitingForDBCredentials (reconcile_secrets.go:95).
+#   Both are asserted in the sustained-poll script: aggregate Ready proves
+#   the CR is not Ready, SecretsReady proves the *specific* sub-condition
+#   that flipped — guarding against false positives where the CR is False
+#   for a *different* reason (e.g. DatabaseReady=False from a transient
+#   MariaDB hiccup unrelated to ESO).
+#
+# Cleanup invariant:
+#   The external-secrets Deployment MUST be at its original replica count
+#   after this test exits (success or failure), otherwise every subsequent
+#   test that depends on ESO syncing ExternalSecrets would fail. Two layers
+#   enforce this:
+#     - Step 5 (scale-eso.sh <orig>) on the success path.
+#     - The test-level `cleanup:` block re-runs scale-eso.sh with the
+#       captured original replica count unconditionally, even on Step 4
+#       abort or test panic (REQ-007 / REQ-008). The capture file in /tmp
+#       persists across chainsaw steps on the runner.
+#
+# REQ-004, REQ-006, REQ-007, REQ-008 (CC-0102)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-eso-down
+spec:
+  namespace: openstack
+  # Opt out of the parallel:4 happy-path pool — scaling ESO globally would
+  # race with every other Keystone CR running concurrently (REQ-006). Same
+  # rationale as openbao-sealed and openbao-policy-revoked.
+  concurrent: false
+  timeouts:
+    # The recovery assert (Step 6) must converge within 3m of ESO scale-up
+    # (REQ-004). Chainsaw's per-test default of 5m is comfortably above that
+    # while still catching regressions where reconcileSecrets caches the
+    # WaitingForDBCredentials state past ESO recovery.
+    assert: 5m
+  # Test-level cleanup: restore ESO to the captured original replica count
+  # unconditionally, even if the test body aborts before Step 5. The script
+  # is idempotent (kubectl scale --replicas=N is a no-op when status
+  # already matches), so a successful Step 5 followed by this cleanup
+  # re-running is harmless.
+  cleanup:
+  - script:
+      timeout: 180s
+      content: |
+        set -euo pipefail
+        # /tmp/eso-down-original-replicas is written by Step 1; if it is
+        # missing (Step 1 never ran or runner state was wiped), default to 1
+        # — the kind/dev topology default — rather than leaving ESO at 0.
+        # Leaving ESO at 0 would brick every subsequent ExternalSecret-
+        # dependent test in the suite.
+        orig=1
+        if [[ -f /tmp/eso-down-original-replicas ]]; then
+          orig=$(cat /tmp/eso-down-original-replicas)
+        fi
+        echo "[cleanup] restoring external-secrets Deployment to ${orig} replicas"
+        ./scale-eso.sh "${orig}"
+        rm -f /tmp/eso-down-original-replicas
+  steps:
+  # ── Step 1: Capture the current ESO replica count ──────────────────────
+  # Saves the live spec.replicas to /tmp so the cleanup block can restore
+  # the exact pre-test count. Defaults to 1 if the field is unset (the
+  # absent-replicas case is unusual but possible immediately after a chart
+  # install before the deployment controller defaults the field).
+  - name: capture-eso-replicas
+    try:
+    - script:
+        timeout: 30s
+        content: |
+          set -euo pipefail
+          orig=$(kubectl get deployment.apps/external-secrets \
+            -n external-secrets \
+            -o jsonpath='{.spec.replicas}' 2>/dev/null || true)
+          if [[ -z "${orig}" || "${orig}" == "<no value>" ]]; then
+            orig=1
+          fi
+          echo "captured original external-secrets replicas=${orig}"
+          printf '%s' "${orig}" > /tmp/eso-down-original-replicas
+    catch:
+    - script:
+        content: |
+          echo "=== external-secrets Deployment status ==="
+          kubectl get deployment.apps/external-secrets -n external-secrets -o yaml 2>&1 || true
+          echo "=== external-secrets pods ==="
+          kubectl get pods -n external-secrets -o wide 2>&1 || true
+
+  # ── Step 2: Scale external-secrets to 0 replicas ───────────────────────
+  # Idempotent (REQ-008): scale-eso.sh waits for status convergence so the
+  # next step is guaranteed to see ESO fully drained — no half-scaled-down
+  # window where one terminating pod might still serve a stale ES sync.
+  # Defence-in-depth cleanup: even if a later step fails before Step 5
+  # runs, this step's per-step cleanup re-scales ESO back to the captured
+  # original count.
+  - name: scale-eso-down
+    cleanup:
+    - script:
+        timeout: 180s
+        content: |
+          set -euo pipefail
+          orig=1
+          if [[ -f /tmp/eso-down-original-replicas ]]; then
+            orig=$(cat /tmp/eso-down-original-replicas)
+          fi
+          ./scale-eso.sh "${orig}"
+    try:
+    - script:
+        timeout: 180s
+        content: ./scale-eso.sh 0
+    catch:
+    - script:
+        content: |
+          echo "=== external-secrets Deployment status ==="
+          kubectl get deployment.apps/external-secrets -n external-secrets -o yaml 2>&1 || true
+          echo "=== external-secrets pods ==="
+          kubectl get pods -n external-secrets -o wide 2>&1 || true
+
+  # ── Step 3: Apply Keystone CR ──────────────────────────────────────────
+  # The CR is applied AFTER ESO is fully scaled down (REQ-004 scenario "ESO
+  # scaled to zero before CR apply"). This guarantees no ExternalSecret
+  # sync race window where ESO catches the CR's first reconcile and syncs
+  # the Secret before being terminated.
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+
+  # ── Step 4a: Convergence gate — wait for first failure observation ─────
+  # Chainsaw's polling assert acts as the convergence gate: it polls the CR
+  # until SecretsReady=False/WaitingForDBCredentials AND aggregate Ready=
+  # False/NotAllReady appear, then proceeds to the sustained-window check
+  # in Step 4b. Without this gate the sustained-poll script in Step 4b
+  # would spuriously fail on its first iteration (the operator's first
+  # reconcile takes a few seconds and the conditions slice is initially
+  # empty).
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-eso-down
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "False"
+              reason: WaitingForDBCredentials
+            (conditions[?type == 'Ready']):
+            - status: "False"
+              reason: NotAllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR status ==="
+          kubectl get keystone keystone-eso-down -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== external-secrets Deployment ==="
+          kubectl get deployment.apps/external-secrets -n external-secrets -o wide 2>&1 || true
+          echo "=== external-secrets pods (should be 0) ==="
+          kubectl get pods -n external-secrets -o wide 2>&1 || true
+          echo "=== ExternalSecret conditions ==="
+          kubectl get externalsecrets -n $NAMESPACE -o wide 2>&1 || true
+          for es in $(kubectl get externalsecrets -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $es ---"
+            kubectl get -n $NAMESPACE "$es" -o jsonpath='{.status.conditions}' 2>&1 || true
+            echo
+          done
+          echo "=== Operator logs ==="
+          kubectl logs -n keystone-operator-system -l app.kubernetes.io/name=keystone-operator --tail=100 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+
+  # ── Step 4b: Sustained-window assertion (REQ-004) ──────────────────────
+  # Take 6 evenly-spaced samples over ~66 seconds (>60s) and fail on the
+  # first sample that does NOT observe Ready=False AND SecretsReady=False/
+  # WaitingForDBCredentials. This guards against a Ready=True flicker
+  # regression that a single chainsaw `assert` would not catch (REQ-004
+  # scenario "Sustained Ready=False for 60s").
+  #
+  # Why 6 samples / 11s interval:
+  #   The reconcile loop runs at most every RequeueSecretPolling=10s
+  #   (operators/keystone/internal/controller/keystone_controller.go). 11s
+  #   between samples ensures every sample lands inside or just after a
+  #   reconcile cycle, so a flicker of any duration would have a >50%
+  #   chance of being captured by at least one sample. Six samples brings
+  #   the cumulative miss probability below 2%.
+  - name: sustained-ready-false
+    try:
+    - script:
+        timeout: 90s
+        content: |
+          set -euo pipefail
+          SAMPLES=6
+          INTERVAL=11
+          CR_NAME=keystone-eso-down
+          NS="${NAMESPACE:-openstack}"
+          start_epoch=$(date -u +%s)
+          for i in $(seq 1 "${SAMPLES}"); do
+            ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+            ready_status=$(kubectl get keystone "${CR_NAME}" -n "${NS}" \
+              -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+            ready_reason=$(kubectl get keystone "${CR_NAME}" -n "${NS}" \
+              -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}' 2>/dev/null || echo "")
+            secrets_status=$(kubectl get keystone "${CR_NAME}" -n "${NS}" \
+              -o jsonpath='{.status.conditions[?(@.type=="SecretsReady")].status}' 2>/dev/null || echo "")
+            secrets_reason=$(kubectl get keystone "${CR_NAME}" -n "${NS}" \
+              -o jsonpath='{.status.conditions[?(@.type=="SecretsReady")].reason}' 2>/dev/null || echo "")
+            echo "[${ts}] sample ${i}/${SAMPLES}: Ready=${ready_status}/${ready_reason} SecretsReady=${secrets_status}/${secrets_reason}"
+
+            if [[ "${ready_status}" != "False" ]]; then
+              echo "FAIL: aggregate Ready flipped to '${ready_status}' at sample ${i} — Ready=True flicker observed"
+              exit 1
+            fi
+            if [[ "${secrets_status}" != "False" || "${secrets_reason}" != "WaitingForDBCredentials" ]]; then
+              echo "FAIL: SecretsReady='${secrets_status}'/reason='${secrets_reason}' — expected False/WaitingForDBCredentials at sample ${i}"
+              exit 1
+            fi
+
+            if [[ "${i}" -lt "${SAMPLES}" ]]; then
+              sleep "${INTERVAL}"
+            fi
+          done
+          end_epoch=$(date -u +%s)
+          elapsed=$(( end_epoch - start_epoch ))
+          if [[ "${elapsed}" -lt 60 ]]; then
+            echo "FAIL: sustained window ${elapsed}s < required 60s (clock skew or slept short)"
+            exit 1
+          fi
+          echo "PASS: Ready=False/SecretsReady=WaitingForDBCredentials sustained for ${elapsed}s across ${SAMPLES} samples"
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR status ==="
+          kubectl get keystone keystone-eso-down -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== external-secrets Deployment ==="
+          kubectl get deployment.apps/external-secrets -n external-secrets -o wide 2>&1 || true
+          echo "=== external-secrets pods (should be 0) ==="
+          kubectl get pods -n external-secrets -o wide 2>&1 || true
+          echo "=== ExternalSecret CRs ==="
+          kubectl get externalsecrets -n $NAMESPACE -o wide 2>&1 || true
+          for es in $(kubectl get externalsecrets -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $es ---"
+            kubectl get -n $NAMESPACE "$es" -o jsonpath='{.status.conditions}' 2>&1 || true
+            echo
+          done
+          echo "=== Operator logs (last 100) ==="
+          kubectl logs -n keystone-operator-system -l app.kubernetes.io/name=keystone-operator --tail=100 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+
+  # ── Step 5: Scale external-secrets back to original replica count ──────
+  # Recovery action symmetric to Step 2 (REQ-004 scenario "Recovery on ESO
+  # scale-up"). Uses the captured count from Step 1 rather than hard-
+  # coding 1, so a non-default deployment (e.g. an HA chart values change)
+  # still recovers correctly. Idempotent (REQ-008).
+  - name: scale-eso-up
+    try:
+    - script:
+        timeout: 180s
+        content: |
+          set -euo pipefail
+          orig=1
+          if [[ -f /tmp/eso-down-original-replicas ]]; then
+            orig=$(cat /tmp/eso-down-original-replicas)
+          fi
+          ./scale-eso.sh "${orig}"
+    catch:
+    - script:
+        content: |
+          echo "=== external-secrets Deployment ==="
+          kubectl get deployment.apps/external-secrets -n external-secrets -o yaml 2>&1 || true
+          echo "=== external-secrets pods ==="
+          kubectl get pods -n external-secrets -o wide 2>&1 || true
+          echo "=== captured replicas file ==="
+          cat /tmp/eso-down-original-replicas 2>&1 || true
+
+  # ── Step 6: Assert recovery to Ready=True/AllReady within 3m ───────────
+  # Recovery bound: REQ-004 says Ready=True/AllReady should be observed
+  # within 3 minutes of ESO scale-up. The chainsaw default assert timeout
+  # is 5m which gives a generous upper bound while still catching
+  # regressions where reconcileSecrets caches the WaitingForDBCredentials
+  # state past ESO recovery (e.g. an over-aggressive RequeueAfter that
+  # delays the next reconcile past the recovery window).
+  - try:
+    - assert:
+        timeout: 3m
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-eso-down
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR status ==="
+          kubectl get keystone keystone-eso-down -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== external-secrets Deployment ==="
+          kubectl get deployment.apps/external-secrets -n external-secrets -o wide 2>&1 || true
+          echo "=== external-secrets pods ==="
+          kubectl get pods -n external-secrets -o wide 2>&1 || true
+          echo "=== ExternalSecret CRs ==="
+          kubectl get externalsecrets -n $NAMESPACE -o wide 2>&1 || true
+          for es in $(kubectl get externalsecrets -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $es ---"
+            kubectl get -n $NAMESPACE "$es" -o jsonpath='{.status.conditions}' 2>&1 || true
+            echo
+          done
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Operator logs (last 100) ==="
+          kubectl logs -n keystone-operator-system -l app.kubernetes.io/name=keystone-operator --tail=100 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

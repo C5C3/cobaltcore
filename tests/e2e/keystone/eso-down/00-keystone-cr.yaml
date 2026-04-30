@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR fixture for the eso-down failure/recovery E2E test (CC-0102).
+#
+# Managed mode: database via clusterRef to openstack-db, cache via clusterRef
+# to openstack-memcached. Modelled on tests/e2e/keystone/basic-deployment/
+# 00-keystone-cr.yaml so the test inherits the operator-managed
+# MariaDB User/Database/Grant chain for free (REQ-009).
+#
+# Test-isolation choices:
+#
+#   - Unique CR name (keystone-eso-down) and database (keystone_eso_down)
+#     avoid collisions with sibling failure tests sharing the openstack
+#     namespace under concurrent:false serialisation.
+#
+#   - Unique secretRef names (eso-down-keystone-db, eso-down-keystone-admin)
+#     differ from the basic-deployment / openbao-sealed defaults
+#     (keystone-db / keystone-admin) on purpose: this test must observe a
+#     materialise-from-zero ExternalSecret sync, so the referenced Secrets
+#     MUST NOT pre-exist when the CR is applied. Reusing the shared names
+#     would risk the operator finding a stale Secret left by a prior test
+#     and skipping the WaitForExternalSecret==false branch we are validating
+#     (reconcile_secrets.go:86). The operator creates the Secret indirectly
+#     via the ExternalSecret CR it owns, so the unique name is sufficient.
+#
+# REQ-009 (CC-0102)
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-eso-down
+  namespace: openstack
+spec:
+  replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_eso_down
+    secretRef:
+      name: eso-down-keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: eso-down-keystone-admin
+    region: RegionOne
