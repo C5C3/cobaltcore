@@ -165,6 +165,7 @@ jobs:
       packages: write
       id-token: write       # CC-0029, CC-0030, CC-0035: Sigstore OIDC signing
       attestations: write   # CC-0029, CC-0035: GitHub Attestations API
+      artifact-metadata: write  # gh#108: actions/attest v4.1.0 storage record
       security-events: write  # CC-0032: GitHub Security tab SARIF upload
     outputs:
       python-base-image: ghcr.io/${{ needs.prepare.outputs.image-owner }}/python-base@${{ steps.merge-python-base.outputs.digest }}
@@ -326,6 +327,7 @@ jobs:
       packages: write
       id-token: write          # CC-0030, CC-0035: Sigstore OIDC signing
       attestations: write      # CC-0029, CC-0035: GitHub Attestations API
+      artifact-metadata: write # gh#108: actions/attest v4.1.0 storage record
       security-events: write   # CC-0032: GitHub Security tab SARIF upload
     strategy:
       fail-fast: false
@@ -373,6 +375,7 @@ jobs:
       packages: write
       id-token: write       # CC-0029, CC-0030, CC-0035: Sigstore OIDC signing
       attestations: write   # CC-0029, CC-0035: GitHub Attestations API
+      artifact-metadata: write  # gh#108: actions/attest v4.1.0 storage record
       security-events: write  # CC-0032: GitHub Security tab SARIF upload
     strategy:
       fail-fast: false
@@ -458,6 +461,7 @@ jobs:
       packages: write
       id-token: write       # CC-0029, CC-0030, CC-0035: Sigstore OIDC signing
       attestations: write   # CC-0029, CC-0035: GitHub Attestations API
+      artifact-metadata: write  # gh#108: actions/attest v4.1.0 storage record
       security-events: write  # CC-0032: GitHub Security tab SARIF upload
     strategy:
       fail-fast: false
