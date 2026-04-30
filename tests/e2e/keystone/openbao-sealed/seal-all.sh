@@ -3,9 +3,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# tests/e2e/keystone/openbao-sealed/seal-all.sh — Seal every OpenBao replica.
+# tests/e2e/keystone/openbao-sealed/seal-all.sh — Seal every OpenBao replica
+# and verify the ClusterSecretStore observes the cluster as NotReady.
+# Feature: CC-0102
 #
-# Why all three?
+# Why all three replicas?
 # OpenBao runs as a 3-replica HA Raft cluster. Sealing only one replica is NOT
 # sufficient to flip the ClusterSecretStore Ready=False: Raft elects a new
 # leader from the surviving quorum and the CSS continues serving secrets
@@ -26,119 +28,122 @@
 # kind topology with single-replica OpenBao) is skipped with a warning rather
 # than failing — the helper therefore tolerates 1- and 3-replica topologies.
 #
-# REQ-001, REQ-008 (CC-0102)
+# Single-replica topology guard (CC-0102 review fix): the helper requires at
+# least one expected pod to be present AND records how many were actually
+# sealed. This avoids the silent "single-replica topology that does not match
+# production HA Raft" failure mode flagged in the review — when fewer than
+# all production replicas exist, the post-condition CSS Ready=False assertion
+# below still runs and gates correctness.
+#
+# CSS post-condition (CC-0102 review fix): after sealing every present
+# replica, the helper asserts the ClusterSecretStore openbao-cluster-store
+# transitions to Ready=False within CSS_READY_FALSE_TIMEOUT (default 240 s).
+# This is the contract the upstream Keystone reconcileSecrets branch under
+# test relies on; if a single-replica kind topology cannot reach that state,
+# the helper fails fast rather than silently passing through the chainsaw
+# step and timing out 5 minutes later in a cryptic Step 4 assertion.
+#
+# REQ-001, REQ-002, REQ-008 (CC-0102)
 
 set -euo pipefail
 
-# Use BAO_NAMESPACE (not NAMESPACE) because chainsaw injects $NAMESPACE into
-# script env from the test's spec.namespace (openstack), which would silently
-# override a NAMESPACE default and make us look for openbao-* in the wrong
-# namespace.
-BAO_NAMESPACE="${BAO_NAMESPACE:-openbao-system}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="${SCRIPT_DIR}/../../../lib"
+
 PODS=("openbao-0" "openbao-1" "openbao-2")
-SECRET_NAME="${SECRET_NAME:-openbao-init-keys}"
-BAO_ADDR="${BAO_ADDR:-https://127.0.0.1:8200}"
-VAULT_CACERT="${VAULT_CACERT:-/openbao/tls/ca.crt}"
+CSS_NAME="${CSS_NAME:-openbao-cluster-store}"
+CSS_READY_FALSE_TIMEOUT="${CSS_READY_FALSE_TIMEOUT:-240}"
+CSS_POLL_INTERVAL="${CSS_POLL_INTERVAL:-5}"
 
 log() {
   echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] seal-all: $*"
 }
 
-# Recover the root token from the init-output Secret. This Secret is
-# populated by hack/deploy-infra.sh::openbao_init_unseal at bootstrap; if it
-# is missing, OpenBao has not been initialised and the seal action cannot
-# authenticate — fail fast with a clear pointer to the missing Secret.
-read_root_token() {
-  local init_output
-  if ! init_output=$(kubectl get secret "${SECRET_NAME}" -n "${BAO_NAMESPACE}" \
-      -o jsonpath='{.data.init-output}' 2>/dev/null | base64 -d); then
-    log "ERROR: could not read Secret ${BAO_NAMESPACE}/${SECRET_NAME} (was openbao bootstrap run?)"
-    exit 1
-  fi
-  if [[ -z "${init_output}" ]]; then
-    log "ERROR: Secret ${BAO_NAMESPACE}/${SECRET_NAME} exists but init-output key is empty"
-    exit 1
-  fi
-
-  local token
-  token=$(printf '%s' "${init_output}" | jq -r '.root_token')
-  if [[ -z "${token}" || "${token}" == "null" ]]; then
-    log "ERROR: root_token missing from Secret ${BAO_NAMESPACE}/${SECRET_NAME}"
-    exit 1
-  fi
-  printf '%s' "${token}"
-}
-
-# Returns 0 if the named pod exists in BAO_NAMESPACE, 1 otherwise. Used to
-# tolerate single-replica topologies (kind) where openbao-1 / openbao-2 are
-# not part of the cluster.
-pod_exists() {
-  local pod="$1"
-  kubectl get pod "${pod}" -n "${BAO_NAMESPACE}" >/dev/null 2>&1
-}
-
-# Returns 0 if `bao status` reports sealed=true. This lets us skip an
-# already-sealed pod for idempotency without relying on `bao operator seal`'s
-# own no-op behaviour (which we still rely on as a backstop, but the explicit
-# check produces clearer logs in CI).
-pod_is_sealed() {
-  local pod="$1"
-  local status_json
-  # bao status returns rc=2 when sealed; capture stdout regardless.
-  status_json=$(kubectl exec -n "${BAO_NAMESPACE}" "${pod}" -- \
-    env BAO_ADDR="${BAO_ADDR}" VAULT_CACERT="${VAULT_CACERT}" \
-    bao status -format=json 2>/dev/null) || true
-  if [[ -z "${status_json}" ]]; then
-    return 1
-  fi
-  echo "${status_json}" | jq -e '.sealed == true' >/dev/null 2>&1
-}
+# shellcheck source=tests/lib/openbao.sh
+source "${LIB_DIR}/openbao.sh"
 
 seal_pod() {
   local pod="$1"
   local token="$2"
 
-  if ! pod_exists "${pod}"; then
+  if ! openbao_pod_exists "${pod}"; then
     log "  ${pod} does not exist in ${BAO_NAMESPACE} — skipping (single-replica topology?)"
     return 0
   fi
 
-  if pod_is_sealed "${pod}"; then
+  if openbao_pod_is_sealed "${pod}"; then
     log "  ${pod} is already sealed — skipping"
     return 0
   fi
 
   log "  sealing ${pod}..."
-  kubectl exec -n "${BAO_NAMESPACE}" "${pod}" -- \
-    env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${token}" VAULT_CACERT="${VAULT_CACERT}" \
-    bao operator seal > /dev/null
+  openbao_bao_run_auth "${pod}" "${token}" bao operator seal > /dev/null
   log "  ${pod} sealed"
+}
+
+# Wait until ClusterSecretStore openbao-cluster-store reports Ready=False.
+# This is the cluster-side contract the operator's reconcileSecrets branch
+# under test depends on (reconcile_secrets.go:66). A single-replica kind
+# topology CAN reach this state (sealing the only replica trivially flips
+# the store), but the timing differs from a 3-replica cluster — the wait
+# bound here (240 s default) covers ESO's default 5-minute reconcile window
+# minus a small headroom for kubectl latency.
+wait_for_css_not_ready() {
+  local deadline=$(( $(date +%s) + CSS_READY_FALSE_TIMEOUT ))
+  log "Waiting up to ${CSS_READY_FALSE_TIMEOUT}s for ClusterSecretStore/${CSS_NAME} to report Ready=False..."
+  while true; do
+    local status
+    status=$(kubectl get clustersecretstore "${CSS_NAME}" \
+      -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null) \
+      || status=""
+    if [[ "${status}" == "False" ]]; then
+      log "  ClusterSecretStore/${CSS_NAME} is Ready=False (sealed cluster confirmed)"
+      return 0
+    fi
+    if [[ $(date +%s) -ge ${deadline} ]]; then
+      log "ERROR: ClusterSecretStore/${CSS_NAME} did not transition to Ready=False within ${CSS_READY_FALSE_TIMEOUT}s (last observed status: ${status:-<absent>})"
+      kubectl get clustersecretstore "${CSS_NAME}" -o yaml 2>&1 || true
+      kubectl get pods -n "${BAO_NAMESPACE}" -l app.kubernetes.io/name=openbao -o wide 2>&1 || true
+      exit 1
+    fi
+    sleep "${CSS_POLL_INTERVAL}"
+  done
 }
 
 main() {
   log "Recovering root token from Secret ${BAO_NAMESPACE}/${SECRET_NAME}..."
   local token
-  token=$(read_root_token)
+  token=$(openbao_read_root_token)
 
   # Scrub the token from this script's environment on any exit path (success,
   # set -e failure, signal) — mirrors hack/deploy-infra.sh:759 (CC-0010).
   trap 'token=""' EXIT
 
   log "Sealing OpenBao replicas..."
-  local sealed_any=0
+  local sealed_present=0
+  local pod
   for pod in "${PODS[@]}"; do
-    if pod_exists "${pod}"; then
-      sealed_any=1
+    if openbao_pod_exists "${pod}"; then
+      sealed_present=$(( sealed_present + 1 ))
     fi
     seal_pod "${pod}" "${token}"
   done
 
-  if [[ "${sealed_any}" -eq 0 ]]; then
+  if [[ "${sealed_present}" -eq 0 ]]; then
     log "ERROR: none of ${PODS[*]} exist in ${BAO_NAMESPACE} — cannot seal"
     exit 1
   fi
+  log "Sealed ${sealed_present} OpenBao replica(s); validating ClusterSecretStore observes the cluster as NotReady..."
 
-  log "All present OpenBao replicas are sealed"
+  # Belt-and-braces post-condition: ESO MUST observe the sealed cluster and
+  # transition the ClusterSecretStore to Ready=False before the chainsaw test
+  # proceeds to its Step 4 SecretsReady=False assertion. Without this gate,
+  # a topology mismatch (single-replica kind cluster where some helpers'
+  # behaviour differs from production HA Raft) would silently fall through
+  # and surface as a generic Step 4 timeout.
+  wait_for_css_not_ready
+
+  log "All present OpenBao replicas are sealed and ClusterSecretStore is Ready=False"
 }
 
 main "$@"

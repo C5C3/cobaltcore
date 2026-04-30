@@ -4,14 +4,14 @@
 
 # Patch that drives the db-expand failure path for CC-0102.
 #
-# DECISION (task 4.1): failing-tag mechanism.
-# Ambiguity: the plan offered two candidates — (a) bogus-tag whose image is
-# missing from the kind image set, and (b) an "incompatible-real-tag" such
-# as a downgrade tag rejected by the upgrade matrix. A third option —
-# patching the operator-managed Job spec to inject a failing command — was
-# noted as cleaner but invasive (REQ-010 forbids operator-side changes).
+# Failing-tag mechanism:
+#   The plan offered two candidates — (a) bogus-tag whose image is missing
+#   from the kind image set, and (b) an "incompatible-real-tag" such as a
+#   downgrade tag rejected by the upgrade matrix. A third option — patching
+#   the operator-managed Job spec to inject a failing command — was noted as
+#   cleaner but invasive (REQ-010 forbids operator-side changes).
 #
-# Chose: (a) bogus-tag, concretely "2026.1-bogus".
+# Chosen mechanism: (a) bogus-tag, concretely "2026.1-bogus".
 #
 # Reason:
 #   * "2026.1-bogus" passes operators/keystone/internal/controller/
@@ -43,18 +43,30 @@
 #       fails IsSequentialUpgrade with reason=UpgradePathInvalid
 #       (reconcile_database.go:486), again not ExpandFailed.
 #
-#   Trade-off (documented for review): this mechanism relies on the K8s
-#   Job controller marking the expand Job's pod Failed within the test's
-#   5-minute assert window once the image-pull retries have exhausted the
-#   pod's BackoffLimit. Recent kind / Kubernetes (>=1.31) honour pod
-#   ImagePullBackOff toward Job BackoffLimit by default; older clusters
-#   may need PodFailurePolicy on the Job spec, which would require an
-#   operator change (out of scope per REQ-010 "no operator code changes").
-#   If the test proves flaky in CI, the follow-up is to add a
-#   PodFailurePolicy rule to buildDBJob in reconcile_database.go that
-#   counts ImagePullBackOff toward BackoffLimit, tracked under a separate
-#   feature ID.
-# Reviewer: please verify the trade-off matches review intent.
+#   Environment dependency (CC-0102 review fix — explicit documentation):
+#   This mechanism relies on the K8s Job controller marking the expand
+#   Job's pod Failed within the chainsaw assert window once the image-pull
+#   retries have exhausted the pod's BackoffLimit. With BackoffLimit=4
+#   and exponential backoff (10s, 20s, 40s, 80s, 160s), total wait is
+#   approximately 5 minutes before the Job transitions to JobFailed=True.
+#
+#   Concretely, kind / Kubernetes >=1.31 honours pod ImagePullBackOff
+#   toward Job BackoffLimit by default, so a freshly-imported kind cluster
+#   reproduces the ExpandFailed reason within the test's bounded window.
+#   Older clusters keep the pod in ImagePullBackOff indefinitely and the
+#   Job never transitions to JobFailed=True — on those clusters this test
+#   would deterministically time out asserting DatabaseReady=False/
+#   ExpandFailed.
+#
+#   To accommodate the upper bound while still catching real regressions,
+#   the chainsaw Step 4 assert timeout is raised to 10 m (vs the 5 m
+#   default) — this gives the Job controller comfortably more than the
+#   ~5 min BackoffLimit budget plus headroom for kubelet-side pull-retry
+#   pacing variance. If the test ever needs to pass on a Kubernetes <1.31
+#   cluster, the follow-up is to add a PodFailurePolicy rule to buildDBJob
+#   in reconcile_database.go that explicitly counts ImagePullBackOff
+#   toward BackoffLimit; that work is out of scope per REQ-010 ("no
+#   operator code changes") and tracked under a separate feature ID.
 #
 # REQ-005 (CC-0102)
 apiVersion: keystone.openstack.c5c3.io/v1alpha1

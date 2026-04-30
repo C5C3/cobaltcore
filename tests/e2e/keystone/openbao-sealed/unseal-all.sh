@@ -18,8 +18,14 @@
 # Idempotency:
 #   - If a pod is already Ready, the readiness probe (GET /v1/sys/health) has
 #     confirmed it is unsealed; the script skips the bao client entirely
-#     (mirrors tests/e2e-chaos/unseal-openbao.sh:128 fast-path, REQ-008).
+#     (mirrors tests/e2e-chaos/unseal-openbao.sh fast-path, REQ-008).
 #   - Re-running on an already-unsealed cluster exits 0 without acting.
+#
+# Key delivery (CC-0102 review fix): unseal keys are forwarded over stdin via
+# `bao operator unseal -` rather than as kubectl exec positional arguments.
+# Positional args are visible in /proc/<pid>/cmdline on the host while the
+# kubectl invocation is alive; piping over stdin keeps the secret out of the
+# process listing. The same change is applied to tests/e2e-chaos/unseal-openbao.sh.
 #
 # Failure modes:
 #   - Missing init-output Secret is a hard failure with a clear error pointing
@@ -32,16 +38,10 @@
 
 set -euo pipefail
 
-# Note: use BAO_NAMESPACE (not NAMESPACE) because chainsaw injects $NAMESPACE
-# into script env from the test's spec.namespace (openstack), which would
-# silently override a NAMESPACE default and make us look for openbao-* in the
-# wrong namespace.
-BAO_NAMESPACE="${BAO_NAMESPACE:-openbao-system}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="${SCRIPT_DIR}/../../../lib"
+
 PODS=("openbao-0" "openbao-1" "openbao-2")
-SECRET_NAME="${SECRET_NAME:-openbao-init-keys}"
-BAO_ADDR="${BAO_ADDR:-https://127.0.0.1:8200}"
-VAULT_CACERT="${VAULT_CACERT:-/openbao/tls/ca.crt}"
-KEY_THRESHOLD="${KEY_THRESHOLD:-3}"
 POD_RUNNING_TIMEOUT="${POD_RUNNING_TIMEOUT:-120}"
 BAO_REACHABLE_RETRIES="${BAO_REACHABLE_RETRIES:-30}"
 BAO_REACHABLE_INTERVAL="${BAO_REACHABLE_INTERVAL:-5}"
@@ -50,33 +50,8 @@ log() {
   echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] unseal-all: $*"
 }
 
-bao_exec() {
-  local pod="$1"
-  shift
-  kubectl exec -n "${BAO_NAMESPACE}" "${pod}" -- \
-    env BAO_ADDR="${BAO_ADDR}" VAULT_CACERT="${VAULT_CACERT}" "$@"
-}
-
-# Returns 0 if the named pod exists in BAO_NAMESPACE, 1 otherwise.
-pod_exists() {
-  local pod="$1"
-  kubectl get pod "${pod}" -n "${BAO_NAMESPACE}" >/dev/null 2>&1
-}
-
-# OpenBao's upstream readiness probe is GET /v1/sys/health, which only returns
-# 200 when the pod is initialized AND unsealed AND active. The kubelet's Ready
-# condition therefore tracks unseal state directly — far more reliable than
-# re-running `bao status` post-unseal: the bao client occasionally returns
-# empty stdout while the listener re-initialises, while the readiness probe
-# uses an in-process HTTP path that doesn't depend on TLS or the bao CLI.
-pod_is_ready() {
-  local pod="$1"
-  local ready
-  ready=$(kubectl get pod "${pod}" -n "${BAO_NAMESPACE}" \
-    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null) \
-    || ready=""
-  [[ "${ready}" == "True" ]]
-}
+# shellcheck source=tests/lib/openbao.sh
+source "${LIB_DIR}/openbao.sh"
 
 # Polls .status.phase directly so a missing pod (StatefulSet still recreating
 # after a restart) is treated as "not yet Running" instead of a hard failure
@@ -103,12 +78,13 @@ wait_for_pod_running() {
 }
 
 # Wait for a single pod to report Ready=True after unseal. Uses kubelet's
-# probe rather than re-issuing `bao status` (see pod_is_ready rationale).
+# probe rather than re-issuing `bao status` (see openbao_pod_is_ready in
+# tests/lib/openbao.sh for the rationale).
 wait_for_pod_ready() {
   local pod="$1"
   local deadline=$(( $(date +%s) + BAO_REACHABLE_RETRIES * BAO_REACHABLE_INTERVAL ))
   while true; do
-    if pod_is_ready "${pod}"; then
+    if openbao_pod_is_ready "${pod}"; then
       log "  ${pod} is Ready (unsealed)"
       return 0
     fi
@@ -122,42 +98,18 @@ wait_for_pod_ready() {
   done
 }
 
-# Read the unseal keys from the init-output Secret once and emit them on
-# stdout, one per line. Hard-fails if the Secret is missing or any of the
-# first KEY_THRESHOLD keys is empty.
-read_unseal_keys() {
-  local init_output
-  if ! init_output=$(kubectl get secret "${SECRET_NAME}" -n "${BAO_NAMESPACE}" \
-      -o jsonpath='{.data.init-output}' 2>/dev/null | base64 -d); then
-    log "ERROR: could not read Secret ${BAO_NAMESPACE}/${SECRET_NAME} (was openbao bootstrap run?)"
-    exit 1
-  fi
-  if [[ -z "${init_output}" ]]; then
-    log "ERROR: Secret ${BAO_NAMESPACE}/${SECRET_NAME} exists but init-output key is empty"
-    exit 1
-  fi
-
-  local i key
-  for i in $(seq 0 $(( KEY_THRESHOLD - 1 ))); do
-    key=$(printf '%s' "${init_output}" | jq -r ".unseal_keys_b64[${i}]")
-    if [[ -z "${key}" || "${key}" == "null" ]]; then
-      log "ERROR: unseal key index ${i} missing from Secret ${BAO_NAMESPACE}/${SECRET_NAME}"
-      exit 1
-    fi
-    printf '%s\n' "${key}"
-  done
-}
-
+# Apply the unseal keys one at a time, piping each over stdin so the key
+# value never appears in the host's /proc/<pid>/cmdline. `bao operator unseal -`
+# reads a single key from stdin per invocation.
 unseal_pod() {
   local pod="$1"
   shift
-  local keys=("$@")
 
   log "Unsealing ${pod}..."
   local idx=0
   local key
-  for key in "${keys[@]}"; do
-    bao_exec "${pod}" bao operator unseal "${key}" > /dev/null
+  for key in "$@"; do
+    printf '%s' "${key}" | openbao_bao_run "${pod}" bao operator unseal - > /dev/null
     idx=$(( idx + 1 ))
     log "  applied unseal key ${idx}/${KEY_THRESHOLD} to ${pod}"
   done
@@ -170,7 +122,7 @@ main() {
   local present=()
   local pod
   for pod in "${PODS[@]}"; do
-    if pod_exists "${pod}"; then
+    if openbao_pod_exists "${pod}"; then
       present+=("${pod}")
     else
       log "  ${pod} does not exist in ${BAO_NAMESPACE} — skipping (single-replica topology?)"
@@ -193,7 +145,7 @@ main() {
   # — this is the idempotent re-run case (REQ-008).
   local needs_unseal=0
   for pod in "${present[@]}"; do
-    if ! pod_is_ready "${pod}"; then
+    if ! openbao_pod_is_ready "${pod}"; then
       needs_unseal=1
       break
     fi
@@ -208,10 +160,10 @@ main() {
   local keys=()
   while IFS= read -r line; do
     keys+=("${line}")
-  done < <(read_unseal_keys)
+  done < <(openbao_read_unseal_keys)
 
   for pod in "${present[@]}"; do
-    if pod_is_ready "${pod}"; then
+    if openbao_pod_is_ready "${pod}"; then
       log "${pod} already Ready — skipping"
       continue
     fi

@@ -23,9 +23,12 @@
 # the openbao-* and eso-down siblings, it does not set
 # spec.concurrent:false because it does not touch global infrastructure.
 #
-# Failing-tag mechanism: see the DECISION header in
-# 01-patch-failing-tag.yaml for the choice between bogus-tag,
-# incompatible-real-tag, and Job-spec patching.
+# Failing-tag mechanism + environment dependency: see the documentation
+# block at the top of 01-patch-failing-tag.yaml. The TL;DR is that the
+# 2026.1-bogus image-pull failure is honoured toward the Job's
+# BackoffLimit on Kubernetes >=1.31 (kind's default), with a worst-case
+# observation budget of ~5 min — Step 4's assert timeout is raised to
+# 10 m to cover that with comfortable headroom.
 #
 # REQ-005, REQ-007, REQ-009 (CC-0102)
 apiVersion: chainsaw.kyverno.io/v1alpha1
@@ -69,6 +72,7 @@ spec:
     catch:
     - script:
         content: |
+          set -euo pipefail
           echo "=== Keystone CR status ==="
           kubectl get keystone keystone-db-expand-failure -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== All pod logs ==="
@@ -102,12 +106,17 @@ spec:
 
   # ── Step 4: Assert DatabaseReady=False/ExpandFailed + aggregate Ready=False
   # + Warning ExpandFailed event ─────────────────────────────────────────
-  # The 5m chainsaw default assert timeout (set above) bounds the wait —
-  # in practice the failure surfaces once the expand Job's BackoffLimit
-  # is exhausted by repeated image-pull failures, which the K8s Job
-  # controller honours by marking JobFailed=True.
+  # The 10 m chainsaw assert timeout (raised here from the spec-level 5 m
+  # default per CC-0102 review fix) covers the Kubernetes Job controller's
+  # worst-case ~5 min BackoffLimit budget for repeated image-pull failures
+  # plus headroom for kubelet pull-retry pacing variance. See the
+  # 01-patch-failing-tag.yaml DECISION header for the full discussion of
+  # Kubernetes >=1.31 ImagePullBackOff/BackoffLimit semantics and the
+  # follow-up (PodFailurePolicy on buildDBJob) needed if older clusters
+  # ever need to be supported.
   - try:
     - assert:
+        timeout: 10m
         resource:
           apiVersion: keystone.openstack.c5c3.io/v1alpha1
           kind: Keystone
@@ -124,7 +133,7 @@ spec:
     - script:
         timeout: 30s
         content: |
-          set -eu
+          set -euo pipefail
           # REQ-005 scenario "Patch to failing tag flips DatabaseReady" /
           # and_then: assert a Warning event with reason=ExpandFailed
           # exists in the namespace for the CR. Mirrors the event-assertion
@@ -141,6 +150,7 @@ spec:
     catch:
     - script:
         content: |
+          set -euo pipefail
           echo "=== Keystone CR status ==="
           kubectl get keystone keystone-db-expand-failure -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== Expand Job status ==="
@@ -167,8 +177,8 @@ spec:
         file: 02-patch-recovery-tag.yaml
 
   # ── Step 6: Clear the active upgrade state via status subresource ──────
-  # DECISION (task 4.4): explicit status-subresource clearing.
-  # Ambiguity: REQ-005 scenario "Recovery requires Job deletion + tag
+  # Explicit status-subresource clearing — out of operational necessity, not
+  # convenience. REQ-005 scenario "Recovery requires Job deletion + tag
   # revert" describes recovery as "patches spec.image.tag back to the
   # working tag and explicitly deletes the failed <name>-db-expand Job".
   # That sequence alone does not recover the CR: with
@@ -177,30 +187,34 @@ spec:
   # guard at reconcile_database.go:315 emits DatabaseReady=False/
   # reason=UpgradeTargetChanged and refuses to dispatch reconcileExpand
   # — preventing the Step 8 Ready=True assertion from ever passing.
-  # Chose: clear status.upgradePhase and status.targetRelease via
-  # `kubectl patch --subresource=status` so the next reconcile re-enters
+  #
+  # Clearing status.upgradePhase and status.targetRelease via
+  # `kubectl patch --subresource=status` makes the next reconcile re-enter
   # the non-upgrade branch (isUpgrade()=false because spec.tag=2025.2 ==
   # status.installedRelease=2025.2), runs the regular db-sync Job (which
   # is already Complete and pod-spec-hash-matched from the initial
   # deploy), and aggregates back to Ready=True/AllReady.
-  # Reason: this is the minimal recovery that matches the test's
-  # operational intent (CR returns to a healthy steady state) while
-  # respecting REQ-010 ("no operator code changes"). A status-subresource
-  # patch is a standard E2E recovery tool — no internal API is bypassed.
-  # Reviewer: please verify; if the operator should support tag-revert as
-  # a recovery action without status surgery, that becomes a small
-  # operator-side feature ticket (out of scope for CC-0102).
+  #
+  # This is the minimal recovery that matches the test's operational
+  # intent (CR returns to a healthy steady state) while respecting REQ-010
+  # ("no operator code changes"). A status-subresource patch is a standard
+  # E2E recovery tool — no internal API is bypassed. If the operator is
+  # ever extended to support tag-revert as a first-class recovery action
+  # without status surgery, this Step 6 (and the matching note in
+  # docs/reference/testing/keystone-e2e-tests.md) can be deleted; that
+  # work is tracked separately and out of scope for CC-0102.
   - try:
     - script:
         timeout: 30s
         content: |
-          set -eu
+          set -euo pipefail
           kubectl patch keystone keystone-db-expand-failure -n openstack \
             --subresource=status --type=merge \
             -p '{"status":{"upgradePhase":"","targetRelease":""}}'
     catch:
     - script:
         content: |
+          set -euo pipefail
           echo "=== Keystone CR status (post-patch attempt) ==="
           kubectl get keystone keystone-db-expand-failure -n $NAMESPACE -o yaml 2>&1 || true
 
@@ -218,7 +232,7 @@ spec:
     - script:
         timeout: 30s
         content: |
-          set -eu
+          set -euo pipefail
           kubectl delete job keystone-db-expand-failure-db-expand \
             -n openstack --ignore-not-found
 
@@ -248,6 +262,7 @@ spec:
     catch:
     - script:
         content: |
+          set -euo pipefail
           echo "=== Keystone CR status ==="
           kubectl get keystone keystone-db-expand-failure -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== Job status ==="
@@ -257,6 +272,11 @@ spec:
             echo "--- $pod ---"
             kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
             kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
           done
           echo "=== Operator logs ==="
           kubectl logs -n keystone-operator-system -l app.kubernetes.io/name=keystone-operator --tail=100 2>&1 || true

@@ -14,13 +14,12 @@
 # happy-path in tests/e2e/keystone/basic-deployment/chainsaw-test.yaml:177
 # (CC-0083) but has no negative-path E2E coverage today.
 #
-# DECISION (task 1.1): Test placement.
-# Same trade-off as tests/e2e/keystone/openbao-sealed/chainsaw-test.yaml:13 —
-# placed under tests/e2e/keystone/ with spec.concurrent:false rather than
-# moved to tests/e2e-chaos/, because the failure mechanism (`bao policy
+# Test placement: under tests/e2e/keystone/ with spec.concurrent:false rather
+# than under tests/e2e-chaos/, because the failure mechanism (`bao policy
 # delete`) is a steady-state OpenBao admin command not chaos engineering, the
 # test does not depend on Chaos Mesh CRDs, and co-locating PushSecret happy-
-# path and failure-path tests aids discovery. Reviewer: please verify.
+# path and failure-path tests aids discovery. Same trade-off as
+# tests/e2e/keystone/openbao-sealed/chainsaw-test.yaml.
 #
 # Failure mechanism rationale (REQ-003):
 #   1. revoke-policy.sh deletes the push-keystone-keys policy. The
@@ -51,10 +50,14 @@
 #   The push-keystone-keys policy MUST be present on the cluster after this
 #   test exits (success or failure), otherwise every subsequent test that
 #   relies on PushSecret writes (basic-deployment, deletion-cleanup, etc.)
-#   would fail spuriously. Two layers enforce this:
-#     - Step 7 (restore-policy.sh) on the success path.
-#     - The test-level `cleanup:` block runs restore-policy.sh unconditionally,
-#       even on Step 4 abort or test panic (REQ-007 / REQ-008).
+#   would fail spuriously. The per-step `cleanup:` blocks on Steps 3 and 4
+#   (capture-policy and revoke-policy) re-run restore-policy.sh
+#   unconditionally on test-end — Chainsaw guarantees per-step cleanup runs
+#   regardless of which step fails or whether the test panics, so they ARE
+#   the safety net. (Note: chainsaw v1alpha1 TestSpec does NOT support a
+#   top-level `cleanup` field; cleanup is per-step only.) Step 7's normal
+#   restore is the success-path equivalent and shares the same idempotent
+#   `bao policy write` upsert.
 #
 # REQ-003, REQ-006, REQ-007, REQ-008 (CC-0102)
 apiVersion: chainsaw.kyverno.io/v1alpha1
@@ -75,13 +78,6 @@ spec:
   concurrent: false
   timeouts:
     assert: 5m
-  # Test-level cleanup: restore the policy unconditionally, even if the test
-  # body aborts before Step 7. Idempotent (bao policy write is upsert), so a
-  # successful Step 7 followed by this cleanup re-running is a no-op.
-  cleanup:
-  - script:
-      timeout: 60s
-      content: ./restore-policy.sh
   steps:
   # ── Step 1: Apply Keystone CR ──────────────────────────────────────────
   - try:
@@ -119,8 +115,14 @@ spec:
     catch:
     - script:
         content: |
+          set -euo pipefail
           echo "=== Keystone CR status ==="
           kubectl get keystone keystone-policy-revoked -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=keystone-policy-revoked -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
           echo "=== All pod logs ==="
           for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
             echo "--- $pod ---"
@@ -141,7 +143,16 @@ spec:
   # capture-policy.sh dumps the running cluster's policy text to the chainsaw
   # runner's filesystem so restore-policy.sh can re-apply it byte-for-byte
   # (REQ-008). Runs BEFORE the revoke step so the capture target still exists.
+  # The per-step `cleanup:` block re-runs restore-policy.sh after the test
+  # ends — this is the outer end-of-test safety net (Chainsaw runs per-step
+  # cleanup blocks unconditionally, including on test panic), guaranteeing
+  # the captured policy is restored to the cluster regardless of which step
+  # fails. Idempotent: bao policy write is upsert.
   - name: capture-policy
+    cleanup:
+    - script:
+        timeout: 60s
+        content: ./restore-policy.sh
     try:
     - script:
         timeout: 60s
@@ -149,17 +160,24 @@ spec:
     catch:
     - script:
         content: |
+          set -euo pipefail
           echo "=== openbao pod status ==="
           kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao -o wide 2>&1 || true
+          echo "=== openbao pod describe ==="
+          for pod in $(kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n openbao-system "$pod" 2>&1 | tail -40 || true
+          done
           echo "=== openbao-init-keys Secret presence ==="
           kubectl get secret openbao-init-keys -n openbao-system 2>&1 || true
 
   # ── Step 4: Revoke the push-keystone-keys policy ───────────────────────
   # Failure-injection step. Idempotent: a missing policy is treated as a
-  # no-op (REQ-008). Defence-in-depth `cleanup:` runs restore-policy.sh even
-  # if a later step aborts — the test-level `cleanup:` block above is the
-  # outer safety net but a per-step net keeps state consistent if the test
-  # body itself diverges before Step 7.
+  # no-op (REQ-008). Defence-in-depth `cleanup:` runs restore-policy.sh
+  # even if a later step aborts; combined with the Step 3 cleanup, the
+  # captured policy is restored to the cluster regardless of which step
+  # fails (Chainsaw guarantees per-step cleanup blocks run on every exit
+  # path).
   - name: revoke-policy
     cleanup:
     - script:
@@ -172,8 +190,14 @@ spec:
     catch:
     - script:
         content: |
+          set -euo pipefail
           echo "=== openbao audit trail (last 100 lines) ==="
           kubectl -n openbao-system logs -l app.kubernetes.io/name=openbao --tail=100 2>&1 || true
+          echo "=== openbao pod describe ==="
+          for pod in $(kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n openbao-system "$pod" 2>&1 | tail -40 || true
+          done
 
   # ── Step 5: Trigger a manual fernet rotation ───────────────────────────
   # Forces a Secret-data change on the production fernet-keys Secret, which
@@ -209,6 +233,7 @@ spec:
     catch:
     - script:
         content: |
+          set -euo pipefail
           echo "=== Rotation Job pods ==="
           kubectl get pods -n $NAMESPACE -l job-name=keystone-policy-revoked-manual-rotate -o wide 2>&1 || true
           for pod in $(kubectl get pods -n $NAMESPACE -l job-name=keystone-policy-revoked-manual-rotate -o name 2>/dev/null); do
@@ -216,6 +241,8 @@ spec:
             kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 2>&1 || true
             echo "--- $pod previous logs ---"
             kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 --previous 2>&1 || true
+            echo "--- $pod describe ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
           done
           echo "=== CronJob status ==="
           kubectl -n $NAMESPACE describe cronjob keystone-policy-revoked-fernet-rotate 2>&1 | tail -40 || true
@@ -233,6 +260,10 @@ spec:
   #       push-keystone-keys policy (CC-0083) over a single all-purpose ESO
   #       policy: a leaked-token write incident does not bring down the read
   #       path.
+  #
+  # The substring match on '403' is a known-fragile assertion; a follow-up
+  # ticket will add a typed PushSecretWriteFailed event so the test can
+  # match on a stable reason instead of the upstream HTTP response text.
   - try:
     - assert:
         resource:
@@ -262,6 +293,7 @@ spec:
     catch:
     - script:
         content: |
+          set -euo pipefail
           echo "=== PushSecret describe ==="
           kubectl -n $NAMESPACE describe pushsecret keystone-policy-revoked-fernet-keys-backup 2>&1 || true
           echo "=== PushSecret status JSON ==="
@@ -273,6 +305,11 @@ spec:
           kubectl -n openbao-system logs -l app.kubernetes.io/name=openbao --tail=100 2>&1 || true
           echo "=== Keystone CR status ==="
           kubectl get keystone keystone-policy-revoked -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=keystone-policy-revoked -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
 
   # ── Step 7: Restore the push-keystone-keys policy ──────────────────────
   # Re-applies the snapshot captured in Step 3 (REQ-003 recovery). Idempotent:
@@ -285,10 +322,16 @@ spec:
     catch:
     - script:
         content: |
+          set -euo pipefail
           echo "=== capture file ==="
           ls -la /tmp/push-keystone-keys.hcl.captured 2>&1 || true
           echo "=== openbao pod status ==="
           kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao -o wide 2>&1 || true
+          echo "=== openbao pod describe ==="
+          for pod in $(kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n openbao-system "$pod" 2>&1 | tail -40 || true
+          done
 
   # ── Step 8: Assert PushSecret recovers to Ready=True ───────────────────
   # ESO retries on its built-in error backoff after the policy returns. The
@@ -308,6 +351,7 @@ spec:
     catch:
     - script:
         content: |
+          set -euo pipefail
           echo "=== PushSecret describe ==="
           kubectl -n $NAMESPACE describe pushsecret keystone-policy-revoked-fernet-keys-backup 2>&1 || true
           echo "=== external-secrets controller logs (last 200 lines) ==="
@@ -320,3 +364,8 @@ spec:
             env BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN="$BAO_TOKEN" \
             VAULT_CACERT=/openbao/tls/ca.crt \
             bao policy read push-keystone-keys 2>&1 || true
+          echo "=== Keystone pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=keystone-policy-revoked -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done

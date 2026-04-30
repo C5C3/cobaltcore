@@ -7,35 +7,33 @@
 # reason=WaitingForDBCredentials when the external-secrets Deployment is
 # scaled to 0 replicas, holds that state continuously for at least 60
 # seconds (no Ready=True flicker), and recovers to Ready=True/AllReady
-# within 3 minutes after ESO is scaled back up.
+# within 3 minutes after ESO is scaled back up and the test's late-applied
+# ExternalSecrets sync.
 #
 # This exercises the WaitForExternalSecret==false branch in
 # operators/keystone/internal/controller/reconcile_secrets.go:86 — a code
 # path that has unit and integration coverage but no E2E coverage today.
 #
-# DECISION (task 1.1): Test placement.
-# Same trade-off as tests/e2e/keystone/openbao-sealed/chainsaw-test.yaml:13 —
-# placed under tests/e2e/keystone/ with spec.concurrent:false rather than
-# moved to tests/e2e-chaos/, because the failure mechanism (`kubectl scale
+# Test placement: under tests/e2e/keystone/ with spec.concurrent:false rather
+# than under tests/e2e-chaos/, because the failure mechanism (`kubectl scale
 # deployment/external-secrets --replicas=0`) is a steady-state Kubernetes
 # admin command not chaos engineering, the test does not depend on Chaos
 # Mesh CRDs, and co-locating happy-path and failure-path tests for the same
-# Secret-side condition aids discovery. Reviewer: please verify.
+# Secret-side condition aids discovery. Same trade-off as
+# tests/e2e/keystone/openbao-sealed/chainsaw-test.yaml.
 #
-# DECISION: Sustained-window assertion (REQ-004).
-# Ambiguity: a single point-in-time chainsaw `assert` cannot prove that
-# Ready=False holds *continuously* — chainsaw polls until the assertion
-# matches, then stops. A regression where reconcileSecrets briefly flips
-# Ready=True between two false readings would slip past such a check.
-# Chose: an inline polling script (Step 4b) that takes 6 evenly-spaced
-# samples over ~66 seconds and fails on the first sample that does NOT
-# observe Ready=False/NotAllReady AND SecretsReady=False/WaitingForDB-
-# Credentials. The chainsaw `assert` in Step 4a provides the eventual
-# convergence gate (waits for the first matching state); the sustained
-# script then proves the state is stable. This split lets us reuse
-# chainsaw's polling for the convergence gate without conflating the two
-# semantics.
-# Reviewer: please verify the trade-off matches review intent.
+# Sustained-window assertion (REQ-004):
+#   A single point-in-time chainsaw `assert` cannot prove that Ready=False
+#   holds *continuously* — chainsaw polls until the assertion matches, then
+#   stops. A regression where reconcileSecrets briefly flips Ready=True
+#   between two false readings would slip past such a check. The mitigation
+#   is an inline polling script (Step 4b) that takes 6 evenly-spaced samples
+#   over ~66 seconds and fails on the first sample that does NOT observe
+#   Ready=False/NotAllReady AND SecretsReady=False/WaitingForDBCredentials.
+#   The chainsaw `assert` in Step 4a provides the eventual convergence gate
+#   (waits for the first matching state); the sustained script then proves
+#   the state is stable. This split lets us reuse chainsaw's polling for
+#   the convergence gate without conflating the two semantics.
 #
 # Reason value rationale:
 #   The aggregate Ready condition's reason is NotAllReady (set by the
@@ -48,16 +46,32 @@
 #   for a *different* reason (e.g. DatabaseReady=False from a transient
 #   MariaDB hiccup unrelated to ESO).
 #
+# ExternalSecrets fixture:
+#   The test uses unique secretRef names (eso-down-keystone-db,
+#   eso-down-keystone-admin) so the operator must materialise the
+#   underlying Secrets from zero — this is the core of the
+#   WaitForExternalSecret==false branch under test. Because the static
+#   GitOps inventory under deploy/eso/externalsecrets/ uses the shared
+#   keystone-db / keystone-admin names, the test ships its own
+#   ExternalSecret manifests in 03-late-externalsecrets.yaml. They are
+#   applied AFTER ESO scale-up (between Steps 5 and 6) — modelled on
+#   tests/e2e/keystone/missing-secret/01-late-secrets.yaml — so the
+#   recovery ordering is linear: ESO controller returns -> ExternalSecrets
+#   created -> reconciled to Ready=True -> Secrets materialised -> operator
+#   SecretsReady flips to True.
+#
 # Cleanup invariant:
 #   The external-secrets Deployment MUST be at its original replica count
 #   after this test exits (success or failure), otherwise every subsequent
-#   test that depends on ESO syncing ExternalSecrets would fail. Two layers
-#   enforce this:
-#     - Step 5 (scale-eso.sh <orig>) on the success path.
-#     - The test-level `cleanup:` block re-runs scale-eso.sh with the
-#       captured original replica count unconditionally, even on Step 4
-#       abort or test panic (REQ-007 / REQ-008). The capture file in /tmp
-#       persists across chainsaw steps on the runner.
+#   test that depends on ESO syncing ExternalSecrets would fail. Per-step
+#   `cleanup:` blocks (Step 1 capture file, Step 2 scale-eso-down,
+#   Step 5 scale-eso-up) re-run scale-eso.sh with the captured original
+#   replica count unconditionally on test-end, even on a Step 4 abort or
+#   test panic (REQ-007 / REQ-008). The capture file in /tmp persists
+#   across chainsaw steps on the runner. (Note: chainsaw v1alpha1 TestSpec
+#   does not have a top-level `cleanup` field — `cleanup` is a per-step
+#   construct, and per-step cleanup blocks are guaranteed to run regardless
+#   of which step fails, so they ARE the safety net.)
 #
 # REQ-004, REQ-006, REQ-007, REQ-008 (CC-0102)
 apiVersion: chainsaw.kyverno.io/v1alpha1
@@ -82,28 +96,6 @@ spec:
     # while still catching regressions where reconcileSecrets caches the
     # WaitingForDBCredentials state past ESO recovery.
     assert: 5m
-  # Test-level cleanup: restore ESO to the captured original replica count
-  # unconditionally, even if the test body aborts before Step 5. The script
-  # is idempotent (kubectl scale --replicas=N is a no-op when status
-  # already matches), so a successful Step 5 followed by this cleanup
-  # re-running is harmless.
-  cleanup:
-  - script:
-      timeout: 180s
-      content: |
-        set -euo pipefail
-        # /tmp/eso-down-original-replicas is written by Step 1; if it is
-        # missing (Step 1 never ran or runner state was wiped), default to 1
-        # — the kind/dev topology default — rather than leaving ESO at 0.
-        # Leaving ESO at 0 would brick every subsequent ExternalSecret-
-        # dependent test in the suite.
-        orig=1
-        if [[ -f /tmp/eso-down-original-replicas ]]; then
-          orig=$(cat /tmp/eso-down-original-replicas)
-        fi
-        echo "[cleanup] restoring external-secrets Deployment to ${orig} replicas"
-        ./scale-eso.sh "${orig}"
-        rm -f /tmp/eso-down-original-replicas
   steps:
   # ── Step 1: Capture the current ESO replica count ──────────────────────
   # Saves the live spec.replicas to /tmp so the cleanup block can restore
@@ -111,6 +103,22 @@ spec:
   # absent-replicas case is unusual but possible immediately after a chart
   # install before the deployment controller defaults the field).
   - name: capture-eso-replicas
+    cleanup:
+    # Outermost cleanup safety net: re-run with the captured original count
+    # so a Step 1 failure mid-write (capture file empty) still leaves ESO
+    # at a sane replica count. Defaults to 1 — the kind/dev topology
+    # default — if the file was never written. Idempotent.
+    - script:
+        timeout: 180s
+        content: |
+          set -euo pipefail
+          orig=1
+          if [[ -f /tmp/eso-down-original-replicas ]]; then
+            orig=$(cat /tmp/eso-down-original-replicas)
+          fi
+          echo "[cleanup] restoring external-secrets Deployment to ${orig} replicas"
+          ./scale-eso.sh "${orig}"
+          rm -f /tmp/eso-down-original-replicas
     try:
     - script:
         timeout: 30s
@@ -127,10 +135,16 @@ spec:
     catch:
     - script:
         content: |
+          set -euo pipefail
           echo "=== external-secrets Deployment status ==="
           kubectl get deployment.apps/external-secrets -n external-secrets -o yaml 2>&1 || true
           echo "=== external-secrets pods ==="
           kubectl get pods -n external-secrets -o wide 2>&1 || true
+          echo "=== external-secrets pod describe ==="
+          for pod in $(kubectl get pods -n external-secrets -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n external-secrets "$pod" 2>&1 | tail -40 || true
+          done
 
   # ── Step 2: Scale external-secrets to 0 replicas ───────────────────────
   # Idempotent (REQ-008): scale-eso.sh waits for status convergence so the
@@ -157,16 +171,23 @@ spec:
     catch:
     - script:
         content: |
+          set -euo pipefail
           echo "=== external-secrets Deployment status ==="
           kubectl get deployment.apps/external-secrets -n external-secrets -o yaml 2>&1 || true
           echo "=== external-secrets pods ==="
           kubectl get pods -n external-secrets -o wide 2>&1 || true
+          echo "=== external-secrets pod describe ==="
+          for pod in $(kubectl get pods -n external-secrets -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n external-secrets "$pod" 2>&1 | tail -40 || true
+          done
 
   # ── Step 3: Apply Keystone CR ──────────────────────────────────────────
   # The CR is applied AFTER ESO is fully scaled down (REQ-004 scenario "ESO
   # scaled to zero before CR apply"). This guarantees no ExternalSecret
   # sync race window where ESO catches the CR's first reconcile and syncs
-  # the Secret before being terminated.
+  # the Secret before being terminated. The ExternalSecret manifests are
+  # applied later (Step 5b) so there is no half-synced state to chase.
   - try:
     - apply:
         file: 00-keystone-cr.yaml
@@ -197,8 +218,14 @@ spec:
     catch:
     - script:
         content: |
+          set -euo pipefail
           echo "=== Keystone CR status ==="
           kubectl get keystone keystone-eso-down -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=keystone-eso-down -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
           echo "=== external-secrets Deployment ==="
           kubectl get deployment.apps/external-secrets -n external-secrets -o wide 2>&1 || true
           echo "=== external-secrets pods (should be 0) ==="
@@ -275,8 +302,14 @@ spec:
     catch:
     - script:
         content: |
+          set -euo pipefail
           echo "=== Keystone CR status ==="
           kubectl get keystone keystone-eso-down -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=keystone-eso-down -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
           echo "=== external-secrets Deployment ==="
           kubectl get deployment.apps/external-secrets -n external-secrets -o wide 2>&1 || true
           echo "=== external-secrets pods (should be 0) ==="
@@ -312,20 +345,41 @@ spec:
     catch:
     - script:
         content: |
+          set -euo pipefail
           echo "=== external-secrets Deployment ==="
           kubectl get deployment.apps/external-secrets -n external-secrets -o yaml 2>&1 || true
           echo "=== external-secrets pods ==="
           kubectl get pods -n external-secrets -o wide 2>&1 || true
+          echo "=== external-secrets pod describe ==="
+          for pod in $(kubectl get pods -n external-secrets -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n external-secrets "$pod" 2>&1 | tail -40 || true
+          done
           echo "=== captured replicas file ==="
           cat /tmp/eso-down-original-replicas 2>&1 || true
 
+  # ── Step 5b: Apply the late ExternalSecrets fixture ────────────────────
+  # Modelled on tests/e2e/keystone/missing-secret/01-late-secrets.yaml: the
+  # ExternalSecrets carry the test-unique target Secret names (eso-down-
+  # keystone-db, eso-down-keystone-admin) referenced by the CR's
+  # secretRef.name fields. They are applied AFTER ESO is back at its
+  # original replica count so the controller is up to reconcile them. Any
+  # earlier apply would leave the ExternalSecrets without a Ready
+  # condition for the duration of the ESO-down window — the operator's
+  # WaitForExternalSecret call would still return (false, nil) (same
+  # outcome as for an absent ExternalSecret), but the recovery ordering
+  # would no longer be linear and any failure would be harder to diagnose.
+  - try:
+    - apply:
+        file: 03-late-externalsecrets.yaml
+
   # ── Step 6: Assert recovery to Ready=True/AllReady within 3m ───────────
   # Recovery bound: REQ-004 says Ready=True/AllReady should be observed
-  # within 3 minutes of ESO scale-up. The chainsaw default assert timeout
-  # is 5m which gives a generous upper bound while still catching
-  # regressions where reconcileSecrets caches the WaitingForDBCredentials
-  # state past ESO recovery (e.g. an over-aggressive RequeueAfter that
-  # delays the next reconcile past the recovery window).
+  # within 3 minutes of ESO scale-up + ExternalSecret apply. The chainsaw
+  # default assert timeout is 5m which gives a generous upper bound while
+  # still catching regressions where reconcileSecrets caches the
+  # WaitingForDBCredentials state past ESO recovery (e.g. an over-aggressive
+  # RequeueAfter that delays the next reconcile past the recovery window).
   - try:
     - assert:
         timeout: 3m
@@ -344,8 +398,14 @@ spec:
     catch:
     - script:
         content: |
+          set -euo pipefail
           echo "=== Keystone CR status ==="
           kubectl get keystone keystone-eso-down -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=keystone-eso-down -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
           echo "=== external-secrets Deployment ==="
           kubectl get deployment.apps/external-secrets -n external-secrets -o wide 2>&1 || true
           echo "=== external-secrets pods ==="

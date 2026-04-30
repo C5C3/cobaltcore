@@ -1,0 +1,228 @@
+{
+  "summary": "CC-0102 adds four Chainsaw E2E failure/recovery test directories (openbao-sealed, openbao-policy-revoked, eso-down, db-expand-failure) plus extensive documentation in docs/reference/testing/keystone-e2e-tests.md. Helper shell scripts implement seal/unseal, policy capture/revoke/restore, and ESO scaling. Three of four tests opt out of parallel execution via spec.concurrent:false; the db-expand-failure test stays in the parallel pool. Comments and DECISION headers are thorough. However, two BLOCKER defects make the suite non-functional as written: (1) the eso-down test references ExternalSecret names that do not exist anywhere in the cluster, so the recovery assertion can never converge; (2) the test-level spec.cleanup field used by openbao-policy-revoked and eso-down is not a valid Chainsaw v1alpha1 TestSpec field. Two CRITICAL design risks (db-expand failure mechanism dependent on environment; recovery via status-subresource patch bypassing operator semantics) and one CRITICAL security consistency issue (unseal keys passed as kubectl positional args) are also flagged.",
+  "verdict": "BLOCKED",
+  "tests_checklist": [
+    {"item": "All four test directories exist with required files", "checked": true},
+    {"item": "Helper scripts are idempotent (seal-all, unseal-all, capture/revoke/restore-policy, scale-eso)", "checked": true},
+    {"item": "eso-down test asserts Ready=False sustained 60s with 6 samples", "checked": true},
+    {"item": "eso-down recovery assertion (Ready=True/AllReady within 3m) is achievable in target cluster", "checked": false},
+    {"item": "db-expand-failure failing-tag mechanism produces ExpandFailed (not ImagePullBackOff)", "checked": false},
+    {"item": "Test-level cleanup (spec.cleanup) is a valid Chainsaw v1alpha1 field", "checked": false},
+    {"item": "Per-step cleanup blocks restore cluster state on test failure", "checked": true},
+    {"item": "Unique CR names and database names per test (no namespace collisions)", "checked": true},
+    {"item": "Catch blocks include diagnostic output (pod logs, job logs, events)", "checked": true},
+    {"item": "Catch blocks include kubectl describe consistently across all steps", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "SPDX Apache-2.0 header on all new files", "checked": true},
+    {"item": "CC-0102 / #277 Phase 1 references in headers", "checked": true},
+    {"item": "BAO_NAMESPACE override pattern documented (not NAMESPACE)", "checked": true},
+    {"item": "DECISION headers documenting trade-offs", "checked": true},
+    {"item": "Reviewer-please-verify comments resolved before merge", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "Root token recovered from Secret on every script (not stored)", "checked": true},
+    {"item": "Token scrubbed from script env on exit (trap)", "checked": true},
+    {"item": "TLS verification enabled (VAULT_CACERT, not VAULT_SKIP_VERIFY)", "checked": true},
+    {"item": "Secrets not passed as kubectl positional args (unseal keys violate this)", "checked": false},
+    {"item": "BAO_TOKEN passed via env (not arg) in seal-all.sh", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "No operator code changes (REQ-010)", "checked": true},
+    {"item": "No chart changes", "checked": true},
+    {"item": "No new infra under deploy/kind/", "checked": true},
+    {"item": "Tests under tests/e2e/keystone/ and docs under docs/", "checked": true},
+    {"item": "Three global-state tests serialised via spec.concurrent:false", "checked": true},
+    {"item": "db-expand-failure recovery aligns with REQ-005 (no operator-side bypass)", "checked": false}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "read_root_token() helper is duplicated across capture/revoke/restore/seal scripts", "checked": false},
+    {"item": "Catch blocks contain ~20-line shell snippets duplicated across 6 steps in some tests", "checked": false}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Empty/missing init-output Secret hard-fails with clear message", "checked": true},
+    {"item": "Empty/missing policy capture file hard-fails with clear message", "checked": true},
+    {"item": "Non-integer replica count rejected up-front", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Pod-existence check tolerates single-replica kind topology", "checked": true},
+    {"item": "Unsealed-pod fast-path skip on already-Ready pods", "checked": true},
+    {"item": "Empty kubectl get convergence guarded against 0-default false-positive", "checked": true}
+  ],
+  "security_findings": [
+    {
+      "severity": "MEDIUM",
+      "description": "Unseal keys passed as kubectl positional command-line arguments — exposes secrets in /proc/<pid>/cmdline on the host kernel and inside the pod's PID namespace. Pattern review_patterns/never-pass-secrets-as-command-line-arguments-through-kubectl-exec.md flags this as a known anti-pattern. The seal-all.sh script correctly uses BAO_TOKEN env var, but unseal-all.sh expands keys directly into the bao_exec arg list. The bao operator unseal command supports stdin via the - argument, so the secret can be piped in instead of becoming a positional arg. Existing tests/e2e-chaos/unseal-openbao.sh has the same flaw, so consistency across the codebase is preserved — but a security improvement here would set the standard for both files.",
+      "location": "tests/e2e/keystone/openbao-sealed/unseal-all.sh:160",
+      "fix": "Pipe the key via stdin using kubectl with -i flag and bao operator unseal -. Apply the same fix to tests/e2e-chaos/unseal-openbao.sh:87 in a follow-up to keep both scripts consistent.",
+      "fix_classification": "ASK"
+    }
+  ],
+  "architecture_findings": [
+    {
+      "severity": "BLOCKER",
+      "description": "db-expand-failure recovery uses kubectl patch --subresource=status to clear status.upgradePhase and status.targetRelease. The DECISION header (chainsaw-test.yaml:170-192) acknowledges this manipulates operator state to bypass the active-upgrade tag-mismatch guard at reconcile_database.go:315. REQ-005 scenario 'Recovery requires Job deletion + tag revert' explicitly describes the recovery as 'patches spec.image.tag back to the working tag and explicitly deletes the failed <name>-db-expand Job' — there is no mention of status surgery. Either (a) REQ-005 needs to be expanded to acknowledge that status patching is part of the documented recovery contract, or (b) the operator must support recovery through spec changes alone, or (c) the test must use a failing tag that does NOT trigger the upgrade path. As written, the test does not validate a real production-recoverable state — operators in the field cannot reach into the status subresource the same way.",
+      "location": "tests/e2e/keystone/db-expand-failure/chainsaw-test.yaml:193-200",
+      "fix": "Choose one of: (1) Add a sub-issue to add operator-side support for tag-revert as a recovery action and depend on it. (2) Document in REQ-005 that status surgery is part of the recovery contract for this E2E test only, and explain why production differs. (3) Replace the failing-tag mechanism with one that triggers a failing db_sync Job (not an upgrade-path Job) so reconcileDatabase doesn't latch into UpgradePhase=Expanding — this avoids the tag-mismatch guard entirely. Option (3) is the smallest change.",
+      "fix_classification": "ASK"
+    },
+    {
+      "severity": "MAJOR",
+      "description": "Helper scripts duplicate the read_root_token() function across capture-policy.sh, revoke-policy.sh, restore-policy.sh, and seal-all.sh — four near-identical 20-line copies. The pattern review_patterns/extract-shared-template-logic-to-avoid-duplication-drift.md flags this as a drift risk; the existing deploy/openbao/bootstrap/common.sh provides similar wrappers but no shared sourcing exists for tests/e2e/keystone/. A single shared lib file would eliminate the drift risk for the 4 test scripts.",
+      "location": "tests/e2e/keystone/openbao-policy-revoked/capture-policy.sh:64-85",
+      "fix": "Extract read_root_token() (and pod_exists/pod_is_sealed if shared) into tests/e2e/keystone/openbao-shared/lib.sh (new directory) or tests/lib/openbao.sh, source it from each helper script. This collapses 4x20 lines into one source-of-truth.",
+      "fix_classification": "ASK"
+    }
+  ],
+  "issues_found": [
+    {
+      "check_id": "C2",
+      "severity": "BLOCKER",
+      "description": "eso-down test cannot recover: the CR specifies secretRef.name=eso-down-keystone-db and adminPasswordSecretRef.name=eso-down-keystone-admin, but no ExternalSecret with those names exists anywhere in the cluster. The operator's reconcile_secrets.go:86 calls WaitForExternalSecret(ctx, c, dbSecretKey) which performs a Get on the ExternalSecret object — when the object is absent, the function returns (false, nil), and SecretsReady stays False/WaitingForDBCredentials forever. The 00-keystone-cr.yaml comment claims 'The operator creates the Secret indirectly via the ExternalSecret CR it owns' — this is incorrect: only static ExternalSecrets in deploy/eso/externalsecrets/ exist (keystone-db, keystone-admin, mariadb-root-password), and the operator only OBSERVES them via WaitForExternalSecret. The missing-secret/ test (CC-0016) demonstrates the correct pattern: it ships a 01-late-secrets.yaml fixture that creates ExternalSecrets named missing-secret-keystone-db / missing-secret-keystone-admin, applied AFTER the failure observation. eso-down ships no equivalent fixture — Step 6 (assert Ready=True/AllReady within 3m) will time out on every cluster.",
+      "location": "tests/e2e/keystone/eso-down/00-keystone-cr.yaml:43-55",
+      "fix": "Add a fixture file (e.g., 03-late-externalsecrets.yaml) modelled on tests/e2e/keystone/missing-secret/01-late-secrets.yaml that creates ExternalSecrets named eso-down-keystone-db and eso-down-keystone-admin pointing at the openstack/keystone/db and bootstrap/keystone-admin OpenBao paths. Apply the fixture as a new step BETWEEN the current Step 5 (scale ESO up) and Step 6 (assert recovery). Alternatively, change the CR to use the pre-existing keystone-db / keystone-admin Secret names and document the stale-Secret risk in the test header.",
+      "evidence": "tests/e2e/keystone/eso-down/00-keystone-cr.yaml lines 43-44 set secretRef name to eso-down-keystone-db. internal/common/secrets/secrets.go:44-58 only Gets the ExternalSecret and returns (false, nil) on NotFound. Operator code never creates ExternalSecret objects (grep -rn for esov1.ExternalSecret under operators/ returns only test files and the Get call). deploy/eso/externalsecrets/ contains only keystone-db.yaml, keystone-admin.yaml, mariadb-root-password.yaml — no eso-down-* ExternalSecrets exist anywhere in the repo.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "C2",
+      "severity": "BLOCKER",
+      "description": "spec.cleanup is not a valid Chainsaw v1alpha1 TestSpec field. The fields supported by Chainsaw's v1alpha1 TestSpec are: description, failFast, timeouts, cluster, clusters, skip, concurrent, skipDelete, template, compiler, namespace, namespaceTemplate, namespaceTemplateCompiler, fastNamespaceDeletion, scenarios, bindings, steps, catch, forceTerminationGracePeriod, delayBeforeCleanup, deletionPropagationPolicy. There is NO top-level cleanup field — cleanup exists only inside individual TestSteps. The openbao-policy-revoked and eso-down tests both use a top-level spec.cleanup block and document it as 'the outer safety net'. Depending on Chainsaw's strict-mode handling, this either fails parsing (BLOCKER) or is silently dropped (MAJOR — misleading documentation that suggests an additional cleanup that does not exist). The per-step cleanup blocks DO run unconditionally at test-end and provide the real safety net, so test correctness is not affected when chainsaw is lenient — but the documented invariant is wrong and the two-layer claim is dishonest.",
+      "location": "tests/e2e/keystone/openbao-policy-revoked/chainsaw-test.yaml:78-84",
+      "fix": "Remove the top-level cleanup block from spec on both tests. Update the header comments to clarify that the per-step cleanup blocks (which run after the test finishes regardless of success/failure per Chainsaw semantics) ARE the safety net — there is no separate outer test-level cleanup. Same change in tests/e2e/keystone/eso-down/chainsaw-test.yaml:90-106.",
+      "evidence": "Chainsaw API reference (https://kyverno.github.io/chainsaw/latest/reference/apis/chainsaw.v1alpha1/) lists TestSpec fields explicitly — no cleanup among them. Source of truth from kyverno/chainsaw/main/pkg/apis/v1alpha1/test.go: TestSpec contains Description, FailFast, Timeouts, Cluster, Clusters, Skip, Concurrent, SkipDelete, Template, Compiler, Namespace, NamespaceTemplate, NamespaceTemplateCompiler, FastNamespaceDeletion, Scenarios, Bindings, Steps, Catch, ForceTerminationGracePeriod, DelayBeforeCleanup, DeletionPropagationPolicy — no Cleanup. Both tests reference a top-level spec.cleanup block: openbao-policy-revoked at lines 78-84 and eso-down at lines 90-106.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "C3",
+      "severity": "CRITICAL",
+      "description": "db-expand-failure failing-tag mechanism is environment-dependent. The DECISION header (01-patch-failing-tag.yaml:46-56) acknowledges: 'this mechanism relies on the K8s Job controller marking the expand Job's pod Failed within the test's 5-minute assert window once the image-pull retries have exhausted the pod's BackoffLimit. Recent kind / Kubernetes (>=1.31) honour pod ImagePullBackOff toward Job BackoffLimit by default; older clusters may need PodFailurePolicy on the Job spec, which would require an operator change'. The criterion explicitly states: 'the failing-tag mechanism produces DatabaseReady=False/reason=ExpandFailed (NOT ImagePullBackOff)'. With BackoffLimit=4 image-pull retries and exponential backoff (10s, 20s, 40s, 80s, 160s), total wait is approx 5 minutes before the Job transitions to JobFailed=True. The 5m chainsaw assert timeout sits right at the boundary, making the test inherently flaky. On Kubernetes <1.31 clusters, the pod stays in ImagePullBackOff indefinitely and the Job never fails — the test then times out asserting DatabaseReady=False/ExpandFailed.",
+      "location": "tests/e2e/keystone/db-expand-failure/01-patch-failing-tag.yaml:46-56",
+      "fix": "Three options: (1) Use a 'real' tag that ParseRelease accepts but where the keystone-manage db_expand command itself fails inside a successfully-pulled container — e.g., a tag whose image is in the kind set but with deliberately-broken DB schema. (2) Add an operator-side feature ticket to add PodFailurePolicy on the expand Job that counts ImagePullBackOff toward BackoffLimit, then depend on that — out of scope per REQ-010 but the cleaner long-term fix. (3) Increase the assert timeout for Step 4 to 10m to absorb the BackoffLimit retry budget, and document the dependency on Kubernetes >=1.31 in the test header. Without one of these, the test will be flaky in CI and unusable on older clusters.",
+      "evidence": "tests/e2e/keystone/db-expand-failure/01-patch-failing-tag.yaml:46-56 explicitly documents the dependency on K8s >=1.31 ImagePullBackOff/BackoffLimit semantics. tests/e2e/keystone/db-expand-failure/chainsaw-test.yaml:43-44 sets assert: 5m. The test asserts DatabaseReady=False/reason=ExpandFailed at Step 4, which can only fire after RunJob returns ErrJobFailed — i.e., after the K8s Job controller transitions the Job to JobFailed=True after the BackoffLimit budget is consumed.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "Q3",
+      "severity": "MAJOR",
+      "description": "read_root_token() function is duplicated verbatim (or near-verbatim) across four helper scripts: tests/e2e/keystone/openbao-sealed/seal-all.sh:51-70, tests/e2e/keystone/openbao-policy-revoked/capture-policy.sh:64-85, tests/e2e/keystone/openbao-policy-revoked/revoke-policy.sh:54-73, tests/e2e/keystone/openbao-policy-revoked/restore-policy.sh:56-75. Same risk applies to pod_exists() and bao_exec() helpers. The codebase already has deploy/openbao/bootstrap/common.sh with similar wrappers — those serve a production purpose and shouldn't be sourced from test code, but a tests/lib/openbao-helpers.sh would eliminate the drift risk for the 4 test scripts.",
+      "location": "tests/e2e/keystone/openbao-policy-revoked/capture-policy.sh:64-85",
+      "fix": "Extract read_root_token() and bao_exec() into tests/e2e/keystone/openbao-shared/lib.sh (new directory) or tests/lib/openbao.sh, source it from each helper script. This collapses 4x20 lines into one source-of-truth.",
+      "evidence": "Diff'ing seal-all.sh:51-70 against capture-policy.sh:64-85 produces approx 3 trivial textual differences (variable names) — the logic is identical. Same applies to revoke-policy.sh:54-73 and restore-policy.sh:56-75.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "TE2",
+      "severity": "MAJOR",
+      "description": "openbao-sealed test does not validate that all three replicas were actually sealed before asserting SecretsReady=False. The Step 3 seal-all.sh script logs 'sealing pod' but the script's exit code only confirms the kubectl commands succeeded. If the kind topology runs single-replica OpenBao (the script tolerates this by skipping missing pods), the test is silently asserting against a single-pod scenario that does not match the production HA Raft quorum behavior the test claims to validate. The test header explicitly says 'Sealing only one of three replicas is insufficient — Raft elects a new leader and the ClusterSecretStore stays Ready' but the test then blindly proceeds when ALL replicas after openbao-0 are absent.",
+      "location": "tests/e2e/keystone/openbao-sealed/seal-all.sh:118-141",
+      "fix": "After the sealing loop, query the ClusterSecretStore and assert it has flipped to Ready=False before returning success — the script should fail-fast if the seal action did not produce the expected upstream symptom. Alternatively, log a WARN message and set the test header to gate execution on a 3-replica topology. Currently any single-replica run silently passes.",
+      "evidence": "tests/e2e/keystone/openbao-sealed/seal-all.sh:118-141 — main() sets sealed_any=1 and seals each present pod, but does not verify the post-condition (CSS Ready=False) before returning. tests/e2e/keystone/openbao-sealed/chainsaw-test.yaml:31-35 explicitly documents the 3-replica vs 1-replica discrepancy but doesn't enforce it.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "TE7",
+      "severity": "MAJOR",
+      "description": "db-expand-failure inline scripts use 'set -eu' instead of 'set -euo pipefail'. With set -eu, a failing kubectl get events command in a pipe could exit silently mid-script. The shell test script convention pattern (review_patterns/enforce-consistent-error-handling-pattern-across-all-test-cases) uses set -euo pipefail consistently to prevent silent abort on failed command substitutions.",
+      "location": "tests/e2e/keystone/db-expand-failure/chainsaw-test.yaml:127",
+      "fix": "Replace 'set -eu' with 'set -euo pipefail' in all inline scripts in db-expand-failure/chainsaw-test.yaml (Steps 4, 6, 7). This is consistent with the seal-all.sh / capture-policy.sh / etc. helper scripts in this PR which all use 'set -euo pipefail'.",
+      "evidence": "tests/e2e/keystone/db-expand-failure/chainsaw-test.yaml:127, :197, :221 all use 'set -eu'. Compare to tests/e2e/keystone/openbao-sealed/seal-all.sh:31 which uses 'set -euo pipefail'.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "Q1",
+      "severity": "MAJOR",
+      "description": "The 'Reviewer: please verify' comments in five locations indicate unresolved trade-off questions that should be settled BEFORE merge. The pattern review_patterns/resolve-ambiguous-commented-out-alternatives-before-merge.md flags this as BLOCKING. Specifically: (a) tests/e2e/keystone/openbao-sealed/chainsaw-test.yaml:28; (b) tests/e2e/keystone/openbao-policy-revoked/chainsaw-test.yaml:23; (c) tests/e2e/keystone/eso-down/chainsaw-test.yaml:23 and :38; (d) tests/e2e/keystone/db-expand-failure/01-patch-failing-tag.yaml:57; (e) tests/e2e/keystone/db-expand-failure/chainsaw-test.yaml:190. These should be either resolved in conversation with the reviewer (and the comment removed) or escalated to follow-up tickets.",
+      "location": "tests/e2e/keystone/openbao-sealed/chainsaw-test.yaml:28",
+      "fix": "After the review cycle, remove all 'Reviewer: please verify' comments. If the trade-off is accepted, replace with a DECISION line stating the verdict. If rejected, refactor the test according to the review verdict.",
+      "evidence": "5 occurrences across 4 files of 'Reviewer: please verify' comments left in committed code. These are not actionable items in code — they belong in the PR description or follow-up issues.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "TE2",
+      "severity": "MAJOR",
+      "description": "openbao-sealed Step 4 (assert SecretsReady=False/SecretStoreNotReady) relies on ESO observing every backend OpenBao replica as sealed and flipping the ClusterSecretStore to Ready=False. The CSS reconcile interval can be up to 5 minutes by default. Combined with the default 5m chainsaw assert timeout, the test has zero headroom for flake — if ESO's reconcile takes 4m59s, the test passes; at 5m1s, it fails. The test should explicitly bound the test against ESO's documented reconcile cadence, either by triggering an ESO refresh or by raising the assert timeout for that specific step.",
+      "location": "tests/e2e/keystone/openbao-sealed/chainsaw-test.yaml:128-148",
+      "fix": "Either: (1) Verify ESO's CSS refresh interval in deploy/eso/clustersecretstore.yaml; if >2m, raise the Step 4 assert timeout to 10m. (2) After seal-all, force an ESO refresh by annotating the ClusterSecretStore with external-secrets.io/refresh-time=<unix-time> to bypass the natural reconcile interval. Document the choice in the chainsaw-test.yaml header.",
+      "evidence": "tests/e2e/keystone/openbao-sealed/chainsaw-test.yaml:53-54: timeouts.assert: 5m. The CSS reconcile is governed by ESO's configured refresh interval; without a forced refresh, the test depends on this interval being shorter than 5m. No annotation-poke or interval verification appears in the test.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "TE10",
+      "severity": "MAJOR",
+      "description": "Tasks 5.2 (run make e2e twice consecutively) and 5.3 (3x soak run) are marked status=done in .planwerk/progress/CC-0102-test-e2e-cover-failure-recovery-paths-for.json — but the agent works in a sandbox without docker/kind/cluster (per project memory project_sandbox_no_docker.md), so neither verification could have actually run. Combined with the BLOCKER findings above (eso-down references nonexistent ExternalSecrets, spec.cleanup is invalid syntax), the test suite has demonstrably not been live-validated. The Definition of Done in the spec lists 'All four chainsaw test ... directories green locally against make kind-up' as the first checkbox — this is unchecked and should remain so until live validation is performed.",
+      "location": ".planwerk/progress/CC-0102-test-e2e-cover-failure-recovery-paths-for.json:tasks 5.2/5.3",
+      "fix": "Mark tasks 5.2 and 5.3 as status=blocked with a note 'Live cluster validation cannot be performed in this sandbox; deferred to operator workstation per project memory project_sandbox_no_docker.md'. Address the BLOCKER findings, then run on the operator's workstation. Only set status=done after Live make e2e results show all four tests green.",
+      "evidence": ".planwerk/progress/CC-0102-test-e2e-cover-failure-recovery-paths-for.json shows id 5.2 and 5.3 with status=done, but the BLOCKER findings (eso-down recovery, spec.cleanup) prove the suite cannot have run successfully end-to-end. Sandbox memory: /claude/projects/-workspace/memory/project_sandbox_no_docker.md — kind/chainsaw cannot run here.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "D1",
+      "severity": "MINOR",
+      "description": "Some catch blocks omit kubectl describe pod whereas the events/chainsaw-test.yaml convention (used by db-expand-failure) includes it. The criterion 'Each test's catch block reproduces the diagnostic output convention (pod logs + job logs + pod describe + configmaps + last 30 events)' is partially met — pod describe is missing from openbao-sealed Step 2 catch (lines 81-98), openbao-sealed Step 4 catch (lines 151-173), openbao-sealed Step 6 catch (lines 213-230), openbao-policy-revoked Step 2 catch (lines 121-138), openbao-policy-revoked Step 8 catch (lines 309-322), and most eso-down catches.",
+      "location": "tests/e2e/keystone/openbao-sealed/chainsaw-test.yaml:81-98",
+      "fix": "Add the events/chainsaw-test.yaml-style 'Pod describe' block to each catch. Apply uniformly across all three openbao-* / eso-down test files (db-expand-failure already has it).",
+      "evidence": "tests/e2e/keystone/events/chainsaw-test.yaml catch convention includes 'Pod describe' section; tests/e2e/keystone/db-expand-failure/chainsaw-test.yaml:85-89 includes it; tests/e2e/keystone/openbao-sealed/chainsaw-test.yaml:81-98 omits it.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "D2",
+      "severity": "MINOR",
+      "description": "openbao-policy-revoked test asserts on the symptom 'message contains 403' rather than a typed event reason. This is acknowledged in the spec's Risks/open questions section as a follow-up — should be tracked as a follow-up issue rather than left as a fragile substring match in production tests.",
+      "location": "tests/e2e/keystone/openbao-policy-revoked/chainsaw-test.yaml:247-250",
+      "fix": "Open a follow-up feature ticket to emit a typed PushSecretWriteFailed event from reconcileFernetKeys/reconcileCredentialKeys when ESO reports the PushSecret as Ready=False, then update this test to assert the typed reason instead of substring-matching '403'. The current substring-match is acceptable as a first iteration but documented as fragile.",
+      "evidence": "tests/e2e/keystone/openbao-policy-revoked/chainsaw-test.yaml:247-250 uses contains(message, '403'). The spec at .planwerk/progress/CC-0102-test-e2e-cover-failure-recovery-paths-for.json explicitly notes this as an open question.",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "Extract a tests/lib/openbao.sh shared library with read_root_token/bao_exec/pod_exists/pod_is_sealed — eliminate 4-way duplication across helper scripts.",
+    "Add 'assert ClusterSecretStore Ready=False' to seal-all.sh post-condition so a single-replica kind topology fails-fast instead of silently passing.",
+    "Use stdin-piped key delivery in unseal-all.sh (bao operator unseal -) instead of positional arg — apply the same change to tests/e2e-chaos/unseal-openbao.sh for consistency.",
+    "Standardise on 'set -euo pipefail' (not 'set -eu') in all inline chainsaw script blocks.",
+    "Remove all 'Reviewer: please verify' comments after the review cycle — they should not be committed to main.",
+    "Consider opening a follow-up issue to add operator-side support for tag-revert as a recovery action (eliminates the status-subresource patch in db-expand-failure).",
+    "Open a follow-up issue to emit typed PushSecretWriteFailed events for the openbao-policy-revoked symptom-based assertion."
+  ],
+  "next_steps": [
+    "BLOCKER: Fix eso-down test by adding a 03-late-externalsecrets.yaml fixture (modelled on missing-secret/01-late-secrets.yaml) creating ExternalSecrets eso-down-keystone-db and eso-down-keystone-admin, applied AFTER ESO scale-up. Otherwise the recovery assertion will time out on every cluster.",
+    "BLOCKER: Remove the invalid spec.cleanup block from openbao-policy-revoked/chainsaw-test.yaml and eso-down/chainsaw-test.yaml. Update header comments to reflect that per-step cleanup blocks are the actual safety net.",
+    "BLOCKER: Either change the db-expand-failure recovery to not require status-subresource surgery (e.g., choose a failing tag that doesn't trigger UpgradePhase=Expanding), OR add operator-side support for tag-revert recovery, OR explicitly document that REQ-005 recovery includes status surgery (and explain why).",
+    "CRITICAL: Address db-expand-failure environment-dependency on K8s >=1.31 ImagePullBackOff/BackoffLimit semantics. Choose a more deterministic failure mechanism or raise the Step 4 assert timeout to 10m and document the kubelet dependency.",
+    "Re-run make e2e 2x consecutively and a 3x soak after fixes are in place; mark tasks 5.2/5.3 as done only after observing live success.",
+    "Address MAJOR findings: helper script deduplication, Reviewer-please-verify comment cleanup, openbao-sealed CSS post-condition assertion, sustained-window timeout headroom, set -euo pipefail consistency.",
+    "Address MINOR findings: pod describe in catch blocks, typed PushSecret event follow-up."
+  ],
+  "detected_patterns": [
+    {
+      "name": "phase1-failure label + spec.concurrent:false for global-state failure tests",
+      "component": "tests/e2e/keystone/<failure-test>/",
+      "category": "testing",
+      "applies_when": "Adding a new E2E failure-injection test that mutates global cluster infrastructure (OpenBao seal state, OpenBao policies, ExternalSecrets Deployment) and would race with parallel-pool happy-path tests",
+      "description": "Each failure/recovery test that mutates infrastructure shared across the openstack namespace (OpenBao replicas, ESO Deployment, OpenBao policies) carries the Chainsaw test label phase1-failure: 'true' for selective local runs and sets spec.concurrent: false to opt out of the chainsaw parallel:4 pool. Tests that mutate ONLY their own namespace's CR (e.g., db-expand-failure) stay in the parallel pool and do NOT set concurrent: false. The label enables 'chainsaw test --selector phase1-failure=true' and the spec.concurrent toggle prevents cross-test races. Per-step cleanup blocks ensure cluster invariants are restored after the test ends regardless of pass/fail.",
+      "examples": [
+        {
+          "location": "tests/e2e/keystone/openbao-sealed/chainsaw-test.yaml:39-52",
+          "code": "metadata:\n  name: keystone-openbao-sealed\n  labels:\n    phase1-failure: \"true\"\nspec:\n  namespace: openstack\n  concurrent: false\n  timeouts:\n    assert: 5m"
+        },
+        {
+          "location": "tests/e2e/keystone/eso-down/chainsaw-test.yaml:65-84",
+          "code": "metadata:\n  name: keystone-eso-down\n  labels:\n    phase1-failure: \"true\"\nspec:\n  namespace: openstack\n  concurrent: false\n  timeouts:\n    assert: 5m"
+        }
+      ]
+    },
+    {
+      "name": "Sustained-window assertion via inline polling script",
+      "component": "tests/e2e/keystone/<test>/chainsaw-test.yaml",
+      "category": "testing",
+      "applies_when": "Asserting that a Kubernetes condition holds CONTINUOUSLY for a window (not just at one point in time) — e.g., proving a controller does not flicker Ready=True between False readings",
+      "description": "When a test must prove a state holds continuously over a window (REQ-style 'sustained for >=60s'), a pure chainsaw assert is insufficient because chainsaw stops polling on the first match. Combine: (1) a chainsaw assert as the convergence gate (waits for the first matching state), then (2) an inline polling script that takes N evenly-spaced samples over T seconds and fails on the first sample that does NOT match the expected state. Sample interval should land inside or just after the controller's reconcile cycle so a flicker of any duration has high probability of being captured. The script also enforces that at least the required wall-clock time has elapsed (guards against clock skew or short sleep).",
+      "examples": [
+        {
+          "location": "tests/e2e/keystone/eso-down/chainsaw-test.yaml:232-274",
+          "code": "  - name: sustained-ready-false\n    try:\n    - script:\n        timeout: 90s\n        content: |\n          set -euo pipefail\n          SAMPLES=6\n          INTERVAL=11\n          for i in $(seq 1 \"${SAMPLES}\"); do\n            ready_status=$(kubectl get keystone \"${CR_NAME}\" -n \"${NS}\" -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' 2>/dev/null || echo \"\")\n            if [[ \"${ready_status}\" != \"False\" ]]; then\n              echo \"FAIL: aggregate Ready flipped to '${ready_status}' at sample ${i}\"\n              exit 1\n            fi\n            if [[ \"${i}\" -lt \"${SAMPLES}\" ]]; then sleep \"${INTERVAL}\"; fi\n          done"
+        }
+      ]
+    }
+  ]
+}

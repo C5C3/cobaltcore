@@ -11,21 +11,17 @@
 # operators/keystone/internal/controller/reconcile_secrets.go:66 — a code
 # path that has unit and integration coverage but no E2E coverage today.
 #
-# DECISION (task 1.1): Test placement.
-# Ambiguity: REQ-006 says global-state tests must be serialised. Two
-# alternatives — place under tests/e2e-chaos/ (parallel:1 globally) or
-# under tests/e2e/keystone/ with spec.concurrent:false.
-# Chose: tests/e2e/keystone/ with spec.concurrent:false, because (a) the
-# test does not depend on Chaos Mesh CRDs (no PodChaos/NetworkChaos) and
-# its operational mechanism (`bao operator seal`) is a steady-state
-# OpenBao admin command rather than chaos-engineering fault injection;
-# (b) keeping happy-path and failure-path tests for the same condition
-# (SecretsReady) co-located in tests/e2e/keystone/ aids discovery and
-# matches the placement of tests/e2e/keystone/missing-secret/ (CC-0016)
-# which is itself a Secret-side failure path; (c) spec.concurrent:false
-# is the per-test serialisation knob Chainsaw provides and adds zero
-# infrastructure (no new chainsaw-config.yaml, no new make targets).
-# Reviewer: please verify the trade-off matches review intent.
+# Test placement: under tests/e2e/keystone/ with spec.concurrent:false rather
+# than under tests/e2e-chaos/, because (a) the test does not depend on Chaos
+# Mesh CRDs (no PodChaos/NetworkChaos) and its operational mechanism (`bao
+# operator seal`) is a steady-state OpenBao admin command rather than chaos-
+# engineering fault injection; (b) keeping happy-path and failure-path tests
+# for the same condition (SecretsReady) co-located in tests/e2e/keystone/
+# aids discovery and matches the placement of tests/e2e/keystone/
+# missing-secret/ (CC-0016) which is itself a Secret-side failure path; (c)
+# spec.concurrent:false is the per-test serialisation knob Chainsaw provides
+# and adds zero infrastructure (no new chainsaw-config.yaml, no new make
+# targets).
 #
 # NOTE on topology: production runs OpenBao 3-replica HA Raft (PLAN.md
 # Phase 4 / S009). seal-all.sh and unseal-all.sh iterate openbao-{0,1,2};
@@ -33,6 +29,11 @@
 # logged and skipped rather than failing). Sealing only one of three
 # replicas is insufficient — Raft elects a new leader and the
 # ClusterSecretStore stays Ready (REQ-001 documentation scenario).
+# seal-all.sh enforces this contract end-to-end: after sealing every
+# present replica it asserts ClusterSecretStore openbao-cluster-store
+# transitions to Ready=False, so a topology where the seal action does NOT
+# flip the store fails fast in Step 3 instead of timing out 5 minutes
+# later in Step 4.
 #
 # REQ-001, REQ-002, REQ-006, REQ-007 (CC-0102)
 apiVersion: chainsaw.kyverno.io/v1alpha1
@@ -79,8 +80,14 @@ spec:
     catch:
     - script:
         content: |
+          set -euo pipefail
           echo "=== Keystone CR status ==="
           kubectl get keystone keystone-openbao-sealed -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=keystone-openbao-sealed -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
           echo "=== All pod logs ==="
           for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
             echo "--- $pod ---"
@@ -94,12 +101,21 @@ spec:
           done
           echo "=== OpenBao pod status ==="
           kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao -o wide 2>&1 || true
+          echo "=== OpenBao pod describe ==="
+          for pod in $(kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n openbao-system "$pod" 2>&1 | tail -40 || true
+          done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
 
-  # ── Step 3: Seal every OpenBao replica ─────────────────────────────────
+  # ── Step 3: Seal every OpenBao replica + assert CSS Ready=False ────────
   # Idempotent: an already-sealed replica is a no-op (REQ-008). Tolerates
-  # 1- or 3-replica kind topologies; missing pods are skipped.
+  # 1- or 3-replica kind topologies; missing pods are skipped. After
+  # sealing every present replica the helper waits up to 240 s for the
+  # ClusterSecretStore openbao-cluster-store to transition to Ready=False
+  # (CC-0102 review fix), so a single-replica kind topology that cannot
+  # produce that state fails fast here rather than letting Step 4 time out.
   - name: seal-all
     cleanup:
     # Defence-in-depth cleanup: even if a later step fails before Step 5
@@ -109,20 +125,37 @@ spec:
         timeout: 240s
         content: ./unseal-all.sh
     try:
+    # 240 s upper bound: seal-all.sh's CSS post-condition wait defaults to
+    # 240 s. The seal-all step itself completes near-instantly (3 kubectl
+    # exec calls); the bulk of the timeout is the ESO reconcile-cadence
+    # headroom for the CSS Ready=False transition.
     - script:
-        timeout: 60s
+        timeout: 300s
         content: ./seal-all.sh
     catch:
     - script:
         content: |
+          set -euo pipefail
           echo "=== OpenBao pod status ==="
           kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao -o wide 2>&1 || true
+          echo "=== OpenBao pod describe ==="
+          for pod in $(kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n openbao-system "$pod" 2>&1 | tail -40 || true
+          done
           echo "=== OpenBao bao status (per replica) ==="
           for pod in openbao-0 openbao-1 openbao-2; do
             echo "--- $pod ---"
             kubectl exec -n openbao-system "$pod" -- \
               env BAO_ADDR=https://127.0.0.1:8200 VAULT_CACERT=/openbao/tls/ca.crt \
               bao status -format=json 2>&1 || true
+          done
+          echo "=== ClusterSecretStore status ==="
+          kubectl get clustersecretstore -o wide 2>&1 || true
+          for css in $(kubectl get clustersecretstore -o name 2>/dev/null); do
+            echo "--- $css ---"
+            kubectl get "$css" -o jsonpath='{.status.conditions}' 2>&1 || true
+            echo
           done
 
   # ── Step 4: Assert SecretsReady=False/SecretStoreNotReady ──────────────
@@ -131,8 +164,19 @@ spec:
   # state returns 503). reconcileSecrets observes the CSS NotReady and
   # records SecretsReady=False/reason=SecretStoreNotReady; the aggregate
   # Ready condition flips to False/reason=NotAllReady.
+  #
+  # Timeout headroom: Step 3's seal-all.sh has already gated on the CSS
+  # transitioning to Ready=False before this step runs, so the operator's
+  # next reconcile (RequeueSecretPolling=10s) should pick the change up
+  # promptly. The 7m bound here covers the worst-case scenario where ESO
+  # took ~5m to flip the CSS (its default reconcile cadence) AND the
+  # operator needs another reconcile cycle to observe the CSS — without
+  # this CC-0102 review fix raising the bound from the implicit 5m
+  # default, a CSS flip near the upper edge of ESO's reconcile window
+  # would deterministically time out.
   - try:
     - assert:
+        timeout: 7m
         resource:
           apiVersion: keystone.openstack.c5c3.io/v1alpha1
           kind: Keystone
@@ -149,8 +193,14 @@ spec:
     catch:
     - script:
         content: |
+          set -euo pipefail
           echo "=== Keystone CR status ==="
           kubectl get keystone keystone-openbao-sealed -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=keystone-openbao-sealed -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
           echo "=== ClusterSecretStore status ==="
           kubectl get clustersecretstore -o wide 2>&1 || true
           for css in $(kubectl get clustersecretstore -o name 2>/dev/null); do
@@ -167,6 +217,11 @@ spec:
           done
           echo "=== OpenBao pod status ==="
           kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao -o wide 2>&1 || true
+          echo "=== OpenBao pod describe ==="
+          for pod in $(kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n openbao-system "$pod" 2>&1 | tail -40 || true
+          done
           echo "=== Operator logs ==="
           kubectl logs -n keystone-operator-system -l app.kubernetes.io/name=keystone-operator --tail=100 2>&1 || true
           echo "=== Events ==="
@@ -182,8 +237,14 @@ spec:
     catch:
     - script:
         content: |
+          set -euo pipefail
           echo "=== OpenBao pod status ==="
           kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao -o wide 2>&1 || true
+          echo "=== OpenBao pod describe ==="
+          for pod in $(kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n openbao-system "$pod" 2>&1 | tail -40 || true
+          done
           echo "=== openbao-init-keys Secret presence ==="
           kubectl get secret openbao-init-keys -n openbao-system 2>&1 || true
 
@@ -211,8 +272,14 @@ spec:
     catch:
     - script:
         content: |
+          set -euo pipefail
           echo "=== Keystone CR status ==="
           kubectl get keystone keystone-openbao-sealed -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=keystone-openbao-sealed -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
           echo "=== ClusterSecretStore status ==="
           kubectl get clustersecretstore -o wide 2>&1 || true
           for css in $(kubectl get clustersecretstore -o name 2>/dev/null); do
@@ -224,6 +291,11 @@ spec:
           kubectl get externalsecrets -n $NAMESPACE -o wide 2>&1 || true
           echo "=== OpenBao pod status ==="
           kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao -o wide 2>&1 || true
+          echo "=== OpenBao pod describe ==="
+          for pod in $(kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n openbao-system "$pod" 2>&1 | tail -40 || true
+          done
           echo "=== Operator logs ==="
           kubectl logs -n keystone-operator-system -l app.kubernetes.io/name=keystone-operator --tail=100 2>&1 || true
           echo "=== Events ==="

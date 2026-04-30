@@ -728,9 +728,14 @@ within 2 m of unseal.
 **Recovery:** `unseal-all.sh` reads the threshold keys from
 `Secret openbao-system/openbao-init-keys` and applies the first three
 `unseal_keys_b64` to each replica (mirrors `deploy/openbao/bootstrap/init-unseal.sh`).
-Idempotent — already-Ready pods are fast-path skipped. The script runs twice as a
-defence-in-depth measure: once in the test body's recovery step and again in the
-test-level `cleanup:` block, so an aborted Step 4 still leaves the cluster usable.
+Each key is forwarded over stdin via `bao operator unseal -` rather than as a
+positional argument, so the key value never appears in the host's
+`/proc/<pid>/cmdline`. Idempotent — already-Ready pods are fast-path skipped.
+The script runs twice as a defence-in-depth measure: once in the test body's
+recovery step and again in the seal-all step's per-step `cleanup:` block, so an
+aborted Step 4 still leaves the cluster usable. (Chainsaw v1alpha1 has no
+top-level `cleanup` field; per-step `cleanup:` blocks are guaranteed to run
+regardless of which step fails, so they ARE the safety net.)
 
 **Steps:**
 
@@ -738,9 +743,9 @@ test-level `cleanup:` block, so an aborted Step 4 still leaves the cluster usabl
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` | `00-keystone-cr.yaml` — managed-mode CR `keystone-openbao-sealed` (image `2025.2`) |
 | 2 | Assert baseline `Ready=True` | `assert` (5m) | `Ready=True/AllReady` and `SecretsReady=True` — gate so Step 4 is unambiguous |
-| 3 | Seal all OpenBao replicas | `script` (60s) | Runs `seal-all.sh`; idempotent; per-step `cleanup:` runs `unseal-all.sh` if a later step aborts |
-| 4 | Assert `SecretsReady=False/SecretStoreNotReady` | `assert` (5m) | Aggregate `Ready=False/NotAllReady` |
-| 5 | Unseal all OpenBao replicas | `script` (240s) | Runs `unseal-all.sh`; idempotent on already-Ready pods |
+| 3 | Seal all OpenBao replicas + assert CSS `Ready=False` | `script` (300s) | Runs `seal-all.sh`; idempotent; the helper waits up to 240 s for `ClusterSecretStore/openbao-cluster-store` to transition to `Ready=False` so a topology mismatch fails fast here rather than timing out in Step 4; per-step `cleanup:` runs `unseal-all.sh` if a later step aborts |
+| 4 | Assert `SecretsReady=False/SecretStoreNotReady` | `assert` (7m) | Aggregate `Ready=False/NotAllReady`; timeout raised from the spec-level 5 m default to cover the worst-case ESO reconcile cadence (~5 m) plus an operator reconcile cycle |
+| 5 | Unseal all OpenBao replicas | `script` (240s) | Runs `unseal-all.sh`; stdin-piped key delivery; idempotent on already-Ready pods |
 | 6 | Assert recovery within 2 m | `assert` (2m) | `SecretsReady=True`, `Ready=True/AllReady` |
 
 **Fixtures:** `00-keystone-cr.yaml`, `seal-all.sh`, `unseal-all.sh`
@@ -771,11 +776,20 @@ unaffected — this asymmetry is the central invariant the test guards.
 policy is restored.
 
 **Recovery:** `restore-policy.sh` re-applies the snapshot captured by
-`capture-policy.sh` in Step 3 (`bao policy write` is upsert). ESO retries on its
-built-in error backoff. The policy MUST be present after the test exits, otherwise
-every subsequent test relying on PushSecret writes (`basic-deployment`,
-`deletion-cleanup`, etc.) would fail spuriously — enforced by both Step 7 and an
-unconditional test-level `cleanup:` block.
+`capture-policy.sh` in Step 3 (`bao policy write` is upsert; the HCL body is
+piped over stdin via `kubectl exec -i`, never passed as a positional argument).
+ESO retries on its built-in error backoff. The policy MUST be present after the
+test exits, otherwise every subsequent test relying on PushSecret writes
+(`basic-deployment`, `deletion-cleanup`, etc.) would fail spuriously — enforced
+by both Step 7 and the per-step `cleanup:` blocks on Steps 3 and 4
+(capture-policy and revoke-policy), each of which re-runs `restore-policy.sh`
+unconditionally on test-end. (Chainsaw v1alpha1 has no top-level `cleanup`
+field; per-step `cleanup:` blocks are guaranteed to run regardless of which
+step fails, so they ARE the safety net.) The substring match on `403` in
+Step 6 is acknowledged as fragile and is tracked as a follow-up: the
+external-secrets controller does not yet emit a typed `PushSecretWriteFailed`
+event, so the test currently asserts on the upstream HTTP response text
+embedded in the `Ready` condition message.
 
 **Steps:**
 
@@ -823,21 +837,31 @@ within 3 m of ESO scale-up.
 count. The original count is captured to `/tmp/eso-down-original-replicas` in
 Step 1 so a non-default deployment (e.g. an HA values change) recovers correctly.
 Idempotent — `kubectl scale --replicas=N` is a no-op when status already matches.
-A test-level `cleanup:` block re-runs the scale-up unconditionally.
+The per-step `cleanup:` blocks on Steps 1 and 2 re-run `scale-eso.sh` with the
+captured original replica count unconditionally on test-end (Chainsaw v1alpha1
+has no top-level `cleanup` field; per-step `cleanup:` blocks are guaranteed to
+run regardless of which step fails, so they ARE the safety net). Step 5b
+applies a late ExternalSecrets fixture (`03-late-externalsecrets.yaml`,
+modelled on `tests/e2e/keystone/missing-secret/01-late-secrets.yaml`) that
+creates the `eso-down-keystone-db` / `eso-down-keystone-admin` ExternalSecrets
+referenced by the CR — applied AFTER ESO scale-up so the recovery ordering is
+linear (ESO returns → ExternalSecrets created → reconciled to `Ready=True` →
+underlying Secrets materialised → operator's `SecretsReady` flips to True).
 
 **Steps:**
 
 | # | Step Name | Type | Details |
 | --- | --- | --- | --- |
-| 1 | Capture ESO replica count | `script` (30s) | Reads `external-secrets` `.spec.replicas`, writes to `/tmp` (defaults to 1 if unset) |
+| 1 | Capture ESO replica count | `script` (30s) | Reads `external-secrets` `.spec.replicas`, writes to `/tmp` (defaults to 1 if unset); per-step `cleanup:` re-scales to captured count on test-end |
 | 2 | Scale ESO to 0 | `script` (180s) | `scale-eso.sh 0`; idempotent; per-step `cleanup:` re-scales to captured count |
 | 3 | Apply Keystone CR | `apply` | `00-keystone-cr.yaml` — managed-mode CR `keystone-eso-down` with unique secretRefs (`eso-down-keystone-db`, `eso-down-keystone-admin`) so the test observes a from-zero ExternalSecret sync |
 | 4a | Convergence gate — first failure observation | `assert` (5m) | `SecretsReady=False/WaitingForDBCredentials` and `Ready=False/NotAllReady` |
 | 4b | Sustained-window assertion | `script` (90s) | 6 samples × 11 s interval (>60 s total); fails on any sample where `Ready` is not `False` or `SecretsReady` reason ≠ `WaitingForDBCredentials` |
 | 5 | Scale ESO back to original | `script` (180s) | `scale-eso.sh <captured>`; idempotent |
+| 5b | Apply late ExternalSecrets | `apply` | `03-late-externalsecrets.yaml` — `eso-down-keystone-db` and `eso-down-keystone-admin`; applied AFTER ESO is back so reconciliation can drive them to `Ready=True` |
 | 6 | Assert recovery within 3 m | `assert` (3m) | `SecretsReady=True`, `Ready=True/AllReady` |
 
-**Fixtures:** `00-keystone-cr.yaml`, `scale-eso.sh`
+**Fixtures:** `00-keystone-cr.yaml`, `03-late-externalsecrets.yaml`, `scale-eso.sh`
 
 **Concurrency:** `spec.concurrent: false` — scaling ESO globally would
 race every other Keystone CR running in parallel.
@@ -889,7 +913,7 @@ chainsaw-test.yaml Step 6):
 | 1 | Apply Keystone CR | `apply` | `00-keystone-cr.yaml` — managed-mode CR `keystone-db-expand-failure` with `image.tag: 2025.2` |
 | 2 | Assert baseline `Ready=True/installedRelease=2025.2` | `assert` (5m) | Gate so Step 4 is unambiguous |
 | 3 | Patch to failing tag | `patch` | `01-patch-failing-tag.yaml` — `spec.image.tag: 2026.1-bogus` |
-| 4 | Assert `DatabaseReady=False/ExpandFailed` + Warning event | `assert` + `script` (5m) | Two-part: condition assertion plus `kubectl get events --field-selector reason=ExpandFailed,involvedObject.name=...` |
+| 4 | Assert `DatabaseReady=False/ExpandFailed` + Warning event | `assert` + `script` (10m) | Two-part: condition assertion plus `kubectl get events --field-selector reason=ExpandFailed,involvedObject.name=...`. Timeout raised from the spec-level 5 m default to cover the K8s Job controller's worst-case ~5 min `BackoffLimit` budget for repeated image-pull failures plus headroom for kubelet pull-retry pacing variance — see the DECISION header in `01-patch-failing-tag.yaml` for the kubelet (≥1.31) `ImagePullBackOff`/`BackoffLimit` semantics this relies on |
 | 5 | Patch back to recovery tag | `patch` | `02-patch-recovery-tag.yaml` — `spec.image.tag: 2025.2` |
 | 6 | Clear active upgrade state | `script` (30s) | `kubectl patch ... --subresource=status --type=merge -p '{"status":{"upgradePhase":"","targetRelease":""}}'` |
 | 7 | Delete failed expand Job | `script` (30s) | `kubectl delete job <name>-db-expand --ignore-not-found` |
