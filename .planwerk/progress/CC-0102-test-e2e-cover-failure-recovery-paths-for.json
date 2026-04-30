@@ -517,6 +517,7 @@
       "title": "Create tests/e2e/keystone/openbao-policy-revoked/00-keystone-cr.yaml fixture: managed-mode Keystone CR named keystone-policy-revoked, image tag 2025.2, fernet rotationSchedule that allows manual triggering (REQ-009, CC-0102)",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -526,6 +527,7 @@
       "title": "Create tests/e2e/keystone/openbao-policy-revoked/capture-policy.sh: dumps current `bao policy read push-keystone-keys` to a tmp file (or in-cluster Secret); fails fast on empty payload (REQ-003, REQ-008, CC-0102)",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-008"
@@ -536,6 +538,7 @@
       "title": "Create tests/e2e/keystone/openbao-policy-revoked/revoke-policy.sh: runs `bao policy delete push-keystone-keys` against the openbao-system pod; idempotent (already-deleted is a no-op) (REQ-003, REQ-008, CC-0102)",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-008"
@@ -546,6 +549,7 @@
       "title": "Create tests/e2e/keystone/openbao-policy-revoked/restore-policy.sh: writes captured payload back via `bao policy write push-keystone-keys -`; idempotent (bao policy write is upsert) (REQ-003, REQ-008, CC-0102)",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-008"
@@ -556,6 +560,7 @@
       "title": "Create tests/e2e/keystone/openbao-policy-revoked/chainsaw-test.yaml: steps (apply CR, assert Ready=True, capture-policy.sh, revoke-policy.sh, kubectl create job --from=cronjob/<name>-fernet-rotate manual-rotate, assert PushSecret <name>-fernet-keys-backup Failed or message contains '403' AND Keystone SecretsReady=True, restore-policy.sh, assert PushSecret Ready=True); catch block + finally cleanup that always runs restore-policy.sh (REQ-003, REQ-007, CC-0102)",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-007"

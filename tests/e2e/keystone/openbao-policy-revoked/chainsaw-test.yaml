@@ -1,0 +1,316 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E failure/recovery test for OpenBao push-keystone-keys policy
+# revocation (CC-0102).
+#
+# Verifies the Keystone CR keeps SecretsReady=True (read path is unaffected by
+# losing the write policy) while the management-cluster ESO PushSecret
+# `<name>-fernet-keys-backup` flips to Ready=False after the policy is revoked
+# and a fernet rotation triggers a fresh push that OpenBao now denies with
+# HTTP 403 — and recovers to PushSecret Ready=True after the policy is
+# restored. This exercises the PushSecret-side failure path that is asserted
+# happy-path in tests/e2e/keystone/basic-deployment/chainsaw-test.yaml:177
+# (CC-0083) but has no negative-path E2E coverage today.
+#
+# DECISION (task 1.1): Test placement.
+# Same trade-off as tests/e2e/keystone/openbao-sealed/chainsaw-test.yaml:13 —
+# placed under tests/e2e/keystone/ with spec.concurrent:false rather than
+# moved to tests/e2e-chaos/, because the failure mechanism (`bao policy
+# delete`) is a steady-state OpenBao admin command not chaos engineering, the
+# test does not depend on Chaos Mesh CRDs, and co-locating PushSecret happy-
+# path and failure-path tests aids discovery. Reviewer: please verify.
+#
+# Failure mechanism rationale (REQ-003):
+#   1. revoke-policy.sh deletes the push-keystone-keys policy. The
+#      management-cluster ESO Kubernetes-auth role binds two policies
+#      (eso-management for reads + push-keystone-keys for the fernet/credential
+#      backup writes — see deploy/openbao/bootstrap/setup-auth.sh:86); after
+#      the delete, the role's effective ACL drops every grant on the
+#      `kv-v2/{data,metadata}/openstack/keystone/+/fernet-keys` paths.
+#   2. The fernet rotation CronJob clone (`kubectl create job --from=cronjob/
+#      keystone-policy-revoked-fernet-rotate`) writes new keys into the
+#      staging Secret; the operator's fernet reconciler applies them to the
+#      production Secret; ESO observes the production Secret change and
+#      attempts to push the new revision to OpenBao.
+#   3. OpenBao denies the PUT with HTTP 403 because the role no longer holds
+#      the matching write capability. ESO records the error on the PushSecret
+#      `Ready` condition (status=False, message contains the upstream HTTP
+#      response). The Keystone CR's SecretsReady condition stays True because
+#      the *read*-side ClusterSecretStore is unaffected (eso-management is
+#      still bound) — this asymmetry is the test's most important assertion.
+#
+# Recovery (REQ-003 + REQ-008):
+#   restore-policy.sh re-applies the captured policy (upsert via `bao policy
+#   write -`), ESO retries on its built-in backoff, and the PushSecret
+#   transitions back to Ready=True. The assertion timeout (5 m) is comfortably
+#   above ESO's default error-backoff cap.
+#
+# Cleanup invariant:
+#   The push-keystone-keys policy MUST be present on the cluster after this
+#   test exits (success or failure), otherwise every subsequent test that
+#   relies on PushSecret writes (basic-deployment, deletion-cleanup, etc.)
+#   would fail spuriously. Two layers enforce this:
+#     - Step 7 (restore-policy.sh) on the success path.
+#     - The test-level `cleanup:` block runs restore-policy.sh unconditionally,
+#       even on Step 4 abort or test panic (REQ-007 / REQ-008).
+#
+# REQ-003, REQ-006, REQ-007, REQ-008 (CC-0102)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-openbao-policy-revoked
+spec:
+  namespace: openstack
+  # Opt out of the parallel:4 happy-path pool — deleting/recreating a global
+  # OpenBao policy would race with every other Keystone CR running concurrently
+  # (REQ-006). Same rationale as openbao-sealed.
+  concurrent: false
+  timeouts:
+    assert: 5m
+  # Test-level cleanup: restore the policy unconditionally, even if the test
+  # body aborts before Step 7. Idempotent (bao policy write is upsert), so a
+  # successful Step 7 followed by this cleanup re-running is a no-op.
+  cleanup:
+  - script:
+      timeout: 60s
+      content: ./restore-policy.sh
+  steps:
+  # ── Step 1: Apply Keystone CR ──────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+
+  # ── Step 2: Assert baseline Ready=True before revocation ───────────────
+  # Gate: the test MUST observe a healthy Keystone CR (and a synced PushSecret
+  # backup) before injecting the failure, otherwise a Step 5 PushSecret
+  # Ready=False assertion would be ambiguous (was the PushSecret ever Ready?).
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-policy-revoked
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1alpha1
+          kind: PushSecret
+          metadata:
+            name: keystone-policy-revoked-fernet-keys-backup
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR status ==="
+          kubectl get keystone keystone-policy-revoked -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== PushSecret describe ==="
+          kubectl -n $NAMESPACE describe pushsecret keystone-policy-revoked-fernet-keys-backup 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+
+  # ── Step 3: Capture the live push-keystone-keys policy ─────────────────
+  # capture-policy.sh dumps the running cluster's policy text to the chainsaw
+  # runner's filesystem so restore-policy.sh can re-apply it byte-for-byte
+  # (REQ-008). Runs BEFORE the revoke step so the capture target still exists.
+  - name: capture-policy
+    try:
+    - script:
+        timeout: 60s
+        content: ./capture-policy.sh
+    catch:
+    - script:
+        content: |
+          echo "=== openbao pod status ==="
+          kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao -o wide 2>&1 || true
+          echo "=== openbao-init-keys Secret presence ==="
+          kubectl get secret openbao-init-keys -n openbao-system 2>&1 || true
+
+  # ── Step 4: Revoke the push-keystone-keys policy ───────────────────────
+  # Failure-injection step. Idempotent: a missing policy is treated as a
+  # no-op (REQ-008). Defence-in-depth `cleanup:` runs restore-policy.sh even
+  # if a later step aborts — the test-level `cleanup:` block above is the
+  # outer safety net but a per-step net keeps state consistent if the test
+  # body itself diverges before Step 7.
+  - name: revoke-policy
+    cleanup:
+    - script:
+        timeout: 60s
+        content: ./restore-policy.sh
+    try:
+    - script:
+        timeout: 60s
+        content: ./revoke-policy.sh
+    catch:
+    - script:
+        content: |
+          echo "=== openbao audit trail (last 100 lines) ==="
+          kubectl -n openbao-system logs -l app.kubernetes.io/name=openbao --tail=100 2>&1 || true
+
+  # ── Step 5: Trigger a manual fernet rotation ───────────────────────────
+  # Forces a Secret-data change on the production fernet-keys Secret, which
+  # ESO's PushSecret controller observes and attempts to push to OpenBao.
+  # The push fails with 403 (the policy was just deleted), surfacing the
+  # PushSecret Ready=False condition that Step 6 asserts.
+  #
+  # `kubectl create job --from=cronjob/<name>` clones the rotation CronJob
+  # spec into a one-shot Job — same idiom as tests/e2e/keystone/fernet-
+  # rotation/chainsaw-test.yaml:124. We do NOT `kubectl wait` on the Job
+  # completion here: the rotation Job itself succeeds (it writes the staging
+  # Secret), and the failure mode under test surfaces on the *downstream*
+  # ESO PushSecret push, which is asserted in the next step.
+  - name: trigger-rotation
+    try:
+    - script:
+        timeout: 60s
+        content: |
+          set -euo pipefail
+          # Idempotency: if a previous (failed) test run left this Job behind,
+          # delete it before the create — kubectl create rejects an existing
+          # name (mirrors invalid-cr cleanup pattern).
+          kubectl -n openstack delete job keystone-policy-revoked-manual-rotate \
+            --ignore-not-found --wait=true
+          kubectl -n openstack create job keystone-policy-revoked-manual-rotate \
+            --from=cronjob/keystone-policy-revoked-fernet-rotate
+          # Wait for the rotation Job to complete so that ESO has a real
+          # Secret-data change to react to (otherwise Step 6 might race the
+          # rotation and observe the still-healthy pre-rotation PushSecret).
+          # The Job itself is expected to succeed — only the ESO push fails.
+          kubectl -n openstack wait --for=condition=complete \
+            job/keystone-policy-revoked-manual-rotate --timeout=180s
+    catch:
+    - script:
+        content: |
+          echo "=== Rotation Job pods ==="
+          kubectl get pods -n $NAMESPACE -l job-name=keystone-policy-revoked-manual-rotate -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name=keystone-policy-revoked-manual-rotate -o name 2>/dev/null); do
+            echo "--- $pod logs ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 2>&1 || true
+            echo "--- $pod previous logs ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 --previous 2>&1 || true
+          done
+          echo "=== CronJob status ==="
+          kubectl -n $NAMESPACE describe cronjob keystone-policy-revoked-fernet-rotate 2>&1 | tail -40 || true
+
+  # ── Step 6: Assert PushSecret Ready=False (403) AND Keystone SecretsReady=True
+  # Two-part assertion captures the test's central invariant (REQ-003):
+  #   (a) The PushSecret condition flips to Ready=False — proves the write
+  #       path is broken. Asserted as the JMESPath filter `[?type=='Ready']`
+  #       with `status: "False"`. ESO records the upstream HTTP response in
+  #       the message; we cross-check that it contains '403' to guard against
+  #       false positives where the PushSecret is False for a *different*
+  #       reason (e.g. ClusterSecretStore NotReady due to OpenBao being down).
+  #   (b) The Keystone CR's SecretsReady stays True — proves the read path is
+  #       independent. This is the asymmetry that justifies the separate
+  #       push-keystone-keys policy (CC-0083) over a single all-purpose ESO
+  #       policy: a leaked-token write incident does not bring down the read
+  #       path.
+  - try:
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1alpha1
+          kind: PushSecret
+          metadata:
+            name: keystone-policy-revoked-fernet-keys-backup
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "False"
+              # Sub-assertion: ESO embeds the upstream error in the message.
+              # `contains()` is JMESPath; the chainsaw default-5m assert
+              # timeout polls until the message converges.
+              (contains(message, '403')): true
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-policy-revoked
+            namespace: openstack
+          status:
+            # Read path stays healthy (eso-management policy untouched).
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+    catch:
+    - script:
+        content: |
+          echo "=== PushSecret describe ==="
+          kubectl -n $NAMESPACE describe pushsecret keystone-policy-revoked-fernet-keys-backup 2>&1 || true
+          echo "=== PushSecret status JSON ==="
+          kubectl -n $NAMESPACE get pushsecret keystone-policy-revoked-fernet-keys-backup -o jsonpath='{.status}' 2>&1 || true
+          echo
+          echo "=== external-secrets controller logs (last 200 lines) ==="
+          kubectl -n external-secrets logs -l app.kubernetes.io/name=external-secrets --tail=200 2>&1 || true
+          echo "=== openbao audit/server log (last 100 lines) — should show 403 path/policy ==="
+          kubectl -n openbao-system logs -l app.kubernetes.io/name=openbao --tail=100 2>&1 || true
+          echo "=== Keystone CR status ==="
+          kubectl get keystone keystone-policy-revoked -n $NAMESPACE -o yaml 2>&1 || true
+
+  # ── Step 7: Restore the push-keystone-keys policy ──────────────────────
+  # Re-applies the snapshot captured in Step 3 (REQ-003 recovery). Idempotent:
+  # `bao policy write` is upsert.
+  - name: restore-policy
+    try:
+    - script:
+        timeout: 60s
+        content: ./restore-policy.sh
+    catch:
+    - script:
+        content: |
+          echo "=== capture file ==="
+          ls -la /tmp/push-keystone-keys.hcl.captured 2>&1 || true
+          echo "=== openbao pod status ==="
+          kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao -o wide 2>&1 || true
+
+  # ── Step 8: Assert PushSecret recovers to Ready=True ───────────────────
+  # ESO retries on its built-in error backoff after the policy returns. The
+  # assert timeout (5 m default) is comfortably above ESO's default backoff
+  # cap; if recovery takes longer than 5 m there is a real regression.
+  - try:
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1alpha1
+          kind: PushSecret
+          metadata:
+            name: keystone-policy-revoked-fernet-keys-backup
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    catch:
+    - script:
+        content: |
+          echo "=== PushSecret describe ==="
+          kubectl -n $NAMESPACE describe pushsecret keystone-policy-revoked-fernet-keys-backup 2>&1 || true
+          echo "=== external-secrets controller logs (last 200 lines) ==="
+          kubectl -n external-secrets logs -l app.kubernetes.io/name=external-secrets --tail=200 2>&1 || true
+          echo "=== openbao policy read push-keystone-keys (post-restore) ==="
+          # Read with init-keys root token to verify the restore actually persisted.
+          BAO_TOKEN=$(kubectl get secret openbao-init-keys -n openbao-system \
+            -o jsonpath='{.data.init-output}' 2>/dev/null | base64 -d | jq -r '.root_token') || true
+          kubectl exec -n openbao-system openbao-0 -- \
+            env BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN="$BAO_TOKEN" \
+            VAULT_CACERT=/openbao/tls/ca.crt \
+            bao policy read push-keystone-keys 2>&1 || true
