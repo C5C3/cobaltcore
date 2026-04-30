@@ -1066,6 +1066,12 @@ jobs:
         package: [keystone-operator, keystone, tempest]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      # GH-312: do NOT pass delete-untagged here. This job runs in
+      # parallel with build-and-push, which uploads per-platform
+      # manifests via push-by-digest=true (i.e. untagged) and relies on
+      # merge-operator-images to assemble them into a tagged manifest
+      # list. Pruning untagged images mid-flight removes those digests
+      # and breaks the merge step.
       - name: Delete run-scoped tags for ${{ matrix.package }}
         uses: ./.github/actions/cleanup-ghcr-package
         with:

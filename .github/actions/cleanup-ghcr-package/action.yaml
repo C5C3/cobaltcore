@@ -4,9 +4,10 @@
 ---
 name: Cleanup GHCR package
 description: >
-  Delete untagged and old images for a single GHCR package.
+  Delete old images for a single GHCR package.
   Supports two modes for selecting old tagged images: either a glob
-  pattern (delete-tags) or a keep-list (exclude-tags).
+  pattern (delete-tags) or a keep-list (exclude-tags). Untagged-image
+  pruning is opt-in via delete-untagged (default false).
 
 inputs:
   package:
@@ -32,6 +33,17 @@ inputs:
     description: "Minimum age of images to delete (e.g. '7 days')"
     required: false
     default: "7 days"
+  delete-untagged:
+    description: >
+      Also delete untagged / ghost / partial images. Opt-in because a
+      multi-arch `push-by-digest` flow (build-and-push →
+      merge-operator-images) leaves the per-platform manifests untagged
+      until the manifest list is assembled; pruning untagged images
+      while such a push is in flight removes the digests imagetools
+      needs and breaks the merge step (GH-312). Safe to enable from
+      the nightly cleanup workflow where no parallel push runs.
+    required: false
+    default: "false"
   token:
     description: GitHub token with packages:write scope
     required: true
@@ -40,6 +52,7 @@ runs:
   using: composite
   steps:
     - name: Delete untagged images
+      if: inputs.delete-untagged == 'true'
       uses: dataaxiom/ghcr-cleanup-action@cd0cdb900b5dbf3a6f2cc869f0dbb0b8211f50c4 # v1
       with:
         package: ${{ inputs.package }}

@@ -55,6 +55,7 @@ jobs:
           delete-tags: "*.*.*-p*-*-*"
           keep-n-tagged: ${{ inputs.keep-n-tagged || '10' }}
           older-than: ${{ inputs.older-than || '7 days' }}
+          delete-untagged: "true"
           token: ${{ secrets.GITHUB_TOKEN }}
 
   # ── 1. Service images (SHA tags) ───────────────────────────────────
@@ -71,6 +72,7 @@ jobs:
           exclude-tags: latest
           keep-n-tagged: ${{ inputs.keep-n-tagged || '10' }}
           older-than: ${{ inputs.older-than || '7 days' }}
+          delete-untagged: "true"
           token: ${{ secrets.GITHUB_TOKEN }}
 
   # ── 2. venv-builder (after service images) ─────────────────────────
@@ -88,6 +90,7 @@ jobs:
           exclude-tags: latest
           keep-n-tagged: ${{ inputs.keep-n-tagged || '10' }}
           older-than: ${{ inputs.older-than || '7 days' }}
+          delete-untagged: "true"
           token: ${{ secrets.GITHUB_TOKEN }}
 
   # ── 3. python-base (after venv-builder) ────────────────────────────
@@ -105,6 +108,7 @@ jobs:
           exclude-tags: latest
           keep-n-tagged: ${{ inputs.keep-n-tagged || '10' }}
           older-than: ${{ inputs.older-than || '7 days' }}
+          delete-untagged: "true"
           token: ${{ secrets.GITHUB_TOKEN }}
 
   # ── 4. Operator images (independent) ───────────────────────────────
@@ -128,6 +132,7 @@ jobs:
           exclude-tags: latest
           keep-n-tagged: ${{ inputs.keep-n-tagged || '10' }}
           older-than: ${{ inputs.older-than || '7 days' }}
+          delete-untagged: "true"
           token: ${{ secrets.GITHUB_TOKEN }}
 
   # ── 5. E2E run-scoped tags (safety net for cancelled CI runs) ──────
