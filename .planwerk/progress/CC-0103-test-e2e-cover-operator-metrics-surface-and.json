@@ -545,6 +545,7 @@
       "title": "Manual sanity check (REQ-011) — document the procedure in the PR description: (a) the exact patch (file, line, Eventf snippet) that adds a per-reconcile r.Recorder.Eventf to operators/keystone/internal/controller/keystone_controller.go's main Reconcile, (b) command to run only the event-budget chainsaw test, (c) expected count > 5 with the failure message format, (d) `git checkout -- operators/keystone/internal/controller/keystone_controller.go` to revert. Explicitly note this is a one-shot pre-merge gate, NOT wired into CI (REQ-011, CC-0103).",
       "level": 4,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-011"
       ]
@@ -554,6 +555,7 @@
       "title": "Diff scope verification: `git diff --name-only main..HEAD` shows only paths under tests/e2e/keystone/operator-metrics-endpoint/, tests/e2e/keystone/event-budget/, and docs/reference/testing/keystone-e2e-tests.md. No path under operators/, deploy/, or .github/. Paste the file list into the PR description (REQ-010, CC-0103).",
       "level": 4,
       "estimate_minutes": 5,
+      "status": "done",
       "requirements": [
         "REQ-010"
       ]
