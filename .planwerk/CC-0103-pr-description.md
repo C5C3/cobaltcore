@@ -72,10 +72,19 @@ REQ-010 is satisfied.
 
 REQ-011 calls for empirical validation that `BUDGET=5` actually
 catches a per-reconcile event-spam regression — not a guess that
-survives because no regression happened to fire. This is a one-shot
-reviewer signoff procedure run against `make kind-up`. The patch
-below is reverted before merge; the diff scope verification above is
-the gate that proves no operator file reaches the merge commit.
+survives because no regression happened to fire. This requires a
+real kind cluster: apply the synthetic patch, run the event-budget
+suite, observe the failing count, revert, run the suite again, and
+record both numbers.
+
+> **Status: NOT YET EXECUTED.** The implementation environment for
+> this PR is a sandbox without Docker / kind / a live Kubernetes API
+> server, so the empirical run cannot happen here. The procedure
+> below is the executable runbook for the maintainer (or any
+> reviewer with a kind host) to perform on `main` + this branch
+> before merging. **This PR must not merge until the run is done
+> and steps (c) and (d) below are filled in with the actual `count=`
+> values.**
 
 ### (a) The exact patch
 
@@ -103,7 +112,7 @@ Notes:
   400, 408, 472, 484 for the existing event-emission style). No new
   imports needed.
 
-### (b) Command — run only the event-budget suite
+### (b) Commands — run only the event-budget suite
 
 ```sh
 make kind-up
@@ -116,31 +125,33 @@ chainsaw test --config tests/e2e/chainsaw-config.yaml \
 single-suite form documented in
 `docs/reference/testing/keystone-e2e-tests.md:96-99`.)
 
-### (c) Expected failure outcome
+### (c) Expected failure outcome — to be filled in by the runner
 
-The default reconcile loop emits `ReconcilePass` on every pass, so
-well over five events accumulate in the 5-minute steady-state window.
-Step 3 of the suite logs:
+With the patch applied, the default reconcile loop emits
+`ReconcilePass` on every pass, so the 5-minute steady-state window
+accumulates well over five events. Step 3 of the suite logs:
 
 ```
 count=<N> budget=5
 ```
 
-with `<N> > 5` (typically several dozen). The next line
-`test "$count" -le "$BUDGET"` exits non-zero, failing the test. The
-catch block then prints, in order:
+with `<N> > 5`. The next line `test "$count" -le "$BUDGET"` exits
+non-zero and the test fails. The catch block then prints, in order:
 
 1. every event in the `openstack` namespace sorted by `lastTimestamp`
    (no truncation — diagnosis budget > byte budget),
 2. the Keystone CR YAML for `keystone-event-budget`,
 3. operator logs (tail 200).
 
-The dumped event list shows the synthetic `ReconcilePass` reason
+The dumped event list will show the synthetic `ReconcilePass` reason
 repeating, which is the smoking gun for a per-reconcile event-spam
-regression. The `operator-metrics-endpoint` suite is unaffected by
-the patch and continues to pass.
+regression.
 
-### (d) Revert
+**Runner: paste the actual `count=` value observed here:**
+
+> `count=___ budget=5` *(to be filled in)*
+
+### (d) Revert and re-run
 
 ```sh
 git checkout -- operators/keystone/internal/controller/keystone_controller.go
@@ -149,17 +160,32 @@ chainsaw test --config tests/e2e/chainsaw-config.yaml \
   tests/e2e/keystone/event-budget/
 ```
 
-After revert, the test passes (typical `count` is 0). This pass-on-
-revert step closes the loop: it confirms the budget is correctly
-tuned — quiet under the real reconcile loop, loud under a synthetic
-per-reconcile `Eventf`.
+After revert, the test must pass. This pass-on-revert step closes
+the loop: it confirms the budget is correctly tuned — quiet under
+the real reconcile loop, loud under a synthetic per-reconcile
+`Eventf`.
 
-### CI scope statement
+**Runner: paste the actual `count=` value observed after revert:**
 
-This procedure is **not** wired into CI. CI runs the unmodified
+> `count=___ budget=5` *(to be filled in; expected `count <= BUDGET`,
+> typically `0`)*
+
+### (e) Why this is not in CI
+
+The procedure is **not** wired into CI. CI runs the unmodified
 event-budget suite as part of the normal `chainsaw test` pass; the
 synthetic `Eventf` patch above must never appear in the merge
 commit. The diff scope verification in the previous section is the
-mechanical guard that enforces this — if any file under
+mechanical guard — if any file under
 `operators/keystone/internal/controller/` shows in the diff, the PR
 fails its own REQ-010 check.
+
+### (f) Sandbox limitation — declared explicitly
+
+The implementation worktree for CC-0103 has no access to Docker,
+kind, or a live API server (see also CC-0086, CC-0097 worktrees,
+which carry the same limitation). All YAML in this PR has been
+linted and reviewed statically; the empirical REQ-011 run is the
+maintainer's pre-merge gate, not a step that can be performed by
+the implementation agent. Reviewers: please run the procedure above
+and paste the two `count=` numbers into (c) and (d) before merging.

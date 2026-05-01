@@ -140,7 +140,7 @@ Deployment rollout, bootstrap Job).
 | [event-budget](#event-budget) | `keystone-event-budget` | Steady-state event budget — non-lifecycle event count over a 5m window does not exceed threshold (regression gate for per-reconcile event-spam) |
 | [graceful-shutdown](#graceful-shutdown) | `keystone-graceful-shutdown` | Deployment configured with `terminationGracePeriodSeconds=30`, preStop sleep hook, startup probe |
 | [healthcheck](#healthcheck) | `keystone-healthcheck` | Post-Deployment HTTP health check gates `KeystoneAPIReady=True` with reason `APIHealthy` before aggregate `Ready` flips |
-| [operator-metrics-endpoint](#operator-metrics-endpoint) | `keystone-metrics-endpoint` | Live scrape of operator `/metrics` endpoint; asserts all five Prometheus metric families are exposed and each has at least one sample row |
+| [operator-metrics-endpoint](#operator-metrics-endpoint) | `keystone-metrics-endpoint` | Live scrape of operator `/metrics` endpoint; asserts all five Prometheus metric families are exposed and four of them have at least one labelled sample row pinned to the test CR (`reconcile_errors_total` is exempt by design — zero-error healthy run) |
 | [policy-validation](#policy-validation) | `keystone-policy-validation` | `PolicyValidReady` gates the Deployment; validation Job lifecycle on `policyOverrides` add/remove |
 | [priority-class](#priority-class) | `keystone-pc` | `spec.priorityClassName` propagation: unset → empty, set → applied, patched empty → removed |
 | [schema-drift-detection](#schema-drift-detection) | `keystone-schema-drift` | `DatabaseReady=True` with message "revision verified"; schema-check Job runs and completes |
@@ -631,29 +631,52 @@ an empty slice explicitly disables all constraints.
 
 **File:** `tests/e2e/keystone/operator-metrics-endpoint/chainsaw-test.yaml`
 
-**Purpose:** Live-scrape complement to the metrics suite (`tests/e2e/keystone/metrics/`,
-which only verifies `ServiceMonitor` shape). Applies a Keystone CR, waits for
-`Ready=True/AllReady`, then scrapes
-`http://keystone-operator.openstack.svc:8080/metrics` from inside the cluster via a
-one-off probe pod and asserts that all five Prometheus metric families registered by
-`globalCollectors()` are present, and that each has at least one labelled sample row
-pinned to this test's CR. A regression that drops a single collector or breaks the
-`instrumentSubReconciler` wiring fails this test (CC-0103).
+**Purpose:** Live-scrape complement to the [`metrics`](#metrics) suite
+(`tests/e2e/keystone/metrics/`, which only verifies `ServiceMonitor` CRD shape — Prometheus
+is not deployed in the kind overlay). Applies a Keystone CR, waits for
+`Ready=True/AllReady`, then resolves the `keystone-operator` Service namespace dynamically
+via `kubectl get svc -A -l app.kubernetes.io/name=keystone-operator -o jsonpath='{.items[0].metadata.namespace}'`
+and scrapes `http://keystone-operator.<resolved-ns>.svc:8080/metrics` from inside the
+cluster via a one-off probe pod. Asserts all five Prometheus metric families registered
+by `globalCollectors()` are present, and that four of the five have at least one
+labelled sample row pinned to this test's CR (`keystone_operator_reconcile_errors_total`
+is exempt — see Sample-row coverage below). A regression that drops a single collector
+or breaks the `instrumentSubReconciler` wiring fails this test (CC-0103).
+
+**Why dynamic namespace resolution:** The kind base overlay
+(`deploy/kind/base/kustomization.yaml:87-106`) suspends the `openstack/keystone-operator`
+HelmRelease, and `hack/ci-deploy-operator.sh` runs `helm install` with no `-n` flag, so
+the operator currently lives in the `default` namespace. Sibling tests
+(`tests/e2e/keystone/prometheus-stack/chainsaw-test.yaml:298`,
+`tests/e2e-chaos/operator-pod-kill/chainsaw-test.yaml:74`) hard-code that. This suite
+resolves the namespace at runtime via the canonical `app.kubernetes.io/name=keystone-operator`
+label so the test stays correct if the deployment topology shifts (e.g. when the suspend
+patch is removed and Flux reconciles the `openstack/keystone-operator` HelmRelease).
 
 **Steps:**
 
 | # | Step Name | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` + `assert` (5m) | `00-keystone-cr.yaml` — Keystone CR `keystone-metrics-endpoint`; asserts `DatabaseReady=True/DatabaseSynced`, `BootstrapReady=True/BootstrapComplete`, `Ready=True/AllReady` |
-| 2 | Scrape `/metrics` via probe pod | `script` (120s) | `kubectl run keystone-metrics-probe --image=ghcr.io/c5c3/keystone:2025.2 --rm -i --restart=Never --command -- python3 -c "import urllib.request,sys; sys.stdout.write(urllib.request.urlopen('http://keystone-operator.openstack.svc:8080/metrics').read().decode())"` — captures the exposition body to `/tmp/keystone-metrics-endpoint-body.txt` for inline assertions and catch-block diagnostics |
-| 3 | Assert family names and sample rows | `script` (inline in step 2) | (a) all five family names present (`keystone_operator_reconcile_duration_seconds`, `keystone_operator_reconcile_errors_total`, `keystone_operator_key_rotation_age_seconds`, `keystone_operator_db_sync_total`, `keystone_operator_db_sync_duration_seconds`); (b) `reconcile_duration_seconds_count{sub_reconciler=...}` matches the closed 14-name set drawn from `operators/keystone/internal/controller/instrumentation.go`; (c) `db_sync_total` has a sample with `keystone="keystone-metrics-endpoint",namespace="openstack",result="succeeded"`; (d) `key_rotation_age_seconds` has a sample with `key_type="fernet"` or `key_type="credential"` |
+| 2 | Resolve operator namespace + scrape `/metrics` via probe pod | `script` (120s) | `op_ns=$(kubectl get svc -A -l app.kubernetes.io/name=keystone-operator -o jsonpath='{.items[0].metadata.namespace}')` then `kubectl run keystone-metrics-probe -n openstack --image=ghcr.io/c5c3/keystone:2025.2 --rm -i --restart=Never --command -- python3 -c "import urllib.request,sys; sys.stdout.write(urllib.request.urlopen('http://keystone-operator.${op_ns}.svc:8080/metrics').read().decode())"` — captures the exposition body to `/tmp/keystone-metrics-endpoint-body.txt` for inline assertions and catch-block diagnostics |
+| 3 | Assert family names and sample rows | `script` (inline in step 2) | (a) all five family names present (`keystone_operator_reconcile_duration_seconds`, `keystone_operator_reconcile_errors_total`, `keystone_operator_key_rotation_age_seconds`, `keystone_operator_db_sync_total`, `keystone_operator_db_sync_duration_seconds`); (b) `reconcile_duration_seconds_count{sub_reconciler=...}` matches the closed 14-name set drawn from `operators/keystone/internal/controller/instrumentation.go`; (c) `db_sync_total` has a sample with `keystone="keystone-metrics-endpoint",namespace="openstack",result="succeeded"`; (d) `db_sync_duration_seconds_count` has a sample with `keystone="keystone-metrics-endpoint",namespace="openstack",result="succeeded"`; (e) `key_rotation_age_seconds` has a sample with `key_type="fernet"` or `key_type="credential"` |
 
 **Fixtures:** `00-keystone-cr.yaml`
 
-**Diagnostics:** Step 2 includes a catch block that dumps the operator `Service` spec,
-operator pods (`-l app.kubernetes.io/name=keystone-operator -o wide`), the captured
-exposition body if present, and operator logs (`--tail=120`) so a scrape failure can
-be triaged from CI logs alone.
+**Sample-row coverage:** Of the five Prometheus metric families registered by
+`globalCollectors()`, four have sample-level assertions in step 3
+(`reconcile_duration_seconds_count`, `db_sync_total`, `db_sync_duration_seconds_count`,
+`key_rotation_age_seconds`). `keystone_operator_reconcile_errors_total` is **intentionally
+exempt** from sample-level assertion: it only records a sample when a sub-reconciler
+returns an error, and a healthy run that reaches `Ready=AllReady` is expected to have
+zero error samples by design. A family-name regression on that vector is still caught
+by the `# HELP` line check.
+
+**Diagnostics:** Step 2 includes a catch block that dumps the operator `Service` (looked
+up across all namespaces via `-A -l app.kubernetes.io/name=keystone-operator`), operator
+pods (same label, `-A -o wide`), the captured exposition body if present, and operator
+logs from the resolved namespace (`--tail=120`), so a scrape failure can be triaged from
+CI logs alone — even when the namespace-resolution step is itself the failing step.
 
 **Drift-guard:** The literal family-name list and the `sub_reconciler` regex are intentional
 duplications of `operators/keystone/internal/metrics/collectors.go`,
@@ -683,7 +706,7 @@ reasons (`BootstrapComplete`, `DatabaseSynced`, `FernetKeysGenerated`,
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` + `assert` (7m) | `00-keystone-cr.yaml` — Keystone CR `keystone-event-budget`; asserts `DatabaseReady=True/DatabaseSynced`, `BootstrapReady=True/BootstrapComplete`, `Ready=True/AllReady`. The `assert` timeout is overridden to `7m` (5m sleep + 2m headroom) |
 | 2 | Capture T0 | `script` | `T0=$(date -Iseconds); echo "$T0" > /tmp/t0-event-budget` — lower bound for the steady-state window. Chainsaw scripts run in a fresh `/bin/sh` per step, so `T0` is persisted via `/tmp` (the canonical chainsaw idiom) |
-| 3 | Sleep 5m and assert event budget | `script` (360s) | After `sleep 300`, counts events on `keystone-event-budget` newer than `T0` excluding the four lifecycle reasons via `EXCLUDE_RE='^(BootstrapComplete\|DatabaseSynced\|FernetKeysGenerated\|CredentialKeysGenerated)$'`; asserts `count <= BUDGET=5`. Threshold lives in `BUDGET=5` only — never inline |
+| 3 | Sleep 5m and assert event budget | `script` (330s) | After `sleep 300`, counts events on `keystone-event-budget` newer than `T0` excluding the four lifecycle reasons via `EXCLUDE_RE='^(BootstrapComplete\|DatabaseSynced\|FernetKeysGenerated\|CredentialKeysGenerated)$'`; asserts `count <= BUDGET=5`. Threshold lives in `BUDGET=5` only — never inline. The `330s` step timeout = 5m sleep + 30s for the `kubectl get` + `jq` pipeline; the surrounding `7m` assert budget leaves a further ~3m margin |
 
 **Fixtures:** `00-keystone-cr.yaml`
 

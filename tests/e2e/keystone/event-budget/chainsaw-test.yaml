@@ -88,9 +88,20 @@ spec:
   # Threshold lives in BUDGET=5 only — never inline. Lifecycle reasons
   # are excluded via EXCLUDE_RE; they are covered by the events suite
   # (REQ-006 cross-reference: tests/e2e/keystone/events/chainsaw-test.yaml).
+  #
+  # CANONICAL SOURCE for the four lifecycle reasons is the for-loop in
+  # tests/e2e/keystone/events/chainsaw-test.yaml step 3:
+  #   for reason in BootstrapComplete DatabaseSynced \
+  #                 FernetKeysGenerated CredentialKeysGenerated; do
+  # If a reason is renamed there, EXCLUDE_RE below MUST be updated in
+  # lock-step or non-lifecycle event-spam will be miscounted as zero.
+  # The cross-reference is one-way (events/ does not reference back) so
+  # this comment is the authoritative coupling marker (CC-0103, REQ-006).
   - try:
     - script:
-        timeout: 360s
+        # 5m sleep + 30s headroom for the kubectl-get + jq pipeline.
+        # The 7m assert budget keeps a further ~3m margin on top.
+        timeout: 330s
         content: |
           set -eu
           sleep 300
@@ -106,7 +117,11 @@ spec:
     # REQ-008 (CC-0103): catch dumps every event in the namespace
     # (no truncation — diagnosis budget > byte budget), the CR YAML,
     # and operator logs so a budget overrun can be triaged from CI
-    # logs alone.
+    # logs alone. The operator-log lookup resolves the operator
+    # namespace dynamically because the kind base overlay suspends
+    # the openstack/keystone-operator HelmRelease and the Service
+    # actually lives in 'default' (see operator-metrics-endpoint
+    # suite for the same dynamic-resolution rationale).
     catch:
     - script:
         content: |
@@ -114,5 +129,13 @@ spec:
           kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 || true
           echo "=== Keystone CR ==="
           kubectl get keystone -n openstack keystone-event-budget -o yaml 2>&1 || true
-          echo "=== Operator logs (tail 200) ==="
-          kubectl logs -n openstack -l app.kubernetes.io/name=keystone-operator --tail=200 2>&1 || true
+          echo "=== Operator logs (tail 200, namespace resolved via label) ==="
+          op_ns=$(kubectl get svc -A \
+            -l app.kubernetes.io/name=keystone-operator \
+            -o jsonpath='{.items[0].metadata.namespace}' 2>/dev/null || true)
+          if [ -n "$op_ns" ]; then
+            echo "(operator namespace=$op_ns)"
+            kubectl logs -n "$op_ns" -l app.kubernetes.io/name=keystone-operator --tail=200 2>&1 || true
+          else
+            echo "(could not resolve operator namespace from Service label)"
+          fi

@@ -1,0 +1,111 @@
+{
+  "summary": "Adds two Chainsaw E2E suites (tests/e2e/keystone/operator-metrics-endpoint/, tests/e2e/keystone/event-budget/) plus inventory rows + Test Suite Details subsections in docs/reference/testing/keystone-e2e-tests.md. Diff is correctly fenced to tests/e2e/keystone/ + docs/reference/testing/ (no operator/, helm/, deploy/, hack/, .github/ changes). Fixtures mirror tests/e2e/keystone/events/00-keystone-cr.yaml with distinct names + database names; chainsaw-test.yaml files follow the established suite structure (SPDX, header comment with CC-0103 + #277, JMESPath condition asserts, catch-block diagnostics). The /metrics scraper hits a wrong DNS name — the keystone-operator Service runs in 'default' (kind base patch suspends the openstack/keystone-operator HelmRelease and ci-deploy-operator.sh installs without -n), but the test dials keystone-operator.openstack.svc — so the suite will fail at the scrape step on every CI run. Manual sanity check (REQ-011) is documented as a procedure but not recorded as actually executed.",
+  "verdict": "BLOCKED",
+  "tests_checklist": [
+    {"item": "Tests exist and are syntactically valid Chainsaw v1alpha1", "checked": true},
+    {"item": "operator-metrics-endpoint scrape will succeed in CI (correct service DNS)", "checked": false},
+    {"item": "All five metric family names asserted (literal list)", "checked": true},
+    {"item": "At least one labelled sample row asserted PER family (5/5)", "checked": false},
+    {"item": "sub_reconciler regex is the closed 14-name set from instrumentation.go:54", "checked": true},
+    {"item": "event-budget threshold lives in single named BUDGET=5 var", "checked": true},
+    {"item": "event-budget exclusion list literally matches events/chainsaw-test.yaml:74", "checked": true},
+    {"item": "event-budget spec.timeouts.assert is 7m (not 5m default)", "checked": true},
+    {"item": "Catch blocks dump full untruncated event list for budget test", "checked": true},
+    {"item": "Manual sanity-check (REQ-011) actually executed and count recorded", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows Chainsaw E2E suite structure pattern", "checked": true},
+    {"item": "SPDX Apache-2.0 header on both YAML files", "checked": true},
+    {"item": "Header comments cite CC-0103 and parent #277 Phase 1", "checked": true},
+    {"item": "Distinct CR names + distinct database names enable parallel:4", "checked": true},
+    {"item": "Inline threshold (no magic number) — BUDGET=5 only", "checked": true},
+    {"item": "Cross-reference comment to events/chainsaw-test.yaml in event-budget header", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No secrets in test fixtures or scripts", "checked": true},
+    {"item": "Scrape pod runs --restart=Never --rm (no leaked workloads)", "checked": true},
+    {"item": "No shell injection in script bodies (variables quoted, EXCLUDE_RE passed via --arg to jq)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Diff scope confined to tests/e2e/keystone/ + docs/reference/testing/ + .planwerk/", "checked": true},
+    {"item": "No operator code changes", "checked": true},
+    {"item": "No chart, deploy/, hack/, or .github/ changes", "checked": true},
+    {"item": "Solution is the simplest viable approach (in-cluster probe pod, declarative budget gate)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "Catch block diagnostic snippet duplicated from events/ — acceptable per established suite pattern", "checked": true},
+    {"item": "BUDGET threshold defined exactly once", "checked": true},
+    {"item": "Family-name list duplicated between chainsaw test and collectors.go — intentional drift-guard, called out in header comment", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Step 2 errors out if exposition body is empty (clear FAIL message)", "checked": true},
+    {"item": "Each metric family check prints MISSING:<name> + full body before exit 1", "checked": true},
+    {"item": "Step 3 of event-budget echoes 'count=N budget=5' before the test command (visible in CI log even on pass)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Probe pod uses ghcr.io/c5c3/keystone:2025.2 (already cached in kind, offline-safe)", "checked": true},
+    {"item": "Catch blocks degrade gracefully (|| true on every diagnostic kubectl)", "checked": true},
+    {"item": "T0 persisted via /tmp file across chainsaw script-step shells (correct chainsaw idiom)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "C1",
+      "severity": "BLOCKER",
+      "description": "Wrong service DNS — the /metrics scrape dials http://keystone-operator.openstack.svc:8080/metrics but the keystone-operator Service is in the 'default' namespace, not 'openstack'. deploy/kind/base/kustomization.yaml:87-106 explicitly suspends the openstack/keystone-operator HelmRelease, and hack/ci-deploy-operator.sh runs `helm install \"${OPERATOR}-operator\" \"${CHART_PATH}/\"` with no -n flag, so helm defaults to the 'default' namespace (the suspend-patch comment on lines 91-92 confirms this verbatim: 'CI's subsequent `helm install` (no --namespace flag → default) ...'). Sibling tests already encode this: tests/e2e/keystone/prometheus-stack/chainsaw-test.yaml:298 reads `kubectl get servicemonitor keystone-operator -n default` and tests/e2e-chaos/operator-pod-kill/chainsaw-test.yaml:74 reads `kubectl get deployment keystone-operator -n default`. As written, the probe pod's urllib.request.urlopen will fail with NXDOMAIN, kubectl run will exit non-zero, the body file will be empty, and step 2 will exit 1 on every CI invocation — the suite cannot pass.",
+      "location": "tests/e2e/keystone/operator-metrics-endpoint/chainsaw-test.yaml:11, 98, 102, 171",
+      "fix": "Change all three URL/lookup occurrences to use the 'default' namespace: line 11 header comment URL, line 98 urllib.request.urlopen('http://keystone-operator.default.svc:8080/metrics'), line 102 the FAIL message, and line 171 the catch-block `kubectl get svc -n default keystone-operator -o yaml`. Alternatively, resolve the namespace dynamically with `ns=$(kubectl get svc -A -l app.kubernetes.io/name=keystone-operator -o jsonpath='{.items[0].metadata.namespace}')` and substitute. Update the docs section in keystone-e2e-tests.md (Step 2 row) and the PR description's commands accordingly.",
+      "evidence": "deploy/kind/base/kustomization.yaml:87-92: '# keystone-operator: suspend Flux management in kind so that the e2e CI / # job can install it manually with a locally built dev image. / # Without this patch Flux installs the published chart from c5c3-charts, / # creating the ClusterRole with meta.helm.sh/release-namespace=openstack. / # The CI's subsequent `helm install` (no --namespace flag → default) then / # fails with an ownership-annotation conflict (fix-001).' AND hack/ci-deploy-operator.sh:75-78: 'helm install \"${OPERATOR}-operator\" \\ / \"${CHART_PATH}/\" \\ / \"${helm_args[@]}\" \\ / --wait --timeout 120s' (no -n flag). AND tests/e2e/keystone/operator-metrics-endpoint/chainsaw-test.yaml:98: 'urllib.request.urlopen(\\'http://keystone-operator.openstack.svc:8080/metrics\\')'",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "FC4",
+      "severity": "CRITICAL",
+      "description": "REQ-011 manual sanity check is documented as a procedure but the PR description does not record an actual empirical run. The required artefacts per the criterion are 'the patch applied, the failing count observed, and the revert' — all empirically captured. The current section reads 'Expected failure outcome' with a placeholder count of '<N>' and language like 'typically several dozen'; no real run with a concrete count + concrete revert verification appears. This means BUDGET=5 remains a guess. The criterion is explicit: empirical validation is required before merge.",
+      "location": ".planwerk/CC-0103-pr-description.md:119-155",
+      "fix": "Run the documented procedure once against a kind cluster: apply the synthetic Eventf patch, run only the event-budget chainsaw suite, capture the actual count (e.g. 'count=37 budget=5'), revert the patch, re-run, capture the post-revert count (e.g. 'count=0 budget=5'). Replace the 'Expected failure outcome' / '<N>' placeholders with the verbatim CI output for both phases. If the project sandbox cannot host kind (per project memory: 'Sandbox has no docker/cluster'), report this in the PR description as an explicit blocker for review-time empirical validation and request the maintainer execute the procedure before merge — do not ship REQ-011 as a procedure-only artefact.",
+      "evidence": ".planwerk/CC-0103-pr-description.md:119-130: '### (c) Expected failure outcome / The default reconcile loop emits `ReconcilePass` on every pass, so / well over five events accumulate in the 5-minute steady-state window. / Step 3 of the suite logs: / / ``` / count=<N> budget=5 / ``` / / with `<N> > 5` (typically several dozen).'",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "TE2",
+      "severity": "MAJOR",
+      "description": "Sample-row coverage is 3 of 5 families, not 5 of 5. The BLOCKING review criterion 'asserts ALL FIVE metric family names ... AND at least one labelled sample row per family' is not met. Only reconcile_duration_seconds_count, db_sync_total, and key_rotation_age_seconds get sample-level assertions (REQ-004 a/b/c). The other two families — keystone_operator_reconcile_errors_total and keystone_operator_db_sync_duration_seconds — are only verified to have a `# HELP` line, which is emitted by the Prometheus client even when zero samples have been recorded for the vector. A regression that registers the collector (HELP line present) but never observes a sample (e.g., the call site's instrumentation gets removed) would not be caught. db_sync_duration_seconds always has at least one sample after first DB-sync completion in this CR, so a sample assertion is straightforward; reconcile_errors_total may legitimately have zero samples in a healthy run — note that explicitly in the test or relax the criterion in the plan.",
+      "location": "tests/e2e/keystone/operator-metrics-endpoint/chainsaw-test.yaml:127-161",
+      "fix": "Add a sample assertion for keystone_operator_db_sync_duration_seconds_count{keystone=\"keystone-metrics-endpoint\",namespace=\"openstack\"} (mirroring the db_sync_total assertion form). For keystone_operator_reconcile_errors_total, either (a) add an explicit comment in the test stating that no sample assertion is made because zero errors is the healthy steady state, or (b) push back on the criterion in the PR description and link the rationale to this finding. Without one of these, the reconcile_errors collector could silently de-register and the test would still pass.",
+      "evidence": "tests/e2e/keystone/operator-metrics-endpoint/chainsaw-test.yaml:127-161 contains exactly three sample-row asserts (sub_reconciler regex, db_sync_total result=succeeded, key_rotation_age key_type=fernet|credential). No sample-row assertion exists for keystone_operator_reconcile_errors_total or keystone_operator_db_sync_duration_seconds. Compare against the BLOCKING criterion 'AND at least one labelled sample row per family'.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "DA3",
+      "severity": "MAJOR",
+      "description": "Reference docs document the wrong scrape URL. The Test Suite Details Step 2 row in keystone-e2e-tests.md and the Purpose paragraph both repeat 'http://keystone-operator.openstack.svc:8080/metrics'. Once the test is fixed for the BLOCKER above, the doc must be updated in lock-step or readers will be misled into the same wrong assumption.",
+      "location": "docs/reference/testing/keystone-e2e-tests.md:639, 651",
+      "fix": "Update the URL in the Purpose paragraph and the Step 2 table row of the operator-metrics-endpoint section to match whatever the test ultimately uses (likely 'http://keystone-operator.default.svc:8080/metrics'). Keep the change in the same commit as the test fix to avoid temporary doc/test drift.",
+      "evidence": "docs/reference/testing/keystone-e2e-tests.md:639: 'http://keystone-operator.openstack.svc:8080/metrics' AND :651: 'urllib.request.urlopen('http://keystone-operator.openstack.svc:8080/metrics')'.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "PC3",
+      "severity": "MINOR",
+      "description": "One-way cross-reference: event-budget references events/ but events/ does not reference back. The review criterion calls for 'both pieces have header-comment cross-references so a future rename does not silently desync'. Strictly applied, events/chainsaw-test.yaml:74 (the for-loop with the four reasons) has no comment pointing to event-budget/. A future rename of one of the four reasons in events/ would silently desync the EXCLUDE_RE in event-budget without any note in events/ to flag the coupling. Adding a one-liner comment above events/chainsaw-test.yaml:74 like '# These four reasons are also referenced as the EXCLUDE_RE in tests/e2e/keystone/event-budget/ — keep them in sync.' closes the loop.",
+      "location": "tests/e2e/keystone/events/chainsaw-test.yaml:73-74",
+      "fix": "Add a one-line cross-reference comment immediately above 'for reason in BootstrapComplete DatabaseSynced FernetKeysGenerated CredentialKeysGenerated; do' pointing to tests/e2e/keystone/event-budget/chainsaw-test.yaml:99 EXCLUDE_RE. This requires touching events/chainsaw-test.yaml — the original PR scope was tests-only + docs-only with no operator code changes; touching the events suite header is allowed under the same scope.",
+      "evidence": "tests/e2e/keystone/event-budget/chainsaw-test.yaml:8-12 references events: '(BootstrapComplete, DatabaseSynced, FernetKeysGenerated, CredentialKeysGenerated — see tests/e2e/keystone/events/chainsaw-test.yaml as the canonical source ...)'. tests/e2e/keystone/events/chainsaw-test.yaml:67-89 has no comment referencing event-budget.",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Resolve the operator service namespace dynamically inside step 2 (kubectl get svc -A -l app.kubernetes.io/name=keystone-operator -o jsonpath='{.items[0].metadata.namespace}') so the test does not break again if the deployment topology shifts (e.g. when the kind base patch is removed and Flux reconciles the openstack/keystone-operator HelmRelease).",
+    "Consider tightening the timeout of step 3 in event-budget from 360s to 330s — the sleep is exactly 300s, so 30s is plenty of headroom for the kubectl + jq pipeline. The current 360s leaves the 7m assert budget with only 60s margin.",
+    "Add a one-line note in the operator-metrics-endpoint docs section that this test is the live-scrape complement to tests/e2e/keystone/metrics/ (which only verifies ServiceMonitor shape) — the PR description and chainsaw-test header already say this, but the docs section says it only obliquely ('Live-scrape complement to the metrics suite ...')."
+  ],
+  "next_steps": [
+    "Fix the BLOCKING URL bug: change keystone-operator.openstack.svc to keystone-operator.default.svc in chainsaw-test.yaml lines 11/98/102/171 and in keystone-e2e-tests.md lines 639/651.",
+    "Run the REQ-011 procedure once on a real kind cluster (or get the maintainer to run it), capture the failing count + post-revert count, and replace the placeholder values in .planwerk/CC-0103-pr-description.md:119-155.",
+    "Decide whether the criterion 'one sample row per family' applies to all 5 families. If yes, add a db_sync_duration_seconds_count sample assertion and a comment explaining why reconcile_errors_total is exempt; if no, push back in the PR description with a link to this review finding.",
+    "Optional: add the back-reference comment in events/chainsaw-test.yaml:73 above the for-loop."
+  ],
+  "detected_patterns": []
+}

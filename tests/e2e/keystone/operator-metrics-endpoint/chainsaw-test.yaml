@@ -6,23 +6,38 @@
 # (CC-0103, parent #277 Phase 1; REQ-001..REQ-004, REQ-008).
 #
 # Live-scrape complement to tests/e2e/keystone/metrics/ (which only verifies
-# ServiceMonitor shape). This test apply()s a Keystone CR, waits for
-# Ready=True/AllReady, then scrapes
-#   http://keystone-operator.openstack.svc:8080/metrics
+# ServiceMonitor shape — Prometheus is not deployed in the kind overlay).
+# This test apply()s a Keystone CR, waits for Ready=True/AllReady, then
+# scrapes
+#   http://keystone-operator.<ns>.svc:8080/metrics
 # from inside the cluster via a one-off pod and asserts:
 #   - All five metric family names registered by globalCollectors() are
 #     present (literal name list — drift-guard with
 #     operators/keystone/internal/metrics/collectors.go and
 #     operators/keystone/internal/metrics/collectors_test.go; rename one,
 #     update both).
-#   - At least one labelled sample row per family pinned to this test's CR:
-#     reconcile_duration histogram has _count{sub_reconciler="..."} drawn
-#     from the closed set in
-#     operators/keystone/internal/controller/instrumentation.go:54;
-#     db_sync_total has a sample with keystone="keystone-metrics-endpoint",
-#     namespace="openstack", result="succeeded";
-#     key_rotation_age has a sample with key_type="fernet" OR
-#     key_type="credential" (initial generation counts as first rotation).
+#   - At least one labelled sample row per OBSERVED family pinned to this
+#     test's CR. Four of the five families have observed samples after
+#     Ready=AllReady is reached:
+#       (a) reconcile_duration_seconds histogram has
+#           _count{sub_reconciler="..."} drawn from the closed set in
+#           operators/keystone/internal/controller/instrumentation.go:54;
+#       (b) db_sync_total has a sample with
+#           keystone="keystone-metrics-endpoint", namespace="openstack",
+#           result="succeeded";
+#       (c) db_sync_duration_seconds histogram has at least one
+#           _count{keystone="keystone-metrics-endpoint",namespace="openstack",
+#           result="succeeded"} sample (every successful db-sync emits a
+#           paired Inc + Observe, so this fires on first DB-sync
+#           completion);
+#       (d) key_rotation_age has a sample with key_type="fernet" OR
+#           key_type="credential" (initial generation counts as first
+#           rotation).
+#     reconcile_errors_total is intentionally exempt from sample-level
+#     assertion: it only records a sample when a sub-reconciler returns
+#     an error, and a healthy run reaches Ready=AllReady with zero error
+#     samples by design. A family-name regression on that vector is
+#     still caught by the # HELP check above.
 #
 # A regression that drops a single collector OR breaks the
 # instrumentSubReconciler wiring fails this test (REQ-003, REQ-004).
@@ -89,17 +104,44 @@ spec:
           body_file=/tmp/keystone-metrics-endpoint-body.txt
           rm -f "$body_file"
 
-          # REQ-002 (CC-0103): scrape from inside the cluster via a one-off
-          # pod. Image and invocation mirror
-          # tests/e2e/keystone/basic-deployment/chainsaw-test.yaml:220 so no
-          # new image needs to be pulled into kind.
+          # REQ-002 (CC-0103): resolve the keystone-operator Service
+          # namespace dynamically rather than hard-coding it. The kind
+          # base overlay suspends the openstack/keystone-operator
+          # HelmRelease (deploy/kind/base/kustomization.yaml:87-106) and
+          # hack/ci-deploy-operator.sh runs `helm install` with no -n
+          # flag, so the Service currently lives in 'default'. Resolving
+          # via the canonical operator label keeps the test correct if
+          # the deployment topology shifts (e.g. when the suspend patch
+          # is removed and Flux reconciles the openstack/keystone-operator
+          # HelmRelease). Sibling tests already encode the 'default'
+          # location verbatim:
+          #   tests/e2e/keystone/prometheus-stack/chainsaw-test.yaml:298
+          #   tests/e2e-chaos/operator-pod-kill/chainsaw-test.yaml:74
+          op_ns=$(kubectl get svc -A \
+            -l app.kubernetes.io/name=keystone-operator \
+            -o jsonpath='{.items[0].metadata.namespace}' 2>/dev/null || true)
+          if [ -z "$op_ns" ]; then
+            echo "FAIL: no Service with app.kubernetes.io/name=keystone-operator found in any namespace"
+            kubectl get svc -A 2>&1 || true
+            exit 1
+          fi
+          echo "operator Service namespace=$op_ns"
+          metrics_url="http://keystone-operator.${op_ns}.svc:8080/metrics"
+
+          # REQ-002 (CC-0103): scrape from inside the cluster via a
+          # one-off pod. Image and invocation mirror
+          # tests/e2e/keystone/basic-deployment/chainsaw-test.yaml:220 so
+          # no new image needs to be pulled into kind. The probe pod is
+          # created in the openstack namespace (where the Keystone CR
+          # lives); cross-namespace DNS resolves keystone-operator.${op_ns}.svc
+          # because kube-dns serves the whole cluster.
           kubectl run keystone-metrics-probe -n openstack \
             --image=ghcr.io/c5c3/keystone:2025.2 --rm -i --restart=Never \
-            --command -- python3 -c "import urllib.request,sys; sys.stdout.write(urllib.request.urlopen('http://keystone-operator.openstack.svc:8080/metrics').read().decode())" \
+            --command -- python3 -c "import urllib.request,sys; sys.stdout.write(urllib.request.urlopen('${metrics_url}').read().decode())" \
             > "$body_file" 2>/dev/null
 
           if [ ! -s "$body_file" ]; then
-            echo "FAIL: empty exposition body from http://keystone-operator.openstack.svc:8080/metrics"
+            echo "FAIL: empty exposition body from ${metrics_url}"
             exit 1
           fi
 
@@ -148,6 +190,23 @@ spec:
           fi
 
           # REQ-004 (CC-0103) sample assertion (c):
+          # db_sync_duration_seconds histogram has at least one _count
+          # sample pinned to this test's CR with result=succeeded. Every
+          # successful db-sync emits a paired Inc on db_sync_total +
+          # Observe on db_sync_duration_seconds, so this fires on first
+          # DB-sync completion (i.e. before BootstrapReady is reached,
+          # hence definitely before Ready=AllReady — see REQ-001 gate).
+          # This protects against a regression where the duration
+          # collector is registered (HELP line present) but the Observe
+          # call site is removed.
+          if ! awk '/^keystone_operator_db_sync_duration_seconds_count\{/ && /keystone="keystone-metrics-endpoint"/ && /namespace="openstack"/ && /result="succeeded"/ { found=1 } END { exit !found }' "$body_file"; then
+            echo "FAIL: no keystone_operator_db_sync_duration_seconds_count{keystone=\"keystone-metrics-endpoint\",namespace=\"openstack\",result=\"succeeded\"} sample"
+            echo "--- exposition body ---"
+            cat "$body_file"
+            exit 1
+          fi
+
+          # REQ-004 (CC-0103) sample assertion (d):
           # key_rotation_age has a sample with key_type="fernet" OR
           # key_type="credential". The initial keys produced by the
           # FernetKeys / CredentialKeys sub-reconcilers count as the first
@@ -160,22 +219,40 @@ spec:
             exit 1
           fi
 
-          echo "PASS: all five metric family names and three labelled samples present"
+          # NOTE (CC-0103): keystone_operator_reconcile_errors_total is
+          # exempt from sample-level assertion. It only records a sample
+          # when a sub-reconciler returns an error, and a healthy run
+          # that reaches Ready=AllReady is expected to have zero error
+          # samples. A family-name regression is still caught by the
+          # # HELP check above.
+
+          echo "PASS: all five metric family names and four labelled samples present (reconcile_errors_total exempt by design)"
     # REQ-008 (CC-0103): catch dumps Service spec, operator pods, the
     # captured exposition body (if any), and operator logs so a scrape
-    # failure can be triaged from CI logs alone.
+    # failure can be triaged from CI logs alone. The Service/pod lookups
+    # use -A + the canonical operator label so the catch dump still
+    # works if the namespace-resolution step is the thing that failed.
     catch:
     - script:
         content: |
-          echo "=== Operator Service ==="
-          kubectl get svc -n openstack keystone-operator -o yaml 2>&1 || true
-          echo "=== Operator pods ==="
-          kubectl get pods -n openstack -l app.kubernetes.io/name=keystone-operator -o wide 2>&1 || true
+          echo "=== Operator Services (all namespaces) ==="
+          kubectl get svc -A -l app.kubernetes.io/name=keystone-operator -o wide 2>&1 || true
+          kubectl get svc -A -l app.kubernetes.io/name=keystone-operator -o yaml 2>&1 || true
+          echo "=== Operator pods (all namespaces) ==="
+          kubectl get pods -A -l app.kubernetes.io/name=keystone-operator -o wide 2>&1 || true
           echo "=== Captured exposition body (if any) ==="
           if [ -s /tmp/keystone-metrics-endpoint-body.txt ]; then
             cat /tmp/keystone-metrics-endpoint-body.txt 2>&1 || true
           else
             echo "(no body captured)"
           fi
-          echo "=== Operator logs (tail 120) ==="
-          kubectl logs -n openstack -l app.kubernetes.io/name=keystone-operator --tail=120 2>&1 || true
+          echo "=== Operator logs (tail 120, namespace resolved via label) ==="
+          op_ns=$(kubectl get svc -A \
+            -l app.kubernetes.io/name=keystone-operator \
+            -o jsonpath='{.items[0].metadata.namespace}' 2>/dev/null || true)
+          if [ -n "$op_ns" ]; then
+            echo "(operator namespace=$op_ns)"
+            kubectl logs -n "$op_ns" -l app.kubernetes.io/name=keystone-operator --tail=120 2>&1 || true
+          else
+            echo "(could not resolve operator namespace from Service label)"
+          fi
