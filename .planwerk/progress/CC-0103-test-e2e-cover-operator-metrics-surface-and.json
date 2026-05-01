@@ -515,6 +515,7 @@
       "title": "Extend docs/reference/testing/keystone-e2e-tests.md ## Test Suite Inventory table with two new rows: `[operator-metrics-endpoint](#operator-metrics-endpoint)` (CR keystone-metrics-endpoint, behaviour: 'Live scrape of operator /metrics endpoint; asserts all five Prometheus metric families are exposed and have at least one sample row') and `[event-budget](#event-budget)` (CR keystone-event-budget, behaviour: 'Steady-state event budget — non-lifecycle event count over 5m window does not exceed threshold (regression gate for per-reconcile event-spam)'). Maintain alphabetical/grouped ordering consistent with the existing rows (REQ-009, CC-0103).",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -524,6 +525,7 @@
       "title": "Append ### operator-metrics-endpoint subsection to docs/reference/testing/keystone-e2e-tests.md ## Test Suite Details. Format mirrors the existing ### events section (lines 471-489): File path, Purpose (live scrape complement to the existing metrics suite which only verifies ServiceMonitor shape), Steps table with three rows (apply CR, scrape /metrics via kubectl run probe pod, assert family names + sample rows), Fixtures, CC-0103 + #277 Phase 1 reference (REQ-009, CC-0103).",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -533,6 +535,7 @@
       "title": "Append ### event-budget subsection to docs/reference/testing/keystone-e2e-tests.md ## Test Suite Details. Same format. Document the threshold (5), the 5-min window rationale (weekly fernet CronJob does not fire inside it; non-lifecycle events are signal), the exclusion list (BootstrapComplete, DatabaseSynced, FernetKeysGenerated, CredentialKeysGenerated) with a link to tests/e2e/keystone/events/, and CC-0103 + #277 Phase 1 reference (REQ-009, CC-0103).",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
