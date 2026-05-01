@@ -1,0 +1,118 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for steady-state event budget (CC-0103, parent #277
+# Phase 1; REQ-005..REQ-008).
+#
+# Regression gate against per-reconcile event-spam: once the four
+# lifecycle reasons have fired (BootstrapComplete, DatabaseSynced,
+# FernetKeysGenerated, CredentialKeysGenerated — see
+# tests/e2e/keystone/events/chainsaw-test.yaml as the canonical source
+# of those reasons), the controller should be quiet. This test waits
+# for Ready=AllReady, captures T0, sleeps 5 minutes, then counts
+# Keystone events newer than T0 and excludes the four lifecycle reasons.
+# The remaining "non-lifecycle" event count must not exceed BUDGET.
+#
+# Window rationale: 5 min is long enough to surface a per-reconcile
+# Eventf (default sync period is well under that) and short enough
+# that the weekly fernet rotation CronJob does not fire inside it,
+# so all non-lifecycle events in the window are signal.
+#
+# Threshold lives in BUDGET=5 only — never inline. Adjust there if the
+# steady-state baseline shifts; do not weaken individual assertions.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-event-budget
+spec:
+  namespace: openstack
+  # 5m sleep + 2m headroom for the assert phase. Overrides the 5m
+  # default used by other suites.
+  timeouts:
+    assert: 7m
+  steps:
+  # ── Step 1: Apply CR and wait for full reconciliation ──────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-event-budget
+            namespace: openstack
+          status:
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+              reason: DatabaseSynced
+            (conditions[?type == 'BootstrapReady']):
+            - status: "True"
+              reason: BootstrapComplete
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 2: Capture T0 — lower bound for the steady-state window ───────
+  # Chainsaw scripts run in a fresh /bin/sh per step; persisting via a
+  # /tmp file is the canonical chainsaw idiom for cross-step state.
+  - try:
+    - script:
+        content: |
+          set -eu
+          T0=$(date -Iseconds)
+          echo "$T0" > /tmp/t0-event-budget
+          echo "T0=$T0"
+  # ── Step 3: Sleep 5m, then count non-lifecycle events since T0 ─────────
+  # Threshold lives in BUDGET=5 only — never inline. Lifecycle reasons
+  # are excluded via EXCLUDE_RE; they are covered by the events suite
+  # (REQ-006 cross-reference: tests/e2e/keystone/events/chainsaw-test.yaml).
+  - try:
+    - script:
+        timeout: 360s
+        content: |
+          set -eu
+          sleep 300
+          T0=$(cat /tmp/t0-event-budget)
+          BUDGET=5
+          EXCLUDE_RE='^(BootstrapComplete|DatabaseSynced|FernetKeysGenerated|CredentialKeysGenerated)$'
+          count=$(kubectl get events -n openstack \
+            --field-selector involvedObject.name=keystone-event-budget,involvedObject.kind=Keystone \
+            -o json | jq --arg t0 "$T0" --arg ex "$EXCLUDE_RE" \
+              '[.items[] | select(.lastTimestamp >= $t0) | select((.reason | test($ex)) | not)] | length')
+          echo "count=$count budget=$BUDGET"
+          test "$count" -le "$BUDGET"
+    # REQ-008 (CC-0103): catch dumps every event in the namespace
+    # (no truncation — diagnosis budget > byte budget), the CR YAML,
+    # and operator logs so a budget overrun can be triaged from CI
+    # logs alone.
+    catch:
+    - script:
+        content: |
+          echo "=== All events in namespace (sorted by lastTimestamp) ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 || true
+          echo "=== Keystone CR ==="
+          kubectl get keystone -n openstack keystone-event-budget -o yaml 2>&1 || true
+          echo "=== Operator logs (tail 200) ==="
+          kubectl logs -n openstack -l app.kubernetes.io/name=keystone-operator --tail=200 2>&1 || true

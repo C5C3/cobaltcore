@@ -462,6 +462,7 @@
       "title": "Create tests/e2e/keystone/event-budget/00-keystone-cr.yaml fixture: managed-mode CR keystone-event-budget in namespace openstack, identical shape to tests/e2e/keystone/events/00-keystone-cr.yaml except metadata.name and database name (keystone_event_budget) (REQ-005, CC-0103).",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -471,6 +472,7 @@
       "title": "Create tests/e2e/keystone/event-budget/chainsaw-test.yaml step 1: apply 00-keystone-cr.yaml and assert Ready=True/AllReady. spec.namespace: openstack, spec.timeouts.assert: 7m (the 5m sleep + 2m headroom — overrides the 5m default of other suites). Header comment cites CC-0103, #277 Phase 1, AND links to tests/e2e/keystone/events/chainsaw-test.yaml as the canonical source of the four lifecycle reasons (cross-reference for REQ-006). Same catch-block pattern as events suite (REQ-005, REQ-006, REQ-008, CC-0103).",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-006",
@@ -482,6 +484,7 @@
       "title": "Add step 2 to event-budget chainsaw-test.yaml: script step `T0=$(date -Iseconds); echo \"$T0\" > /tmp/t0-event-budget`. Inline comment notes T0 is the lower bound for the steady-state window. (Chainsaw scripts run in fresh /bin/sh per step; persisting via /tmp file is the canonical chainsaw idiom — sidecar processes inside the test pod share /tmp.) (REQ-005, CC-0103).",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -491,6 +494,7 @@
       "title": "Add step 3 to event-budget chainsaw-test.yaml: script step with timeout: 360s. Body: `set -eu; sleep 300; T0=$(cat /tmp/t0-event-budget); BUDGET=5; EXCLUDE_RE='^(BootstrapComplete|DatabaseSynced|FernetKeysGenerated|CredentialKeysGenerated)$'; count=$(kubectl get events -n openstack --field-selector involvedObject.name=keystone-event-budget,involvedObject.kind=Keystone -o json | jq --arg t0 \"$T0\" --arg ex \"$EXCLUDE_RE\" '[.items[] | select(.lastTimestamp >= $t0) | select((.reason | test($ex)) | not)] | length'); echo \"count=$count budget=$BUDGET\"; test \"$count\" -le \"$BUDGET\"`. Threshold lives in `BUDGET=5` only — never inline (REQ-006, REQ-007, CC-0103).",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-007"
@@ -501,6 +505,7 @@
       "title": "Add catch block to event-budget step 3: print every counted event for diagnosis with `kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 || true` (no truncation — the catch budget is more important than the byte count); kubectl get keystone -n openstack keystone-event-budget -o yaml 2>&1 || true; kubectl logs -n openstack -l app.kubernetes.io/name=keystone-operator --tail=200 2>&1 || true (REQ-008, CC-0103).",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
