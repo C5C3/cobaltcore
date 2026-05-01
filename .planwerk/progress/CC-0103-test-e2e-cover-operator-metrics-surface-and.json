@@ -401,6 +401,7 @@
       "title": "Create tests/e2e/keystone/operator-metrics-endpoint/00-keystone-cr.yaml fixture: managed-mode Keystone CR named keystone-metrics-endpoint in namespace openstack, image 2025.2, clusterRef to openstack-db (database keystone_metrics_endpoint) and openstack-memcached, fernet rotationSchedule '0 0 * * 0' / maxActiveKeys 3, bootstrap admin/keystone-admin/RegionOne. Mirror tests/e2e/keystone/events/00-keystone-cr.yaml exactly (REQ-001, CC-0103).",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-001"
       ]
@@ -410,6 +411,7 @@
       "title": "Create tests/e2e/keystone/operator-metrics-endpoint/chainsaw-test.yaml step 1: apply 00-keystone-cr.yaml and assert Keystone status conditions include Ready=True/AllReady; spec.namespace: openstack, spec.timeouts.assert: 5m. Add the same catch-block diagnostic snippet as tests/e2e/keystone/events/chainsaw-test.yaml lines 46-66 (pod logs, job logs, pod describe, last 30 events). Header comment names CC-0103 and parent #277 Phase 1 (REQ-001, REQ-008, CC-0103).",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-008"
@@ -420,6 +422,7 @@
       "title": "Add chainsaw-test.yaml step 2 to operator-metrics-endpoint: a single `script` step that uses `kubectl run keystone-metrics-probe -n openstack --image=ghcr.io/c5c3/keystone:2025.2 --rm -i --restart=Never --command -- python3 -c \"import urllib.request,sys; sys.stdout.write(urllib.request.urlopen('http://keystone-operator.openstack.svc:8080/metrics').read().decode())\"` to capture the exposition body into a shell variable. Image and pattern mirror tests/e2e/keystone/basic-deployment/chainsaw-test.yaml:220 so no new image needs to be pulled (REQ-002, CC-0103).",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -429,6 +432,7 @@
       "title": "Extend the step 2 script to assert all five metric family names: iterate `for fam in keystone_operator_reconcile_duration_seconds keystone_operator_reconcile_errors_total keystone_operator_key_rotation_age_seconds keystone_operator_db_sync_total keystone_operator_db_sync_duration_seconds; do echo \"$body\" | grep -q \"^# HELP $fam \" || { echo \"MISSING:$fam\"; failed=1; }; done`. Print full body and exit 1 on any miss (REQ-003, CC-0103).",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -438,6 +442,7 @@
       "title": "Extend the step 2 script with three labelled-sample assertions: (a) reconcile_duration histogram has _count{sub_reconciler=...} matching the 14-name closed regex Secrets|DBConnectionSecret|Config|FernetKeys|CredentialKeys|NetworkPolicy|Database|PolicyValidation|Deployment|HTTPRoute|HealthCheck|HPA|Bootstrap|TrustFlush; (b) db_sync_total has a sample with keystone=\"keystone-metrics-endpoint\",namespace=\"openstack\",result=\"succeeded\"; (c) key_rotation_age has a sample with key_type=\"fernet\" OR key_type=\"credential\". Each grep failure prints the body and exits 1 (REQ-004, CC-0103).",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -447,6 +452,7 @@
       "title": "Add catch block to the operator-metrics-endpoint scrape step that runs: kubectl get svc -n openstack keystone-operator -o yaml; kubectl get pods -n openstack -l app.kubernetes.io/name=keystone-operator -o wide; echo the captured exposition body if present; kubectl logs -n openstack -l app.kubernetes.io/name=keystone-operator --tail=120 2>&1 || true (REQ-008, CC-0103).",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]

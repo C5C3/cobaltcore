@@ -1,0 +1,181 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the keystone-operator /metrics endpoint
+# (CC-0103, parent #277 Phase 1; REQ-001..REQ-004, REQ-008).
+#
+# Live-scrape complement to tests/e2e/keystone/metrics/ (which only verifies
+# ServiceMonitor shape). This test apply()s a Keystone CR, waits for
+# Ready=True/AllReady, then scrapes
+#   http://keystone-operator.openstack.svc:8080/metrics
+# from inside the cluster via a one-off pod and asserts:
+#   - All five metric family names registered by globalCollectors() are
+#     present (literal name list — drift-guard with
+#     operators/keystone/internal/metrics/collectors.go and
+#     operators/keystone/internal/metrics/collectors_test.go; rename one,
+#     update both).
+#   - At least one labelled sample row per family pinned to this test's CR:
+#     reconcile_duration histogram has _count{sub_reconciler="..."} drawn
+#     from the closed set in
+#     operators/keystone/internal/controller/instrumentation.go:54;
+#     db_sync_total has a sample with keystone="keystone-metrics-endpoint",
+#     namespace="openstack", result="succeeded";
+#     key_rotation_age has a sample with key_type="fernet" OR
+#     key_type="credential" (initial generation counts as first rotation).
+#
+# A regression that drops a single collector OR breaks the
+# instrumentSubReconciler wiring fails this test (REQ-003, REQ-004).
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-operator-metrics-endpoint
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply CR and wait for full reconciliation ──────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-metrics-endpoint
+            namespace: openstack
+          status:
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+              reason: DatabaseSynced
+            (conditions[?type == 'BootstrapReady']):
+            - status: "True"
+              reason: BootstrapComplete
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 2: Scrape /metrics and assert family + sample contracts ───────
+  # Single script so the captured exposition body stays in one shell scope
+  # for all assertions. The body is also persisted to /tmp/...-body.txt so
+  # the catch block can dump it on failure.
+  - try:
+    - script:
+        timeout: 120s
+        content: |
+          set -u
+          body_file=/tmp/keystone-metrics-endpoint-body.txt
+          rm -f "$body_file"
+
+          # REQ-002 (CC-0103): scrape from inside the cluster via a one-off
+          # pod. Image and invocation mirror
+          # tests/e2e/keystone/basic-deployment/chainsaw-test.yaml:220 so no
+          # new image needs to be pulled into kind.
+          kubectl run keystone-metrics-probe -n openstack \
+            --image=ghcr.io/c5c3/keystone:2025.2 --rm -i --restart=Never \
+            --command -- python3 -c "import urllib.request,sys; sys.stdout.write(urllib.request.urlopen('http://keystone-operator.openstack.svc:8080/metrics').read().decode())" \
+            > "$body_file" 2>/dev/null
+
+          if [ ! -s "$body_file" ]; then
+            echo "FAIL: empty exposition body from http://keystone-operator.openstack.svc:8080/metrics"
+            exit 1
+          fi
+
+          # REQ-003 (CC-0103): assert all five Prometheus metric family
+          # names registered by globalCollectors(). Literal name list —
+          # drift-guard with operators/keystone/internal/metrics/collectors.go
+          # and collectors_test.go. Rename one, update both.
+          failed=0
+          for fam in keystone_operator_reconcile_duration_seconds \
+                     keystone_operator_reconcile_errors_total \
+                     keystone_operator_key_rotation_age_seconds \
+                     keystone_operator_db_sync_total \
+                     keystone_operator_db_sync_duration_seconds; do
+            if ! grep -q "^# HELP $fam " "$body_file"; then
+              echo "MISSING:$fam"
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "--- exposition body ---"
+            cat "$body_file"
+            exit 1
+          fi
+
+          # REQ-004 (CC-0103) sample assertion (a):
+          # reconcile_duration histogram has at least one _count sample with
+          # a sub_reconciler label drawn from the closed set in
+          # operators/keystone/internal/controller/instrumentation.go:54.
+          if ! grep -Eq 'keystone_operator_reconcile_duration_seconds_count\{sub_reconciler="(Secrets|DBConnectionSecret|Config|FernetKeys|CredentialKeys|NetworkPolicy|Database|PolicyValidation|Deployment|HTTPRoute|HealthCheck|HPA|Bootstrap|TrustFlush)"\}' "$body_file"; then
+            echo "FAIL: no keystone_operator_reconcile_duration_seconds_count sample with a known sub_reconciler label"
+            echo "--- exposition body ---"
+            cat "$body_file"
+            exit 1
+          fi
+
+          # REQ-004 (CC-0103) sample assertion (b):
+          # db_sync_total has a sample row pinned to this test's CR with
+          # result=succeeded. Labels are emitted alphabetically by the
+          # Prometheus client, but match label-order-independently so a
+          # client-library reordering does not silently regress.
+          if ! awk '/^keystone_operator_db_sync_total\{/ && /keystone="keystone-metrics-endpoint"/ && /namespace="openstack"/ && /result="succeeded"/ { found=1 } END { exit !found }' "$body_file"; then
+            echo "FAIL: no keystone_operator_db_sync_total{keystone=\"keystone-metrics-endpoint\",namespace=\"openstack\",result=\"succeeded\"} sample"
+            echo "--- exposition body ---"
+            cat "$body_file"
+            exit 1
+          fi
+
+          # REQ-004 (CC-0103) sample assertion (c):
+          # key_rotation_age has a sample with key_type="fernet" OR
+          # key_type="credential". The initial keys produced by the
+          # FernetKeys / CredentialKeys sub-reconcilers count as the first
+          # rotation observation, so at least one of the two values must
+          # appear by the time Ready=AllReady is reached (REQ-001 gate).
+          if ! grep -Eq 'keystone_operator_key_rotation_age_seconds\{[^}]*key_type="(fernet|credential)"' "$body_file"; then
+            echo "FAIL: no keystone_operator_key_rotation_age_seconds sample with key_type=fernet or key_type=credential"
+            echo "--- exposition body ---"
+            cat "$body_file"
+            exit 1
+          fi
+
+          echo "PASS: all five metric family names and three labelled samples present"
+    # REQ-008 (CC-0103): catch dumps Service spec, operator pods, the
+    # captured exposition body (if any), and operator logs so a scrape
+    # failure can be triaged from CI logs alone.
+    catch:
+    - script:
+        content: |
+          echo "=== Operator Service ==="
+          kubectl get svc -n openstack keystone-operator -o yaml 2>&1 || true
+          echo "=== Operator pods ==="
+          kubectl get pods -n openstack -l app.kubernetes.io/name=keystone-operator -o wide 2>&1 || true
+          echo "=== Captured exposition body (if any) ==="
+          if [ -s /tmp/keystone-metrics-endpoint-body.txt ]; then
+            cat /tmp/keystone-metrics-endpoint-body.txt 2>&1 || true
+          else
+            echo "(no body captured)"
+          fi
+          echo "=== Operator logs (tail 120) ==="
+          kubectl logs -n openstack -l app.kubernetes.io/name=keystone-operator --tail=120 2>&1 || true
