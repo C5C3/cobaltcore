@@ -1,0 +1,74 @@
+{
+  "summary": "Single-commit improvement cycle (74c20d8d) addressing all four BLOCKING/WARNING items from external review #1 (berendt). Step 3 ownerReferences fan-out now includes the always-materialised TrustFlush CronJob and the managed-mode MariaDB Database/User/Grant CRs, with corresponding source-file enumeration consolidated to docs/reference/testing/keystone-e2e-tests.md (single source of truth, in-file comment points to it). Step 3, Step 5, and Step 6 catch blocks now dump operator pod logs (Step 5 also dumps keystone-API pod logs) and Step 6 additionally dumps the full Keystone CR YAML — matching REQ-007 across every step. Step 5 lastTransitionTime comparison is unchanged but the inline comment now documents why strict `>` is intentional and why same-second equality is unreachable here. The review-pattern catalogue and progress JSON are updated accordingly. Implementation correctness verified against operators/keystone/internal/controller/reconcile_trustflush.go (TrustFlush always materialised when webhook defaults spec.trustFlush) and reconcile_database.go + internal/common/database/database.go (managed-mode fixture creates Database/User/Grant via SetControllerReference). All five blocking criteria from the review-criteria block are satisfied, the kind labels match (app.kubernetes.io/name=keystone-operator deploys to namespace 'openstack' alongside the CR), and the diff stays inside the worktree scope (tests/e2e/keystone/semantic-invariants/, docs/reference/testing/keystone-e2e-tests.md, planwerk tracking files only).",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "All five scope rows asserted by exactly one step each (REQ-001..REQ-005)", "checked": true},
+    {"item": "Step 3 ownerReferences fan-out covers every reconcile_*.go that creates managed kinds (TrustFlush + MariaDB CRs added)", "checked": true},
+    {"item": "ConfigMap families resolved by labelSelector forge.c5c3.io/config-base, never by hash suffix", "checked": true},
+    {"item": "Step 5 uses replicas: 0 scale-down (immediate, no progressDeadlineSeconds path)", "checked": true},
+    {"item": "Catch blocks on every step dump CR YAML + pod logs + events (REQ-007)", "checked": true},
+    {"item": "Strict-> comparison on lastTransitionTime documented as intentional and unreachable equality boundary explained", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "SPDX Apache-2.0 header present", "checked": true},
+    {"item": "Source-file enumeration consolidated to docs (single source of truth) with in-file pointer", "checked": true},
+    {"item": "Bash scripts use set -euo pipefail and explicit shell: bash overrides", "checked": true},
+    {"item": "Mandatory pattern compliance: chainsaw-e2e-test-suite-structure-with-jmespath-condition-assertions", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No secrets in test manifests (admin password via secretRef, no inline passwords)", "checked": true},
+    {"item": "kubectl patch/scale operations target the test fixture only, no cross-namespace access", "checked": true},
+    {"item": "Catch blocks omit ConfigMap data dump by design (only metadata + immutable flag) — keystone.conf is not a secret but the principle of minimal disclosure is preserved", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Test stays inside the worktree scope (tests/e2e/keystone/semantic-invariants/ + docs/reference/testing/keystone-e2e-tests.md)", "checked": true},
+    {"item": "No changes to deploy/kind/, tests/e2e/chainsaw-config.yaml, or any operator Go source (REQ-006)", "checked": true},
+    {"item": "CR fixture name keystone-invariants and DB name keystone_invariants enable parallel execution against other Keystone E2E suites", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "Source-file enumeration deduplicated — was in two places, now canonical in docs with in-file pointer (CC-0101 review #1 I-002)", "checked": true},
+    {"item": "check_owner / check_owner_by_label helpers reused for every managed kind, no copy-pasted assertion blocks", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Empty CR_UID detected and reported with named diagnostic (line 162-165)", "checked": true},
+    {"item": "Empty label-selector match treated as failure, not silent pass (check_owner_by_label, line 206-210)", "checked": true},
+    {"item": "Step 6 distinguishes 'no CM matched selector' from 'patch unexpectedly succeeded' from 'patch failed but stderr lacks immutable marker' — three distinct exit-1 paths with named messages", "checked": true},
+    {"item": "Step 4 polling deadline emits the lagging condition list on timeout, not just a generic timeout error", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Step 3 collects all ownerReference failures before exiting (no fail-on-first short-circuit) — better diagnostic surface", "checked": true},
+    {"item": "Step 5 settles to True before capturing T0, avoiding race with Step 4's replicas: 1→2 patch", "checked": true},
+    {"item": "Step 5 captured timestamps printed alongside T0/T1 to aid debugging on flake", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "Q3",
+      "severity": "MINOR",
+      "description": "Newly added catch blocks (Step 3 line 282-284, Step 5 line 484-488, Step 6 line 544-545) only dump --previous logs without first dumping current logs. The convention used by every other tests/e2e/keystone/* suite (basic-deployment, healthcheck, deletion-cleanup, trust-flush, etc.) and even by Step 1/Step 2/Step 4 catch blocks within the same file is to dump current logs first, then --previous. With --previous alone, when the operator pod hasn't crashed (the common case for these particular failure modes — missing ownerReferences, lagging observedGeneration, immutability bypass), kubectl returns 'previous terminated container not found' and the most diagnostic information (live operator logs) is silently swallowed by `|| true`, leaving the catch block with no operator log content at all.",
+      "location": "tests/e2e/keystone/semantic-invariants/chainsaw-test.yaml:282-284,484-488,544-545",
+      "fix": "Add a current-logs invocation alongside the --previous one in each catch block: `kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true` followed by the existing `kubectl logs ... --previous ...`. Same pattern for the keystone-API pod logs in Step 5. This matches the established 'current then previous' idiom used by 9+ sibling suites and by Step 1/Step 4 within this file (line 58-59, 354-355).",
+      "evidence": "Step 6 catch (lines 543-545): `kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 --previous 2>&1 || true` — only --previous, no current. Compare to basic-deployment/chainsaw-test.yaml:62-63 which dumps both: `kubectl logs ... --tail=60 2>&1 || true; kubectl logs ... --tail=60 --previous 2>&1 || true`.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "D2",
+      "severity": "MINOR",
+      "description": "The review-pattern catalogue entry .planwerk/review_patterns/assert-full-spec-not-just-resource-existence.md was extended with a CC-0101 occurrence whose subject (catch-block diagnostic completeness — REQ-007 pod logs / CR status) does not match the pattern's stated scope ('In tests that fetch a managed resource, check whether assertions only verify existence/one field, while other relevant spec fields driving the behavior under test go unverified'). The pattern is about test-assertion granularity on resource fields; the CC-0101 finding is about catch-block diagnostic surface. The mismatch dilutes the pattern's detection-hint and makes it harder for future reviewers to trigger correctly. A separate pattern (e.g., 'catch-block-must-include-required-diagnostic-set' under review-area: error-handling) would be a cleaner home.",
+      "location": ".planwerk/review_patterns/assert-full-spec-not-just-resource-existence.md:23-27",
+      "fix": "Either (a) move the CC-0101 entry to a new or existing pattern that genuinely covers catch-block diagnostic completeness, or (b) rename and broaden the existing pattern to explicitly cover both test-assertion granularity and catch-block content. Suggest (a) — keeping single-purpose patterns is healthier for the catalogue.",
+      "evidence": "Pattern detection-hint (line 4): 'In tests that fetch a managed resource (CronJob, Deployment, etc.), check whether assertions only verify existence/one field' — narrowly scoped to assertion granularity. The new CC-0101 entry's What-Was-Missed (line 25): 'Every step's catch block emits the full required diagnostic set: target CR YAML, operator/controller pod logs with --previous, and recent events' — different scope (catch-block content).",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a small chainsaw-level helper script or shared catch-block snippet so the 'CR YAML + current logs + previous logs + events' diagnostic set is defined once and referenced from each step. Today the snippet is repeated across six catch blocks in this file (and dozens of times across tests/e2e/keystone/), which has already produced one drift (current logs missing on the new catch blocks). A single external file referenced via Chainsaw `script: file: ../_lib/diagnostics.sh` would prevent this class of regression."
+  ],
+  "next_steps": [
+    "Address Q3 [AUTO_FIX]: prepend current-logs invocations to the three new catch blocks (Step 3, Step 5, Step 6) so the diagnostic set covers both running and crashed operator pods.",
+    "Address D2 [ASK] at the team's discretion: consolidate the catch-block-diagnostic finding into its own review pattern or accept the current placement.",
+    "Both issues are MINOR — no blockers. Suite is ready to merge once Q3 is addressed (one-line additions per catch block) or accepted as-is."
+  ],
+  "detected_patterns": []
+}

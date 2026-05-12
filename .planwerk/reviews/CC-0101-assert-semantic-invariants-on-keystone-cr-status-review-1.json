@@ -1,0 +1,82 @@
+{
+  "summary": "CC-0101 adds a Chainsaw E2E suite tests/e2e/keystone/semantic-invariants/ (00-keystone-cr.yaml + chainsaw-test.yaml) asserting five Keystone CR status invariants — status.endpoint URL format, ownerReferences[0] fan-out across every operator-managed kind, observedGeneration tracking after a spec change, DeploymentReady.lastTransitionTime monotonicity, and ConfigMap immutability — and updates docs/reference/testing/keystone-e2e-tests.md (inventory row, detail section, file-layout tree). All five REQs (REQ-001..REQ-005) are covered by exactly one step each. Scope is strictly limited to the new test directory and the doc; no changes to deploy/kind/, chainsaw-config.yaml, or operator Go source.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Chainsaw test fixture (00-keystone-cr.yaml) creates the keystone-invariants CR with managed DB+cache and gateway/networkPolicy/autoscaling intentionally unset (REQ-001, REQ-006)", "checked": true},
+    {"item": "Step 1 applies the CR and gates the suite on Ready=True/AllReady (REQ-001, REQ-007)", "checked": true},
+    {"item": "Step 2 asserts status.endpoint literal http://keystone-invariants.openstack.svc.cluster.local:5000/v3 (REQ-001)", "checked": true},
+    {"item": "Step 3 iterates every operator-managed kind and asserts ownerReferences[0] {kind=Keystone, controller=true, blockOwnerDeletion=true, uid=<CR UID>} (REQ-002)", "checked": true},
+    {"item": "Step 4 patches replicas 1→2 and polls until every condition.observedGeneration matches metadata.generation (REQ-003)", "checked": true},
+    {"item": "Step 5 captures DeploymentReady.lastTransitionTime, scales deploy to 0 then 1, asserts T1 > T0 (REQ-004)", "checked": true},
+    {"item": "Step 6 resolves the active config CM by labelSelector and asserts kubectl patch is rejected with 'field is immutable' (REQ-005)", "checked": true},
+    {"item": "Each step has a catch block dumping diagnostic context", "checked": true},
+    {"item": "Cluster-dependent end-to-end flake check (two consecutive parallel:4 runs) — sandbox cannot exercise; reviewer notes blocker honestly", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows chainsaw-e2e-test-suite-structure-with-jmespath-condition-assertions pattern (SPDX header, REQ comment block, apiVersion v1alpha1, namespace+timeouts.assert: 5m, numbered '── Step N ──' headers, JMESPath conditions[?type == 'X'] filters, set -euo pipefail in script steps)", "checked": true},
+    {"item": "Unique CR name keystone-invariants enables parallel:4 execution without conflicts", "checked": true},
+    {"item": "Helper functions check_owner / check_owner_by_label avoid copy-paste duplication across the 16 managed-kind assertions", "checked": true},
+    {"item": "ConfigMap families resolved via labelSelector forge.c5c3.io/config-base, never by hash suffix (CC-0005, CC-0077)", "checked": true},
+    {"item": "Inline comment block enumerates every reconcile_*.go source file contributing managed kinds — a reviewer adding a new kind sees the test as a tracked counterpart", "checked": true},
+    {"item": "Per-step script timeouts (2m, 6m, 12m) sized against worst-case loop wall-clock (Step 5: 3m settle + 4m flip + 4m return + slack ≤ 12m); avoids the 'test script timeout must exceed worst-case loop duration' anti-pattern", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No secrets, tokens, or credentials embedded in test fixtures or scripts", "checked": true},
+    {"item": "kubectl patch payloads are static literals — no untrusted user input is interpolated into shell commands", "checked": true},
+    {"item": "Test does not disable TLS verification or grant elevated permissions", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Test placed under tests/e2e/keystone/semantic-invariants/ — does not extend an existing suite, matching the scope plan and the chainsaw-e2e-test-suite pattern", "checked": true},
+    {"item": "Scope strictly limited to tests/e2e/keystone/semantic-invariants/ and docs/reference/testing/keystone-e2e-tests.md — no operator source, no deploy/kind/, no chainsaw-config.yaml changes", "checked": true},
+    {"item": "Asserted resource names match the actual reconcile pattern: subResourceName(keystone) = keystone.Name (verified in operators/keystone/internal/controller/reconcile_hpa.go:32) and ConfigMap baseName = '<name>-config' / '<name>-fernet-rotate-script' / '<name>-credential-rotate-script'", "checked": true},
+    {"item": "Documentation (inventory row, detail section with REQ coverage and source-file enumeration, file-layout tree) is updated and discoverable", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "check_owner / check_owner_by_label collapse 16 ownerReferences assertions into a single helper", "checked": true},
+    {"item": "No premature abstraction — helpers exist only because the assertion list has 16 entries", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "set -euo pipefail at the top of every script step", "checked": true},
+    {"item": "check_owner_by_label fails on empty match (avoids silent pass when label regresses)", "checked": true},
+    {"item": "Step 6 explicitly fails when no immutable ConfigMap is found, when patch unexpectedly succeeds, AND when stderr does not contain the expected 'field is immutable' substring — three distinct failure modes named", "checked": true},
+    {"item": "Step 4 polling loop emits the lagging condition types on timeout", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "CR_UID emptiness guarded explicitly before use (line 152-155)", "checked": true},
+    {"item": "Step 5 acknowledges and tolerates the operator-vs-kubectl-scale race in a comment (lines 331-335)", "checked": true},
+    {"item": "Step 6 uses mktemp + trap RETURN cleanup for the stderr capture file", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "TE7",
+      "severity": "MINOR",
+      "description": "Step 5 issues `kubectl scale deploy ... --replicas=1` after the True→False flip, but the CR's spec.replicas is 2 at that point (Step 4 patched it). The operator immediately reconciles the Deployment back to 2 replicas, so the scale-to-1 has no observable effect — the loop polls for DeploymentReady=True regardless of whether the Deployment ends at 1 or 2 replicas. The intermediate `--replicas=1` is dead movement; relying on the operator's restorative reconcile to bring DeploymentReady back to True is sufficient, and removing the second scale call would simplify the test and shrink the race surface.",
+      "location": "tests/e2e/keystone/semantic-invariants/chainsaw-test.yaml:398",
+      "fix": "Drop the `kubectl scale deploy -n \"$NAMESPACE\" \"$NAME\" --replicas=1` call. The operator reconciles spec.Replicas=2 onto the Deployment as soon as the watch fires from the scale-to-0 patch, which is what actually drives DeploymentReady back to True. Optionally add a one-line comment noting that the operator restores the desired replica count.",
+      "evidence": "chainsaw-test.yaml:397-399 — '# Force False → True\\nkubectl scale deploy -n \"$NAMESPACE\" \"$NAME\" --replicas=1'. The script header comment at lines 331-335 already states the operator transiently restores spec.replicas to 1, but at this point in the suite spec.replicas is 2 (Step 4 patched it), so the second scale is redundant.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "TE7",
+      "severity": "MINOR",
+      "description": "The catch blocks on Steps 2–6 capture CR YAML and namespace events but never operator pod logs. When the assertion that fails is Step 2 (status.endpoint mismatch) or Step 4 (observedGeneration lag), the most diagnostic signal is the operator's reconcile log — which lives in a different namespace (typically keystone-system) and is not dumped. This matches the existing healthcheck convention only partially: healthcheck Steps 2 and 3 do dump pod logs in $NAMESPACE (operator-side logs are still missing there too, so this is a pre-existing repo-wide gap), but the new suite's later catches are thinner than healthcheck's.",
+      "location": "tests/e2e/keystone/semantic-invariants/chainsaw-test.yaml:97-103, 249-259, 313-322, 427-435, 478-486",
+      "fix": "Consider adding `kubectl -n keystone-system logs -l app.kubernetes.io/name=keystone-operator --tail=100` (or the operator namespace selector used by the project) to at least the Step 2 and Step 4 catches, since those failures are most likely caused by reconciler bugs invisible from the CR YAML alone. Lower priority for Steps 3, 5, 6 where the dumped object state is sufficient.",
+      "evidence": "Step 2 catch dumps only `kubectl get keystone ... -o yaml` and `kubectl get events`. Step 4 catch dumps only the generation/conditions slice and events. If observedGeneration regresses (e.g., a sub-reconciler forgets to set it), the operator's log line for that reconcile is not preserved.",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "Step 5: drop the redundant `kubectl scale --replicas=1` (the operator restores spec.replicas=2 automatically once the watch fires from the scale-to-0 patch).",
+    "Catches on Steps 2 and 4: optionally include keystone-operator pod logs from the operator namespace, since those failures are reconciler-side and not visible in the CR YAML.",
+    "Step 6 catch: the ConfigMap dump uses `IMMUTABLE:.immutable` against `-o custom-columns` — confirmed correct (ConfigMap.immutable is a top-level field, not nested under metadata), but a brief inline note would save the next reader from looking it up."
+  ],
+  "next_steps": [
+    "Run `chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/keystone/semantic-invariants` twice consecutively against `make kind-up` to confirm no flakes — sandbox cannot do this; the user must verify against a real kind cluster before merge.",
+    "Optional: trim the redundant second `kubectl scale --replicas=1` in Step 5 (chainsaw-test.yaml:398).",
+    "Optional: add operator-namespace pod-log dumps to the Step 2 and Step 4 catch blocks for faster reconciler-side diagnosis."
+  ],
+  "detected_patterns": []
+}

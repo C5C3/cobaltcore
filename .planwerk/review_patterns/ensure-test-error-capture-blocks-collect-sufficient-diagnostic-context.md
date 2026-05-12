@@ -1,9 +1,9 @@
 # Review Pattern: Ensure test error-capture blocks collect sufficient diagnostic context
 
 **Review-Area**: error-handling
-**Detection-Hint**: When reviewing test catch/error blocks, ask: if this test fails at 3am, does the captured output include enough resources to diagnose root cause? If a step tests a running service, the catch block should capture not just the service object but also pod status and events. For auth/permission failures (403/401), the catch must capture logs from the server enforcing the policy (the authoritative source), not just the client that reported the error.
+**Detection-Hint**: When reviewing test catch/error blocks, ask: if this test fails at 3am, does the captured output include enough resources to diagnose root cause? If a step tests a running service, the catch block should capture not just the service object but also pod status and events. For auth/permission failures (403/401), the catch must capture logs from the server enforcing the policy (the authoritative source), not just the client that reported the error. Spec carve-outs that omit a single diagnostic item (e.g. "ConfigMap content dump not required") must be applied narrowly to only the excused item — the rest of the required diagnostic set (target CR YAML, operator pod logs current and --previous, recent events) is still mandatory on every catch.
 **Severity**: WARNING
-**Occurrences**: 2
+**Occurrences**: 3
 
 ## What to check
 
@@ -24,3 +24,8 @@ Minimal catch blocks force engineers to manually reproduce failures to diagnose 
 - **Feedback**: A 403 on PushSecret is most authoritatively diagnosed from OpenBao's audit log (which records the denied path + policy) rather than the ESO controller log (which only reports the HTTP status). Without OpenBao logs in the catch block, operators need a second CI run with more logging to diagnose failures.
 - **What was missed**: In test failure handlers (catch blocks, teardown scripts), verify that diagnostic output includes logs from every component whose behavior could explain the failure. For auth/permission failures, the authoritative source (e.g., the server enforcing the policy) must be captured, not just the client reporting the error.
 - **Fix**: Added `kubectl -n openbao logs -l app.kubernetes.io/name=openbao --tail=100` to the chainsaw catch script alongside the existing PushSecret status dump.
+
+### CC-0101 — berendt
+- **Feedback**: Step 6's catch block dumps only ConfigMap metadata and events. REQ-007 requires pod logs, CR status, and recent events on every step failure. The spec's "Catch block does not require ConfigMap content dump for invariants test" scenario excuses only the content dump — not the CR status (`kubectl get keystone -o yaml`) or pod logs (`kubectl logs --tail=60 --previous`). Step 3 and Step 5 catch blocks similarly omitted operator pod logs.
+- **What was missed**: Every step's catch block must emit the full required diagnostic set: target CR YAML, operator/controller pod logs (current AND --previous, in that order so live logs are not silently swallowed when the pod has not crashed), and recent events. Spec carve-outs must be applied narrowly to only the excused item — they never authorize dropping the CR status or pod logs.
+- **Fix**: Added `kubectl get keystone keystone-invariants -n $NAMESPACE -o yaml` and the `kubectl logs -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60` (current) followed by `--tail=60 --previous` pair to the catch blocks of Step 3, Step 5, and Step 6, plus a comment in Step 6 explaining that the spec carve-out only excuses the ConfigMap content dump.

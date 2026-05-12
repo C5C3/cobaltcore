@@ -2,8 +2,8 @@
   "feature_id": "CC-0101",
   "title": "Assert semantic invariants on Keystone CR status",
   "slug": "assert-semantic-invariants-on-keystone-cr-status",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #314: test(e2e): Assert semantic invariants on Keystone CR status (#277 Phase 1)\n\n## Context\n\nParent: #277, Phase 1 → *Semantic / state checks*.\n\nToday the Keystone E2E suite exercises happy-path lifecycle (`tests/e2e/keystone/basic-deployment/`),\nrecovery (`missing-secret/`, `release-upgrade/`) and condition shapes (`healthcheck/`, `events/`),\nbut no test pins down the *invariants* the CR must guarantee at all times:\n\n- `status.endpoint` URL format\n- `ownerReferences` on every operator-managed object\n- `status.observedGeneration` tracking (CC-0072)\n- Monotonicity of `condition.lastTransitionTime`\n- Immutability of generated ConfigMaps\n\nEach of these is verified by unit/integration tests (e.g.\n`operators/keystone/internal/controller/integration_test.go:622` — `TestIntegration_StatusEndpoint`,\n`reconcile_deployment_test.go:178` — `TestReconcileDeployment_OwnerReferences`),\nbut no E2E gate exists. This sub-issue closes that gap.\n\n## Scope — new assertions\n\n| # | Scenario | Enforced by | Assertion |\n|---|----------|-------------|-----------|\n| 1 | `status.endpoint` matches the cluster-local URL when `spec.gateway` is unset | `reconcile_httproute.go:96` (`internalAPIURL`), `reconcile_deployment.go:111` | `status.endpoint == \"http://<keystone.Name>.<ns>.svc.cluster.local:5000/v3\"` |\n| 2 | Every operator-managed object carries `ownerReferences[0].kind=Keystone`, `controller=true`, `blockOwnerDeletion=true`, `uid==<CR UID>` | `controllerutil.SetControllerReference` calls in `reconcile_deployment.go`, `reconcile_fernet.go`, `reconcile_credential.go`, `reconcile_networkpolicy.go`, `reconcile_httproute.go`, `reconcile_hpa.go`, `reconcile_dbconnection_secret.go`, `internal/common/config` | For each managed kind {Deployment, Service, ConfigMap (immutable `keystone-config-*`), `<name>-db-connection` Secret, `<name>-fernet-keys` Secret, `<name>-credential-keys` Secret, `<name>-fernet-keys-backup` PushSecret, `<name>-credential-keys-backup` PushSecret, `<name>-fernet-rotation` CronJob+SA+Role+RoleBinding, `<name>-credential-rotation` CronJob+SA+Role+RoleBinding} assert the four owner-reference fields via JMESPath |\n| 3 | `observedGeneration` on every sub-condition catches up with `metadata.generation` after a spec change | `keystone_controller.go:542/550` (Ready), `reconcile_secrets.go:74/93/110/126/142/152` and analogous in every sub-reconciler — CC-0072 | After `kubectl patch keystone ... --type=merge -p '{\\\"spec\\\":{\\\"replicas\\\":2}}'`, assert `metadata.generation > 1` and for **every** condition `observedGeneration == metadata.generation` |\n| 4 | `condition.lastTransitionTime` strictly increases when a condition flips True→False→True | `conditions.SetCondition` only bumps `lastTransitionTime` on a status change (apimachinery convention) | Capture `lastTransitionTime` on `DeploymentReady=True`; force a flip via `kubectl scale deploy <name>-keystone --replicas=0`; wait for `DeploymentReady=False`; reset replicas; wait for `DeploymentReady=True`; assert new `lastTransitionTime > previous` (RFC3339 string compare suffices) |\n| 5 | Manual mutation of a generated ConfigMap is rejected by the API server | `internal/common/config.CreateImmutableConfigMap` sets `Immutable: true` | `kubectl patch cm <keystone-config-*> --type=merge -p '{\\\"data\\\":{\\\"keystone.conf\\\":\\\"x\\\"}}'` exits non-zero with stderr containing `\\\"field is immutable\\\"` — proves the invariant the operator relies on |\n\n## Out of scope (prerequisites, separate tickets)\n\nOne Phase 1 checkbox requires a feature that does not exist today:\n\n- **Secret drift policy on `<name>-fernet-keys` / `<name>-credential-keys`** — neither Secret is\n  marked `Immutable` (`reconcile_fernet.go:258` and analogous in `reconcile_credential.go`); the\n  operator only writes new keys on rotation, so a manual edit persists between rotations. There\n  is no implemented \"policy\" to revert manual edits. Splitting this off:\n  → `feat(CC-xxxx): define and enforce drift policy on rotation Secrets`. The E2E test follows\n  once the feature lands.\n\n## Test design\n\nLocation: new directory `tests/e2e/keystone/semantic-invariants/` (does **not** extend an existing\ntest — the assertion surface is wide enough that mixing it into e.g. `basic-deployment` would\ndilute that test's intent).\n\n```\ntests/e2e/keystone/semantic-invariants/\n├── 00-keystone-cr.yaml      (managed DB+cache via clusterRef, gateway unset, replicas: 1)\n└── chainsaw-test.yaml       (5 steps, one per scope row)\n```\n\nStep pattern:\n\n- **Step 1** — apply CR, assert `Ready=True`.\n- **Step 2** — `assert` block: `status.endpoint` literal match.\n- **Step 3** — `script` step iterating the managed-kind list with `kubectl get ... -o json | jq -e '.metadata.ownerReferences[0]'`. Failing kinds print to stderr; exit 1 on the first miss.\n- **Step 4** — `patch` to `replicas: 2`; `assert` block matching `(conditions[*])` with the JMESPath function `(observedGeneration == metadata.generation)`.\n- **Step 5** — `script` step: capture `lastTransitionTime` on `DeploymentReady`, scale Deployment to 0, poll until `DeploymentReady=False`, scale back, poll until `DeploymentReady=True`, fail if new timestamp is not strictly greater than the captured one.\n- **Step 6** — `script` step: `kubectl patch cm <keystone-config-*>` and assert non-zero exit with `\\\"field is immutable\\\"` in stderr (no resource cleanup needed; the patch is rejected pre-commit).\n\nAll steps fit inside the 30 s `apply` / 5 m `assert` budget from `tests/e2e/chainsaw-config.yaml`.\nNo new infrastructure components.\n\n## Definition of Done\n\n- [ ] `chainsaw test tests/e2e/keystone/semantic-invariants` green locally against `make kind-up`\n- [ ] `make e2e` green; no flakes in two consecutive `parallel: 4` CI runs\n- [ ] All five scope rows asserted; one prerequisite split into its own follow-up issue and linked here\n- [ ] No new infra in `deploy/kind/`; no deviations from `tests/e2e/chainsaw-config.yaml`\n- [ ] Parent #277: the four covered checkboxes ticked, the Secret-drift checkbox replaced by a link to the new feature ticket\n- [ ] Commit prefix `test(CC-xxxx)` once a feature code is assigned\n\n## Risks / open questions\n\n- **Owner-reference list maintenance**: the managed-kind list is derived from today's reconcile surface. Any future managed object (e.g. ServiceMonitor when CC-0089 lands in-cluster) needs to be appended. Mitigation: a comment in the test enumerates the source files (`reconcile_*.go`) so a reviewer adding a new managed kind sees the test as a tracked counterpart.\n- **Step 4 timing**: the flip via `kubectl scale` interacts with the Deployment's `progressDeadlineSeconds`. Using `replicas: 0` avoids the deadline path because scale-down is immediate; please confirm in review.\n- **Endpoint string drift**: the cluster DNS suffix `.cluster.local` is hard-coded. Clusters that override `--cluster-domain` would fail this test — out of scope here, the kind test cluster uses the default.\n\n---\nSource: https://github.com/C5C3/forge/issues/314",
   "stories": [
@@ -326,9 +326,10 @@
   "tasks": [
     {
       "id": "1.1",
-      "title": "Create fixture tests/e2e/semantic-invariants/00-keystone-cr.yaml: Keystone CR named keystone-invariants in namespace openstack with replicas: 1, image ghcr.io/c5c3/keystone:2025.2, database/cache via clusterRef to openstack-db/openstack-memcached, secretRef keystone-db, bootstrap secret keystone-admin, NO spec.gateway, NO spec.networkPolicy, NO spec.autoscaling. Include SPDX header per project convention. Mirrors tests/e2e/keystone/healthcheck/00-keystone-cr.yaml. (CC-0101 REQ-001, REQ-006)",
+      "title": "Create fixture tests/e2e/keystone/semantic-invariants/00-keystone-cr.yaml: Keystone CR named keystone-invariants in namespace openstack with replicas: 1, image ghcr.io/c5c3/keystone:2025.2, database/cache via clusterRef to openstack-db/openstack-memcached, secretRef keystone-db, bootstrap secret keystone-admin, NO spec.gateway, NO spec.networkPolicy, NO spec.autoscaling. Include SPDX header per project convention. Mirrors tests/e2e/keystone/healthcheck/00-keystone-cr.yaml. (CC-0101 REQ-001, REQ-006)",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-006"
@@ -339,6 +340,7 @@
       "title": "Create tests/e2e/keystone/semantic-invariants/chainsaw-test.yaml skeleton: apiVersion chainsaw.kyverno.io/v1alpha1, kind Test, metadata.name keystone-semantic-invariants, spec.namespace openstack, spec.timeouts.assert 5m, six placeholder `try` steps with section dividers matching the basic-deployment style. Include SPDX header and CC-0101 reference comment. (CC-0101 REQ-006, REQ-007)",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-007"
@@ -349,6 +351,7 @@
       "title": "Implement Step 1 (apply CR) and Step 2 (Ready=True with reason AllReady) in chainsaw-test.yaml — apply 00-keystone-cr.yaml then assert Ready condition matches status: True, reason: AllReady. Add catch block dumping pod logs and events. Mirrors basic-deployment Step 1+2. (CC-0101 REQ-001, REQ-007)",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-007"
@@ -359,6 +362,7 @@
       "title": "Implement Step 3 (status.endpoint literal match) — chainsaw assert block on Keystone resource asserting status.endpoint == 'http://keystone-invariants.openstack.svc.cluster.local:5000/v3'. Add catch block printing `kubectl get keystone keystone-invariants -o yaml`. (CC-0101 REQ-001, REQ-007)",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-007"
@@ -369,6 +373,7 @@
       "title": "Implement Step 4 (ownerReferences fan-out) — inline `script` step capturing CR_UID via `kubectl get keystone keystone-invariants -o jsonpath='{.metadata.uid}'`, then iterating a managed-kind list (Deployment, Service, PodDisruptionBudget, three ConfigMap families resolved via `kubectl get cm -l forge.c5c3.io/config-base=<base>`, three Secrets keystone-invariants-{db-connection,fernet-keys,credential-keys}, ServiceAccount/Role/RoleBinding/CronJob keystone-invariants-{fernet-rotate,credential-rotate}, PushSecret keystone-invariants-{fernet-keys-backup,credential-keys-backup}) and asserting `kind=='Keystone' and controller==true and blockOwnerDeletion==true and uid==$CR_UID` via `jq -e`. Print failing GVK+name on mismatch and exit 1. Comment listing source files (reconcile_*.go, internal/common/config/config.go) per the issue's mitigation note. (CC-0101 REQ-002, REQ-007)",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-007"
@@ -376,9 +381,10 @@
     },
     {
       "id": "2.4",
-      "title": "Implement Step 5 (observedGeneration tracking) — `script` step running `kubectl patch keystone keystone-invariants --type=merge -p '{\\\"spec\\\":{\\\"replicas\\\":2}}'`, followed by an `assert` block on the Keystone resource using JMESPath `(metadata.generation > `1`): true` AND `(length(conditions[?observedGeneration != metadata.generation])): 0` (or equivalent chainsaw idiom). Add catch block dumping `kubectl get keystone -o jsonpath='{.status.conditions}' | jq`. (CC-0101 REQ-003, REQ-007)",
+      "title": "Implement Step 5 (observedGeneration tracking) — `script` step running `kubectl patch keystone keystone-invariants --type=merge -p '{\"spec\":{\"replicas\":2}}'`, followed by an `assert` block on the Keystone resource using JMESPath `(metadata.generation > `1`): true` AND `(length(conditions[?observedGeneration != metadata.generation])): 0` (or equivalent chainsaw idiom). Add catch block dumping `kubectl get keystone -o jsonpath='{.status.conditions}' | jq`. (CC-0101 REQ-003, REQ-007)",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-007"
@@ -386,9 +392,10 @@
     },
     {
       "id": "2.5",
-      "title": "Implement Step 6 (lastTransitionTime monotonicity) — `script` step that: (a) captures T0 via `kubectl get keystone keystone-invariants -o jsonpath='{.status.conditions[?(@.type==\"DeploymentReady\")].lastTransitionTime}'`, (b) `kubectl scale deploy keystone-invariants --replicas=0`, (c) polls every 2s up to 4m for DeploymentReady=False, (d) `kubectl scale deploy keystone-invariants --replicas=1`, (e) polls every 2s up to 4m for DeploymentReady=True and captures T1, (f) asserts `[[ \\\"$T1\\\" > \\\"$T0\\\" ]]` (RFC3339 string compare). Exit 1 with `lastTransitionTime did not advance: T0=$T0 T1=$T1` on failure. Add catch block dumping events. NOTE: replicas: 0 path avoids progressDeadlineSeconds; immediate scale-down. (CC-0101 REQ-004, REQ-007)",
+      "title": "Implement Step 6 (lastTransitionTime monotonicity) — `script` step that: (a) captures T0 via `kubectl get keystone keystone-invariants -o jsonpath='{.status.conditions[?(@.type==\"DeploymentReady\")].lastTransitionTime}'`, (b) `kubectl scale deploy keystone-invariants --replicas=0`, (c) polls every 2s up to 4m for DeploymentReady=False, (d) `kubectl scale deploy keystone-invariants --replicas=1`, (e) polls every 2s up to 4m for DeploymentReady=True and captures T1, (f) asserts `[[ \"$T1\" > \"$T0\" ]]` (RFC3339 string compare). Exit 1 with `lastTransitionTime did not advance: T0=$T0 T1=$T1` on failure. Add catch block dumping events. NOTE: replicas: 0 path avoids progressDeadlineSeconds; immediate scale-down. (CC-0101 REQ-004, REQ-007)",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-007"
@@ -396,30 +403,13 @@
     },
     {
       "id": "2.6",
-      "title": "Implement Step 7 (ConfigMap immutability) — `script` step that: (a) selects the active config CM via `CM=$(kubectl get cm -n openstack -l forge.c5c3.io/config-base=keystone-invariants-config -o name | head -n1)`, exits 1 with 'no immutable ConfigMap found' if empty; (b) runs `kubectl patch \\\"$CM\\\" -n openstack --type=merge -p '{\\\"data\\\":{\\\"keystone.conf\\\":\\\"x\\\"}}' 2>err`; (c) asserts non-zero exit AND `grep -q 'field is immutable' err`; treats zero exit as a hard failure with explicit message. (CC-0101 REQ-005, REQ-007)",
+      "title": "Implement Step 7 (ConfigMap immutability) — `script` step that: (a) selects the active config CM via `CM=$(kubectl get cm -n openstack -l forge.c5c3.io/config-base=keystone-invariants-config -o name | head -n1)`, exits 1 with 'no immutable ConfigMap found' if empty; (b) runs `kubectl patch \"$CM\" -n openstack --type=merge -p '{\"data\":{\"keystone.conf\":\"x\"}}' 2>err`; (c) asserts non-zero exit AND `grep -q 'field is immutable' err`; treats zero exit as a hard failure with explicit message. (CC-0101 REQ-005, REQ-007)",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-007"
-      ]
-    },
-    {
-      "id": "3.1",
-      "title": "Run `chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/keystone/semantic-invariants/` against `make kind-up` (or report sandbox-no-cluster blocker per memory). Capture green output; ensure all six steps pass within budgets. (CC-0101 REQ-006)",
-      "level": 3,
-      "estimate_minutes": 25,
-      "requirements": [
-        "REQ-006"
-      ]
-    },
-    {
-      "id": "3.2",
-      "title": "Run `make e2e` end-to-end and confirm the new suite appears in the JUnit report under chainsaw-report; verify no regressions in adjacent suites. (CC-0101 REQ-006)",
-      "level": 3,
-      "estimate_minutes": 20,
-      "requirements": [
-        "REQ-006"
       ]
     },
     {
@@ -427,6 +417,7 @@
       "title": "Update docs/reference/testing/keystone-e2e-tests.md inventory table: insert a row `| [semantic-invariants](#semantic-invariants) | keystone-invariants | status.endpoint URL format, ownerReferences fan-out, observedGeneration tracking, lastTransitionTime monotonicity, ConfigMap immutability |` placed alphabetically. (CC-0101 REQ-008)",
       "level": 4,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -436,6 +427,7 @@
       "title": "Update docs/reference/testing/keystone-e2e-tests.md detail sections: add `### semantic-invariants` subsection (file path, fixture summary, step-by-step description of all six steps, list of CC-0101 REQ IDs covered REQ-001..REQ-005, link to source files reconcile_*.go and internal/common/config/config.go). Update the file-layout tree if present to include the new directory alphabetically. (CC-0101 REQ-008)",
       "level": 4,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -445,6 +437,7 @@
       "title": "Add an inline comment block at the top of chainsaw-test.yaml enumerating the source files that contribute managed kinds (reconcile_deployment.go, reconcile_fernet.go, reconcile_credential.go, reconcile_dbconnection_secret.go, reconcile_config.go, reconcile_httproute.go, reconcile_networkpolicy.go, reconcile_hpa.go, internal/common/config/config.go) so a reviewer adding a new managed kind sees the test as a tracked counterpart. (CC-0101 risk mitigation)",
       "level": 4,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -599,8 +592,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-30T13:21:16.309037"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-30T13:38:27.806295"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-05-12T16:20:02.927283"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/318",
+  "pr_number": 318,
   "execution_history": [
     {
       "run_id": "67f6ea77-a450-4a6b-9ae9-2dd3e6309913",
@@ -612,6 +615,64 @@
           "name": "prepare",
           "duration": 489.18604588508606,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "a4e6e264-7bdb-411d-8dd8-6bb0e3b57d47",
+      "timestamp": "2026-04-30T14:15:26.836120",
+      "total_duration": 1970.7444808483124,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (2 tasks)",
+          "duration": 189.60458374023438,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (6 tasks)",
+          "duration": 874.8675062656403,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (3 tasks)",
+          "duration": 260.0343282222748,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0101] Code Review",
+          "duration": 348.8316602706909,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0101] Improvements",
+          "duration": 194.14169549942017,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0101] Simplify",
+          "duration": 103.26470685005188,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "523bb018-760e-4bf1-98e5-4c365f53fded",
+      "timestamp": "2026-04-30T17:29:45.575177",
+      "total_duration": 1153.0537300109863,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 1153.0537300109863,
+          "type": "review_address",
           "status": "done"
         }
       ]

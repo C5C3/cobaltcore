@@ -1,0 +1,579 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for Keystone CR status semantic invariants (CC-0101).
+# Asserts the contracts the CR must guarantee at all times — none of which
+# are otherwise covered by an E2E gate today:
+#   - status.endpoint URL format (REQ-001)
+#   - ownerReferences fan-out across managed objects (REQ-002)
+#   - status.observedGeneration tracking after a spec change (REQ-003)
+#   - condition.lastTransitionTime monotonicity (REQ-004)
+#   - immutability of generated ConfigMaps (REQ-005)
+#
+# Source-file enumeration for the Step 3 ownerReferences fan-out lives in
+# the reference doc to avoid drift between two lists (CC-0101 review #1
+# I-002): docs/reference/testing/keystone-e2e-tests.md → "Source files
+# contributing managed kinds". A reviewer adding a new managed kind in any
+# reconcile_*.go MUST extend the iteration list in Step 3 (and the doc) so
+# the ownership invariant cannot regress unnoticed.
+#
+# CC-0101 REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-006, REQ-007
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-semantic-invariants
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR and wait for Ready=True (CC-0101 REQ-001)
+  # Apply the fixture and gate the rest of the suite on Ready=True/AllReady;
+  # every subsequent invariant check assumes a fully reconciled CR. The
+  # diagnostic dump on failure mirrors basic-deployment/healthcheck so CI
+  # output stays consistent across suites (CC-0101 REQ-007).
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-invariants
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR (full YAML) ==="
+          kubectl get keystone keystone-invariants -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 2: Assert status.endpoint literal (CC-0101 REQ-001) ───────────
+  # Pins the URL contract from internalAPIURL (reconcile_httproute.go) and
+  # the Status.Endpoint write (reconcile_deployment.go). spec.gateway is
+  # unset on the fixture, so the cluster-local URL must surface unchanged
+  # — a literal match deliberately fails on any port/scheme/path drift, not
+  # only on an empty value.
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-invariants
+            namespace: openstack
+          status:
+            endpoint: http://keystone-invariants.openstack.svc.cluster.local:5000/v3
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR (full YAML) ==="
+          kubectl get keystone keystone-invariants -n $NAMESPACE -o yaml 2>&1 || true
+          # Step 2 failures are reconciler-side (status.endpoint is written
+          # by reconcile_deployment.go from internalAPIURL in
+          # reconcile_httproute.go), so the operator logs are the most
+          # diagnostic signal. The keystone-operator runs in $NAMESPACE
+          # (openstack) — same namespace as the Keystone CRs — so a single
+          # label-scoped log dump captures it without crossing namespaces.
+          echo "=== keystone-operator pod logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keystone-operator \
+            --all-containers --tail=200 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Assert ownerReferences fan-out (CC-0101 REQ-002) ───────────
+  # Iterates every operator-managed kind and asserts ownerReferences[0] is
+  # {kind: Keystone, controller: true, blockOwnerDeletion: true, uid: <CR
+  # UID>}. Cascading delete depends on this contract; the gate prevents a
+  # reconcile_*.go reorganization from silently dropping it on one kind.
+  #
+  # ConfigMap families (config-, fernet-rotate-script-, credential-rotate-
+  # script-) are resolved via labelSelector forge.c5c3.io/config-base=<base>
+  # — never by hash suffix — so a content-hash change cannot regress the
+  # assertion (CC-0005, CC-0077).
+  #
+  # Source files contributing managed kinds (a reviewer adding a new
+  # managed kind MUST extend the iteration list below; the same list is
+  # mirrored in docs/reference/testing/keystone-e2e-tests.md and both must
+  # stay in sync):
+  #   - operators/keystone/internal/controller/reconcile_deployment.go
+  #     → Deployment, Service, PodDisruptionBudget
+  #   - operators/keystone/internal/controller/reconcile_fernet.go
+  #     → Secret <name>-fernet-keys, ConfigMap family
+  #       <name>-fernet-rotate-script, ServiceAccount/Role/RoleBinding/
+  #       CronJob <name>-fernet-rotate, PushSecret <name>-fernet-keys-backup
+  #   - operators/keystone/internal/controller/reconcile_credential.go
+  #     → Secret <name>-credential-keys, ConfigMap family
+  #       <name>-credential-rotate-script, ServiceAccount/Role/RoleBinding/
+  #       CronJob <name>-credential-rotate, PushSecret
+  #       <name>-credential-keys-backup
+  #   - operators/keystone/internal/controller/reconcile_trustflush.go
+  #     → CronJob <name>-trust-flush (always materialised — webhook defaults
+  #       spec.trustFlush; see operators/keystone/api/v1alpha1/keystone_webhook.go)
+  #   - operators/keystone/internal/controller/reconcile_database.go
+  #     → MariaDB Database/User/Grant CRs (managed mode only — fixture sets
+  #       spec.database.clusterRef so all three are created via
+  #       database.EnsureDatabase / database.EnsureDatabaseUser)
+  #   - operators/keystone/internal/controller/reconcile_dbconnection_secret.go
+  #     → Secret <name>-db-connection
+  #   - operators/keystone/internal/controller/reconcile_config.go +
+  #     internal/common/config/config.go (CreateImmutableConfigMap)
+  #     → ConfigMap family <name>-config (forge.c5c3.io/config-base label)
+  #   - operators/keystone/internal/controller/reconcile_httproute.go
+  #     → HTTPRoute (only when spec.gateway is set — out of scope here)
+  #   - operators/keystone/internal/controller/reconcile_networkpolicy.go
+  #     → NetworkPolicy (only when spec.networkPolicy is set — out of scope)
+  #   - operators/keystone/internal/controller/reconcile_hpa.go
+  #     → HorizontalPodAutoscaler (only when spec.autoscaling is set — out
+  #       of scope)
+  - try:
+    - script:
+        # bash for `set -o pipefail` and local-scoped function variables;
+        # default `sh` on the chainsaw runner rejects both. The 2m timeout
+        # gives ~16 kubectl calls room on a slow cluster (default exec: 30s
+        # is tight when `parallel: 4` saturates the API server).
+        timeout: 2m
+        shell: bash
+        content: |
+          set -euo pipefail
+          NAME=keystone-invariants
+          CR_UID=$(kubectl get keystone -n "$NAMESPACE" "$NAME" -o jsonpath='{.metadata.uid}')
+          if [ -z "$CR_UID" ]; then
+            echo "FAIL: could not read keystone/$NAME .metadata.uid" >&2
+            exit 1
+          fi
+          echo "CR UID: $CR_UID"
+
+          fail=0
+
+          # check_owner GVR resource-name
+          # GVR is the kubectl-style resource (deploy, svc, pdb, secret, ...);
+          # group-qualified (e.g. pushsecret.external-secrets.io,
+          # role.rbac.authorization.k8s.io) where ambiguity is possible.
+          check_owner() {
+            local gvr="$1" name="$2"
+            local owner_json
+            if ! owner_json=$(kubectl get -n "$NAMESPACE" "$gvr" "$name" -o json 2>/dev/null); then
+              echo "FAIL: $gvr/$name missing — operator did not create the expected child" >&2
+              fail=1
+              return
+            fi
+            if ! echo "$owner_json" | jq -e --arg uid "$CR_UID" '
+                .metadata.ownerReferences[0]
+                | (.kind == "Keystone")
+                  and (.controller == true)
+                  and (.blockOwnerDeletion == true)
+                  and (.uid == $uid)
+              ' >/dev/null 2>&1; then
+              echo "FAIL: $gvr/$name has missing or wrong ownerReferences[0]" >&2
+              echo "  expected: kind=Keystone controller=true blockOwnerDeletion=true uid=$CR_UID" >&2
+              echo "  actual:   $(echo "$owner_json" | jq -c '.metadata.ownerReferences')" >&2
+              fail=1
+              return
+            fi
+            echo "OK   $gvr/$name"
+          }
+
+          # check_owner_by_label GVR label-selector descr
+          # Resolves a ConfigMap family (or any list) by labelSelector and
+          # asserts ownerReferences[0] on every match. Empty match → fail
+          # (avoids a silent pass when the label regresses).
+          check_owner_by_label() {
+            local gvr="$1" selector="$2" descr="$3"
+            local names
+            names=$(kubectl get -n "$NAMESPACE" "$gvr" -l "$selector" -o jsonpath='{.items[*].metadata.name}')
+            if [ -z "$names" ]; then
+              echo "FAIL: no $gvr matched selector '$selector' ($descr)" >&2
+              fail=1
+              return
+            fi
+            for n in $names; do
+              check_owner "$gvr" "$n"
+            done
+          }
+
+          # Core workload (reconcile_deployment.go)
+          check_owner deploy "$NAME"
+          check_owner svc "$NAME"
+          check_owner pdb "$NAME"
+
+          # ConfigMap families — resolved by label, never by hash suffix
+          check_owner_by_label cm \
+            "forge.c5c3.io/config-base=${NAME}-config" \
+            "keystone config CM"
+          check_owner_by_label cm \
+            "forge.c5c3.io/config-base=${NAME}-fernet-rotate-script" \
+            "fernet-rotate script CM"
+          check_owner_by_label cm \
+            "forge.c5c3.io/config-base=${NAME}-credential-rotate-script" \
+            "credential-rotate script CM"
+
+          # Per-CR Secrets (reconcile_dbconnection_secret.go,
+          # reconcile_fernet.go, reconcile_credential.go)
+          check_owner secret "${NAME}-db-connection"
+          check_owner secret "${NAME}-fernet-keys"
+          check_owner secret "${NAME}-credential-keys"
+
+          # Fernet rotation RBAC + CronJob (reconcile_fernet.go)
+          check_owner sa "${NAME}-fernet-rotate"
+          check_owner role.rbac.authorization.k8s.io "${NAME}-fernet-rotate"
+          check_owner rolebinding.rbac.authorization.k8s.io "${NAME}-fernet-rotate"
+          check_owner cronjob "${NAME}-fernet-rotate"
+
+          # Credential rotation RBAC + CronJob (reconcile_credential.go)
+          check_owner sa "${NAME}-credential-rotate"
+          check_owner role.rbac.authorization.k8s.io "${NAME}-credential-rotate"
+          check_owner rolebinding.rbac.authorization.k8s.io "${NAME}-credential-rotate"
+          check_owner cronjob "${NAME}-credential-rotate"
+
+          # Trust flush CronJob (reconcile_trustflush.go) — webhook defaults
+          # spec.trustFlush so this CronJob is always materialised
+          check_owner cronjob "${NAME}-trust-flush"
+
+          # PushSecrets (reconcile_fernet.go, reconcile_credential.go)
+          check_owner pushsecret.external-secrets.io "${NAME}-fernet-keys-backup"
+          check_owner pushsecret.external-secrets.io "${NAME}-credential-keys-backup"
+
+          # MariaDB CRs (reconcile_database.go) — managed mode only;
+          # fixture uses spec.database.clusterRef so all three are created
+          check_owner database.k8s.mariadb.com "${NAME}"
+          check_owner user.k8s.mariadb.com "${NAME}"
+          check_owner grant.k8s.mariadb.com "${NAME}"
+
+          if [ "$fail" -ne 0 ]; then
+            echo "FAIL: one or more managed objects had a missing or wrong ownerReferences[0]" >&2
+            exit 1
+          fi
+          echo "OK: ownerReferences fan-out verified for all managed kinds"
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR (full YAML) ==="
+          kubectl get keystone keystone-invariants -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Managed objects (selected by name prefix) ==="
+          kubectl get -n $NAMESPACE \
+            deploy,svc,pdb,cm,secret,sa,role.rbac.authorization.k8s.io,rolebinding.rbac.authorization.k8s.io,cronjob,pushsecret.external-secrets.io \
+            -o name 2>&1 | grep keystone-invariants || true
+          # REQ-007 mandates pod logs on every step's catch. Step 3 failures
+          # are reconciler-side (a sub-reconciler missed
+          # controllerutil.SetControllerReference on a managed kind), so the
+          # operator logs are the most diagnostic signal. Dump current logs
+          # first (the common case — operator pod is running but emitted the
+          # missing-ownerRef regression) and then --previous (covers the rare
+          # case where the operator crashed) so neither phase is silently
+          # swallowed when the other returns an error.
+          echo "=== keystone-operator pod logs (current) ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keystone-operator \
+            --all-containers --tail=60 2>&1 || true
+          echo "=== keystone-operator pod logs (previous) ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keystone-operator \
+            --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Assert observedGeneration tracking (CC-0101 REQ-003) ───────
+  # Patches spec.replicas (1 → 2) to bump metadata.generation, then asserts
+  # every status.conditions[*].observedGeneration has caught up. CC-0072
+  # requires every sub-reconciler to set ObservedGeneration on SetCondition;
+  # this gate prevents one reconciler from forgetting it.
+  #
+  # Why a script and not a chainsaw `assert` block: chainsaw's kyverno-style
+  # JMESPath cannot reach metadata.generation from inside a
+  # `conditions[?...]` filter, so a `length(conditions[?observedGeneration
+  # != metadata.generation])` predicate is not expressible cleanly. Reading
+  # both via `kubectl get -o json | jq` and polling up to the chainsaw 5m
+  # assert budget keeps the assertion exact and gives a clear diagnostic
+  # naming the lagging condition(s) on failure.
+  - try:
+    - script:
+        # 6m covers the 5m polling deadline below plus a slack window for
+        # the patch and the final diagnostic dump on timeout.
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          NAME=keystone-invariants
+
+          # Bump metadata.generation. --type=merge keeps the patch minimal
+          # and matches what an external automation client would do.
+          kubectl patch keystone -n "$NAMESPACE" "$NAME" \
+            --type=merge -p '{"spec":{"replicas":2}}'
+
+          # Poll up to the 5m chainsaw assert budget for catch-up. Two
+          # invariants must hold simultaneously:
+          #   1. metadata.generation > 1 (the patch took effect)
+          #   2. every status.conditions[*].observedGeneration matches
+          #      metadata.generation
+          deadline=$(( $(date +%s) + 300 ))
+          while :; do
+            json=$(kubectl get keystone -n "$NAMESPACE" "$NAME" -o json)
+            gen=$(echo "$json" | jq -r '.metadata.generation')
+            lagging=$(echo "$json" | jq -r --argjson gen "$gen" '
+              [.status.conditions[]?
+                | select((.observedGeneration // 0) != $gen)
+                | .type] | join(",")')
+            if [ "$gen" -gt 1 ] && [ -z "$lagging" ]; then
+              echo "OK: metadata.generation=$gen and every condition.observedGeneration matches"
+              exit 0
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: observedGeneration did not catch up within 5m" >&2
+              echo "  metadata.generation=$gen lagging=[$lagging]" >&2
+              echo "$json" | jq '{generation: .metadata.generation, conditions: .status.conditions}' >&2 || true
+              exit 1
+            fi
+            sleep 2
+          done
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR (generation + conditions) ==="
+          echo "metadata.generation:"
+          kubectl get keystone keystone-invariants -n $NAMESPACE -o jsonpath='{.metadata.generation}{"\n"}' 2>&1 || true
+          echo "status.conditions:"
+          kubectl get keystone keystone-invariants -n $NAMESPACE -o jsonpath='{.status.conditions}' 2>&1 | jq . || true
+          # Step 4 failures are reconciler-side (a sub-reconciler forgot to
+          # set ObservedGeneration on SetCondition — see CC-0072). Operator
+          # logs are required to identify which reconciler is lagging; the
+          # CR YAML only shows the symptom. keystone-operator runs in
+          # $NAMESPACE — see Step 2 catch for the same selector.
+          echo "=== keystone-operator pod logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keystone-operator \
+            --all-containers --tail=200 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 5: Assert lastTransitionTime monotonicity (CC-0101 REQ-004) ───
+  # Captures DeploymentReady.lastTransitionTime (T0), forces a True→False
+  # flip via `kubectl scale deploy --replicas=0` (immediate; side-steps
+  # progressDeadlineSeconds), polls until DeploymentReady=False, then waits
+  # for the operator to reconcile the Deployment back to spec.replicas (=2,
+  # set by Step 4) and re-flip DeploymentReady to True (T1), and asserts
+  # T1 > T0. apimachinery normalises lastTransitionTime to UTC seconds-
+  # precision (RFC3339), so a lexicographic string compare suffices for
+  # monotonicity.
+  #
+  # Note: spec.replicas: 0 cannot be set on the CR (CRD enforces Minimum=1).
+  # Scaling the Deployment directly is the only way to flip DeploymentReady
+  # to False; the operator's watch fires from the scale-to-0 patch and
+  # restores the Deployment to spec.replicas=2, which is sufficient to
+  # drive the False → True transition without an explicit second scale.
+  - try:
+    - script:
+        # Polling windows: 3m settle + 4m True→False + 4m False→True per
+        # task spec, plus 1m slack. The chainsaw default `exec: 30s` is
+        # far too short for a real Deployment flip cycle.
+        timeout: 12m
+        shell: bash
+        content: |
+          set -euo pipefail
+          NAME=keystone-invariants
+
+          # Read DeploymentReady's "<status> <lastTransitionTime>" pair.
+          get_dep_ready() {
+            kubectl get keystone -n "$NAMESPACE" "$NAME" -o json \
+              | jq -r '
+                  (.status.conditions[]?
+                    | select(.type == "DeploymentReady"))
+                  | "\(.status) \(.lastTransitionTime)"' \
+              | head -n1
+          }
+
+          # Step 4 patched replicas 1→2 and only waits for observedGeneration
+          # to catch up — DeploymentReady may transiently be False while the
+          # second pod schedules. Settle first by waiting for the steady-state
+          # True before capturing T0.
+          deadline=$(( $(date +%s) + 180 ))
+          T0=""
+          while :; do
+            row=$(get_dep_ready)
+            status=$(echo "$row" | awk '{print $1}')
+            ts=$(echo "$row" | awk '{print $2}')
+            if [ "$status" = "True" ] && [ -n "$ts" ]; then
+              T0="$ts"
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: DeploymentReady did not settle to True within 3m at start of Step 5 (last: '$row')" >&2
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "T0 (DeploymentReady=True, settled): $T0"
+
+          # Force True → False. The operator's watch fires from this patch
+          # and reconciles the Deployment back to spec.replicas=2 (set by
+          # Step 4), so no explicit scale-back is required to drive the
+          # False → True transition.
+          kubectl scale deploy -n "$NAMESPACE" "$NAME" --replicas=0
+
+          deadline=$(( $(date +%s) + 240 ))
+          while :; do
+            row=$(get_dep_ready)
+            status=$(echo "$row" | awk '{print $1}')
+            if [ "$status" = "False" ]; then
+              echo "DeploymentReady flipped to False"
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: DeploymentReady did not flip to False within 4m (last: '$row')" >&2
+              exit 1
+            fi
+            sleep 2
+          done
+
+          # False → True via operator-driven restore (no explicit scale).
+          deadline=$(( $(date +%s) + 240 ))
+          T1=""
+          while :; do
+            row=$(get_dep_ready)
+            status=$(echo "$row" | awk '{print $1}')
+            ts=$(echo "$row" | awk '{print $2}')
+            if [ "$status" = "True" ] && [ -n "$ts" ]; then
+              T1="$ts"
+              echo "T1 (DeploymentReady=True after flip): $T1"
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: DeploymentReady did not return to True within 4m (last: '$row')" >&2
+              exit 1
+            fi
+            sleep 2
+          done
+
+          # apimachinery emits RFC3339 UTC seconds-precision timestamps;
+          # bash `[[ > ]]` does a lexicographic compare which is correct
+          # for that format. Strict `>` (not `>=`) is intentional: a
+          # controller that never refreshes lastTransitionTime would yield
+          # T1 == T0 and we want that to fail. Same-second equality (the
+          # only edge case that would falsely fail under strict `>`) is
+          # unreachable here: the True→False→True cycle is bounded below by
+          # terminationGracePeriodSeconds=30s + the keystone preStop sleep
+          # (5s), so T1 is at least ~35s after T0 even on the fastest
+          # cluster. Do NOT relax to `>=` (CC-0101 review #1 I-001).
+          if [[ "$T1" > "$T0" ]]; then
+            echo "OK: lastTransitionTime advanced ($T0 -> $T1)"
+          else
+            echo "FAIL: lastTransitionTime did not advance: T0=$T0 T1=$T1" >&2
+            exit 1
+          fi
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR (conditions) ==="
+          kubectl get keystone keystone-invariants -n $NAMESPACE -o jsonpath='{.status.conditions}' 2>&1 | jq . || true
+          echo "=== Deployment ==="
+          kubectl get deploy -n $NAMESPACE keystone-invariants -o yaml 2>&1 | tail -40 || true
+          # REQ-007 mandates pod logs on every step's catch. Step 5 failures
+          # are reconciler/Deployment-flip side: operator logs reveal whether
+          # the False→True flip was driven, and keystone-API pod logs reveal
+          # whether the new Pods came up cleanly. Both are required. Dump
+          # current logs first (the common case — pods are running but the
+          # condition flip lagged) and then --previous (covers a crash on
+          # restart) so the diagnostic surface covers both phases.
+          echo "=== keystone-operator pod logs (current) ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keystone-operator \
+            --all-containers --tail=60 2>&1 || true
+          echo "=== keystone-operator pod logs (previous) ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keystone-operator \
+            --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== keystone-API pod logs (current) ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keystone \
+            --all-containers --tail=60 2>&1 || true
+          echo "=== keystone-API pod logs (previous) ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keystone \
+            --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 6: Assert ConfigMap immutability (CC-0101 REQ-005) ────────────
+  # Resolves the active config CM by labelSelector (never by hash suffix)
+  # and asserts that `kubectl patch` is rejected by the API server with
+  # 'field is immutable' in stderr. Proves the invariant the operator
+  # relies on (Immutable: true in CreateImmutableConfigMap,
+  # internal/common/config/config.go) — without it, an operator that wrote
+  # configuration into a mutable CM would silently drift between rotations.
+  #
+  # No cleanup is required: the patch is rejected pre-commit, so the
+  # ConfigMap on the API server is unchanged.
+  - try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          NAME=keystone-invariants
+          BASE="${NAME}-config"
+
+          CM=$(kubectl get cm -n "$NAMESPACE" \
+            -l "forge.c5c3.io/config-base=$BASE" -o name | head -n1)
+          if [ -z "$CM" ]; then
+            echo "FAIL: no immutable ConfigMap found for $BASE" >&2
+            kubectl get cm -n "$NAMESPACE" --show-labels >&2 || true
+            exit 1
+          fi
+          echo "Selected immutable ConfigMap: $CM"
+
+          err=$(mktemp)
+          trap 'rm -f "$err"' EXIT
+
+          if kubectl patch -n "$NAMESPACE" "$CM" --type=merge \
+              -p '{"data":{"keystone.conf":"x"}}' 2>"$err"; then
+            echo "FAIL: expected immutable rejection but patch succeeded for $CM" >&2
+            cat "$err" >&2 || true
+            exit 1
+          fi
+          if ! grep -q 'field is immutable' "$err"; then
+            echo "FAIL: kubectl patch was rejected but stderr did not contain 'field is immutable'" >&2
+            cat "$err" >&2 || true
+            exit 1
+          fi
+          echo "OK: $CM is immutable (API server rejected the patch with 'field is immutable')"
+    catch:
+    - script:
+        content: |
+          # REQ-007 mandates CR status + operator pod logs on every step's
+          # catch. The "ConfigMap content dump not required" carve-out from
+          # the spec excuses only the ConfigMap data dump, not the CR or
+          # operator logs — both are surfaced first so a reviewer can see
+          # the full reconciler context for the immutability failure.
+          echo "=== Keystone CR (full YAML) ==="
+          kubectl get keystone keystone-invariants -n $NAMESPACE -o yaml 2>&1 || true
+          # Dump current operator logs first (the common case for an
+          # immutability bypass — the operator pod is healthy but the API
+          # server failed to enforce Immutable: true) and then --previous
+          # (covers the rare case where the operator crashed) so neither
+          # phase is silently swallowed when the other returns an error.
+          echo "=== keystone-operator pod logs (current) ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keystone-operator \
+            --all-containers --tail=60 2>&1 || true
+          echo "=== keystone-operator pod logs (previous) ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keystone-operator \
+            --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Keystone config ConfigMaps (metadata only — data omitted by design) ==="
+          # ConfigMap.immutable is a TOP-LEVEL field on the ConfigMap object
+          # (not nested under metadata) — see k8s.io/api/core/v1.ConfigMap.
+          # The custom-columns path `.immutable` is therefore correct;
+          # `.metadata.immutable` would silently render `<none>`.
+          kubectl get cm -n $NAMESPACE \
+            -l "forge.c5c3.io/config-base=keystone-invariants-config" \
+            -o custom-columns=NAME:.metadata.name,IMMUTABLE:.immutable,LABELS:.metadata.labels 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

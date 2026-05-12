@@ -142,6 +142,7 @@ Deployment rollout, bootstrap Job).
 | [policy-validation](#policy-validation) | `keystone-policy-validation` | `PolicyValidReady` gates the Deployment; validation Job lifecycle on `policyOverrides` add/remove |
 | [priority-class](#priority-class) | `keystone-pc` | `spec.priorityClassName` propagation: unset → empty, set → applied, patched empty → removed |
 | [schema-drift-detection](#schema-drift-detection) | `keystone-schema-drift` | `DatabaseReady=True` with message "revision verified"; schema-check Job runs and completes |
+| [semantic-invariants](#semantic-invariants) | `keystone-invariants` | `status.endpoint` URL format, `ownerReferences` fan-out, `observedGeneration` tracking, `lastTransitionTime` monotonicity, ConfigMap immutability |
 | [topology-spread](#topology-spread) | `keystone-tsc` | `spec.topologySpreadConstraints`: `nil` injects 2 defaults; non-empty slice passes through verbatim; `[]` disables all constraints |
 
 ---
@@ -601,6 +602,42 @@ patching with a valid class sets it; patching with empty string removes it.
 
 ---
 
+### semantic-invariants
+
+**File:** `tests/e2e/keystone/semantic-invariants/chainsaw-test.yaml`
+
+**Purpose:** Asserts five Keystone CR `status` semantic invariants that no other E2E suite gates today: `status.endpoint` URL format (CC-0101 REQ-001), `ownerReferences` fan-out across every operator-managed kind (CC-0101 REQ-002), `status.observedGeneration` catch-up after a `spec` change (CC-0101 REQ-003), `condition.lastTransitionTime` monotonicity across a `True → False → True` flip (CC-0101 REQ-004), and immutability of the generated config ConfigMap (CC-0101 REQ-005). The fixture intentionally omits `spec.gateway`, `spec.networkPolicy`, and `spec.autoscaling` so the cluster-local `status.endpoint` surfaces and the `observedGeneration` assertion stays exact regardless of optional sub-condition reasons.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR and gate on Ready=True | `apply` + `assert` (5m) | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-invariants` — and gates the rest of the suite on `Ready=True/AllReady` |
+| 2 | Assert `status.endpoint` literal | `assert` (5m) | `status.endpoint == http://keystone-invariants.openstack.svc.cluster.local:5000/v3` exactly — fails on any port/scheme/path drift, not only on an empty value |
+| 3 | Assert `ownerReferences` fan-out | `script` (2m) | Reads CR UID, then for every managed kind (Deployment, Service, PodDisruptionBudget; ConfigMap families resolved via `forge.c5c3.io/config-base` label, never by hash suffix; per-CR Secrets `*-db-connection`, `*-fernet-keys`, `*-credential-keys`; ServiceAccount/Role/RoleBinding/CronJob `*-{fernet,credential}-rotate`; PushSecrets `*-{fernet,credential}-keys-backup`) asserts `ownerReferences[0]` is `{kind: Keystone, controller: true, blockOwnerDeletion: true, uid: <CR UID>}` via `jq -e`; reports the offending GVK+name on mismatch |
+| 4 | Assert `observedGeneration` tracking | `script` (6m) | Patches `spec.replicas` `1 → 2` to bump `metadata.generation`, then polls up to 5 minutes until every `status.conditions[*].observedGeneration` matches `metadata.generation`; lists lagging condition types on timeout |
+| 5 | Assert `lastTransitionTime` monotonicity | `script` (12m) | Captures `T0` from `DeploymentReady.lastTransitionTime`, scales the Deployment to 0 replicas (immediate flip; side-steps `progressDeadlineSeconds`), polls for `DeploymentReady=False`, then waits for the operator to reconcile the Deployment back to `spec.replicas=2` (set by Step 4) and captures `T1` once `DeploymentReady=True` again; asserts `T1 > T0` via lexicographic compare on the RFC3339 UTC timestamps |
+| 6 | Assert ConfigMap immutability | `script` | Resolves the active config ConfigMap by `forge.c5c3.io/config-base=keystone-invariants-config` (never by hash suffix), runs `kubectl patch` against `data.keystone.conf`, and asserts non-zero exit with `field is immutable` in stderr |
+
+**Fixtures:** `00-keystone-cr.yaml`
+
+**Requirements covered:** CC-0101 REQ-001, REQ-002, REQ-003, REQ-004, REQ-005.
+
+**Source files contributing managed kinds.** Step 3 is the tracked counterpart of these files — a reviewer adding a new managed kind in any of them MUST extend the iteration list in Step 3, otherwise the ownership invariant can regress unnoticed:
+
+- `operators/keystone/internal/controller/reconcile_deployment.go` — Deployment, Service, PodDisruptionBudget
+- `operators/keystone/internal/controller/reconcile_fernet.go` — `*-fernet-keys` Secret, `*-fernet-rotate-script` ConfigMap family, `*-fernet-rotate` ServiceAccount/Role/RoleBinding/CronJob, `*-fernet-keys-backup` PushSecret
+- `operators/keystone/internal/controller/reconcile_credential.go` — `*-credential-keys` Secret, `*-credential-rotate-script` ConfigMap family, `*-credential-rotate` ServiceAccount/Role/RoleBinding/CronJob, `*-credential-keys-backup` PushSecret
+- `operators/keystone/internal/controller/reconcile_trustflush.go` — `*-trust-flush` CronJob (always materialised — the defaulting webhook at `operators/keystone/api/v1alpha1/keystone_webhook.go` populates `spec.trustFlush` whenever unset)
+- `operators/keystone/internal/controller/reconcile_database.go` — MariaDB `Database`, `User`, and `Grant` CRs in managed mode (created via `database.EnsureDatabase` / `database.EnsureDatabaseUser` whenever `spec.database.clusterRef` is set, as the fixture does)
+- `operators/keystone/internal/controller/reconcile_dbconnection_secret.go` — `*-db-connection` Secret
+- `operators/keystone/internal/controller/reconcile_config.go` + `internal/common/config/config.go` (`CreateImmutableConfigMap`) — `*-config` ConfigMap family carrying the `forge.c5c3.io/config-base` label and `Immutable: true`
+- `operators/keystone/internal/controller/reconcile_httproute.go` — HTTPRoute (only when `spec.gateway` is set — out of scope for this suite)
+- `operators/keystone/internal/controller/reconcile_networkpolicy.go` — NetworkPolicy (only when `spec.networkPolicy` is set — out of scope)
+- `operators/keystone/internal/controller/reconcile_hpa.go` — HorizontalPodAutoscaler (only when `spec.autoscaling` is set — out of scope)
+
+---
+
 ### topology-spread
 
 **File:** `tests/e2e/keystone/topology-spread/chainsaw-test.yaml`
@@ -831,6 +868,9 @@ tests/e2e/keystone/
 ├── schema-drift-detection/
 │   ├── chainsaw-test.yaml              Schema drift detection
 │   └── 00-keystone-cr.yaml             Keystone CR for schema drift test
+├── semantic-invariants/
+│   ├── chainsaw-test.yaml              CR status semantic invariants
+│   └── 00-keystone-cr.yaml             Keystone CR for invariants test
 ├── topology-spread/
 │   ├── chainsaw-test.yaml              spec.topologySpreadConstraints
 │   ├── 00-keystone-cr.yaml             Keystone CR without explicit TSC
