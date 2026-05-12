@@ -1,0 +1,67 @@
+{
+  "summary": "Iteration 2 of CC-0104 addresses external review feedback from berendt on the new Chainsaw E2E test for Keystone CR reconciliation under PSS Restricted. Five concrete code/doc changes were applied: (1) new fixture tests/e2e/keystone/pod-security-restricted/00-policy-cm.yaml plus spec.policyOverrides.configMapRef on the Keystone CR plus apply+assert in chainsaw-test.yaml Step 1 — closes the C-001/W-001 gap that the policy-validation Job was claimed to be exercised but never created; (2) cleanupPolicy: Skip added to the User and Grant CRs in tests/e2e/keystone/brownfield-database/00-brownfield-db-setup.yaml — closes the W-002 asymmetric-cleanup race over the canonical 'keystone' MariaDB user under parallel:4; (3) every absolute Go-source line-number reference (reconcile_database.go:70, reconcile_secrets.go:86) replaced with stable function-name anchors (mariaDBResourceKey, WaitForExternalSecret) across chainsaw-test.yaml, 00-namespace.yaml, 00-brownfield-db-setup.yaml, 01-keystone-cr.yaml, and docs/reference/testing/keystone-e2e-tests.md — closes W-003; (4) kubectl delete job --ignore-not-found=true --wait=true prepended to the manual rotation Job creation script in chainsaw-test.yaml Step 4 — closes W-001 (REQ-005 idempotency); (5) docs/reference/testing/keystone-e2e-tests.md updated to describe the new policy CM fixture in Step 1 and the policyOverrides wiring in Step 3. The planwerk progress JSON's REQ-003 and Tasks 1.1/1.2 were rewritten so the spec literally matches the ExternalSecret-based implementation that ships (B-001 dismissed at the planwerk-record level). The B (no-change) recommendation on the I-001 'Steps 1-2 catch blocks' note was honored.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "All four required fixture files present (chainsaw-test.yaml, 00-namespace.yaml, 00-brownfield-db-setup.yaml, 01-keystone-cr.yaml) plus the new 00-policy-cm.yaml", "checked": true},
+    {"item": "Namespace fixture carries both PSS enforce=restricted AND enforce-version=latest labels", "checked": true},
+    {"item": "chainsaw-test.yaml has spec.namespace: \"\" so chainsaw does not generate an unlabelled per-test namespace", "checked": true},
+    {"item": "Keystone CR uses brownfield mode (database.host + cache.servers); no clusterRef field", "checked": true},
+    {"item": "Test asserts Ready=True with reason AllReady within spec.timeouts.assert: 5m", "checked": true},
+    {"item": "Test triggers manual fernet rotation via kubectl create job --from=cronjob/...-fernet-rotate and asserts condition=complete", "checked": true},
+    {"item": "Test asserts zero events with reason=FailedCreate and message containing 'violates PodSecurity \"restricted:latest\"'", "checked": true},
+    {"item": "Manual rotation Job creation is idempotent under retry (kubectl delete --ignore-not-found=true precedes create)", "checked": true},
+    {"item": "Policy-validation Job is exercised: 00-policy-cm.yaml applied + spec.policyOverrides.configMapRef set on CR", "checked": true},
+    {"item": "Step 1 asserts the policy ConfigMap exists (apply+assert pair)", "checked": true},
+    {"item": "Catch blocks on Steps 3-5 surface pod securityContext, sorted events, and Job pod logs (every command guarded with || true)", "checked": true},
+    {"item": "Resource names prefixed keystone-pss-restricted-* across CR, brownfield CRs, and manual rotation Job (collision-safe under parallel:4)", "checked": true},
+    {"item": "All bash script blocks declare shell: bash and use set -euo pipefail", "checked": true},
+    {"item": "I-001 (Steps 1-2 lack catch blocks) intentionally not addressed per reviewer's recommendation B", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Line-number references replaced with stable function-name anchors across all 6 sites called out by W-003", "checked": true},
+    {"item": "SPDX Apache-2.0 header present on the new 00-policy-cm.yaml", "checked": true},
+    {"item": "00-policy-cm.yaml mirrors tests/e2e/keystone/policy-overrides/00-policy-cm.yaml structure (apiVersion, kind, data.policy.yaml content) — only namespace differs", "checked": true},
+    {"item": "Inline comments on the new policyOverrides block in 01-keystone-cr.yaml explain the why (without the field, reconcilePolicyValidation short-circuits) and reference CC-0104", "checked": true},
+    {"item": "Inline comments on the new cleanupPolicy: Skip in tests/e2e/keystone/brownfield-database/00-brownfield-db-setup.yaml explain the cross-test race rationale and reference CC-0104, W-002", "checked": true},
+    {"item": "Inline comment on the new kubectl delete job line in Step 4 documents the AlreadyExists/set -e idempotency reasoning and references CC-0104, W-001", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No new secrets, credentials, or auth changes introduced — the diff is purely test fixtures + docs + planwerk records", "checked": true},
+    {"item": "PSS-restricted enforcement label retained on the test namespace; the new ConfigMap fixture is a non-Pod resource and does not interact with PSS admission", "checked": true},
+    {"item": "No change to operator code or RBAC — sub-resources reference existing OpenBao paths/policies via existing ESO ClusterSecretStore", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Scope respected: changes confined to tests/e2e/keystone/pod-security-restricted/, the matching brownfield-database 00-setup file (justified by W-002 cross-test symmetry), docs/reference/testing/keystone-e2e-tests.md, and .planwerk/ records — no operator code, helm chart, or deploy/kind/ changes", "checked": true},
+    {"item": "Test design unchanged: brownfield mode, opt-out per-test namespace, manual fernet rotation Job — all the original architectural decisions still stand and are documented in the file headers", "checked": true},
+    {"item": "Policy ConfigMap fixture follows the established mirror pattern from tests/e2e/keystone/policy-overrides/", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "Policy ConfigMap fixture mirrors the existing policy-overrides reference rather than introducing a new pattern", "checked": true},
+    {"item": "cleanupPolicy: Skip applied symmetrically to all User+Grant CRs that manage the canonical 'keystone' MariaDB user across both tests", "checked": true},
+    {"item": "Function-name anchors replace line-number references uniformly — no leftover :70 / :86 references in scope", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Step 1 still asserts ExternalSecrets reach Ready=True so an ESO sync regression fails before Step 3 (preserved across the diff)", "checked": true},
+    {"item": "Step 4's kubectl delete job uses --wait=true so a half-deleted Job is fully reclaimed before the create — no race", "checked": true},
+    {"item": "Step 5 grep -cF guard with || true so set -e does not abort before the count check (preserved)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Idempotency of manual rotation Job creation: kubectl delete --ignore-not-found=true --wait=true precedes kubectl create job (W-001 fix)", "checked": true},
+    {"item": "Cross-test cleanup race protected: brownfield-database User+Grant CRs now carry cleanupPolicy: Skip so deletion does not strand the canonical user (W-002 fix)", "checked": true},
+    {"item": "Catch blocks on Steps 3-5 unchanged — all kubectl commands still guarded with || true", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Optional: the chainsaw-test.yaml header decisions block (lines 9-55) lists 5 architectural decisions but does not mention the new policyOverrides/policy-CM requirement. Consider adding a sixth bullet so the file header is self-describing without having to read into Step 1's inline comment.",
+    "Optional: the Database CR in tests/e2e/keystone/brownfield-database/00-brownfield-db-setup.yaml does not carry cleanupPolicy: Skip (only User and Grant do). The canonical MariaDB user race is fully covered by the User CR's Skip, but for full symmetry with the new pod-security-restricted test (which sets Skip on all three) and to make the rationale uniform across the fixture, consider adding cleanupPolicy: Skip to the Database too. Defer to follow-up if the database-name divergence (keystone_brownfield vs keystone_pss_restricted) is judged sufficient isolation.",
+    "Optional follow-up (matches the reviewer's I-001 deferral note): when convenient, add minimal catch blocks to Steps 1-2 of chainsaw-test.yaml (last 30 events + ExternalSecret/User/Grant .status). The current diff does not include this per the reviewer's accepted recommendation B, but the suite-wide sweep is worth a single PR across all sibling tests."
+  ],
+  "next_steps": [
+    "Run chainsaw test tests/e2e/keystone/pod-security-restricted locally against a kind cluster brought up via make e2e-up to confirm the policy-validation Job admits under PSS=restricted and Ready=True/AllReady is reached within the 5m budget.",
+    "Run two consecutive make e2e (parallel: 4) runs and confirm no new flakes — particularly attention to the brownfield-database / pod-security-restricted pair now sharing the canonical 'keystone' MariaDB user with cleanupPolicy: Skip on both sides.",
+    "Update PR description with negative-test sanity check evidence per REQ-010 (temporarily strip restrictedSecurityContext() from one reconciler and observe the FailedCreate event with 'violates PodSecurity \"restricted:latest\"')."
+  ],
+  "detected_patterns": []
+}

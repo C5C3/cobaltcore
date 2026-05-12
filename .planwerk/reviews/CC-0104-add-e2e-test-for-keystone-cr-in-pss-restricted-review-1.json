@@ -1,0 +1,77 @@
+{
+  "summary": "Adds a Chainsaw E2E test (tests/e2e/keystone/pod-security-restricted/) that proves the full Keystone workload — API Deployment, bootstrap Job, db-sync Job, policy-validation Job, and a manually-triggered fernet-rotation Job — admits cleanly into a `pod-security.kubernetes.io/enforce=restricted` namespace. Implementation comprises 4 YAML fixtures (00-namespace.yaml with PSS labels + plain Secrets, 00-brownfield-db-setup.yaml with MariaDB Database/User/Grant, 01-keystone-cr.yaml with brownfield database+cache wiring, chainsaw-test.yaml with 5 ordered steps including catch blocks) and a comprehensive new section in docs/reference/testing/keystone-e2e-tests.md (inventory grid, inventory-table row, full per-test section with design-note rationale and cross-references). No changes to operator code, Helm chart, or deploy/kind/. The test correctly opts out of Chainsaw's per-test namespace plumbing via spec.namespace: \"\", asserts Ready=True/AllReady, asserts zero `FailedCreate` events containing `violates PodSecurity \"restricted:latest\"`, and uses unique resource-name prefix `keystone-pss-restricted-` to avoid collisions under parallel:4.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "All 4 required test files exist (chainsaw-test.yaml, 00-namespace.yaml, 00-brownfield-db-setup.yaml, 01-keystone-cr.yaml)", "checked": true},
+    {"item": "Namespace fixture carries both pod-security.kubernetes.io/enforce=restricted AND pod-security.kubernetes.io/enforce-version=latest labels", "checked": true},
+    {"item": "chainsaw-test.yaml has spec.namespace: \"\" so chainsaw does not generate an unlabelled per-test namespace", "checked": true},
+    {"item": "Keystone CR uses brownfield mode (database.host + cache.servers); no clusterRef field", "checked": true},
+    {"item": "Test asserts Ready=True with reason AllReady within spec.timeouts.assert: 5m", "checked": true},
+    {"item": "Manual Fernet rotation Job triggered via kubectl create job --from=cronjob/...-fernet-rotate, with kubectl wait --for=condition=complete --timeout=2m and status.succeeded > 0 check", "checked": true},
+    {"item": "Zero events with reason=FailedCreate AND message containing `violates PodSecurity \"restricted:latest\"` (grep -cF, exact literal needle)", "checked": true},
+    {"item": "Catch blocks present on Steps 3-5, surfacing pod securityContext, sorted events, Job pod logs (current + previous), and Job describe; every command guarded with `|| true`", "checked": true},
+    {"item": "Step 4 and Step 5 try-script blocks declare shell: bash and use set -euo pipefail (chainsaw default sh would reject pipefail)", "checked": true},
+    {"item": "Live-cluster verification (chainsaw test, full make e2e parallel:4, negative-test sanity strip of restrictedSecurityContext) — cannot be executed in this sandbox; reported as deferred", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing chainsaw test suite structure pattern (SPDX header, REQ-IDs in comment block, JMESPath filter assertions, numbered Step comments)", "checked": true},
+    {"item": "Resource names prefixed `keystone-pss-restricted-` everywhere (CR, Database/User/Grant, Job, Secret) to avoid collisions under parallel:4", "checked": true},
+    {"item": "TEST-ONLY hardcoded passwords clearly labelled inline; companion-Secret password parity is documented", "checked": true},
+    {"item": "docs/reference/testing/keystone-e2e-tests.md inventory grid + per-test section + file-layout block all updated with the new test", "checked": true},
+    {"item": "Decision-style comment headers in chainsaw-test.yaml and per-fixture files explain pinned-namespace, brownfield-mode, manual-rotation, and zero-violation-scan rationale", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "TEST-ONLY hardcoded passwords are deterministic 32-char hex strings, scoped to a disposable namespace, and explicitly labelled as TEST-ONLY in three places (00-namespace.yaml comments, 00-brownfield-db-setup.yaml comment, 01-keystone-cr.yaml docstring)", "checked": true},
+    {"item": "No real secrets committed; no real OpenBao paths overloaded (the test uses pre-baked plain Secrets specifically to avoid OpenBao policy work)", "checked": true},
+    {"item": "PushSecret backup paths inherit the unique CR name `keystone-pss-restricted`, so `kv-v2/openstack/keystone/keystone-pss-restricted/{fernet,credential}-keys` cannot collide with sibling tests; existing push-keystone-keys policy already covers the wildcard (no policy change needed)", "checked": true},
+    {"item": "kubectl exec / sh -c interpolation review N/A — test fixtures only run kubectl get / wait / create / describe; no secret values are passed via command-line arguments", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is the simplest possible — a single Chainsaw test directory with 4 files; no operator code changes, no chart changes, no deploy/kind/ changes", "checked": true},
+    {"item": "Brownfield-mode wiring is correctly chosen (the only path that reaches openstack/openstack-db from a CR in keystone-pss-restricted-test without duplicating MariaDB CRs into the test namespace, since mariaDbRef is a LocalObjectReference)", "checked": true},
+    {"item": "Pinned-namespace pattern (spec.namespace: \"\") is the correct mechanism for owning the labelled namespace — Chainsaw's per-test namespace plumbing would otherwise create an unlabelled chainsaw-* namespace", "checked": true},
+    {"item": "Credential-rotation and trust-flush CronJobs are not separately exercised — they share restrictedSecurityContext() with fernet-rotate, so a single manual rotation Job is sufficient to prove the helper-vs-PSS contract for all CronJob-driven Pods (rationale documented in design notes)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated logic — fixtures mirror the brownfield-database test's shape rather than introducing new abstractions", "checked": true},
+    {"item": "No unused fixtures or unreferenced helper files", "checked": true},
+    {"item": "No future-proofing beyond the explicit Definition of Done", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Step 1 asserts the PSS labels on the namespace before any Pod is created — a typo on the label would surface here, not later as a confusing reconciler-failure timeout", "checked": true},
+    {"item": "Step 4 uses set -euo pipefail and a defensive `[ \"${SUCCEEDED:-0}\" -lt 1 ]` check after kubectl wait, so a Job that completes with succeeded=0 still fails the step", "checked": true},
+    {"item": "Step 5 uses `grep -cF \"$NEEDLE\" || true` to guard against grep's exit-code-1 on zero matches under set -e (correctly avoids silent script abort)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Catch blocks guard every kubectl invocation with `|| true` so a missing resource never short-circuits the diagnostic dump", "checked": true},
+    {"item": "Catch blocks dump securityContext via jsonpath rather than full pod YAML (prevents log truncation / line-length issues in CI)", "checked": true},
+    {"item": "Catch blocks dump both current and --previous logs to capture crash-loop diagnostics", "checked": true},
+    {"item": "FailedCreate event scan is namespace-scoped (`-n keystone-pss-restricted-test`) so unrelated FailedCreate events in `openstack` (e.g. from sibling tests under parallel:4) cannot pollute the result", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "DA3 [ASK]",
+      "severity": "MINOR",
+      "description": "The chainsaw-test.yaml comment block (line 16) and the docs/reference/testing/keystone-e2e-tests.md design note (line 676) describe the test's `spec.namespace: \"\"` mechanism as 'mirrors the pinned-namespace pattern from tests/e2e/keystone/namespace-scoped-rbac/'. namespace-scoped-rbac actually pins to an existing namespace (`spec.namespace: openstack` at chainsaw-test.yaml:22), which is a conceptually different mechanism: the pod-security-restricted test OPTS OUT of Chainsaw's per-test namespace plumbing entirely, while namespace-scoped-rbac pins to a pre-existing namespace. Both achieve 'do not create chainsaw-* per-test namespace', but the underlying mechanism differs. The parenthetical '(which pins to `openstack`)' partially disambiguates, but a careful reader could be misled into thinking spec.namespace: \"\" pins to a namespace.",
+      "location": "tests/e2e/keystone/pod-security-restricted/chainsaw-test.yaml:11-17, docs/reference/testing/keystone-e2e-tests.md:671-676",
+      "fix": "Reword the cross-reference to clarify the difference. Suggested wording: 'Mirrors the namespace-management approach from `tests/e2e/keystone/namespace-scoped-rbac/` (which pins `spec.namespace: openstack`); this test opts out entirely with `spec.namespace: \"\"` and applies its own labelled namespace.' Apply both in chainsaw-test.yaml and in the docs design notes.",
+      "evidence": "chainsaw-test.yaml line 11: '#   - Pinned namespace (`spec.namespace: \"\"`): Chainsaw's per-test namespace' — the mechanism is opt-out, not pinning. namespace-scoped-rbac/chainsaw-test.yaml:22 actually has `namespace: openstack`, not `namespace: \"\"`.",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider parameterising the namespace name (`keystone-pss-restricted-test`) and CR name (`keystone-pss-restricted`) via Chainsaw `bindings:` if the same fixture shape is reused for an audit-/warn-level PSS variant in a future ticket. Out of scope for CC-0104.",
+    "If a future change adds a new CronJob that produces a uniquely-shaped Pod spec (i.e. not covered by the existing restrictedSecurityContext() helper-vs-PSS contract), extend Step 4 to manually trigger that Job too, or add a sibling Step 4b. Currently the design note explains why fernet-rotate alone is sufficient, which is accurate today.",
+    "The negative-test sanity check (REQ-010) is a manual workflow that cannot be automated cheaply (it requires rebuilding the operator image with restrictedSecurityContext() stripped). When opening the PR, capture the observation in the PR description with a quoted FailedCreate event so the regression-net property is documented end-to-end.",
+    "Live-cluster verification (chainsaw test + two consecutive `make e2e` parallel:4 runs) is required before merge per the Definition of Done; this sandbox cannot run those (no docker/cluster). Plan to re-run review after live-cluster runs are available."
+  ],
+  "next_steps": [
+    "Run `chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/keystone/pod-security-restricted/` against a kind cluster brought up via `make e2e-up` and confirm Ready=True, manual rotation succeeded, zero PSS-violation events, total wall-clock < 5m.",
+    "Run `make e2e` (parallel:4) twice consecutively; confirm zero new flakes and the new test name appears in `_output/reports/chainsaw-report-*.xml`.",
+    "Perform the negative-test sanity check (REQ-010) on a local working copy: temporarily strip restrictedSecurityContext() from one reconciler call site (e.g. reconcile_fernet.go:315), rebuild the operator image, re-run the test, observe FailedCreate event with `violates PodSecurity \"restricted:latest\"`. Revert before opening the PR. Quote the captured event in the PR description.",
+    "Optional: tighten the cross-reference wording flagged in DA3 (chainsaw-test.yaml:11-17 and docs:671-676) to clarify opt-out vs. pin distinction. Low priority — does not block merge."
+  ],
+  "detected_patterns": []
+}

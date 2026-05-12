@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Test namespace + ExternalSecrets fixture for the PSS-restricted E2E test
+# (CC-0104, REQ-001, REQ-003).
+#
+# The namespace carries both `pod-security.kubernetes.io/enforce=restricted`
+# AND `pod-security.kubernetes.io/enforce-version=latest`. Without the
+# version label, kube-apiserver pins to the cluster's current PSS baseline,
+# which can drift on cluster upgrade and surface as a spurious failure;
+# `latest` tracks the newest baseline and is the regression net we want.
+#
+# `keystone-admin` and `keystone-db` are ESO-managed: the operator's
+# `reconcileSecrets` gates SecretsReady on its `WaitForExternalSecret` calls
+# (operators/keystone/internal/controller/reconcile_secrets.go), so plain
+# Secrets — even with all required keys — leave the CR stuck at
+# SecretsReady=False/WaitingForDBCredentials and never reach Ready=True. The
+# ExternalSecrets pull from the same OpenBao paths the in-cluster
+# `openstack` namespace uses (`bootstrap/keystone-admin` and
+# `openstack/keystone/db`), reusing the canonical `keystone` MariaDB user
+# that brownfield-database (tests/e2e/keystone/brownfield-database) also
+# uses; the `eso-management` policy
+# (deploy/openbao/policies/eso-management.hcl) already grants read access to
+# both paths, so no new OpenBao policy work is required.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: keystone-pss-restricted-test
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: keystone-admin
+  namespace: keystone-pss-restricted-test
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: openbao-cluster-store
+    kind: ClusterSecretStore
+  target:
+    name: keystone-admin
+    creationPolicy: Owner
+  data:
+  - secretKey: password
+    remoteRef:
+      key: bootstrap/keystone-admin
+      property: password
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: keystone-db
+  namespace: keystone-pss-restricted-test
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: openbao-cluster-store
+    kind: ClusterSecretStore
+  target:
+    name: keystone-db
+    creationPolicy: Owner
+  data:
+  - secretKey: username
+    remoteRef:
+      key: openstack/keystone/db
+      property: username
+  - secretKey: password
+    remoteRef:
+      key: openstack/keystone/db
+      property: password

@@ -1,0 +1,339 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for Keystone CR reconciling under restricted PodSecurity
+# (CC-0104, parent: #317, parent-of-parent: #277 Phase 1 — security/compliance
+# baseline).
+#
+# Decisions worth knowing before reading the steps:
+#
+#   - Opt-out from per-test namespace (`spec.namespace: ""`): Chainsaw's
+#     per-test namespace plumbing creates a chainsaw-* namespace WITHOUT PSS
+#     labels. To exercise restricted-profile admission we must own the
+#     namespace, so this test sets `spec.namespace: ""` to OPT OUT of the
+#     plumbing entirely; Chainsaw then creates no namespace and the test
+#     applies its own labelled namespace `keystone-pss-restricted-test` from
+#     00-namespace.yaml. This is a different mechanism from
+#     `tests/e2e/keystone/namespace-scoped-rbac/`, which sets
+#     `spec.namespace: openstack` to PIN to a pre-existing namespace (Chainsaw
+#     uses, but does not create, that namespace). Both avoid a chainsaw-*
+#     per-test namespace, but the underlying mechanism is different
+#     (opt-out vs. pin-to-existing).
+#
+#   - Brownfield mode (database.host + cache.servers, no clusterRef):
+#     `Database.ClusterRef` / `Cache.ClusterRef` are namespace-local
+#     (`mariaDBResourceKey` in
+#     operators/keystone/internal/controller/reconcile_database.go).
+#     Cross-namespace lookup is not supported, so a CR in
+#     `keystone-pss-restricted-test` cannot reach `openstack/openstack-db`
+#     through clusterRef. Brownfield wiring is the only path that satisfies
+#     the parent issue's "no new infra in deploy/kind/" constraint.
+#
+#   - ESO-managed Secrets (keystone-admin / keystone-db are ExternalSecrets,
+#     not plain Secrets): `reconcileSecrets` gates SecretsReady on the
+#     `WaitForExternalSecret` call in
+#     operators/keystone/internal/controller/reconcile_secrets.go, so
+#     a plain Secret with all required keys still leaves the CR stuck at
+#     SecretsReady=False/WaitingForDBCredentials. The ExternalSecrets pull
+#     from the same OpenBao paths (`bootstrap/keystone-admin`,
+#     `openstack/keystone/db`) the cluster's `openstack` namespace already
+#     uses; the `eso-management` policy
+#     (deploy/openbao/policies/eso-management.hcl) covers both paths so no
+#     new OpenBao policy work is required (REQ-003).
+#
+#   - Manual fernet rotation Job: Ready=True alone does not exercise the
+#     rotation Pod (the CronJob has not fired yet). Step 4 triggers a manual
+#     Job from the CronJob template so the rotation Pod's spec is actually
+#     admitted under PSS. Mirrors the manual-rotate pattern from
+#     `tests/e2e/keystone/fernet-rotation/chainsaw-test.yaml`.
+#
+#   - Zero-PSS-violation event scan (Step 5): the parent controller emits a
+#     `FailedCreate` event with the violation listed verbatim when PSS rejects
+#     a Pod, so a zero-match scan on `violates PodSecurity "restricted:latest"`
+#     is the explicit regression net for any future reconciler that forgets
+#     `restrictedSecurityContext()`.
+#
+#   - Policy-validation Job opt-in (`spec.policyOverrides.configMapRef`):
+#     `reconcilePolicyValidation` short-circuits when `Spec.PolicyOverrides`
+#     is nil, so the policy-validation Pod is never created and its PSS
+#     admission is never tested. To exercise that call site (and keep the
+#     "regression net for any future reconciler that forgets
+#     `restrictedSecurityContext()`" claim honest), Step 1 applies a minimal
+#     policy ConfigMap (00-policy-cm.yaml) and the Keystone CR
+#     (01-keystone-cr.yaml) sets `spec.policyOverrides.configMapRef` to it
+#     (CC-0104, C-001/W-001).
+#
+# REQ-001..REQ-008 (CC-0104)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-pod-security-restricted
+spec:
+  # Disable Chainsaw's per-test namespace plumbing so Pods land in our
+  # PSS-labelled namespace (REQ-001).
+  namespace: ""
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the labelled namespace + ESO ExternalSecrets + policy CM ─
+  # REQ-001, REQ-002, REQ-003. Asserts the PSS enforce label is present so a
+  # mis-typed label would surface here, before any Pod is created. Also
+  # asserts each ExternalSecret reaches Ready=True so a regression that
+  # broke ESO sync would fail here, not deeper in step 3 where the
+  # operator's SecretsReady condition would be the only signal. The policy
+  # source ConfigMap is applied here so it exists before the Keystone CR
+  # references it via `spec.policyOverrides.configMapRef` (Step 3); without
+  # it, `reconcilePolicyValidation` short-circuits and the policy-validation
+  # Pod is never admitted under PSS.
+  - try:
+    - apply:
+        file: 00-namespace.yaml
+    - apply:
+        file: 00-policy-cm.yaml
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: keystone-pss-restricted-test
+            labels:
+              pod-security.kubernetes.io/enforce: restricted
+              pod-security.kubernetes.io/enforce-version: latest
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: keystone-admin
+            namespace: keystone-pss-restricted-test
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: keystone-db
+            namespace: keystone-pss-restricted-test
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: keystone-policy-source
+            namespace: keystone-pss-restricted-test
+  # ── Step 2: Pre-create brownfield MariaDB Database/User/Grant ──────────
+  # REQ-002, REQ-008. Mirrors the brownfield-database test's Step 0 shape;
+  # the CRs live in `openstack` (the MariaDB operator's namespace), not in
+  # the test namespace, because MariaDB CRs reference `openstack-db` via
+  # `mariaDbRef` (LocalObjectReference, same-namespace only). The User CR
+  # manages the canonical `keystone` MariaDB user against the existing
+  # `openstack/keystone-db` Secret (matching brownfield-database) and is
+  # marked `cleanupPolicy: Skip` so this test's User-CR deletion does not
+  # drop the user out from under a sibling brownfield test still running
+  # under `parallel: 4`.
+  - try:
+    - apply:
+        file: 00-brownfield-db-setup.yaml
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: keystone-pss-restricted-db
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: keystone-pss-restricted-user
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: keystone-pss-restricted-grant
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+  # ── Step 3: Apply the Keystone CR, assert Ready=True/AllReady ──────────
+  # REQ-002, REQ-004. The Ready=True signal is the primary end-to-end
+  # gate — every Pod the reconciler creates (API Deployment, bootstrap Job,
+  # db-sync Job, policy-validation Job) must have been admitted under
+  # restricted PSS for the sub-conditions to flip True.
+  #
+  # The trailing `error` assertions enforce the brownfield-mode invariant:
+  # NO Database/User/Grant CR named after the Keystone CR may be created in
+  # the test namespace (mirrors the brownfield-database test).
+  - try:
+    - apply:
+        file: 01-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-pss-restricted
+            namespace: keystone-pss-restricted-test
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: keystone-pss-restricted
+            namespace: keystone-pss-restricted-test
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: keystone-pss-restricted
+            namespace: keystone-pss-restricted-test
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: keystone-pss-restricted
+            namespace: keystone-pss-restricted-test
+    catch:
+    - script:
+        content: |
+          NS=keystone-pss-restricted-test
+          echo "=== Pod securityContext (CR namespace) ==="
+          kubectl get pods -n "$NS" \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.securityContext}{"\t"}{.spec.containers[*].securityContext}{"\n"}{end}' 2>&1 || true
+          echo "=== Sorted events (last 30, CR namespace) ==="
+          kubectl get events -n "$NS" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          echo "=== Bootstrap / db-sync Job pods ==="
+          for pod in $(kubectl get pods -n "$NS" -l job-name -o name 2>/dev/null); do
+            echo "--- $pod logs ---"
+            kubectl logs -n "$NS" "$pod" --all-containers --tail=100 2>&1 || true
+            echo "--- $pod previous logs ---"
+            kubectl logs -n "$NS" "$pod" --all-containers --tail=100 --previous 2>&1 || true
+            echo "--- $pod describe (last 30 lines) ---"
+            kubectl describe -n "$NS" "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Job status (CR namespace) ==="
+          kubectl get jobs -n "$NS" -o wide 2>&1 || true
+  # ── Step 4: Trigger a manual fernet rotation Job ───────────────────────
+  # REQ-005. Reaching Ready=True does not exercise the rotation Pod (the
+  # CronJob's first scheduled run is at midnight Sunday). To prove the
+  # rotation Pod also admits under restricted PSS we create a one-shot Job
+  # from the CronJob template and wait for completion. The 2m timeout is
+  # the budget for Job admission + execution; the rotation is short.
+  - try:
+    - script:
+        timeout: 180s
+        shell: bash
+        content: |
+          set -euo pipefail
+          NS=keystone-pss-restricted-test
+          JOB=keystone-pss-restricted-manual-rotate
+          CRONJOB=keystone-pss-restricted-fernet-rotate
+
+          # Idempotency: `kubectl create job` is unconditional, so a re-run
+          # within the same chainsaw invocation (retry, second-pass, etc.)
+          # would fail with AlreadyExists and abort under `set -e`. Delete
+          # any leftover Job first so REQ-005's idempotency requirement
+          # holds (CC-0104, W-001).
+          kubectl delete job "$JOB" -n "$NS" --ignore-not-found=true --wait=true
+          kubectl create job "$JOB" --from="cronjob/$CRONJOB" -n "$NS"
+          kubectl wait --for=condition=complete \
+            "job/$JOB" -n "$NS" --timeout=2m
+          SUCCEEDED=$(kubectl get job "$JOB" -n "$NS" \
+            -o jsonpath='{.status.succeeded}')
+          if [ "${SUCCEEDED:-0}" -lt 1 ]; then
+            echo "ERROR: manual rotation Job $JOB did not reach succeeded > 0 (got: ${SUCCEEDED:-0})"
+            exit 1
+          fi
+          echo "OK: manual rotation Job $JOB completed (succeeded=$SUCCEEDED)"
+    catch:
+    - script:
+        content: |
+          NS=keystone-pss-restricted-test
+          JOB=keystone-pss-restricted-manual-rotate
+          echo "=== Pod securityContext (CR namespace) ==="
+          kubectl get pods -n "$NS" \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.securityContext}{"\t"}{.spec.containers[*].securityContext}{"\n"}{end}' 2>&1 || true
+          echo "=== Sorted events (last 30, CR namespace) ==="
+          kubectl get events -n "$NS" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          echo "=== Manual rotation Job describe ==="
+          kubectl describe job/"$JOB" -n "$NS" 2>&1 || true
+          echo "=== Manual rotation Job pods ==="
+          kubectl get pods -n "$NS" -l "job-name=$JOB" -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n "$NS" -l "job-name=$JOB" -o name 2>/dev/null); do
+            echo "--- $pod logs ---"
+            kubectl logs -n "$NS" "$pod" --all-containers --tail=100 2>&1 || true
+            echo "--- $pod previous logs ---"
+            kubectl logs -n "$NS" "$pod" --all-containers --tail=100 --previous 2>&1 || true
+            echo "--- $pod describe (last 30 lines) ---"
+            kubectl describe -n "$NS" "$pod" 2>&1 | tail -30 || true
+          done
+  # ── Step 5: Assert zero PSS-violation FailedCreate events ──────────────
+  # REQ-006. PSS admission rejection emits a `FailedCreate` event on the
+  # Pod's parent (Deployment/Job/CronJob) with the violation listed
+  # verbatim. A zero-match scan on `violates PodSecurity "restricted:latest"`
+  # is the explicit regression net for any future reconciler that forgets
+  # `restrictedSecurityContext()`. The scan is scoped to the test namespace
+  # so unrelated FailedCreate events in `openstack` are not picked up.
+  - try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          NS=keystone-pss-restricted-test
+          NEEDLE='violates PodSecurity "restricted:latest"'
+
+          MSGS=$(kubectl get events -n "$NS" \
+            --field-selector reason=FailedCreate \
+            -o jsonpath='{range .items[*]}{.message}{"\n"}{end}')
+          # grep -c returns 1 when zero matches; guard with `|| true` so
+          # `set -e` does not abort before the count check runs.
+          COUNT=$(printf '%s\n' "$MSGS" | grep -cF "$NEEDLE" || true)
+          if [ "$COUNT" -ne 0 ]; then
+            echo "FAIL: $COUNT FailedCreate event(s) carry the PSS-restricted violation:"
+            printf '%s\n' "$MSGS" | grep -F "$NEEDLE" || true
+            exit 1
+          fi
+          echo "OK: zero PSS-restricted FailedCreate events in $NS"
+    catch:
+    - script:
+        content: |
+          NS=keystone-pss-restricted-test
+          echo "=== Pod securityContext (CR namespace) ==="
+          kubectl get pods -n "$NS" \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.securityContext}{"\t"}{.spec.containers[*].securityContext}{"\n"}{end}' 2>&1 || true
+          echo "=== All FailedCreate events (CR namespace) ==="
+          kubectl get events -n "$NS" --field-selector reason=FailedCreate \
+            -o custom-columns=LAST:.lastTimestamp,OBJ:.involvedObject.kind/.involvedObject.name,MSG:.message 2>&1 || true
+          echo "=== Sorted events (last 30, CR namespace) ==="
+          kubectl get events -n "$NS" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          echo "=== Job status (CR namespace) ==="
+          kubectl get jobs -n "$NS" -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n "$NS" -l job-name -o name 2>/dev/null); do
+            echo "--- $pod logs ---"
+            kubectl logs -n "$NS" "$pod" --all-containers --tail=100 2>&1 || true
+            echo "--- $pod previous logs ---"
+            kubectl logs -n "$NS" "$pod" --all-containers --tail=100 --previous 2>&1 || true
+            echo "--- $pod describe (last 30 lines) ---"
+            kubectl describe -n "$NS" "$pod" 2>&1 | tail -30 || true
+          done

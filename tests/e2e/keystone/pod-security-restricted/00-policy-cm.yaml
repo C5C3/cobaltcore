@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Policy source ConfigMap for the PSS-restricted E2E test (CC-0104, REQ-002).
+#
+# Without `spec.policyOverrides` on the Keystone CR, `reconcilePolicyValidation`
+# short-circuits and the policy-validation Job is never created. To exercise
+# `buildPolicyValidationJob`'s call to `restrictedSecurityContext()` under
+# PSS=restricted admission, we point the CR at this ConfigMap so the
+# validation Job is built and admitted in the test namespace.
+#
+# Mirrors `tests/e2e/keystone/policy-overrides/00-policy-cm.yaml`. The
+# ConfigMap lives in the test namespace (not `openstack`) because the Keystone
+# CR resolves `policyOverrides.configMapRef` from its own namespace.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keystone-policy-source
+  namespace: keystone-pss-restricted-test
+data:
+  policy.yaml: |
+    "identity:list_users": "role:admin"
+    "identity:get_user": "role:admin or user_id:%(target.user.id)s"
+    "identity:create_project": "role:admin"

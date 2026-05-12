@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Brownfield MariaDB Database/User/Grant pre-creation for the PSS-restricted
+# E2E test (CC-0104, REQ-002, REQ-003, REQ-008).
+#
+# The Keystone CR lives in the labelled `keystone-pss-restricted-test`
+# namespace, but `Database.ClusterRef` / `Cache.ClusterRef` are
+# `LocalObjectReference` and `mariaDBResourceKey`
+# (operators/keystone/internal/controller/reconcile_database.go) only looks up
+# MariaDB CRs in the Keystone CR's own namespace —
+# cross-namespace lookup is not supported. To reach the cluster's existing
+# `openstack/openstack-db` without copying MariaDB CRs into the test
+# namespace, the test uses brownfield mode (database.host + cache.servers)
+# and pre-creates the Database/User/Grant CRs here, in `openstack`.
+#
+# The User CR manages the canonical `keystone` MariaDB user against the
+# existing `openstack/keystone-db` Secret (synced from OpenBao by the
+# cluster's `keystone-db` ExternalSecret). Reusing that user matches the
+# brownfield-database fixture (tests/e2e/keystone/brownfield-database) and
+# means both tests reconcile to the same SET PASSWORD on the same MariaDB
+# user with the same password value (no race). `cleanupPolicy: Skip`
+# keeps the user alive when this test's User CR is deleted, so a sibling
+# test still managing the same user (e.g. brownfield-database) is not
+# stranded mid-flight (REQ-008).
+#
+# All resource names are prefixed `keystone-pss-restricted-` and the
+# database name is `keystone_pss_restricted` so this fixture cannot collide
+# with sibling tests under `parallel: 4` (REQ-008). The Grant scopes
+# `keystone` user's privileges to the test-only `keystone_pss_restricted`
+# database, isolating PSS test data from other brownfield-mode tests that
+# share the same canonical user.
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: Database
+metadata:
+  name: keystone-pss-restricted-db
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  cleanupPolicy: Skip
+  characterSet: utf8
+  collate: utf8_general_ci
+  name: keystone_pss_restricted
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: User
+metadata:
+  name: keystone-pss-restricted-user
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  cleanupPolicy: Skip
+  name: keystone
+  passwordSecretKeyRef:
+    name: keystone-db
+    key: password
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: Grant
+metadata:
+  name: keystone-pss-restricted-grant
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  cleanupPolicy: Skip
+  privileges:
+  - "ALL PRIVILEGES"
+  database: keystone_pss_restricted
+  table: "*"
+  username: keystone

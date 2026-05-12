@@ -1,0 +1,64 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR fixture for the PSS-restricted E2E test (CC-0104, REQ-002).
+#
+# Brownfield mode (database.host + cache.servers, no `clusterRef`): the CR
+# lives in the labelled `keystone-pss-restricted-test` namespace, but
+# `Database.ClusterRef` / `Cache.ClusterRef` are namespace-local
+# (`mariaDBResourceKey` in
+# operators/keystone/internal/controller/reconcile_database.go looks up the
+# MariaDB CR in `keystone.Namespace`). Brownfield wiring is the only path that reaches
+# the existing `openstack/openstack-db` and `openstack/openstack-memcached`
+# from this namespace without duplicating MariaDB / Memcached CRs.
+#
+# Database/User/Grant for `keystone_pss_restricted` are pre-created in the
+# openstack namespace by 00-brownfield-db-setup.yaml. The bootstrap admin
+# password and the database credentials are synced into this namespace by
+# the ExternalSecrets in 00-namespace.yaml (the operator's reconcileSecrets
+# gates SecretsReady on a WaitForExternalSecret call, so plain Secrets would
+# never satisfy the gate).
+#
+# `replicas: 1` keeps the test inside the suite's 5-minute assert budget;
+# the regression net we want is "every Pod the operator creates admits
+# under PSS=restricted", which a single replica is sufficient to prove
+# (the rotation Pod is exercised separately via a manual Job).
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-pss-restricted
+  namespace: keystone-pss-restricted-test
+spec:
+  replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    host: openstack-db.openstack.svc.cluster.local
+    port: 3306
+    database: keystone_pss_restricted
+    secretRef:
+      name: keystone-db
+  cache:
+    backend: dogpile.cache.pymemcache
+    servers:
+    - "openstack-memcached.openstack.svc:11211"
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
+  # `policyOverrides.configMapRef` makes `reconcilePolicyValidation` build a
+  # validation Job (operators/keystone/internal/controller/reconcile_policyvalidation.go,
+  # `buildPolicyValidationJob`). Without this field the reconciler short-circuits
+  # and the policy-validation Pod is never admitted, leaving
+  # `restrictedSecurityContext()` on that Pod uncovered by this regression net.
+  # The ConfigMap is pre-applied by 00-policy-cm.yaml in this same namespace
+  # (CC-0104).
+  policyOverrides:
+    configMapRef:
+      name: keystone-policy-source

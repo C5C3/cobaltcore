@@ -52,23 +52,28 @@ namespace, enabling parallel execution.
 │  │                   │  │  rbac             │  │                       │   │
 │  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
 │  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ policy-overrides  │  │ policy-validation │  │ priority-class        │   │
+│  │ pod-security-     │  │ policy-overrides  │  │ policy-validation     │   │
+│  │  restricted       │  │                   │  │                       │   │
+│  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
+│  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
+│  │ priority-class    │  │ release-upgrade   │  │ resources             │   │
 │  │                   │  │                   │  │                       │   │
 │  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
 │  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ release-upgrade   │  │ resources         │  │ scale                 │   │
-│  │                   │  │                   │  │                       │   │
+│  │ scale             │  │ schema-drift-     │  │ topology-spread       │   │
+│  │                   │  │  detection        │  │                       │   │
 │  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
 │  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ schema-drift-     │  │ topology-spread   │  │ trust-flush           │   │
-│  │  detection        │  │                   │  │                       │   │
+│  │ trust-flush       │  │ trust-flush-      │  │ upgrade-flow          │   │
+│  │                   │  │  default          │  │                       │   │
 │  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
-│  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ trust-flush-      │  │ upgrade-flow      │  │ uwsgi                 │   │
-│  │  default          │  │                   │  │                       │   │
-│  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
+│  ┌───────────────────┐                                                     │
+│  │ uwsgi             │                                                     │
+│  │                   │                                                     │
+│  └───────────────────┘                                                     │
 │                                                                            │
-│  All tests run in: namespace openstack                                     │
+│  Most tests run in: namespace openstack                                    │
+│  pod-security-restricted: own namespace keystone-pss-restricted-test       │
 │  Infrastructure: MariaDB, Memcached, ESO, OpenBao (pre-deployed)           │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -144,6 +149,7 @@ Deployment rollout, bootstrap Job).
 | [schema-drift-detection](#schema-drift-detection) | `keystone-schema-drift` | `DatabaseReady=True` with message "revision verified"; schema-check Job runs and completes |
 | [semantic-invariants](#semantic-invariants) | `keystone-invariants` | `status.endpoint` URL format, `ownerReferences` fan-out, `observedGeneration` tracking, `lastTransitionTime` monotonicity, ConfigMap immutability |
 | [topology-spread](#topology-spread) | `keystone-tsc` | `spec.topologySpreadConstraints`: `nil` injects 2 defaults; non-empty slice passes through verbatim; `[]` disables all constraints |
+| [pod-security-restricted](#pod-security-restricted) | `keystone-pss-restricted` | Reconciliation reaches Ready=True/AllReady inside a `pod-security.kubernetes.io/enforce=restricted` namespace; every Pod the reconciler creates (API Deployment, bootstrap Job, db-sync Job, policy-validation Job, manually-triggered fernet-rotation Job) admits under PSS Restricted; zero `FailedCreate` events carry the literal violation `violates PodSecurity "restricted:latest"` |
 
 ---
 
@@ -662,6 +668,119 @@ an empty slice explicitly disables all constraints.
 
 ---
 
+### pod-security-restricted
+
+**File:** `tests/e2e/keystone/pod-security-restricted/chainsaw-test.yaml`
+
+**Purpose:** Validates that the Keystone reconciler admits its full workload — API
+Deployment, bootstrap Job, db-sync Job, policy-validation Job, and the
+fernet-rotation Pod — into a namespace labelled with
+`pod-security.kubernetes.io/enforce=restricted`. The test asserts Ready=True/AllReady
+within the 5-minute budget AND zero `FailedCreate` events carry the literal violation
+`violates PodSecurity "restricted:latest"`. This is the executable regression net for
+any future reconciler that forgets `restrictedSecurityContext()` — a unit-level test
+exists in `security_context_test.go`, but only this E2E proves the helper is wired
+into every Pod-creating reconciler call site.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply labelled namespace + ESO ExternalSecrets + policy CM | `apply` × 2 + 4× `assert` | Applies `00-namespace.yaml` — Namespace `keystone-pss-restricted-test` with **both** `pod-security.kubernetes.io/enforce=restricted` AND `pod-security.kubernetes.io/enforce-version=latest` labels, plus ExternalSecrets `keystone-admin` (pulls `bootstrap/keystone-admin` from OpenBao) and `keystone-db` (pulls `openstack/keystone/db` — username + password). Then applies `00-policy-cm.yaml` — ConfigMap `keystone-policy-source` in the test namespace, referenced by the CR's `policyOverrides.configMapRef` so `reconcilePolicyValidation` builds the policy-validation Job (without it the reconciler short-circuits and that Pod is never admitted). Asserts the PSS labels are present so a typo would surface here, before any Pod is created, asserts each ExternalSecret reaches `Ready=True` so an ESO sync regression fails here, not deeper in step 3, and asserts the policy ConfigMap exists. ESO is mandatory because `reconcileSecrets` gates SecretsReady on `WaitForExternalSecret` |
+| 2 | Pre-create brownfield MariaDB Database/User/Grant | `apply` + 3× `assert` (5m) | Applies `00-brownfield-db-setup.yaml` — Database `keystone-pss-restricted-db` (database `keystone_pss_restricted`), User `keystone-pss-restricted-user` (manages canonical MariaDB user `keystone` against the existing `openstack/keystone-db` Secret), Grant `keystone-pss-restricted-grant` (ALL PRIVILEGES on `keystone_pss_restricted` to user `keystone`), all in the `openstack` namespace and all marked `cleanupPolicy: Skip` so deletion of the test's CRs does not strand a sibling brownfield test still managing the same MariaDB user. Asserts each MariaDB CR reaches `Ready=True`. The CRs live in `openstack` because `mariaDbRef` is a `LocalObjectReference` (same-namespace only) |
+| 3 | Apply Keystone CR; assert Ready=True/AllReady; no in-namespace MariaDB CRs | `apply` + `assert` (5m) + 3× `error` | Applies `01-keystone-cr.yaml` — Keystone CR `keystone-pss-restricted` in `keystone-pss-restricted-test` with brownfield database (`host=openstack-db.openstack.svc.cluster.local`, `port=3306`, `database=keystone_pss_restricted`, `secretRef=keystone-db`), brownfield cache (`servers=[openstack-memcached.openstack.svc:11211]`, `backend=dogpile.cache.pymemcache`), and `policyOverrides.configMapRef=keystone-policy-source` so the policy-validation Job is exercised under PSS=restricted. Asserts `Ready=True` with `reason=AllReady` within 5m; error-asserts no `Database`, `User`, or `Grant` CR named `keystone-pss-restricted` exists in the test namespace (brownfield-mode invariant — same as `brownfield-database`) |
+| 4 | Trigger manual fernet rotation Job | `script` (180s) | `kubectl create job keystone-pss-restricted-manual-rotate --from=cronjob/keystone-pss-restricted-fernet-rotate -n keystone-pss-restricted-test`, then `kubectl wait --for=condition=complete job/... --timeout=2m`, then asserts `status.succeeded > 0`. Reaching Ready=True alone does not exercise the rotation Pod (the CronJob's first scheduled run is at midnight Sunday); this step proves the rotation Pod also admits under restricted PSS |
+| 5 | Assert zero PSS-violation `FailedCreate` events | `script` | Captures `kubectl get events -n keystone-pss-restricted-test --field-selector reason=FailedCreate -o jsonpath='{range .items[*]}{.message}{"\n"}{end}'` and counts lines matching the literal `violates PodSecurity "restricted:latest"` via `grep -cF`. Match count must equal 0; on non-zero, the script prints the offending events and exits non-zero |
+
+**Fixtures:** `00-namespace.yaml`, `00-policy-cm.yaml`, `00-brownfield-db-setup.yaml`, `01-keystone-cr.yaml`
+
+**Catch blocks:** Steps 3–5 each carry a `catch` block that dumps (every command
+guarded with `|| true` so a missing resource never short-circuits the dump): Pod
+securityContext extracts (`jsonpath`), the last 30 sorted events in the test
+namespace, bootstrap / db-sync / manual-rotate Job pod logs (current AND
+`--previous`), Job describe output, Job status, and — in Step 5 — the full
+`FailedCreate` event list with `involvedObject.kind/.name` so the offending parent
+Deployment/Job/CronJob is identifiable. Mirrors the catch-block shape from
+[`fernet-rotation`](#fernet-rotation).
+
+**Design notes:**
+
+- **Opt-out from per-test namespace (`spec.namespace: ""`).** Chainsaw's
+  per-test namespace plumbing creates a `chainsaw-*` namespace **without** PSS
+  labels. To exercise restricted-profile admission this test must own the
+  namespace, so `spec.namespace: ""` **opts out** of Chainsaw's plumbing
+  entirely — Chainsaw creates no namespace, and the test applies the labelled
+  namespace from `00-namespace.yaml`. This is a **different mechanism** from
+  [`namespace-scoped-rbac`](#namespace-scoped-rbac), which sets
+  `spec.namespace: openstack` to **pin** to a pre-existing namespace (Chainsaw
+  uses, but does not create, that namespace). Both tests avoid a `chainsaw-*`
+  per-test namespace, but the underlying mechanism differs (opt-out vs.
+  pin-to-existing).
+- **Brownfield mode (no `clusterRef`).** `Database.ClusterRef` and
+  `Cache.ClusterRef` are `LocalObjectReference`s; the reconciler resolves them in
+  the Keystone CR's own namespace and creates Database/User/Grant CRs there too,
+  so a CR in `keystone-pss-restricted-test` cannot reach
+  `openstack/openstack-db` through `clusterRef`. Brownfield wiring
+  (`database.host` + `cache.servers`) is therefore the **only** path that
+  satisfies the parent issue's "no new infra in `deploy/kind/`" constraint.
+  Mirrors [`brownfield-database`](#brownfield-database) for the no-MariaDB-CRs
+  invariant.
+- **PSS label shape: `enforce-version=latest`.** Without the version label the
+  apiserver pins to the cluster's current Kubernetes version, which can cause
+  spurious failures when the cluster image is upgraded. Pinning to `latest`
+  tracks the newest baseline — the regression net we actually want.
+- **Manual fernet-rotation Job.** Ready=True alone does not cover the rotation
+  Pod (the CronJob has not fired yet). Step 4 triggers a one-shot Job from the
+  CronJob template so the rotation Pod's spec is actually admitted under PSS.
+  The credential-rotation and trust-flush CronJobs are **not** triggered here:
+  their Pod specs use the same `restrictedSecurityContext()` helper, so a single
+  rotation trigger is sufficient to prove the helper-vs-PSS contract for all
+  CronJob-driven Pods. A future reconciler that introduces a *new* unique Pod
+  spec is caught on first reconcile by Step 3's Ready=True assertion.
+- **Test secrets are ESO-managed ExternalSecrets, not plain Secrets.**
+  `reconcileSecrets` gates SecretsReady on its `WaitForExternalSecret` calls
+  in `operators/keystone/internal/controller/reconcile_secrets.go`, so a plain
+  Secret with all required keys still leaves the CR stuck at
+  SecretsReady=False/WaitingForDBCredentials. The
+  ExternalSecrets in `00-namespace.yaml` reuse the cluster's existing OpenBao
+  paths (`bootstrap/keystone-admin` and `openstack/keystone/db`) — the
+  `eso-management` policy
+  (`deploy/openbao/policies/eso-management.hcl`) already grants read access to
+  both, so no new OpenBao policy work is needed. Reusing
+  `openstack/keystone/db` (whose `username` is `keystone`) is what drives the
+  fixture's choice of canonical user `keystone` in 00-brownfield-db-setup.yaml.
+- **Unique resource-name and database-name prefix.** Brownfield Database/User/Grant
+  CRs land in the shared `openstack` namespace alongside `brownfield-database`'s
+  `keystone-brownfield-*` CRs. The `keystone-pss-restricted-` prefix and
+  `keystone_pss_restricted` database name guarantee no collisions under
+  `parallel: 4`.
+- **PushSecret backup paths.** Per-CR fernet/credential PushSecrets push to
+  `kv-v2/openstack/keystone/<CR-name>/{fernet,credential}-keys`; the unique CR
+  name `keystone-pss-restricted` keeps these paths distinct from sibling tests.
+  The existing `push-keystone-keys` OpenBao policy already covers the wildcard,
+  so no policy change is needed.
+
+**Cross-references:**
+
+- Feature: **CC-0104** (this test).
+- Parent issue: **#317** — PSS-restricted admission gate for Keystone.
+- Phase 1 baseline: **#277** — security/compliance baseline. The Keystone
+  unit-test evidence for `restrictedSecurityContext()` lives in
+  `operators/keystone/internal/controller/security_context_test.go`; this E2E
+  closes the loop with an executable check against a real apiserver.
+- Helper definition: `operators/keystone/internal/controller/security_context.go`.
+- Reconciler architecture and helper call sites:
+  [Keystone Reconciler Architecture](../keystone/keystone-reconciler.md).
+- Sibling E2E patterns reused:
+  [`brownfield-database`](#brownfield-database) (brownfield-mode invariant),
+  [`fernet-rotation`](#fernet-rotation) (manual rotation + catch shape).
+  Related but **not** reused (different mechanism, see design note above):
+  [`namespace-scoped-rbac`](#namespace-scoped-rbac) pins to a pre-existing
+  namespace via `spec.namespace: openstack`; this test opts out via
+  `spec.namespace: ""`.
+
+---
+
 ## Assertion Patterns
 
 The test suites use three Chainsaw assertion patterns:
@@ -836,6 +955,11 @@ tests/e2e/keystone/
 │   ├── 00-keystone-cr.yaml             Keystone CR with ingress policy
 │   ├── 01-patch-update-ingress.yaml    Patch ingress rule
 │   └── 02-patch-disable-networkpolicy.yaml Patch to disable NetworkPolicy
+├── pod-security-restricted/
+│   ├── chainsaw-test.yaml              PSS-restricted admission gate (CC-0104)
+│   ├── 00-namespace.yaml               PSS-labelled test namespace + plain Secrets
+│   ├── 00-brownfield-db-setup.yaml     Brownfield Database/User/Grant + db-pw Secret
+│   └── 01-keystone-cr.yaml             Keystone CR with brownfield db + cache
 ├── policy-overrides/
 │   ├── chainsaw-test.yaml              oslo.policy integration
 │   ├── 00-policy-cm.yaml               Policy source ConfigMap

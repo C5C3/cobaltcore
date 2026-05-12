@@ -2,8 +2,8 @@
   "feature_id": "CC-0104",
   "title": "Add e2e test for Keystone CR in PSS-restricted namespace",
   "slug": "add-e2e-test-for-keystone-cr-in-pss-restricted",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #317: test(e2e): Reconcile Keystone CR in PSS-restricted namespace (#277 Phase 1)\n\n## Context\n\nParent: #277, Phase 1 → *Security / compliance baseline*.\n\nThe operator already builds restricted PodSecurityContexts everywhere it spawns a Pod —\n`operators/keystone/internal/controller/security_context.go:21` (`restrictedSecurityContext`)\nis referenced from:\n\n- `reconcile_deployment.go:174` (Keystone API Deployment)\n- `reconcile_bootstrap.go:157` (bootstrap Job)\n- `reconcile_database.go:806` (db-sync, db-expand, db-migrate, schema-check Jobs)\n- `reconcile_fernet.go:315/328` (rotation init/main containers)\n- `reconcile_credential.go:318/331` (rotation init/main containers)\n- `reconcile_trustflush.go:124` (trust flush CronJob)\n- `reconcile_policyvalidation.go:174` (policy validation Job)\n\nThe chart's operator pod itself sets pod- and container-level restricted contexts in\n`helm/keystone-operator/templates/deployment.yaml` (lines 22-27 and 67-78). Unit tests\n(`security_context_test.go`, `reconcile_bootstrap_test.go:319`,\n`reconcile_fernet_test.go:558`, `reconcile_credential_test.go:565`) verify each call site.\n\nWhat's missing: an end-to-end gate that proves the **whole** workload — operator + Keystone API\n+ every Job and CronJob — admits cleanly into a namespace labelled\n`pod-security.kubernetes.io/enforce=restricted`. A regression where any future reconciler\nforgets `restrictedSecurityContext()` would be caught by the API server's PSS admission, but\nonly if exercised at this enforcement level, which today's tests do not do.\n\n## Scope — new test\n\nA single Chainsaw test directory: `tests/e2e/keystone/pod-security-restricted/`.\n\nScenario:\n\n1. Create a fresh test namespace labelled `pod-security.kubernetes.io/enforce=restricted, pod-security.kubernetes.io/enforce-version=latest`.\n2. Apply a Keystone CR using the basic-deployment fixture, with `database.clusterRef` and `cache.clusterRef` pointing at the existing `openstack-db` / `openstack-memcached` (which already live in the `openstack` namespace and are unaffected by the new namespace's PSS label).\n3. Trigger one Fernet rotation manually (`kubectl create job --from=cronjob/<name>-fernet-rotation manual-rotation -n <test-ns>`) so the rotation Pod is exercised under the restricted policy, not just the API Deployment.\n\nAssertion:\n\n- `(conditions[?type=='Ready']).status == \\\"True\\\"`, reason `AllReady`, within 5 min\n- `kubectl get events -n <test-ns> --field-selector reason=FailedCreate` returns zero entries with a message containing `violates PodSecurity \\\"restricted:latest\\\"`\n- The manual rotation Job reaches `succeeded > 0`\n\nOut of scope: PSS at the **audit** or **warn** levels (Kubernetes default-on for any unlabelled\nnamespace already issues warn-level audit lines). Audit-level coverage is automatic; the\nrestricted enforce gate is the regression net.\n\n## Out of scope (prerequisites, separate tickets)\n\nNone — every Pod spec the reconciler creates already sets `restrictedSecurityContext()`. The\ntest exercises the existing surface; if a future Pod is added without the helper, this test\ncatches it on the first failed admission.\n\n## Test design\n\n```\ntests/e2e/keystone/pod-security-restricted/\n├── 00-namespace.yaml         (Namespace with PSS labels)\n├── 01-keystone-cr.yaml       (CR in the new namespace, basic-deployment fixture)\n└── chainsaw-test.yaml        (3 steps)\n```\n\nSteps:\n\n1. `apply: 00-namespace.yaml` — Chainsaw's per-test namespace plumbing must be **disabled** for this test (`spec.namespace: \\\"\\\"` plus an explicit namespace in the manifest), because Chainsaw creates the implicit per-test namespace without PSS labels. Mirror the pattern from `tests/e2e/keystone/namespace-scoped-rbac/` (which also pins its namespace).\n2. `apply: 01-keystone-cr.yaml` — assert `Ready=True`.\n3. `script` step: trigger the manual rotation Job, wait for `kubectl wait --for=condition=complete job/manual-rotation -n <test-ns> --timeout=2m`, then `kubectl get events -n <test-ns>` and `grep -v \\\"violates PodSecurity\\\"` and assert no matching events.\n\nCatch block: `kubectl get pods -n <test-ns> -o yaml | grep -A3 securityContext`,\n`kubectl get events -n <test-ns> --sort-by='.lastTimestamp'`. PSS admission rejections produce\na `FailedCreate` event on the parent (Deployment, Job, CronJob) with the violation listed\nverbatim, so the catch block surfaces the cause.\n\nThe test fits the `tests/e2e/chainsaw-config.yaml` budget (5 min assert).\n\n## Definition of Done\n\n- [ ] `chainsaw test tests/e2e/keystone/pod-security-restricted` green locally\n- [ ] `make e2e` green; two consecutive `parallel: 4` CI runs without new flakes\n- [ ] Sanity check: temporarily strip `restrictedSecurityContext()` from one reconciler in review, observe this test failing with the expected `violates PodSecurity` event\n- [ ] No new infra in `deploy/kind/`; no chart changes; no operator code changes\n- [ ] Parent #277: the one covered checkbox ticked\n- [ ] Commit prefix `test(CC-xxxx)` once a feature code is assigned\n\n## Risks / open questions\n\n- **Cross-namespace MariaDB/Memcached references**: the CR points its `database.clusterRef` at `openstack/openstack-db`. The MariaDB operator places the resulting DB CRs in the cluster's namespace (the operator's own choice), so the PSS label on the test namespace does not affect them. If a future operator change moves DB CR creation into the consumer's namespace, this test would also need that namespace to admit MariaDB/Memcached operator pods — handle when it happens.\n- **Pre-existing operator pod**: the `keystone-operator` Deployment is in `openstack`, not in the test namespace, so PSS does not gate it. This test is about *workload* Pods. A separate follow-up could add a PSS test for the operator chart by installing a release into a restricted namespace; out of scope here.\n\n---\nSource: https://github.com/C5C3/forge/issues/317",
   "stories": [
@@ -354,6 +354,7 @@
       "title": "Create tests/e2e/keystone/pod-security-restricted/00-namespace.yaml: Namespace `keystone-pss-restricted-test` with `pod-security.kubernetes.io/enforce=restricted` and `pod-security.kubernetes.io/enforce-version=latest`, plus plain Secrets `keystone-admin` (key: password) and `keystone-db` (key: password) with TEST-ONLY values (32-char hex). Include SPDX header (REQ-001, REQ-003).",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-003"
@@ -364,6 +365,7 @@
       "title": "Create tests/e2e/keystone/pod-security-restricted/00-brownfield-db-setup.yaml in the openstack namespace: MariaDB Database (name: keystone-pss-restricted-db, db: keystone_pss_restricted), User (name: keystone-pss-restricted-user, passwordSecretKeyRef: keystone-pss-restricted-db-pw), Grant (name: keystone-pss-restricted-grant, ALL PRIVILEGES). Mirror tests/e2e/keystone/brownfield-database/00-brownfield-db-setup.yaml. Also include the `keystone-pss-restricted-db-pw` Secret with the same password as the test namespace's `keystone-db`. SPDX header. (REQ-002, REQ-003, REQ-008).",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-003",
@@ -375,6 +377,7 @@
       "title": "Create tests/e2e/keystone/pod-security-restricted/01-keystone-cr.yaml: Keystone CR `keystone-pss-restricted` in `keystone-pss-restricted-test`, brownfield database (host=openstack-db.openstack.svc.cluster.local, port=3306, database=keystone_pss_restricted, secretRef=keystone-db), brownfield cache (servers=[openstack-memcached.openstack.svc:11211], backend=dogpile.cache.pymemcache), fernet rotationSchedule `0 0 * * 0`, bootstrap (admin/keystone-admin/RegionOne), replicas=1. SPDX header. (REQ-002).",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -384,6 +387,7 @@
       "title": "Create tests/e2e/keystone/pod-security-restricted/chainsaw-test.yaml skeleton: apiVersion v1alpha1, name `keystone-pod-security-restricted`, `spec.namespace: \"\"`, `spec.timeouts.assert: 5m`, SPDX + decision-style header comment summarising brownfield-mode + pinned-namespace + parent CC-0104/#317/#277 (REQ-001, REQ-008).",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-008"
@@ -394,6 +398,7 @@
       "title": "Add Step 1 to chainsaw-test.yaml: `apply: 00-namespace.yaml` then assert Namespace label `pod-security.kubernetes.io/enforce: restricted` is present (REQ-001).",
       "level": 2,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-001"
       ]
@@ -403,6 +408,7 @@
       "title": "Add Step 2 to chainsaw-test.yaml: `apply: 00-brownfield-db-setup.yaml` then assert Database/User/Grant CRs reach Ready=True in openstack namespace (mirror brownfield-database test) (REQ-002).",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -412,6 +418,7 @@
       "title": "Add Step 3 to chainsaw-test.yaml: `apply: 01-keystone-cr.yaml`, assert `(conditions[?type=='Ready']).status='True', .reason='AllReady'` on the Keystone CR within the 5m budget. Add an `error` assertion that no Database/User/Grant CR named `keystone-pss-restricted` exists in the test namespace (brownfield-mode invariant) (REQ-002, REQ-004).",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-004"
@@ -422,6 +429,7 @@
       "title": "Add Step 4 to chainsaw-test.yaml: bash script that runs `kubectl create job keystone-pss-restricted-manual-rotate --from=cronjob/keystone-pss-restricted-fernet-rotate -n keystone-pss-restricted-test`, then `kubectl wait --for=condition=complete job/... --timeout=2m`, then asserts `status.succeeded > 0`. Use `set -euo pipefail` and `shell: bash`. (REQ-005).",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-005"
       ]
@@ -431,6 +439,7 @@
       "title": "Add Step 5 to chainsaw-test.yaml: bash script that runs `kubectl get events -n keystone-pss-restricted-test --field-selector reason=FailedCreate -o jsonpath='{range .items[*]}{.message}{\"\\n\"}{end}'` and exits non-zero if any line contains the literal `violates PodSecurity \"restricted:latest\"` (use `grep -F` and assert match count == 0). (REQ-006).",
       "level": 2,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -440,6 +449,7 @@
       "title": "Add catch block(s) to Steps 3-5: dump pod securityContext (jsonpath extract), sorted events (last 30), bootstrap/db-sync/manual-rotate Job pod logs (current + previous), Job describe — every command guarded with `|| true`. Mirror catch shape from tests/e2e/keystone/fernet-rotation/chainsaw-test.yaml. (REQ-007).",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -449,6 +459,7 @@
       "title": "Update docs/reference/testing/keystone-e2e-tests.md: (a) add `pod-security-restricted` to the ASCII inventory grid (lines ~30-60), (b) add inventory-table row with CR name `keystone-pss-restricted` and purpose summary, (c) add `### pod-security-restricted` section with file paths, step-by-step table, brownfield-mode + pinned-namespace rationale, cross-link to CC-0104 / #317 / #277 Phase 1. (REQ-009).",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -458,6 +469,7 @@
       "title": "Local verification: run `chainsaw test tests/e2e/keystone/pod-security-restricted` against a kind cluster brought up via `make e2e-up` (or equivalent). Confirm Ready=True, manual rotation Job succeeded, zero PSS-violation events. Capture timing (must finish well inside 5m).",
       "level": 4,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-005",
@@ -469,6 +481,7 @@
       "title": "Suite verification: run the full `make e2e` (parallel:4) twice consecutively; confirm zero new flakes and that the new test name appears in `_output/reports/chainsaw-report-*.xml`. Verify no name collisions with sibling tests in the openstack namespace.",
       "level": 4,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -478,6 +491,7 @@
       "title": "Negative-test sanity check (manual, not committed): on a local working copy, temporarily remove `restrictedSecurityContext()` from one reconciler call site (e.g. reconcile_fernet.go:315), rebuild the operator image, re-run the test, observe FailedCreate event with `violates PodSecurity \"restricted:latest\"`. Revert before opening the PR. Capture observation in the PR description. (REQ-010).",
       "level": 4,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-010"
       ]
@@ -644,8 +658,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-04-30T20:06:19.509656"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-30T21:11:39.004227"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-05-12T16:59:56.710374"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/324",
+  "pr_number": 324,
   "execution_history": [
     {
       "run_id": "4abe247d-1cab-4600-b3bc-48bee16f1c2d",
@@ -657,6 +681,70 @@
           "name": "prepare",
           "duration": 533.5255517959595,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "ff467dba-ca52-488c-b60f-f0442e1df3d1",
+      "timestamp": "2026-04-30T21:43:13.551794",
+      "total_duration": 1608.8159294128418,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (3 tasks)",
+          "duration": 257.2767720222473,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (7 tasks)",
+          "duration": 197.85833072662354,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (1 tasks)",
+          "duration": 380.22019481658936,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (3 tasks)",
+          "duration": 315.98702573776245,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0104] Code Review",
+          "duration": 281.73410177230835,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0104] Improvements",
+          "duration": 116.9988226890564,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0104] Simplify",
+          "duration": 58.740681648254395,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "22cc93b8-2e3f-4ce1-93a2-17bdbea39c9c",
+      "timestamp": "2026-05-01T12:57:57.964246",
+      "total_duration": 1137.4361188411713,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 1137.4361188411713,
+          "type": "review_address",
           "status": "done"
         }
       ]

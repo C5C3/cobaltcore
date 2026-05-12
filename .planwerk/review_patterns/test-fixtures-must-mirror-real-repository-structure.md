@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: When reviewing test setup code that creates temporary directories and files, compare the directory structure created in the test workdir against the actual repository layout. If the test places files at different relative paths than production, it will mask path-related bugs.
 **Severity**: BLOCKING
-**Occurrences**: 3
+**Occurrences**: 4
 
 ## What to check
 
@@ -29,3 +29,8 @@ Tests that use a simplified directory structure give false confidence — they p
 - **Feedback**: `driveFullReconciliation` hardcodes `3` for `SimulateDeploymentReady`. `IsDeploymentReady` checks `Status.ReadyReplicas >= *Spec.Replicas` — so if the `integrationBrownfieldKeystone` fixture is ever changed to a replica count **greater than 3** (e.g., 5), `SimulateDeploymentReady(..., 3)` would set `ReadyReplicas=3`, which is less than `desired=5`, causing `IsDeploymentReady` to return `false`. The test would then silently hang at `waitForCondition`.
 - **What was missed**: Look for numeric literals passed to test simulation/assertion helpers. Trace whether the same value is defined or implied by the object under test (e.g., Spec.Replicas). If so, the helper should read the value from the object rather than hardcoding it.
 - **Fix**: Read the desired replica count from the already-created Deployment spec instead of hardcoding it: `deploy := &appsv1.Deployment{}; c.Get(ctx, deployKey, deploy); replicas := *deploy.Spec.Replicas; SimulateDeploymentReady(ctx, c, deployKey, replicas)`.
+
+### CC-0104 — berendt
+- **Feedback**: C-001/W-001 (policy-validation Job not exercised) — added new fixture tests/e2e/keystone/pod-security-restricted/00-policy-cm.yaml, added spec.policyOverrides.configMapRef to 01-keystone-cr.yaml, and an apply+assert for the ConfigMap to chainsaw-test.yaml Step 1.
+- **What was missed**: When a test claims to cover a feature (e.g., policy-validation Job, policyOverrides), verify the test actually applies the required fixtures and asserts on the resulting behavior. A CR field referenced in spec but missing from the test manifest, or a ConfigMap mentioned but never applied, means the feature is not really being tested.
+- **Fix**: Added 00-policy-cm.yaml fixture, set spec.policyOverrides.configMapRef in the Keystone CR, and added apply+assert steps to chainsaw-test.yaml Step 1.
