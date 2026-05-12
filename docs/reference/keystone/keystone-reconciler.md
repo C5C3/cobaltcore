@@ -1467,12 +1467,14 @@ and disaster recovery backup to OpenBao.
 | Schedule | `spec.fernet.rotationSchedule` |
 | ServiceAccount | `{name}-fernet-rotate` |
 | Init container | Copies keys from `fernet-keys-src` (Secret) to `fernet-keys` (emptyDir) |
-| Command | `/scripts/fernet_rotate.sh` |
-| Volume `fernet-keys-src` | Secret `{name}-fernet-keys` (read-only source) |
-| Volume `fernet-keys` | emptyDir (writable working copy) |
-| Volume `credential-keys` | Secret `{name}-credential-keys` (read-only, required by config) |
+| Command | `/scripts/fernet_rotate.sh` (CC-0073) |
+| Volume `fernet-keys-src` | Secret `{name}-fernet-keys` (read-only source, `defaultMode: 0400`) (CC-0099) |
+| Volume `fernet-keys` | emptyDir (writable working copy; init container writes files with `install -m 0400`) (CC-0099) |
+| Volume `credential-keys` | Secret `{name}-credential-keys` (read-only, required by config, `defaultMode: 0400`) (CC-0099) |
 | Volume `config` | ConfigMap `{configMapName}` |
-| Volume `scripts` | ConfigMap `{name}-fernet-rotate-script-{hash}` (`defaultMode: 0555`) |
+| Volume `scripts` | ConfigMap `{name}-fernet-rotate-script-{hash}` (`defaultMode: 0555`) (CC-0073) |
+| Pod `fsGroup` | `42424` (openstack GID — grants the rotation Pod's UID 42424 group access to projected key files at mode `0400`) (CC-0099) |
+| Rationale | Mirrors upstream Keystone's `keystone.common.fernet_utils._check_key_repository`, which logs a `WARNING` when the key directory or any key file is world-readable (`stat.S_IROTH`); pinning `defaultMode: 0400` plus `fsGroup: 42424` keeps the projected files group-readable to UID 42424 only and silences the warning (CC-0099) |
 
 **PushSecret:**
 
@@ -1636,12 +1638,14 @@ with credential migration, and disaster recovery backup to OpenBao.
 | Schedule | `spec.credentialKeys.rotationSchedule` |
 | ServiceAccount | `{name}-credential-rotate` |
 | Init container | Copies keys from `credential-keys-src` (Secret) to `credential-keys` (emptyDir) |
-| Command | `/scripts/credential_rotate.sh` |
-| Volume `credential-keys-src` | Secret `{name}-credential-keys` (read-only source) |
-| Volume `credential-keys` | emptyDir (writable working copy) |
-| Volume `fernet-keys` | Secret `{name}-fernet-keys` (read-only, required by config) |
+| Command | `/scripts/credential_rotate.sh` (CC-0073) |
+| Volume `credential-keys-src` | Secret `{name}-credential-keys` (read-only source, `defaultMode: 0400`) (CC-0099) |
+| Volume `credential-keys` | emptyDir (writable working copy; init container writes files with `install -m 0400`) (CC-0099) |
+| Volume `fernet-keys` | Secret `{name}-fernet-keys` (read-only, required by config, `defaultMode: 0400`) (CC-0099) |
 | Volume `config` | ConfigMap `{configMapName}` |
-| Volume `scripts` | ConfigMap `{name}-credential-rotate-script-{hash}` (`defaultMode: 0555`) |
+| Volume `scripts` | ConfigMap `{name}-credential-rotate-script-{hash}` (`defaultMode: 0555`) (CC-0073) |
+| Pod `fsGroup` | `42424` (openstack GID — grants the rotation Pod's UID 42424 group access to projected key files at mode `0400`) (CC-0099) |
+| Rationale | Mirrors upstream Keystone's `keystone.common.fernet_utils._check_key_repository`, which logs a `WARNING` when the key directory or any key file is world-readable (`stat.S_IROTH`); pinning `defaultMode: 0400` plus `fsGroup: 42424` keeps the projected files group-readable to UID 42424 only and silences the warning (CC-0099) |
 
 > **Note:** The `credential_rotate.sh` script runs both `credential_rotate` and
 > `credential_migrate`. The migrate step re-encrypts existing credentials in the
@@ -2030,8 +2034,15 @@ The liveness and readiness probes are intentionally separated. The liveness prob
 | Volume Name | Mount Path | Source | ReadOnly |
 | --- | --- | --- | --- |
 | `config` | `/etc/keystone/keystone.conf.d/` | ConfigMap `{configMapName}` | Yes |
-| `fernet-keys` | `/etc/keystone/fernet-keys/` | Secret `keystone-fernet-keys` | Yes |
-| `credential-keys` | `/etc/keystone/credential-keys/` | Secret `keystone-credential-keys` | Yes |
+| `fernet-keys` | `/etc/keystone/fernet-keys/` | Secret `keystone-fernet-keys` (`defaultMode: 0400`) (CC-0099) | Yes |
+| `credential-keys` | `/etc/keystone/credential-keys/` | Secret `keystone-credential-keys` (`defaultMode: 0400`) (CC-0099) | Yes |
+
+**Pod-level Security:**
+
+| Field | Value |
+| --- | --- |
+| `spec.template.spec.securityContext.fsGroup` | `42424` (openstack GID — grants the API Pod's UID 42424 group access to projected key files at mode `0400`) (CC-0099) |
+| Rationale | Mirrors upstream Keystone's `keystone.common.fernet_utils._check_key_repository`, which logs a `WARNING` when the key directory or any key file is world-readable (`stat.S_IROTH`); pinning `defaultMode: 0400` plus `fsGroup: 42424` keeps the projected files group-readable to UID 42424 only and silences the warning (CC-0099) |
 
 **Service Spec:**
 

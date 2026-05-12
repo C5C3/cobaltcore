@@ -704,6 +704,160 @@ func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 	g.Expect(*scriptsVol.ConfigMap.DefaultMode).To(Equal(int32(0o555)))
 }
 
+// Feature: CC-0099 — restrict mode on mounted credential/fernet key Secret
+// volumes inside the Credential rotation CronJob Pod template. Symmetric to
+// the Fernet rotation CronJob coverage in reconcile_fernet_test.go and to the
+// Deployment-side coverage in reconcile_deployment_test.go.
+
+// TestCredentialRotationCronJob_PodSecurityContextSetsFSGroup verifies that
+// the rotation Pod template carries SecurityContext.FSGroup = openstackUID so
+// the kubelet group-owns mounted Secret volumes by the openstack GID. Combined
+// with DefaultMode 0o400 this lets keystone-manage read keys while the
+// directory passes upstream Keystone's "key_repository is world readable"
+// check (CC-0099, REQ-004, REQ-008). All other PodSecurityContext fields must
+// remain nil — Pod-level FSGroup is orthogonal to the container-level CC-0045
+// PSS-Restricted SecurityContext on the rotate/init containers.
+func TestCredentialRotationCronJob_PodSecurityContextSetsFSGroup(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := credentialTestKeystone()
+
+	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123")
+
+	psc := cronJob.Spec.JobTemplate.Spec.Template.Spec.SecurityContext
+	g.Expect(psc).NotTo(BeNil(), "CC-0099: PodSecurityContext must be set so FSGroup applies to rotation Pod")
+	g.Expect(psc.FSGroup).NotTo(BeNil(), "CC-0099: FSGroup must be set on rotation PodSecurityContext")
+	g.Expect(*psc.FSGroup).To(Equal(openstackUID), "CC-0099: rotation Pod FSGroup must equal the openstack UID/GID (42424)")
+
+	// CC-0099: do not set any other Pod-level SecurityContext field. Pod-level
+	// RunAs* / Seccomp / SELinux / AppArmor would conflict with or override
+	// the container-level CC-0045 SecurityContext on init/rotate containers.
+	g.Expect(psc.RunAsUser).To(BeNil(), "CC-0099: RunAsUser must stay container-level (CC-0045)")
+	g.Expect(psc.RunAsGroup).To(BeNil(), "CC-0099: RunAsGroup must stay container-level (CC-0045)")
+	g.Expect(psc.RunAsNonRoot).To(BeNil(), "CC-0099: RunAsNonRoot must stay container-level (CC-0045)")
+	g.Expect(psc.SeccompProfile).To(BeNil(), "CC-0099: SeccompProfile must stay container-level (CC-0045)")
+	g.Expect(psc.FSGroupChangePolicy).To(BeNil(), "CC-0099: FSGroupChangePolicy must remain unset (default Always is intentional)")
+	g.Expect(psc.SupplementalGroups).To(BeNil(), "CC-0099: SupplementalGroups must remain unset")
+	g.Expect(psc.SELinuxOptions).To(BeNil(), "CC-0099: SELinuxOptions must remain unset")
+	g.Expect(psc.WindowsOptions).To(BeNil(), "CC-0099: WindowsOptions must remain unset")
+	g.Expect(psc.Sysctls).To(BeNil(), "CC-0099: Sysctls must remain unset")
+	g.Expect(psc.AppArmorProfile).To(BeNil(), "CC-0099: AppArmorProfile must remain unset")
+}
+
+// TestCredentialRotationCronJob_KeySecretVolumesSetDefaultMode0400 verifies
+// that the read-only Secret-backed key volumes mounted into the rotation Pod
+// use file mode 0o400 (owner read-only): `credential-keys-src` (the production
+// keys the init container copies into the writable emptyDir) and `fernet-keys`
+// (mounted read-only purely so the directory exists for keystone-manage)
+// (CC-0099, REQ-004, REQ-005). The writable `credential-keys` emptyDir, the
+// `config` ConfigMap, and the `scripts` ConfigMap are out of scope and must
+// not be touched by CC-0099.
+func TestCredentialRotationCronJob_KeySecretVolumesSetDefaultMode0400(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := credentialTestKeystone()
+
+	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123")
+
+	var srcVol, workVol, fernetVol, cfgVol, scriptsVol corev1.Volume
+	for _, v := range cronJob.Spec.JobTemplate.Spec.Template.Spec.Volumes {
+		switch v.Name {
+		case "credential-keys-src":
+			srcVol = v
+		case "credential-keys":
+			workVol = v
+		case "fernet-keys":
+			fernetVol = v
+		case "config":
+			cfgVol = v
+		case "scripts":
+			scriptsVol = v
+		}
+	}
+
+	g.Expect(srcVol.Secret).NotTo(BeNil(), "CC-0099: credential-keys-src Secret volume source must be set")
+	g.Expect(srcVol.Secret.DefaultMode).NotTo(BeNil(), "CC-0099: credential-keys-src must set DefaultMode")
+	g.Expect(*srcVol.Secret.DefaultMode).To(Equal(int32(0o400)), "CC-0099: credential-keys-src DefaultMode must be 0o400 (owner read-only)")
+
+	g.Expect(fernetVol.Secret).NotTo(BeNil(), "CC-0099: fernet-keys Secret volume source must be set")
+	g.Expect(fernetVol.Secret.DefaultMode).NotTo(BeNil(), "CC-0099: fernet-keys must set DefaultMode")
+	g.Expect(*fernetVol.Secret.DefaultMode).To(Equal(int32(0o400)), "CC-0099: fernet-keys DefaultMode must be 0o400 (owner read-only)")
+
+	// Regression guard: scope CC-0099 strictly to Secret-backed key volumes.
+	// The writable emptyDir and ConfigMap volumes must remain untouched.
+	g.Expect(workVol.EmptyDir).NotTo(BeNil(), "CC-0099 scope guard: credential-keys must remain an EmptyDir source")
+	g.Expect(cfgVol.ConfigMap).NotTo(BeNil(), "CC-0099 scope guard: config volume must remain a ConfigMap source")
+	g.Expect(cfgVol.ConfigMap.DefaultMode).To(BeNil(), "CC-0099 scope guard: config ConfigMap DefaultMode must remain unset")
+	g.Expect(scriptsVol.ConfigMap).NotTo(BeNil(), "CC-0099 scope guard: scripts volume must remain a ConfigMap source")
+	g.Expect(scriptsVol.ConfigMap.DefaultMode).NotTo(BeNil(), "CC-0099 scope guard: scripts DefaultMode (0o555 from CC-0073) must remain set")
+	g.Expect(*scriptsVol.ConfigMap.DefaultMode).To(Equal(int32(0o555)), "CC-0099 scope guard: scripts DefaultMode must remain 0o555 (CC-0073)")
+}
+
+// TestCredentialRotationCronJob_CopyKeysInitContainerPreservesNonWorldReadableMode
+// verifies that the `copy-keys` init container materialises the rotation
+// working set with mode 0o400. A plain `cp` would inherit the kubelet's mount
+// mode for the destination emptyDir (typically 0o755) and re-introduce the
+// world-readable directory that CC-0099 fixes. Using `install -m 0400` (or
+// equivalent `cp` + explicit `chmod 0400`) keeps the writable copy in lockstep
+// with the read-only source mode (CC-0099, REQ-004, REQ-008).
+func TestCredentialRotationCronJob_CopyKeysInitContainerPreservesNonWorldReadableMode(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := credentialTestKeystone()
+
+	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123")
+
+	initContainer := findContainerByName(cronJob.Spec.JobTemplate.Spec.Template.Spec.InitContainers, "copy-keys")
+	g.Expect(initContainer).NotTo(BeNil(), "CC-0099: copy-keys init container must exist")
+	g.Expect(initContainer.Command).NotTo(BeEmpty(), "CC-0099: copy-keys init container must have a Command")
+
+	// Assert the full ["sh", "-c", "<cmd>"] argv shape so a future change to
+	// `bash` or a non-shell entrypoint fails the unit test (CC-0099, REQ-004,
+	// REQ-008). The fernet side has equivalent integration coverage via full-
+	// slice equality at integration_test.go.
+	g.Expect(len(initContainer.Command)).To(BeNumerically(">=", 3), "CC-0099: copy-keys Command must be sh -c <cmd>")
+	g.Expect(initContainer.Command[0]).To(Equal("sh"), "CC-0099: copy-keys Command[0] must be `sh`")
+	g.Expect(initContainer.Command[1]).To(Equal("-c"), "CC-0099: copy-keys Command[1] must be `-c`")
+	g.Expect(initContainer.Command[2]).To(ContainSubstring("install -m 0400"), "CC-0099: copy-keys command must use `install -m 0400` to preserve the non-world-readable mode")
+}
+
+// TestCredentialRotationCronJob_RotateContainerVolumeMountsUnchanged is an
+// active regression guard: CC-0099 only changes Pod-level FSGroup, Secret
+// volume DefaultMode, and the init container's copy command. The
+// credential-rotate container's VolumeMounts (including the read-only
+// fernet-keys mount and the read-only config/scripts mounts) must stay
+// byte-for-byte identical to what reconcile_credential.go declares today
+// (CC-0099, REQ-008).
+func TestCredentialRotationCronJob_RotateContainerVolumeMountsUnchanged(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := credentialTestKeystone()
+
+	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123")
+
+	rotate := findContainerByName(cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers, "credential-rotate")
+	g.Expect(rotate).NotTo(BeNil(), "CC-0099: credential-rotate container must exist")
+
+	g.Expect(rotate.VolumeMounts).To(ConsistOf(
+		corev1.VolumeMount{Name: "credential-keys", MountPath: "/etc/keystone/credential-keys"},
+		corev1.VolumeMount{Name: "fernet-keys", MountPath: "/etc/keystone/fernet-keys", ReadOnly: true},
+		corev1.VolumeMount{Name: "config", MountPath: "/etc/keystone/keystone.conf.d/", ReadOnly: true},
+		corev1.VolumeMount{Name: "scripts", MountPath: "/scripts", ReadOnly: true},
+	), "CC-0099 scope guard: credential-rotate container VolumeMounts must not be modified")
+}
+
+// TestCredentialRotationCronJob_RotationContainerSecurityContextUnchanged is
+// an active regression guard: CC-0099 must NOT touch container-level
+// SecurityContext on the rotate or init containers — those are fully owned by
+// CC-0045. Pod-level FSGroup and container-level RunAs*/Seccomp/Capabilities
+// are independent fields (CC-0099, REQ-008).
+func TestCredentialRotationCronJob_RotationContainerSecurityContextUnchanged(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := credentialTestKeystone()
+
+	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123")
+	podSpec := cronJob.Spec.JobTemplate.Spec.Template.Spec
+
+	expectRestrictedSecurityContext(g, findContainerByName(podSpec.InitContainers, "copy-keys"))
+	expectRestrictedSecurityContext(g, findContainerByName(podSpec.Containers, "credential-rotate"))
+}
+
 // TestCredentialRotateScript_EmbeddedContent verifies that the go:embed directive
 // correctly loads scripts/credential_rotate.sh into the credentialRotateScript variable.
 // A broken or missing embed silently produces an empty string, which would cause

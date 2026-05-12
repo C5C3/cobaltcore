@@ -339,6 +339,105 @@ func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
 	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
 }
 
+// Feature: CC-0099 — restrict mode on mounted Fernet/credential key Secret volumes.
+
+// TestBuildKeystoneDeployment_PodSecurityContextSetsFSGroup verifies that the
+// Pod template carries SecurityContext.FSGroup = openstackUID so that mounted
+// Secret volumes are owned by the openstack group, satisfying the upstream
+// Keystone "key_repository is world readable" check (CC-0099, REQ-001, REQ-008).
+// All other PodSecurityContext fields must remain nil — Pod-level FSGroup is
+// orthogonal to the container-level CC-0045 PSS-Restricted SecurityContext.
+func TestBuildKeystoneDeployment_PodSecurityContextSetsFSGroup(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	deploy := buildKeystoneDeployment(deployTestKeystone(), "keystone-config-abc123")
+
+	psc := deploy.Spec.Template.Spec.SecurityContext
+	g.Expect(psc).NotTo(BeNil(), "CC-0099: PodSecurityContext must be set so FSGroup applies")
+	g.Expect(psc.FSGroup).NotTo(BeNil(), "CC-0099: FSGroup must be set on PodSecurityContext")
+	g.Expect(*psc.FSGroup).To(Equal(openstackUID), "CC-0099: FSGroup must equal the openstack UID/GID (42424)")
+
+	// CC-0099: do not set any other Pod-level SecurityContext field. Pod-level
+	// RunAs* / Seccomp / SELinux / AppArmor would conflict with or override
+	// the container-level CC-0045 SecurityContext.
+	g.Expect(psc.RunAsUser).To(BeNil(), "CC-0099: RunAsUser must stay container-level (CC-0045)")
+	g.Expect(psc.RunAsGroup).To(BeNil(), "CC-0099: RunAsGroup must stay container-level (CC-0045)")
+	g.Expect(psc.RunAsNonRoot).To(BeNil(), "CC-0099: RunAsNonRoot must stay container-level (CC-0045)")
+	g.Expect(psc.SeccompProfile).To(BeNil(), "CC-0099: SeccompProfile must stay container-level (CC-0045)")
+	g.Expect(psc.FSGroupChangePolicy).To(BeNil(), "CC-0099: FSGroupChangePolicy must remain unset (default Always is intentional)")
+	g.Expect(psc.SupplementalGroups).To(BeNil(), "CC-0099: SupplementalGroups must remain unset")
+	g.Expect(psc.SELinuxOptions).To(BeNil(), "CC-0099: SELinuxOptions must remain unset")
+	g.Expect(psc.WindowsOptions).To(BeNil(), "CC-0099: WindowsOptions must remain unset")
+	g.Expect(psc.Sysctls).To(BeNil(), "CC-0099: Sysctls must remain unset")
+	g.Expect(psc.AppArmorProfile).To(BeNil(), "CC-0099: AppArmorProfile must remain unset")
+}
+
+// TestBuildKeystoneDeployment_FernetAndCredentialVolumesSetDefaultMode0400 verifies
+// that the fernet-keys and credential-keys Secret volumes mount with file mode
+// 0o400 (owner read-only), so the Keystone process running under the openstack
+// UID/GID can read the keys while the volume is not group- or world-readable
+// (CC-0099, REQ-002). The config ConfigMap volume must NOT receive a
+// DefaultMode — it is out of scope and changing it would be scope creep.
+func TestBuildKeystoneDeployment_FernetAndCredentialVolumesSetDefaultMode0400(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	deploy := buildKeystoneDeployment(deployTestKeystone(), "keystone-config-abc123")
+
+	var fernetVol, credentialVol, configVol corev1.Volume
+	for _, v := range deploy.Spec.Template.Spec.Volumes {
+		switch v.Name {
+		case "fernet-keys":
+			fernetVol = v
+		case "credential-keys":
+			credentialVol = v
+		case "config":
+			configVol = v
+		}
+	}
+
+	g.Expect(fernetVol.Secret).NotTo(BeNil(), "CC-0099: fernet-keys Secret volume source must be set")
+	g.Expect(fernetVol.Secret.DefaultMode).NotTo(BeNil(), "CC-0099: fernet-keys must set DefaultMode")
+	g.Expect(*fernetVol.Secret.DefaultMode).To(Equal(int32(0o400)), "CC-0099: fernet-keys DefaultMode must be 0o400 (owner read-only)")
+
+	g.Expect(credentialVol.Secret).NotTo(BeNil(), "CC-0099: credential-keys Secret volume source must be set")
+	g.Expect(credentialVol.Secret.DefaultMode).NotTo(BeNil(), "CC-0099: credential-keys must set DefaultMode")
+	g.Expect(*credentialVol.Secret.DefaultMode).To(Equal(int32(0o400)), "CC-0099: credential-keys DefaultMode must be 0o400 (owner read-only)")
+
+	// Regression guard: do not tighten the config ConfigMap volume. CC-0099 is
+	// scoped to the two Fernet-related Secret volumes only.
+	g.Expect(configVol.ConfigMap).NotTo(BeNil(), "CC-0099 scope guard: config volume must remain a ConfigMap source")
+	g.Expect(configVol.ConfigMap.DefaultMode).To(BeNil(), "CC-0099 scope guard: config ConfigMap DefaultMode must remain unset")
+}
+
+// TestBuildKeystoneDeployment_ContainerSecurityContextUnchangedByCC0099 is an
+// active regression guard: CC-0099 must NOT touch the container-level
+// SecurityContext established by CC-0045. Pod-level FSGroup and container-level
+// RunAsUser/RunAsGroup/etc. are independent fields (CC-0099, REQ-008).
+func TestBuildKeystoneDeployment_ContainerSecurityContextUnchangedByCC0099(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	deploy := buildKeystoneDeployment(deployTestKeystone(), "keystone-config-abc123")
+
+	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
+	g.Expect(container).NotTo(BeNil(), "CC-0099: keystone container must exist")
+	expectRestrictedSecurityContext(g, container)
+}
+
+// TestBuildKeystoneDeployment_NoFSGroupChangePolicyOrUnsupportedFields locks in
+// the choice to leave FSGroupChangePolicy unset so the kubelet's default
+// "Always" recursive chown applies on every mount. Setting "OnRootMismatch"
+// would skip the chown when the volume already has the right group, which is
+// brittle for in-place key rotation (CC-0099, REQ-001).
+func TestBuildKeystoneDeployment_NoFSGroupChangePolicyOrUnsupportedFields(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	deploy := buildKeystoneDeployment(deployTestKeystone(), "keystone-config-abc123")
+
+	psc := deploy.Spec.Template.Spec.SecurityContext
+	g.Expect(psc).NotTo(BeNil(), "CC-0099: PodSecurityContext must be set")
+	g.Expect(psc.FSGroupChangePolicy).To(BeNil(), "CC-0099: FSGroupChangePolicy must remain unset (kubelet default Always is intentional)")
+}
+
 func TestReconcileDeployment_NotReady_ConditionMessageAndGeneration(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := deployTestScheme()

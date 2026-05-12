@@ -308,10 +308,22 @@ func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName st
 							ServiceAccountName: saName,
 							RestartPolicy:      corev1.RestartPolicyOnFailure,
 							PriorityClassName:  priorityClassName(keystone),
+							// FSGroup makes the kubelet group-own mounted Secret volumes by
+							// the openstack GID so DefaultMode 0o400 still lets the openstack
+							// UID read the keys via the group bit. Without it, kubelet would
+							// project files as root:root mode 0o400 and the openstack process
+							// could not read them; upstream Keystone logs a "key_repository is
+							// world readable" WARNING via fernet_utils._check_key_repository
+							// for any default-mode (0o644) workaround (CC-0099).
+							SecurityContext: &corev1.PodSecurityContext{FSGroup: ptr.To(openstackUID)},
 							InitContainers: []corev1.Container{{
-								Name:            "copy-keys",
-								Image:           image,
-								Command:         []string{"sh", "-c", "cp /fernet-keys-src/* /etc/keystone/fernet-keys/"},
+								Name:  "copy-keys",
+								Image: image,
+								// `install -m 0400` materialises each key in the writable emptyDir
+								// at owner-read-only mode. A plain `cp` would inherit the kubelet
+								// emptyDir mode and re-introduce the world-readable directory that
+								// CC-0099 fixes for the rotation Pod.
+								Command:         []string{"sh", "-c", "install -m 0400 /fernet-keys-src/* /etc/keystone/fernet-keys/"},
 								SecurityContext: restrictedSecurityContext(),
 								VolumeMounts: []corev1.VolumeMount{
 									{Name: "fernet-keys-src", MountPath: "/fernet-keys-src", ReadOnly: true},
@@ -358,7 +370,10 @@ func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName st
 								{
 									Name: "fernet-keys-src",
 									VolumeSource: corev1.VolumeSource{
-										Secret: &corev1.SecretVolumeSource{SecretName: secretName},
+										Secret: &corev1.SecretVolumeSource{
+											SecretName:  secretName,
+											DefaultMode: ptr.To(int32(0o400)),
+										},
 									},
 								},
 								{
@@ -373,7 +388,10 @@ func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName st
 									// directory exists even though this job only rotates fernet keys.
 									Name: "credential-keys",
 									VolumeSource: corev1.VolumeSource{
-										Secret: &corev1.SecretVolumeSource{SecretName: credentialSecretName},
+										Secret: &corev1.SecretVolumeSource{
+											SecretName:  credentialSecretName,
+											DefaultMode: ptr.To(int32(0o400)),
+										},
 									},
 								},
 								{

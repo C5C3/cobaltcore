@@ -167,6 +167,7 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 					TerminationGracePeriodSeconds: ptr.To(terminationGracePeriodSeconds(keystone)),
 					TopologySpreadConstraints:     topologySpreadConstraints(keystone),
 					PriorityClassName:             priorityClassName(keystone),
+					SecurityContext:               &corev1.PodSecurityContext{FSGroup: ptr.To(openstackUID)},
 					Containers: []corev1.Container{{
 						Name:            "keystone",
 						Image:           fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag),
@@ -247,7 +248,8 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 							Name: "fernet-keys",
 							VolumeSource: corev1.VolumeSource{
 								Secret: &corev1.SecretVolumeSource{
-									SecretName: fernetSecretName,
+									SecretName:  fernetSecretName,
+									DefaultMode: ptr.To(int32(0o400)),
 								},
 							},
 						},
@@ -255,7 +257,8 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 							Name: "credential-keys",
 							VolumeSource: corev1.VolumeSource{
 								Secret: &corev1.SecretVolumeSource{
-									SecretName: credentialSecretName,
+									SecretName:  credentialSecretName,
+									DefaultMode: ptr.To(int32(0o400)),
 								},
 							},
 						},

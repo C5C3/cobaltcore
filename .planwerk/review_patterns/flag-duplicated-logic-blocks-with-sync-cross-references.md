@@ -3,7 +3,7 @@
 **Review-Area**: documentation
 **Detection-Hint**: When reviewing a step or block that looks structurally identical to another block in the same file or workflow, diff the two. If they must remain identical due to platform constraints, check for a comment explicitly documenting the coupling.
 **Severity**: WARNING
-**Occurrences**: 3
+**Occurrences**: 4
 
 ## What to check
 
@@ -29,3 +29,8 @@ When duplicated logic diverges silently, downstream steps operate on stale assum
 - **Feedback**: Three steps in `test-service-images` — `Resolve source ref`, `Apply patches`, and `Apply constraint overrides` — are verbatim copies of steps in `build-service-images` with no cross-reference comments. If the source-ref resolution logic in `build-service-images` is updated, the copies in `test-service-images` will silently diverge.
 - **What was missed**: Any block of code (3+ lines) that is copy-pasted from another location in the same file or workflow must have a cross-reference comment identifying its counterpart, so future editors know to update both.
 - **Fix**: Added `# NOTE: This step MUST stay in sync with the equivalent step in build-service-images.` comments above each of the three duplicated steps in test-service-images.
+
+### CC-0099 — berendt
+- **Feedback**: `grep -rln "^feature:" docs/` returns only this file. No other reference doc carries a `feature:` field, no schema or VitePress config consumes it, and there's no precedent for the convention.
+- **What was missed**: New frontmatter keys should either follow an existing convention (multiple files use it) or be backed by a documented schema/consumer. A single-file novel field with no consumer is dead metadata or an undocumented convention.
+- **Fix**: Removed the `feature:` line from the frontmatter per the reviewer's primary suggestion — CC-0099 is already inline-tagged in the table rows that matter, so no consumer-less convention is introduced.

@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: Look for test assertions wrapped in `if err != nil` or similar conditionals. If the happy path means the condition is false, the assertion body is never executed and the test passes without proving anything.
 **Severity**: BLOCKING
-**Occurrences**: 6
+**Occurrences**: 8
 
 ## What to check
 
@@ -44,3 +44,13 @@ A vacuous test gives false confidence — it always passes regardless of whether
 - **Feedback**: The bypass log message contains the literal string "defaulting" inside "webhook defaulting did not run". So `ContainSubstring("default")` matches the message text itself, not the namespace value. The assertion would pass even if the keystone.Namespace field were never logged.
 - **What was missed**: For every substring/contains assertion on log output: (1) read the actual log statement being asserted against, (2) confirm the substring uniquely identifies the dynamic field, not boilerplate text in the message. Prefer asserting on the structured key/value pair or the exact field value rather than a short fragment.
 - **Fix**: Asserted against the structured namespace key/value rather than a short substring that collides with the log message template.
+
+### CC-0099 — berendt
+- **Feedback**: If the keystone container started 3+ minutes before the `kubectl logs` call, `--since=120s` discards the startup window entirely, both `grep -cF` calls return 0, and the test passes vacuously even when a regression is present.
+- **What was missed**: When a test asserts on logs produced at a one-time event (startup, init), ensure the log retrieval is not bounded by a time window shorter than the maximum plausible delay between that event and the assertion. Prefer `--tail=N` over `--since=Ns` when buffer size is already bounded. Also flag deviations from the established pattern used by sibling tests in the same suite.
+- **Fix**: Removed `--since=120s` from both the assertion and catch-block log scrapes, keeping only `--tail=2000`, and updated the catch-block heading accordingly.
+
+### CC-0099 — berendt
+- **Feedback**: Applied the optional INFO-3 enhancement by switching from `grep -cF` (count only) to `grep -F` (capture lines) in `chainsaw-test.yaml` for both the fernet and credential paths, so the offending log lines are echoed directly in the assertion error.
+- **What was missed**: When a grep assertion can fail, prefer `grep -F` (printing matched lines) over `grep -cF` (count only) so the failure message contains the actual offending log/output, not just a number.
+- **Fix**: Replaced `grep -cF` with `grep -F` in both fernet and credential assertion paths.

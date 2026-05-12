@@ -843,7 +843,7 @@ func TestIntegration_CronJobDetailedSpec(t *testing.T) {
 	initContainer := podSpec.InitContainers[0]
 	g.Expect(initContainer.Name).To(Equal("copy-keys"))
 	g.Expect(initContainer.Image).To(Equal(expectedImage), "init container image should match spec")
-	g.Expect(initContainer.Command).To(Equal([]string{"sh", "-c", "cp /fernet-keys-src/* /etc/keystone/fernet-keys/"}))
+	g.Expect(initContainer.Command).To(Equal([]string{"sh", "-c", "install -m 0400 /fernet-keys-src/* /etc/keystone/fernet-keys/"}))
 
 	// Verify init container volume mounts.
 	g.Expect(initContainer.VolumeMounts).To(HaveLen(2))

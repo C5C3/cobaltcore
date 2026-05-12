@@ -1,0 +1,146 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the Fernet/credential key-repository mode hardening
+# (CC-0099, REQ-006). Verifies that the upstream Keystone startup warning
+# `key_repository is world readable: <path>` does NOT appear in the keystone
+# container log for either the fernet or credential key paths after the
+# operator's restrictive-mode Secret projections take effect.
+#
+# The two log assertions are run as SEPARATE grep invocations so that a
+# regression on one path fails independently with a CC-0099-tagged error
+# message — the credential-path warning is otherwise masked by the fernet
+# warning firing first when both paths regress together.
+#
+# REQ-006 (CC-0099)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-key-repository-mode
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR ──────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Wait for Ready=True ────────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-keymode
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=keystone-keymode -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Assert no `key_repository is world readable` warnings ──────
+  # Scrapes the keystone container log of a Deployment-managed API pod
+  # (the `pod-template-hash` label scopes the selector to API pods and
+  # excludes any CronJob-managed rotation pods sharing commonLabels) and
+  # asserts ZERO matches for both warning lines independently.
+  - try:
+    - script:
+        timeout: 60s
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          POD=$(kubectl get pods -n openstack \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-keymode,pod-template-hash \
+            -o jsonpath='{.items[0].metadata.name}')
+          if [ -z "$POD" ]; then
+            echo "ERROR (CC-0099 REQ-006): no keystone API pod matched the selector — cannot scrape startup log"
+            exit 1
+          fi
+          echo "Inspecting keystone container log on pod: $POD"
+
+          # Capture once; the two grep invocations operate on the same buffer
+          # so the assertions reflect a single point-in-time view of startup.
+          LOGS=$(kubectl logs -n openstack "$POD" -c keystone --tail=2000 2>&1)
+
+          FAIL=0
+
+          # CC-0099 REQ-006: assert NO world-readable warning for fernet path.
+          # Capture the matching lines (not just the count) so the offending
+          # log line is echoed directly in the assertion error per REQ-006.
+          FERNET_LINES=$(printf '%s\n' "$LOGS" | grep -F 'key_repository is world readable: /etc/keystone/fernet-keys' || true)
+          if [ -n "$FERNET_LINES" ]; then
+            FERNET_COUNT=$(printf '%s\n' "$FERNET_LINES" | wc -l | tr -d ' ')
+            echo "ERROR (CC-0099 REQ-006): keystone container logged 'key_repository is world readable: /etc/keystone/fernet-keys' ($FERNET_COUNT occurrence(s)) — restrictive-mode Secret projection regressed for the fernet key volume"
+            echo "Offending line(s):"
+            printf '%s\n' "$FERNET_LINES"
+            FAIL=1
+          else
+            echo "OK (CC-0099 REQ-006): no 'key_repository is world readable' warning for /etc/keystone/fernet-keys"
+          fi
+
+          # CC-0099 REQ-006: assert NO world-readable warning for credential path.
+          # Run as a SEPARATE grep so a regression on the credential path is
+          # surfaced even if the fernet assertion above already passed (and
+          # vice versa) — the upstream warning fires per-path.
+          CRED_LINES=$(printf '%s\n' "$LOGS" | grep -F 'key_repository is world readable: /etc/keystone/credential-keys' || true)
+          if [ -n "$CRED_LINES" ]; then
+            CRED_COUNT=$(printf '%s\n' "$CRED_LINES" | wc -l | tr -d ' ')
+            echo "ERROR (CC-0099 REQ-006): keystone container logged 'key_repository is world readable: /etc/keystone/credential-keys' ($CRED_COUNT occurrence(s)) — restrictive-mode Secret projection regressed for the credential key volume"
+            echo "Offending line(s):"
+            printf '%s\n' "$CRED_LINES"
+            FAIL=1
+          else
+            echo "OK (CC-0099 REQ-006): no 'key_repository is world readable' warning for /etc/keystone/credential-keys"
+          fi
+
+          exit $FAIL
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone API pods ==="
+          kubectl get pods -n $NAMESPACE \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-keymode \
+            -o wide 2>&1 || true
+          echo "=== Keystone container log (last 2000 lines) ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-keymode,pod-template-hash -o name 2>/dev/null); do
+            echo "--- $pod (keystone container, last 2000 lines) ---"
+            kubectl logs -n $NAMESPACE "$pod" -c keystone --tail=2000 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=keystone-keymode -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
+          echo "=== Mounted Secret volume modes (kubelet projection) ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-keymode,pod-template-hash -o name 2>/dev/null); do
+            echo "--- $pod /etc/keystone/fernet-keys ---"
+            kubectl exec -n $NAMESPACE "$pod" -c keystone -- ls -la /etc/keystone/fernet-keys 2>&1 || true
+            echo "--- $pod /etc/keystone/credential-keys ---"
+            kubectl exec -n $NAMESPACE "$pod" -c keystone -- ls -la /etc/keystone/credential-keys 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
