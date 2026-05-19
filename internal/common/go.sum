@@ -74,6 +74,7 @@ github.com/google/gofuzz v1.0.0/go.mod h1:dBl0BpW6vV/+mYPU4Po3pmUjxk6FQPldtuIdl/
 github.com/google/gofuzz v1.2.0 h1:xRy4A+RhZaiKjJ1bPfwQ8sedCA+YS2YcCHW6ec7JMi0=
 github.com/google/gofuzz v1.2.0/go.mod h1:dBl0BpW6vV/+mYPU4Po3pmUjxk6FQPldtuIdl/M65Eg=
 github.com/google/pprof v0.0.0-20260115054156-294ebfa9ad83 h1:z2ogiKUYzX5Is6zr/vP9vJGqPwcdqsWjOt+V8J7+bTc=
+github.com/google/pprof v0.0.0-20260115054156-294ebfa9ad83/go.mod h1:MxpfABSjhmINe3F1It9d+8exIHFvUqtLIRCdOGNXqiI=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
 github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
 github.com/json-iterator/go v1.1.12 h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnrnM=
@@ -100,6 +101,8 @@ github.com/onsi/ginkgo/v2 v2.28.0 h1:Rrf+lVLmtlBIKv6KrIGJCjyY8N36vDVcutbGJkyqjJc
 github.com/onsi/ginkgo/v2 v2.28.0/go.mod h1:ArE1D/XhNXBXCBkKOLkbsb2c81dQHCRcF5zwn/ykDRo=
 github.com/onsi/gomega v1.40.0 h1:Vtol0e1MghCD2ZVIilPDIg44XSL9l2QAn8ZNaljWcJc=
 github.com/onsi/gomega v1.40.0/go.mod h1:M/Uqpu/8qTjtzCLUA2zJHX9Iilrau25x1PdoSRbWh5A=
+github.com/onsi/gomega v1.41.0 h1:OwKp4pXNgVxf6sCplzYo794OFNuoL2q2SBMU5NSWOjA=
+github.com/onsi/gomega v1.41.0/go.mod h1:M/Uqpu/8qTjtzCLUA2zJHX9Iilrau25x1PdoSRbWh5A=
 github.com/opencontainers/go-digest v1.0.0 h1:apOUWs51W5PlhuyGyz9FCeeBIOUDA/6nW8Oi/yOhh5U=
 github.com/opencontainers/go-digest v1.0.0/go.mod h1:0JzlMkj0TRzQZfJkVvzbP0HBR3IKzErnv2BNG4W4MAM=
 github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=
@@ -185,6 +188,7 @@ k8s.io/klog/v2 v2.130.1/go.mod h1:3Jpz1GvMt720eyJH1ckRHK1EDfpxISzJ7I9OYgaDtPE=
 k8s.io/kube-openapi v0.0.0-20260127142750-a19766b6e2d4 h1:HhDfevmPS+OalTjQRKbTHppRIz01AWi8s45TMXStgYY=
 k8s.io/kube-openapi v0.0.0-20260127142750-a19766b6e2d4/go.mod h1:kdmbQkyfwUagLfXIad1y2TdrjPFWp2Q89B3qkRwf/pQ=
 k8s.io/utils v0.0.0-20260319190234-28399d86e0b5 h1:kBawHLSnx/mYHmRnNUf9d4CpjREbeZuxoSGOX/J+aYM=
+k8s.io/utils v0.0.0-20260319190234-28399d86e0b5/go.mod h1:xDxuJ0whA3d0I4mf/C4ppKHxXynQ+fxnkmQH0vTHnuk=
 sigs.k8s.io/controller-runtime v0.23.3 h1:VjB/vhoPoA9l1kEKZHBMnQF33tdCLQKJtydy4iqwZ80=
 sigs.k8s.io/controller-runtime v0.23.3/go.mod h1:B6COOxKptp+YaUT5q4l6LqUJTRpizbgf9KSRNdQGns0=
 sigs.k8s.io/gateway-api v1.5.1 h1:RqVRIlkhLhUO8wOHKTLnTJA6o/1un4po4/6M1nRzdd0=
