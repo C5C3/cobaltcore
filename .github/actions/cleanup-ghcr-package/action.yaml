@@ -53,7 +53,7 @@ runs:
   steps:
     - name: Delete untagged images
       if: inputs.delete-untagged == 'true'
-      uses: dataaxiom/ghcr-cleanup-action@cd0cdb900b5dbf3a6f2cc869f0dbb0b8211f50c4 # v1
+      uses: dataaxiom/ghcr-cleanup-action@34a2b6c814b9c6bcb92f78cba3e56a7ab9ca7a86 # v1
       with:
         package: ${{ inputs.package }}
         delete-untagged: true
@@ -63,7 +63,7 @@ runs:
 
     - name: Delete old tagged images (by pattern)
       if: inputs.delete-tags != ''
-      uses: dataaxiom/ghcr-cleanup-action@cd0cdb900b5dbf3a6f2cc869f0dbb0b8211f50c4 # v1
+      uses: dataaxiom/ghcr-cleanup-action@34a2b6c814b9c6bcb92f78cba3e56a7ab9ca7a86 # v1
       with:
         package: ${{ inputs.package }}
         delete-tags: ${{ inputs.delete-tags }}
@@ -73,7 +73,7 @@ runs:
 
     - name: Delete old tagged images (by exclusion)
       if: inputs.exclude-tags != ''
-      uses: dataaxiom/ghcr-cleanup-action@cd0cdb900b5dbf3a6f2cc869f0dbb0b8211f50c4 # v1
+      uses: dataaxiom/ghcr-cleanup-action@34a2b6c814b9c6bcb92f78cba3e56a7ab9ca7a86 # v1
       with:
         package: ${{ inputs.package }}
         exclude-tags: ${{ inputs.exclude-tags }}
