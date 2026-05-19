@@ -53,7 +53,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
+    - uses: ./.github/actions/registry-login
       with:
         registry: ${{ inputs.registry }}
         username: ${{ inputs.username }}

@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Container registry login with retry/backoff. docker/login-action has no
+# built-in retry, so a transient ghcr.io timeout ("context deadline exceeded")
+# fails the whole job. This wraps `docker login` in a bounded retry loop so
+# registry/DNS/TLS flakes no longer break CI.
+
+name: Registry login
+description: >
+  Authenticate to a container registry via `docker login` with bounded
+  retry and linear backoff to absorb transient network failures.
+
+inputs:
+  registry:
+    description: Container registry URL
+    required: false
+    default: ghcr.io
+  username:
+    description: Registry username
+    required: true
+  password:
+    description: Registry password/token
+    required: true
+  attempts:
+    description: Maximum number of login attempts
+    required: false
+    default: '5'
+  base-delay:
+    description: >
+      Base delay in seconds for the linear backoff between attempts; the
+      Nth retry waits N * base-delay seconds.
+    required: false
+    default: '5'
+
+runs:
+  using: composite
+  steps:
+    - name: Log in to ${{ inputs.registry }}
+      shell: bash
+      env:
+        REGISTRY: ${{ inputs.registry }}
+        REGISTRY_USERNAME: ${{ inputs.username }}
+        REGISTRY_PASSWORD: ${{ inputs.password }}
+        MAX_ATTEMPTS: ${{ inputs.attempts }}
+        BASE_DELAY: ${{ inputs.base-delay }}
+      run: |
+        set -euo pipefail
+        for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+          if echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY" \
+               --username "$REGISTRY_USERNAME" --password-stdin; then
+            exit 0
+          fi
+          if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+            delay=$((attempt * BASE_DELAY))
+            echo "::warning::docker login to $REGISTRY failed (attempt $attempt/$MAX_ATTEMPTS); retrying in ${delay}s"
+            sleep "$delay"
+          fi
+        done
+        echo "::error::docker login to $REGISTRY failed after $MAX_ATTEMPTS attempts"
+        exit 1
