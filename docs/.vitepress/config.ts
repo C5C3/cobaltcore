@@ -89,6 +89,12 @@ export default defineConfig({
           },
         ],
       },
+      {
+        text: 'Contributing',
+        items: [
+          { text: 'Claude Code Skills', link: '/contributing/claude-skills' },
+        ],
+      },
     ],
     socialLinks: [
       { icon: 'github', link: 'https://github.com/c5c3/forge' },
