@@ -249,25 +249,23 @@ the `setup-test-deps` composite action, the same one consumed internally by
 
 Timeout: 5 minutes.
 
-### shell-unit-tests-cc-0100
+### test-shell
 
-Sub-second shell unit-test suite that pins down the `WITH_PROMETHEUS` gating
-contract. The suite is its own job (rather than steps folded into another
-job) because the tests are scoped to the kind-only opt-in plumbing —
-keeping them isolated keeps their failure signal unambiguous. The job runs
-unconditionally on every PR, so a regression in the gating contract is
-caught even when no prometheus paths have changed.
+Runs every shell unit test under `tests/unit/` (hack/, deploy/, docs/,
+renovate/). Tests read repo files only — no cluster, no untrusted input —
+so the job is unconditional and finishes in well under a minute on a cold
+runner. Tests that depend on `yq` or `kustomize` are written to skip
+gracefully when those tools are missing; the job installs `kustomize`
+explicitly so the deploy/ overlay assertions run their full check set
+(`yq` is preinstalled on ubuntu-latest).
 
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
-| 2 | `bash tests/unit/hack/deploy_infra_prometheus_flag_test.sh` | Asserts `hack/deploy-infra.sh` stages `keystone-operator.json`, applies `deploy/kind/prometheus/`, and invokes `enable_keystone_operator_servicemonitor` only when `WITH_PROMETHEUS=true` |
-| 3 | `bash tests/unit/ci/ci_path_filters_e2e_prometheus_test.sh` | Asserts `hack/ci-resolve-changes.sh` emits `e2e-prometheus=true` for the documented trigger inputs |
+| 2 | Install kustomize | Downloads the pinned kustomize binary into `/usr/local/bin` |
+| 3 | `make test-shell` | Iterates every `tests/unit/**/*_test.sh` and aggregates exit status |
 
 Timeout: 5 minutes.
-
-A future cleanup will fold these tests into the existing `make test-shell`
-target once the unrelated docs-test bug is resolved.
 
 ### test
 

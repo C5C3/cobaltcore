@@ -94,8 +94,8 @@ test_custom_manager_regex_captures_chart_pin() {
   fi
 
   local expected_value
-  expected_value="$(grep -E '^\s+- version:' "$FLUX_WEB_FILE" \
-    | head -1 | sed -E 's/^\s+- version:\s*"([^"]+)".*/\1/')"
+  expected_value="$(grep -E '^[[:space:]]+- version:' "$FLUX_WEB_FILE" \
+    | head -1 | sed -E 's/^[[:space:]]+- version:[[:space:]]*"([^"]+)".*/\1/')"
   assert_not_empty "chart version input present in deploy/kind/base/flux-web.yaml" \
     "$expected_value"
 
@@ -103,7 +103,7 @@ test_custom_manager_regex_captures_chart_pin() {
   match_string="$(jq -r '.matchStrings[0]' <<<"$entry")"
 
   local line
-  line="$(grep -E '^\s+- version:' "$FLUX_WEB_FILE" | head -1)"
+  line="$(grep -E '^[[:space:]]+- version:' "$FLUX_WEB_FILE" | head -1)"
 
   local captured
   captured="$(REGEX="$match_string" LINE="$line" perl -e '

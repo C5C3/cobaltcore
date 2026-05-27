@@ -158,7 +158,7 @@ test_kind_base_kustomization_drops_chaos_mesh_patch() {
   # `yq -r` returns "null" for missing keys, which we filter out. Any
   # remaining "chaos-mesh" line is a violation.
   local patch_target_hits
-  patch_target_hits="$(yq -r '.patches[]?.target.name // empty' "$KIND_BASE_KUSTOMIZATION" 2>/dev/null \
+  patch_target_hits="$(yq -r '.patches[]?.target.name // ""' "$KIND_BASE_KUSTOMIZATION" 2>/dev/null \
     | grep -c '^chaos-mesh$' || true)"
 
   assert_eq "no patch in kind/base/kustomization.yaml targets HelmRelease/chaos-mesh" \
@@ -333,7 +333,7 @@ test_kustomize_build_kind_chaos_overlay_renders_full_bundle() {
   # Namespace document with the privileged PodSecurity label.
   local ns_label
   ns_label="$(printf '%s\n' "$rendered" | yq -r \
-    'select(.kind == "Namespace" and .metadata.name == "chaos-mesh") | .metadata.labels."pod-security.kubernetes.io/enforce" // empty' \
+    'select(.kind == "Namespace" and .metadata.name == "chaos-mesh") | .metadata.labels."pod-security.kubernetes.io/enforce" // ""' \
     2>/dev/null | head -n1)"
   assert_eq "Namespace/chaos-mesh carries the privileged PodSecurity label" \
     "privileged" "$ns_label"
@@ -341,7 +341,7 @@ test_kustomize_build_kind_chaos_overlay_renders_full_bundle() {
   # HelmRepository at the chaos-mesh chart URL.
   local repo_url
   repo_url="$(printf '%s\n' "$rendered" | yq -r \
-    'select(.kind == "HelmRepository" and .metadata.name == "chaos-mesh") | .spec.url // empty' \
+    'select(.kind == "HelmRepository" and .metadata.name == "chaos-mesh") | .spec.url // ""' \
     2>/dev/null | head -n1)"
   assert_eq "HelmRepository/chaos-mesh points at https://charts.chaos-mesh.org" \
     "https://charts.chaos-mesh.org" "$repo_url"
@@ -349,10 +349,10 @@ test_kustomize_build_kind_chaos_overlay_renders_full_bundle() {
   # HelmRelease with dependsOn cert-manager preserved verbatim.
   local depends_on_name depends_on_namespace
   depends_on_name="$(printf '%s\n' "$rendered" | yq -r \
-    'select(.kind == "HelmRelease" and .metadata.name == "chaos-mesh") | .spec.dependsOn[0].name // empty' \
+    'select(.kind == "HelmRelease" and .metadata.name == "chaos-mesh") | .spec.dependsOn[0].name // ""' \
     2>/dev/null | head -n1)"
   depends_on_namespace="$(printf '%s\n' "$rendered" | yq -r \
-    'select(.kind == "HelmRelease" and .metadata.name == "chaos-mesh") | .spec.dependsOn[0].namespace // empty' \
+    'select(.kind == "HelmRelease" and .metadata.name == "chaos-mesh") | .spec.dependsOn[0].namespace // ""' \
     2>/dev/null | head -n1)"
   assert_eq "HelmRelease.spec.dependsOn[0].name is cert-manager" "cert-manager" "$depends_on_name"
   assert_eq "HelmRelease.spec.dependsOn[0].namespace is cert-manager" "cert-manager" "$depends_on_namespace"
@@ -361,16 +361,16 @@ test_kustomize_build_kind_chaos_overlay_renders_full_bundle() {
   # reduced controller-manager resource requests.
   local runtime socket_path dashboard_create cm_cpu
   runtime="$(printf '%s\n' "$rendered" | yq -r \
-    'select(.kind == "HelmRelease" and .metadata.name == "chaos-mesh") | .spec.values.chaosDaemon.runtime // empty' \
+    'select(.kind == "HelmRelease" and .metadata.name == "chaos-mesh") | .spec.values.chaosDaemon.runtime // ""' \
     2>/dev/null | head -n1)"
   socket_path="$(printf '%s\n' "$rendered" | yq -r \
-    'select(.kind == "HelmRelease" and .metadata.name == "chaos-mesh") | .spec.values.chaosDaemon.socketPath // empty' \
+    'select(.kind == "HelmRelease" and .metadata.name == "chaos-mesh") | .spec.values.chaosDaemon.socketPath // ""' \
     2>/dev/null | head -n1)"
   dashboard_create="$(printf '%s\n' "$rendered" | yq -r \
     'select(.kind == "HelmRelease" and .metadata.name == "chaos-mesh") | .spec.values.dashboard.create' \
     2>/dev/null | head -n1)"
   cm_cpu="$(printf '%s\n' "$rendered" | yq -r \
-    'select(.kind == "HelmRelease" and .metadata.name == "chaos-mesh") | .spec.values.controllerManager.resources.requests.cpu // empty' \
+    'select(.kind == "HelmRelease" and .metadata.name == "chaos-mesh") | .spec.values.controllerManager.resources.requests.cpu // ""' \
     2>/dev/null | head -n1)"
 
   assert_eq "chaosDaemon.runtime is containerd" "containerd" "$runtime"

@@ -221,32 +221,25 @@ jobs:
       - name: Run shellcheck on hack/*.sh and operator rotation scripts
         run: make shellcheck
 
-  # CC-0100, REQ-010: Run the CC-0100 shell unit tests in CI.
-  #
-  # Why a sibling job and not `make test-shell`:
-  #   `make test-shell` globs every shell test under tests/unit/, including
-  #   tests/unit/docs/reference_cross_links_test.sh which currently
-  #   references the pre-PR-293 location of docs/reference/keystone-crd.md
-  #   (the file was moved to docs/reference/keystone/keystone-crd.md by
-  #   the docs-grouping commit dd583904). Wiring `make test-shell` into
-  #   CI would fail every PR on that pre-existing breakage — fixing the
-  #   docs-cross-links test belongs to the docs-grouping follow-up, not
-  #   CC-0100, per the rule-4 minimal-changes constraint. Once the
-  #   unrelated docs-test bug is fixed, this job can be replaced with
-  #   `make test-shell` to cover every shell test in tests/unit/. The
-  #   decision is recorded as a CC-0100 follow-up in the progress JSON.
-  #
-  # The tests below read repo files only (no untrusted input consumed),
-  # so this adds no injection surface and is sub-second on a cold runner.
-  shell-unit-tests-cc-0100:
+  # Run every shell unit test under tests/unit/ (hack/, deploy/, docs/,
+  # renovate/). Repo files only — adds no injection surface. ubuntu-latest
+  # preinstalls bash, jq, mikefarah/yq, perl, npx; kustomize is installed
+  # explicitly so deploy/ overlay tests run the full assertion set instead
+  # of skipping their kustomize-build checks. The renovate/ tests pull
+  # renovate-config-validator via npx, taking ~30s on a cold runner.
+  test-shell:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - name: Run CC-0100 deploy-infra prometheus-flag unit test
-        run: bash tests/unit/hack/deploy_infra_prometheus_flag_test.sh
-      - name: Run CC-0100 CI path-filter completeness lint
-        run: bash tests/unit/ci/ci_path_filters_e2e_prometheus_test.sh
+      - name: Install kustomize
+        run: |
+          KUSTOMIZE_VERSION=v5.4.3
+          curl -fsSL -o /tmp/kustomize.tar.gz \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          tar -xzf /tmp/kustomize.tar.gz -C /usr/local/bin
+      - name: Run shell unit tests
+        run: make test-shell
 
   # CC-0094: Enforce the canonical-scaffold contract for the invalid-CR
   # Chainsaw fixtures (sourcery-ai review #1, FC1 from review #2). Runs

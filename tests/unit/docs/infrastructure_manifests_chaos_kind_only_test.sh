@@ -29,7 +29,7 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-DOC="$PROJECT_ROOT/docs/reference/infrastructure-manifests.md"
+DOC="$PROJECT_ROOT/docs/reference/infrastructure/infrastructure-manifests.md"
 
 if [[ ! -f "$DOC" ]]; then
   echo "FAIL: $DOC does not exist"

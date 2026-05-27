@@ -36,7 +36,7 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-QUICK_START="$PROJECT_ROOT/docs/quick-start.md"
+QUICK_START="$PROJECT_ROOT/docs/quick-start-extended.md"
 
 # --- Test 1: Step 4a heading + anchor exist (CC-0086, REQ-005) ---
 test_step_4a_heading_and_anchor() {

@@ -27,7 +27,7 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-CRD_DOC="$PROJECT_ROOT/docs/reference/keystone-crd.md"
+CRD_DOC="$PROJECT_ROOT/docs/reference/keystone/keystone-crd.md"
 
 # --- Test 1: heading exists (CC-0095, REQ-008) ---
 test_heading_exists() {
@@ -41,7 +41,7 @@ test_heading_exists() {
 
   assert_file_contains "naming-convention heading present" \
     "$CRD_DOC" \
-    '## Sub-Resource Naming Convention (CC-0095)'
+    '## Sub-Resource Naming Convention'
 }
 
 # --- Test 2: section asserts the bare-name convention (CC-0095, REQ-008) ---
