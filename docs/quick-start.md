@@ -37,10 +37,11 @@ KIND_HOST_PORT=8443 make deploy-infra
 ```
 
 Creates the `forge-e2e` kind cluster with `host:8443 → nodePort 31443`,
-then installs Flux, cert-manager, OpenBao (initialised, unsealed and
-bootstrapped), MariaDB operator + `openstack-db`, Memcached operator +
-`openstack-memcached`, External Secrets, Envoy Gateway and the shared
-`openstack-gw`. Expect **5–10 minutes** on first run (image pulls dominate).
+then installs Flux, cert-manager, the Gateway API CRDs,
+prometheus-operator-crds, OpenBao (initialised, unsealed and bootstrapped),
+MariaDB operator + `openstack-db`, External Secrets, Memcached operator +
+`openstack-memcached`, Envoy Gateway and the shared `openstack-gw`. Expect
+**5–10 minutes** on first run (image pulls dominate).
 
 ## Step 3 — Keystone operator
 

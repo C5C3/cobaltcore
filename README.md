@@ -21,16 +21,7 @@ Chainsaw E2E).
 
 ## Roadmap
 
-The full implementation plan is documented in [`.planwerk/PLAN.md`](.planwerk/PLAN.md) and spans 11 phases:
-
-1. **Project Foundation & Test Infrastructure** — Go Workspace monorepo, build system, test harnesses, and CI pipeline
-2. **Shared Library Packages** — Common types, conditions, config rendering, and Kubernetes helpers in `internal/common/`
-3. **Keystone Container Image Build Pipeline** — Multi-stage Docker builds for the Keystone service image
-4. **Infrastructure Deployment Stack** — FluxCD HelmReleases, OpenBao HA, ESO integration, MariaDB & Memcached
-5. **Keystone CRD & Webhooks** — API type definitions with Kubebuilder markers, defaulting, and validation
-6. **Keystone Reconciler** — Sequential sub-reconciler pattern with condition progression
-7. **Keystone Dependencies & E2E Tests** — Detailed dependency interactions and Chainsaw E2E test suite
-8. **Keystone Operator Packaging** — Operator image, Helm chart, and complete CI pipeline
-9. **c5c3-operator** — ControlPlane CRD with Keystone-only orchestration and auxiliary CRDs
-10. **End-to-End Integration Hardening** — Full-stack validation, failure recovery, and stress tests
-11. **Release Preparation** — Release workflow, documentation, and CI gate validation
+Outstanding work is tracked in [GitHub Issues](https://github.com/c5c3/forge/issues) — the issue
+tracker is the single source of truth for planned features (`CC-NNNN` labels), production-hardening
+gaps, and release milestones. See the architecture handbook under [`architecture/docs/`](architecture/docs/)
+for the design context behind individual feature IDs.
