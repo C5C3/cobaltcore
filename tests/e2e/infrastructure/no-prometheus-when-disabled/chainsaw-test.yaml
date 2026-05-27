@@ -4,17 +4,18 @@
 
 # Chainsaw E2E test pinning the default-state non-regression invariant for the
 # CC-0100 kind opt-in: when WITH_PROMETHEUS is unset (or set to anything
-# other than the literal string "true"), `make deploy-infra` MUST NOT create
-# the `monitoring` namespace, install the kube-prometheus-stack HelmRelease,
-# or render a `ServiceMonitor/keystone-operator` in `openstack`.
+# other than the literal string "true"), `make deploy-infra` MUST NOT install
+# the kube-prometheus-stack HelmRelease or render a
+# `ServiceMonitor/keystone-operator` in `keystone-system` (the operator's
+# dedicated Namespace introduced in CC-0105).
 #
 # Why this test exists (CC-0100, REQ-006):
 #   The shell unit test (tests/unit/hack/deploy_infra_prometheus_flag_test.sh)
 #   exercises the gating logic at the source-script level (grep + subshell
 #   sourcing). The companion happy-path suite at
-#   tests/e2e/keystone/prometheus-stack/ skips when `monitoring` is absent.
-#   Neither positively asserts "default cluster has no monitoring footprint",
-#   so a regression that accidentally creates the namespace (e.g. a stray
+#   tests/e2e/keystone/prometheus-stack/ skips when the stack is absent.
+#   Neither positively asserts "default cluster has no kube-prometheus-stack
+#   footprint", so a regression that accidentally installs it (e.g. a stray
 #   `kubectl apply -k deploy/kind/prometheus` outside the WITH_PROMETHEUS
 #   gate, or a future kustomize merge that pulls the overlay into the base)
 #   would slip through. This suite closes that gap by asserting absence
@@ -22,11 +23,13 @@
 #
 # Lane wiring:
 #   This test runs in the default e2e-infra lane (which exercises
-#   `make deploy-infra` without WITH_PROMETHEUS), so the assertion holds:
-#   the monitoring namespace, the HelmRelease, and the ServiceMonitor are
-#   all expected to be absent. The e2e-prometheus lane runs only the
-#   tests/e2e/keystone/prometheus-stack/ directory, so this test is not
-#   exercised there (where the assertions would, correctly, fail).
+#   `make deploy-infra` without WITH_PROMETHEUS), so the assertions hold:
+#   the kube-prometheus-stack HelmRelease and the ServiceMonitor are
+#   expected to be absent, while the base-owned `monitoring` Namespace is
+#   expected to be present (CC-0105, REQ-004). The e2e-prometheus lane runs
+#   only the tests/e2e/keystone/prometheus-stack/ directory, so this test is
+#   not exercised there (where the workload assertions would, correctly,
+#   fail).
 #
 # Scope gating — none. Unlike chaos-mesh-health and prometheus-stack which
 # carry `overlay: kind`, this test is *environment-agnostic*: it asserts an
@@ -68,18 +71,27 @@ spec:
         content: |
           set -euo pipefail
 
-          # ── Assertion 1: monitoring namespace is absent (CC-0100, REQ-006) ──
-          # The opt-in overlay deploy/kind/prometheus/namespace.yaml is the
-          # only producer of this namespace. Its presence on a default-flag
-          # cluster proves the gate at hack/deploy-infra.sh leaked.
-          if kubectl get namespace monitoring >/dev/null 2>&1; then
-            echo "FAIL: namespace 'monitoring' exists on a default (WITH_PROMETHEUS unset/false) cluster."
-            echo "      Source of regression: deploy/kind/prometheus/namespace.yaml is being applied"
-            echo "      outside the WITH_PROMETHEUS=true gate in hack/deploy-infra.sh, or the overlay"
-            echo "      has been pulled into deploy/kind/base/ or deploy/flux-system/."
+          # ── Assertion 1: monitoring namespace is base-owned (CC-0105, REQ-004) ──
+          # Post-CC-0105 the flux-system base owns the `monitoring` Namespace
+          # (deploy/flux-system/namespaces.yaml) so the always-on
+          # prometheus-operator-crds HelmRelease — a hard dependency of
+          # memcached-operator — has a live target. Its presence on a
+          # default-flag cluster is the EXPECTED steady state, not a leak;
+          # the previous "must be absent" assertion was a CC-0100 artifact
+          # that CC-0105 superseded. Asserting presence here pins the
+          # consolidation: a regression that drops `monitoring` from the
+          # base (or reintroduces the dead monitoring-system Namespace)
+          # would strand prometheus-operator-crds and break the
+          # memcached-operator dependency chain.
+          if ! kubectl get namespace monitoring >/dev/null 2>&1; then
+            echo "FAIL: namespace 'monitoring' is absent on a default cluster."
+            echo "      Post-CC-0105 (REQ-004) the flux-system base MUST own 'monitoring' so the"
+            echo "      always-on prometheus-operator-crds HelmRelease has a live target Namespace."
+            echo "      Source of regression: 'monitoring' was dropped from"
+            echo "      deploy/flux-system/namespaces.yaml, or monitoring-system was reintroduced."
             exit 1
           fi
-          echo "OK: namespace 'monitoring' is absent (CC-0100, REQ-006)"
+          echo "OK: namespace 'monitoring' is present and base-owned (CC-0105, REQ-004)"
 
           # ── Assertion 2: no kube-prometheus-stack HelmRelease anywhere ─────
           # Defensive: a HelmRelease named kube-prometheus-stack in any
@@ -98,25 +110,27 @@ spec:
           fi
           echo "OK: no HelmRelease 'kube-prometheus-stack' exists (CC-0100, REQ-006)"
 
-          # ── Assertion 3: no ServiceMonitor/keystone-operator in openstack ──
+          # ── Assertion 3: no ServiceMonitor/keystone-operator in keystone-system ──
           # The deploy script's enable_keystone_operator_servicemonitor
           # helper patches monitoring.serviceMonitor.enabled=true only inside
           # the WITH_PROMETHEUS=true gate. On a default cluster the
           # rendered chart's monitoring.serviceMonitor.enabled stays false
           # (chart default at operators/keystone/helm/keystone-operator/values.yaml),
           # so the ServiceMonitor must not exist.
-          # The 'openstack' namespace is itself created by the base overlay,
-          # so a NotFound on the ServiceMonitor is the meaningful signal.
+          # Post-CC-0105, the keystone-operator HelmRelease lives in
+          # `keystone-system`, so any rendered ServiceMonitor would land in
+          # that Namespace; the previous check against `openstack` would not
+          # catch a regression because the SM no longer renders there at all.
           if kubectl get servicemonitor.monitoring.coreos.com keystone-operator \
-                -n openstack >/dev/null 2>&1; then
-            echo "FAIL: ServiceMonitor/keystone-operator exists in 'openstack' on a default cluster."
+                -n keystone-system >/dev/null 2>&1; then
+            echo "FAIL: ServiceMonitor/keystone-operator exists in 'keystone-system' on a default cluster."
             echo "      Source of regression: hack/deploy-infra.sh ran"
             echo "      enable_keystone_operator_servicemonitor outside the WITH_PROMETHEUS gate,"
             echo "      or the keystone-operator chart default monitoring.serviceMonitor.enabled"
             echo "      flipped to true."
             exit 1
           fi
-          echo "OK: no ServiceMonitor/keystone-operator in 'openstack' (CC-0100, REQ-006)"
+          echo "OK: no ServiceMonitor/keystone-operator in 'keystone-system' (CC-0100, REQ-006, CC-0105)"
 
           echo "PASS: default kind deploy footprint matches the WITH_PROMETHEUS=false contract."
     catch:
@@ -125,13 +139,13 @@ spec:
     # short-circuit the rest of the dump.
     - script:
         content: |
-          echo "=== Namespaces (filtered to monitoring/openstack) ==="
-          kubectl get ns monitoring openstack -o wide 2>&1 || true
+          echo "=== Namespaces (filtered to monitoring/keystone-system/openstack) ==="
+          kubectl get ns monitoring keystone-system openstack -o wide 2>&1 || true
           echo "=== HelmReleases named kube-prometheus-stack (any namespace) ==="
           kubectl get helmrelease.helm.toolkit.fluxcd.io --all-namespaces \
             --field-selector=metadata.name=kube-prometheus-stack -o wide 2>&1 || true
-          echo "=== ServiceMonitors in openstack ==="
-          kubectl get servicemonitor.monitoring.coreos.com -n openstack -o wide 2>&1 || true
+          echo "=== ServiceMonitors in keystone-system (CC-0105) ==="
+          kubectl get servicemonitor.monitoring.coreos.com -n keystone-system -o wide 2>&1 || true
           echo "=== keystone-operator HelmRelease values (effective) ==="
-          kubectl get helmrelease.helm.toolkit.fluxcd.io keystone-operator -n openstack \
+          kubectl get helmrelease.helm.toolkit.fluxcd.io keystone-operator -n keystone-system \
             -o jsonpath='{.spec.values}' 2>&1 || true

@@ -397,7 +397,7 @@ mariadb-operator).
 | --- | --- |
 | API version | `helm.toolkit.fluxcd.io/v2` |
 | Name | `keystone-operator` |
-| Target namespace | `openstack` |
+| Target namespace | `keystone-system` |
 | Reconciliation interval | `30m` |
 | Chart | `keystone-operator` |
 | Version constraint | `>=0.1.0 <1.0.0` |
@@ -441,7 +441,7 @@ cert-manager (cert-manager namespace)
 ├── mariadb-operator (mariadb-system namespace)
 ├── memcached-operator (memcached-system namespace)
 ├── external-secrets (external-secrets namespace)
-└── keystone-operator (openstack namespace)
+└── keystone-operator (keystone-system namespace)
     ├── dependsOn: cert-manager/cert-manager
     ├── dependsOn: mariadb-operator/mariadb-system
     ├── dependsOn: memcached-operator/memcached-system
@@ -537,7 +537,7 @@ FluxCD helm-controller
   │     → ServiceAccount, ClusterRole, ClusterRoleBinding, Deployment, Service,
   │       MutatingWebhookConfiguration, ValidatingWebhookConfiguration
   │
-  ├─ 5. Applies rendered resources to openstack namespace
+  ├─ 5. Applies rendered resources to keystone-system namespace
   │
   ├─ 6. cert-manager detects inject-ca-from annotation on webhook configurations
   │     → Injects CA bundle from Certificate resource into caBundle field

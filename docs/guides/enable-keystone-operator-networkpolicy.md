@@ -3,6 +3,8 @@ title: Enable the Keystone Operator NetworkPolicy
 quadrant: operator
 ---
 
+<!-- CC-0105: operator namespace is `keystone-system`; workload (Keystone CR) stays in `openstack`. -->
+
 # How-to: Enable the Keystone Operator NetworkPolicy
 
 This guide walks an operator through opting in to the chart-level
@@ -144,7 +146,7 @@ Apply the values change with a rolling `helm upgrade`:
 
 ```bash
 helm upgrade keystone-operator oci://ghcr.io/c5c3/charts/keystone-operator \
-  --namespace keystone-operator-system \
+  --namespace keystone-system \
   --version <chart-version> \
   -f values.yaml
 ```
@@ -160,8 +162,8 @@ once the new pod reaches `Ready`.
 ### 4.1 NetworkPolicy exists and matches the pod
 
 ```bash
-kubectl -n keystone-operator-system describe networkpolicy \
-  $(kubectl -n keystone-operator-system get networkpolicy -o name \
+kubectl -n keystone-system describe networkpolicy \
+  $(kubectl -n keystone-system get networkpolicy -o name \
     | grep keystone-operator)
 ```
 
@@ -172,7 +174,7 @@ API server.
 Confirm the selector actually matches exactly one pod:
 
 ```bash
-kubectl -n keystone-operator-system get pods \
+kubectl -n keystone-system get pods \
   -l app.kubernetes.io/name=keystone-operator,app.kubernetes.io/instance=keystone-operator
 ```
 
@@ -200,7 +202,7 @@ Tail operator logs and confirm there are no `i/o timeout`,
 controller-runtime client dials the API:
 
 ```bash
-kubectl -n keystone-operator-system logs deploy/keystone-operator -f \
+kubectl -n keystone-system logs deploy/keystone-operator -f \
   | grep -Ei 'apiserver|leader|timeout|refused|deadline'
 ```
 

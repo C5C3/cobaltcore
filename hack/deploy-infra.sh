@@ -628,11 +628,11 @@ enable_keystone_operator_servicemonitor() {
   local timeout="${1:-${HELMRELEASE_TIMEOUT}}"
 
   log "Enabling keystone-operator ServiceMonitor (CC-0100, REQ-005)..."
-  kubectl patch helmrelease keystone-operator -n openstack --type=merge \
+  kubectl patch helmrelease keystone-operator -n keystone-system --type=merge \
     -p '{"spec":{"values":{"monitoring":{"serviceMonitor":{"enabled":true}}}}}'
 
   local suspended
-  suspended=$(kubectl get helmrelease keystone-operator -n openstack \
+  suspended=$(kubectl get helmrelease keystone-operator -n keystone-system \
     -o jsonpath='{.spec.suspend}' 2>/dev/null || true)
   if [[ "${suspended}" == "true" ]]; then
     log "keystone-operator HelmRelease is suspended (kind base patch); skipping reconcile wait."

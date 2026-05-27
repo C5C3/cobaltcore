@@ -42,12 +42,15 @@
 #   - A Keystone CR reconciles to Ready=True under the policy (REQ-010, REQ-011)
 #   - Failures produce enough diagnostic output to debug egress regressions
 #     without re-running locally (REQ-011)
+#
+# CC-0105: operator NetworkPolicy lives in keystone-system; the Keystone CR
+# remains in openstack to exercise cross-Namespace operator-→-workload semantics.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
   name: keystone-operator-network-policy-egress
 spec:
-  namespace: openstack
+  namespace: keystone-system
   timeouts:
     assert: 5m
   steps:
@@ -58,26 +61,26 @@ spec:
         content: |
           helm install keystone-operator-netpol \
             ${GITHUB_WORKSPACE:-.}/operators/keystone/helm/keystone-operator/ \
-            --namespace openstack \
+            --namespace keystone-system --create-namespace \
             --values ${GITHUB_WORKSPACE:-.}/tests/e2e/keystone-operator/network-policy-egress/00-install-operator.yaml \
             --wait --timeout 90s
     catch:
     - script:
         content: |
           echo "=== Helm status ==="
-          helm status keystone-operator-netpol -n openstack 2>&1 || true
+          helm status keystone-operator-netpol -n keystone-system 2>&1 || true
           echo "=== Pod status ==="
-          kubectl get pods -n openstack -l app.kubernetes.io/instance=keystone-operator-netpol -o wide 2>&1 || true
+          kubectl get pods -n keystone-system -l app.kubernetes.io/instance=keystone-operator-netpol -o wide 2>&1 || true
           echo "=== Operator pod logs ==="
-          for pod in $(kubectl get pods -n openstack -l app.kubernetes.io/instance=keystone-operator-netpol -o name 2>/dev/null); do
+          for pod in $(kubectl get pods -n keystone-system -l app.kubernetes.io/instance=keystone-operator-netpol -o name 2>/dev/null); do
             echo "--- $pod ---"
-            kubectl logs -n openstack "$pod" --all-containers --tail=120 2>&1 || true
-            kubectl logs -n openstack "$pod" --all-containers --tail=120 --previous 2>&1 || true
+            kubectl logs -n keystone-system "$pod" --all-containers --tail=120 2>&1 || true
+            kubectl logs -n keystone-system "$pod" --all-containers --tail=120 --previous 2>&1 || true
           done
           echo "=== NetworkPolicy state ==="
-          kubectl get networkpolicy keystone-operator-netpol -n openstack -o yaml 2>&1 || true
+          kubectl get networkpolicy keystone-operator-netpol -n keystone-system -o yaml 2>&1 || true
           echo "=== Events ==="
-          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          kubectl get events -n keystone-system --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
   # ── Step 2: Assert NetworkPolicy exists in release namespace (REQ-010) ──
   - try:
     - assert:
@@ -86,7 +89,7 @@ spec:
           kind: NetworkPolicy
           metadata:
             name: keystone-operator-netpol
-            namespace: openstack
+            namespace: keystone-system
             labels:
               app.kubernetes.io/name: keystone-operator
               app.kubernetes.io/instance: keystone-operator-netpol
@@ -120,17 +123,17 @@ spec:
     - script:
         content: |
           echo "=== Operator pod logs (current) ==="
-          for pod in $(kubectl get pods -n openstack -l app.kubernetes.io/instance=keystone-operator-netpol -o name 2>/dev/null); do
+          for pod in $(kubectl get pods -n keystone-system -l app.kubernetes.io/instance=keystone-operator-netpol -o name 2>/dev/null); do
             echo "--- $pod ---"
-            kubectl logs -n openstack "$pod" --all-containers --tail=200 2>&1 || true
+            kubectl logs -n keystone-system "$pod" --all-containers --tail=200 2>&1 || true
           done
           echo "=== Operator pod logs (previous) ==="
-          for pod in $(kubectl get pods -n openstack -l app.kubernetes.io/instance=keystone-operator-netpol -o name 2>/dev/null); do
+          for pod in $(kubectl get pods -n keystone-system -l app.kubernetes.io/instance=keystone-operator-netpol -o name 2>/dev/null); do
             echo "--- $pod ---"
-            kubectl logs -n openstack "$pod" --all-containers --tail=200 --previous 2>&1 || true
+            kubectl logs -n keystone-system "$pod" --all-containers --tail=200 --previous 2>&1 || true
           done
           echo "=== NetworkPolicy YAML ==="
-          kubectl get networkpolicy keystone-operator-netpol -n openstack -o yaml 2>&1 || true
+          kubectl get networkpolicy keystone-operator-netpol -n keystone-system -o yaml 2>&1 || true
           echo "=== Keystone CR status ==="
           kubectl get keystone keystone-netpol-egress -n openstack -o jsonpath='{.status}' 2>&1 | jq . || true
           echo "=== Failed Job logs ==="
@@ -138,7 +141,9 @@ spec:
             echo "--- $job ---"
             kubectl logs -n openstack "$job" --all-containers --tail=100 2>&1 || true
           done
-          echo "=== Events (last 30) ==="
+          echo "=== Events (operator ns, last 30) ==="
+          kubectl get events -n keystone-system --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          echo "=== Events (workload ns, last 30) ==="
           kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
   # ── Step 5: Cleanup Helm release ─────────────────────────────────────────
   # Release-scoped uninstall removes the Deployment, ServiceAccount,
@@ -147,5 +152,5 @@ spec:
   - try:
     - script:
         content: |
-          helm uninstall keystone-operator-netpol -n openstack 2>&1 || true
+          helm uninstall keystone-operator-netpol -n keystone-system 2>&1 || true
           kubectl delete keystone keystone-netpol-egress -n openstack --ignore-not-found 2>&1 || true

@@ -77,9 +77,10 @@ spec:
           echo "=== HTTPRoute ==="
           kubectl get httproute -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== Operator pod logs ==="
-          for pod in $(kubectl get pods -n keystone-operator -o name 2>/dev/null); do
+          # CC-0105: keystone-operator pod now runs in keystone-system Namespace
+          for pod in $(kubectl get pods -n keystone-system -o name 2>/dev/null); do
             echo "--- $pod ---"
-            kubectl logs -n keystone-operator "$pod" --all-containers --tail=120 2>&1 || true
+            kubectl logs -n keystone-system "$pod" --all-containers --tail=120 2>&1 || true
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
@@ -143,9 +144,10 @@ spec:
           echo "=== HTTPRoute with status ==="
           kubectl get httproute keystone-httproute -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== Operator pod logs ==="
-          for pod in $(kubectl get pods -n keystone-operator -o name 2>/dev/null); do
+          # CC-0105: keystone-operator pod now runs in keystone-system Namespace
+          for pod in $(kubectl get pods -n keystone-system -o name 2>/dev/null); do
             echo "--- $pod ---"
-            kubectl logs -n keystone-operator "$pod" --all-containers --tail=120 2>&1 || true
+            kubectl logs -n keystone-system "$pod" --all-containers --tail=120 2>&1 || true
           done
   # ── Step 7: Unset spec.gateway ─────────────────────────────────────────
   - try:

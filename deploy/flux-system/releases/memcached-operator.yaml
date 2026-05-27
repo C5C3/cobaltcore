@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
+# Feature: CC-0105, REQ-006
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
@@ -13,7 +14,7 @@ spec:
     - name: cert-manager
       namespace: cert-manager
     - name: prometheus-operator-crds
-      namespace: monitoring-system
+      namespace: monitoring
   chart:
     spec:
       chart: memcached-operator

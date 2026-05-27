@@ -1,0 +1,117 @@
+{
+  "feature_id": "CC-0105",
+  "title": "GitHub Review by gndrmnn",
+  "summary": "The reviewer wants a stray `CC-0105` HTML comment removed from `docs/reference/backend/keystone-operator-packaging.md:399` and the \"contract change\" preamble (lines 12-20) stripped from the chainsaw e2e test, since the project has no stable release yet. They also want all the newly added regression/documentation/string-literal shell tests under `tests/unit/` and `tests/integration/` deleted, arguing such checks belong in PR review rather than the test suite at this pre-release stage.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "gndrmnn",
+  "date": "2026-05-20T09:24:19Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "Remove the comment from Markdown file\n\n`<!-- CC-0105: operator targets `keystone-system` Namespace; workload (Keystone CR) stays in `openstack`. -->`",
+      "path": "docs/reference/backend/keystone-operator-packaging.md",
+      "line": 399,
+      "author": "gndrmnn",
+      "created_at": "2026-05-20T08:58:57Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "Remove lines 12-20 describing the \"contract change\" as this project did not have a stable release yet.",
+      "path": "tests/e2e/infrastructure/no-prometheus-when-disabled/chainsaw-test.yaml",
+      "line": 20,
+      "author": "gndrmnn",
+      "created_at": "2026-05-20T09:02:55Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "We are not going to add tests which test documentation for regressions! Remove the file `tests/unit/architecture/namespace_policy_doc_test.sh`",
+      "path": "tests/unit/architecture/namespace_policy_doc_test.sh",
+      "line": 1,
+      "author": "gndrmnn",
+      "created_at": "2026-05-20T09:12:09Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "Absolutely not. We are not adding `tests/unit/hack/ci_deploy_operator_namespace_test.sh`. We are not testing code using string literals. And we are not testing for regressions in this PR, as 1) we control the namespace defintions and 2) there has never been a stable release of this project yet",
+      "path": "tests/unit/hack/ci_deploy_operator_namespace_test.sh",
+      "line": 1,
+      "author": "gndrmnn",
+      "created_at": "2026-05-20T09:14:57Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "No absolutely not. This is what pull request reviews are for. Remove `tests/unit/docs/namespace_consistency_test.sh`",
+      "path": "tests/unit/docs/namespace_consistency_test.sh",
+      "line": 1,
+      "author": "gndrmnn",
+      "created_at": "2026-05-20T09:17:12Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "Remove `tests/unit/deploy/helmrelease_namespaces_test.sh` for the reasons already mentioned",
+      "path": "tests/unit/deploy/helmrelease_namespaces_test.sh",
+      "line": 1,
+      "author": "gndrmnn",
+      "created_at": "2026-05-20T09:18:49Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "Remove `tests/unit/deploy/kind_overlay_test.sh` for the reasons already mentioned",
+      "path": "tests/unit/deploy/kind_overlay_test.sh",
+      "line": 1,
+      "author": "gndrmnn",
+      "created_at": "2026-05-20T09:19:33Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "Remove `tests/unit/deploy/namespaces_test.sh` for the reasons already mentioned",
+      "path": "tests/unit/deploy/namespaces_test.sh",
+      "line": 1,
+      "author": "gndrmnn",
+      "created_at": "2026-05-20T09:20:08Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "Remove `tests/integration/deploy/kustomize_render_test.sh` for the reasons already mentioned.",
+      "path": "tests/integration/deploy/kustomize_render_test.sh",
+      "line": 1,
+      "author": "gndrmnn",
+      "created_at": "2026-05-20T09:20:51Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "Remove `tests/integration/ci/full_kind_up_test.sh` for the reasons already mentioned",
+      "path": "tests/integration/ci/full_kind_up_test.sh",
+      "line": 1,
+      "author": "gndrmnn",
+      "created_at": "2026-05-20T09:22:51Z",
+      "id": null,
+      "resolution": ""
+    }
+  ],
+  "github_review_id": 4326828139
+}

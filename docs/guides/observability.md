@@ -184,14 +184,14 @@ for the full field semantics, including `level`, `debug`, and `perLoggerLevels`.
 If status and events don't explain a failure, read the operator logs directly:
 
 ```bash
-kubectl logs -n openstack -l app.kubernetes.io/name=keystone-operator \
+kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator \
   --tail=200 -f
 ```
 
 The operator uses structured `logr` output — every line includes the reconciled object's namespace/name and the sub-reconciler that produced the log. Filter a specific CR:
 
 ```bash
-kubectl logs -n openstack -l app.kubernetes.io/name=keystone-operator --tail=500 \
+kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --tail=500 \
   | grep '"Keystone":"openstack/keystone"'
 ```
 

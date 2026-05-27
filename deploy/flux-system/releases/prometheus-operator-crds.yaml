@@ -5,13 +5,13 @@
 # Prometheus Operator CRDs (ServiceMonitor, PodMonitor, PrometheusRule, etc.).
 # Required by the memcached-operator controller which unconditionally watches
 # monitoring.coreos.com/v1 ServiceMonitor resources via Owns().
-# Feature: CC-0010
+# Feature: CC-0010, CC-0105
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: prometheus-operator-crds
-  namespace: monitoring-system
+  namespace: monitoring
 spec:
   interval: 30m
   chart:

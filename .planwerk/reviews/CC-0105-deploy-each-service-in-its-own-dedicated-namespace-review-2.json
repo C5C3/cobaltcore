@@ -1,0 +1,62 @@
+{
+  "summary": "Second-round review after addressing external reviewer feedback from gndrmnn. The implementer correctly applied every concrete change requested: (1) removed the inline `<!-- CC-0105: operator targets keystone-system Namespace; workload (Keystone CR) stays in openstack. -->` HTML comment from docs/reference/backend/keystone-operator-packaging.md:399; (2) stripped the lines 12-20 'contract change' preamble from tests/e2e/infrastructure/no-prometheus-when-disabled/chainsaw-test.yaml; (3) deleted all eight regression/string-literal/documentation shell tests (tests/unit/architecture/namespace_policy_doc_test.sh, tests/unit/deploy/{namespaces,helmrelease_namespaces,kind_overlay}_test.sh, tests/unit/docs/namespace_consistency_test.sh, tests/unit/hack/ci_deploy_operator_namespace_test.sh, tests/integration/deploy/kustomize_render_test.sh, tests/integration/ci/full_kind_up_test.sh). New review patterns capturing the lesson were added under .planwerk/review_patterns/ and the planwerk progress file was moved back from completed/ to progress/ with status reset to prepared/improving. No code or behavioral regressions introduced; deletions are clean (no Makefile/CI reference left dangling).",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Removed tests were exactly the set requested by gndrmnn (8 files)", "checked": true},
+    {"item": "No remaining references to deleted tests in Makefile or .github/ workflows", "checked": true},
+    {"item": "Existing tests/unit/deploy/production_posture_test.sh and other untouched suites still present", "checked": true},
+    {"item": "Edge cases are covered (deletions are exhaustive; no test left in inconsistent state)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing code patterns (review patterns format consistent with prior pattern files)", "checked": true},
+    {"item": "No commented-out code or debris left behind from deletions", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No new code paths introduced; security posture unchanged", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible (deletion only; no rework)", "checked": true},
+    {"item": "Production source (deploy/, operators/, helm chart) untouched in this round", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "Removed YAGNI tests that pinned internal definitions the project controls", "checked": true},
+    {"item": "Removed YAGNI 'contract change' narrative from chainsaw-test.yaml", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "N/A — no error-handling logic touched in this round", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "N/A — no boundary code touched in this round", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "Q4",
+      "severity": "MINOR",
+      "description": "The CC-0105 example added to .planwerk/review_patterns/avoid-asserting-exact-ordered-arrays-in-command-builder-tests.md does not fit that pattern's category. The pattern is about brittle full-array assertions in command/argument builder tests; the CC-0105 entry is about rejecting tests whose subject is documentation prose ('Reject tests whose subject under test is documentation prose'). This belongs in the new no-regression-tests-for-pre-release-internal-artifacts.md pattern (or a new dedicated pattern), not here. The misplacement dilutes the original pattern's detection-hint and will confuse future reviewers searching the catalogue.",
+      "location": ".planwerk/review_patterns/avoid-asserting-exact-ordered-arrays-in-command-builder-tests.md:38-42",
+      "fix": "Move the CC-0105 entry from this file to .planwerk/review_patterns/no-regression-tests-for-pre-release-internal-artifacts.md (where it conceptually fits) and decrement the Occurrences counter back to 4.",
+      "evidence": "### CC-0105 — gndrmnn\\n- **Feedback**: We are not going to add tests which test documentation for regressions! Remove the file `tests/unit/architecture/namespace_policy_doc_test.sh`\\n- **What was missed**: Reject tests whose subject under test is documentation prose. Doc consistency is a review responsibility, not a CI assertion.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "D2",
+      "severity": "MINOR",
+      "description": "The new pattern .planwerk/review_patterns/no-issue-tracker-references-in-shipped-artifacts.md generalizes the reviewer's two specific complaints ('CC-0105 HTML comment' and 'contract change preamble') into a broad rule ('Inline HTML comments or YAML comments that cite ticket numbers'). That broad rule conflicts with CLAUDE.md rule #11 (FEATURE_ID_REQUIRED) and with the project-wide convention of citing CC-NNNN feature IDs in test comments, commit messages, and code (see the many CC-0105/REQ-NNN markers retained in tests/e2e/infrastructure/no-prometheus-when-disabled/chainsaw-test.yaml lines 10, 29, 74-94, 120, 133, 147). Pattern should be narrowed to what gndrmnn actually objected to: (a) HTML/YAML comments that narrate a change ('contract change', 'migrated from', 'CC-NNNN: operator targets ...') and (b) ticket references that add no traceability value in user-facing prose. Otherwise the next reviewer will incorrectly flag the legitimate, project-mandated feature-ID markers as violations.",
+      "location": ".planwerk/review_patterns/no-issue-tracker-references-in-shipped-artifacts.md:8-14",
+      "fix": "Tighten 'What to check' to: 'Inline HTML/YAML comments that NARRATE a change (\"contract change\", \"migrated from X\", \"CC-NNNN: <action description>\") rather than acting as traceability markers for which spec a piece of code implements. Functional `(CC-NNNN, REQ-NNN)` traceability markers that pair an assertion with its spec ID remain valid per CLAUDE.md rule #11.'",
+      "evidence": "Pattern says: 'Inline HTML comments or YAML comments that cite ticket numbers or describe the change itself rather than the artifact's purpose.' But the same file the reviewer asked to clean up (chainsaw-test.yaml) intentionally retains 10 CC-0105 references as functional traceability markers; only the narrative 'contract change' block was removed.",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "Consider adding a brief note in .planwerk/review_patterns/no-issue-tracker-references-in-shipped-artifacts.md explicitly distinguishing 'narrative change-log comments' (flag) from 'spec/req traceability markers' (allow per CLAUDE.md rule #11) so future reviewers do not over-apply the pattern.",
+    "When a new pattern has only a single occurrence, consider waiting for a second before promoting it to the catalogue (per the mandatory-patterns guidance: 'A new pattern MUST be used in 2+ places to qualify'). Both new patterns added in this round are single-occurrence — they are borderline and may attract noise findings until corroborated."
+  ],
+  "next_steps": [
+    "Move the CC-0105 occurrence in avoid-asserting-exact-ordered-arrays-in-command-builder-tests.md to no-regression-tests-for-pre-release-internal-artifacts.md and restore the original Occurrences count.",
+    "Tighten the 'What to check' in no-issue-tracker-references-in-shipped-artifacts.md to exempt functional `(CC-NNNN, REQ-NNN)` traceability markers, reconciling it with CLAUDE.md rule #11."
+  ],
+  "detected_patterns": []
+}

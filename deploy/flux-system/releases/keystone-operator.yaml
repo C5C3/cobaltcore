@@ -1,12 +1,19 @@
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
+
+# Feature: CC-0105, REQ-001 — the keystone-operator controller runs in its
+# own dedicated keystone-system Namespace; the Keystone CR and the
+# operator-managed payload (Deployment, Secrets, HTTPRoute, NetworkPolicy)
+# remain in the openstack tenant Namespace. dependsOn entries are
+# unchanged and continue to reference each operator in its existing
+# Namespace.
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: keystone-operator
-  namespace: openstack
+  namespace: keystone-system
 spec:
   interval: 30m
   dependsOn:

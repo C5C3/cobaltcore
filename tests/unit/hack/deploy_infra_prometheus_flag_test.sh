@@ -237,7 +237,7 @@ test_servicemonitor_helper_is_defined_and_gated() {
   assert_file_contains \
     "helper patches the keystone-operator HelmRelease values" \
     "$DEPLOY_INFRA_SH" \
-    'kubectl patch helmrelease keystone-operator -n openstack'
+    'kubectl patch helmrelease keystone-operator -n keystone-system'
 
   # The call site must be inside a WITH_PROMETHEUS gate.
   local call_line gate_line

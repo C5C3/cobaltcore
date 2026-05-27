@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# CC-0105: operator metrics endpoints are now in keystone-system; Keystone CR workload remains in openstack
 # Chainsaw E2E test for the operator metrics ServiceMonitor (CC-0089, REQ-006).
 # Verifies that the keystone-operator chart renders (and later removes) a
 # monitoring.coreos.com/v1 ServiceMonitor pointing at the operator's
@@ -10,7 +11,7 @@
 # REQ-006 (CC-0089)
 #
 # DEPLOYMENT NOTE — why this test installs its own Helm release:
-# The keystone-operator HelmRelease at openstack/keystone-operator is
+# The keystone-operator HelmRelease at keystone-system/keystone-operator is
 # intentionally suspended in the kind CI overlay (see
 # deploy/kind/base/kustomization.yaml: "keystone-operator: suspend Flux
 # management in kind"). The operator that actually runs in the cluster is
@@ -31,7 +32,7 @@
 # .planwerk/progress/CC-0089-add-prometheus-metrics-and-servicemonitor-sub.json
 # (see acceptance_criteria_deferred). TODO(CC-0089): once a Prometheus
 # instance is deployed in the e2e cluster, add a third step that issues
-#   curl -sf http://prometheus.monitoring-system.svc:9090/api/v1/targets \
+#   curl -sf http://prometheus.monitoring.svc:9090/api/v1/targets \
 #     | jq '.data.activeTargets[] | select(.labels.job=="keystone-operator")
 #                                  | select(.health=="up")'
 # and asserts at least one target is healthy. The structural ServiceMonitor
@@ -42,7 +43,7 @@ kind: Test
 metadata:
   name: keystone-metrics
 spec:
-  namespace: openstack
+  namespace: keystone-system
   timeouts:
     assert: 5m
   steps:
@@ -56,7 +57,7 @@ spec:
         content: |
           helm install keystone-operator-metrics \
             ${GITHUB_WORKSPACE:-.}/operators/keystone/helm/keystone-operator/ \
-            --namespace openstack \
+            --namespace keystone-system --create-namespace \
             --set image.repository=ghcr.io/c5c3/keystone-operator \
             --set image.tag=dev \
             --set image.pullPolicy=Never \
@@ -69,16 +70,16 @@ spec:
     - script:
         content: |
           echo "=== Helm status ==="
-          helm status keystone-operator-metrics -n openstack 2>&1 || true
+          helm status keystone-operator-metrics -n keystone-system 2>&1 || true
           echo "=== Pod status ==="
-          kubectl get pods -n openstack -l app.kubernetes.io/instance=keystone-operator-metrics -o wide 2>&1 || true
+          kubectl get pods -n keystone-system -l app.kubernetes.io/instance=keystone-operator-metrics -o wide 2>&1 || true
           echo "=== Operator pod logs ==="
-          for pod in $(kubectl get pods -n openstack -l app.kubernetes.io/instance=keystone-operator-metrics -o name 2>/dev/null); do
+          for pod in $(kubectl get pods -n keystone-system -l app.kubernetes.io/instance=keystone-operator-metrics -o name 2>/dev/null); do
             echo "--- $pod ---"
-            kubectl logs -n openstack "$pod" --all-containers --tail=120 2>&1 || true
+            kubectl logs -n keystone-system "$pod" --all-containers --tail=120 2>&1 || true
           done
           echo "=== Events ==="
-          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          kubectl get events -n keystone-system --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
   # ── Step 2: Assert the ServiceMonitor exists with the expected spec ──────
   # Mirrors operators/keystone/helm/keystone-operator/templates/servicemonitor.yaml.
   # With release name "keystone-operator-metrics" the helper "keystone-operator.fullname"
@@ -91,7 +92,7 @@ spec:
           kind: ServiceMonitor
           metadata:
             name: keystone-operator-metrics
-            namespace: openstack
+            namespace: keystone-system
             labels:
               app.kubernetes.io/name: keystone-operator
               app.kubernetes.io/instance: keystone-operator-metrics
@@ -109,11 +110,11 @@ spec:
     - script:
         content: |
           echo "=== ServiceMonitor list ==="
-          kubectl get servicemonitor -n openstack -o wide 2>&1 || true
+          kubectl get servicemonitor -n keystone-system -o wide 2>&1 || true
           echo "=== ServiceMonitor yaml ==="
-          kubectl get servicemonitor keystone-operator-metrics -n openstack -o yaml 2>&1 || true
+          kubectl get servicemonitor keystone-operator-metrics -n keystone-system -o yaml 2>&1 || true
           echo "=== Helm values ==="
-          helm get values keystone-operator-metrics -n openstack 2>&1 || true
+          helm get values keystone-operator-metrics -n keystone-system 2>&1 || true
   # ── Step 3: (deferred) Poll Prometheus API for target=Up ─────────────────
   # See DECISION comment at top of this file. No Prometheus instance is
   # deployed in this cluster, so the target-Up polling required by REQ-006
@@ -123,7 +124,7 @@ spec:
     - script:
         timeout: 120s
         content: |
-          helm uninstall keystone-operator-metrics -n openstack --wait --timeout 60s 2>&1 || true
+          helm uninstall keystone-operator-metrics -n keystone-system --wait --timeout 60s 2>&1 || true
   # ── Step 5: Assert the ServiceMonitor is removed ─────────────────────────
   - try:
     - script:
@@ -131,12 +132,12 @@ spec:
           # Verify the ServiceMonitor is gone after helm uninstall
           # (CC-0089, REQ-006).
           for i in $(seq 1 12); do
-            if ! kubectl get servicemonitor keystone-operator-metrics -n openstack >/dev/null 2>&1; then
+            if ! kubectl get servicemonitor keystone-operator-metrics -n keystone-system >/dev/null 2>&1; then
               echo "PASS: ServiceMonitor correctly removed"
               exit 0
             fi
             sleep 5
           done
           echo "FAIL: ServiceMonitor still present after helm uninstall"
-          kubectl get servicemonitor keystone-operator-metrics -n openstack -o yaml 2>&1 || true
+          kubectl get servicemonitor keystone-operator-metrics -n keystone-system -o yaml 2>&1 || true
           exit 1

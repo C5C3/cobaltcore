@@ -49,7 +49,7 @@ comment, license identifier).
 
 ## Namespaces
 
-Seven `Namespace` resources are defined in `namespaces.yaml` and included as the first
+Eight `Namespace` resources are defined in `namespaces.yaml` and included as the first
 entry in the base kustomization. Kustomize applies `Namespace` resources before other
 resource kinds, ensuring target namespaces exist before any namespaced resources are
 created.
@@ -59,8 +59,9 @@ created.
 | `cert-manager` | cert-manager operator and its resources |
 | `mariadb-system` | MariaDB Operator |
 | `external-secrets` | External Secrets Operator |
-| `monitoring-system` | Prometheus Operator CRDs |
+| `monitoring` | Prometheus Operator CRDs (consumed by the optional kube-prometheus-stack kind overlay) |
 | `memcached-system` | Memcached Operator |
+| `keystone-system` | Keystone Operator controller (workload CRs continue to live in `openstack`) |
 | `openstack` | Infrastructure instance CRs (MariaDB cluster, Memcached cluster) |
 | `openbao-system` | OpenBao HA Raft cluster |
 
@@ -206,7 +207,7 @@ install it. See [Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in).
 
 | Property | Value |
 | --- | --- |
-| Target namespace | `monitoring-system` |
+| Target namespace | `monitoring` |
 | Chart | `prometheus-operator-crds` |
 | Version constraint | `>=17.0.0 <20.0.0` |
 | Source | `prometheus-community` HelmRepository |
@@ -281,7 +282,7 @@ mariadb-operator so CRDs are available for the operator and for infrastructure C
 | Chart | `memcached-operator` |
 | Version constraint | `>=0.1.0 <1.0.0` |
 | Source | `c5c3-charts` HelmRepository (shared OCI registry) |
-| Dependencies | `cert-manager` in `cert-manager` namespace, `prometheus-operator-crds` in `monitoring-system` namespace |
+| Dependencies | `cert-manager` in `cert-manager` namespace, `prometheus-operator-crds` in `monitoring` namespace |
 
 **Source reference:** The Memcached Operator chart is published to the shared `c5c3-charts`
 OCI registry (`oci://ghcr.io/c5c3/charts`), not a dedicated HelmRepository. The
@@ -329,7 +330,7 @@ design rationale.
 
 | Property | Value |
 | --- | --- |
-| Target namespace | `openstack` |
+| Target namespace | `keystone-system` (controller); operator-managed Keystone workload remains in `openstack` (CC-0105, REQ-001) |
 | Chart | `keystone-operator` |
 | Version constraint | `>=0.1.0 <1.0.0` |
 | Source | `c5c3-charts` HelmRepository (shared OCI registry) |
@@ -454,15 +455,15 @@ The base kustomization uses `apiVersion: kustomize.config.k8s.io/v1beta1` and in
 namespaces, the FluxInstance CR, HelmRepository sources, and HelmRelease operators.
 These resources do not depend on any custom CRDs.
 
-**Resource count:** 16 files producing 22 Kubernetes resources.
+**Resource count:** 16 files producing 23 Kubernetes resources.
 
 | Category | Count | Resources |
 | --- | --- | --- |
-| Namespace | 7 | cert-manager, mariadb-system, external-secrets, monitoring-system, memcached-system, openstack, openbao-system |
+| Namespace | 8 | cert-manager, mariadb-system, external-secrets, monitoring, memcached-system, keystone-system, openstack, openbao-system |
 | FluxInstance | 1 | flux (drives the flux-operator) |
 | HelmRepository | 6 | cert-manager, mariadb-operator, external-secrets, openbao, c5c3-charts, prometheus-community |
 | HelmRelease | 8 | cert-manager, prometheus-operator-crds, mariadb-operator-crds, mariadb-operator, external-secrets, memcached-operator, openbao, keystone-operator |
-| **Total** | **22** | |
+| **Total** | **23** | |
 
 The `chaos-mesh` HelmRepository, HelmRelease, and Namespace ship in the
 kind-only opt-in overlay at `deploy/kind/chaos-mesh/` and are not
@@ -493,7 +494,7 @@ kustomization and after operators have finished installing their CRDs.
 kubectl apply -k deploy/flux-system/
 ```
 
-This applies 22 resources: 7 namespaces, 1 FluxInstance, 6 HelmRepository
+This applies 23 resources: 8 namespaces, 1 FluxInstance, 6 HelmRepository
 sources, and 8 HelmRelease operators. FluxCD resolves the dependency graph between
 HelmReleases and installs operators in the correct order. Wait for all operators to
 finish installing before proceeding to step 2.
@@ -803,7 +804,7 @@ overlays inherit the safe default. When `WITH_PROMETHEUS=true`,
 become Ready, then runs:
 
 ```bash
-kubectl patch helmrelease keystone-operator -n openstack --type=merge \
+kubectl patch helmrelease keystone-operator -n keystone-system --type=merge \
   -p '{"spec":{"values":{"monitoring":{"serviceMonitor":{"enabled":true}}}}}'
 ```
 

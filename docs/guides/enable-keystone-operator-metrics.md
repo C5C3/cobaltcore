@@ -8,6 +8,8 @@ quadrant: operator
 
 ---
 
+<!-- CC-0105: operator namespace is `keystone-system`; workload (Keystone CR) stays in `openstack`. -->
+
 # How-to: Enable the Keystone Operator Metrics Endpoint
 
 This guide walks an operator through turning on the Prometheus
@@ -87,7 +89,7 @@ cadence):
 ```bash
 helm upgrade --install keystone-operator \
   oci://ghcr.io/c5c3/charts/keystone-operator \
-  --namespace openstack-operators \
+  --namespace keystone-system \
   --set monitoring.serviceMonitor.enabled=true \
   --set monitoring.serviceMonitor.interval=30s
 ```
@@ -105,7 +107,7 @@ monitoring:
 Confirm the ServiceMonitor object was created:
 
 ```bash
-kubectl -n openstack-operators get servicemonitor \
+kubectl -n keystone-system get servicemonitor \
   -l app.kubernetes.io/name=keystone-operator
 ```
 
@@ -186,7 +188,7 @@ scraping the operator Pod directly. Port-forward the metrics port
 (default `8080`):
 
 ```bash
-kubectl -n openstack-operators port-forward \
+kubectl -n keystone-system port-forward \
   deployment/keystone-operator 8080:8080
 curl -s http://localhost:8080/metrics \
   | grep -E '^# (TYPE|HELP) keystone_operator_'
@@ -256,7 +258,7 @@ To disable the ServiceMonitor without uninstalling the operator:
 ```bash
 helm upgrade keystone-operator \
   oci://ghcr.io/c5c3/charts/keystone-operator \
-  --namespace openstack-operators \
+  --namespace keystone-system \
   --reuse-values \
   --set monitoring.serviceMonitor.enabled=false
 ```

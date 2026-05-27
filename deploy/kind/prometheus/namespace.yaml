@@ -2,10 +2,28 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# kind-only opt-in monitoring Namespace for kube-prometheus-stack,
-# relocated to this overlay rather than deploy/flux-system/namespaces.yaml
-# because the production stack does NOT install kube-prometheus-stack
-# (CC-0100, REQ-001 — production overlays are unchanged).
+# kind-only opt-in monitoring Namespace for kube-prometheus-stack.
+#
+# DECISION (CC-0105, REQ-008): This Namespace is also declared in
+# deploy/flux-system/namespaces.yaml so the prometheus-operator-crds
+# HelmRelease can install into a live `monitoring` Namespace under the
+# production flux-system bundle. The inline copy in this overlay is
+# intentionally kept rather than removed because:
+#   1. The overlay is applied STANDALONE via `kubectl apply -k
+#      deploy/kind/prometheus` (gated on WITH_PROMETHEUS=true in
+#      hack/deploy-infra.sh); it is NOT a child of deploy/kind/base, so
+#      there is no parent overlay guaranteed to create the Namespace
+#      first.
+#   2. kubectl's embedded kustomize cannot pass --load-restrictor
+#      (kubernetes/kubectl#948), so the overlay MUST be self-contained
+#      under the default LoadRestrictionsRootOnly check — a `../../`
+#      reference into deploy/flux-system/namespaces.yaml would refuse to
+#      render (same constraint that drove the chaos-mesh overlay layout
+#      in CC-0097, REQ-003).
+#   3. `kubectl apply -k` is idempotent for Namespace resources: if the
+#      flux-system reconciliation already created `monitoring`, this
+#      overlay's apply is a no-op rather than a conflict.
+# Original justification: CC-0100, REQ-001.
 ---
 apiVersion: v1
 kind: Namespace

@@ -4,10 +4,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # hack/ci-deploy-operator.sh — Deploy an operator into a kind cluster.
-# Feature: CC-0050
+# Feature: CC-0050, CC-0105
+#
+# CC-0105: operator runs in its own dedicated Namespace (default keystone-system);
+# the Keystone workload (custom resources) remains in the openstack Namespace.
 #
 # Installs CRDs, waits for establishment, and deploys the operator via Helm
-# with the specified container image.
+# with the specified container image into NAMESPACE (default: keystone-system).
 #
 # Required env vars:
 #   OPERATOR    — Operator name (e.g. keystone)
@@ -15,6 +18,9 @@
 #
 # Optional env vars:
 #   IMAGE_TAG          — Image tag (default: dev)
+#   NAMESPACE          — Release Namespace for the operator (default:
+#                        keystone-system). The Namespace is created on demand
+#                        via `helm install --create-namespace` (CC-0105, REQ-011).
 #   WITH_PROMETHEUS    — When "true", enables the chart's gated ServiceMonitor
 #                        template via --set monitoring.serviceMonitor.enabled=true
 #                        (default: false). Used by the e2e-prometheus CI job
@@ -40,6 +46,9 @@ fi
 IMAGE_REPO="${IMAGE_REPO:?IMAGE_REPO is required (e.g. ghcr.io/c5c3/keystone-operator)}"
 IMAGE_TAG="${IMAGE_TAG:-dev}"
 WITH_PROMETHEUS="${WITH_PROMETHEUS:-false}"
+# CC-0105: dedicated release Namespace for the operator. The Keystone workload
+# CRs themselves are still reconciled in the `openstack` Namespace.
+NAMESPACE="${NAMESPACE:-keystone-system}"
 
 CHART_PATH="operators/${OPERATOR}/helm/${OPERATOR}-operator"
 
@@ -74,6 +83,8 @@ fi
 
 helm install "${OPERATOR}-operator" \
   "${CHART_PATH}/" \
+  --namespace "${NAMESPACE}" \
+  --create-namespace \
   "${helm_args[@]}" \
   --wait --timeout 120s
 

@@ -47,10 +47,11 @@ spec:
   # of the two replicas, so "at least one pre-chaos UID gone" proves the kill
   # took effect. Apply + poll live in one script so the pre-chaos snapshot
   # and the wait share state. Mirrors the CC-0076 fix on operator-pod-kill.
-  # NOTE: Operator runs in `default` namespace because hack/ci-deploy-operator.sh
-  # invokes `helm install` without `--namespace`. The Deployment name is
+  # NOTE: CC-0105 — operator runs in the dedicated `keystone-system` namespace
+  # because hack/ci-deploy-operator.sh now invokes `helm install --namespace
+  # keystone-system --create-namespace`. The Deployment name is
   # `keystone-operator` (release name contains the chart name, so fullname
-  # == release name).
+  # == release name). The Keystone CR remains in `openstack` (spec.namespace).
   - try:
     - script:
         # Timeout budget: Phase 1 (60×2s=120s) + Phase 2 (60×2s=120s) = 240s
@@ -64,7 +65,7 @@ spec:
 
           # Read desired replica count from the Deployment so the test stays
           # valid if the operator replica count changes.
-          DESIRED=$(kubectl get deployment keystone-operator -n default -o jsonpath='{.spec.replicas}')
+          DESIRED=$(kubectl get deployment keystone-operator -n keystone-system -o jsonpath='{.spec.replicas}')
           if [ -z "$DESIRED" ] || [ "$DESIRED" -lt 1 ]; then
             echo "ERROR: could not determine desired replica count from keystone-operator Deployment"
             exit 1
@@ -73,7 +74,7 @@ spec:
 
           # Snapshot pre-chaos pod UIDs. mode: one must replace at least one
           # of these; checking that at least one disappears is race-free.
-          OLD_UIDS=$(kubectl get pods -n default -l app.kubernetes.io/name=keystone-operator -o jsonpath='{.items[*].metadata.uid}')
+          OLD_UIDS=$(kubectl get pods -n keystone-system -l app.kubernetes.io/name=keystone-operator -o jsonpath='{.items[*].metadata.uid}')
           if [ -z "$OLD_UIDS" ]; then
             echo "ERROR: no operator pods found before chaos injection"
             exit 1
@@ -88,7 +89,7 @@ spec:
           # Empty CURRENT_UIDS (transient kubectl failure) would spuriously
           # match "no UIDs present" — skip those iterations instead.
           for i in $(seq 1 60); do
-            CURRENT_UIDS=$(kubectl get pods -n default -l app.kubernetes.io/name=keystone-operator -o jsonpath='{.items[*].metadata.uid}')
+            CURRENT_UIDS=$(kubectl get pods -n keystone-system -l app.kubernetes.io/name=keystone-operator -o jsonpath='{.items[*].metadata.uid}')
             if [ -z "$CURRENT_UIDS" ]; then
               sleep 2
               continue
@@ -116,7 +117,7 @@ spec:
           # Phase 2: wait until readyReplicas returns to DESIRED (operator
           # recovered and reconciliation resumed). 60×2s = 120s max.
           for i in $(seq 1 60); do
-            READY=$(kubectl get deployment keystone-operator -n default -o jsonpath='{.status.readyReplicas}')
+            READY=$(kubectl get deployment keystone-operator -n keystone-system -o jsonpath='{.status.readyReplicas}')
             if [ "${READY:-0}" -eq "${DESIRED}" ]; then
               echo "Operator recovered: readyReplicas=${DESIRED}"
               exit 0
@@ -127,7 +128,7 @@ spec:
           exit 1
     catch:
     - script:
-        content: ../diagnostics.sh chaos keystone-chaos-op --dep-label=app.kubernetes.io/name=keystone-operator --dep-ns=default
+        content: ../diagnostics.sh chaos keystone-chaos-op --dep-label=app.kubernetes.io/name=keystone-operator --dep-ns=keystone-system
   # ── Step 4: Delete PodChaos to clean up ────────────────────────────────
   - try:
     - delete:
@@ -150,4 +151,4 @@ spec:
               reason: AllReady
     catch:
     - script:
-        content: ../diagnostics.sh chaos keystone-chaos-op --dep-label=app.kubernetes.io/name=keystone-operator --dep-ns=default
+        content: ../diagnostics.sh chaos keystone-chaos-op --dep-label=app.kubernetes.io/name=keystone-operator --dep-ns=keystone-system

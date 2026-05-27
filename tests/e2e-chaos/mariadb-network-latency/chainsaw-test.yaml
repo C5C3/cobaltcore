@@ -70,11 +70,13 @@ spec:
           # ensures at least one full cycle has run under latency.
           sleep 15
 
-          # The operator is deployed to the 'default' namespace by
-          # hack/ci-deploy-operator.sh (Helm install without --namespace).
-          # Labels are set by the Helm chart _helpers.tpl selectorLabels
-          # template: app.kubernetes.io/name=keystone-operator.
-          OPERATOR_NS="default"
+          # CC-0105: the operator is deployed to the dedicated
+          # `keystone-system` namespace because hack/ci-deploy-operator.sh
+          # now invokes `helm install --namespace keystone-system
+          # --create-namespace`. Labels are set by the Helm chart
+          # _helpers.tpl selectorLabels template:
+          # app.kubernetes.io/name=keystone-operator.
+          OPERATOR_NS="keystone-system"
           OPERATOR_LABEL="app.kubernetes.io/name=keystone-operator"
 
           # Guard: ensure at least one operator pod exists before checking

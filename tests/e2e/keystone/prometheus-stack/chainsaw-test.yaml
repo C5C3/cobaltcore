@@ -51,12 +51,25 @@
 #      a kind-only opt-in (CC-0100, REQ-006).
 #
 #   2. Runtime presence check at the head of every step's script: an early
-#      `kubectl get ns monitoring` probe. If the namespace is absent, the
-#      script exits 0 with a SKIP log line. The monitoring Namespace is
-#      created exclusively by deploy/kind/prometheus/namespace.yaml under
-#      WITH_PROMETHEUS=true — its absence unambiguously signals that the
-#      opt-in flag was not set, and the test is therefore default-safe on
-#      any cluster regardless of selector use.
+#      `kubectl get helmrelease kube-prometheus-stack -n monitoring` probe.
+#      If the HelmRelease is absent, the script exits 0 with a SKIP log
+#      line. The kube-prometheus-stack HelmRelease is created exclusively
+#      by deploy/kind/prometheus/release.yaml under WITH_PROMETHEUS=true —
+#      its absence unambiguously signals that the opt-in flag was not set,
+#      and the test is therefore default-safe on any cluster regardless of
+#      selector use.
+#
+#      NOTE (CC-0105): the probe deliberately keys off the HelmRelease, not
+#      `kubectl get ns monitoring`. Since CC-0105 the `monitoring` Namespace
+#      is owned by the always-applied flux base
+#      (deploy/flux-system/namespaces.yaml) so prometheus-operator-crds and
+#      memcached-operator can install into a live Namespace — it now exists
+#      on every cluster, prometheus or not, so its presence is no longer a
+#      valid WITH_PROMETHEUS=true signal. The kube-prometheus-stack
+#      HelmRelease is still installed only by the kind opt-in overlay
+#      (production flux-system never lists it — see
+#      deploy/kind/prometheus/kustomization.yaml), so it is the correct
+#      runtime gate.
 #
 # The two gates are belt-and-braces: the label lets callers skip without
 # deploying anything, while the runtime probe keeps the test default-safe
@@ -135,20 +148,23 @@ spec:
         content: |
           set -euo pipefail
 
-          # ── Presence guard (CC-0100) ───────────────────────────────
+          # ── Presence guard (CC-0100, CC-0105) ──────────────────────
           # The opt-in overlay deploy/kind/prometheus/ creates the
-          # monitoring Namespace; its absence unambiguously signals
-          # WITH_PROMETHEUS=false (or a non-kind cluster). Exit 0 with a
-          # SKIP line so the test passes without failing on the missing
-          # HelmRelease downstream.
-          if ! kubectl get ns monitoring >/dev/null 2>&1; then
-            echo "SKIP: monitoring namespace not present."
+          # kube-prometheus-stack HelmRelease; its absence unambiguously
+          # signals WITH_PROMETHEUS=false (or a non-kind cluster). The
+          # `monitoring` Namespace is no longer a valid signal — since
+          # CC-0105 it is owned by the always-applied flux base, so it
+          # exists even without the prometheus opt-in (see header note).
+          # Exit 0 with a SKIP line so the test passes without failing on
+          # the missing HelmRelease downstream.
+          if ! kubectl get helmrelease kube-prometheus-stack -n monitoring >/dev/null 2>&1; then
+            echo "SKIP: kube-prometheus-stack HelmRelease not present."
             echo "      This is expected when WITH_PROMETHEUS is unset/false"
             echo "      (default) or on non-kind overlays."
             echo "      Run \`WITH_PROMETHEUS=true make deploy-infra\` to install."
             exit 0
           fi
-          echo "OK: monitoring namespace present — running prometheus-stack checks"
+          echo "OK: kube-prometheus-stack HelmRelease present — running prometheus-stack checks"
 
           # kubectl wait retries until Ready=True or the timeout fires,
           # giving us the same semantics as chainsaw's declarative assert
@@ -204,8 +220,12 @@ spec:
         content: |
           set -euo pipefail
 
-          if ! kubectl get ns monitoring >/dev/null 2>&1; then
-            echo "SKIP: monitoring namespace not present (WITH_PROMETHEUS=false)."
+          # Same presence guard as Step 1 — chainsaw has no step-level
+          # skip, so each step re-checks for default-safe behavior. Keys
+          # off the HelmRelease, not the `monitoring` Namespace, which is
+          # always present since CC-0105 (see header note).
+          if ! kubectl get helmrelease kube-prometheus-stack -n monitoring >/dev/null 2>&1; then
+            echo "SKIP: kube-prometheus-stack HelmRelease not present (WITH_PROMETHEUS=false)."
             exit 0
           fi
 
@@ -278,37 +298,39 @@ spec:
           set -euo pipefail
 
           # Same presence guard as Step 1 — chainsaw has no step-level
-          # skip, so each step re-checks for default-safe behavior.
-          if ! kubectl get ns monitoring >/dev/null 2>&1; then
-            echo "SKIP: monitoring namespace not present (WITH_PROMETHEUS=false)."
+          # skip, so each step re-checks for default-safe behavior. Keys
+          # off the HelmRelease, not the `monitoring` Namespace, which is
+          # always present since CC-0105 (see header note).
+          if ! kubectl get helmrelease kube-prometheus-stack -n monitoring >/dev/null 2>&1; then
+            echo "SKIP: kube-prometheus-stack HelmRelease not present (WITH_PROMETHEUS=false)."
             exit 0
           fi
 
           # In kind CI the keystone-operator chart is installed by
-          # hack/ci-deploy-operator.sh via `helm install` without
-          # `--namespace`, which puts the release (and its rendered
-          # ServiceMonitor) in the `default` namespace. The FluxCD
-          # HelmRelease in `openstack` is suspended by
-          # deploy/kind/base/kustomization.yaml to avoid an ownership-
-          # annotation conflict with that install, so the openstack-
-          # namespaced ServiceMonitor never renders here. The release
-          # name is "keystone-operator" (helm install argument), so the
-          # rendered ServiceMonitor name is "keystone-operator" per the
-          # keystone-operator.fullname helper.
-          kubectl get servicemonitor keystone-operator -n default \
+          # hack/ci-deploy-operator.sh via `helm install ... --namespace
+          # "${NAMESPACE}" --create-namespace`, which puts the release
+          # (and its rendered ServiceMonitor) in the keystone-system
+          # Namespace by default (CC-0105). The FluxCD HelmRelease in
+          # keystone-system is suspended by deploy/kind/base/kustomization.yaml
+          # to avoid an ownership-annotation conflict with that install,
+          # so only the helm-installed ServiceMonitor renders here. The
+          # release name is "keystone-operator" (helm install argument),
+          # so the rendered ServiceMonitor name is "keystone-operator"
+          # per the keystone-operator.fullname helper.
+          kubectl get servicemonitor keystone-operator -n keystone-system \
             >/dev/null
-          echo "OK: ServiceMonitor/keystone-operator exists in default (CC-0100, REQ-005)"
+          echo "OK: ServiceMonitor/keystone-operator exists in keystone-system (CC-0100, REQ-005, CC-0105)"
     catch:
     - script:
         content: |
           echo "=== ServiceMonitors (all namespaces) ==="
           kubectl get servicemonitor -A -o wide 2>&1 || true
           echo "=== keystone-operator HelmRelease values ==="
-          kubectl get helmrelease keystone-operator -n openstack \
+          kubectl get helmrelease keystone-operator -n keystone-system \
             -o jsonpath='{.spec.values}' 2>&1 || true
           echo
           echo "=== keystone-operator HelmRelease status ==="
-          kubectl get helmrelease keystone-operator -n openstack \
+          kubectl get helmrelease keystone-operator -n keystone-system \
             -o jsonpath='{.status.conditions}' 2>&1 || true
 
   # ── Step 3 — Prometheus is scraping keystone-operator (target up) ───────
@@ -333,8 +355,12 @@ spec:
         content: |
           set -euo pipefail
 
-          if ! kubectl get ns monitoring >/dev/null 2>&1; then
-            echo "SKIP: monitoring namespace not present (WITH_PROMETHEUS=false)."
+          # Same presence guard as Step 1 — chainsaw has no step-level
+          # skip, so each step re-checks for default-safe behavior. Keys
+          # off the HelmRelease, not the `monitoring` Namespace, which is
+          # always present since CC-0105 (see header note).
+          if ! kubectl get helmrelease kube-prometheus-stack -n monitoring >/dev/null 2>&1; then
+            echo "SKIP: kube-prometheus-stack HelmRelease not present (WITH_PROMETHEUS=false)."
             exit 0
           fi
 
@@ -425,8 +451,12 @@ spec:
         content: |
           set -euo pipefail
 
-          if ! kubectl get ns monitoring >/dev/null 2>&1; then
-            echo "SKIP: monitoring namespace not present (WITH_PROMETHEUS=false)."
+          # Same presence guard as Step 1 — chainsaw has no step-level
+          # skip, so each step re-checks for default-safe behavior. Keys
+          # off the HelmRelease, not the `monitoring` Namespace, which is
+          # always present since CC-0105 (see header note).
+          if ! kubectl get helmrelease kube-prometheus-stack -n monitoring >/dev/null 2>&1; then
+            echo "SKIP: kube-prometheus-stack HelmRelease not present (WITH_PROMETHEUS=false)."
             exit 0
           fi
 
@@ -519,8 +549,12 @@ spec:
         content: |
           set -euo pipefail
 
-          if ! kubectl get ns monitoring >/dev/null 2>&1; then
-            echo "SKIP: monitoring namespace not present (WITH_PROMETHEUS=false)."
+          # Same presence guard as Step 1 — chainsaw has no step-level
+          # skip, so each step re-checks for default-safe behavior. Keys
+          # off the HelmRelease, not the `monitoring` Namespace, which is
+          # always present since CC-0105 (see header note).
+          if ! kubectl get helmrelease kube-prometheus-stack -n monitoring >/dev/null 2>&1; then
+            echo "SKIP: kube-prometheus-stack HelmRelease not present (WITH_PROMETHEUS=false)."
             exit 0
           fi
 

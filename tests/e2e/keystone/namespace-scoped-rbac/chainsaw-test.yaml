@@ -14,6 +14,15 @@
 # works exactly as in all other E2E tests.
 #
 # REQ-001, REQ-002 (CC-0043)
+#
+# Namespace-scoped carve-out (CC-0105): the new cluster-scoped default deploys
+# keystone-operator into the dedicated "keystone-system" Namespace (REQ-001/REQ-010).
+# This test intentionally exercises a DIFFERENT release Namespace ("openstack") with
+# namespace-scoped RBAC, proving the operator is not hard-wired to "keystone-system"
+# and that the namespaceScoped=true code path still produces Role/RoleBinding (not
+# ClusterRole/ClusterRoleBinding). It also requires the same Namespace as the shared
+# infra (MariaDB, Memcached, Secrets) because a namespace-scoped operator can only
+# watch its own release Namespace.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

@@ -305,7 +305,7 @@ invisible to the CR's status conditions.
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-chaos-op` with database `keystone_chaos_op` |
 | 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady — confirms healthy state before fault injection |
-| 3 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml` — PodChaos `kill-operator` targeting `app.kubernetes.io/name: keystone-operator` in `openstack` |
+| 3 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml` — PodChaos `kill-operator` targeting `app.kubernetes.io/name: keystone-operator` in `keystone-system` (CC-0105: the operator controller lives in its own Namespace; the PodChaos CR itself is still created in the test's `openstack` namespace) |
 | 4 | Wait for operator pod crash and recovery | `wait` (2m + 2m) | Condition-based waits: operator pod `Ready=false` (kill took effect), then `Ready=true` (Deployment controller restarted pod) |
 | 5 | Delete PodChaos | `delete` | Removes PodChaos `kill-operator` to clean up |
 | 6 | Assert Ready=True after re-reconciliation | `assert` (5m) | Ready=True with reason AllReady — no sub-condition stuck in False state |
@@ -313,7 +313,7 @@ invisible to the CR's status conditions.
 **Fixtures:** `00-keystone-cr.yaml`, `01-podchaos.yaml`
 
 **Catch blocks:** Steps 2 and 6 include catch blocks calling `diagnostics.sh` with
-appropriate mode (`baseline`/`chaos`) and `--dep-label=app.kubernetes.io/name=keystone-operator`.
+appropriate mode (`baseline`/`chaos`) and `--dep-label=app.kubernetes.io/name=keystone-operator --dep-ns=keystone-system`.
 Step 4 includes a catch block with chaos diagnostics for the operator pod.
 
 **Design note:** Step 4 uses condition-based waits on the operator pod (`Ready=false` then
@@ -513,7 +513,7 @@ recovery to confirm the new leader processes spec changes end-to-end.
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-chaos-opk` with database `keystone_chaos_opk` |
 | 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady — confirms healthy state before chaos injection |
-| 3 | Inject chaos and verify pod replacement | `script` (270s) | Snapshots operator pod UIDs, applies `01-podchaos.yaml` (PodChaos `kill-operator-all`, `mode: all`, targets `app.kubernetes.io/name: keystone-operator` in `default`), waits until none of the pre-chaos UIDs remain, then waits until Deployment `readyReplicas` equals `.spec.replicas` |
+| 3 | Inject chaos and verify pod replacement | `script` (270s) | Snapshots operator pod UIDs, applies `01-podchaos.yaml` (PodChaos `kill-operator-all`, `mode: all`, targets `app.kubernetes.io/name: keystone-operator` in `keystone-system`), waits until none of the pre-chaos UIDs remain, then waits until Deployment `readyReplicas` equals `.spec.replicas` |
 | 4 | Delete PodChaos | `delete` | Removes PodChaos `kill-operator-all` to lift the fault |
 | 5 | Assert Ready=True after failover | `assert` (5m) | All 6 conditions: SecretsReady=True, FernetKeysReady=True, DatabaseReady=True, DeploymentReady=True, BootstrapReady=True, Ready=True (AllReady) |
 | 6 | Patch replicas 1→2 | `patch` | Applies `02-patch-replicas.yaml` — patches `spec.replicas` to 2 |
@@ -522,13 +522,15 @@ recovery to confirm the new leader processes spec changes end-to-end.
 **Fixtures:** `00-keystone-cr.yaml`, `01-podchaos.yaml`, `02-patch-replicas.yaml`
 
 **Catch blocks:** Step 2 calls `diagnostics.sh baseline`. Steps 3, 5, and 7 call
-`diagnostics.sh chaos` with `--dep-label=app.kubernetes.io/name=keystone-operator --dep-ns=default`.
+`diagnostics.sh chaos` with `--dep-label=app.kubernetes.io/name=keystone-operator --dep-ns=keystone-system`.
 
 **Design notes:**
 
-- The operator pod runs in the `default` namespace (not `openstack`) because
-  `hack/ci-deploy-operator.sh` runs `helm install` without `--namespace`. The PodChaos
-  `selector.namespaces` targets `default` accordingly.
+- The operator pod runs in the `keystone-system` Namespace (CC-0105 — see
+  [Infrastructure Manifests › Keystone Operator](../infrastructure/infrastructure-manifests.md#keystone-operator));
+  the operator-managed Keystone workload remains in `openstack`. The PodChaos
+  `selector.namespaces` targets `keystone-system` accordingly.
+
 - Step 5 asserts all 6 individual conditions (not just the aggregate Ready) to verify
   that no sub-condition was stuck in a stale state after the operator restart and leader
   re-election.
@@ -740,7 +742,7 @@ spec:
   mode: all
   selector:
     namespaces:
-    - default
+    - keystone-system
     labelSelectors:
       app.kubernetes.io/name: keystone-operator
   gracePeriod: 0
@@ -749,7 +751,7 @@ spec:
 | Field | Value | Rationale |
 | --- | --- | --- |
 | `mode` | `all` | Kills every operator pod — unlike SC-CHAOS-004 (`mode: one`) which leaves other replicas running |
-| `selector.namespaces` | `default` | Operator runs in `default` because `hack/ci-deploy-operator.sh` runs `helm install` without `--namespace` |
+| `selector.namespaces` | `keystone-system` | Operator controller runs in `keystone-system` (CC-0105); the operator-managed Keystone workload stays in `openstack` |
 
 ### Fault cleanup
 
@@ -825,7 +827,7 @@ tests/e2e-chaos/
 │   └── chainsaw-test.yaml            Test: SecretsReady=False → recovery
 ├── operator-pod-crash/               SC-CHAOS-004: Operator self-recovery
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-op)
-│   ├── 01-podchaos.yaml              PodChaos targeting keystone-operator in openstack
+│   ├── 01-podchaos.yaml              PodChaos targeting keystone-operator in keystone-system
 │   └── chainsaw-test.yaml            Test: Ready=True maintained after operator restart
 ├── cronjob-rotation-failure/         SC-CHAOS-005: CronJob fault tolerance
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-cron)

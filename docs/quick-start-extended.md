@@ -454,7 +454,7 @@ kubectl apply -f deploy/flux-system/releases/keystone-operator.yaml
 
 # Wait until the operator is Ready
 kubectl wait helmrelease/keystone-operator \
-  -n openstack \
+  -n keystone-system \
   --for=condition=Ready \
   --timeout=120s
 ```
@@ -481,7 +481,7 @@ kubectl wait crd --all --for condition=Established --timeout=60s
 # 4. Install the chart
 helm install keystone-operator \
   operators/keystone/helm/keystone-operator/ \
-  -n openstack --create-namespace \
+  -n keystone-system --create-namespace \
   --set image.repository=ghcr.io/c5c3/keystone-operator \
   --set image.tag=dev \
   --set image.pullPolicy=Never \
@@ -491,7 +491,7 @@ helm install keystone-operator \
 ### Verify the operator is running
 
 ```bash
-kubectl get pods -n openstack -l app.kubernetes.io/name=keystone-operator
+kubectl get pods -n keystone-system -l app.kubernetes.io/name=keystone-operator
 ```
 
 Expected output:

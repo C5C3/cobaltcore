@@ -7,7 +7,7 @@
 # the OpenBao HelmRelease to standalone mode (1 replica, HA disabled,
 # no retry_join peers, standard storage class) suitable for a
 # single-node kind cluster.
-# Feature: CC-0010, REQ-003
+# Feature: CC-0010, REQ-003, CC-0105, REQ-007
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -85,23 +85,25 @@ patches:
             enabled: false
 
   # keystone-operator: suspend Flux management in kind so that the e2e CI
-  # job can install it manually with a locally built dev image.
-  # Without this patch Flux installs the published chart from c5c3-charts,
-  # creating the ClusterRole with meta.helm.sh/release-namespace=openstack.
-  # The CI's subsequent `helm install` (no --namespace flag → default) then
-  # fails with an ownership-annotation conflict (fix-001).
+  # job can install it manually with a locally built dev image. Both Flux
+  # and the CI's `helm install` now target the keystone-system Namespace
+  # (CC-0105, REQ-007), so the historical ownership-annotation conflict
+  # caused by the prior openstack-vs-default-namespace mismatch (fix-001)
+  # no longer applies. The suspend is still required because the published
+  # chart and the locally built dev image cannot share the same release
+  # name without one overwriting the other.
   - target:
       group: helm.toolkit.fluxcd.io
       version: v2
       kind: HelmRelease
       name: keystone-operator
-      namespace: openstack
+      namespace: keystone-system
     patch: |
       apiVersion: helm.toolkit.fluxcd.io/v2
       kind: HelmRelease
       metadata:
         name: keystone-operator
-        namespace: openstack
+        namespace: keystone-system
       spec:
         suspend: true
 

@@ -54,6 +54,13 @@
 # relative to the 2–5m ceilings used elsewhere in tests/e2e/.
 #
 # Feature: CC-0088, REQ-002, REQ-003, REQ-006, REQ-009
+#
+# CC-0105: the keystone-operator pod now runs in the `keystone-system`
+# Namespace (split off from the workload Namespace), while the Keystone
+# CR and its rendered workload still live in `openstack`. Catch-step
+# podLogs lookups for `app.kubernetes.io/name=keystone-operator` therefore
+# target `keystone-system`; workload-side resources (Gateway, HTTPRoute,
+# Certificate, Keystone CR) continue to target `openstack`.
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -365,7 +372,7 @@ spec:
         name: keystone-gateway-qs
         namespace: openstack
     - podLogs:
-        namespace: openstack
+        namespace: keystone-system  # CC-0105: operator pod moved to keystone-system
         selector: app.kubernetes.io/name=keystone-operator
         tail: 200
     - podLogs:

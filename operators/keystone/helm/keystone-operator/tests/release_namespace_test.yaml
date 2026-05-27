@@ -1,0 +1,179 @@
+# CC-0105, REQ-009: Release namespace unit tests.
+#
+# Verifies that the keystone-operator Helm chart correctly threads
+# .Release.Namespace through every namespaced resource, the
+# cert-manager.io/inject-ca-from annotation on the webhook configurations,
+# and the ClusterRoleBinding subjects entry — when installed with
+# --namespace keystone-system (the dedicated controller Namespace introduced
+# by CC-0105).
+#
+# These assertions are namespace-parametric: the release namespace is set
+# once at the suite level via `release.namespace` and the expected value is
+# `keystone-system` in every assertion. Existing test suites in this chart
+# rely on the helm-unittest default release namespace (NAMESPACE) and
+# remain untouched.
+suite: Release Namespace
+release:
+  name: keystone-operator
+  namespace: keystone-system
+templates:
+  - templates/certificate.yaml
+  - templates/clusterrolebinding.yaml
+  - templates/deployment.yaml
+  - templates/networkpolicy.yaml
+  - templates/rolebinding.yaml
+  - templates/service.yaml
+  - templates/serviceaccount.yaml
+  - templates/servicemonitor.yaml
+  - templates/webhook-configuration.yaml
+tests:
+  # ---------------------------------------------------------------------------
+  # Namespaced resources rendered with default values (webhook on, monitoring
+  # off, namespaceScoped off, networkPolicy off).
+  # ---------------------------------------------------------------------------
+  - it: should render the Deployment in keystone-system (CC-0105, REQ-009)
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: keystone-system
+
+  - it: should render the ServiceAccount in keystone-system (CC-0105, REQ-009)
+    template: templates/serviceaccount.yaml
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: keystone-system
+
+  - it: should render the Service in keystone-system (CC-0105, REQ-009)
+    template: templates/service.yaml
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: keystone-system
+
+  - it: should render the self-signed Issuer in keystone-system (CC-0105, REQ-009)
+    template: templates/certificate.yaml
+    documentIndex: 0
+    asserts:
+      - isKind:
+          of: Issuer
+      - equal:
+          path: metadata.namespace
+          value: keystone-system
+
+  - it: should render the webhook Certificate in keystone-system (CC-0105, REQ-009)
+    template: templates/certificate.yaml
+    documentIndex: 1
+    asserts:
+      - isKind:
+          of: Certificate
+      - equal:
+          path: metadata.namespace
+          value: keystone-system
+
+  - it: should reference keystone-system in the Certificate SAN DNS names (CC-0105, REQ-009)
+    template: templates/certificate.yaml
+    documentIndex: 1
+    asserts:
+      - contains:
+          path: spec.dnsNames
+          content: keystone-operator.keystone-system.svc
+      - contains:
+          path: spec.dnsNames
+          content: keystone-operator.keystone-system.svc.cluster.local
+
+  # ---------------------------------------------------------------------------
+  # Webhook configurations are cluster-scoped, but the inject-ca-from
+  # annotation MUST point to the release namespace so cert-manager finds the
+  # Certificate object emitted into keystone-system.
+  # ---------------------------------------------------------------------------
+  - it: should set inject-ca-from to keystone-system/<fullname>-webhook on the MutatingWebhookConfiguration (CC-0105, REQ-009)
+    template: templates/webhook-configuration.yaml
+    documentIndex: 0
+    asserts:
+      - isKind:
+          of: MutatingWebhookConfiguration
+      - equal:
+          path: metadata.annotations["cert-manager.io/inject-ca-from"]
+          value: keystone-system/keystone-operator-webhook
+      - equal:
+          path: webhooks[0].clientConfig.service.namespace
+          value: keystone-system
+
+  - it: should set inject-ca-from to keystone-system/<fullname>-webhook on the ValidatingWebhookConfiguration (CC-0105, REQ-009)
+    template: templates/webhook-configuration.yaml
+    documentIndex: 1
+    asserts:
+      - isKind:
+          of: ValidatingWebhookConfiguration
+      - equal:
+          path: metadata.annotations["cert-manager.io/inject-ca-from"]
+          value: keystone-system/keystone-operator-webhook
+      - equal:
+          path: webhooks[0].clientConfig.service.namespace
+          value: keystone-system
+
+  # ---------------------------------------------------------------------------
+  # ClusterRoleBinding is cluster-scoped but binds a ServiceAccount that lives
+  # in the release namespace — subjects[0].namespace MUST be keystone-system.
+  # ---------------------------------------------------------------------------
+  - it: should bind to the ServiceAccount in keystone-system (CC-0105, REQ-009)
+    template: templates/clusterrolebinding.yaml
+    asserts:
+      - isKind:
+          of: ClusterRoleBinding
+      - equal:
+          path: subjects[0].kind
+          value: ServiceAccount
+      - equal:
+          path: subjects[0].namespace
+          value: keystone-system
+
+  # ---------------------------------------------------------------------------
+  # Conditionally-rendered namespaced resources.
+  # ---------------------------------------------------------------------------
+  - it: should render the ServiceMonitor in keystone-system when enabled (CC-0105, REQ-009)
+    template: templates/servicemonitor.yaml
+    set:
+      monitoring:
+        serviceMonitor:
+          enabled: true
+    asserts:
+      - isKind:
+          of: ServiceMonitor
+      - equal:
+          path: metadata.namespace
+          value: keystone-system
+
+  - it: should render the NetworkPolicy in keystone-system when enabled (CC-0105, REQ-009)
+    template: templates/networkpolicy.yaml
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: [6443]
+    asserts:
+      - isKind:
+          of: NetworkPolicy
+      - equal:
+          path: metadata.namespace
+          value: keystone-system
+
+  - it: should render the RoleBinding in keystone-system in namespace-scoped mode (CC-0105, REQ-009)
+    template: templates/rolebinding.yaml
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - isKind:
+          of: RoleBinding
+      - equal:
+          path: metadata.namespace
+          value: keystone-system
+      - equal:
+          path: subjects[0].namespace
+          value: keystone-system

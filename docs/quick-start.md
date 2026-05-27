@@ -47,11 +47,13 @@ bootstrapped), MariaDB operator + `openstack-db`, Memcached operator +
 ```bash
 kubectl apply -f deploy/flux-system/sources/c5c3-charts.yaml
 kubectl apply -f deploy/flux-system/releases/keystone-operator.yaml
-kubectl wait helmrelease/keystone-operator -n openstack \
+kubectl wait helmrelease/keystone-operator -n keystone-system \
   --for=condition=Ready --timeout=120s
 ```
 
 ## Step 4 — Keystone service image
+
+> Note: the keystone-operator controller runs in `keystone-system`; the Keystone workload it manages runs in `openstack` (controller-vs-workload split, CC-0105).
 
 ```bash
 RELEASE=2025.2

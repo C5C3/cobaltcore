@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: When reviewing tests for functions that build CLI argument lists, check whether the assertions verify the full ordered slice via deep-equal. If so, flag as brittle: adding, removing, or reordering any unrelated flag will break every test case.
 **Severity**: WARNING
-**Occurrences**: 4
+**Occurrences**: 5
 
 ## What to check
 
@@ -34,3 +34,8 @@ Full-array assertions couple every test to the exact ordering of all flags. Any 
 - **Feedback**: Also add a unit test that renders buildBootstrapJob and asserts the embedded sc[ript]...
 - **What was missed**: Controllers that generate Jobs with inline scripts should have tests that invoke the builder and assert the script references expected env vars, and that required env vars are present in the container spec
 - **Fix**: Added TestBuildBootstrapJob_PreInsertScriptReadsDBConnectionEnvVar asserting os.environ.get("OS_DATABASE__CONNECTION") appears before the configparser fallback, and extended TestReconcileBootstrap_JobCreated to assert env var ordering
+
+### CC-0105 — gndrmnn
+- **Feedback**: We are not going to add tests which test documentation for regressions! Remove the file `tests/unit/architecture/namespace_policy_doc_test.sh`
+- **What was missed**: Reject tests whose subject under test is documentation prose. Doc consistency is a review responsibility, not a CI assertion.
+- **Fix**: Removed namespace_policy_doc_test.sh and namespace_consistency_test.sh which asserted on Markdown content.

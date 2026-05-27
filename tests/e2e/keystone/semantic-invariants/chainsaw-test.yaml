@@ -19,6 +19,10 @@
 # the ownership invariant cannot regress unnoticed.
 #
 # CC-0101 REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-006, REQ-007
+#
+# CC-0105: operator pod is always in keystone-system; the Keystone CR is
+# per-test under $NAMESPACE (default openstack). catch blocks dump operator
+# logs with a fixed -n keystone-system and workload logs with -n $NAMESPACE.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -94,11 +98,12 @@ spec:
           # Step 2 failures are reconciler-side (status.endpoint is written
           # by reconcile_deployment.go from internalAPIURL in
           # reconcile_httproute.go), so the operator logs are the most
-          # diagnostic signal. The keystone-operator runs in $NAMESPACE
-          # (openstack) — same namespace as the Keystone CRs — so a single
-          # label-scoped log dump captures it without crossing namespaces.
+          # diagnostic signal. CC-0105: the keystone-operator runs in
+          # keystone-system (fixed), while the Keystone CR is per-test under
+          # $NAMESPACE — so the operator log dump is namespace-pinned and the
+          # CR/workload dumps stay on $NAMESPACE.
           echo "=== keystone-operator pod logs ==="
-          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keystone-operator \
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator \
             --all-containers --tail=200 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
@@ -283,11 +288,12 @@ spec:
           # missing-ownerRef regression) and then --previous (covers the rare
           # case where the operator crashed) so neither phase is silently
           # swallowed when the other returns an error.
+          # CC-0105: operator pod is in keystone-system (fixed); see header.
           echo "=== keystone-operator pod logs (current) ==="
-          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keystone-operator \
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator \
             --all-containers --tail=60 2>&1 || true
           echo "=== keystone-operator pod logs (previous) ==="
-          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keystone-operator \
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator \
             --all-containers --tail=60 --previous 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
@@ -355,10 +361,10 @@ spec:
           # Step 4 failures are reconciler-side (a sub-reconciler forgot to
           # set ObservedGeneration on SetCondition — see CC-0072). Operator
           # logs are required to identify which reconciler is lagging; the
-          # CR YAML only shows the symptom. keystone-operator runs in
-          # $NAMESPACE — see Step 2 catch for the same selector.
+          # CR YAML only shows the symptom. CC-0105: keystone-operator runs
+          # in keystone-system (fixed) — see header and Step 2 catch.
           echo "=== keystone-operator pod logs ==="
-          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keystone-operator \
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator \
             --all-containers --tail=200 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
@@ -490,11 +496,13 @@ spec:
           # current logs first (the common case — pods are running but the
           # condition flip lagged) and then --previous (covers a crash on
           # restart) so the diagnostic surface covers both phases.
+          # CC-0105: operator pod is in keystone-system (fixed); keystone
+          # workload pods stay under $NAMESPACE — see header.
           echo "=== keystone-operator pod logs (current) ==="
-          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keystone-operator \
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator \
             --all-containers --tail=60 2>&1 || true
           echo "=== keystone-operator pod logs (previous) ==="
-          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keystone-operator \
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator \
             --all-containers --tail=60 --previous 2>&1 || true
           echo "=== keystone-API pod logs (current) ==="
           kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keystone \
@@ -561,11 +569,12 @@ spec:
           # server failed to enforce Immutable: true) and then --previous
           # (covers the rare case where the operator crashed) so neither
           # phase is silently swallowed when the other returns an error.
+          # CC-0105: operator pod is in keystone-system (fixed); see header.
           echo "=== keystone-operator pod logs (current) ==="
-          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keystone-operator \
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator \
             --all-containers --tail=60 2>&1 || true
           echo "=== keystone-operator pod logs (previous) ==="
-          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keystone-operator \
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator \
             --all-containers --tail=60 --previous 2>&1 || true
           echo "=== Keystone config ConfigMaps (metadata only — data omitted by design) ==="
           # ConfigMap.immutable is a TOP-LEVEL field on the ConfigMap object

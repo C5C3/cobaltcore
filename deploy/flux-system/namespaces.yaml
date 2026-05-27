@@ -4,7 +4,15 @@
 
 # Namespace resources for all infrastructure components.
 # Applied before any namespaced resources to ensure target namespaces exist.
-# Feature: CC-0008, CC-0009
+# Feature: CC-0008, CC-0009, CC-0105
+#
+# CC-0105 (REQ-002, REQ-003, REQ-004): keystone-system is added so the
+# keystone-operator HelmRelease can run in its own dedicated Namespace
+# instead of co-tenanting with the Keystone workload in openstack; the
+# dead monitoring-system Namespace is dropped after the
+# prometheus-operator-crds and memcached-operator releases were repointed
+# at the live monitoring Namespace, which the flux base now owns directly
+# (previously only declared in the kind overlay).
 ---
 apiVersion: v1
 kind: Namespace
@@ -24,7 +32,7 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: monitoring-system
+  name: monitoring
 ---
 apiVersion: v1
 kind: Namespace
@@ -40,6 +48,11 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: openbao-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: keystone-system
 # The chaos-mesh Namespace lives in the opt-in overlay deploy/kind/chaos-mesh/,
 # not here, so the privileged PodSecurity label is created only when Chaos Mesh
 # is actually deployed (CC-0097, REQ-001).
