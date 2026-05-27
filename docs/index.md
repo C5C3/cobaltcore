@@ -24,4 +24,6 @@ features:
     details: Unit, envtest integration, Chainsaw E2E, Tempest, and Chaos Mesh coverage across the stack.
   - title: Day 2 Operations
     details: Guides for observability, key rotation, multi-tenant deployment, and advanced configuration.
+  - title: Maintenance & Dependencies
+    details: <a href="/forge/guides/dependency-management">Dependency Management</a> — Go version upgrades, library updates, and the Renovate workflow.
 ---

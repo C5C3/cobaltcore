@@ -31,6 +31,7 @@ export default defineConfig({
           { text: 'Rotate Keystone Keys', link: '/guides/keystone-key-rotation' },
           { text: 'Multi-Tenant Deployment', link: '/guides/multi-tenant-deployment' },
           { text: 'Enable Keystone Operator NetworkPolicy', link: '/guides/enable-keystone-operator-networkpolicy' },
+          { text: 'Dependency Management', link: '/guides/dependency-management' },
         ],
       },
       {
