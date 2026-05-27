@@ -155,6 +155,62 @@ func SetupKeystoneEnvTest(
 	return c, ctx, cancel
 }
 
+// SetupKeystoneEnvTestNoWebhook starts an envtest API server with only the
+// Keystone CRD installed — no webhook configurations, no validating webhooks
+// (CC-0106). It returns a direct controller-runtime client so tests can submit
+// CRs and observe exactly the schema-layer validation the API server enforces
+// (kubebuilder validation markers + x-kubernetes-validations CEL rules)
+// without the defense-in-depth validating webhook short-circuiting the
+// rejection. Tear-down is wired via t.Cleanup().
+//
+// This is intended for tests that must distinguish a CRD CEL rejection from a
+// webhook rejection — e.g. the CC-0106 CRD CEL rule on spec.database that
+// requires caBundleSecretRef.name and clientCertSecretRef.name when
+// tls.enabled is true. If the CEL rule were ever removed, the equivalent
+// SetupKeystoneEnvTest-based test would silently keep passing because the
+// validating webhook would still reject the CR. Using this helper makes the
+// CRD-layer rule the only enforcement point in scope, so the test fails the
+// moment that rule is removed.
+func SetupKeystoneEnvTestNoWebhook(
+	t testing.TB,
+	addToScheme func(*k8sruntime.Scheme) error,
+) (client.Client, context.Context, context.CancelFunc) {
+	t.Helper()
+
+	crdDir, _ := keystonePaths()
+
+	env := &envtest.Environment{
+		CRDDirectoryPaths:     []string{crdDir},
+		ErrorIfCRDPathMissing: true,
+	}
+
+	cfg, err := env.Start()
+	if err != nil {
+		t.Fatalf("failed to start no-webhook Keystone envtest environment: %v", err)
+	}
+
+	s := buildScheme(addToScheme)
+
+	c, err := client.New(cfg, client.Options{Scheme: s})
+	if err != nil {
+		if stopErr := env.Stop(); stopErr != nil {
+			t.Logf("additionally failed to stop envtest environment: %v", stopErr)
+		}
+		t.Fatalf("failed to create direct client: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	t.Cleanup(func() {
+		cancel()
+		if err := env.Stop(); err != nil {
+			t.Errorf("failed to stop no-webhook Keystone envtest environment: %v", err)
+		}
+	})
+
+	return c, ctx, cancel
+}
+
 // waitForWebhookServer polls the webhook server's TLS endpoint until it
 // accepts connections or the timeout is reached.
 func waitForWebhookServer(host string, port int, timeout time.Duration) error {

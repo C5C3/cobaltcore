@@ -1,0 +1,183 @@
+{
+  "summary": "CC-0106 adds opt-in TLS/mTLS for the Keystone→MariaDB/MaxScale path. The diff introduces DatabaseTLSSpec in internal/common/types, a pure modeToSSLParams helper with typed condition constants, a new reconcileDatabaseTLS sub-reconciler ordered after Secrets and before DBConnectionSecret, ssl_* DSN parameter injection in reconcile_dbconnection_secret.go, db-tls volume/mount wiring in Deployment + every buildDBJob variant + buildBootstrapJob (plus an inline python ssl-dict mapper), CRD CEL + defense-in-depth webhook validation, a non-mutating Default() for tls.mode, cert-manager.io/certificates RBAC in both kubebuilder markers and _helpers.tpl, a dedicated openstack-db-ca-issuer ClusterIssuer + CA Certificate, mariadb.yaml spec.tls.required=true (via *IssuerRef, deviating from the planned *CASecretRef shape), a chainsaw E2E suite that asserts non-empty Ssl_cipher and plaintext rejection, and a Diataxis how-to + CRD reference updates. Tests cover deepcopy, mode mapping, ordering, webhook + CEL validation, certificate lifecycle (envtest), and per-job-variant mount assertions. The implementation is structurally sound and well-tested, but contains a load-bearing bug: dbTLSVolumeAndMount hardcodes the mount Secret name to '<keystone.Name>-db-client' and never reads spec.database.tls.clientCertSecretRef.Name or caBundleSecretRef.Name — so brownfield mode mounts a non-existent Secret, and managed-mode users who set a different ref name are silently ignored. Several other unverified-by-construction assumptions (MariaDB *IssuerRef field names in v0.38.1, kind TLS posture without Galera, MaxScale.spec.tls existence) are flagged with 'Reviewer: please verify' DECISION comments rather than resolved before merge.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Unit tests for modeToSSLParams cover all four modes plus deterministic ordering and unknown-mode error (dbtls_mode_test.go)", "checked": true},
+    {"item": "Defense-in-depth webhook tests: TestValidate_RejectsOutOfEnumTLSMode, TestValidate_RejectsEnabledWithoutSecretRef, TestDefault_DoesNotMaterializeTLSEnabled, TestDefault_DefaultsModeOnlyWhenBlockPresent all present and unconditional", "checked": true},
+    {"item": "TestValidateCreate_RunsAllValidations extended with tls.mode + caBundleSecretRef.name + clientCertSecretRef.name accumulation assertions", "checked": true},
+    {"item": "TestReconcileDBConnectionSecret_TLSEnabled_AppendsModeSSLParams covers all four modes; _TLSDisabled_NoSSLParams covers the byte-identical plaintext path; _TLSEnabledButDisabledFlag_NoSSLParams covers the explicit-disable edge", "checked": true},
+    {"item": "Every db_sync variant (db-sync, expand, migrate, contract, schema-check) plus buildKeystoneDeployment + buildBootstrapJob have name-based db-tls volume/mount assertions for both Enabled and disabled paths", "checked": true},
+    {"item": "Bootstrap script test asserts ssl_* parsing, ssl.CERT_REQUIRED/CERT_NONE branches, check_hostname, and conditional ssl= kwarg — but does not execute the script so the actual pymysql ssl-dict shape is unverified", "checked": true},
+    {"item": "envtest integration test TestIntegration_DatabaseTLS_CertificateLifecycle asserts Certificate creation + ownerRef + CertificatePending condition under the real controller", "checked": true},
+    {"item": "CEL integration test TestIntegration_CRD_CELRejectsInvalidTLS runs with the webhook ENABLED, so it cannot distinguish a CEL rejection from a webhook rejection — task 2.6 explicitly required webhook-disabled envtest", "checked": false},
+    {"item": "Helm RBAC tests cover the new cert-manager.io/certificates rule in both clusterrole_test.yaml and role_test.yaml with updated rule-count = 22", "checked": true},
+    {"item": "Chainsaw E2E asserts non-empty Ssl_cipher AND plaintext rejection with full catch-block diagnostic set including MariaDB/MaxScale logs", "checked": true},
+    {"item": "No brownfield E2E or unit test exercises the dbTLSVolumeAndMount mount path — the secret-ref-ignored bug is not caught by any test", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Typed condition + reason constants (conditionTypeDatabaseTLSReady, reasonCertificateIssued/Pending/NotRequired/ExternallyManaged) extracted to dbtls_mode.go", "checked": true},
+    {"item": "modeToSSLParams returns (url.Values, error) and composes cleanly with charset=utf8 via deterministic url.Values.Encode()", "checked": true},
+    {"item": "Sub-reconciler follows the optional-sub-resource three-path lifecycle (NotRequired/ExternallyManaged/Managed) and sets ObservedGeneration on every condition", "checked": true},
+    {"item": "All DECISION comments are explicit and reviewer-verifiable", "checked": true},
+    {"item": "Several DECISION comments embed unverified assumptions (MariaDB *IssuerRef field names, MaxScale.spec.tls existence, kind TLS posture without Galera) instead of resolving them before commit", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "Operator never reads keypair bytes — DSN only emits in-pod file paths", "checked": true},
+    {"item": "db-tls Volume uses DefaultMode 0o400 (owner read-only) mirroring fernet/credential-keys volumes", "checked": true},
+    {"item": "Mount is ReadOnly:true on every container", "checked": true},
+    {"item": "spec.database.tls.enabled is strictly opt-in (Default never sets enabled=true)", "checked": true},
+    {"item": "verify-full mode correctly maps to ssl_verify_cert=true + ssl_verify_identity=true (no silent downgrade)", "checked": true},
+    {"item": "MariaDB CR sets spec.tls.required=true so plaintext is rejected at the transport layer", "checked": true},
+    {"item": "CA topology uses a dedicated openstack-db-ca-issuer (NOT the leaf-self-signed selfsigned-cluster-issuer)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "DatabaseTLSSpec lives in internal/common/types so OpenBao/Memcached siblings can reuse it", "checked": true},
+    {"item": "Sub-reconciler ordered AFTER Secrets and BEFORE DBConnectionSecret; condition added to subConditionTypes and the CC-0089 drift map", "checked": true},
+    {"item": "RBAC parity: cert-manager.io/certificates appears in BOTH kubebuilder markers and _helpers.tpl rbacRules", "checked": true},
+    {"item": "CRD CEL + webhook + Default() form a non-mutating, defense-in-depth admission contract", "checked": true},
+    {"item": "ClusterIssuer name (openstack-db-ca-issuer) is hardcoded in Go and YAML in three places with no shared constant or per-CR override", "checked": false}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No new helper introduces premature abstraction; dbTLSVolumeAndMount and modeToSSLParams are minimal pure functions", "checked": true},
+    {"item": "appendDBTLSParams is a single shared call site between the DSN builder and the bootstrap script's runtime parser", "checked": true},
+    {"item": "Defense-in-depth duplication between webhook and CEL is intentional and required by project pattern", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "modeToSSLParams returns an error (not a partial DSN) on unknown mode", "checked": true},
+    {"item": "appendDBTLSParams surfaces the modeToSSLParams error all the way up; no silent downgrade", "checked": true},
+    {"item": "Webhook + CEL reject incomplete TLS configs at admission rather than at runtime", "checked": true},
+    {"item": "ExternallyManaged path silently records True without validating that the user-supplied ClientCertSecretRef Secret actually exists — a non-existent Secret will surface as a pod CreateContainerConfigError rather than a clear status condition", "checked": false}
+  ],
+  "defensive_checklist": [
+    {"item": "TLS pointer defaults to nil (preserves pre-CC-0106 plaintext behavior for all existing CRs)", "checked": true},
+    {"item": "Default() carve-out for the bool field 'enabled' matches the established UWSGISpec.HTTPKeepAlive / LoggingSpec.Debug pattern", "checked": true},
+    {"item": "Mount Secret name is derived purely from keystone.Name and is NOT validated against the user-supplied spec.database.tls.clientCertSecretRef.Name", "checked": false}
+  ],
+  "security_findings": [],
+  "architecture_findings": [
+    {
+      "severity": "MEDIUM",
+      "description": "dbCAIssuerName ('openstack-db-ca-issuer') is hardcoded in three places without a shared constant: operators/keystone/internal/controller/reconcile_databasetls.go:55, deploy/flux-system/infrastructure/db-ca-issuer.yaml:76 (the ClusterIssuer metadata.name), and deploy/flux-system/infrastructure/mariadb.yaml:75/79 (spec.tls.*IssuerRef.name). A future rename or per-CR override (e.g. multi-tenant deployments with separate CA roots) would have to update three files in lockstep — a typical drift trap.",
+      "location": "operators/keystone/internal/controller/reconcile_databasetls.go:55",
+      "fix": "Expose the issuer name (and Kind) on spec.database.tls (e.g. spec.database.tls.issuerRef) with the current value as the Default(). The reconcile_databasetls.go const becomes the documented default. The YAML manifests then reference the same shared value, and per-CR overrides become possible for multi-tenant CA roots."
+    }
+  ],
+  "issues_found": [
+    {
+      "check_id": "C1",
+      "severity": "BLOCKER",
+      "description": "dbTLSVolumeAndMount hardcodes the mount Secret name to '<keystone.Name>-db-client' and never reads spec.database.tls.ClientCertSecretRef.Name. The webhook and CRD CEL both REQUIRE the user to set clientCertSecretRef.name when tls.enabled is true, but the operator silently ignores whatever value is supplied. Two concrete failure modes: (1) Brownfield mode (Database.Host set, no ClusterRef) — the operator does NOT create the '<name>-db-client' Secret (ExternallyManaged path is a no-op), so the API pod / db_sync Jobs / bootstrap Job all mount a non-existent Secret and fail with CreateContainerConfigError. (2) Managed mode — if a user sets clientCertSecretRef.name to anything other than '<keystone.Name>-db-client' (which the CRD does not constrain), the operator silently mounts the wrong Secret (or a non-existent one) instead of the one the user declared. The required field is dead configuration.",
+      "location": "operators/keystone/internal/controller/reconcile_databasetls.go:213-230",
+      "fix": "Change dbTLSVolumeAndMount to take the spec.database.tls.ClientCertSecretRef.Name (and the spec for CA bundle, see next finding) as parameters instead of computing the Secret name from keystone.Name. In managed mode, also make dbClientCertificate's SecretName equal tlsSpec.ClientCertSecretRef.Name so the operator-issued Certificate writes to the Secret the user declared. Add a brownfield E2E or unit test that asserts the mount uses the user-supplied name.",
+      "evidence": "func dbTLSVolumeAndMount(keystone *keystonev1alpha1.Keystone) (corev1.Volume, corev1.VolumeMount) {\n\tsecretName := fmt.Sprintf(\"%s-db-client\", keystone.Name)\n\tvolume := corev1.Volume{\n\t\tName: dbTLSVolumeName,\n\t\tVolumeSource: corev1.VolumeSource{\n\t\t\tSecret: &corev1.SecretVolumeSource{\n\t\t\t\tSecretName:  secretName,\n\t\t\t\tDefaultMode: ptr.To(int32(0o400)),\n\t\t\t},\n\t\t},\n\t}",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "C3",
+      "severity": "BLOCKER",
+      "description": "spec.database.tls.caBundleSecretRef is required by both the CRD CEL rule and the validating webhook, but is NEVER read by any production code path. grep across operators/keystone/internal/controller/*.go shows the only reference is reconcile_databasetls.go:90 — the ExternallyManaged condition message — and even that uses ClientCertSecretRef, not CABundleSecretRef. The mount projects ca.crt, tls.crt, tls.key from a SINGLE Secret (the client-cert one), assuming managed-mode cert-manager output. In brownfield deployments where the CA bundle and client keypair live in separate Secrets (the common enterprise PKI shape), the operator silently ignores the caBundleSecretRef the user was forced to declare, mounts only the client-cert Secret, and pymysql fails at runtime with 'CA file not found'. The required field is, again, dead configuration.",
+      "location": "operators/keystone/api/v1alpha1/keystone_webhook.go:300-313",
+      "fix": "Either (a) actually use spec.database.tls.CABundleSecretRef.Name to project a separate ca.crt subpath into the db-tls mount when it differs from ClientCertSecretRef.Name (the brownfield case), or (b) relax the validation so caBundleSecretRef.name is optional in managed mode and only required when the user supplies a separate-from-client-cert CA Secret. The current state — required-but-ignored — is the worst of both worlds.",
+      "evidence": "$ grep -rn \"CABundleSecretRef\" operators/keystone/internal/controller/*.go | grep -v _test\n(no production-code matches)",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "TE3",
+      "severity": "MAJOR",
+      "description": "TestIntegration_CRD_CELRejectsInvalidTLS (api/v1alpha1/integration_test.go:229) is documented as exercising the CRD CEL path, but setupEnvTest unconditionally registers the validating webhook (api/v1alpha1/integration_test.go:39-41), so the webhook intercepts the invalid CR FIRST. The test cannot distinguish a CEL rejection from a webhook rejection — if the CEL rule is ever removed, the test still passes because the webhook keeps rejecting. Task 2.6 explicitly required 'under envtest with the webhook disabled, assert the CRD rejects out-of-enum mode and inconsistent enabled+secretRef'. Additionally, the test only covers the enabled-without-secretRef case; the out-of-enum mode case (the other half of REQ-007) is not covered by any CRD-level integration test.",
+      "location": "operators/keystone/api/v1alpha1/integration_test.go:229-252",
+      "fix": "Either (a) add a sibling setupEnvTestWithoutWebhook helper that omits SetupWebhookWithManager and re-run the existing assertions against it, or (b) tear the webhook down for just this test (e.g. by deleting the ValidatingWebhookConfiguration after setup). Add a second sub-test that asserts the CRD rejects an out-of-enum mode (e.g. 'bogus').",
+      "evidence": "func setupEnvTest(t testing.TB) (client.Client, context.Context, context.CancelFunc) {\n\tt.Helper()\n\treturn testutil.SetupKeystoneEnvTest(t, AddToScheme, func(mgr ctrl.Manager) error {\n\t\treturn (&KeystoneWebhook{Client: mgr.GetClient()}).SetupWebhookWithManager(mgr)\n\t})\n}",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "C1",
+      "severity": "MAJOR",
+      "description": "deploy/flux-system/infrastructure/mariadb.yaml deviates from CC-0106 task 5.2's stated field set ({enabled, required, serverCASecretRef, clientCASecretRef}) and uses {serverCertIssuerRef, clientCertIssuerRef} instead. The DECISION block at lines 9-28 acknowledges the deviation but defers verification to the reviewer ('please verify the *IssuerRef fields exist on MariaDB.spec.tls and MaxScale.spec.tls in the mariadb-operator release pinned by deploy/flux-system/releases/mariadb-operator.yaml; if v0.38.1 still requires *CASecretRef, switch to adding both forms with the CA Secret materialised cross-namespace'). This is a 'verify in flight' artefact that ships unverified — if mariadb-operator v0.38.1 rejects the field, MariaDB reconcile fails and nothing else in the dependency chain reaches Ready. The sandbox cannot validate against a live cluster, but the project pins mariadb-operator v0.38.1 in operators/keystone/go.mod and the vendored module's Go types can be checked at build time.",
+      "location": "deploy/flux-system/infrastructure/mariadb.yaml:71-81",
+      "fix": "Add a tiny Go program (or extend an existing test) that imports github.com/mariadb-operator/mariadb-operator/api/v1alpha1 and asserts both reflect.TypeOf(mariadbv1alpha1.MariaDBSpec{}).FieldByName(\"TLS\").Type contains the field names used here (ServerCertIssuerRef / ClientCertIssuerRef) AND, if not, switch to the originally-planned *CASecretRef form with a cross-namespace materialisation strategy documented.",
+      "evidence": "  tls:\n    enabled: true\n    required: true\n    serverCertIssuerRef:\n      name: openstack-db-ca-issuer\n      kind: ClusterIssuer\n      group: cert-manager.io\n    clientCertIssuerRef:\n      name: openstack-db-ca-issuer\n      kind: ClusterIssuer\n      group: cert-manager.io",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "C3",
+      "severity": "MAJOR",
+      "description": "deploy/kind/infrastructure/kustomization.yaml inherits spec.tls.enabled=true and required=true from the base while patching out Galera and MaxScale (replicas=1, galera.enabled=false, maxScale.enabled=false). The DECISION comment at lines 26-37 again defers verification ('Reviewer: please verify the resulting standalone MariaDB pod terminates TLS as expected in a kind run; if mariadb-operator requires Galera to mint server certs, override spec.tls.enabled to false here and document the divergence'). If the standalone MariaDB cannot terminate TLS without Galera/MaxScale, every Keystone CI run in kind that touches the DB will hang waiting for DatabaseReady. This is the failure mode 'Document intentional environment divergence in overlays' is specifically meant to prevent.",
+      "location": "deploy/kind/infrastructure/kustomization.yaml:23-58",
+      "fix": "Either commit to a verified kind TLS posture (run the full kind path in CI with WITH_TLS=true and confirm MariaDB reaches Ready) or override spec.tls.enabled=false in the kind overlay and document the divergence prominently in the file header and in docs/reference/infrastructure/infrastructure-manifests.md.",
+      "evidence": "# DECISION: kind inherits spec.tls from the base unchanged (CC-0106,\n# REQ-009). The single-replica, no-Galera/no-MaxScale kind MariaDB still\n# terminates TLS on the standalone mariadbd because the strategic-merge\n# patch below does not override spec.tls. ... Reviewer: please verify the\n# resulting standalone MariaDB pod terminates TLS as expected in a kind\n# run; if mariadb-operator requires Galera to mint server certs, override\n# spec.tls.enabled to false here and document the divergence.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "Q4",
+      "severity": "MAJOR",
+      "description": "The required-but-ignored caBundleSecretRef / clientCertSecretRef fields (see BLOCKER findings above) are also a sharp-edges/footgun problem. The CRD asks the user to set values the operator refuses to honour. The docs/reference/keystone/keystone-crd.md DatabaseTLSSpec table even hints at the convention ('In managed mode... the operator provisions a cert-manager Certificate into a Secret named <name>-db-client') without warning the user that their input is discarded.",
+      "location": "docs/reference/keystone/keystone-crd.md:1023-1024",
+      "fix": "Documentation alone is insufficient — the fields should either be honoured or removed. Until the BLOCKER above is fixed, add a prominent warning in the CRD reference table that the operator currently ignores the supplied names and uses the hardcoded '<name>-db-client' Secret. Mention the same caveat in the how-to under docs/guides/enable-keystone-database-tls.md.",
+      "evidence": "| `caBundleSecretRef` | [`SecretRefSpec`](#secretrefspec) | Yes (when `enabled=true`) | — | Secret holding the server CA bundle the client trusts when verifying the database endpoint. Required by both the CRD CEL rule and the validating webhook when `enabled` is `true`. |",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "TE2",
+      "severity": "MAJOR",
+      "description": "No test exercises the ExternallyManaged path's downstream consequences. TestReconcileDatabaseTLS_BrownfieldExternallyManaged asserts only that the reconciler emits the right condition and creates no Certificate, but it does NOT verify the Deployment/Job mount path for the brownfield case. As a result, the dbTLSVolumeAndMount mount-of-non-existent-Secret bug (see BLOCKER above) has no test coverage and would not be caught by CI.",
+      "location": "operators/keystone/internal/controller/reconcile_databasetls_test.go:173-199",
+      "fix": "Add a test (in reconcile_deployment_test.go or reconcile_databasetls_test.go) that runs buildKeystoneDeployment on a brownfield TLS-enabled CR with a custom ClientCertSecretRef.Name (e.g. 'external-cert') and asserts the db-tls Volume.SecretName matches the user-supplied name (NOT '<keystone.Name>-db-client'). The test will fail today, which is exactly the point.",
+      "evidence": "ks.Spec.Database.Host = \"db.example.com\"\nks.Spec.Database.Port = 3306\nks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{\n\tEnabled:             true,\n\tMode:                \"verify-full\",\n\tCABundleSecretRef:   commonv1.SecretRefSpec{Name: \"db-server-ca\"},\n\tClientCertSecretRef: commonv1.SecretRefSpec{Name: \"external-db-client\"},\n}\n// ... no assertion that the *deployment* mount uses 'external-db-client'.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "TE3",
+      "severity": "MAJOR",
+      "description": "TestBuildBootstrapJob_PreInsertScript_ParsesSSLDSNParams asserts the bootstrap script CONTAINS specific Python substrings, but never executes the script. A subtle bug in the ssl-dict mapping (e.g. swapping ssl.CERT_REQUIRED and ssl.CERT_NONE, missing the bool coercion, or passing the wrong key name to pymysql) would pass the substring check while breaking the live connection. The E2E test exercises only the verify-full path against a managed MariaDB; the verify-ca and prefer/require paths are not exercised end-to-end, and the bootstrap script execution path is exercised only implicitly through the chainsaw test reaching BootstrapReady.",
+      "location": "operators/keystone/internal/controller/reconcile_bootstrap_test.go:644-690",
+      "fix": "Add a unit test that runs the inline Python via `python3 -c <script>` with a stubbed pymysql.connect that records the kwargs it received (or via subprocess + a tiny shim) so the test verifies the actual ssl-dict shape pymysql gets for each mode. Alternatively, factor the ssl_*-to-ssl-dict mapping out of the inline string into a standalone .py file (per the shared-restrictedSecurityContext-style pattern for embedded scripts) and unit-test that file directly with pytest.",
+      "evidence": "g.Expect(script).To(ContainSubstring(\"ssl.CERT_REQUIRED\"),\n\t\"script must map verify-ca/verify-full to ssl.CERT_REQUIRED (CC-0106, REQ-005)\")\ng.Expect(script).To(ContainSubstring(\"ssl.CERT_NONE\"),\n\t\"script must map prefer/require (no ssl_verify_cert) to ssl.CERT_NONE (CC-0106, REQ-005)\")\n// substring checks only — no execution.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "Q1",
+      "severity": "MAJOR",
+      "description": "buildBootstrapJob embeds a multi-paragraph Python script as a Go string literal (reconcile_bootstrap.go:110-144). This violates the project's shared-restrictedSecurityContext pattern for embedded scripts ('Shell scripts are stored as standalone .sh files... embedded into the Go binary via //go:embed... mounted as a volume with DefaultMode 0555'). The inline form is not Python-lintable, not testable in isolation, and concatenates the region literal via sprintf with %% escaping in the SQL placeholders — a hostile environment for the kind of TLS-handling logic the script now carries (CC-0106 added 25+ lines of ssl-dict construction).",
+      "location": "operators/keystone/internal/controller/reconcile_bootstrap.go:110-144",
+      "fix": "Extract the entire pre-insert script to operators/keystone/internal/controller/scripts/bootstrap_pre_insert.py, embed it via //go:embed, and follow the established pattern: create an immutable ConfigMap with a content-hash suffix and mount it at /scripts/ with DefaultMode 0555. The region id stays as a CLI argument or env var instead of a sprintf interpolation. Add a Python unit test (pytest) that exercises every mode/verify-* branch with a stubbed pymysql.",
+      "evidence": "bootstrapScript := fmt.Sprintf(`python3 -c '\nimport os, configparser, glob, ssl, pymysql\nfrom urllib.parse import urlparse, parse_qs\n... 30+ lines including ssl.CERT_REQUIRED/CERT_NONE branches and a pymysql.connect call ...\ncur.execute(\"INSERT IGNORE INTO region (id, description, extra) VALUES (%%s, %%s, %%s)\", (\"%s\", \"\", \"{}\"))\n...`, keystone.Spec.Bootstrap.Region, internalURL, internalURL, publicURL, keystone.Spec.Bootstrap.Region)",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "D2",
+      "severity": "MINOR",
+      "description": "The 'Disabling' section of docs/guides/enable-keystone-database-tls.md correctly warns that removing spec.database.tls leaves Keystone unable to connect because MariaDB still has tls.required=true. This is a footgun: a user who follows the guide to disable TLS on the Keystone side will brick the deployment. The warning is in the third paragraph after the kubectl command. Consider moving the warning ABOVE the command or refusing to document a partial-disable that leaves the data plane broken.",
+      "location": "docs/guides/enable-keystone-database-tls.md:222-239",
+      "fix": "Add a leading admonition (e.g. '⚠ Warning:') above the kubectl patch command stating that this operation will break Keystone's data plane unless MariaDB's spec.tls.required is also flipped to false in the same change. Or split the section into two: 'rollback TLS on both sides' (the full procedure) and 'temporarily skip Keystone TLS while keeping MariaDB enforcing' (which doesn't work — don't document it).",
+      "evidence": "## Disabling\n\nTo revert a CR to plaintext without uninstalling the operator, drop the `tls`\nblock. ...\n\n```bash\nkubectl -n openstack patch keystone keystone --type json --patch '[\n  {\"op\": \"remove\", \"path\": \"/spec/database/tls\"}\n]'\n```\n\nThe `DatabaseTLSReady` condition transitions to `True` with `reason=NotRequired`,\n... Note: MariaDB still enforces `spec.tls.required=true` on its\nside, so plaintext connections will be rejected ...",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "D4",
+      "severity": "MINOR",
+      "description": "The docs claim the chainsaw test exercises the full TLS path, but a careful reader notices that step 3 uses `kubectl exec ... python3 -c ... sqlalchemy ...` which assumes the keystone container image carries sqlalchemy as an importable module under python3. The DECISION comment in chainsaw-test.yaml lines 96-97 acknowledges this with another 'Reviewer: please verify the keystone container exposes sqlalchemy and OS_DATABASE__CONNECTION in this image tag'. Without verification, the chainsaw step could fail with ImportError rather than reporting the actual TLS state.",
+      "location": "tests/e2e/keystone/database-tls/chainsaw-test.yaml:90-118",
+      "fix": "Either (a) replace the sqlalchemy import with a pymysql.connect against os.environ['OS_DATABASE__CONNECTION'] parsed via urllib (same code path the bootstrap script uses, and we already know pymysql is in the image because the bootstrap script depends on it), or (b) add a single-line `python3 -c 'import sqlalchemy'` precheck so a missing dep surfaces with a clear error.",
+      "evidence": "CIPHER=$(kubectl exec -n openstack \"$POD\" -c keystone -- python3 -c '\nimport os, sqlalchemy\nengine = sqlalchemy.create_engine(os.environ[\"OS_DATABASE__CONNECTION\"])\n...\n' 2>&1)",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "Lift dbCAIssuerName to a configurable spec.database.tls.issuerRef (with the current value as Default()) so multi-tenant deployments and per-environment CA rotations do not require a Go const + two YAML manifest edits.",
+    "Stop forcing both caBundleSecretRef AND clientCertSecretRef when the operator only consumes one Secret in managed mode — either honour both (so brownfield can supply separate trust + keypair Secrets) or relax the validation so managed-mode CRs do not have to declare values the operator ignores.",
+    "Extract the inline bootstrap Python into a standalone .py file under operators/keystone/internal/controller/scripts/ and embed it via //go:embed, matching the existing shell-script convention. The script can then be unit-tested in isolation with pytest, including the ssl-dict mapping for every mode.",
+    "Add a TestBuildKeystoneDeployment_DBTLSVolume_UsesUserSuppliedSecretName (brownfield) test that fails today and proves the operator honours spec.database.tls.clientCertSecretRef.Name once the BLOCKER is fixed.",
+    "Add a CRD CEL-only integration test variant that disables the webhook so the test cannot pass on webhook-only enforcement. Cover both validation paths (out-of-enum mode + enabled-without-secretRef) separately.",
+    "Either commit to running the kind path with WITH_TLS=true in CI to verify the standalone MariaDB TLS posture, or override spec.tls.enabled=false in the kind overlay and document the divergence in the file header."
+  ],
+  "next_steps": [
+    "Fix dbTLSVolumeAndMount to use tlsSpec.ClientCertSecretRef.Name (and address CABundleSecretRef separately) so brownfield mode is functional and managed mode honours user input.",
+    "Verify mariadb-operator v0.38.1's k8s.mariadb.com/v1alpha1 MariaDBSpec.TLS field shape against the actual Go types in the vendored module — not 'reviewer please verify' — and either keep *IssuerRef (if supported) or revert to *CASecretRef with a documented cross-namespace strategy.",
+    "Re-issue TestIntegration_CRD_CELRejectsInvalidTLS with the webhook disabled, and add an out-of-enum mode sub-test.",
+    "Resolve the kind TLS posture: either run the full WITH_TLS=true kind path in CI or override TLS off in the kind overlay with documentation.",
+    "Add brownfield-with-TLS mount assertions to reconcile_deployment_test.go / reconcile_database_test.go.",
+    "Move the 'Disabling' guide's data-plane-warning above the kubectl patch command."
+  ],
+  "detected_patterns": []
+}

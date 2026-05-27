@@ -1,0 +1,43 @@
+{
+  "summary": "Improvement cycle that addresses external reviewer gndrmnn's two NEEDS_CHANGES comments by deleting brittle lexical/keyword-based tests. TestReconcile_DatabaseTLSOrderedBeforeDBConnectionSecret (which read keystone_controller.go source and grepped for substrings) was removed from keystone_controller_test.go along with the now-unused 'os' import. TestBootstrapDBSeedScript_EmbeddedContent (which asserted specific Python keywords inside the go:embed string) was removed from reconcile_bootstrap_test.go; the surviving TestBuildBootstrapJob_PreInsertScript_ParsesSSLDSNParams already proves the embed is wired via NotTo(BeEmpty()) + ContainSubstring(bootstrapDBSeedScript). Two review-pattern catalog files were updated to record the new occurrences, and the external-review JSON was marked ADDRESSED with per-comment resolutions and a resolution_summary.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass for the changed package", "checked": true},
+    {"item": "No new tests required by the change (deletions only)", "checked": true},
+    {"item": "Coverage gap from removed tests is justified — embed wiring still proven by surviving behavioral test (reconcile_bootstrap_test.go:730-733)", "checked": true},
+    {"item": "Sub-reconciler ordering no longer has a unit-level assertion; reviewer explicitly accepted this trade-off because the prior assertion was lexical, not behavioral", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Surgical scope — only the two test functions named by the reviewer were touched", "checked": true},
+    {"item": "Unused 'os' import removed from keystone_controller_test.go after the test that referenced it was deleted", "checked": true},
+    {"item": "No collateral edits to unrelated test cases or production code", "checked": true},
+    {"item": "go build, go vet, and neighboring tests all clean", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No security-relevant code changed in this cycle (test deletions only)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Change is a pure test removal — no production architecture impact", "checked": true},
+    {"item": "Reconcile sub-reconciler ordering wiring in keystone_controller.go:253 (DatabaseTLS) is unchanged; only the lexical assertion guarding it was removed", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "Duplicate / brittle test coverage removed in favour of the surviving behavioral test", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "N/A — no error-handling paths changed", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "N/A — no input-handling paths changed", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Optional follow-up: if the project later wants real coverage of the Secrets → DatabaseTLS → DBConnectionSecret ordering (REQ-002), add a behavioral integration test in operators/keystone/internal/controller/integration_test.go that drives Reconcile under envtest and asserts the issued cert-manager Certificate exists before the <name>-db-connection Secret is updated — i.e., observe the side effects in order rather than scanning the source. This is a suggestion, not a finding; the reviewer explicitly accepted the gap left by removing the lexical test."
+  ],
+  "next_steps": [
+    "Land the change as-is; both reviewer comments are addressed and the external-review JSON is marked ADDRESSED.",
+    "Optionally promote the suggested envtest-level ordering check in a future PR if REQ-002 coverage is desired beyond the per-sub-reconciler unit tests already in reconcile_databasetls_test.go."
+  ],
+  "detected_patterns": []
+}

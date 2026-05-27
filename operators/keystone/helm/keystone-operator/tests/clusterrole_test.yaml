@@ -7,7 +7,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 21
+          count: 22
 
   - it: should grant full CRUD on keystones
     asserts:
@@ -170,6 +170,24 @@ tests:
               - get
               - list
               - watch
+
+  - it: should grant full CRUD on cert-manager certificates (CC-0106)
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - cert-manager.io
+            resources:
+              - certificates
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
 
   - it: should grant CRUD without delete on externalsecrets (CC-0079)
     asserts:

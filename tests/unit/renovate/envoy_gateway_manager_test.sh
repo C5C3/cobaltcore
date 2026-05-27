@@ -43,7 +43,7 @@ test_renovate_config_valid() {
   fi
 
   local output status=0
-  output="$(cd "$PROJECT_ROOT" && npx --yes --package renovate -- \
+  output="$(cd "$PROJECT_ROOT" && npx --yes --package renovate@latest -- \
     renovate-config-validator renovate.json 2>&1)" || status=$?
 
   if [ "$status" -ne 0 ]; then

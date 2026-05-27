@@ -5,7 +5,20 @@
 # MariaDB Galera cluster for OpenStack infrastructure databases.
 # The mariadb-operator manages this CR and provisions a 3-node Galera cluster
 # with automatic failover and synchronous replication.
-# Feature: CC-0008, REQ-005
+#
+# TLS is configured via ClusterIssuer refs rather than raw CA Secret refs.
+# Verified against the vendored mariadb-operator v0.38.1 Go types
+# (k8s.mariadb.com/v1alpha1: TLS.ServerCertIssuerRef, TLS.ClientCertIssuerRef
+# in api/v1alpha1/mariadb_types.go). The operator auto-derives the
+# server/client CA bundles from the referenced issuer, which:
+#   (a) avoids the cross-namespace problem of mirroring the CA bundle Secret
+#       from the cert-manager clusterResourceNamespace (where the CA keypair
+#       lives, see db-ca-issuer.yaml) into the openstack namespace.
+#   (b) keeps the trust root unified with the Keystone DB-client cert that
+#       the Keystone operator issues from the same ClusterIssuer
+#       (operators/keystone/internal/controller/reconcile_databasetls.go).
+#
+# Feature: CC-0008, CC-0106, REQ-005, REQ-009
 ---
 apiVersion: k8s.mariadb.com/v1alpha1
 kind: MariaDB
@@ -19,6 +32,12 @@ spec:
   maxScale:
     enabled: true
     replicas: 2
+    # MaxScale terminates TLS for client connections; the per-listener
+    # ServerCA/ServerCert refs default from the referenced MariaDB instance
+    # (verified against the vendored mariadb-operator v0.38.1 MaxScaleTLS
+    # type in api/v1alpha1/maxscale_types.go SetDefaults).
+    tls:
+      enabled: true
   # The mariadb-root-password Secret will be provisioned by the External
   # Secrets Operator integration (CC-0009).
   rootPasswordSecretKeyRef:
@@ -33,3 +52,18 @@ spec:
     type: ClusterIP
   secondaryService:
     type: ClusterIP
+  # TLS to the database (CC-0106, REQ-009). Galera inter-node, MaxScale
+  # listener, and Keystone client all sit inside the OpenStack DB trust
+  # domain rooted at the "openstack-db-ca-issuer" ClusterIssuer defined
+  # in db-ca-issuer.yaml.
+  tls:
+    enabled: true
+    required: true
+    serverCertIssuerRef:
+      name: openstack-db-ca-issuer
+      kind: ClusterIssuer
+      group: cert-manager.io
+    clientCertIssuerRef:
+      name: openstack-db-ca-issuer
+      kind: ClusterIssuer
+      group: cert-manager.io

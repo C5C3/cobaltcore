@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR fixture for the database-tls E2E test (CC-0106, REQ-011).
+# Managed mode: database via clusterRef to the openstack-db MariaDB Galera
+# cluster, cache via clusterRef to openstack-memcached. The spec.database.tls
+# block exercises the full TLS/mTLS path:
+#   - .enabled: true        -> reconcileDatabaseTLS provisions a cert-manager
+#                              Certificate from the "openstack-db-ca-issuer"
+#                              ClusterIssuer into Secret keystone-dbtls-db-client
+#                              (containing ca.crt / tls.crt / tls.key).
+#   - .mode: verify-full    -> DSN appends ssl_ca/ssl_cert/ssl_key plus
+#                              ssl_verify_cert=true and ssl_verify_identity=true
+#                              (strongest mode; verifies the server cert chain
+#                              AND its hostname identity).
+#
+# DECISION: caBundleSecretRef / clientCertSecretRef both point at the operator-
+# managed Secret keystone-dbtls-db-client. In managed mode the cert-manager
+# Certificate writes ca.crt, tls.crt, and tls.key into the same Secret, so a
+# single reference satisfies both fields and avoids fixturing a separate CA
+# bundle Secret. The CRD CEL rule (keystone_types.go, the database block)
+# requires both names to be non-empty when tls.enabled is true. Reviewer:
+# please verify this single-Secret pattern is the intended managed-mode shape.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-dbtls
+  namespace: openstack
+spec:
+  replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_dbtls
+    secretRef:
+      name: keystone-db
+    tls:
+      enabled: true
+      mode: verify-full
+      caBundleSecretRef:
+        name: keystone-dbtls-db-client
+      clientCertSecretRef:
+        name: keystone-dbtls-db-client
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne

@@ -32,6 +32,8 @@ spec:
               properties:
                 secretName:
                   type: string
+                commonName:
+                  type: string
                 issuerRef:
                   type: object
                   properties:
@@ -42,6 +44,10 @@ spec:
                     group:
                       type: string
                 dnsNames:
+                  type: array
+                  items:
+                    type: string
+                usages:
                   type: array
                   items:
                     type: string

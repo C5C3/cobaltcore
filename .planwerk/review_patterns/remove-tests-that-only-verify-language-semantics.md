@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: Look for tests that create a struct, immediately assign values, then assert those same values are present — without invoking any production logic, transformation, or side effect.
 **Severity**: WARNING
-**Occurrences**: 4
+**Occurrences**: 5
 
 ## What to check
 
@@ -34,3 +34,8 @@ Useless tests inflate test counts, give false confidence in coverage, and add ma
 - **Feedback**: We are *absolutely* not going to test source code via literal string analysis. This is not acceptable remove lines 262-432
 - **What was missed**: Tests must exercise runtime behavior, not perform literal string analysis of source code or validate documentation against code. Flag any 'drift guard' or 'contract' test that reads source/docs files.
 - **Fix**: Deleted contract_test.go entirely and removed the AST-based literal-analysis drift guard plus its go/ast/parser/token imports from instrumentation_test.go.
+
+### CC-0106 — gndrmnn
+- **Feedback**: We already test if the script is being loaded. Testing each keyword as presented here is too specific and brittle.
+- **What was missed**: For each added test, ask: does an existing test already prove this? If a higher-level behavioral test covers the wiring, a finer-grained content-assertion test adds brittleness without new signal.
+- **Fix**: Removed `TestBootstrapDBSeedScript_EmbeddedContent` because `TestBuildBootstrapJob_PreInsertScript_ParsesSSLDSNParams` already proves the embed is wired.

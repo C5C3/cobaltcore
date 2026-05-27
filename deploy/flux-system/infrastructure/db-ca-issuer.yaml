@@ -1,0 +1,79 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Dedicated cert-manager CA for the OpenStack database trust domain
+# (CC-0106, REQ-009). One self-signed CA keypair backs three concerns:
+#   1. The "openstack-db-ca-issuer" ClusterIssuer that signs leaf
+#      certificates for MariaDB/MaxScale TLS material and for the
+#      Keystone DB-client mTLS keypair (CC-0106, REQ-002, REQ-009).
+#   2. mariadb-operator's server-side TLS (Galera + MaxScale terminate
+#      TLS on certs minted by this issuer; CC-0106, REQ-009).
+#   3. Keystone's client-side mTLS (Keystone presents a client cert
+#      minted by this issuer; MariaDB trusts it because it is signed
+#      by the same CA; CC-0106, REQ-002).
+#
+# DECISION: separate CA from selfsigned-cluster-issuer — Chose to
+# bootstrap a dedicated CA keypair (Certificate + CA ClusterIssuer)
+# rather than reuse the existing "selfsigned-cluster-issuer", because
+# that issuer is a SelfSigned issuer that mints only self-signed leaf
+# certs; it cannot sign other certificates. A CA-type ClusterIssuer
+# requires a real CA keypair in a Secret. The selfsigned-cluster-
+# issuer is used here only to bootstrap that CA keypair (CC-0008
+# convention preserved).
+#
+# DECISION: CA Certificate placement — Issued the CA Certificate into
+# the "cert-manager" namespace because cert-manager's default
+# --cluster-resource-namespace is "cert-manager", which is where a
+# ClusterIssuer of type CA looks up its secretName. Placing the
+# CA keypair Secret here is the standard cert-manager convention
+# (see https://cert-manager.io/docs/configuration/ca/). The kind
+# overlay inherits this resource via deploy/kind/infrastructure/
+# kustomization.yaml.
+#
+# DECISION: CA lifetime — 3 years (26280h) for the CA keypair with
+# 30-day renewBefore. CA certs should outlive the leaves they sign;
+# leaf certs in this trust domain target ~1y (mirroring openbao-tls-
+# cert.yaml). A 3y CA balances rotation cost against the operational
+# burden of re-distributing the trust bundle to MariaDB/MaxScale and
+# all Keystone workloads each rotation.
+#
+# Feature: CC-0106, REQ-009
+---
+# Bootstrap CA keypair Secret. Issued in the cert-manager namespace
+# because that is cert-manager's default clusterResourceNamespace
+# (where ClusterIssuer ca.secretName is looked up). The selfsigned-
+# cluster-issuer mints this CA keypair; the keypair then becomes the
+# trust root for the OpenStack DB trust domain.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: openstack-db-ca
+  namespace: cert-manager
+spec:
+  secretName: openstack-db-ca
+  isCA: true
+  commonName: openstack-db-ca
+  # 3-year CA lifetime; 30-day renew window.
+  duration: 26280h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: selfsigned-cluster-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+# CA-type ClusterIssuer signing leaf certs for MariaDB, MaxScale, and
+# Keystone DB-client mTLS. The name "openstack-db-ca-issuer" is the
+# source-of-truth referenced by operators/keystone/internal/controller/
+# reconcile_databasetls.go (const dbCAIssuerName) and by mariadb.yaml's
+# spec.tls.serverCertIssuerRef / clientCertIssuerRef (CC-0106, REQ-009).
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: openstack-db-ca-issuer
+spec:
+  ca:
+    secretName: openstack-db-ca

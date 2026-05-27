@@ -58,7 +58,17 @@ type KeystoneSpec struct {
 
 	// Database defines the MariaDB connection parameters.
 	// Supports managed (clusterRef) and brownfield (host/port) modes.
+	// TLS/mTLS is opt-in via database.tls (CC-0106): when enabled, both the
+	// CA bundle and client keypair Secret references must be supplied so the
+	// reconciler can establish a verified, mutually-authenticated connection.
+	//
+	// DECISION (CC-0106): no CEL rule is added for tls.mode — the out-of-enum
+	// case is already rejected by the leaf +kubebuilder:validation:Enum marker
+	// on DatabaseTLSSpec.Mode (prefer;require;verify-ca;verify-full). Adding a
+	// mode CEL here would be redundant with that schema-level enum and risks
+	// drifting from it.
 	// +kubebuilder:validation:XValidation:rule="has(self.clusterRef) != has(self.host)",message="exactly one of clusterRef or host must be set"
+	// +kubebuilder:validation:XValidation:rule="!has(self.tls) || !self.tls.enabled || (self.tls.caBundleSecretRef.name != '' && self.tls.clientCertSecretRef.name != '')",message="when database.tls.enabled is true, both database.tls.caBundleSecretRef.name and database.tls.clientCertSecretRef.name must be set"
 	Database commonv1.DatabaseSpec `json:"database"`
 
 	// Cache defines the Memcached cache configuration.

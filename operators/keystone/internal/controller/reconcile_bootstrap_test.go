@@ -143,22 +143,37 @@ func TestReconcileBootstrap_JobCreated(t *testing.T) {
 	g.Expect(container.Name).To(Equal("bootstrap"))
 	g.Expect(container.Command[:3]).To(Equal([]string{"/bin/sh", "-eu", "-c"}))
 	g.Expect(container.Command[3]).To(ContainSubstring("keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap"))
-	expectedServiceURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", ks.Name, ks.Namespace)
-	g.Expect(container.Command[3]).To(ContainSubstring(expectedServiceURL))
-	g.Expect(container.Command[3]).To(ContainSubstring("--bootstrap-region-id RegionOne"))
+	// The bootstrap URLs and region id are passed via env vars (CC-0095,
+	// REQ-002; CC-0106 review-1 follow-up), so the wrapper string references
+	// them as $BOOTSTRAP_*_URL / $BOOTSTRAP_REGION_ID rather than embedding
+	// the cluster-local Service URL or region literal directly.
+	g.Expect(container.Command[3]).To(ContainSubstring(`--bootstrap-internal-url "$BOOTSTRAP_INTERNAL_URL"`))
+	g.Expect(container.Command[3]).To(ContainSubstring(`--bootstrap-region-id "$BOOTSTRAP_REGION_ID"`))
 	g.Expect(container.Args).To(BeNil())
 
 	// Verify env: BOOTSTRAP_PASSWORD first (from admin Secret), then
 	// OS_DATABASE__CONNECTION override sourced from the derived DB connection
-	// Secret (CC-0080, REQ-004, REQ-007, REQ-009). Ordering is asserted so
-	// future edits cannot reorder or drop either entry unnoticed.
-	g.Expect(container.Env).To(HaveLen(2))
+	// Secret (CC-0080, REQ-004, REQ-007, REQ-009), then the BOOTSTRAP_*
+	// parameter env vars consumed by the embedded Python and the
+	// keystone-manage flags (CC-0095, REQ-002; CC-0106 review-1 follow-up).
+	// Ordering is asserted so future edits cannot reorder or drop entries
+	// unnoticed.
+	g.Expect(container.Env).To(HaveLen(6))
 	g.Expect(container.Env[0].Name).To(Equal("BOOTSTRAP_PASSWORD"))
 	g.Expect(container.Env[0].ValueFrom.SecretKeyRef.LocalObjectReference.Name).To(Equal("keystone-admin"))
 	g.Expect(container.Env[0].ValueFrom.SecretKeyRef.Key).To(Equal("password"))
 	g.Expect(container.Env[1].Name).To(Equal("OS_DATABASE__CONNECTION"))
 	g.Expect(container.Env[1].ValueFrom.SecretKeyRef.LocalObjectReference.Name).To(Equal(ks.Name + "-db-connection"))
 	g.Expect(container.Env[1].ValueFrom.SecretKeyRef.Key).To(Equal(dbConnectionSecretKey))
+	g.Expect(container.Env[2].Name).To(Equal("BOOTSTRAP_REGION_ID"))
+	g.Expect(container.Env[2].Value).To(Equal("RegionOne"))
+	expectedServiceURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", ks.Name, ks.Namespace)
+	g.Expect(container.Env[3].Name).To(Equal("BOOTSTRAP_ADMIN_URL"))
+	g.Expect(container.Env[3].Value).To(Equal(expectedServiceURL))
+	g.Expect(container.Env[4].Name).To(Equal("BOOTSTRAP_INTERNAL_URL"))
+	g.Expect(container.Env[4].Value).To(Equal(expectedServiceURL))
+	g.Expect(container.Env[5].Name).To(Equal("BOOTSTRAP_PUBLIC_URL"))
+	g.Expect(container.Env[5].Value).To(Equal(expectedServiceURL))
 
 	// Verify config volume mount is present (CC-0013: bootstrap needs keystone.conf for DB connection).
 	g.Expect(container.VolumeMounts).To(HaveLen(2))
@@ -346,12 +361,18 @@ func TestReconcileBootstrap_PublicEndpoint(t *testing.T) {
 	}, &createdJob)).To(Succeed())
 
 	container := createdJob.Spec.Template.Spec.Containers[0]
-	// Admin and internal URLs should use cluster-local service.
+	// The wrapper script references the bootstrap URLs via env vars, so we
+	// verify the values on the env block rather than scraping the command.
+	// Admin and internal URLs should use the cluster-local service.
 	internalURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", ks.Name, ks.Namespace)
-	g.Expect(container.Command[3]).To(ContainSubstring("--bootstrap-admin-url " + internalURL))
-	g.Expect(container.Command[3]).To(ContainSubstring("--bootstrap-internal-url " + internalURL))
+	envByName := make(map[string]string, len(container.Env))
+	for _, e := range container.Env {
+		envByName[e.Name] = e.Value
+	}
+	g.Expect(envByName).To(HaveKeyWithValue("BOOTSTRAP_ADMIN_URL", internalURL))
+	g.Expect(envByName).To(HaveKeyWithValue("BOOTSTRAP_INTERNAL_URL", internalURL))
 	// Public URL should use the explicit PublicEndpoint (CC-0013).
-	g.Expect(container.Command[3]).To(ContainSubstring("--bootstrap-public-url https://keystone.example.com/v3"))
+	g.Expect(envByName).To(HaveKeyWithValue("BOOTSTRAP_PUBLIC_URL", "https://keystone.example.com/v3"))
 }
 
 func TestReconcileBootstrap_JobSpec_TTLAndBackoff(t *testing.T) {
@@ -521,10 +542,10 @@ func TestBootstrapServiceURL_NoApiLiteral(t *testing.T) {
 		"bootstrapServiceURL must not contain a stray '-api:' segment (CC-0095, REQ-002)")
 }
 
-// TestBuildBootstrapJob_AdminInternalURLsUseBareName pins the bootstrap
-// command's --bootstrap-admin-url and --bootstrap-internal-url flags to the
-// bare-CR-name Service URL produced by bootstrapServiceURL(). After the
-// CC-0095 rename these flags must never embed the legacy "-api." segment in
+// TestBuildBootstrapJob_AdminInternalURLsUseBareName pins the BOOTSTRAP_ADMIN_URL
+// and BOOTSTRAP_INTERNAL_URL env values consumed by the bootstrap script to
+// the bare-CR-name Service URL produced by bootstrapServiceURL(). After the
+// CC-0095 rename these values must never embed the legacy "-api." segment in
 // the host: any drift would write a stale catalog entry on the next bootstrap
 // run, sending in-cluster clients to a non-existent Service (CC-0095,
 // REQ-002, REQ-005).
@@ -535,15 +556,192 @@ func TestBuildBootstrapJob_AdminInternalURLsUseBareName(t *testing.T) {
 	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
 
 	g.Expect(job.Spec.Template.Spec.Containers).To(HaveLen(1))
-	script := job.Spec.Template.Spec.Containers[0].Command[3]
+	container := job.Spec.Template.Spec.Containers[0]
 
 	expectedURL := bootstrapServiceURL(ks)
-	g.Expect(script).To(ContainSubstring("--bootstrap-admin-url "+expectedURL),
-		"--bootstrap-admin-url must use the bare-CR-name Service URL (CC-0095, REQ-002, REQ-005)")
-	g.Expect(script).To(ContainSubstring("--bootstrap-internal-url "+expectedURL),
-		"--bootstrap-internal-url must use the bare-CR-name Service URL (CC-0095, REQ-002, REQ-005)")
+	envByName := make(map[string]string, len(container.Env))
+	for _, e := range container.Env {
+		envByName[e.Name] = e.Value
+	}
+	g.Expect(envByName).To(HaveKeyWithValue("BOOTSTRAP_ADMIN_URL", expectedURL),
+		"BOOTSTRAP_ADMIN_URL must use the bare-CR-name Service URL (CC-0095, REQ-002, REQ-005)")
+	g.Expect(envByName).To(HaveKeyWithValue("BOOTSTRAP_INTERNAL_URL", expectedURL),
+		"BOOTSTRAP_INTERNAL_URL must use the bare-CR-name Service URL (CC-0095, REQ-002, REQ-005)")
 
 	legacyHost := fmt.Sprintf("%s-api.%s.svc.cluster.local", ks.Name, ks.Namespace)
-	g.Expect(script).NotTo(ContainSubstring(legacyHost),
-		"bootstrap script must not embed the legacy `<cr-name>-api.<ns>` host (CC-0095, REQ-002, REQ-005)") // CC-0095 legacy: assertion pins absence of the pre-rename host.
+	for _, e := range container.Env {
+		g.Expect(e.Value).NotTo(ContainSubstring(legacyHost),
+			"bootstrap env vars must not embed the legacy `<cr-name>-api.<ns>` host (CC-0095, REQ-002, REQ-005)") // CC-0095 legacy: assertion pins absence of the pre-rename host.
+	}
+	g.Expect(container.Command[3]).NotTo(ContainSubstring(legacyHost),
+		"bootstrap wrapper script must not embed the legacy `<cr-name>-api.<ns>` host (CC-0095, REQ-002, REQ-005)") // CC-0095 legacy: assertion pins absence of the pre-rename host.
+}
+
+// findVolumeMountByName returns the first VolumeMount with the given name, or
+// nil if absent. Local helper kept out of the production package.
+func findVolumeMountByName(mounts []corev1.VolumeMount, name string) *corev1.VolumeMount {
+	for i := range mounts {
+		if mounts[i].Name == name {
+			return &mounts[i]
+		}
+	}
+	return nil
+}
+
+// findVolumeByName returns the first Volume with the given name, or nil if
+// absent.
+func findVolumeByName(vols []corev1.Volume, name string) *corev1.Volume {
+	for i := range vols {
+		if vols[i].Name == name {
+			return &vols[i]
+		}
+	}
+	return nil
+}
+
+// TestBuildBootstrapJob_DBTLSDisabled_NoDBTLSVolume backs CC-0106 task 4.3
+// REQ-005: when spec.database.tls is nil the bootstrap Job must not mount the
+// db-tls Secret. The pre-CC-0106 plaintext path stays byte-equivalent.
+func TestBuildBootstrapJob_DBTLSDisabled_NoDBTLSVolume(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := bootstrapKeystone()
+	// TLS is nil — the default produced by bootstrapKeystone.
+
+	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
+
+	container := findContainerByName(job.Spec.Template.Spec.Containers, "bootstrap")
+	g.Expect(container).NotTo(BeNil())
+	g.Expect(findVolumeMountByName(container.VolumeMounts, "db-tls")).To(BeNil(),
+		"db-tls VolumeMount must be absent when DB TLS is not enabled (CC-0106, REQ-005)")
+	g.Expect(findVolumeByName(job.Spec.Template.Spec.Volumes, "db-tls")).To(BeNil(),
+		"db-tls Volume must be absent when DB TLS is not enabled (CC-0106, REQ-005)")
+}
+
+// TestBuildBootstrapJob_DBTLSDisabledExplicit_NoDBTLSVolume backs CC-0106
+// task 4.3 REQ-005: when spec.database.tls is non-nil but Enabled is false the
+// bootstrap Job still must not mount the db-tls Secret — the enable flag is
+// the single gate (matches the reconcileDatabaseTLS NotRequired path).
+func TestBuildBootstrapJob_DBTLSDisabledExplicit_NoDBTLSVolume(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := bootstrapKeystone()
+	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
+		Enabled:             false,
+		Mode:                "require",
+		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "db-server-ca"},
+		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "test-keystone-db-client"},
+	}
+
+	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
+
+	container := findContainerByName(job.Spec.Template.Spec.Containers, "bootstrap")
+	g.Expect(container).NotTo(BeNil())
+	g.Expect(findVolumeMountByName(container.VolumeMounts, "db-tls")).To(BeNil())
+	g.Expect(findVolumeByName(job.Spec.Template.Spec.Volumes, "db-tls")).To(BeNil())
+}
+
+// TestBuildBootstrapJob_DBTLSEnabled_MountsClientSecret backs CC-0106 task 4.3
+// REQ-005: when DB TLS is enabled the bootstrap Job projects ca.crt from
+// caBundleSecretRef and tls.crt/tls.key from clientCertSecretRef read-only at
+// /etc/keystone/db-tls/. The mount path must match dbtls_mode.dbTLSPaths so
+// the DSN ssl_ca/ssl_cert/ssl_key file paths resolve.
+func TestBuildBootstrapJob_DBTLSEnabled_MountsClientSecret(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := bootstrapKeystone()
+	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
+		Enabled:             true,
+		Mode:                "verify-full",
+		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "db-server-ca"},
+		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "test-keystone-db-client"},
+	}
+
+	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
+
+	container := findContainerByName(job.Spec.Template.Spec.Containers, "bootstrap")
+	g.Expect(container).NotTo(BeNil())
+
+	mount := findVolumeMountByName(container.VolumeMounts, "db-tls")
+	g.Expect(mount).NotTo(BeNil(),
+		"db-tls VolumeMount must be present when DB TLS is enabled (CC-0106, REQ-005)")
+	g.Expect(mount.MountPath).To(Equal("/etc/keystone/db-tls/"))
+	g.Expect(mount.ReadOnly).To(BeTrue(),
+		"db-tls VolumeMount must be ReadOnly (CC-0106, REQ-005)")
+
+	vol := findVolumeByName(job.Spec.Template.Spec.Volumes, "db-tls")
+	g.Expect(vol).NotTo(BeNil())
+	g.Expect(vol.Projected).NotTo(BeNil(),
+		"db-tls Volume must be a Projected VolumeSource sourcing both Secret refs (CC-0106, REQ-005, REQ-014)")
+	expectDBTLSProjection(g, vol.Projected, "db-server-ca", "test-keystone-db-client")
+}
+
+// TestBuildBootstrapJob_DBTLSEnabled_BrownfieldUsesUserSuppliedSecretNames
+// backs the BLOCKER fix from review #1: when a brownfield deployment supplies
+// caBundleSecretRef and clientCertSecretRef pointing to two distinct Secrets
+// (the canonical enterprise-PKI shape), the bootstrap Job must reference both
+// names verbatim (CC-0106, REQ-002, REQ-014).
+func TestBuildBootstrapJob_DBTLSEnabled_BrownfieldUsesUserSuppliedSecretNames(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := bootstrapKeystone()
+	ks.Spec.Database.Host = "db.example.com"
+	ks.Spec.Database.Port = 3306
+	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
+		Enabled:             true,
+		Mode:                "verify-full",
+		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "enterprise-root-ca-bundle"},
+		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "site-specific-client-keypair"},
+	}
+
+	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
+
+	vol := findVolumeByName(job.Spec.Template.Spec.Volumes, "db-tls")
+	g.Expect(vol).NotTo(BeNil(),
+		"CC-0106: db-tls Volume must be present in brownfield mode when TLS is enabled (REQ-002, REQ-014)")
+	g.Expect(vol.Projected).NotTo(BeNil(),
+		"CC-0106: db-tls Volume must be Projected (REQ-002)")
+	expectDBTLSProjection(g, vol.Projected,
+		"enterprise-root-ca-bundle", "site-specific-client-keypair")
+}
+
+// TestBuildBootstrapJob_PreInsertScript_ParsesSSLDSNParams backs CC-0106 task
+// 4.3 REQ-005: the inline python3 pre-insert script extracts the pymysql
+// ssl_ca/ssl_cert/ssl_key + ssl_verify_cert/ssl_verify_identity query keys out
+// of the DSN, maps them onto a pymysql ssl={...} dict (ca/cert/key plus
+// verify_mode and check_hostname), and only passes the ssl kwarg when at
+// least one ssl_* parameter is present.
+func TestBuildBootstrapJob_PreInsertScript_ParsesSSLDSNParams(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := bootstrapKeystone()
+
+	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
+
+	container := findContainerByName(job.Spec.Template.Spec.Containers, "bootstrap")
+	g.Expect(container).NotTo(BeNil())
+	g.Expect(container.Command).To(HaveLen(4))
+	script := container.Command[3]
+
+	// The wrapper invokes the embedded Python via a 'PY' quoted heredoc so the
+	// script content survives verbatim, with no shell interpolation.
+	g.Expect(script).To(ContainSubstring("python3 - <<'PY'"),
+		"wrapper must invoke python3 via a quoted heredoc so the embedded Python is preserved verbatim (CC-0073)")
+	g.Expect(script).To(ContainSubstring("\nPY\n"),
+		"wrapper heredoc must terminate with the PY sentinel on its own line (CC-0073)")
+
+	// The embedded script must be the bootstrapDBSeedScript variable populated
+	// via go:embed — verifies the directive is wired correctly.
+	g.Expect(bootstrapDBSeedScript).NotTo(BeEmpty(),
+		"bootstrapDBSeedScript must not be empty — check go:embed directive (CC-0073)")
+	g.Expect(script).To(ContainSubstring(bootstrapDBSeedScript),
+		"wrapper must inline the embedded Python content (CC-0073)")
+
+	// keystone-manage is invoked via env-var-parameterised flags so the
+	// wrapper string carries no caller-substituted literals.
+	for _, flag := range []string{
+		`--bootstrap-password "$BOOTSTRAP_PASSWORD"`,
+		`--bootstrap-admin-url "$BOOTSTRAP_ADMIN_URL"`,
+		`--bootstrap-internal-url "$BOOTSTRAP_INTERNAL_URL"`,
+		`--bootstrap-public-url "$BOOTSTRAP_PUBLIC_URL"`,
+		`--bootstrap-region-id "$BOOTSTRAP_REGION_ID"`,
+	} {
+		g.Expect(script).To(ContainSubstring(flag),
+			"wrapper must pass keystone-manage flag from env var (CC-0095, REQ-002)")
+	}
 }

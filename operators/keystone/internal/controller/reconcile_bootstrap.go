@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -18,6 +19,17 @@ import (
 	"github.com/c5c3/forge/internal/common/job"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
+
+// bootstrapDBSeedScript is the standalone Python program that pre-inserts the
+// admin region row before keystone-manage bootstrap runs. The same script is
+// invoked under both plaintext and TLS DSNs — TLS handling is encapsulated in
+// the script's ssl-dict mapping (CC-0106, REQ-005). Extracting it to a .py
+// file (scripts/bootstrap_db_seed.py) makes it independently lintable and
+// pytest-testable, matching the fernet/credential rotation script convention
+// (CC-0073).
+//
+//go:embed scripts/bootstrap_db_seed.py
+var bootstrapDBSeedScript string
 
 // Feature: CC-0013
 
@@ -83,40 +95,70 @@ func buildBootstrapJob(keystone *keystonev1alpha1.Keystone, configMapName string
 	}
 
 	// The pre-insert script seeds the admin region row before keystone-manage
-	// bootstrap runs. It must resolve the real DB URL the same way Keystone
-	// does at runtime: prefer the OS_DATABASE__CONNECTION env override (set by
-	// buildDBConnectionEnvVar from the derived <name>-db-connection Secret,
-	// CC-0080, REQ-004) and fall back to keystone.conf only when the env var
-	// is unset. Stdlib configparser has no knowledge of oslo.config env
-	// overrides, so reading the conf file alone would resolve to the
-	// placeholder host introduced by CC-0080 and fail DNS (CC-0080, C-001).
-	bootstrapScript := fmt.Sprintf(`python3 -c '
-import os, configparser, glob, pymysql
-from urllib.parse import urlparse, parse_qs
-conn_url = os.environ.get("OS_DATABASE__CONNECTION")
-if not conn_url:
-    conf = configparser.RawConfigParser()
-    for f in sorted(glob.glob("/etc/keystone/keystone.conf.d/*.conf")):
-        conf.read(f)
-    conn_url = conf.get("database", "connection")
-url = urlparse(conn_url)
-db = url.path.lstrip("/")
-qs = parse_qs(url.query)
-charset = qs.get("charset", ["utf8"])[0]
-conn = pymysql.connect(host=url.hostname, port=url.port or 3306,
-    user=url.username, password=url.password, database=db, charset=charset)
-cur = conn.cursor()
-cur.execute("INSERT IGNORE INTO region (id, description, extra) VALUES (%%s, %%s, %%s)", ("%s", "", "{}"))
-conn.commit()
-conn.close()
-'
+	// bootstrap runs (CC-0080, REQ-004). Its full contract — DSN resolution
+	// precedence, ssl-dict mapping for CC-0106 REQ-005 — lives in the
+	// standalone scripts/bootstrap_db_seed.py file embedded as
+	// bootstrapDBSeedScript. We invoke it via `python3 -` with the embedded
+	// source piped on stdin so a 'PY' quoted heredoc preserves the Python
+	// content verbatim (no shell interpolation, no need to escape quotes or
+	// percent signs). Region and bootstrap URLs are passed through the
+	// container environment so the wrapper string is parameter-free.
+	bootstrapScript := `python3 - <<'PY'
+` + bootstrapDBSeedScript + `PY
 exec keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap \
   --bootstrap-password "$BOOTSTRAP_PASSWORD" \
-  --bootstrap-admin-url %s \
-  --bootstrap-internal-url %s \
-  --bootstrap-public-url %s \
-  --bootstrap-region-id %s
-`, keystone.Spec.Bootstrap.Region, internalURL, internalURL, publicURL, keystone.Spec.Bootstrap.Region)
+  --bootstrap-admin-url "$BOOTSTRAP_ADMIN_URL" \
+  --bootstrap-internal-url "$BOOTSTRAP_INTERNAL_URL" \
+  --bootstrap-public-url "$BOOTSTRAP_PUBLIC_URL" \
+  --bootstrap-region-id "$BOOTSTRAP_REGION_ID"
+`
+
+	volumeMounts := []corev1.VolumeMount{
+		{
+			Name:      "config",
+			MountPath: "/etc/keystone/keystone.conf.d/",
+			ReadOnly:  true,
+		},
+		{
+			Name:      "fernet-keys",
+			MountPath: "/etc/keystone/fernet-keys/",
+			ReadOnly:  true,
+		},
+	}
+	volumes := []corev1.Volume{
+		{
+			Name: "config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: configMapName,
+					},
+				},
+			},
+		},
+		{
+			Name: "fernet-keys",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: fernetSecretName,
+				},
+			},
+		},
+	}
+	// CC-0106, REQ-005: when DB TLS is enabled, mount the client-cert Secret
+	// produced by reconcile_databasetls.go at /etc/keystone/db-tls/ so the
+	// pre-insert pymysql call can read the ssl_ca/ssl_cert/ssl_key file paths
+	// the DSN carries as query parameters (mirrors the dbtls_mode.dbTLSPaths
+	// canonical layout). The volume is omitted entirely for the plaintext path
+	// so the bootstrap Job is unchanged for pre-CC-0106 CRs. The
+	// dbTLSEnabled/dbTLSVolumeAndMount helpers are owned by
+	// reconcile_databasetls.go (CC-0106 task 4.2) so the Deployment and the
+	// bootstrap Job stay in lockstep.
+	if dbTLSEnabled(keystone) {
+		vol, mount := dbTLSVolumeAndMount(keystone)
+		volumes = append(volumes, vol)
+		volumeMounts = append(volumeMounts, mount)
+	}
 
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -153,41 +195,20 @@ exec keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap \
 							// bootstrap Job reads the DB URL from the derived Secret instead
 							// of the ConfigMap (CC-0080, REQ-004).
 							buildDBConnectionEnvVar(keystone),
+							// Region id and bootstrap URLs are passed as env vars so the
+							// embedded Python and the keystone-manage call read them at
+							// runtime; this keeps scripts/bootstrap_db_seed.py free of
+							// printf-style placeholders and shell-quoting concerns
+							// (CC-0095, REQ-002; CC-0106, REQ-005).
+							{Name: "BOOTSTRAP_REGION_ID", Value: keystone.Spec.Bootstrap.Region},
+							{Name: "BOOTSTRAP_ADMIN_URL", Value: internalURL},
+							{Name: "BOOTSTRAP_INTERNAL_URL", Value: internalURL},
+							{Name: "BOOTSTRAP_PUBLIC_URL", Value: publicURL},
 						},
 						SecurityContext: restrictedSecurityContext(),
-						VolumeMounts: []corev1.VolumeMount{
-							{
-								Name:      "config",
-								MountPath: "/etc/keystone/keystone.conf.d/",
-								ReadOnly:  true,
-							},
-							{
-								Name:      "fernet-keys",
-								MountPath: "/etc/keystone/fernet-keys/",
-								ReadOnly:  true,
-							},
-						},
+						VolumeMounts:    volumeMounts,
 					}},
-					Volumes: []corev1.Volume{
-						{
-							Name: "config",
-							VolumeSource: corev1.VolumeSource{
-								ConfigMap: &corev1.ConfigMapVolumeSource{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: configMapName,
-									},
-								},
-							},
-						},
-						{
-							Name: "fernet-keys",
-							VolumeSource: corev1.VolumeSource{
-								Secret: &corev1.SecretVolumeSource{
-									SecretName: fernetSecretName,
-								},
-							},
-						},
-					},
+					Volumes: volumes,
 				},
 			},
 		},

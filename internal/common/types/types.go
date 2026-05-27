@@ -32,6 +32,39 @@ type DatabaseSpec struct {
 	Database string `json:"database"`
 	// SecretRef references the K8s Secret with credentials.
 	SecretRef SecretRefSpec `json:"secretRef"`
+	// TLS optionally enables TLS/mTLS for the database connection (CC-0106,
+	// REQ-001). The pointer keeps the field opt-in and non-mutating: a nil
+	// TLS means plaintext TCP, preserving the pre-CC-0106 behavior for all
+	// existing DatabaseSpec consumers.
+	// +optional
+	TLS *DatabaseTLSSpec `json:"tls,omitempty"`
+}
+
+// DatabaseTLSSpec configures opt-in TLS (and mutual TLS) for a database
+// connection (CC-0106, REQ-001). It is referenced as an optional pointer from
+// DatabaseSpec so the canonical shape can be reused by sibling operators.
+type DatabaseTLSSpec struct {
+	// Enabled turns on TLS for the database connection. When true the
+	// operator provisions the client certificate, appends the ssl_* DSN
+	// parameters, and mounts the certificate material into the workloads
+	// that open a connection. Opt-in; defaults to false.
+	Enabled bool `json:"enabled"`
+	// Mode selects the TLS verification strength applied to the connection:
+	//   - prefer/require: encrypt the connection only (no peer verification).
+	//   - verify-ca:      additionally verify the server certificate chain
+	//                      against the trusted CA bundle.
+	//   - verify-full:    additionally verify the server certificate chain
+	//                      and that the server hostname matches the
+	//                      certificate identity.
+	// +kubebuilder:validation:Enum=prefer;require;verify-ca;verify-full
+	// +optional
+	Mode string `json:"mode,omitempty"`
+	// CABundleSecretRef references the K8s Secret holding the server CA
+	// bundle the client trusts when verifying the database endpoint.
+	CABundleSecretRef SecretRefSpec `json:"caBundleSecretRef"`
+	// ClientCertSecretRef references the K8s Secret holding the client
+	// keypair presented to the database for mutual TLS.
+	ClientCertSecretRef SecretRefSpec `json:"clientCertSecretRef"`
 }
 
 // MessagingSpec supports managed (ClusterRef) and brownfield (explicit) modes.

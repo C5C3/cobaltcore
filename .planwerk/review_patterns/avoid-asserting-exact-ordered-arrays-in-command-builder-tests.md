@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: When reviewing tests for functions that build CLI argument lists, check whether the assertions verify the full ordered slice via deep-equal. If so, flag as brittle: adding, removing, or reordering any unrelated flag will break every test case.
 **Severity**: WARNING
-**Occurrences**: 5
+**Occurrences**: 6
 
 ## What to check
 
@@ -39,3 +39,8 @@ Full-array assertions couple every test to the exact ordering of all flags. Any 
 - **Feedback**: We are not going to add tests which test documentation for regressions! Remove the file `tests/unit/architecture/namespace_policy_doc_test.sh`
 - **What was missed**: Reject tests whose subject under test is documentation prose. Doc consistency is a review responsibility, not a CI assertion.
 - **Fix**: Removed namespace_policy_doc_test.sh and namespace_consistency_test.sh which asserted on Markdown content.
+
+### CC-0106 — gndrmnn
+- **Feedback**: We do not want to test source code lexically. Remove this lexical test (lines 3900 - 3928)
+- **What was missed**: Flag tests that assert presence of specific tokens, keywords, or ordering by scanning source code or embedded script text rather than exercising behavior. Check for imports like `os` used solely to read implementation files in test files.
+- **Fix**: Deleted `TestReconcile_DatabaseTLSOrderedBeforeDBConnectionSecret` (which read keystone_controller.go and searched for substrings) and `TestBootstrapDBSeedScript_EmbeddedContent` (which asserted specific Python keywords in the embedded script), relying on the behavioral test that already proves the embed is wired.

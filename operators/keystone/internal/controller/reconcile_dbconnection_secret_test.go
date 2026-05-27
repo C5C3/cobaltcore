@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -241,4 +242,195 @@ func TestReconcile_NoPushSecretOrExternalSecretForDBConnection(t *testing.T) {
 	}
 	g.Expect(matching).To(Equal(1),
 		"exactly one corev1.Secret should manage the db-connection material; no PushSecret/ExternalSecret intermediates")
+}
+
+// --- CC-0106 task 4.1: DB-TLS DSN parameters ---
+//
+// These tests assert that reconcileDBConnectionSecret appends the pymysql ssl_*
+// query parameters produced by modeToSSLParams (CC-0106, REQ-004) to the DSN
+// when spec.database.tls is enabled, while leaving the pre-CC-0106 behaviour
+// (charset=utf8 only) unchanged for the plaintext path. The merged query string
+// is asserted via url.Values rather than substring matching so test stability
+// does not depend on url.Values.Encode()'s lexical key ordering.
+
+// parseDSNQuery extracts the query parameters from a pymysql DSN. Using
+// url.ParseQuery keeps the assertions independent of the encoded ordering
+// returned by url.Values.Encode().
+func parseDSNQuery(t *testing.T, dsn string) url.Values {
+	t.Helper()
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse DSN %q: %v", dsn, err)
+	}
+	q, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		t.Fatalf("parse RawQuery %q: %v", u.RawQuery, err)
+	}
+	return q
+}
+
+func TestReconcileDBConnectionSecret_TLSDisabled_NoSSLParams(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	ctx := context.Background()
+
+	ks := configTestKeystone()
+	// TLS is nil by default — assert no ssl_* parameters leak into the DSN.
+	upstream := dbCredentialsSecret("default", "keystone-db-credentials", "ks_user", "ks_pass")
+	r := newConfigTestReconciler(s, ks, upstream)
+
+	_, err := r.reconcileDBConnectionSecret(ctx, ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	derived := &corev1.Secret{}
+	g.Expect(r.Get(ctx, client.ObjectKey{
+		Namespace: "default",
+		Name:      derivedDBConnectionSecretName(ks.Name),
+	}, derived)).To(Succeed())
+
+	q := parseDSNQuery(t, string(derived.Data[dbConnectionSecretKey]))
+	g.Expect(q.Get("charset")).To(Equal("utf8"))
+	for _, key := range []string{"ssl_ca", "ssl_cert", "ssl_key", "ssl_verify_cert", "ssl_verify_identity"} {
+		g.Expect(q.Has(key)).To(BeFalse(), "ssl_* parameter %q must be absent when TLS is disabled", key)
+	}
+}
+
+func TestReconcileDBConnectionSecret_TLSEnabled_AppendsModeSSLParams(t *testing.T) {
+	cases := []struct {
+		mode           string
+		wantVerifyCert bool
+		wantVerifyID   bool
+	}{
+		{"prefer", false, false},
+		{"require", false, false},
+		{"verify-ca", true, false},
+		{"verify-full", true, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.mode, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			s := configTestScheme()
+			ctx := context.Background()
+
+			ks := configTestKeystone()
+			ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
+				Enabled:             true,
+				Mode:                tc.mode,
+				CABundleSecretRef:   commonv1.SecretRefSpec{Name: "db-ca-bundle"},
+				ClientCertSecretRef: commonv1.SecretRefSpec{Name: "test-keystone-db-client"},
+			}
+			upstream := dbCredentialsSecret("default", "keystone-db-credentials", "ks_user", "ks_pass")
+			r := newConfigTestReconciler(s, ks, upstream)
+
+			_, err := r.reconcileDBConnectionSecret(ctx, ks)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			derived := &corev1.Secret{}
+			g.Expect(r.Get(ctx, client.ObjectKey{
+				Namespace: "default",
+				Name:      derivedDBConnectionSecretName(ks.Name),
+			}, derived)).To(Succeed())
+
+			q := parseDSNQuery(t, string(derived.Data[dbConnectionSecretKey]))
+
+			// charset=utf8 (the pre-CC-0106 parameter) must survive the merge.
+			g.Expect(q.Get("charset")).To(Equal("utf8"))
+
+			// The ssl_ca/ssl_cert/ssl_key triple is present for every mode and
+			// must match the canonical /etc/keystone/db-tls/ mount layout.
+			wantPaths := dbTLSPathsForMount()
+			g.Expect(q.Get("ssl_ca")).To(Equal(wantPaths.CA))
+			g.Expect(q.Get("ssl_cert")).To(Equal(wantPaths.Cert))
+			g.Expect(q.Get("ssl_key")).To(Equal(wantPaths.Key))
+
+			if tc.wantVerifyCert {
+				g.Expect(q.Get("ssl_verify_cert")).To(Equal("true"))
+			} else {
+				g.Expect(q.Has("ssl_verify_cert")).To(BeFalse(),
+					"ssl_verify_cert must be absent for mode %q", tc.mode)
+			}
+			if tc.wantVerifyID {
+				g.Expect(q.Get("ssl_verify_identity")).To(Equal("true"))
+			} else {
+				g.Expect(q.Has("ssl_verify_identity")).To(BeFalse(),
+					"ssl_verify_identity must be absent for mode %q", tc.mode)
+			}
+		})
+	}
+}
+
+// TestReconcileDBConnectionSecret_TLSEnabledButDisabledFlag_NoSSLParams covers
+// the spec.database.tls != nil && !enabled edge case: the block is materialised
+// (e.g. by a user toggling enabled to false to test rollback) but the DSN must
+// stay plaintext. Mirrors the NotRequired path in reconcileDatabaseTLS.
+func TestReconcileDBConnectionSecret_TLSEnabledButDisabledFlag_NoSSLParams(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	ctx := context.Background()
+
+	ks := configTestKeystone()
+	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
+		Enabled:             false,
+		Mode:                "verify-full",
+		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "db-ca-bundle"},
+		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "test-keystone-db-client"},
+	}
+	upstream := dbCredentialsSecret("default", "keystone-db-credentials", "ks_user", "ks_pass")
+	r := newConfigTestReconciler(s, ks, upstream)
+
+	_, err := r.reconcileDBConnectionSecret(ctx, ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	derived := &corev1.Secret{}
+	g.Expect(r.Get(ctx, client.ObjectKey{
+		Namespace: "default",
+		Name:      derivedDBConnectionSecretName(ks.Name),
+	}, derived)).To(Succeed())
+
+	q := parseDSNQuery(t, string(derived.Data[dbConnectionSecretKey]))
+	g.Expect(q.Get("charset")).To(Equal("utf8"))
+	for _, key := range []string{"ssl_ca", "ssl_cert", "ssl_key", "ssl_verify_cert", "ssl_verify_identity"} {
+		g.Expect(q.Has(key)).To(BeFalse(),
+			"ssl_* parameter %q must be absent when tls.enabled is false", key)
+	}
+}
+
+// TestReconcileDBConnectionSecret_TLSEnabled_NoPercentEncodedSlashes guards
+// against a regression where url.Values.Encode percent-encodes "/" in the
+// ssl_ca/ssl_cert/ssl_key file paths as "%2F". keystone-manage db_sync hands
+// the DSN to alembic's ConfigParser, which interprets "%" as interpolation
+// syntax and aborts the db_sync Job with "invalid interpolation syntax".
+func TestReconcileDBConnectionSecret_TLSEnabled_NoPercentEncodedSlashes(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	ctx := context.Background()
+
+	ks := configTestKeystone()
+	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
+		Enabled:             true,
+		Mode:                "verify-full",
+		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "db-ca-bundle"},
+		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "test-keystone-db-client"},
+	}
+	upstream := dbCredentialsSecret("default", "keystone-db-credentials", "ks_user", "ks_pass")
+	r := newConfigTestReconciler(s, ks, upstream)
+
+	_, err := r.reconcileDBConnectionSecret(ctx, ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	derived := &corev1.Secret{}
+	g.Expect(r.Get(ctx, client.ObjectKey{
+		Namespace: "default",
+		Name:      derivedDBConnectionSecretName(ks.Name),
+	}, derived)).To(Succeed())
+
+	connStr := string(derived.Data[dbConnectionSecretKey])
+	g.Expect(connStr).NotTo(ContainSubstring("%2F"),
+		"DSN must not contain percent-encoded slashes — they trip Python configparser interpolation in keystone-manage db_sync")
+	g.Expect(connStr).NotTo(ContainSubstring("%2f"),
+		"DSN must not contain percent-encoded slashes — they trip Python configparser interpolation in keystone-manage db_sync")
+	g.Expect(connStr).To(ContainSubstring("ssl_ca=/etc/keystone/db-tls/ca.crt"))
+	g.Expect(connStr).To(ContainSubstring("ssl_cert=/etc/keystone/db-tls/tls.crt"))
+	g.Expect(connStr).To(ContainSubstring("ssl_key=/etc/keystone/db-tls/tls.key"))
 }

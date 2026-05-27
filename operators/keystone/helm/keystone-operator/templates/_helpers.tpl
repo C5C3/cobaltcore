@@ -180,6 +180,22 @@ Extracted into a named template to prevent drift when rules change.
     - get
     - list
     - watch
+# cert-manager.io - certificates (CC-0106)
+# Required so the operator can issue the per-Keystone database client
+# Certificate (Spec.Database.TLS) and have cert-manager rotate the keypair
+# Secret consumed by the Keystone workloads.
+- apiGroups:
+    - cert-manager.io
+  resources:
+    - certificates
+  verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - patch
+    - delete
 # external-secrets.io - externalsecrets (CC-0017)
 # delete is intentionally NOT granted: the operator only manages externalsecret
 # lifecycles via owner-references, it never calls r.Delete on them directly.

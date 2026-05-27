@@ -1,0 +1,46 @@
+{
+  "feature_id": "CC-0106",
+  "title": "GitHub Review by gndrmnn",
+  "summary": "The reviewer wants two brittle lexical/keyword-based tests removed: lines 3900–3928 in `operators/keystone/internal/controller/keystone_controller_test.go` and lines 752–790 in `operators/keystone/internal/controller/reconcile_bootstrap_test.go`, since source code shouldn't be tested by string matching and script loading is already covered elsewhere.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "gndrmnn",
+  "date": "2026-05-20T12:23:37Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "We do not want to test source code lexically. Remove this lexical test (lines 3900 - 3928)",
+      "path": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "line": 3928,
+      "author": "gndrmnn",
+      "created_at": "2026-05-20T11:52:04Z",
+      "id": null,
+      "resolution": "Removed the `TestReconcile_DatabaseTLSOrderedBeforeDBConnectionSecret` function (the lexical source-grep test spanning the cited 3900–3928 range) from operators/keystone/internal/controller/keystone_controller_test.go, and dropped the now-unused `os` import."
+    },
+    {
+      "body": "We already test if the script is being loaded. Testing each keyword as presented here is too specific and brittle. Remove this test (lines 752-790)",
+      "path": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "line": 790,
+      "author": "gndrmnn",
+      "created_at": "2026-05-20T12:20:01Z",
+      "id": null,
+      "resolution": "Removed the `TestBootstrapDBSeedScript_EmbeddedContent` function (the brittle keyword-by-keyword assertions spanning the cited 752–790 range) from operators/keystone/internal/controller/reconcile_bootstrap_test.go; script loading remains covered by the existing pre-insert-script test."
+    }
+  ],
+  "resolution_summary": "Both lexical/keyword tests called out by the reviewer were removed. In keystone_controller_test.go the `TestReconcile_DatabaseTLSOrderedBeforeDBConnectionSecret` test (which read keystone_controller.go and searched for substrings) was deleted along with the now-unused `os` import. In reconcile_bootstrap_test.go the `TestBootstrapDBSeedScript_EmbeddedContent` test (which asserted specific Python keywords inside the embedded script) was deleted; the surviving `TestBuildBootstrapJob_PreInsertScript_ParsesSSLDSNParams` already proves the embed is wired. No additional files beyond the two named by the reviewer were touched.",
+  "github_review_id": 4328163369
+}

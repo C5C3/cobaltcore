@@ -83,7 +83,7 @@ GATEWAY_API_CRDS_URL="${GATEWAY_API_CRDS_URL:-https://github.com/kubernetes-sigs
 # flux-operator release applied in Step 2 before the FluxInstance CR is created
 # (CC-0085, REQ-001). Kept as a script-local constant so Renovate can bump it
 # via renovate.json custom managers.
-FLUX_OPERATOR_VERSION="v0.49.0"
+FLUX_OPERATOR_VERSION="v0.50.0"
 
 # OpenBao init parameters (match deploy/openbao/bootstrap/init-unseal.sh)
 KEY_SHARES=5
@@ -990,13 +990,20 @@ main() {
   log "Phase 1: Waiting for cert-manager..."
   wait_for_helmreleases "${HELMRELEASE_TIMEOUT}" cert-manager
 
-  # Phase 2: Apply TLS prerequisites that OpenBao needs to start.
+  # Phase 2: Apply TLS prerequisites that OpenBao and MariaDB need to start.
   # The openbao-tls Certificate creates the Secret mounted by the OpenBao
-  # StatefulSet. These are also part of the infrastructure kustomization
-  # (applied in Step 5), but OpenBao cannot start without them.
-  log "Phase 2: Applying TLS prerequisites (ClusterIssuer + OpenBao TLS Certificate)..."
+  # StatefulSet. The db-ca-issuer manifest creates the OpenStack DB CA
+  # keypair Secret and the "openstack-db-ca-issuer" ClusterIssuer that
+  # MariaDB/MaxScale and the Keystone DB-client mTLS path consume
+  # (CC-0106, REQ-009). These resources are also part of the
+  # infrastructure kustomization (applied in Step 5), but OpenBao and
+  # MariaDB cannot become Ready until they exist.
+  # Order matters: the selfsigned-cluster-issuer ClusterIssuer must exist
+  # before db-ca-issuer.yaml (whose CA Certificate is issued from it).
+  log "Phase 2: Applying TLS prerequisites (ClusterIssuer + OpenBao TLS Certificate + DB CA Issuer)..."
   kubectl apply -f "${REPO_ROOT}/deploy/flux-system/infrastructure/cluster-issuer.yaml"
   kubectl apply -f "${REPO_ROOT}/deploy/flux-system/infrastructure/openbao-tls-cert.yaml"
+  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/infrastructure/db-ca-issuer.yaml"
 
   # Phase 3: Wait for remaining HelmReleases now that OpenBao can mount its TLS secret.
   # envoy-gateway is kind-only (deploy/kind/base/envoy-gateway.yaml) and provides

@@ -107,6 +107,7 @@ var subConditionTypes = []string{
 	"FernetKeysReady",
 	"CredentialKeysReady",
 	"DatabaseReady",
+	conditionTypeDatabaseTLSReady,
 	conditionTypePolicyValidReady,
 	"DeploymentReady",
 	conditionTypeKeystoneAPIReady,
@@ -167,6 +168,7 @@ func isGatewayAPIAvailable(mapper meta.RESTMapper) bool {
 // +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=databases;users;grants,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=mariadbs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=external-secrets.io,resources=pushsecrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores,verbs=get;list;watch
@@ -238,6 +240,18 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// sub_reconciler label (CC-0089, REQ-001, REQ-002).
 	if result, err := instrumentSubReconciler(ctx, "Secrets", func(ctx context.Context) (ctrl.Result, error) {
 		return r.reconcileSecrets(ctx, &keystone)
+	}); !result.IsZero() || err != nil {
+		return r.updateStatus(ctx, &keystone, result, err)
+	}
+
+	// reconcileDatabaseTLS provisions the client certificate Keystone presents
+	// to MariaDB/MaxScale for mutual TLS. It runs after reconcileSecrets (the
+	// CA/client-cert Secret material referenced by spec.database.tls must be
+	// synced first) and before reconcileDBConnectionSecret (which appends the
+	// ssl_* DSN parameters pointing at the issued client keypair)
+	// (CC-0106, REQ-002, REQ-014).
+	if result, err := instrumentSubReconciler(ctx, "DatabaseTLS", func(ctx context.Context) (ctrl.Result, error) {
+		return r.reconcileDatabaseTLS(ctx, &keystone)
 	}); !result.IsZero() || err != nil {
 		return r.updateStatus(ctx, &keystone, result, err)
 	}

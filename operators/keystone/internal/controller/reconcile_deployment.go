@@ -147,7 +147,7 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 	replicas := int32(keystone.Spec.Replicas)
 	fernetSecretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
 	credentialSecretName := fmt.Sprintf("%s-credential-keys", keystone.Name)
-	return &appsv1.Deployment{
+	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      subResourceName(keystone),
 			Namespace: keystone.Namespace,
@@ -267,6 +267,16 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 			},
 		},
 	}
+	// CC-0106: project the db-tls client keypair into the API pod when DB
+	// TLS is enabled; the gate is centralised in dbTLSEnabled so deployment
+	// and job builders decide identically (REQ-002, REQ-014).
+	if dbTLSEnabled(keystone) {
+		tlsVol, tlsMount := dbTLSVolumeAndMount(keystone)
+		deploy.Spec.Template.Spec.Volumes = append(deploy.Spec.Template.Spec.Volumes, tlsVol)
+		deploy.Spec.Template.Spec.Containers[0].VolumeMounts = append(
+			deploy.Spec.Template.Spec.Containers[0].VolumeMounts, tlsMount)
+	}
+	return deploy
 }
 
 // Feature: CC-0037

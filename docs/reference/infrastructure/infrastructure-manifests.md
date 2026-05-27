@@ -40,7 +40,8 @@ deploy/
     └── infrastructure/                   CRD-dependent infrastructure resources
         ├── kustomization.yaml            Infrastructure kustomize overlay
         ├── cluster-issuer.yaml           Self-signed ClusterIssuer (requires cert-manager CRDs)
-        ├── mariadb.yaml                  MariaDB Galera cluster for OpenStack
+        ├── db-ca-issuer.yaml             OpenStack DB CA Certificate + ClusterIssuer (CC-0106, REQ-009)
+        ├── mariadb.yaml                  MariaDB Galera cluster for OpenStack (with TLS, CC-0106, REQ-009)
         └── memcached.yaml                Memcached cluster for OpenStack
 ```
 
@@ -391,6 +392,43 @@ The self-signed ClusterIssuer provides a default certificate issuer for developm
 environments. It requires cert-manager CRDs (`cert-manager.io/v1`) which are installed
 by the cert-manager HelmRelease.
 
+### OpenStack DB CA Issuer
+
+**File:** `deploy/flux-system/infrastructure/db-ca-issuer.yaml`
+
+Provisions the dedicated cert-manager CA that anchors the OpenStack database trust
+domain (CC-0106, REQ-009). The file declares two resources:
+
+| Resource | API version | Kind | Name | Namespace |
+| --- | --- | --- | --- | --- |
+| CA keypair Certificate | `cert-manager.io/v1` | `Certificate` | `openstack-db-ca` | `cert-manager` |
+| CA ClusterIssuer | `cert-manager.io/v1` | `ClusterIssuer` | `openstack-db-ca-issuer` | Cluster-scoped |
+
+The `selfsigned-cluster-issuer` mints a self-signed CA `Certificate` (`isCA: true`,
+3-year lifetime, 30-day `renewBefore`) into the `openstack-db-ca` Secret in the
+`cert-manager` namespace — cert-manager's default `--cluster-resource-namespace`,
+which is where a CA-type `ClusterIssuer` looks up its `secretName`. The
+`openstack-db-ca-issuer` `ClusterIssuer` then signs every leaf certificate inside
+the OpenStack DB trust domain:
+
+- MariaDB Galera server TLS material (`spec.tls.serverCertIssuerRef`, see below).
+- MaxScale listener TLS material (same issuer via inheritance / explicit
+  `serverCertIssuerRef`).
+- The Keystone DB-client keypair issued by the keystone-operator's
+  `reconcileDatabaseTLS` sub-reconciler — the constant
+  [`dbCAIssuerName`](https://github.com/c5c3/forge/blob/main/operators/keystone/internal/controller/reconcile_databasetls.go)
+  hard-codes the same string (`"openstack-db-ca-issuer"`), so a rename here MUST be
+  matched in the operator (CC-0106, REQ-002).
+
+**Apply ordering.** This manifest is also applied out-of-band from the infrastructure
+kustomization by `hack/deploy-infra.sh` (Phase 2, alongside `cluster-issuer.yaml` and
+`openbao-tls-cert.yaml`) so that MariaDB has the issuer available the moment it tries
+to render its server certificate. The infrastructure kustomization still references
+`db-ca-issuer.yaml` so subsequent `kubectl apply -k` runs are idempotent.
+
+For the end-to-end TLS path the issuer participates in, see the
+[Enable Keystone Database TLS](../../guides/enable-keystone-database-tls.md) how-to.
+
 ### MariaDB Galera Cluster
 
 **File:** `deploy/flux-system/infrastructure/mariadb.yaml`
@@ -421,6 +459,52 @@ The root password is sourced from a Kubernetes Secret (`mariadb-root-password`, 
 | Secondary | `ClusterIP` | Read-only endpoint for read replicas |
 
 **Monitoring:** Prometheus metrics are enabled (`spec.metrics.enabled: true`).
+
+**TLS (CC-0106, REQ-009).** Galera inter-node replication, the MaxScale client
+listener, and every Keystone-to-database connection all sit inside the OpenStack DB
+trust domain rooted at the `openstack-db-ca-issuer` ClusterIssuer documented above.
+The MariaDB CR enables TLS in `spec.tls` and the MaxScale sub-spec inherits it:
+
+| Field | Value | Purpose |
+| --- | --- | --- |
+| `spec.tls.enabled` | `true` | Turn on TLS for the MariaDB cluster |
+| `spec.tls.required` | `true` | Reject any non-TLS connection at the transport layer (verified by the chainsaw plaintext-rejection probe in `tests/e2e/keystone/database-tls/chainsaw-test.yaml`) |
+| `spec.tls.serverCertIssuerRef` | `openstack-db-ca-issuer` (ClusterIssuer, `cert-manager.io`) | Issue server certs for Galera + MaxScale from the shared DB CA |
+| `spec.tls.clientCertIssuerRef` | `openstack-db-ca-issuer` (ClusterIssuer, `cert-manager.io`) | Trust client certs minted by the same DB CA (the Keystone operator issues its DB-client keypair from this issuer; see [reconcile_databasetls.go](https://github.com/c5c3/forge/blob/main/operators/keystone/internal/controller/reconcile_databasetls.go)) |
+| `spec.maxScale.tls.enabled` | `true` | MaxScale terminates TLS on its client listener (proxy-side); explicit block documents intent even where the proxy would otherwise inherit `spec.tls` |
+
+The rendered YAML in `deploy/flux-system/infrastructure/mariadb.yaml` is:
+
+```yaml
+spec:
+  tls:
+    enabled: true
+    required: true
+    serverCertIssuerRef:
+      name: openstack-db-ca-issuer
+      kind: ClusterIssuer
+      group: cert-manager.io
+    clientCertIssuerRef:
+      name: openstack-db-ca-issuer
+      kind: ClusterIssuer
+      group: cert-manager.io
+  maxScale:
+    enabled: true
+    replicas: 2
+    tls:
+      enabled: true
+```
+
+The mariadb-operator (v0.30+) auto-derives the server and client CA bundles from the
+referenced issuer, so explicit `serverCASecretRef` / `clientCASecretRef` entries are
+intentionally omitted — see the inline `DECISION` comment in `mariadb.yaml` for the
+trade-off against the cross-namespace `*CASecretRef` form. End-to-end verification
+that the live connection is encrypted lives in
+[`tests/e2e/keystone/database-tls/chainsaw-test.yaml`](https://github.com/c5c3/forge/blob/main/tests/e2e/keystone/database-tls/chainsaw-test.yaml)
+(asserts `SHOW STATUS LIKE 'Ssl_cipher'` reports a non-empty cipher).
+
+To turn the path on for a `Keystone` CR, follow the
+[Enable Keystone Database TLS](../../guides/enable-keystone-database-tls.md) guide.
 
 ### Memcached Cluster
 
@@ -477,14 +561,25 @@ The infrastructure kustomization includes CRD-dependent resources that require t
 operator CRDs to be installed first. This kustomization must be applied after the base
 kustomization and after operators have finished installing their CRDs.
 
-**Resource count:** 3 files producing 3 Kubernetes resources.
+**Resource count:** 4 manifests producing 6 Kubernetes resources (the
+`db-ca-issuer.yaml` manifest declares two resources: a CA Certificate and the
+CA-type ClusterIssuer that signs from it).
 
 | Category | Count | Resources |
 | --- | --- | --- |
-| ClusterIssuer | 1 | selfsigned-cluster-issuer (requires cert-manager CRDs) |
-| MariaDB | 1 | openstack-db (requires mariadb-operator CRDs) |
-| Memcached | 1 | openstack-memcached (requires memcached-operator CRDs) |
-| **Total** | **3** | |
+| ClusterIssuer | 2 | `selfsigned-cluster-issuer`, `openstack-db-ca-issuer` (both require cert-manager CRDs) |
+| Certificate | 1 | `openstack-db-ca` (CA keypair Secret in the `cert-manager` namespace; CC-0106, REQ-009) |
+| MariaDB | 1 | `openstack-db` (requires mariadb-operator CRDs; TLS enabled per [MariaDB Galera Cluster](#mariadb-galera-cluster)) |
+| Memcached | 1 | `openstack-memcached` (requires memcached-operator CRDs) |
+| **Total** | **6** | |
+
+<!-- DECISION: count excludes openbao-tls-cert.yaml and the ../../eso overlay that
+the infrastructure kustomization also references. Those resources predate
+CC-0106 and are documented in their own reference pages
+(reference/infrastructure/openbao-bootstrap.md and the ESO reference docs); a
+full audit of the kustomization resource list is out of scope for this CC-0106
+change. Reviewer: please verify the scope choice. -->
+
 
 ## Deployment
 
@@ -505,10 +600,21 @@ finish installing before proceeding to step 2.
 kubectl apply -k deploy/flux-system/infrastructure/
 ```
 
-This applies 3 CRD-dependent resources: the ClusterIssuer, MariaDB cluster, and
-Memcached cluster. These resources require CRDs that are installed by the operator
+This applies the CRD-dependent resources: the `selfsigned-cluster-issuer`
+ClusterIssuer, the `openstack-db-ca-issuer` ClusterIssuer plus its backing CA
+`Certificate` (CC-0106, REQ-009), the MariaDB Galera cluster, and the Memcached
+cluster. These resources require CRDs that are installed by the operator
 HelmReleases in step 1. If CRDs are not yet available, the apply will fail — wait
 for the operators to finish installing and retry.
+
+> **`hack/deploy-infra.sh` ordering.** The end-to-end deploy script applies the
+> three TLS-prerequisite manifests (`cluster-issuer.yaml`, `openbao-tls-cert.yaml`,
+> `db-ca-issuer.yaml`) directly in its **Phase 2**, before the main infrastructure
+> kustomization, so that MariaDB has `openstack-db-ca-issuer` available the moment
+> it tries to render its server certificate. The kustomization apply that follows
+> is idempotent — the same manifests are listed in
+> `infrastructure/kustomization.yaml` so a manual `kubectl apply -k` path also
+> works.
 
 > **Expected transient failure:** The MariaDB cluster references a
 > `rootPasswordSecretKeyRef` Secret (`mariadb-root-password`) that is provisioned by

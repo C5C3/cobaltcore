@@ -25,7 +25,7 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-QUICK_START="$PROJECT_ROOT/docs/quick-start.md"
+QUICK_START="$PROJECT_ROOT/docs/quick-start-extended.md"
 
 if [[ ! -f "$QUICK_START" ]]; then
   echo "FAIL: $QUICK_START does not exist"
@@ -53,7 +53,6 @@ test_step_2b_table_row_present() {
 
   assert_contains "Step 2b row names Envoy Gateway" "$row" "Envoy Gateway"
   assert_contains "Step 2b row names openstack-gw" "$row" "openstack-gw"
-  assert_contains "Step 2b row cites CC-0088" "$row" "CC-0088"
 }
 
 # --- Test 2: 2b row sits between 2a and 3 (CC-0088, REQ-008) ---

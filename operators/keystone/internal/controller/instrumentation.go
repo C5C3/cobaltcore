@@ -59,6 +59,7 @@ var subReconcilerConditionTypes = map[string]string{
 	"CredentialKeys":     "CredentialKeysReady",
 	"NetworkPolicy":      "NetworkPolicyReady",
 	"Database":           "DatabaseReady",
+	"DatabaseTLS":        conditionTypeDatabaseTLSReady,
 	"PolicyValidation":   conditionTypePolicyValidReady,
 	"Deployment":         "DeploymentReady",
 	"HTTPRoute":          conditionTypeHTTPRouteReady,

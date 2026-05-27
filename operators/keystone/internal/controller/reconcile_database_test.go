@@ -2560,3 +2560,214 @@ func TestRecordDBJobTerminalState_DefersOnPatchFailure(t *testing.T) {
 		})
 	}
 }
+
+// Feature: CC-0106
+
+// dbTLSManagedKeystoneForJobs returns a managed-mode Keystone CR (ClusterRef
+// set) with DB TLS enabled, used to assert that every db_sync Job variant
+// projects the db-tls Secret into its pod (CC-0106, REQ-002, REQ-014).
+func dbTLSManagedKeystoneForJobs() *keystonev1alpha1.Keystone {
+	ks := managedKeystone()
+	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
+		Enabled:             true,
+		Mode:                "verify-full",
+		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "db-server-ca"},
+		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "test-keystone-db-client"},
+	}
+	return ks
+}
+
+// TestBuildDBJobVariants_DBTLSVolumeAndMount_WhenEnabled verifies that every
+// variant produced by buildDBJob (db-sync, expand, migrate, contract,
+// schema-check) carries the Secret-backed "db-tls" Volume and a matching
+// read-only VolumeMount at /etc/keystone/db-tls/ when TLS is enabled
+// (CC-0106, REQ-002, REQ-014). Name-based assertions only — additive
+// volumes must not perturb the existing volume ordering.
+func TestBuildDBJobVariants_DBTLSVolumeAndMount_WhenEnabled(t *testing.T) {
+	ks := dbTLSManagedKeystoneForJobs()
+
+	cases := []struct {
+		name          string
+		job           *batchv1.Job
+		containerName string
+	}{
+		{"db-sync", buildDBSyncJob(ks, "keystone-config-abc123"), "db-sync"},
+		{"expand", buildExpandJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag), "db-expand"},
+		{"migrate", buildMigrateJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag), "db-migrate"},
+		{"contract", buildContractJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag), "db-contract"},
+		{"schema-check", buildSchemaCheckJob(ks, "keystone-config-abc123"), "schema-check"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			var tlsVol corev1.Volume
+			var tlsVolFound bool
+			for _, v := range tc.job.Spec.Template.Spec.Volumes {
+				if v.Name == "db-tls" {
+					tlsVol = v
+					tlsVolFound = true
+					break
+				}
+			}
+			g.Expect(tlsVolFound).To(BeTrue(),
+				"%s: CC-0106 db-tls Volume must be present when TLS enabled (REQ-002)",
+				tc.name)
+			g.Expect(tlsVol.Projected).NotTo(BeNil(),
+				"%s: CC-0106 db-tls Volume must be Projected so both Secret refs are honored (REQ-002)",
+				tc.name)
+			g.Expect(tlsVol.Projected.DefaultMode).NotTo(BeNil(),
+				"%s: CC-0106 db-tls Volume must set DefaultMode (REQ-014)",
+				tc.name)
+			g.Expect(*tlsVol.Projected.DefaultMode).To(Equal(int32(0o400)),
+				"%s: CC-0106 db-tls Volume DefaultMode must be 0o400 (owner read-only, REQ-014)",
+				tc.name)
+			expectDBTLSProjection(g, tlsVol.Projected, "db-server-ca", "test-keystone-db-client")
+
+			container := findContainerByName(tc.job.Spec.Template.Spec.Containers, tc.containerName)
+			g.Expect(container).NotTo(BeNil())
+			var tlsMount corev1.VolumeMount
+			var tlsMountFound bool
+			for _, m := range container.VolumeMounts {
+				if m.Name == "db-tls" {
+					tlsMount = m
+					tlsMountFound = true
+					break
+				}
+			}
+			g.Expect(tlsMountFound).To(BeTrue(),
+				"%s: CC-0106 db-tls VolumeMount must be present on container when TLS enabled (REQ-002)",
+				tc.name)
+			g.Expect(tlsMount.MountPath).To(Equal("/etc/keystone/db-tls/"),
+				"%s: CC-0106 db-tls VolumeMount path must match ssl_* DSN parameter directory (REQ-014)",
+				tc.name)
+			g.Expect(tlsMount.ReadOnly).To(BeTrue(),
+				"%s: CC-0106 db-tls VolumeMount must be read-only (REQ-014)",
+				tc.name)
+		})
+	}
+}
+
+// TestBuildDBJobVariants_DBTLSVolume_UsesUserSuppliedSecretNames verifies the
+// BLOCKER fix from review #1 across all db_sync Job variants: the projected
+// db-tls Volume must reference the user-supplied caBundleSecretRef.Name and
+// clientCertSecretRef.Name verbatim (not a hardcoded "<name>-db-client" name).
+// This exercises the brownfield/enterprise-PKI shape where the trust bundle
+// and client keypair live in separate Secrets (CC-0106, REQ-002, REQ-014).
+func TestBuildDBJobVariants_DBTLSVolume_UsesUserSuppliedSecretNames(t *testing.T) {
+	ks := managedKeystone()
+	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
+		Enabled:             true,
+		Mode:                "verify-full",
+		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "enterprise-root-ca-bundle"},
+		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "site-specific-client-keypair"},
+	}
+
+	cases := []struct {
+		name string
+		job  *batchv1.Job
+	}{
+		{"db-sync", buildDBSyncJob(ks, "keystone-config-abc123")},
+		{"expand", buildExpandJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag)},
+		{"migrate", buildMigrateJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag)},
+		{"contract", buildContractJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag)},
+		{"schema-check", buildSchemaCheckJob(ks, "keystone-config-abc123")},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			tlsVol := findVolumeByName(tc.job.Spec.Template.Spec.Volumes, "db-tls")
+			g.Expect(tlsVol).NotTo(BeNil(),
+				"%s: CC-0106 db-tls Volume must be present (REQ-002)", tc.name)
+			g.Expect(tlsVol.Projected).NotTo(BeNil(),
+				"%s: CC-0106 db-tls Volume must be Projected (REQ-002)", tc.name)
+			expectDBTLSProjection(g, tlsVol.Projected,
+				"enterprise-root-ca-bundle", "site-specific-client-keypair")
+		})
+	}
+}
+
+// TestBuildDBJobVariants_DBTLSVolumeAbsent_WhenNil verifies that no db-tls
+// Volume or VolumeMount is added by any db_sync Job variant when
+// spec.database.tls is nil — preserves pre-CC-0106 behaviour (REQ-002).
+func TestBuildDBJobVariants_DBTLSVolumeAbsent_WhenNil(t *testing.T) {
+	ks := brownfieldKeystone() // TLS == nil
+
+	cases := []struct {
+		name          string
+		job           *batchv1.Job
+		containerName string
+	}{
+		{"db-sync", buildDBSyncJob(ks, "keystone-config-abc123"), "db-sync"},
+		{"expand", buildExpandJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag), "db-expand"},
+		{"migrate", buildMigrateJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag), "db-migrate"},
+		{"contract", buildContractJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag), "db-contract"},
+		{"schema-check", buildSchemaCheckJob(ks, "keystone-config-abc123"), "schema-check"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			g.Expect(ks.Spec.Database.TLS).To(BeNil(),
+				"precondition: brownfieldKeystone must leave Database.TLS nil")
+
+			for _, v := range tc.job.Spec.Template.Spec.Volumes {
+				g.Expect(v.Name).NotTo(Equal("db-tls"),
+					"%s: CC-0106 db-tls Volume must NOT be present when TLS is nil (REQ-002)",
+					tc.name)
+			}
+			container := findContainerByName(tc.job.Spec.Template.Spec.Containers, tc.containerName)
+			g.Expect(container).NotTo(BeNil())
+			for _, m := range container.VolumeMounts {
+				g.Expect(m.Name).NotTo(Equal("db-tls"),
+					"%s: CC-0106 db-tls VolumeMount must NOT be present when TLS is nil (REQ-002)",
+					tc.name)
+			}
+		})
+	}
+}
+
+// TestBuildDBJobVariants_DBTLSVolumeAbsent_WhenDisabled verifies the
+// Enabled-false gate for every Job variant: a TLS block with Enabled=false
+// must not project the keypair into the Job pod (CC-0106, REQ-002).
+func TestBuildDBJobVariants_DBTLSVolumeAbsent_WhenDisabled(t *testing.T) {
+	ks := managedKeystone()
+	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
+		Enabled:             false,
+		Mode:                "require",
+		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "db-server-ca"},
+		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "test-keystone-db-client"},
+	}
+
+	cases := []struct {
+		name          string
+		job           *batchv1.Job
+		containerName string
+	}{
+		{"db-sync", buildDBSyncJob(ks, "keystone-config-abc123"), "db-sync"},
+		{"expand", buildExpandJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag), "db-expand"},
+		{"migrate", buildMigrateJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag), "db-migrate"},
+		{"contract", buildContractJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag), "db-contract"},
+		{"schema-check", buildSchemaCheckJob(ks, "keystone-config-abc123"), "schema-check"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			for _, v := range tc.job.Spec.Template.Spec.Volumes {
+				g.Expect(v.Name).NotTo(Equal("db-tls"),
+					"%s: CC-0106 db-tls Volume must NOT be present when TLS.Enabled is false (REQ-002)",
+					tc.name)
+			}
+			container := findContainerByName(tc.job.Spec.Template.Spec.Containers, tc.containerName)
+			g.Expect(container).NotTo(BeNil())
+			for _, m := range container.VolumeMounts {
+				g.Expect(m.Name).NotTo(Equal("db-tls"),
+					"%s: CC-0106 db-tls VolumeMount must NOT be present when TLS.Enabled is false (REQ-002)",
+					tc.name)
+			}
+		})
+	}
+}

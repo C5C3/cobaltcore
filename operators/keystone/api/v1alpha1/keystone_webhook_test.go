@@ -1323,6 +1323,15 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	k.Spec.Cache.ClusterRef = &corev1.LocalObjectReference{Name: "memcached"}
 	// REQ-010 (CC-0011): Break database mutual-exclusivity — set both clusterRef and host.
 	k.Spec.Database.ClusterRef = &corev1.LocalObjectReference{Name: "mariadb"}
+	// REQ-007 (CC-0106): Break database TLS — out-of-enum mode and enabled
+	// with both certificate secret refs missing. Every new TLS validation
+	// hook must participate in the aggregated error, matching the
+	// CC-0075/CC-0084-style regression guard so a future short-circuit before
+	// reaching k.Spec.Database.TLS is caught here rather than only at e2e time.
+	k.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
+		Enabled: true,
+		Mode:    "bogus",
+	}
 	// REQ-001 (CC-0038): Break autoscaling — set out-of-range utilization target.
 	invalidCPU := int32(0)
 	k.Spec.Autoscaling = &AutoscalingSpec{
@@ -1446,6 +1455,12 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g.Expect(errMsg).To(ContainSubstring("level"))
 	g.Expect(errMsg).To(ContainSubstring("perLoggerLevels"))
 	g.Expect(errMsg).To(ContainSubstring("logger name must not be empty"))
+	// REQ-007 (CC-0106): every new database-TLS validation path must
+	// participate in the aggregated error so a future short-circuit before
+	// reaching k.Spec.Database.TLS is caught here rather than only at e2e time.
+	g.Expect(errMsg).To(ContainSubstring("tls.mode"))
+	g.Expect(errMsg).To(ContainSubstring("caBundleSecretRef.name"))
+	g.Expect(errMsg).To(ContainSubstring("clientCertSecretRef.name"))
 }
 
 func TestValidateUpdate_RunsSameValidation(t *testing.T) {
@@ -2462,6 +2477,169 @@ func TestValidate_StrategyNilAccepted(t *testing.T) {
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// --- Database TLS validation/defaulting tests (CC-0106, REQ-007, REQ-013) ---
+
+// validDatabaseTLS returns a fully-populated, valid DatabaseTLSSpec that tests
+// mutate to exercise individual rules (mirrors the validKeystone() pattern).
+func validDatabaseTLS() *commonv1.DatabaseTLSSpec {
+	return &commonv1.DatabaseTLSSpec{
+		Enabled:             true,
+		Mode:                "require",
+		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "db-ca-bundle", Key: "ca.crt"},
+		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "keystone-db-client", Key: "tls.crt"},
+	}
+}
+
+func TestValidate_TLSNilAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Database.TLS = nil
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_TLSValidAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Database.TLS = validDatabaseTLS()
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_TLSDisabledWithoutSecretRefsAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	// enabled:false means the secret refs are not required yet; only mode
+	// must still be a valid enum value (it is here).
+	k.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{Enabled: false, Mode: "require"}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_TLSAllFourModesAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	for _, mode := range []string{"prefer", "require", "verify-ca", "verify-full"} {
+		w := &KeystoneWebhook{}
+		k := validKeystone()
+		k.Spec.Database.TLS = validDatabaseTLS()
+		k.Spec.Database.TLS.Mode = mode
+
+		_, err := w.ValidateCreate(context.Background(), k)
+		g.Expect(err).NotTo(HaveOccurred(), "mode %q should be accepted", mode)
+	}
+}
+
+func TestValidate_RejectsOutOfEnumTLSMode(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Database.TLS = validDatabaseTLS()
+	k.Spec.Database.TLS.Mode = "bogus"
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.database.tls.mode"))
+	g.Expect(err.Error()).To(ContainSubstring("bogus"))
+}
+
+func TestValidate_RejectsEnabledWithoutSecretRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	t.Run("missing caBundleSecretRef", func(t *testing.T) {
+		w := &KeystoneWebhook{}
+		k := validKeystone()
+		k.Spec.Database.TLS = validDatabaseTLS()
+		k.Spec.Database.TLS.CABundleSecretRef.Name = ""
+
+		_, err := w.ValidateCreate(context.Background(), k)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.database.tls.caBundleSecretRef.name"))
+	})
+
+	t.Run("missing clientCertSecretRef", func(t *testing.T) {
+		w := &KeystoneWebhook{}
+		k := validKeystone()
+		k.Spec.Database.TLS = validDatabaseTLS()
+		k.Spec.Database.TLS.ClientCertSecretRef.Name = ""
+
+		_, err := w.ValidateCreate(context.Background(), k)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.database.tls.clientCertSecretRef.name"))
+	})
+
+	t.Run("both refs missing reports both errors", func(t *testing.T) {
+		w := &KeystoneWebhook{}
+		k := validKeystone()
+		k.Spec.Database.TLS = validDatabaseTLS()
+		k.Spec.Database.TLS.CABundleSecretRef.Name = ""
+		k.Spec.Database.TLS.ClientCertSecretRef.Name = ""
+
+		_, err := w.ValidateCreate(context.Background(), k)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("caBundleSecretRef.name"))
+		g.Expect(err.Error()).To(ContainSubstring("clientCertSecretRef.name"))
+	})
+}
+
+func TestDefault_DoesNotMaterializeTLSEnabled(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	// A CR with no tls block (the upgrade scenario) must remain plaintext:
+	// Default() must not allocate the pointer nor set enabled:true.
+	k := validKeystone()
+	k.Spec.Database.TLS = nil
+
+	g.Expect(w.Default(context.Background(), k)).To(Succeed())
+	g.Expect(k.Spec.Database.TLS).To(BeNil())
+
+	// An explicitly-disabled block must keep enabled:false even after
+	// defaulting the mode.
+	k2 := validKeystone()
+	k2.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{Enabled: false}
+
+	g.Expect(w.Default(context.Background(), k2)).To(Succeed())
+	g.Expect(k2.Spec.Database.TLS).NotTo(BeNil())
+	g.Expect(k2.Spec.Database.TLS.Enabled).To(BeFalse())
+}
+
+func TestDefault_DefaultsModeOnlyWhenBlockPresent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+
+	t.Run("empty mode defaulted to baseline when block present", func(t *testing.T) {
+		k := validKeystone()
+		k.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{Enabled: true, Mode: ""}
+
+		g.Expect(w.Default(context.Background(), k)).To(Succeed())
+		g.Expect(k.Spec.Database.TLS.Mode).To(Equal(DefaultDatabaseTLSMode))
+		g.Expect(DefaultDatabaseTLSMode).To(Equal("require"))
+		// enabled must be left exactly as the user set it.
+		g.Expect(k.Spec.Database.TLS.Enabled).To(BeTrue())
+	})
+
+	t.Run("explicit mode preserved", func(t *testing.T) {
+		k := validKeystone()
+		k.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{Enabled: true, Mode: "verify-full"}
+
+		g.Expect(w.Default(context.Background(), k)).To(Succeed())
+		g.Expect(k.Spec.Database.TLS.Mode).To(Equal("verify-full"))
+	})
+
+	t.Run("nil block not materialized", func(t *testing.T) {
+		k := validKeystone()
+		k.Spec.Database.TLS = nil
+
+		g.Expect(w.Default(context.Background(), k)).To(Succeed())
+		g.Expect(k.Spec.Database.TLS).To(BeNil())
+	})
 }
 
 // --- Interface compliance (CC-0011) ---

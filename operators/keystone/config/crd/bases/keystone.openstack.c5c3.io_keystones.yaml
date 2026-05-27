@@ -189,6 +189,15 @@ spec:
                 description: |-
                   Database defines the MariaDB connection parameters.
                   Supports managed (clusterRef) and brownfield (host/port) modes.
+                  TLS/mTLS is opt-in via database.tls (CC-0106): when enabled, both the
+                  CA bundle and client keypair Secret references must be supplied so the
+                  reconciler can establish a verified, mutually-authenticated connection.
+
+                  DECISION (CC-0106): no CEL rule is added for tls.mode — the out-of-enum
+                  case is already rejected by the leaf +kubebuilder:validation:Enum marker
+                  on DatabaseTLSSpec.Mode (prefer;require;verify-ca;verify-full). Adding a
+                  mode CEL here would be redundant with that schema-level enum and risks
+                  drifting from it.
                 properties:
                   clusterRef:
                     description: ClusterRef references a MariaDB CR in the cluster
@@ -226,6 +235,64 @@ spec:
                     required:
                     - name
                     type: object
+                  tls:
+                    description: |-
+                      TLS optionally enables TLS/mTLS for the database connection (CC-0106,
+                      REQ-001). The pointer keeps the field opt-in and non-mutating: a nil
+                      TLS means plaintext TCP, preserving the pre-CC-0106 behavior for all
+                      existing DatabaseSpec consumers.
+                    properties:
+                      caBundleSecretRef:
+                        description: |-
+                          CABundleSecretRef references the K8s Secret holding the server CA
+                          bundle the client trusts when verifying the database endpoint.
+                        properties:
+                          key:
+                            type: string
+                          name:
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      clientCertSecretRef:
+                        description: |-
+                          ClientCertSecretRef references the K8s Secret holding the client
+                          keypair presented to the database for mutual TLS.
+                        properties:
+                          key:
+                            type: string
+                          name:
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      enabled:
+                        description: |-
+                          Enabled turns on TLS for the database connection. When true the
+                          operator provisions the client certificate, appends the ssl_* DSN
+                          parameters, and mounts the certificate material into the workloads
+                          that open a connection. Opt-in; defaults to false.
+                        type: boolean
+                      mode:
+                        description: |-
+                          Mode selects the TLS verification strength applied to the connection:
+                            - prefer/require: encrypt the connection only (no peer verification).
+                            - verify-ca:      additionally verify the server certificate chain
+                                               against the trusted CA bundle.
+                            - verify-full:    additionally verify the server certificate chain
+                                               and that the server hostname matches the
+                                               certificate identity.
+                        enum:
+                        - prefer
+                        - require
+                        - verify-ca
+                        - verify-full
+                        type: string
+                    required:
+                    - caBundleSecretRef
+                    - clientCertSecretRef
+                    - enabled
+                    type: object
                 required:
                 - database
                 - secretRef
@@ -233,6 +300,10 @@ spec:
                 x-kubernetes-validations:
                 - message: exactly one of clusterRef or host must be set
                   rule: has(self.clusterRef) != has(self.host)
+                - message: when database.tls.enabled is true, both database.tls.caBundleSecretRef.name
+                    and database.tls.clientCertSecretRef.name must be set
+                  rule: '!has(self.tls) || !self.tls.enabled || (self.tls.caBundleSecretRef.name
+                    != '''' && self.tls.clientCertSecretRef.name != '''')'
               extraConfig:
                 additionalProperties:
                   additionalProperties:

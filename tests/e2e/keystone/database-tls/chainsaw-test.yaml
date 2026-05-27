@@ -1,0 +1,288 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for Keystone <-> MariaDB/MaxScale TLS/mTLS (CC-0106, REQ-011).
+# Verifies the full TLS path end-to-end on a live cluster:
+#   - Managed-mode Keystone CR with spec.database.tls.enabled=true, mode=verify-full
+#     reconciles to Ready=True (AllReady) AND DatabaseTLSReady=True with
+#     reason=CertificateIssued (operator-issued client cert via openstack-db-ca-issuer).
+#   - From an existing keystone-dbtls Deployment pod, MariaDB reports a non-empty
+#     Ssl_cipher in SHOW STATUS — proving the live connection is encrypted.
+#   - A plaintext connection (no ssl_*) is rejected by MariaDB/MaxScale when
+#     deploy/flux-system/infrastructure/mariadb.yaml sets spec.tls.required=true.
+#
+# Scope gating — runtime presence check (CC-0106 + the chaos-mesh-health pattern):
+#
+# Production (deploy/flux-system/infrastructure/mariadb.yaml) enables TLS via
+# serverCertIssuerRef/clientCertIssuerRef on a full Galera+MaxScale cluster.
+# The kind overlay (deploy/kind/infrastructure/kustomization.yaml) patches
+# spec.tls.enabled=false because Galera+MaxScale are disabled in the single-node
+# shape this CI runs on, so MariaDB cannot terminate TLS against the shared
+# openstack-db-ca-issuer. The chainsaw assertions below would time out at
+# db_sync (server rejects the verify-full handshake because mariadbd is not
+# serving a cert from that issuer) before the operator can reach Ready=True.
+#
+# To stay default-safe under any overlay we consolidate the entire flow into a
+# single script step with a precondition guard at the top: if MariaDB
+# openstack-db has spec.tls.enabled != true we exit 0 with a SKIP log line so
+# the test passes without spuriously failing. The full assertions exercise on
+# any cluster that does enable TLS on openstack-db (the production overlay, or
+# a kind overlay with the spec.tls patch removed). The pattern mirrors
+# tests/e2e/infrastructure/chaos-mesh-health/chainsaw-test.yaml, which
+# documents why chainsaw declarative `assert:` blocks can't be used here:
+# chainsaw has no step-level skip — they would time out and fail even if an
+# earlier guard exited 0. Consolidating into one `script` keeps the SKIP
+# short-circuit default-safe.
+#
+# Feature: CC-0106, REQ-011
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-database-tls
+spec:
+  namespace: openstack
+  # Single 6m timeout budget covers: precondition probe (<1s), CR apply (~1s),
+  # kubectl wait for Ready (≤5m allowance for db_sync), Ssl_cipher probe (~5s),
+  # plaintext-rejection probe (~5s). Above the longest realistic worst case so
+  # chainsaw does not kill the script mid-execution and obscure a per-step
+  # failure with a generic timeout.
+  timeouts:
+    exec: 6m
+  steps:
+  - name: dbtls-flow
+    # Cleanup runs regardless of try outcome (including the SKIP exit 0 path),
+    # so the Keystone CR is always removed on a TLS-enabled cluster and the
+    # no-op on a TLS-disabled cluster is harmless (kubectl delete --ignore-
+    # not-found semantics via chainsaw's `delete:` operator).
+    cleanup:
+    - delete:
+        ref:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          name: keystone-dbtls
+          namespace: openstack
+    try:
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          # ── Precondition guard (CC-0106, kind/production split) ──────────
+          # spec.tls.enabled on the shared MariaDB CR is the authoritative
+          # signal that this cluster terminates TLS against the
+          # openstack-db-ca-issuer. Absent or false means the assertions below
+          # cannot succeed regardless of operator/cert-manager state.
+          TLS_ENABLED=$(kubectl get mariadb openstack-db -n openstack \
+            -o jsonpath='{.spec.tls.enabled}' 2>/dev/null || true)
+          if [ "${TLS_ENABLED}" != "true" ]; then
+            echo "SKIP: MariaDB openstack-db has spec.tls.enabled != true (got '${TLS_ENABLED}')."
+            echo "      Production (deploy/flux-system/infrastructure/mariadb.yaml) enables TLS;"
+            echo "      the kind overlay (deploy/kind/infrastructure/kustomization.yaml) disables"
+            echo "      it for single-node Galera/MaxScale constraints. Re-enable spec.tls in the"
+            echo "      kind overlay (and Galera/MaxScale) to exercise the full CC-0106 path here."
+            exit 0
+          fi
+          echo "OK: MariaDB spec.tls.enabled=true — running CC-0106 chainsaw assertions"
+
+          # ── Step 1: Apply the Keystone CR (managed-mode, verify-full) ─────
+          kubectl apply -f 00-keystone-cr.yaml
+
+          # ── Step 2: Wait for Ready=True, then assert specific reasons ────
+          # kubectl wait gives us the same retry+timeout semantics as
+          # chainsaw declarative `assert:`. The follow-up jsonpath checks
+          # pin the exact reason vocabulary (DatabaseTLSReady=CertificateIssued,
+          # Ready=AllReady) so a transient/looser Ready=True still fails fast.
+          echo "Waiting for Keystone keystone-dbtls to reach Ready=True (timeout 5m)..."
+          kubectl wait keystone/keystone-dbtls -n openstack \
+            --for=condition=Ready --timeout=5m
+
+          DBTLS_STATUS=$(kubectl get keystone keystone-dbtls -n openstack \
+            -o jsonpath="{.status.conditions[?(@.type=='DatabaseTLSReady')].status}")
+          DBTLS_REASON=$(kubectl get keystone keystone-dbtls -n openstack \
+            -o jsonpath="{.status.conditions[?(@.type=='DatabaseTLSReady')].reason}")
+          if [ "${DBTLS_STATUS}" != "True" ] || [ "${DBTLS_REASON}" != "CertificateIssued" ]; then
+            echo "FAIL: DatabaseTLSReady=${DBTLS_STATUS}/${DBTLS_REASON} (want True/CertificateIssued)"
+            exit 1
+          fi
+          READY_REASON=$(kubectl get keystone keystone-dbtls -n openstack \
+            -o jsonpath="{.status.conditions[?(@.type=='Ready')].reason}")
+          if [ "${READY_REASON}" != "AllReady" ]; then
+            echo "FAIL: Ready.reason=${READY_REASON} (want AllReady)"
+            exit 1
+          fi
+          echo "OK: DatabaseTLSReady=True/CertificateIssued, Ready=True/AllReady"
+
+          # ── Step 3: Assert non-empty Ssl_cipher (live encrypted connection) ─
+          # The probe runs inside a running keystone-dbtls pod so it can reuse
+          # the db-tls Secret mounted at /etc/keystone/db-tls/ and the fully-
+          # formed OS_DATABASE__CONNECTION DSN — the same code path the running
+          # API uses. We use pymysql directly (not sqlalchemy) because pymysql
+          # is the canonical MySQL/MariaDB driver pinned by openstack/requirements
+          # and reconcile_bootstrap.go's pre-insert script, so its presence is a
+          # known invariant of the keystone image; sqlalchemy is a transitive
+          # dependency whose importability under the runtime venv layout is not
+          # part of the CC-0106 contract. The DSN scheme is rewritten from
+          # mysql+pymysql:// to a pymysql URL the same way the bootstrap script does.
+          POD=$(kubectl get pods -n openstack \
+            -l app.kubernetes.io/instance=keystone-dbtls,app.kubernetes.io/name=keystone \
+            -o jsonpath='{.items[0].metadata.name}')
+          if [ -z "${POD}" ]; then
+            echo "FAIL: no running keystone-dbtls pod found"
+            exit 1
+          fi
+          CIPHER=$(kubectl exec -n openstack "${POD}" -c keystone -- python3 -c '
+          import os, ssl, pymysql
+          from urllib.parse import urlparse, parse_qs
+          url = urlparse(os.environ["OS_DATABASE__CONNECTION"])
+          qs = parse_qs(url.query)
+          ssl_kwargs = {}
+          if "ssl_ca" in qs:
+              ssl_kwargs["ca"] = qs["ssl_ca"][0]
+          if "ssl_cert" in qs:
+              ssl_kwargs["cert"] = qs["ssl_cert"][0]
+          if "ssl_key" in qs:
+              ssl_kwargs["key"] = qs["ssl_key"][0]
+          if ssl_kwargs:
+              verify_cert = qs.get("ssl_verify_cert", ["false"])[0].lower() == "true"
+              verify_id = qs.get("ssl_verify_identity", ["false"])[0].lower() == "true"
+              ssl_kwargs["verify_mode"] = ssl.CERT_REQUIRED if verify_cert else ssl.CERT_NONE
+              ssl_kwargs["check_hostname"] = verify_id
+          connect_kwargs = dict(host=url.hostname, port=url.port or 3306,
+              user=url.username, password=url.password,
+              database=url.path.lstrip("/"))
+          if ssl_kwargs:
+              connect_kwargs["ssl"] = ssl_kwargs
+          conn = pymysql.connect(**connect_kwargs)
+          try:
+              with conn.cursor() as cur:
+                  cur.execute("SHOW STATUS LIKE %s", ("Ssl_cipher",))
+                  row = cur.fetchone()
+                  print(row[1] if row else "")
+          finally:
+              conn.close()
+          ' 2>&1)
+          echo "Ssl_cipher reported by MariaDB: [${CIPHER}]"
+          if [ -z "${CIPHER}" ]; then
+            echo "FAIL: Ssl_cipher is empty — the live connection is NOT encrypted"
+            exit 1
+          fi
+          echo "OK: Live database connection is encrypted (Ssl_cipher=${CIPHER})"
+
+          # ── Step 4: Assert plaintext rejected (only when tls.required=true) ─
+          # MariaDB spec.tls.required=true (deploy/flux-system/infrastructure/
+          # mariadb.yaml, CC-0106) forces the server to reject any connection
+          # that does not negotiate TLS. We connect from inside the keystone
+          # container using pymysql.connect() WITHOUT the ssl={} kwarg; the
+          # connection MUST fail.
+          #
+          # The required=true precondition is independent of TLS being enabled
+          # at all: a future overlay could enable TLS without requiring it (so
+          # plaintext clients still work alongside TLS ones). In that case the
+          # plaintext probe would succeed and the assertion is meaningless, so
+          # we skip it explicitly rather than spuriously failing.
+          #
+          # DECISION: credentials intentionally omitted — under
+          # spec.tls.required=true MariaDB rejects the handshake BEFORE
+          # authentication, so the probe does not need valid credentials. Using
+          # a fixed placeholder user keeps the probe independent of the
+          # keystone-db Secret shape (which differs between managed and
+          # brownfield modes) and removes a fragile cross-dependency. A
+          # PLAINTEXT_ACCEPTED would still indicate failure regardless of auth
+          # result, because the server accepted the un-encrypted transport.
+          TLS_REQUIRED=$(kubectl get mariadb openstack-db -n openstack \
+            -o jsonpath='{.spec.tls.required}' 2>/dev/null || true)
+          if [ "${TLS_REQUIRED}" != "true" ]; then
+            echo "SKIP-step-4: MariaDB spec.tls.required != true (got '${TLS_REQUIRED}');"
+            echo "             plaintext-rejection assertion is meaningful only when the server"
+            echo "             enforces TLS at the transport layer."
+          else
+            set +e
+            OUT=$(kubectl exec -n openstack "${POD}" -c keystone -- python3 -c '
+          import sys, pymysql
+          try:
+              conn = pymysql.connect(
+                  host="openstack-db.openstack.svc",
+                  port=3306,
+                  user="plaintext-probe",
+                  password="plaintext-probe",
+                  database="keystone_dbtls",
+                  connect_timeout=10,
+              )
+              # If we got here, the server accepted a plaintext connection
+              # — independent of auth result, this means tls.required is not
+              # being enforced at the transport layer.
+              print("PLAINTEXT_ACCEPTED")
+              conn.close()
+              sys.exit(0)
+          except Exception as exc:
+              print("PLAINTEXT_REJECTED: " + type(exc).__name__ + ": " + str(exc))
+              sys.exit(0)
+          ' 2>&1)
+            set -e
+            echo "${OUT}"
+            if printf "%s" "${OUT}" | grep -q "PLAINTEXT_ACCEPTED"; then
+              echo "FAIL: server accepted a plaintext connection — spec.tls.required is not being enforced"
+              exit 1
+            fi
+            if ! printf "%s" "${OUT}" | grep -q "PLAINTEXT_REJECTED"; then
+              echo "FAIL: unexpected output from plaintext probe (neither accepted nor rejected marker present)"
+              exit 1
+            fi
+            echo "OK: plaintext connection was rejected by MariaDB/MaxScale"
+          fi
+
+          echo "OK: full CC-0106 TLS/mTLS flow verified"
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR (yaml) ==="
+          kubectl get keystone keystone-dbtls -n openstack -o yaml 2>&1 || true
+          echo "=== Keystone Certificate (cert-manager) ==="
+          kubectl get certificate keystone-dbtls-db-client -n openstack -o yaml 2>&1 || true
+          echo "=== Keystone db-client Secret keys ==="
+          kubectl get secret keystone-dbtls-db-client -n openstack \
+            -o go-template='{{range $k, $_ := .data}}{{$k}}{{"\n"}}{{end}}' 2>&1 || true
+          echo "=== Keystone db-connection Secret keys ==="
+          kubectl get secret keystone-dbtls-db-connection -n openstack \
+            -o go-template='{{range $k, $_ := .data}}{{$k}}{{"\n"}}{{end}}' 2>&1 || true
+          # The keystone-operator's namespace differs between deployment paths:
+          # under Flux (deploy/flux-system/releases/keystone-operator.yaml) it
+          # lives in openstack, but the CI E2E suite installs it via
+          # hack/ci-deploy-operator.sh's `helm install` with no -n flag, so the
+          # pod lands in default (cf. tests/e2e-chaos/operator-pod-kill/
+          # chainsaw-test.yaml which selects `-n default`). Dump both namespaces
+          # so the diagnostic works regardless of which path provisioned the
+          # operator.
+          for ns in default openstack; do
+            echo "=== keystone-operator logs in ns=${ns} (current) ==="
+            kubectl logs -n "${ns}" -l app.kubernetes.io/name=keystone-operator \
+              --all-containers --tail=200 2>&1 || true
+            echo "=== keystone-operator logs in ns=${ns} (--previous) ==="
+            kubectl logs -n "${ns}" -l app.kubernetes.io/name=keystone-operator \
+              --all-containers --tail=200 --previous 2>&1 || true
+          done
+          echo "=== MariaDB / MaxScale logs (openstack ns) ==="
+          for pod in $(kubectl get pods -n openstack -l app.kubernetes.io/name=mariadb -o name 2>/dev/null); do
+            echo "--- ${pod} ---"
+            kubectl logs -n openstack "${pod}" --all-containers --tail=120 2>&1 || true
+          done
+          for pod in $(kubectl get pods -n openstack -l app.kubernetes.io/name=maxscale -o name 2>/dev/null); do
+            echo "--- ${pod} ---"
+            kubectl logs -n openstack "${pod}" --all-containers --tail=120 2>&1 || true
+          done
+          echo "=== Keystone pod logs (current + previous) ==="
+          for pod in $(kubectl get pods -n openstack -l app.kubernetes.io/instance=keystone-dbtls -o name 2>/dev/null); do
+            echo "--- ${pod} (current) ---"
+            kubectl logs -n openstack "${pod}" --all-containers --tail=120 2>&1 || true
+            echo "--- ${pod} (--previous) ---"
+            kubectl logs -n openstack "${pod}" --all-containers --tail=120 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n openstack -o name 2>/dev/null | grep keystone-dbtls); do
+            echo "--- ${job} ---"
+            kubectl logs -n openstack "${job}" --all-containers --tail=120 2>&1 || true
+          done
+          echo "=== Events (last 40) ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -40 || true

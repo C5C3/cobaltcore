@@ -44,6 +44,15 @@ const (
 	// sync with this constant — kubebuilder markers require a string literal
 	// and cannot reference Go constants.
 	DefaultTrustFlushSchedule = "0 * * * *"
+
+	// DefaultDatabaseTLSMode is the verification strength materialized by the
+	// defaulting webhook when spec.database.tls is present with an empty mode
+	// (CC-0106, REQ-013). "require" encrypts the connection without peer
+	// verification — the safe, least-surprising baseline that still works
+	// against a self-signed/internal CA before verify-ca/verify-full is opted
+	// into. It is the single source of truth shared by Default() and the
+	// webhook validation enum so the baseline cannot drift across call sites.
+	DefaultDatabaseTLSMode = "require"
 )
 
 // Default resource requests and limits for the Keystone API container (CC-0042).
@@ -169,6 +178,20 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 			},
 		}
 	}
+	// REQ-013 (CC-0106): Non-mutating database TLS defaulting. We deliberately
+	// do NOT materialize spec.database.tls when it is nil, and we never set
+	// .enabled — TLS is strictly opt-in, so an upgrade of a previously
+	// plaintext CR must not silently turn encryption on (which would also
+	// trigger Certificate provisioning). This mirrors the TrustFlush /
+	// UWSGI / Logging non-mutating discipline above: only partial-fill a
+	// zero-valued sub-field when the parent block is explicitly present.
+	// When the block is present with an empty mode we materialize the
+	// documented baseline "require" (encrypt the connection) so the DSN
+	// builder and reconciler have a single source of truth; an explicit mode
+	// is left untouched.
+	if obj.Spec.Database.TLS != nil && obj.Spec.Database.TLS.Mode == "" {
+		obj.Spec.Database.TLS.Mode = DefaultDatabaseTLSMode
+	}
 	return nil
 }
 
@@ -242,6 +265,52 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 			k.Spec.Database,
 			"exactly one of clusterRef or host must be set",
 		))
+	}
+
+	// REQ-007 (CC-0106): Defense-in-depth database TLS validation alongside the
+	// +kubebuilder:validation:Enum marker on DatabaseTLSSpec.Mode and the
+	// +kubebuilder:validation:XValidation CEL rule on KeystoneSpec.Database
+	// (task 2.1). The tls block is an optional pointer: a nil tls means
+	// plaintext (pre-CC-0106 behavior) and is skipped here. When set, mode
+	// (when non-empty) must be one of the documented enum values, and an
+	// enabled connection requires both certificate secret references so the
+	// reconciler can mount the trust bundle and client keypair (CC-0106
+	// SHARED TLS CONTRACT, kept consistent with the CRD CEL rule).
+	if k.Spec.Database.TLS != nil {
+		tls := k.Spec.Database.TLS
+		tlsPath := specPath.Child("database", "tls")
+		// Mirror the +kubebuilder:validation:Enum=prefer;require;verify-ca;verify-full
+		// marker. Empty mode is tolerated here because Default() materializes
+		// the documented baseline before validation in the normal admission
+		// path; an empty mode reaching validate() is still a valid no-op.
+		switch tls.Mode {
+		case "", "prefer", "require", "verify-ca", "verify-full":
+			// Valid (or to-be-defaulted) mode.
+		default:
+			allErrs = append(allErrs, field.NotSupported(
+				tlsPath.Child("mode"),
+				tls.Mode,
+				[]string{"prefer", "require", "verify-ca", "verify-full"},
+			))
+		}
+		// When TLS is turned on, both the server CA bundle (to verify the
+		// database endpoint) and the client keypair (presented for mutual
+		// TLS) must be referenced. A missing ref would leave the reconciler
+		// unable to assemble the DSN / mount the certificate material.
+		if tls.Enabled {
+			if tls.CABundleSecretRef.Name == "" {
+				allErrs = append(allErrs, field.Required(
+					tlsPath.Child("caBundleSecretRef", "name"),
+					"caBundleSecretRef.name must be set when database.tls.enabled is true",
+				))
+			}
+			if tls.ClientCertSecretRef.Name == "" {
+				allErrs = append(allErrs, field.Required(
+					tlsPath.Child("clientCertSecretRef", "name"),
+					"clientCertSecretRef.name must be set when database.tls.enabled is true",
+				))
+			}
+		}
 	}
 
 	// REQ-002 (CC-0011): Validate cron expression for Fernet key rotation schedule.

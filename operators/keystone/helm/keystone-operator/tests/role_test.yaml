@@ -41,7 +41,7 @@ tests:
       - hasDocuments:
           count: 0
 
-  - it: should have 21 rules matching ClusterRole
+  - it: should have 22 rules matching ClusterRole
     set:
       rbac:
         namespaceScoped: true
@@ -50,7 +50,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 21
+          count: 22
 
   - it: should grant full CRUD on keystones
     set:
@@ -263,6 +263,29 @@ tests:
               - get
               - list
               - watch
+
+  - it: should grant full CRUD on cert-manager certificates (CC-0106)
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - cert-manager.io
+            resources:
+              - certificates
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
 
   - it: should grant CRUD without delete on externalsecrets (CC-0079)
     set:

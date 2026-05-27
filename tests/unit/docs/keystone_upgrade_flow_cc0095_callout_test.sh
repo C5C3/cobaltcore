@@ -27,7 +27,7 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-UPGRADE_DOC="$PROJECT_ROOT/docs/reference/keystone-upgrade-flow.md"
+UPGRADE_DOC="$PROJECT_ROOT/docs/reference/keystone/keystone-upgrade-flow.md"
 
 # --- Test 1: callout heading exists (CC-0095, REQ-007) ---
 test_callout_heading_exists() {
@@ -41,7 +41,7 @@ test_callout_heading_exists() {
 
   assert_file_contains "rename callout heading present" \
     "$UPGRADE_DOC" \
-    '## Sub-Resource Rename (CC-0095)'
+    '## Sub-Resource Rename'
 }
 
 # --- Test 2: affected sub-resources enumerated (CC-0095, REQ-007) ---
@@ -86,7 +86,7 @@ test_cross_link_to_crd_naming_convention() {
 
   assert_file_contains "cross-link to CRD naming-convention anchor" \
     "$UPGRADE_DOC" \
-    './keystone-crd.md#sub-resource-naming-convention-cc-0095'
+    './keystone-crd.md#sub-resource-naming-convention'
 }
 
 # --- Run ---

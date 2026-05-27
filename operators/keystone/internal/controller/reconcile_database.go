@@ -788,7 +788,7 @@ func buildGrant(keystone *keystonev1alpha1.Keystone) *mariadbv1alpha1.Grant {
 // containerResources() for the pattern used by the keystone container (CC-0095).
 func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, imageTag, nameSuffix string, command []string) *batchv1.Job {
 	backoffLimit := int32(4)
-	return &batchv1.Job{
+	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-%s", keystone.Name, nameSuffix),
 			Namespace: keystone.Namespace,
@@ -829,6 +829,17 @@ func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, imageTag, na
 			},
 		},
 	}
+	// CC-0106: project the db-tls client keypair into every db_sync variant
+	// (db-sync, expand, migrate, contract, schema-check) when DB TLS is
+	// enabled; the gate is centralised in dbTLSEnabled so deployment and job
+	// builders decide identically (REQ-002, REQ-014).
+	if dbTLSEnabled(keystone) {
+		tlsVol, tlsMount := dbTLSVolumeAndMount(keystone)
+		job.Spec.Template.Spec.Volumes = append(job.Spec.Template.Spec.Volumes, tlsVol)
+		job.Spec.Template.Spec.Containers[0].VolumeMounts = append(
+			job.Spec.Template.Spec.Containers[0].VolumeMounts, tlsMount)
+	}
+	return job
 }
 
 func buildDBSyncJob(keystone *keystonev1alpha1.Keystone, configMapName string) *batchv1.Job {

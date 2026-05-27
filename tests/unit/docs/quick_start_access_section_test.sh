@@ -3,11 +3,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify docs/quick-start.md's "Access Keystone from your local machine"
-# section has been rewritten so the nip.io Gateway endpoint is the
-# primary flow and `kubectl port-forward svc/keystone` has been moved
-# into a Fallback subsection (CC-0088, REQ-007). Sub-resource Service
-# name is bare `keystone` (no `-api` suffix) since CC-0095.
+# Verify docs/quick-start-extended.md's "Access Keystone from your local
+# machine" section keeps the nip.io Gateway endpoint as the primary flow
+# and `kubectl port-forward svc/keystone` confined to the Fallback
+# subsection. Sub-resource Service name is bare `keystone` (no `-api`
+# suffix).
 #
 # Assertions:
 #   1. `## Access Keystone from your local machine` exists
@@ -34,7 +34,7 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-QUICK_START="$PROJECT_ROOT/docs/quick-start.md"
+QUICK_START="$PROJECT_ROOT/docs/quick-start-extended.md"
 
 # --- Locate the line numbers of the three anchor headings ---
 if [[ ! -f "$QUICK_START" ]]; then

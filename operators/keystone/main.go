@@ -10,6 +10,7 @@ package main
 import (
 	"os"
 
+	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
@@ -34,6 +35,12 @@ func init() {
 	utilruntime.Must(esov1.SchemeBuilder.AddToScheme(scheme))
 	utilruntime.Must(mariadbv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(gatewayv1.Install(scheme))
+	// cert-manager v1 scheme is required so reconcile_databasetls.go can
+	// create/get cert-manager Certificates via the cached client (CC-0106,
+	// REQ-002). Without this, EnsureCertificate fails with "no kind is
+	// registered for the type v1.Certificate" on every reconcile, leaving
+	// the Keystone CR stuck without a DatabaseTLSReady condition.
+	utilruntime.Must(certmanagerv1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 

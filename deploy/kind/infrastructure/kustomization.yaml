@@ -7,7 +7,7 @@
 # patches MariaDB CR (1 replica, Galera disabled, MaxScale disabled,
 # standard storage class) and Memcached CR (1 replica) for single-node
 # kind cluster resource constraints.
-# Feature: CC-0010, REQ-003
+# Feature: CC-0010, CC-0106, REQ-003, REQ-009
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -21,7 +21,22 @@ resources:
   - keystone-nip-io-tls-certificate.yaml
 
 patches:
-  # MariaDB: single replica, no Galera, no MaxScale, standard storage
+  # MariaDB: single replica, no Galera, no MaxScale, standard storage.
+  #
+  # Intentional divergence (CC-0106, REQ-009): the kind overlay disables
+  # spec.tls. The production base (deploy/flux-system/infrastructure/
+  # mariadb.yaml) enables TLS via serverCertIssuerRef/clientCertIssuerRef
+  # because mariadb-operator v0.38.1 issues per-Galera-node server certs and
+  # MaxScale terminates client TLS. In the kind overlay we patch out Galera
+  # AND MaxScale to fit a single-node cluster — leaving spec.tls.enabled=true
+  # would force a single-replica mariadbd to terminate TLS without the
+  # listener Galera/MaxScale provides, a posture that has not been verified
+  # in this environment. Disabling TLS in kind keeps the Quick Start path
+  # green; the production TLS posture is exercised by the
+  # tests/e2e/keystone/database-tls/ chainsaw suite on a full Galera+MaxScale
+  # cluster (CC-0106, REQ-011). To exercise the mTLS path against kind,
+  # remove this spec.tls override and re-enable Galera/MaxScale in this
+  # patch.
   - target:
       group: k8s.mariadb.com
       version: v1alpha1
@@ -43,6 +58,9 @@ patches:
         storage:
           size: 1Gi
           storageClassName: standard
+        tls:
+          enabled: false
+          required: false
 
   # Memcached: single replica
   - target:

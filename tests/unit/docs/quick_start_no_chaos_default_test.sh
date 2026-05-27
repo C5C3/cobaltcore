@@ -27,7 +27,7 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-QUICK_START="$PROJECT_ROOT/docs/quick-start.md"
+QUICK_START="$PROJECT_ROOT/docs/quick-start-extended.md"
 
 if [[ ! -f "$QUICK_START" ]]; then
   echo "FAIL: $QUICK_START does not exist"
@@ -146,33 +146,12 @@ test_optin_tip_block_links_to_chaos_e2e_reference() {
   fi
 }
 
-# --- Test 6: Tip block carries the CC-0097 feature ID (CC-0097, REQ-006) ---
-test_optin_tip_block_cites_feature_id() {
-  echo "Test: Tip block cites CC-0097 feature ID (CC-0097, REQ-006)"
-
-  local tip_block
-  tip_block="$(printf '%s\n' "$STEP3_BLOCK" | awk '
-    /^::: tip Enabling Chaos Mesh/ { in_block = 1 }
-    in_block { print }
-    in_block && /^:::$/ { exit }
-  ')"
-
-  if [[ -z "$tip_block" ]]; then
-    echo "  FAIL: tip block missing — cannot check feature ID"
-    FAIL=$((FAIL + 1))
-    return
-  fi
-
-  assert_contains "tip block cites CC-0097" "$tip_block" "CC-0097"
-}
-
 # --- Run ---
 test_default_flow_table_has_no_chaos_mesh
 test_snapshot_has_no_chaos_mesh_namespace
 test_optin_tip_block_present
 test_optin_tip_block_documents_command
 test_optin_tip_block_links_to_chaos_e2e_reference
-test_optin_tip_block_cites_feature_id
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

@@ -1852,3 +1852,139 @@ func TestBuildPodDisruptionBudget_NameMatchesCR(t *testing.T) {
 	g.Expect(pdb.Name).NotTo(HaveSuffix("-api"),
 		"PodDisruptionBudget Name must not carry the legacy `-api` suffix (CC-0095, REQ-004)")
 }
+
+// Feature: CC-0106
+
+// TestBuildKeystoneDeployment_DBTLSVolumeAndMount_WhenEnabled verifies that
+// the API pod gets a Projected "db-tls" Volume sourcing ca.crt from
+// caBundleSecretRef and tls.crt/tls.key from clientCertSecretRef, and a
+// matching read-only VolumeMount at /etc/keystone/db-tls/, when
+// spec.database.tls.enabled=true (CC-0106, REQ-002, REQ-014). The user-supplied
+// Secret names must be honored verbatim. Name-based assertions only — additive
+// volumes must not perturb the existing volume order.
+func TestBuildKeystoneDeployment_DBTLSVolumeAndMount_WhenEnabled(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
+		Enabled:             true,
+		Mode:                "verify-full",
+		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "db-server-ca"},
+		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "test-keystone-db-client"},
+	}
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	var tlsVol corev1.Volume
+	var tlsVolFound bool
+	for _, v := range deploy.Spec.Template.Spec.Volumes {
+		if v.Name == "db-tls" {
+			tlsVol = v
+			tlsVolFound = true
+			break
+		}
+	}
+	g.Expect(tlsVolFound).To(BeTrue(),
+		"CC-0106: db-tls Volume must be present when TLS is enabled (REQ-002)")
+	g.Expect(tlsVol.Projected).NotTo(BeNil(),
+		"CC-0106: db-tls Volume must be Projected so both Secret refs are honored (REQ-002, REQ-014)")
+	g.Expect(tlsVol.Projected.DefaultMode).NotTo(BeNil(),
+		"CC-0106: db-tls Volume must set DefaultMode (REQ-014)")
+	g.Expect(*tlsVol.Projected.DefaultMode).To(Equal(int32(0o400)),
+		"CC-0106: db-tls Volume DefaultMode must be 0o400 (owner read-only, REQ-014)")
+	expectDBTLSProjection(g, tlsVol.Projected, "db-server-ca", "test-keystone-db-client")
+
+	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
+	g.Expect(container).NotTo(BeNil())
+	var tlsMount corev1.VolumeMount
+	var tlsMountFound bool
+	for _, m := range container.VolumeMounts {
+		if m.Name == "db-tls" {
+			tlsMount = m
+			tlsMountFound = true
+			break
+		}
+	}
+	g.Expect(tlsMountFound).To(BeTrue(),
+		"CC-0106: db-tls VolumeMount must be present on keystone container when TLS enabled (REQ-002)")
+	g.Expect(tlsMount.MountPath).To(Equal("/etc/keystone/db-tls/"),
+		"CC-0106: db-tls VolumeMount path must match ssl_* DSN parameter directory (REQ-014)")
+	g.Expect(tlsMount.ReadOnly).To(BeTrue(),
+		"CC-0106: db-tls VolumeMount must be read-only (REQ-014)")
+}
+
+// TestBuildKeystoneDeployment_DBTLSVolume_UsesUserSuppliedSecretNames verifies
+// the BLOCKER fix from review #1: the db-tls Volume must reference the
+// user-supplied caBundleSecretRef.Name and clientCertSecretRef.Name verbatim
+// (not the hardcoded "<name>-db-client" baked into the previous implementation).
+// This is the brownfield-PKI shape where the trust bundle and client keypair
+// live in two distinct Secrets (CC-0106, REQ-002, REQ-014).
+func TestBuildKeystoneDeployment_DBTLSVolume_UsesUserSuppliedSecretNames(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
+		Enabled:             true,
+		Mode:                "verify-full",
+		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "enterprise-root-ca-bundle"},
+		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "site-specific-client-keypair"},
+	}
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	tlsVol := findVolumeByName(deploy.Spec.Template.Spec.Volumes, "db-tls")
+	g.Expect(tlsVol).NotTo(BeNil(),
+		"CC-0106: db-tls Volume must be present when TLS is enabled (REQ-002)")
+	g.Expect(tlsVol.Projected).NotTo(BeNil(),
+		"CC-0106: db-tls Volume must be Projected so both Secret refs are honored (REQ-002)")
+	expectDBTLSProjection(g, tlsVol.Projected,
+		"enterprise-root-ca-bundle", "site-specific-client-keypair")
+}
+
+// TestBuildKeystoneDeployment_DBTLSVolumeAbsent_WhenNil verifies that no
+// db-tls Volume or VolumeMount is added when spec.database.tls is nil
+// (CC-0106 must preserve pre-feature behaviour; REQ-002).
+func TestBuildKeystoneDeployment_DBTLSVolumeAbsent_WhenNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone() // TLS == nil
+	g.Expect(ks.Spec.Database.TLS).To(BeNil(),
+		"precondition: deployTestKeystone must leave Database.TLS nil")
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	for _, v := range deploy.Spec.Template.Spec.Volumes {
+		g.Expect(v.Name).NotTo(Equal("db-tls"),
+			"CC-0106: db-tls Volume must NOT be present when TLS is nil (REQ-002)")
+	}
+	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
+	g.Expect(container).NotTo(BeNil())
+	for _, m := range container.VolumeMounts {
+		g.Expect(m.Name).NotTo(Equal("db-tls"),
+			"CC-0106: db-tls VolumeMount must NOT be present when TLS is nil (REQ-002)")
+	}
+}
+
+// TestBuildKeystoneDeployment_DBTLSVolumeAbsent_WhenDisabled verifies that
+// the db-tls Volume/Mount are gated on Enabled=true; an explicitly disabled
+// TLS block must not project the keypair into the pod (CC-0106, REQ-002).
+func TestBuildKeystoneDeployment_DBTLSVolumeAbsent_WhenDisabled(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
+		Enabled:             false,
+		Mode:                "require",
+		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "db-server-ca"},
+		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "test-keystone-db-client"},
+	}
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	for _, v := range deploy.Spec.Template.Spec.Volumes {
+		g.Expect(v.Name).NotTo(Equal("db-tls"),
+			"CC-0106: db-tls Volume must NOT be present when TLS.Enabled is false (REQ-002)")
+	}
+	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
+	g.Expect(container).NotTo(BeNil())
+	for _, m := range container.VolumeMounts {
+		g.Expect(m.Name).NotTo(Equal("db-tls"),
+			"CC-0106: db-tls VolumeMount must NOT be present when TLS.Enabled is false (REQ-002)")
+	}
+}

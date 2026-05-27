@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
@@ -1011,17 +1012,22 @@ func TestIntegration_BootstrapJobDetailedSpec(t *testing.T) {
 	g.Expect(container.Image).To(Equal(expectedImage))
 
 	// Verify command uses shell wrapper for idempotent bootstrap (REQ-007).
+	// Since CC-0106, the wrapper passes the admin/internal/public URLs and
+	// region id through environment variables ($BOOTSTRAP_ADMIN_URL etc.)
+	// rather than baking them into the script; the concrete values are
+	// asserted below against container.Env.
 	g.Expect(container.Command[:3]).To(Equal([]string{"/bin/sh", "-eu", "-c"}))
 	g.Expect(container.Command[3]).To(ContainSubstring("keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap"))
-	expectedServiceURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", ks.Name, ns.Name)
-	g.Expect(container.Command[3]).To(ContainSubstring(expectedServiceURL))
-	g.Expect(container.Command[3]).To(ContainSubstring("--bootstrap-region-id " + ks.Spec.Bootstrap.Region))
+	g.Expect(container.Command[3]).To(ContainSubstring(`--bootstrap-admin-url "$BOOTSTRAP_ADMIN_URL"`))
+	g.Expect(container.Command[3]).To(ContainSubstring(`--bootstrap-region-id "$BOOTSTRAP_REGION_ID"`))
 	g.Expect(container.Args).To(BeNil())
 
-	// Verify env: BOOTSTRAP_PASSWORD from admin Secret (REQ-007) and
+	// Verify env: BOOTSTRAP_PASSWORD from admin Secret (REQ-007),
 	// OS_DATABASE__CONNECTION from the derived db-connection Secret
-	// (CC-0080, REQ-004).
-	g.Expect(container.Env).To(HaveLen(2))
+	// (CC-0080, REQ-004) and the bootstrap region + URL env-vars passed to
+	// keystone-manage bootstrap (CC-0106, REQ-005).
+	expectedServiceURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", ks.Name, ns.Name)
+	g.Expect(container.Env).To(HaveLen(6))
 	pwEnv := container.Env[0]
 	g.Expect(pwEnv.Name).To(Equal("BOOTSTRAP_PASSWORD"))
 	g.Expect(pwEnv.ValueFrom).NotTo(BeNil())
@@ -1037,6 +1043,15 @@ func TestIntegration_BootstrapJobDetailedSpec(t *testing.T) {
 	g.Expect(dbEnv.ValueFrom.SecretKeyRef.Name).To(Equal(ks.Name+"-db-connection"),
 		"OS_DATABASE__CONNECTION should reference the derived db-connection Secret")
 	g.Expect(dbEnv.ValueFrom.SecretKeyRef.Key).To(Equal(dbConnectionSecretKey))
+
+	g.Expect(container.Env[2].Name).To(Equal("BOOTSTRAP_REGION_ID"))
+	g.Expect(container.Env[2].Value).To(Equal(ks.Spec.Bootstrap.Region))
+	g.Expect(container.Env[3].Name).To(Equal("BOOTSTRAP_ADMIN_URL"))
+	g.Expect(container.Env[3].Value).To(Equal(expectedServiceURL))
+	g.Expect(container.Env[4].Name).To(Equal("BOOTSTRAP_INTERNAL_URL"))
+	g.Expect(container.Env[4].Value).To(Equal(expectedServiceURL))
+	g.Expect(container.Env[5].Name).To(Equal("BOOTSTRAP_PUBLIC_URL"))
+	g.Expect(container.Env[5].Value).To(Equal(expectedServiceURL))
 
 	// Verify config volume mount (REQ-007).
 	g.Expect(container.VolumeMounts).To(HaveLen(2))
@@ -4185,4 +4200,61 @@ func TestIntegration_LoggingNoOpReconcileDoesNotRollDeployment(t *testing.T) {
 			"no-op reconcile must NOT advance Deployment.Generation (CC-0098, REQ-007)")
 	}, 2*time.Second, pollInterval).Should(Succeed(),
 		"no-op spec reconcile must be idempotent on the Deployment pod template (CC-0098, REQ-007)")
+}
+
+// TestIntegration_DatabaseTLS_CertificateLifecycle verifies CC-0106 REQ-002:
+// applying a managed-mode Keystone CR with spec.database.tls.enabled=true
+// causes the reconciler to issue a cert-manager Certificate named
+// "<name>-db-client" owned by the Keystone CR. cert-manager itself is not
+// running in envtest, so the Certificate never becomes Ready — the test
+// therefore asserts that DatabaseTLSReady reaches False/CertificatePending
+// (the well-defined waiting state), not the eventual Issued state.
+func TestIntegration_DatabaseTLS_CertificateLifecycle(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "dbtls-lifecycle"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create namespace")
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	// Managed-mode CR with DB TLS enabled. The CRD CEL rule + admission
+	// webhook (CC-0106, REQ-007/REQ-010) require both *SecretRef.Name fields
+	// to be set when tls.enabled is true; the *Secret objects themselves do
+	// not need to exist for reconcileDatabaseTLS, which only emits the
+	// Certificate spec and never reads the Secret bytes.
+	ks := integrationManagedKeystone("test-keystone", ns.Name)
+	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
+		Enabled:             true,
+		Mode:                "verify-full",
+		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "openstack-db-server-ca"},
+		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "test-keystone-db-client"},
+	}
+	g.Expect(c.Create(ctx, ks)).To(Succeed(), "create TLS-enabled Keystone CR")
+	key := types.NamespacedName{Namespace: ns.Name, Name: "test-keystone"}
+
+	// 1. The cert-manager Certificate must appear and be controller-owned by
+	//    the Keystone CR.
+	certKey := types.NamespacedName{Namespace: ns.Name, Name: "test-keystone-db-client"}
+	g.Eventually(func(ig Gomega) {
+		cert := &certmanagerv1.Certificate{}
+		ig.Expect(c.Get(ctx, certKey, cert)).To(Succeed())
+		ig.Expect(cert.Spec.SecretName).To(Equal("test-keystone-db-client"))
+		ig.Expect(cert.Spec.IssuerRef.Name).To(Equal(dbCAIssuerName))
+		ig.Expect(cert.Spec.IssuerRef.Kind).To(Equal("ClusterIssuer"))
+		ig.Expect(cert.Spec.Usages).To(ContainElement(certmanagerv1.UsageClientAuth))
+		owner := metav1.GetControllerOf(cert)
+		ig.Expect(owner).NotTo(BeNil(), "Certificate must have a controller ownerRef")
+		ig.Expect(owner.Name).To(Equal("test-keystone"))
+		ig.Expect(owner.Kind).To(Equal("Keystone"))
+	}, eventuallyTimeout, pollInterval).Should(Succeed(),
+		"cert-manager Certificate must be created and owned by the Keystone CR (CC-0106, REQ-002)")
+
+	// 2. DatabaseTLSReady must reach False with reason CertificatePending —
+	//    cert-manager is not running in envtest so the Certificate never
+	//    becomes Ready; the operator must report the pending state honestly.
+	cond := waitForCondition(t, ctx, c, key, conditionTypeDatabaseTLSReady, metav1.ConditionFalse, eventuallyTimeout)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Reason).To(Equal(reasonCertificatePending),
+		"DatabaseTLSReady reason must be CertificatePending while the Certificate has no Ready=True status (CC-0106, REQ-002)")
 }

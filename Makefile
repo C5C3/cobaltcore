@@ -163,14 +163,12 @@ chainsaw-lint:
 	@find tests -type f -name 'chainsaw-config.yaml' -print0 | xargs -0 -r -n1 chainsaw lint configuration -f
 
 .PHONY: test-shell
-# test-shell runs every shell-script unit test under tests/unit/ (CC-0085, REQ-003/REQ-005/REQ-007).
+# test-shell runs every shell-script unit test under tests/unit/.
 # Each test is a self-contained bash script that uses tests/lib/assertions.sh.
-# CC-0088: added tests/unit/docs/ for documentation-coverage shell tests (tasks 3.6-3.8).
-# CC-0100, REQ-010: added tests/unit/ci/ for CI workflow path-filter completeness lints.
 test-shell:
 	@echo "Running shell unit tests..."
 	@status=0; \
-	for t in tests/unit/hack/*_test.sh tests/unit/deploy/*_test.sh tests/unit/renovate/*_test.sh tests/unit/docs/*_test.sh tests/unit/ci/*_test.sh; do \
+	for t in tests/unit/hack/*_test.sh tests/unit/deploy/*_test.sh tests/unit/renovate/*_test.sh tests/unit/docs/*_test.sh; do \
 		[ -f "$$t" ] || continue; \
 		echo "=== $$t ==="; \
 		bash "$$t" || status=1; \

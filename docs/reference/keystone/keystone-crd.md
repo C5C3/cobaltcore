@@ -164,7 +164,7 @@ status:
 | --- | --- | --- | --- | --- |
 | `replicas` | `int32` | No | `3` | Number of Keystone API replicas. Minimum: 1. The webhook provides a secondary default of 3 when zero. |
 | `image` | [`ImageSpec`](#imagespec) | Yes | — | Keystone container image reference. |
-| `database` | [`DatabaseSpec`](#databasespec) | Yes | — | MariaDB connection configuration. |
+| `database` | [`DatabaseSpec`](#databasespec) | Yes | — | MariaDB connection configuration. Includes the optional [`tls`](#databasetlsspec) sub-block that opts in to TLS / mTLS for the connection (CC-0106, REQ-001); when `nil`, the connection is plaintext TCP — preserving pre-CC-0106 behavior for all existing CRs. |
 | `cache` | [`CacheSpec`](#cachespec) | Yes | — | Memcached cache configuration. |
 | `fernet` | [`FernetSpec`](#fernetspec) | No | See below | Fernet key rotation configuration. |
 | `credentialKeys` | [`CredentialKeysSpec`](#credentialkeysspec) | No | See below | Credential-key rotation configuration. Drives the per-CR CronJob that rotates and `credential_migrate`s the credential keys used for encrypting application credentials. |
@@ -195,6 +195,8 @@ webhooks are invoked:
 | Field | Rule | Error Message |
 | --- | --- | --- |
 | `spec.database` | `has(self.clusterRef) != has(self.host)` | "exactly one of clusterRef or host must be set" |
+| `spec.database` | `!has(self.tls) \|\| !self.tls.enabled \|\| (self.tls.caBundleSecretRef.name != '' && self.tls.clientCertSecretRef.name != '')` | "when database.tls.enabled is true, both database.tls.caBundleSecretRef.name and database.tls.clientCertSecretRef.name must be set" (CC-0106, REQ-007) |
+| `spec.database.tls.mode` | Enum: `prefer`, `require`, `verify-ca`, `verify-full` | — (CC-0106, REQ-001) |
 | `spec.cache` | `has(self.clusterRef) != (has(self.servers) && size(self.servers) > 0)` | "exactly one of clusterRef or servers must be set" |
 | `spec.policyOverrides` | `(has(self.rules) && size(self.rules) > 0) \|\| self.configMapRef != null` | "at least one of rules or configMapRef must be set" |
 | `spec.policyOverrides.rules` | `!has(self.rules) \|\| self.rules.all(k, k != '')` | "policy rule name must not be empty" |
@@ -1003,8 +1005,56 @@ operator CRDs.
 | `port` | `int32` | No | Database port (brownfield mode, default 3306). |
 | `database` | `string` | Yes | Database name. |
 | `secretRef` | [`SecretRefSpec`](#secretrefspec) | Yes | Secret with database credentials. |
+| `tls` | [`*DatabaseTLSSpec`](#databasetlsspec) | No | Optional TLS/mTLS configuration (CC-0106, REQ-001). The pointer keeps the field opt-in and non-mutating: a `nil` `tls` means plaintext TCP, preserving the pre-CC-0106 behavior for all existing CRs. |
 
 Exactly one of `clusterRef` or `host` must be set (enforced by CEL validation).
+
+### DatabaseTLSSpec
+
+Configures opt-in TLS (and mutual TLS) for the Keystone-to-database connection
+(CC-0106, REQ-001). Referenced as an optional pointer from
+[`DatabaseSpec`](#databasespec); a `nil` value preserves the pre-CC-0106 plaintext
+behavior.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `enabled` | `bool` | No | `false` | Turns on TLS for the database connection. When `true`, the operator provisions the client certificate (`<name>-db-client`), appends the `ssl_*` DSN parameters, and mounts the certificate material into every workload that opens a connection. Opt-in only — the defaulting webhook never sets this to `true`. |
+| `mode` | `string` | No | `"require"` (materialized by the defaulting webhook when `tls` is non-nil and `mode` is empty) | Verification strength applied to the connection. Enum: `prefer`, `require`, `verify-ca`, `verify-full`. `prefer`/`require` encrypt the connection only (no peer verification); `verify-ca` additionally verifies the server certificate chain against the trusted CA bundle; `verify-full` additionally verifies that the server hostname matches the certificate identity. |
+| `caBundleSecretRef` | [`SecretRefSpec`](#secretrefspec) | Yes (when `enabled=true`) | — | Secret holding the server CA bundle the client trusts when verifying the database endpoint. Required by both the CRD CEL rule and the validating webhook when `enabled` is `true`. |
+| `clientCertSecretRef` | [`SecretRefSpec`](#secretrefspec) | Yes (when `enabled=true`) | — | Secret holding the client keypair presented to the database for mutual TLS. In managed mode (`database.clusterRef` set) the operator provisions a cert-manager `Certificate` into a Secret named `<name>-db-client`; in brownfield mode (`database.host` set) the keypair must be supplied out-of-band. Required by both the CRD CEL rule and the validating webhook when `enabled` is `true`. |
+
+#### Mode → connect-args mapping
+
+The reconciler's `reconcile_dbconnection_secret.go` appends `ssl_*` query parameters
+to the database DSN according to `mode`. The mapping is implemented by
+`modeToSSLParams` in `operators/keystone/internal/controller/dbtls_mode.go`
+(CC-0106, REQ-004). The on-pod paths come from the read-only volume `db-tls`
+mounted at `/etc/keystone/db-tls/` (CC-0106, REQ-005):
+
+| `mode` | `ssl_ca` | `ssl_cert` | `ssl_key` | `ssl_verify_cert` | `ssl_verify_identity` |
+| --- | --- | --- | --- | --- | --- |
+| `prefer` | `/etc/keystone/db-tls/ca.crt` | `/etc/keystone/db-tls/tls.crt` | `/etc/keystone/db-tls/tls.key` | — | — |
+| `require` | `/etc/keystone/db-tls/ca.crt` | `/etc/keystone/db-tls/tls.crt` | `/etc/keystone/db-tls/tls.key` | — | — |
+| `verify-ca` | `/etc/keystone/db-tls/ca.crt` | `/etc/keystone/db-tls/tls.crt` | `/etc/keystone/db-tls/tls.key` | `true` | — |
+| `verify-full` | `/etc/keystone/db-tls/ca.crt` | `/etc/keystone/db-tls/tls.crt` | `/etc/keystone/db-tls/tls.key` | `true` | `true` |
+
+Parameters are emitted via `url.Values.Encode()`, which sorts keys lexically — so
+the resulting query string is deterministic across reconciles regardless of the
+insertion order shown in this table. Any other `mode` value is rejected by
+`modeToSSLParams` (and earlier by the CRD enum and validating webhook) before the
+DSN is assembled, so a partially-formed DSN can never reach a workload.
+
+#### Status condition
+
+`reconcileDatabaseTLS` reports its outcome via the `DatabaseTLSReady` status
+condition (CC-0106, REQ-002, REQ-014) using these typed reasons:
+
+| Reason | When |
+| --- | --- |
+| `NotRequired` | `spec.database.tls` is `nil` or `enabled=false` — plaintext connection. |
+| `ExternallyManaged` | `enabled=true` but the database is brownfield (`spec.database.host` set, no `clusterRef`) — the operator does not own the trust domain and expects the client keypair to be supplied out-of-band via `clientCertSecretRef`. |
+| `CertificatePending` | Managed mode; the operator has created the cert-manager `Certificate` but cert-manager has not yet issued it. The condition is `False` until issuance completes. |
+| `CertificateIssued` | Managed mode; the client `Certificate` is issued into Secret `<name>-db-client` and ready for mount. |
 
 ### CacheSpec
 
@@ -1085,6 +1135,7 @@ Sets spec fields to their documented defaults when they carry zero values. Expli
 | `spec.uwsgi.threads` | `== 0` (when `spec.uwsgi` is non-nil) | `1` — same nil-pointer caveat as processes. |
 | `spec.uwsgi.httpKeepAlive` | Field absent from JSON payload | `true` — defaulted by the CRD schema (`+kubebuilder:default=true`), **not** by the webhook. The webhook cannot distinguish "not set" from "explicitly false" for a bool field. See [HTTPKeepAlive defaulting](#httpkeepalive-defaulting-caveat). |
 | `spec.resources` | `== nil` or empty (`requests` and `limits` both unset) | `{requests: {memory: 256Mi, cpu: 100m}, limits: {memory: 512Mi, cpu: 500m}}` — ensures Burstable QoS class and enables HPA utilization calculations. |
+| `spec.database.tls.mode` | `spec.database.tls != nil && mode == ""` | `"require"` — `DefaultDatabaseTLSMode` in `keystone_webhook.go` (CC-0106, REQ-013). Only materialized when the `tls` block is explicitly present; the webhook never materializes the block itself. |
 
 **Not defaulted by the webhook:**
 
@@ -1094,6 +1145,13 @@ Sets spec fields to their documented defaults when they carry zero values. Expli
   fallbacks. For `topologySpreadConstraints` the reconciler distinguishes `nil`
   (inject zone+hostname defaults) from `[]` (opt out), so the webhook must not
   materialise a struct.
+- `spec.database.tls` itself and `spec.database.tls.enabled` — the webhook never
+  materializes the `tls` block and never sets `enabled` (CC-0106, REQ-013). TLS
+  is strictly opt-in, so an upgrade of a previously plaintext CR cannot silently
+  turn encryption on (which would also trigger Certificate provisioning). The
+  webhook only partial-fills `tls.mode` when the parent block is explicitly
+  present, mirroring the `TrustFlush` / `UWSGI` / `Logging` non-mutating
+  discipline.
 
 **Design note:** `spec.fernet.rotationSchedule` is NOT defaulted by the webhook — it
 relies solely on the Kubebuilder `+kubebuilder:default="0 0 * * 0"` marker.
@@ -1125,6 +1183,9 @@ single `apierrors.NewInvalid` error. It does **not** short-circuit on the first 
 | Replicas minimum | `spec.replicas` | `field.Invalid` | `replicas < 1`. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
 | Cache mutual exclusivity | `spec.cache` | `field.Invalid` | Both `clusterRef` and `servers` set, or neither. Defense-in-depth alongside the CEL XValidation rule. |
 | Database mutual exclusivity | `spec.database` | `field.Invalid` | Both `clusterRef` and `host` set, or neither. Defense-in-depth alongside the CEL XValidation rule. |
+| Database TLS mode out-of-enum | `spec.database.tls.mode` | `field.NotSupported` | `tls.mode` is non-empty but not one of `prefer`/`require`/`verify-ca`/`verify-full`. Defense-in-depth alongside the `+kubebuilder:validation:Enum` marker. Empty `mode` is tolerated because `Default()` materializes `"require"` before validation in the normal admission path (CC-0106, REQ-007). |
+| Database TLS caBundleSecretRef required | `spec.database.tls.caBundleSecretRef.name` | `field.Required` | `tls.enabled=true` but `caBundleSecretRef.name` is empty. Defense-in-depth alongside the CEL XValidation rule on `spec.database` (CC-0106, REQ-007). |
+| Database TLS clientCertSecretRef required | `spec.database.tls.clientCertSecretRef.name` | `field.Required` | `tls.enabled=true` but `clientCertSecretRef.name` is empty. Defense-in-depth alongside the CEL XValidation rule on `spec.database` (CC-0106, REQ-007). |
 | Fernet maxActiveKeys minimum | `spec.fernet.maxActiveKeys` | `field.Invalid` | `maxActiveKeys < 3`. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=3` marker. |
 | Fernet schedule required | `spec.fernet.rotationSchedule` | `field.Required` | Empty after admission (bypass paths). |
 | Fernet cron expression | `spec.fernet.rotationSchedule` | `field.Invalid` | `cron.ParseStandard()` fails. Error message includes the parse failure details. |
@@ -1276,7 +1337,7 @@ rejection in a real cluster with the operator deployed. For the full reconciler
 E2E test suite inventory (basic-deployment, scale, fernet-rotation,
 credential-rotation, network-policy, topology-spread, priority-class,
 release-upgrade, schema-drift-detection, events, healthcheck, graceful-shutdown,
-policy-validation, config-pruning, …), see
+policy-validation, config-pruning, `database-tls` (CC-0106, REQ-011), …), see
 [Keystone E2E Test Suites](../testing/keystone-e2e-tests.md).
 
 #### invalid-cr Suite
@@ -1437,6 +1498,9 @@ tests/e2e/keystone/
 ├── policy-overrides/                 oslo.policy integration E2E
 ├── middleware-config/                Middleware pipeline E2E
 ├── brownfield-database/              External database mode E2E
+├── database-tls/                     Database TLS/mTLS E2E (CC-0106, REQ-011)
+│   ├── chainsaw-test.yaml            Chainsaw E2E test definition
+│   └── 00-keystone-cr.yaml           Keystone CR with spec.database.tls (verify-full)
 ├── image-upgrade/                    Rolling image upgrade E2E
 ├── uwsgi/                            uWSGI field propagation E2E
 │   ├── chainsaw-test.yaml            Chainsaw E2E test definition
