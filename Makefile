@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Makefile for CC-0001 Go Workspace
 # Manages build, test, lint, and deployment operations for operators and common modules
 #

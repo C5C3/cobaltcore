@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // Package main is the entrypoint for the Keystone operator (CC-0001).
 //
 // DEVIATION from architecture/01-project-setup.md (CC-0001):
