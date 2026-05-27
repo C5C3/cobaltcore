@@ -19,6 +19,17 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
+        "/releases/.*/test-refs\\.yaml$/"
+      ],
+      "matchStrings": [
+        "(?m)^(?<depName>[\\w.-]+):\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "datasourceTemplate": "pypi",
+      "versioningTemplate": "pep440"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
         "/hack/deploy-infra\\.sh$/"
       ],
       "matchStrings": [
@@ -27,6 +38,59 @@
       "depNameTemplate": "controlplaneio-fluxcd/flux-operator",
       "datasourceTemplate": "github-releases",
       "packageNameTemplate": "controlplaneio-fluxcd/flux-operator",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/hack/install-test-deps\\.sh$/"
+      ],
+      "matchStrings": [
+        "CHAINSAW_VERSION=\"(?<currentValue>v\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "depNameTemplate": "kyverno/chainsaw",
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "kyverno/chainsaw",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/hack/install-test-deps\\.sh$/"
+      ],
+      "matchStrings": [
+        "FLUX_VERSION=\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "depNameTemplate": "fluxcd/flux2",
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "fluxcd/flux2",
+      "extractVersionTemplate": "^v(?<version>.+)$",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/hack/install-test-deps\\.sh$/"
+      ],
+      "matchStrings": [
+        "KIND_VERSION=\"(?<currentValue>v\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "depNameTemplate": "kubernetes-sigs/kind",
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "kubernetes-sigs/kind",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/hack/install-test-deps\\.sh$/"
+      ],
+      "matchStrings": [
+        "KUBECTL_VERSION=\"(?<currentValue>v\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "depNameTemplate": "kubernetes/kubernetes",
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "kubernetes/kubernetes",
       "versioningTemplate": "semver"
     },
     {
@@ -55,6 +119,72 @@
       "packageNameTemplate": "envoyproxy/gateway",
       "extractVersionTemplate": "^v(?<version>.+)$",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/deploy/kind/base/headlamp\\.yaml$/"
+      ],
+      "matchStrings": [
+        "version:\\s*\">=(?<currentValue>\\d+\\.\\d+\\.\\d+)\\s+<\\d+\\.\\d+\\.\\d+\""
+      ],
+      "depNameTemplate": "headlamp",
+      "datasourceTemplate": "helm",
+      "registryUrlTemplate": "https://kubernetes-sigs.github.io/headlamp/",
+      "versioningTemplate": "helm"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/Makefile$/",
+        "/\\.github/workflows/.*\\.yaml$/"
+      ],
+      "matchStrings": [
+        "GOFUMPT_VERSION\\s*[?=:]+\\s*\"?(?<currentValue>v\\d+\\.\\d+\\.\\d+)\"?"
+      ],
+      "depNameTemplate": "mvdan/gofumpt",
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "mvdan/gofumpt",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/\\.github/workflows/.*\\.yaml$/"
+      ],
+      "matchStrings": [
+        "CONTROLLER_GEN_VERSION:\\s*\"?(?<currentValue>v\\d+\\.\\d+\\.\\d+)\"?"
+      ],
+      "depNameTemplate": "kubernetes-sigs/controller-tools",
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "kubernetes-sigs/controller-tools",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/\\.github/workflows/.*\\.yaml$/"
+      ],
+      "matchStrings": [
+        "GOLANGCI_LINT_VERSION:\\s*\"?(?<currentValue>v\\d+\\.\\d+\\.\\d+)\"?"
+      ],
+      "depNameTemplate": "golangci/golangci-lint",
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "golangci/golangci-lint",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/\\.github/workflows/.*\\.yaml$/"
+      ],
+      "matchStrings": [
+        "YQ_VERSION:\\s*\"?(?<currentValue>v\\d+\\.\\d+\\.\\d+)\"?"
+      ],
+      "depNameTemplate": "mikefarah/yq",
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "mikefarah/yq",
+      "versioningTemplate": "semver"
     }
   ],
   "packageRules": [
@@ -71,6 +201,20 @@
       "automerge": true,
       "minimumReleaseAge": "3 days",
       "groupName": "OpenStack upstream tags"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["releases/**/test-refs.yaml"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["releases/**/test-refs.yaml"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "minimumReleaseAge": "3 days",
+      "groupName": "OpenStack test tooling (PyPI)"
     },
     {
       "matchManagers": ["custom.regex"],
@@ -103,6 +247,74 @@
       "automerge": true,
       "minimumReleaseAge": "3 days",
       "groupName": "envoy-gateway"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["deploy/kind/base/headlamp.yaml"],
+      "matchPackageNames": ["headlamp"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["deploy/kind/base/headlamp.yaml"],
+      "matchPackageNames": ["headlamp"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "minimumReleaseAge": "3 days",
+      "groupName": "headlamp"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["hack/install-test-deps.sh"],
+      "matchPackageNames": [
+        "kyverno/chainsaw",
+        "fluxcd/flux2",
+        "kubernetes-sigs/kind",
+        "kubernetes/kubernetes"
+      ],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["hack/install-test-deps.sh"],
+      "matchPackageNames": [
+        "kyverno/chainsaw",
+        "fluxcd/flux2",
+        "kubernetes-sigs/kind",
+        "kubernetes/kubernetes"
+      ],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "minimumReleaseAge": "3 days",
+      "groupName": "test tooling (install-test-deps)"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["Makefile", ".github/workflows/**.yaml"],
+      "matchPackageNames": [
+        "mvdan/gofumpt",
+        "golangci/golangci-lint",
+        "kubernetes-sigs/controller-tools",
+        "mikefarah/yq"
+      ],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["Makefile", ".github/workflows/**.yaml"],
+      "matchPackageNames": [
+        "mvdan/gofumpt",
+        "golangci/golangci-lint",
+        "kubernetes-sigs/controller-tools",
+        "mikefarah/yq"
+      ],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "minimumReleaseAge": "3 days",
+      "groupName": "Go build tooling"
     }
   ]
 }
