@@ -7,7 +7,7 @@
 # Apply AFTER the base kustomization (deploy/flux-system/) and operator
 # CRDs are available. See docs/reference/infrastructure-manifests.md for
 # deployment instructions.
-# Feature: CC-0008, CC-0009, CC-0106
+# Feature: CC-0008, CC-0009, CC-0106, CC-0107
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -17,5 +17,7 @@ resources:
   - db-ca-issuer.yaml
   - mariadb.yaml
   - memcached.yaml
+  - openbao-ca-issuer.yaml
   - openbao-tls-cert.yaml
+  - openbao-client-tls-cert.yaml
   - ../../eso

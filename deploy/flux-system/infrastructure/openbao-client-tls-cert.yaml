@@ -1,0 +1,70 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# cert-manager Certificates for OpenBao mTLS (client-cert authentication).
+# Issues two `client auth` certificates from the same `openbao-ca-issuer` that
+# produces openbao-tls (the server cert), so client certs and server cert share
+# one CA bundle and the listener's `tls_client_ca_file = /openbao/tls/ca.crt`
+# validates every presented client cert. Requires cert-manager CRDs (installed
+# via the cert-manager HelmRelease) and the `openbao-ca-issuer` ClusterIssuer
+# defined in openbao-ca-issuer.yaml (itself bootstrapped from
+# selfsigned-cluster-issuer in cluster-issuer.yaml).
+#
+#   - openbao-client-tls:     used by the OpenBao StatefulSet pods themselves
+#                             (Raft retry_join peer auth + in-pod bootstrap exec
+#                             wrappers); mounted by a later task into the
+#                             StatefulSet at /openbao/client-tls.
+#   - eso-openbao-client-tls: used by the ESO ClusterSecretStore to authenticate
+#                             to the OpenBao API listener once require-and-verify
+#                             client-cert mode is enabled.
+#
+# Both certs carry usages: ["client auth"] and share the openbao-tls duration /
+# renewBefore so client + server rotation cadences stay aligned. The DNS SANs
+# below are identifiers only (the listener does not verify SANs for client
+# auth) — they make the certs human-readable in kubectl describe output.
+#
+# Both certs are signed by openbao-ca-issuer (see openbao-ca-issuer.yaml).
+# Sharing one CA with the server cert (openbao-tls-cert.yaml) is what makes
+# tls_require_and_verify_client_cert against tls_client_ca_file work:
+# every Secret's ca.crt resolves to the same openbao-ca bundle, so the
+# listener trusts these client certs and ESO trusts the server cert.
+# Feature: CC-0107
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: openbao-client-tls
+  namespace: openbao-system
+spec:
+  secretName: openbao-client-tls
+  # Mirror openbao-tls-cert.yaml lifetimes so client + server rotation align
+  # and OpenBao pod restarts (required for TLS reload) batch into one event.
+  duration: 8760h
+  renewBefore: 720h
+  issuerRef:
+    name: openbao-ca-issuer
+    kind: ClusterIssuer
+  usages:
+    - client auth
+  commonName: openbao-client.openbao-system.svc
+  dnsNames:
+    - openbao-client.openbao-system.svc
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: eso-openbao-client-tls
+  namespace: openbao-system
+spec:
+  secretName: eso-openbao-client-tls
+  duration: 8760h
+  renewBefore: 720h
+  issuerRef:
+    name: openbao-ca-issuer
+    kind: ClusterIssuer
+  usages:
+    - client auth
+  commonName: eso-openbao-client.openbao-system.svc
+  dnsNames:
+    - eso-openbao-client.openbao-system.svc

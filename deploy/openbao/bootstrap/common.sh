@@ -17,6 +17,8 @@
 NAMESPACE="${NAMESPACE:-openbao-system}"
 BAO_ADDR="${BAO_ADDR:-https://127.0.0.1:8200}"
 export VAULT_CACERT="${VAULT_CACERT:-/openbao/tls/ca.crt}"
+export VAULT_CLIENT_CERT="${VAULT_CLIENT_CERT:-/openbao/client-tls/tls.crt}"
+export VAULT_CLIENT_KEY="${VAULT_CLIENT_KEY:-/openbao/client-tls/tls.key}"
 
 # ---------------------------------------------------------------------------
 # log — Print a timestamped log message (ISO 8601 UTC).
@@ -35,7 +37,7 @@ log() {
 # ---------------------------------------------------------------------------
 bao_exec() {
   kubectl exec -n "$NAMESPACE" openbao-0 -- \
-    env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" VAULT_CACERT="${VAULT_CACERT}" "$@"
+    env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" VAULT_CACERT="${VAULT_CACERT}" VAULT_CLIENT_CERT="${VAULT_CLIENT_CERT}" VAULT_CLIENT_KEY="${VAULT_CLIENT_KEY}" "$@"
 }
 
 # ---------------------------------------------------------------------------
@@ -45,5 +47,5 @@ bao_exec() {
 # ---------------------------------------------------------------------------
 bao_exec_stdin() {
   kubectl exec -i -n "$NAMESPACE" openbao-0 -- \
-    env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" VAULT_CACERT="${VAULT_CACERT}" "$@"
+    env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" VAULT_CACERT="${VAULT_CACERT}" VAULT_CLIENT_CERT="${VAULT_CLIENT_CERT}" VAULT_CLIENT_KEY="${VAULT_CLIENT_KEY}" "$@"
 }

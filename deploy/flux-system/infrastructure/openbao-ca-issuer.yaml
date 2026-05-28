@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Dedicated cert-manager CA for the OpenBao trust domain (CC-0107).
+# One self-signed CA keypair backs three concerns:
+#   1. openbao-tls — the API/Raft server cert mounted at /openbao/tls
+#      (see openbao-tls-cert.yaml).
+#   2. openbao-client-tls — the StatefulSet's own client cert used by
+#      the bao CLI inside the pod (chart readiness/liveness probes,
+#      bootstrap exec wrappers, Raft retry_join).
+#   3. eso-openbao-client-tls — ESO's client cert for the OpenBao API
+#      listener once tls_require_and_verify_client_cert is on.
+#
+# DECISION: dedicated CA over selfsigned-cluster-issuer — The OpenBao
+# listener config sets `tls_client_ca_file = /openbao/tls/ca.crt` and
+# `tls_require_and_verify_client_cert = true` (deploy/flux-system/
+# releases/openbao.yaml). With cert-manager's SelfSigned issuer every
+# Certificate is its own root, so server-cert.ca.crt does not validate
+# leaves issued for the clients — the e2e symptom was readiness probes
+# rejected with `remote error: tls: unknown certificate authority` and
+# ESO failing the Kubernetes-auth login with `tls: certificate required`
+# (server refusing to even pick the client cert because it doesn't
+# match the configured client CA). Routing all three openbao TLS certs
+# through one CA-type Issuer makes server cert + every client cert
+# chain to the same root, so ca.crt in every Secret references the same
+# bundle. Mirrors the precedent for the OpenStack DB trust domain in
+# db-ca-issuer.yaml (CC-0106).
+#
+# DECISION: CA Certificate placement — Issued the CA Certificate into
+# the cert-manager namespace because cert-manager's default
+# --cluster-resource-namespace is "cert-manager", which is where a
+# CA-type ClusterIssuer looks up its secretName. Mirrors db-ca-issuer.
+#
+# DECISION: CA lifetime — 3 years (26280h) with 30-day renewBefore.
+# CAs should outlive the leaves they sign; the openbao TLS leaves are
+# 1-year (openbao-tls-cert.yaml, openbao-client-tls-cert.yaml). 3 years
+# matches the openstack-db-ca cadence so both trust-domain CAs renew
+# on comparable schedules.
+#
+# Feature: CC-0107
+---
+# Bootstrap CA keypair Secret. The selfsigned-cluster-issuer mints this
+# self-signed CA, which then becomes the trust root for all openbao
+# transport TLS material.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: openbao-ca
+  namespace: cert-manager
+spec:
+  secretName: openbao-ca
+  isCA: true
+  commonName: openbao-ca
+  duration: 26280h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: selfsigned-cluster-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+# CA-type ClusterIssuer signing every openbao transport cert: the
+# StatefulSet server cert (openbao-tls), the in-pod bao-CLI client
+# cert (openbao-client-tls), and the ESO client cert
+# (eso-openbao-client-tls).
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: openbao-ca-issuer
+spec:
+  ca:
+    secretName: openbao-ca

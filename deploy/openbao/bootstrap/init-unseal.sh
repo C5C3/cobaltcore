@@ -31,7 +31,7 @@ kube_exec() {
   local pod="$1"
   shift
   kubectl exec -n "${NAMESPACE}" "${pod}" -- \
-    env BAO_ADDR="${BAO_ADDR}" VAULT_CACERT="${VAULT_CACERT}" "$@"
+    env BAO_ADDR="${BAO_ADDR}" VAULT_CACERT="${VAULT_CACERT}" VAULT_CLIENT_CERT="${VAULT_CLIENT_CERT}" VAULT_CLIENT_KEY="${VAULT_CLIENT_KEY}" "$@"
 }
 
 # ---------------------------------------------------------------------------

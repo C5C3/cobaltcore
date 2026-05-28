@@ -20,8 +20,12 @@ spec:
   # requires pod restarts to avoid Raft peer TLS handshake failures.
   duration: 8760h
   renewBefore: 720h
+  # CC-0107: signed by openbao-ca-issuer so this server cert and the
+  # client certs in openbao-client-tls-cert.yaml share one CA bundle.
+  # Required for tls_require_and_verify_client_cert against
+  # tls_client_ca_file = /openbao/tls/ca.crt.
   issuerRef:
-    name: selfsigned-cluster-issuer
+    name: openbao-ca-issuer
     kind: ClusterIssuer
   dnsNames:
     - openbao-0.openbao-internal

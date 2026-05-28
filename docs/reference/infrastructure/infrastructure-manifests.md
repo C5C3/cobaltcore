@@ -308,10 +308,22 @@ OCI registry (`oci://ghcr.io/c5c3/charts`), not a dedicated HelmRepository. The
 | Source | `openbao` HelmRepository |
 | Dependencies | `cert-manager` in `cert-manager` namespace |
 
-OpenBao is deployed as a 3-replica HA Raft cluster with TLS enabled. The injector is
-disabled. TLS certificates are sourced from a cert-manager-provisioned Secret
-(`openbao-tls`). See `architecture/docs/09-implementation/09-openbao-deployment.md` for
-design rationale.
+OpenBao is deployed as a 3-replica HA Raft cluster with **mutual TLS (mTLS)
+enforced on the API listener** (CC-0107). The injector is disabled. The server
+TLS certificate is sourced from a cert-manager-provisioned Secret
+(`openbao-tls`), and two additional cert-manager-provisioned client
+certificates (`openbao-client-tls`, `eso-openbao-client-tls`) are required so
+that the OpenBao pods themselves (Raft `retry_join` + in-pod `bao` exec
+wrappers) and the External Secrets Operator can complete the TLS handshake.
+The listener carries `tls_client_ca_file = "/openbao/tls/ca.crt"` and
+`tls_require_and_verify_client_cert = true`, so every connection on `:8200` —
+whether from a Raft peer, the in-pod bootstrap script, or
+`ClusterSecretStore/openbao-cluster-store` — must present a client certificate
+that chains to the same self-signed CA bundle as the server cert; the
+Kubernetes-token auth method (`auth.kubernetes`) is unchanged and runs
+*after* the transport-layer admission gate. See
+`architecture/docs/09-implementation/09-openbao-deployment.md` for design
+rationale.
 
 **Helm values:**
 
@@ -322,8 +334,38 @@ design rationale.
 | `server.ha.enabled` | `true` | Enable HA mode |
 | `server.ha.replicas` | `3` | 3-node Raft cluster |
 | `server.ha.raft.enabled` | `true` | Use Raft storage backend |
+| `server.ha.raft.config` listener `tls_client_ca_file` (CC-0107) | `/openbao/tls/ca.crt` | CA the listener uses to verify presented client certs (same bundle as server cert) |
+| `server.ha.raft.config` listener `tls_require_and_verify_client_cert` (CC-0107) | `true` | Reject any TLS handshake without a valid client cert before app-layer auth runs |
+| `server.ha.raft.config` `retry_join.leader_client_cert_file` × 3 (CC-0107) | `/openbao/client-tls/tls.crt` | Client cert each Raft peer presents on `retry_join` to every other peer (same value in all three stanzas) |
+| `server.ha.raft.config` `retry_join.leader_client_key_file` × 3 (CC-0107) | `/openbao/client-tls/tls.key` | Matching private key for `leader_client_cert_file` |
+| `server.volumes` / `server.volumeMounts` — `client-tls` (CC-0107) | Secret `openbao-client-tls` → `/openbao/client-tls` (`readOnly: true`) | Mounts the in-pod client keypair distinct from the server cert at `/openbao/tls` so server and client lifecycles do not collide |
 | `server.dataStorage.size` | `10Gi` | Persistent volume size |
 | `injector.enabled` | `false` | Disable the Vault/Bao agent injector |
+
+**Client certificates (CC-0107).** The two client `Certificate` resources are
+declared in `deploy/flux-system/infrastructure/openbao-client-tls-cert.yaml`
+and registered in `deploy/flux-system/infrastructure/kustomization.yaml`
+immediately after `openbao-tls-cert.yaml`, so cert-manager reconciles them
+*before* the OpenBao StatefulSet and `ClusterSecretStore` consume them
+(first-apply ordering, see also "Apply ordering" notes below):
+
+| Certificate | Secret (namespace) | Consumer | Reference |
+| --- | --- | --- | --- |
+| `openbao-client-tls` | `openbao-client-tls` (`openbao-system`) | OpenBao pods — Raft `retry_join` + in-pod `bao` exec | StatefulSet volume `client-tls` mounted at `/openbao/client-tls`; env vars `VAULT_CLIENT_CERT` / `VAULT_CLIENT_KEY` in every exec wrapper (`deploy/openbao/bootstrap/common.sh`, `init-unseal.sh`, `hack/deploy-infra.sh`) |
+| `eso-openbao-client-tls` | `eso-openbao-client-tls` (`openbao-system`) | ESO `ClusterSecretStore/openbao-cluster-store` | `spec.provider.vault.tls.certSecretRef` / `keySecretRef` in `deploy/eso/clustersecretstore.yaml`; `auth.kubernetes` block (mountPath `kubernetes/management`, role `eso-management`) is unchanged — mTLS is purely transport-layer |
+
+Both client certs are issued from the same `openbao-ca-issuer` as
+`openbao-tls` (a CA-type ClusterIssuer defined in
+`deploy/flux-system/infrastructure/openbao-ca-issuer.yaml` and itself
+bootstrapped by `selfsigned-cluster-issuer`). Sharing one CA is what makes the
+listener's `tls_client_ca_file = /openbao/tls/ca.crt` validate every presented
+client cert — a SelfSigned issuer would mint each Certificate as its own root
+and leave the chains unrelated. Both client certs carry
+`usages: ["client auth"]`, with the same `duration` / `renewBefore` as
+`openbao-tls` so server and client rotation cadences stay aligned. See
+[OpenBao Bootstrap Procedure — TLS Configuration](./openbao-bootstrap.md#tls-configuration)
+for the full SAN/usages table, the `VAULT_CLIENT_CERT` / `VAULT_CLIENT_KEY`
+operator interface, and the runnable mTLS-enforcement probe.
 
 ### Keystone Operator
 
@@ -567,8 +609,8 @@ CA-type ClusterIssuer that signs from it).
 
 | Category | Count | Resources |
 | --- | --- | --- |
-| ClusterIssuer | 2 | `selfsigned-cluster-issuer`, `openstack-db-ca-issuer` (both require cert-manager CRDs) |
-| Certificate | 1 | `openstack-db-ca` (CA keypair Secret in the `cert-manager` namespace; CC-0106, REQ-009) |
+| ClusterIssuer | 3 | `selfsigned-cluster-issuer`, `openstack-db-ca-issuer`, `openbao-ca-issuer` (all require cert-manager CRDs) |
+| Certificate | 2 | `openstack-db-ca` (CC-0106, REQ-009), `openbao-ca` (CC-0107) — both CA keypair Secrets in the `cert-manager` namespace, signed by `selfsigned-cluster-issuer` |
 | MariaDB | 1 | `openstack-db` (requires mariadb-operator CRDs; TLS enabled per [MariaDB Galera Cluster](#mariadb-galera-cluster)) |
 | Memcached | 1 | `openstack-memcached` (requires memcached-operator CRDs) |
 | **Total** | **6** | |
@@ -602,8 +644,9 @@ kubectl apply -k deploy/flux-system/infrastructure/
 
 This applies the CRD-dependent resources: the `selfsigned-cluster-issuer`
 ClusterIssuer, the `openstack-db-ca-issuer` ClusterIssuer plus its backing CA
-`Certificate` (CC-0106, REQ-009), the MariaDB Galera cluster, and the Memcached
-cluster. These resources require CRDs that are installed by the operator
+`Certificate` (CC-0106, REQ-009), the `openbao-ca-issuer` ClusterIssuer plus
+its backing CA `Certificate` (CC-0107), the MariaDB Galera cluster, and the
+Memcached cluster. These resources require CRDs that are installed by the operator
 HelmReleases in step 1. If CRDs are not yet available, the apply will fail — wait
 for the operators to finish installing and retry.
 

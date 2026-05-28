@@ -54,6 +54,9 @@ patches:
                   cluster_address = "[::]:8201"
                   tls_cert_file   = "/openbao/tls/tls.crt"
                   tls_key_file    = "/openbao/tls/tls.key"
+                  # CC-0107: kind matches production mTLS posture
+                  tls_client_ca_file               = "/openbao/tls/ca.crt"
+                  tls_require_and_verify_client_cert = true
                 }
 
                 storage "raft" {

@@ -129,6 +129,18 @@ spec:
   # ── Step 4: ESO Resources ──────────────────────────────────────────────
   # Verify that the ClusterSecretStore is Valid and all ExternalSecrets have
   # reached SecretSynced status.
+  #
+  # CC-0107 (REQ-010): These assertions now run under enforced mTLS — the
+  # OpenBao API listener requires and verifies a client certificate
+  # (tls_require_and_verify_client_cert = true), and the ClusterSecretStore
+  # presents the eso-openbao-client-tls client cert/key on every Vault call.
+  # ClusterSecretStore Ready=True/reason:Valid and the three ExternalSecrets
+  # Ready=True/reason:SecretSynced therefore prove end-to-end mutual-auth
+  # success: cert-manager issued the client cert, ESO mounted it, OpenBao
+  # accepted the TLS handshake, and the Kubernetes-token auth (unchanged)
+  # then completed the application-layer login. A regression in any link of
+  # that chain (missing client cert, wrong CA, listener misconfig) flips
+  # Ready=False here.
   - try:
     - assert:
         resource:

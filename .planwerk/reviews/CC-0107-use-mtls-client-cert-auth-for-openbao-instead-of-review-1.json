@@ -1,0 +1,85 @@
+{
+  "summary": "CC-0107 enforces transport-layer mTLS on the OpenBao API listener while preserving the existing Kubernetes ServiceAccount-token auth model (Non-Goal #1 respected). The production HA listener and the kind standalone listener both declare tls_client_ca_file + tls_require_and_verify_client_cert = true. All three Raft retry_join stanzas carry leader_client_cert_file/leader_client_key_file. Two new cert-manager Certificates (openbao-client-tls + eso-openbao-client-tls) are issued by selfsigned-cluster-issuer with usages=[client auth] and registered in deploy/flux-system/infrastructure/kustomization.yaml. The ESO ClusterSecretStore adds spec.provider.vault.tls.certSecretRef/keySecretRef (field path independently verified against the external-secrets.io/v1 VaultClientTLS type) while keeping the auth.kubernetes block and caProvider byte-unchanged. All three bootstrap exec wrappers (common.sh, init-unseal.sh, hack/deploy-infra.sh) forward VAULT_CLIENT_CERT/VAULT_CLIENT_KEY; grep -rl returns exactly those three files. production_posture_test.sh carves out openbao.yaml via :(exclude) and the header records the CC-0107 deviation mirroring the CC-0097 chaos-mesh precedent. A new tests/unit/deploy/openbao_mtls_test.sh suite (11 tests, 70 assertions, all PASS) asserts the full wiring including a negative check for tls_require_and_verify_client_cert = false. Chainsaw lint clean on infra-stack-health/chainsaw-test.yaml (annotated for mTLS). Docs (openbao-bootstrap.md, infrastructure-manifests.md) updated with TLS Configuration rows, Certificate-SANs table extension, VAULT_CLIENT_* env vars, and a runnable operator mTLS-enforcement probe. The architecture submodule is NOT modified (rule 12); the design-rationale delta for architecture/docs/09-implementation/09-openbao-deployment.md is captured in .planwerk/CC-0107-pr-description.md as an upstream follow-up. kubectl kustomize verified that both deploy/flux-system/infrastructure and deploy/kind/base render with mTLS keys and that the kind overlay inherits server.volumes.client-tls from the production HelmRelease.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Tests exist and pass (openbao_mtls_test.sh: 70 passed, 0 failed, 0 skipped)", "checked": true},
+    {"item": "production_posture_test.sh still passes with carve-out", "checked": true},
+    {"item": "Edge cases covered (negative check: tls_require_and_verify_client_cert = false absent; partial retry_join updates rejected; auth.kubernetes byte-preservation guards)", "checked": true},
+    {"item": "kustomize render verified for production + kind + infrastructure overlays", "checked": true},
+    {"item": "chainsaw lint passes on infra-stack-health/chainsaw-test.yaml", "checked": true},
+    {"item": "make test-shell runs the new openbao_mtls_test.sh via tests/unit/deploy/*_test.sh glob", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing FluxCD HelmRelease/Certificate patterns (CC-0009 server cert as template)", "checked": true},
+    {"item": "Bootstrap wrappers follow the existing env-forwarding pattern (VAULT_CACERT precedent extended verbatim)", "checked": true},
+    {"item": "Shell test follows shell-test-script-structure-with-passfail-counters pattern (with SKIP counter extension)", "checked": true},
+    {"item": "SPDX Apache-2.0 headers + Feature: CC-0107 markers on all new/modified files", "checked": true},
+    {"item": "Inline CC-0107 comments at every changed line (listener mTLS, retry_join, kind overlay, ESO store)", "checked": true},
+    {"item": "Two-phase kustomization pattern respected (Certificate in infrastructure/, not base)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Client certs use the same selfsigned-cluster-issuer as server (trust chain consistency)", "checked": true},
+    {"item": "tls_client_ca_file references the existing in-pod CA bundle (no skip-verify)", "checked": true},
+    {"item": "Listener verify mode explicit (require_and_verify_client_cert = true), no silent fallback", "checked": true},
+    {"item": "auth.kubernetes block unchanged - mTLS is additive, not a replacement (Non-Goal #1)", "checked": true},
+    {"item": "Client cert mount is readOnly: true and on a separate path from server cert", "checked": true},
+    {"item": "Two-listener consistency: kind matches production posture (no unpatched listener)", "checked": true},
+    {"item": "Three-wrapper consistency: VAULT_CLIENT_CERT propagated to common.sh, init-unseal.sh, deploy-infra.sh", "checked": true},
+    {"item": "Self-signed issuer NOT replaced (Non-Goal respected)", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible - listener + retry_join + Certificate + ESO ref + env vars, no scope creep", "checked": true},
+    {"item": "ESO Vault provider field path tls.certSecretRef/keySecretRef verified against external-secrets.io/v1 VaultClientTLS type", "checked": true},
+    {"item": "Production overlay byte-freeze guard properly extended (carve-out + header doc + test coverage of the carve-out)", "checked": true},
+    {"item": "No architecture submodule modification (rule 12 respected; follow-up captured in PR description)", "checked": true},
+    {"item": "Non-Goals upheld: no AuthMethod swap, no issuer replacement, no injector, no chart-version change, no topology change", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code - bootstrap wrappers reuse the same env-forwarding line pattern", "checked": true},
+    {"item": "No speculative configurability - client-cert mount path /openbao/client-tls is hard-coded everywhere", "checked": true},
+    {"item": "Single source of truth for client-cert paths (common.sh defaults; hack/deploy-infra.sh mirrors them as it does not source common.sh)", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Listener tls_require_and_verify_client_cert = true rejects unauthenticated handshakes before app-layer auth runs", "checked": true},
+    {"item": "Negative test asserts tls_require_and_verify_client_cert = false is NOT present (no silent regression to default)", "checked": true},
+    {"item": "Partial retry_join updates (only 2 of 3 stanzas) fail the unit test", "checked": true},
+    {"item": "ClusterSecretStore anti-regression: auth.kubernetes mountPath/role/serviceAccountRef + caProvider byte-preserved", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Bootstrap shell scripts validated under set -euo pipefail (existing pattern preserved)", "checked": true},
+    {"item": "Volume mount is readOnly so cert files cannot be tampered with from inside the pod", "checked": true},
+    {"item": "Server + client certs share rotation cadence (8760h / 720h) so renewals batch", "checked": true},
+    {"item": "Runbook negative-check probe documented in openbao-bootstrap.md (operator can verify enforcement post-deploy)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "D2",
+      "severity": "MINOR",
+      "description": "ClusterSecretStore DECISION comment still contains 'Reviewer: please verify.' tail after the field path was independently verified against the ESO external-secrets.io/v1 VaultClientTLS type (Go field `tls`, sub-fields `certSecretRef`/`keySecretRef` available across the pinned chart range >=0.10.0 <1.0.0). The verification is done; the lingering 'Reviewer: please verify' line tracks the same anti-pattern flagged by the 'resolve-ambiguous-commented-out-alternatives-before-merge' external-review pattern.",
+      "location": "deploy/eso/clustersecretstore.yaml:38",
+      "fix": "Drop the trailing 'Reviewer: please verify.' sentence from the DECISION comment, or replace it with 'Verified against external-secrets.io/v1 VaultClientTLS in ESO 0.10+'. The rest of the DECISION comment (rationale for choosing tls.* over auth.cert.*) is valuable and should stay.",
+      "evidence": "deploy/eso/clustersecretstore.yaml:30-40: '# DECISION: ESO Vault-provider mTLS field path — Chose tls.certSecretRef / ... # so the `key:` field is intentionally omitted. Reviewer: please verify.'",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "D2",
+      "severity": "MINOR",
+      "description": "The mTLS-enforcement probe in openbao-bootstrap.md uses 'sh -c ...; echo \"exit=$?\"' inside kubectl exec. Because echo is the last command in the inner shell, the OUTER kubectl call always exits 0 regardless of curl's TLS-handshake outcome. The exit code is visible only via the textual 'exit=...' line, so the probe cannot be wrapped in 'if !' or relied on for an exit-code gate in automation. This is acceptable for a human-run runbook (which the doc explicitly frames it as), but a future caller who treats it as scriptable will get a false-positive PASS.",
+      "location": "docs/reference/infrastructure/openbao-bootstrap.md:600-617",
+      "fix": "Either (a) add a sentence above the probe stating 'this command always exits 0 from the kubectl wrapper; inspect the textual exit=N line, not $?', or (b) restructure as `kubectl exec ... -- sh -c 'curl ... ; rc=$?; echo \"exit=$rc\"; exit $rc'` so the outer kubectl exit code reflects curl's. Option (b) makes the probe both human-readable and CI-greppable.",
+      "evidence": "docs/reference/infrastructure/openbao-bootstrap.md:600-606: 'kubectl exec -n openbao-system openbao-0 -- sh -c ... https://127.0.0.1:8200/v1/sys/health; echo \"exit=$?\"'",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "When the upstream architecture/docs/09-implementation/09-openbao-deployment.md PR (handoff in .planwerk/CC-0107-pr-description.md) lands, follow up with a submodule pin bump and remove the 'submodule follow-up' section from the PR description.",
+    "Consider a follow-up E2E gate that actually exercises the negative path documented in the runbook (curl from inside the pod without client cert against :8200, asserting the TLS handshake fails). Today's coverage proves the mTLS wiring renders correctly but not that the listener actually rejects unauthenticated handshakes in a live cluster. Sandbox blocker per [[project_sandbox_no_docker]] applies; this is a CI-only addition."
+  ],
+  "next_steps": [
+    "Trim the 'Reviewer: please verify.' tail from the DECISION comment in deploy/eso/clustersecretstore.yaml:38 (the verification is complete).",
+    "Optional: tighten the runbook mTLS-enforcement probe so the outer kubectl exit code reflects curl's (docs/reference/infrastructure/openbao-bootstrap.md:600-606)."
+  ],
+  "detected_patterns": []
+}

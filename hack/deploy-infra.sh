@@ -97,6 +97,8 @@ KEY_THRESHOLD=3
 OPENBAO_NAMESPACE="${NAMESPACE:-openbao-system}"
 BAO_ADDR="${BAO_ADDR:-https://127.0.0.1:8200}"
 VAULT_CACERT="${VAULT_CACERT:-/openbao/tls/ca.crt}"
+VAULT_CLIENT_CERT="${VAULT_CLIENT_CERT:-/openbao/client-tls/tls.crt}"
+VAULT_CLIENT_KEY="${VAULT_CLIENT_KEY:-/openbao/client-tls/tls.key}"
 SECRET_NAME="openbao-init-keys"
 
 # ---------------------------------------------------------------------------
@@ -651,7 +653,7 @@ enable_keystone_operator_servicemonitor() {
 # ---------------------------------------------------------------------------
 openbao_kube_exec() {
   kubectl exec -n "${OPENBAO_NAMESPACE}" openbao-0 -- \
-    env BAO_ADDR="${BAO_ADDR}" VAULT_CACERT="${VAULT_CACERT}" "$@"
+    env BAO_ADDR="${BAO_ADDR}" VAULT_CACERT="${VAULT_CACERT}" VAULT_CLIENT_CERT="${VAULT_CLIENT_CERT}" VAULT_CLIENT_KEY="${VAULT_CLIENT_KEY}" "$@"
 }
 
 # ---------------------------------------------------------------------------
@@ -995,13 +997,20 @@ main() {
   # StatefulSet. The db-ca-issuer manifest creates the OpenStack DB CA
   # keypair Secret and the "openstack-db-ca-issuer" ClusterIssuer that
   # MariaDB/MaxScale and the Keystone DB-client mTLS path consume
-  # (CC-0106, REQ-009). These resources are also part of the
-  # infrastructure kustomization (applied in Step 5), but OpenBao and
-  # MariaDB cannot become Ready until they exist.
-  # Order matters: the selfsigned-cluster-issuer ClusterIssuer must exist
-  # before db-ca-issuer.yaml (whose CA Certificate is issued from it).
-  log "Phase 2: Applying TLS prerequisites (ClusterIssuer + OpenBao TLS Certificate + DB CA Issuer)..."
+  # (CC-0106, REQ-009). The openbao-ca-issuer manifest creates the
+  # OpenBao trust-domain CA keypair Secret and the "openbao-ca-issuer"
+  # ClusterIssuer that signs openbao-tls and all openbao client certs
+  # (CC-0107). These resources are also part of the infrastructure
+  # kustomization (applied in Step 5), but OpenBao and MariaDB cannot
+  # become Ready until they exist.
+  # Order matters:
+  #   - selfsigned-cluster-issuer (cluster-issuer.yaml) must exist before
+  #     either CA-issuer manifest (their CA Certificates are signed by it).
+  #   - openbao-ca-issuer must exist before openbao-tls-cert.yaml (which
+  #     references it via issuerRef).
+  log "Phase 2: Applying TLS prerequisites (ClusterIssuer + OpenBao CA + OpenBao TLS Certificate + DB CA Issuer)..."
   kubectl apply -f "${REPO_ROOT}/deploy/flux-system/infrastructure/cluster-issuer.yaml"
+  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/infrastructure/openbao-ca-issuer.yaml"
   kubectl apply -f "${REPO_ROOT}/deploy/flux-system/infrastructure/openbao-tls-cert.yaml"
   kubectl apply -f "${REPO_ROOT}/deploy/flux-system/infrastructure/db-ca-issuer.yaml"
 
@@ -1076,6 +1085,26 @@ main() {
 
   # Wait for OpenBao to become Ready after unseal
   wait_for_pods "${OPENBAO_NAMESPACE}" "app.kubernetes.io/name=openbao" "${POD_TIMEOUT}"
+
+  # The ClusterSecretStore was applied in Step 5, before OpenBao was
+  # initialised and unsealed (Step 7). ESO's first store validation therefore
+  # failed against a down/sealed OpenBao and the controller entered an
+  # exponential backoff that can outlast EXTERNALSECRET_TIMEOUT. Bump an
+  # annotation to force an immediate re-validation now that OpenBao is up, wait
+  # for the store to report Ready, then force-sync the dependent
+  # ExternalSecrets so Step 8 does not race ESO's backoff. Same
+  # apply-before-dependency reason as the MariaDB reconcile-trigger below.
+  local now
+  now=$(date +%s)
+  log "Forcing ESO ClusterSecretStore re-validation and ExternalSecret re-sync..."
+  kubectl annotate clustersecretstore/openbao-cluster-store \
+    "deploy.c5c3.io/reconcile-trigger=${now}" --overwrite || true
+  kubectl wait clustersecretstore/openbao-cluster-store \
+    --for=condition=Ready --timeout="${POD_TIMEOUT}s" || true
+  for es in keystone-admin keystone-db mariadb-root-password; do
+    kubectl annotate "externalsecret/${es}" -n openstack \
+      "force-sync=${now}" --overwrite || true
+  done
 
   # Step 8: Wait for ExternalSecrets to sync
   log "=== Step 8/8: Wait for ExternalSecrets ==="

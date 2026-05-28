@@ -23,6 +23,16 @@
 # suite asserts the resulting posture (production renders zero chaos-mesh
 # resources; the overlay renders the full bundle).
 #
+# CC-0107 enforces OpenBao mTLS by editing
+# deploy/flux-system/releases/openbao.yaml in place:
+#   - the HA raft listener requires & verifies client certs
+#     (tls_client_ca_file + tls_require_and_verify_client_cert = true);
+#   - all three retry_join stanzas carry leader_client_cert_file +
+#     leader_client_key_file pointing at /openbao/client-tls; and
+#   - server.volumes/volumeMounts mount the openbao-client-tls Secret
+#     at /openbao/client-tls.
+# openbao.yaml is therefore excluded from the byte-identity check.
+#
 # In addition, any net-new file under deploy/flux-system/sources/ must contain
 # ONLY HelmRepository objects (no HelmRelease / Gateway controller leakage).
 #
@@ -79,11 +89,11 @@ test_production_overlay_unchanged() {
   # remain byte-identical.
   local groups_label=(
     "deploy/flux-system/fluxinstance.yaml"
-    "deploy/flux-system/releases (excluding chaos-mesh.yaml relocated by CC-0097)"
+    "deploy/flux-system/releases (excluding chaos-mesh.yaml relocated by CC-0097 and openbao.yaml edited in place by CC-0107)"
   )
   local groups_specs=(
     "deploy/flux-system/fluxinstance.yaml"
-    "deploy/flux-system/releases :(exclude)deploy/flux-system/releases/chaos-mesh.yaml"
+    "deploy/flux-system/releases :(exclude)deploy/flux-system/releases/chaos-mesh.yaml :(exclude)deploy/flux-system/releases/openbao.yaml"
   )
 
   local diff_output=""

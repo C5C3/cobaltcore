@@ -1,0 +1,43 @@
+{
+  "summary": "External-review improvement cycle (review #1 by gndrmnn). The reviewer's single comment requested deleting tests/unit/deploy/openbao_mtls_test.sh as it added no meaningful testing. This cycle: (1) deleted the 704-line openbao_mtls_test.sh; (2) removed two now-stale comment lines in production_posture_test.sh that referenced the deleted suite; (3) advanced the progress phase to 'improving' and marked the external review 'ADDRESSED' with an accurate resolution summary. Scope reviewed: the 4 changed files only. The deletion is the explicitly-requested external-review change and is protected from being flagged; this review verifies it introduced no NEW defects (dangling references, broken discovery, incoherent comments, or inaccurate metadata).",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Edited test (production_posture_test.sh) runs green (2 passed, 0 failed, 0 skipped)", "checked": true},
+    {"item": "make test-shell discovery is glob-based (tests/unit/deploy/*_test.sh with [ -f ] guard); deleting one file does not break the runner", "checked": true},
+    {"item": "Deleted suite was not sourced/imported by any other test file (grep over tests/ returns none)", "checked": true},
+    {"item": "openbao.yaml byte-identity carve-out pathspec remains intact after the comment edit", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Comment edit is surgical — removed only the two lines naming the deleted suite, kept the accurate 'openbao.yaml is therefore excluded' sentence", "checked": true},
+    {"item": "Remaining header comment is coherent and self-contained (no orphaned references)", "checked": true},
+    {"item": "Follows the cross-file-consistency pattern: stale reference cleaned up in lockstep with file removal", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No security-relevant production code changed in this cycle (mTLS transport-layer manifests are out of this diff's scope)", "checked": true},
+    {"item": "No secrets, credentials, or TLS-bypass flags introduced by the deletion or comment edit", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Change is limited to the reviewer-requested deletion plus the consequent comment cleanup and tracking-metadata updates — no scope creep", "checked": true},
+    {"item": "No new abstractions or files introduced", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "Removing a low-value test that the external reviewer judged non-meaningful aligns with YAGNI; no duplication introduced", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "production_posture_test.sh retains its byte-identity guard and explicit FAIL path; no error-handling weakened", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Test discovery and the remaining posture test degrade gracefully (preflight SKIP, [ -f ] guard) — unaffected by the deletion", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Out-of-scope (not in this diff), but for full cross-file consistency: .planwerk/CC-0107-pr-description.md and the task descriptions in .planwerk/progress/CC-0107-...json still reference tests/unit/deploy/openbao_mtls_test.sh as an existing/done artifact. Updating those metadata files to reflect the reviewer-requested removal would keep the tracking record accurate. This is cosmetic tracking metadata, not a code defect.",
+    "With openbao_mtls_test.sh removed, production_posture_test.sh's byte-identity carve-out is now the only shell-unit guard touching openbao.yaml. The mTLS listener/retry_join/volume posture is still exercised by the e2e infra-stack-health and openbao-pod-kill chaos suites (per the acceptance criteria), so transport-layer enforcement remains covered at the e2e tier — no action required, noted for traceability."
+  ],
+  "next_steps": [
+    "None required for the in-scope changes — the external-review feedback is correctly addressed and introduces no new defects."
+  ],
+  "detected_patterns": []
+}

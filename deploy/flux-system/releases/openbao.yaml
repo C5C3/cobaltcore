@@ -34,6 +34,16 @@ spec:
       # via the Kubernetes TokenReview API (required for ESO authentication).
       authDelegator:
         enabled: true
+      # CC-0107: the API listener now requires & verifies a client cert
+      # (tls_require_and_verify_client_cert = true), so the default chart
+      # readiness/liveness probes (`bao status -tls-skip-verify`) must present
+      # one. The bao CLI auto-picks up VAULT_CLIENT_CERT/VAULT_CLIENT_KEY
+      # from the pod environment; the mount lives at /openbao/client-tls
+      # (see volumes/volumeMounts below).
+      extraEnvironmentVars:
+        VAULT_CLIENT_CERT: /openbao/client-tls/tls.crt
+        VAULT_CLIENT_KEY: /openbao/client-tls/tls.key
+        VAULT_CACERT: /openbao/tls/ca.crt
       ha:
         enabled: true
         replicas: 3
@@ -48,21 +58,30 @@ spec:
               cluster_address = "[::]:8201"
               tls_cert_file   = "/openbao/tls/tls.crt"
               tls_key_file    = "/openbao/tls/tls.key"
+              # CC-0107: mTLS — require & verify client cert
+              tls_client_ca_file               = "/openbao/tls/ca.crt"
+              tls_require_and_verify_client_cert = true
             }
 
             storage "raft" {
               path = "/openbao/data"
               retry_join {
-                leader_api_addr    = "https://openbao-0.openbao-internal:8200"
-                leader_ca_cert_file = "/openbao/tls/ca.crt"
+                leader_api_addr        = "https://openbao-0.openbao-internal:8200"
+                leader_ca_cert_file    = "/openbao/tls/ca.crt"
+                leader_client_cert_file = "/openbao/client-tls/tls.crt"
+                leader_client_key_file  = "/openbao/client-tls/tls.key"
               }
               retry_join {
-                leader_api_addr    = "https://openbao-1.openbao-internal:8200"
-                leader_ca_cert_file = "/openbao/tls/ca.crt"
+                leader_api_addr        = "https://openbao-1.openbao-internal:8200"
+                leader_ca_cert_file    = "/openbao/tls/ca.crt"
+                leader_client_cert_file = "/openbao/client-tls/tls.crt"
+                leader_client_key_file  = "/openbao/client-tls/tls.key"
               }
               retry_join {
-                leader_api_addr    = "https://openbao-2.openbao-internal:8200"
-                leader_ca_cert_file = "/openbao/tls/ca.crt"
+                leader_api_addr        = "https://openbao-2.openbao-internal:8200"
+                leader_ca_cert_file    = "/openbao/tls/ca.crt"
+                leader_client_cert_file = "/openbao/client-tls/tls.crt"
+                leader_client_key_file  = "/openbao/client-tls/tls.key"
               }
             }
 
@@ -85,9 +104,16 @@ spec:
         - name: tls
           secret:
             secretName: openbao-tls
+        # CC-0107: client cert for mTLS (Raft retry_join + in-pod bao exec)
+        - name: client-tls
+          secret:
+            secretName: openbao-client-tls
       volumeMounts:
         - name: tls
           mountPath: /openbao/tls
+          readOnly: true
+        - name: client-tls
+          mountPath: /openbao/client-tls
           readOnly: true
 
     injector:
