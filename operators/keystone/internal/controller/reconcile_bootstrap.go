@@ -6,17 +6,21 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"fmt"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/job"
+	"github.com/c5c3/forge/internal/common/secrets"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
@@ -31,6 +35,13 @@ import (
 //go:embed scripts/bootstrap_db_seed.py
 var bootstrapDBSeedScript string
 
+// adminPasswordHashAnnotation stamps a SHA-256 digest of the admin password
+// (the `password` key of the admin Secret) onto the bootstrap Job's pod
+// template. Because job.PodSpecHash hashes the full PodTemplateSpec, a rotated
+// admin password changes this annotation and therefore the forge.c5c3.io/pod-spec-hash
+// gate, forcing the idempotent bootstrap Job to re-run (CC-0108, REQ-002, REQ-011).
+const adminPasswordHashAnnotation = "forge.c5c3.io/admin-password-hash" //nolint:gosec // annotation key, not a credential (CC-0108)
+
 // Feature: CC-0013
 
 // reconcileBootstrap ensures the Keystone bootstrap Job runs with
@@ -38,8 +49,47 @@ var bootstrapDBSeedScript string
 func (r *KeystoneReconciler) reconcileBootstrap(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
+	// Re-run the bootstrap Job whenever the admin password rotates: read the
+	// `password` key of the admin Secret and stamp its SHA-256 digest onto the
+	// Job's pod template so a changed password changes the pod-spec-hash gate
+	// (CC-0108, REQ-002, REQ-005). A missing/unreadable Secret, an absent
+	// `password` key, or an empty value is a hard error — bootstrap cannot run
+	// without an admin password, so surface it via BootstrapReady=False and
+	// requeue rather than building a Job with empty credentials.
+	//
+	// DECISION: missing/empty admin password returns an error (requeue with backoff)
+	// — Chose to return the error rather than the requeue-without-error pattern used
+	// by reconcileDBConnectionSecret, because task 2.2/REQ-005 specify "return the
+	// error (requeue)" and an absent admin password is a hard precondition failure.
+	// Reviewer: please verify this matches intent (CC-0108, REQ-005).
+	adminSecretKey := client.ObjectKey{
+		Namespace: keystone.Namespace,
+		Name:      keystone.Spec.Bootstrap.AdminPasswordSecretRef.Name,
+	}
+	password, err := secrets.GetSecretValue(ctx, r.Client, adminSecretKey, "password")
+	if err != nil || password == "" {
+		msg := fmt.Sprintf("Admin password Secret %s/%s is missing, unreadable, or has an empty %q value",
+			adminSecretKey.Namespace, adminSecretKey.Name, "password")
+		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+			Type:               "BootstrapReady",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: keystone.Generation,
+			Reason:             "AdminSecretInvalid",
+			Message:            msg,
+		})
+		r.Recorder.Event(keystone, corev1.EventTypeWarning, "AdminSecretInvalid", msg)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("reading admin password from Secret %s/%s: %w",
+				adminSecretKey.Namespace, adminSecretKey.Name, err)
+		}
+		return ctrl.Result{}, fmt.Errorf("admin password Secret %s/%s has an empty %q value",
+			adminSecretKey.Namespace, adminSecretKey.Name, "password")
+	}
+	sum := sha256.Sum256([]byte(password))
+	adminPasswordHash := hex.EncodeToString(sum[:])
+
 	fernetSecretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
-	done, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, buildBootstrapJob(keystone, configMapName, fernetSecretName))
+	done, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, buildBootstrapJob(keystone, configMapName, fernetSecretName, adminPasswordHash))
 	if err != nil {
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               "BootstrapReady",
@@ -84,7 +134,7 @@ func bootstrapServiceURL(keystone *keystonev1alpha1.Keystone) string {
 	return fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", subResourceName(keystone), keystone.Namespace)
 }
 
-func buildBootstrapJob(keystone *keystonev1alpha1.Keystone, configMapName string, fernetSecretName string) *batchv1.Job {
+func buildBootstrapJob(keystone *keystonev1alpha1.Keystone, configMapName string, fernetSecretName string, adminPasswordHash string) *batchv1.Job {
 	backoffLimit := int32(4)
 	ttl := int32(300)
 
@@ -169,6 +219,11 @@ exec keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap \
 			BackoffLimit:            &backoffLimit,
 			TTLSecondsAfterFinished: &ttl,
 			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						adminPasswordHashAnnotation: adminPasswordHash,
+					},
+				},
 				Spec: corev1.PodSpec{
 					RestartPolicy:     corev1.RestartPolicyNever,
 					PriorityClassName: priorityClassName(keystone),

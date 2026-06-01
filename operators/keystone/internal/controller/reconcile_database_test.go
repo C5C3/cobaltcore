@@ -113,7 +113,7 @@ func completedDBSyncJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 	now := metav1.Now()
 	j := desired.DeepCopy()
 	j.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
 	}
 	j.Status.Succeeded = 1
 	j.Status.CompletionTime = &now
@@ -131,7 +131,7 @@ func failedDBSyncJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 	desired := buildDBSyncJob(ks, "keystone-config-abc123")
 	j := desired.DeepCopy()
 	j.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
 	}
 	j.Status.Failed = 5
 	j.Status.Conditions = []batchv1.JobCondition{
@@ -156,7 +156,7 @@ func completedSchemaCheckJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 	j := desired.DeepCopy()
 	j.UID = types.UID(ks.Name + "-schema-check-complete-uid")
 	j.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
 	}
 	j.Status.Succeeded = 1
 	j.Status.CompletionTime = &now
@@ -178,7 +178,7 @@ func failedSchemaCheckJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 	j := desired.DeepCopy()
 	j.UID = types.UID(ks.Name + "-schema-check-failed-uid")
 	j.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
 	}
 	j.Status.Failed = 3
 	j.Status.Conditions = []batchv1.JobCondition{
@@ -196,7 +196,7 @@ func runningSchemaCheckJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 	desired := buildSchemaCheckJob(ks, "keystone-config-abc123")
 	j := desired.DeepCopy()
 	j.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
 	}
 	return j
 }
@@ -438,7 +438,7 @@ func TestReconcileDatabase_DBSyncRunning_Requeues(t *testing.T) {
 	// Job exists but is not completed (still running).
 	syncJob := buildDBSyncJob(ks, "keystone-config-abc123")
 	syncJob.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&syncJob.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&syncJob.Spec.Template),
 	}
 	r := newDBTestReconciler(s, ks, syncJob)
 
@@ -597,7 +597,7 @@ func TestReconcileDatabase_StaleDBSyncJob_Recreated(t *testing.T) {
 	}, &newJob)).To(Succeed())
 
 	desired := buildDBSyncJob(ks, "keystone-config-abc123")
-	expectedHash := job.PodSpecHash(&desired.Spec.Template.Spec)
+	expectedHash := job.PodSpecHash(&desired.Spec.Template)
 	g.Expect(newJob.Annotations[job.PodSpecHashAnnotation]).To(Equal(expectedHash))
 }
 
@@ -892,7 +892,7 @@ func TestReconcileDatabase_PatchOnly_UsesSimpleDBSync(t *testing.T) {
 	now := metav1.Now()
 	completedJob := desired.DeepCopy()
 	completedJob.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
 	}
 	completedJob.Status.Succeeded = 1
 	completedJob.Status.CompletionTime = &now
@@ -1055,7 +1055,7 @@ func completedUpgradeJob(ks *keystonev1alpha1.Keystone, configMapName, imageTag,
 	j := desired.DeepCopy()
 	j.UID = types.UID(ks.Name + "-db-" + phase + "-complete-uid")
 	j.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
 	}
 	j.Status.Succeeded = 1
 	j.Status.CompletionTime = &now
@@ -1070,7 +1070,7 @@ func failedUpgradeJob(ks *keystonev1alpha1.Keystone, configMapName, imageTag, ph
 	j := desired.DeepCopy()
 	j.UID = types.UID(ks.Name + "-db-" + phase + "-failed-uid")
 	j.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
 	}
 	j.Status.Failed = 5
 	j.Status.Conditions = []batchv1.JobCondition{
@@ -1117,7 +1117,7 @@ func TestReconcileExpand_JobRunning_Requeues(t *testing.T) {
 	// Create a running expand Job (exists but not complete).
 	expandJob := buildExpandJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag)
 	expandJob.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&expandJob.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&expandJob.Spec.Template),
 	}
 
 	r := newDBTestReconciler(s, ks, expandJob)
@@ -1190,7 +1190,7 @@ func TestReconcileMigrate_JobRunning_Requeues(t *testing.T) {
 	// Create a running migrate Job (exists but not complete).
 	migrateJob := buildMigrateJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag)
 	migrateJob.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&migrateJob.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&migrateJob.Spec.Template),
 	}
 
 	r := newDBTestReconciler(s, ks, migrateJob)
@@ -1322,7 +1322,7 @@ func TestReconcileContract_JobRunning_Requeues(t *testing.T) {
 	// Create a running contract Job (exists but not complete).
 	contractJob := buildContractJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag)
 	contractJob.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&contractJob.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&contractJob.Spec.Template),
 	}
 
 	r := newDBTestReconciler(s, ks, contractJob)
@@ -1734,7 +1734,7 @@ func TestReconcileDatabase_SchemaCheckStale_Recreated(t *testing.T) {
 	}, &newJob)).To(Succeed())
 
 	desired := buildSchemaCheckJob(ks, "keystone-config-abc123")
-	expectedHash := job.PodSpecHash(&desired.Spec.Template.Spec)
+	expectedHash := job.PodSpecHash(&desired.Spec.Template)
 	g.Expect(newJob.Annotations[job.PodSpecHashAnnotation]).To(Equal(expectedHash))
 }
 
@@ -1749,7 +1749,7 @@ func TestReconcileDatabase_SchemaCheckNotCreatedWhenDBSyncRunning(t *testing.T) 
 	// db_sync Job exists but is not completed (still running).
 	syncJob := buildDBSyncJob(ks, "keystone-config-abc123")
 	syncJob.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&syncJob.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&syncJob.Spec.Template),
 	}
 	r := newDBTestReconciler(s, ks, syncJob)
 
@@ -2186,7 +2186,7 @@ func TestDbSyncCompletionRecordsMetric(t *testing.T) {
 	dbJob.UID = types.UID("dbsync-complete-job-uid")
 	dbJob.CreationTimestamp = created
 	dbJob.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
 	}
 	dbJob.Status.Succeeded = 1
 	dbJob.Status.CompletionTime = &terminated
@@ -2258,7 +2258,7 @@ func TestDbSyncFailureRecordsMetric(t *testing.T) {
 	dbJob.UID = types.UID("dbsync-failed-job-uid")
 	dbJob.CreationTimestamp = created
 	dbJob.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
 	}
 	dbJob.Status.Failed = 5
 	dbJob.Status.Conditions = []batchv1.JobCondition{{
@@ -2314,7 +2314,7 @@ func TestDbSyncInProgressDoesNotRecord(t *testing.T) {
 	dbJob.UID = types.UID("dbsync-running-job-uid")
 	dbJob.CreationTimestamp = metav1.NewTime(time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC))
 	dbJob.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
 	}
 	// Active Job: no terminal condition.
 	dbJob.Status.Active = 1
@@ -2498,7 +2498,7 @@ func TestRecordDBJobTerminalState_DefersOnPatchFailure(t *testing.T) {
 			dbJob.UID = types.UID(tc.nameSuffix + "-patch-failure-job-uid")
 			dbJob.CreationTimestamp = created
 			dbJob.Annotations = map[string]string{
-				job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+				job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
 			}
 			dbJob.Status.Succeeded = 1
 			dbJob.Status.CompletionTime = &terminated

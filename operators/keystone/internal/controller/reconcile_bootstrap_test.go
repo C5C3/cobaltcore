@@ -6,6 +6,8 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"testing"
@@ -14,6 +16,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -63,6 +66,30 @@ func bootstrapKeystone() *keystonev1alpha1.Keystone {
 	}
 }
 
+// bootstrapTestAdminPassword is the admin password held by the admin Secret in
+// the bootstrap reconcile tests; its SHA-256 digest is what buildBootstrapJob must
+// stamp as the admin-password-hash annotation (CC-0108, REQ-002).
+const bootstrapTestAdminPassword = "admin-password"
+
+// bootstrapAdminPasswordHash returns hex(sha256(bootstrapTestAdminPassword)),
+// matching the digest reconcileBootstrap derives from the admin Secret (CC-0108).
+func bootstrapAdminPasswordHash() string {
+	sum := sha256.Sum256([]byte(bootstrapTestAdminPassword))
+	return hex.EncodeToString(sum[:])
+}
+
+// bootstrapAdminSecret returns the admin password Secret referenced by the CR,
+// holding bootstrapTestAdminPassword under the `password` key (CC-0108).
+func bootstrapAdminSecret(ks *keystonev1alpha1.Keystone) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ks.Spec.Bootstrap.AdminPasswordSecretRef.Name,
+			Namespace: ks.Namespace,
+		},
+		Data: map[string][]byte{"password": []byte(bootstrapTestAdminPassword)},
+	}
+}
+
 func newBootstrapTestReconciler(s *runtime.Scheme, objs ...client.Object) *KeystoneReconciler {
 	cb := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...)
 	cb = cb.WithStatusSubresource(&keystonev1alpha1.Keystone{})
@@ -76,11 +103,11 @@ func newBootstrapTestReconciler(s *runtime.Scheme, objs ...client.Object) *Keyst
 // completedBootstrapJob returns a bootstrap Job that matches what buildBootstrapJob
 // produces for the given keystone and is marked as complete with the correct pod-spec hash.
 func completedBootstrapJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
-	desired := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
+	desired := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash())
 	now := metav1.Now()
 	j := desired.DeepCopy()
 	j.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
 	}
 	j.Status.Succeeded = 1
 	j.Status.CompletionTime = &now
@@ -95,10 +122,10 @@ func completedBootstrapJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 
 // failedBootstrapJob returns a bootstrap Job that is marked as permanently failed.
 func failedBootstrapJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
-	desired := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
+	desired := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash())
 	j := desired.DeepCopy()
 	j.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
 	}
 	j.Status.Failed = 5
 	j.Status.Conditions = []batchv1.JobCondition{
@@ -112,10 +139,10 @@ func failedBootstrapJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 
 // runningBootstrapJob returns a bootstrap Job that exists but is still running.
 func runningBootstrapJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
-	desired := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
+	desired := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash())
 	j := desired.DeepCopy()
 	j.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
 	}
 	return j
 }
@@ -125,7 +152,7 @@ func TestReconcileBootstrap_JobCreated(t *testing.T) {
 	s := bootstrapTestScheme()
 	ks := bootstrapKeystone()
 
-	r := newBootstrapTestReconciler(s, ks)
+	r := newBootstrapTestReconciler(s, ks, bootstrapAdminSecret(ks))
 
 	result, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
@@ -211,7 +238,7 @@ func TestReconcileBootstrap_JobComplete(t *testing.T) {
 	s := bootstrapTestScheme()
 	ks := bootstrapKeystone()
 
-	r := newBootstrapTestReconciler(s, ks, completedBootstrapJob(ks))
+	r := newBootstrapTestReconciler(s, ks, completedBootstrapJob(ks), bootstrapAdminSecret(ks))
 
 	result, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
@@ -231,7 +258,7 @@ func TestReconcileBootstrap_JobRunning(t *testing.T) {
 	s := bootstrapTestScheme()
 	ks := bootstrapKeystone()
 
-	r := newBootstrapTestReconciler(s, ks, runningBootstrapJob(ks))
+	r := newBootstrapTestReconciler(s, ks, runningBootstrapJob(ks), bootstrapAdminSecret(ks))
 
 	result, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
@@ -251,7 +278,7 @@ func TestReconcileBootstrap_JobFailed(t *testing.T) {
 	s := bootstrapTestScheme()
 	ks := bootstrapKeystone()
 
-	r := newBootstrapTestReconciler(s, ks, failedBootstrapJob(ks))
+	r := newBootstrapTestReconciler(s, ks, failedBootstrapJob(ks), bootstrapAdminSecret(ks))
 
 	_, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).To(HaveOccurred())
@@ -274,7 +301,7 @@ func TestReconcileBootstrap_StaleJobDetection(t *testing.T) {
 	staleJob := completedBootstrapJob(ks)
 	staleJob.Annotations[job.PodSpecHashAnnotation] = "stale-hash-from-previous-spec"
 
-	r := newBootstrapTestReconciler(s, ks, staleJob)
+	r := newBootstrapTestReconciler(s, ks, staleJob, bootstrapAdminSecret(ks))
 
 	result, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
@@ -288,8 +315,8 @@ func TestReconcileBootstrap_StaleJobDetection(t *testing.T) {
 	}, &newJob)).To(Succeed())
 
 	// The new Job should have the correct hash.
-	desired := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
-	expectedHash := job.PodSpecHash(&desired.Spec.Template.Spec)
+	desired := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash())
+	expectedHash := job.PodSpecHash(&desired.Spec.Template)
 	g.Expect(newJob.Annotations[job.PodSpecHashAnnotation]).To(Equal(expectedHash))
 }
 
@@ -298,7 +325,7 @@ func TestReconcileBootstrap_JobFailed_ConditionMessage(t *testing.T) {
 	s := bootstrapTestScheme()
 	ks := bootstrapKeystone()
 
-	r := newBootstrapTestReconciler(s, ks, failedBootstrapJob(ks))
+	r := newBootstrapTestReconciler(s, ks, failedBootstrapJob(ks), bootstrapAdminSecret(ks))
 
 	_, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).To(HaveOccurred())
@@ -316,7 +343,7 @@ func TestReconcileBootstrap_JobComplete_ConditionMessageAndGeneration(t *testing
 	s := bootstrapTestScheme()
 	ks := bootstrapKeystone()
 
-	r := newBootstrapTestReconciler(s, ks, completedBootstrapJob(ks))
+	r := newBootstrapTestReconciler(s, ks, completedBootstrapJob(ks), bootstrapAdminSecret(ks))
 
 	result, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
@@ -337,7 +364,7 @@ func TestBuildBootstrapJob_SecurityContext(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := bootstrapKeystone()
 
-	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
+	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash())
 
 	container := findContainerByName(job.Spec.Template.Spec.Containers, "bootstrap")
 	expectRestrictedSecurityContext(g, container)
@@ -349,7 +376,7 @@ func TestReconcileBootstrap_PublicEndpoint(t *testing.T) {
 	ks := bootstrapKeystone()
 	ks.Spec.Bootstrap.PublicEndpoint = "https://keystone.example.com/v3"
 
-	r := newBootstrapTestReconciler(s, ks)
+	r := newBootstrapTestReconciler(s, ks, bootstrapAdminSecret(ks))
 
 	_, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
@@ -380,7 +407,7 @@ func TestReconcileBootstrap_JobSpec_TTLAndBackoff(t *testing.T) {
 	s := bootstrapTestScheme()
 	ks := bootstrapKeystone()
 
-	r := newBootstrapTestReconciler(s, ks)
+	r := newBootstrapTestReconciler(s, ks, bootstrapAdminSecret(ks))
 
 	_, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
@@ -416,7 +443,7 @@ func TestReconcileBootstrap_ConditionObservedGeneration(t *testing.T) {
 	ks := bootstrapKeystone()
 	ks.Generation = 5
 
-	r := newBootstrapTestReconciler(s, ks, runningBootstrapJob(ks))
+	r := newBootstrapTestReconciler(s, ks, runningBootstrapJob(ks), bootstrapAdminSecret(ks))
 
 	_, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
@@ -429,7 +456,7 @@ func TestReconcileBootstrap_ConditionObservedGeneration(t *testing.T) {
 	ks2 := bootstrapKeystone()
 	ks2.Generation = 7
 
-	r2 := newBootstrapTestReconciler(s, ks2, completedBootstrapJob(ks2))
+	r2 := newBootstrapTestReconciler(s, ks2, completedBootstrapJob(ks2), bootstrapAdminSecret(ks2))
 
 	_, err = r2.reconcileBootstrap(context.Background(), ks2, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
@@ -442,7 +469,7 @@ func TestReconcileBootstrap_ConditionObservedGeneration(t *testing.T) {
 	ks3 := bootstrapKeystone()
 	ks3.Generation = 12
 
-	r3 := newBootstrapTestReconciler(s, ks3, failedBootstrapJob(ks3))
+	r3 := newBootstrapTestReconciler(s, ks3, failedBootstrapJob(ks3), bootstrapAdminSecret(ks3))
 
 	_, err = r3.reconcileBootstrap(context.Background(), ks3, "keystone-config-abc123")
 	g.Expect(err).To(HaveOccurred())
@@ -460,7 +487,7 @@ func TestBuildBootstrapJob_PriorityClassNameSet(t *testing.T) {
 	pcn := "system-cluster-critical"
 	ks.Spec.PriorityClassName = &pcn
 
-	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
+	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash())
 
 	g.Expect(job.Spec.Template.Spec.PriorityClassName).To(Equal("system-cluster-critical"))
 }
@@ -471,7 +498,7 @@ func TestBuildBootstrapJob_PriorityClassNameNil(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := bootstrapKeystone()
 
-	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
+	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash())
 
 	g.Expect(job.Spec.Template.Spec.PriorityClassName).To(BeEmpty())
 }
@@ -492,7 +519,7 @@ func TestBuildBootstrapJob_PreInsertScriptReadsDBConnectionEnvVar(t *testing.T) 
 	g := NewGomegaWithT(t)
 	ks := bootstrapKeystone()
 
-	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
+	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash())
 
 	container := findContainerByName(job.Spec.Template.Spec.Containers, "bootstrap")
 	g.Expect(container).NotTo(BeNil())
@@ -553,7 +580,7 @@ func TestBuildBootstrapJob_AdminInternalURLsUseBareName(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := bootstrapKeystone()
 
-	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
+	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash())
 
 	g.Expect(job.Spec.Template.Spec.Containers).To(HaveLen(1))
 	container := job.Spec.Template.Spec.Containers[0]
@@ -607,7 +634,7 @@ func TestBuildBootstrapJob_DBTLSDisabled_NoDBTLSVolume(t *testing.T) {
 	ks := bootstrapKeystone()
 	// TLS is nil — the default produced by bootstrapKeystone.
 
-	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
+	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash())
 
 	container := findContainerByName(job.Spec.Template.Spec.Containers, "bootstrap")
 	g.Expect(container).NotTo(BeNil())
@@ -631,7 +658,7 @@ func TestBuildBootstrapJob_DBTLSDisabledExplicit_NoDBTLSVolume(t *testing.T) {
 		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "test-keystone-db-client"},
 	}
 
-	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
+	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash())
 
 	container := findContainerByName(job.Spec.Template.Spec.Containers, "bootstrap")
 	g.Expect(container).NotTo(BeNil())
@@ -654,7 +681,7 @@ func TestBuildBootstrapJob_DBTLSEnabled_MountsClientSecret(t *testing.T) {
 		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "test-keystone-db-client"},
 	}
 
-	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
+	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash())
 
 	container := findContainerByName(job.Spec.Template.Spec.Containers, "bootstrap")
 	g.Expect(container).NotTo(BeNil())
@@ -690,7 +717,7 @@ func TestBuildBootstrapJob_DBTLSEnabled_BrownfieldUsesUserSuppliedSecretNames(t 
 		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "site-specific-client-keypair"},
 	}
 
-	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
+	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash())
 
 	vol := findVolumeByName(job.Spec.Template.Spec.Volumes, "db-tls")
 	g.Expect(vol).NotTo(BeNil(),
@@ -711,7 +738,7 @@ func TestBuildBootstrapJob_PreInsertScript_ParsesSSLDSNParams(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := bootstrapKeystone()
 
-	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys")
+	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash())
 
 	container := findContainerByName(job.Spec.Template.Spec.Containers, "bootstrap")
 	g.Expect(container).NotTo(BeNil())
@@ -744,4 +771,246 @@ func TestBuildBootstrapJob_PreInsertScript_ParsesSSLDSNParams(t *testing.T) {
 		g.Expect(script).To(ContainSubstring(flag),
 			"wrapper must pass keystone-manage flag from env var (CC-0095, REQ-002)")
 	}
+}
+
+// TestBuildBootstrapJob_AdminPasswordHashAnnotation verifies that
+// buildBootstrapJob stamps the SHA-256 digest of the admin password onto the
+// pod template's admin-password-hash annotation, so a rotated password
+// changes the pod-spec-hash gate and re-runs the idempotent bootstrap
+// (CC-0108, REQ-002).
+func TestBuildBootstrapJob_AdminPasswordHashAnnotation(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := bootstrapKeystone()
+
+	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash())
+
+	g.Expect(job.Spec.Template.ObjectMeta.Annotations).To(HaveKeyWithValue(
+		"forge.c5c3.io/admin-password-hash", bootstrapAdminPasswordHash()),
+		"pod template must carry the admin-password-hash annotation (CC-0108, REQ-002)")
+
+	// Pin the hashing input: the annotation must equal hex(sha256("admin-password")).
+	sum := sha256.Sum256([]byte("admin-password"))
+	g.Expect(job.Spec.Template.ObjectMeta.Annotations["forge.c5c3.io/admin-password-hash"]).
+		To(Equal(hex.EncodeToString(sum[:])),
+			"admin-password-hash must be hex(sha256(admin password)) (CC-0108, REQ-002)")
+}
+
+// TestReconcileBootstrap_PasswordChangeRecreatesJob verifies that when the
+// admin password rotates, the previously completed bootstrap Job (stamped with
+// the OLD password's hash) is detected as stale, deleted, and recreated with
+// the new admin-password-hash annotation — forcing the idempotent bootstrap to
+// re-run with the rotated credential (CC-0108, REQ-003).
+func TestReconcileBootstrap_PasswordChangeRecreatesJob(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := bootstrapTestScheme()
+	ks := bootstrapKeystone()
+
+	// hashOf returns hex(sha256(pw)) — the same digest reconcileBootstrap derives.
+	hashOf := func(pw string) string {
+		sum := sha256.Sum256([]byte(pw))
+		return hex.EncodeToString(sum[:])
+	}
+
+	// Build an OLD completed bootstrap Job stamped with a DIFFERENT password's hash.
+	oldDesired := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", hashOf("old-password"))
+	oldHash := job.PodSpecHash(&oldDesired.Spec.Template)
+	oldJob := oldDesired.DeepCopy()
+	oldJob.Annotations = map[string]string{job.PodSpecHashAnnotation: oldHash}
+	now := metav1.Now()
+	oldJob.Status.Succeeded = 1
+	oldJob.Status.CompletionTime = &now
+	oldJob.Status.Conditions = []batchv1.JobCondition{
+		{Type: batchv1.JobComplete, Status: corev1.ConditionTrue},
+	}
+
+	// The admin Secret holds the CURRENT password ("admin-password").
+	r := newBootstrapTestReconciler(s, ks, bootstrapAdminSecret(ks), oldJob)
+
+	result, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueBootstrapWait),
+		"stale Job recreation must requeue while the new Job runs (CC-0108, REQ-003)")
+
+	// A new Job must exist carrying the CURRENT admin-password-hash.
+	var newJob batchv1.Job
+	g.Expect(r.Client.Get(context.Background(), client.ObjectKey{
+		Name:      "test-keystone-bootstrap",
+		Namespace: "default",
+	}, &newJob)).To(Succeed())
+	g.Expect(newJob.Spec.Template.ObjectMeta.Annotations).To(HaveKeyWithValue(
+		"forge.c5c3.io/admin-password-hash", bootstrapAdminPasswordHash()),
+		"recreated Job must carry the current admin-password-hash (CC-0108, REQ-003)")
+
+	// The new pod-spec-hash must match the current desired template and differ
+	// from the old stamped hash.
+	curDesired := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash())
+	curHash := job.PodSpecHash(&curDesired.Spec.Template)
+	g.Expect(newJob.Annotations[job.PodSpecHashAnnotation]).To(Equal(curHash),
+		"recreated Job's pod-spec-hash must match the current desired template (CC-0108, REQ-003)")
+	g.Expect(curHash).NotTo(Equal(oldHash),
+		"a rotated admin password must change the pod-spec-hash gate (CC-0108, REQ-003)")
+}
+
+// TestReconcileBootstrap_UnchangedPasswordRetainsJob verifies that when the
+// admin password is unchanged, the completed bootstrap Job (stamped with the
+// current password hash) is recognised as current and is NOT deleted/recreated
+// — the bootstrap completes idempotently without churn (CC-0108, REQ-004).
+func TestReconcileBootstrap_UnchangedPasswordRetainsJob(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := bootstrapTestScheme()
+	ks := bootstrapKeystone()
+
+	// Completed Job built with the CURRENT password hash; pin a UID so we can
+	// detect a delete/recreate (the recreated Job would get a fresh UID).
+	completed := completedBootstrapJob(ks)
+	completed.UID = "bootstrap-job-uid"
+
+	r := newBootstrapTestReconciler(s, ks, bootstrapAdminSecret(ks), completed)
+
+	result, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(BeZero(),
+		"unchanged password must not requeue — bootstrap is complete (CC-0108, REQ-004)")
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "BootstrapReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("BootstrapComplete"))
+
+	// The Job must be the same object (unchanged UID) — not deleted/recreated.
+	var retained batchv1.Job
+	g.Expect(r.Client.Get(context.Background(), client.ObjectKey{
+		Name:      "test-keystone-bootstrap",
+		Namespace: "default",
+	}, &retained)).To(Succeed())
+	g.Expect(retained.UID).To(Equal(completed.UID),
+		"unchanged password must retain the existing Job (same UID) (CC-0108, REQ-004)")
+}
+
+// TestReconcileBootstrap_CutoverConditionTransitions verifies the full cutover:
+// with only the admin Secret present, the first reconcile creates the Job and
+// reports BootstrapReady=False/BootstrapInProgress; once the Job completes, a
+// second reconcile reports BootstrapReady=True/BootstrapComplete (CC-0108,
+// REQ-003).
+func TestReconcileBootstrap_CutoverConditionTransitions(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := bootstrapTestScheme()
+	ks := bootstrapKeystone()
+
+	// Start with ONLY the admin Secret — no Job yet.
+	r := newBootstrapTestReconciler(s, ks, bootstrapAdminSecret(ks))
+
+	result, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueBootstrapWait))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "BootstrapReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("BootstrapInProgress"))
+
+	// Fetch the created Job and mark it Complete.
+	var created batchv1.Job
+	g.Expect(r.Client.Get(context.Background(), client.ObjectKey{
+		Name:      "test-keystone-bootstrap",
+		Namespace: "default",
+	}, &created)).To(Succeed())
+	now := metav1.Now()
+	created.Status.Succeeded = 1
+	created.Status.CompletionTime = &now
+	created.Status.Conditions = []batchv1.JobCondition{
+		{Type: batchv1.JobComplete, Status: corev1.ConditionTrue},
+	}
+	g.Expect(r.Client.Status().Update(context.Background(), &created)).To(Succeed())
+
+	// Second reconcile sees the completed Job — BootstrapReady should flip True.
+	result, err = r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(BeZero())
+
+	cond = meta.FindStatusCondition(ks.Status.Conditions, "BootstrapReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("BootstrapComplete"))
+}
+
+// TestReconcileBootstrap_MissingPasswordKeyCleanError verifies that an admin
+// Secret lacking the `password` key produces a clean error (no panic),
+// BootstrapReady=False/AdminSecretInvalid, a Warning event, and NO bootstrap
+// Job (CC-0108, REQ-005).
+func TestReconcileBootstrap_MissingPasswordKeyCleanError(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := bootstrapTestScheme()
+	ks := bootstrapKeystone()
+
+	// Admin Secret present but WITHOUT a "password" key.
+	adminSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ks.Spec.Bootstrap.AdminPasswordSecretRef.Name,
+			Namespace: ks.Namespace,
+		},
+		Data: map[string][]byte{"other": []byte("x")},
+	}
+
+	r := newBootstrapTestReconciler(s, ks, adminSecret)
+
+	_, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).To(HaveOccurred(),
+		"a missing password key must return an error (CC-0108, REQ-005)")
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "BootstrapReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("AdminSecretInvalid"))
+
+	expectEvent(g, r, "Warning AdminSecretInvalid")
+
+	// No bootstrap Job must have been created.
+	var createdJob batchv1.Job
+	getErr := r.Get(context.Background(), client.ObjectKey{
+		Name:      "test-keystone-bootstrap",
+		Namespace: "default",
+	}, &createdJob)
+	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
+		"no bootstrap Job may be created when the admin password is invalid (CC-0108, REQ-005)")
+}
+
+// TestReconcileBootstrap_EmptyPasswordCleanError verifies that an admin Secret
+// with an empty `password` value produces a clean error (no panic),
+// BootstrapReady=False/AdminSecretInvalid, a Warning event, and NO bootstrap
+// Job (CC-0108, REQ-005).
+func TestReconcileBootstrap_EmptyPasswordCleanError(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := bootstrapTestScheme()
+	ks := bootstrapKeystone()
+
+	// Admin Secret present with an empty "password" value.
+	adminSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ks.Spec.Bootstrap.AdminPasswordSecretRef.Name,
+			Namespace: ks.Namespace,
+		},
+		Data: map[string][]byte{"password": []byte("")},
+	}
+
+	r := newBootstrapTestReconciler(s, ks, adminSecret)
+
+	_, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).To(HaveOccurred(),
+		"an empty password value must return an error (CC-0108, REQ-005)")
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "BootstrapReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("AdminSecretInvalid"))
+
+	expectEvent(g, r, "Warning AdminSecretInvalid")
+
+	var createdJob batchv1.Job
+	getErr := r.Get(context.Background(), client.ObjectKey{
+		Name:      "test-keystone-bootstrap",
+		Namespace: "default",
+	}, &createdJob)
+	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
+		"no bootstrap Job may be created when the admin password is empty (CC-0108, REQ-005)")
 }

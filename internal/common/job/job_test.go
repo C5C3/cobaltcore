@@ -75,7 +75,7 @@ func testCompletedJobWithHash() *batchv1.Job {
 		j.Spec.Template.Spec.Containers[i].TerminationMessagePolicy = corev1.TerminationMessageReadFile
 	}
 	j.Annotations = map[string]string{
-		PodSpecHashAnnotation: PodSpecHash(&desired.Spec.Template.Spec),
+		PodSpecHashAnnotation: PodSpecHash(&desired.Spec.Template),
 	}
 	now := metav1.Now()
 	j.Status.Succeeded = 1
@@ -336,6 +336,108 @@ func TestRunJob_existingComplete_specChanged_alreadyExists(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeFalse(), "should return false when old Job is still terminating")
 	g.Expect(createCalls).To(Equal(1))
+}
+
+// --- PodSpecHash template coverage (CC-0108, REQ-001) ---
+
+// TestPodSpecHash_TemplateAnnotationParticipates verifies that two pod
+// templates with byte-identical PodSpecs but differing pod-template
+// annotations hash to different digests. This is the property CC-0108 relies
+// on: a content-derived pod-template annotation must change the stored
+// forge.c5c3.io/pod-spec-hash so RunJob re-runs a completed Job even when the
+// PodSpec itself is unchanged (REQ-001).
+func TestPodSpecHash_TemplateAnnotationParticipates(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	base := testJob().Spec.Template
+	annotated := testJob().Spec.Template
+	annotated.Annotations = map[string]string{"forge.c5c3.io/trigger": "rotated"}
+
+	g.Expect(PodSpecHash(&base)).To(Equal(PodSpecHash(&base)), "hash must be deterministic")
+	g.Expect(PodSpecHash(&annotated)).NotTo(Equal(PodSpecHash(&base)),
+		"a pod-template annotation must change the hash even when the PodSpec is identical")
+}
+
+// TestRunJob_RecreatesOnTemplateAnnotationChange verifies that a completed Job
+// is deleted-and-recreated when the only difference in the desired template is
+// a pod-template annotation — the PodSpec is byte-identical (REQ-001). This
+// mirrors the bootstrap password-rotation case, where the password is injected
+// by secretKeyRef and only a pod-template annotation carries the change signal.
+func TestRunJob_RecreatesOnTemplateAnnotationChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	// Completed Job whose stored hash was computed from a template WITHOUT the
+	// trigger annotation.
+	oldJob := testJob()
+	oldJob.Annotations = map[string]string{
+		PodSpecHashAnnotation: PodSpecHash(&oldJob.Spec.Template),
+	}
+	now := metav1.Now()
+	oldJob.Status.Succeeded = 1
+	oldJob.Status.CompletionTime = &now
+	oldJob.Status.Conditions = []batchv1.JobCondition{
+		{Type: batchv1.JobComplete, Status: corev1.ConditionTrue},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, oldJob).
+		WithStatusSubresource(oldJob).
+		Build()
+
+	// Desired Job differs only by a pod-template annotation; the PodSpec is
+	// byte-identical.
+	newJob := testJob()
+	newJob.Spec.Template.Annotations = map[string]string{"forge.c5c3.io/trigger": "rotated"}
+
+	ready, err := RunJob(context.Background(), c, s, owner, newJob)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ready).To(BeFalse(), "should recreate when only the pod-template annotation changed")
+
+	fetched := &batchv1.Job{}
+	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "test-job", Namespace: "default"}, fetched)).To(Succeed())
+	g.Expect(fetched.Annotations[PodSpecHashAnnotation]).To(Equal(PodSpecHash(&newJob.Spec.Template)),
+		"replacement Job should carry the hash of the new template")
+	g.Expect(fetched.Annotations[PodSpecHashAnnotation]).NotTo(Equal(oldJob.Annotations[PodSpecHashAnnotation]),
+		"new hash must differ from the old template's hash")
+	g.Expect(fetched.Spec.Template.Annotations).To(HaveKeyWithValue("forge.c5c3.io/trigger", "rotated"))
+}
+
+// TestRunJob_NoRecreateWhenTemplateUnchanged verifies that a completed Job
+// whose stored hash already matches the desired template — including its
+// pod-template annotations — is retained without a delete-and-recreate
+// (REQ-001). This is the no-churn invariant for an unchanged credential.
+func TestRunJob_NoRecreateWhenTemplateUnchanged(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	desired := testJob()
+	desired.Spec.Template.Annotations = map[string]string{"forge.c5c3.io/trigger": "v1"}
+
+	// Completed Job whose stored hash already matches the desired template.
+	existing := desired.DeepCopy()
+	existing.Annotations = map[string]string{
+		PodSpecHashAnnotation: PodSpecHash(&desired.Spec.Template),
+	}
+	now := metav1.Now()
+	existing.Status.Succeeded = 1
+	existing.Status.CompletionTime = &now
+	existing.Status.Conditions = []batchv1.JobCondition{
+		{Type: batchv1.JobComplete, Status: corev1.ConditionTrue},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		WithStatusSubresource(existing).
+		Build()
+
+	ready, err := RunJob(context.Background(), c, s, owner, desired)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ready).To(BeTrue(), "should retain the completed Job when the template (incl. annotations) is unchanged")
 }
 
 // --- EnsureCronJob ---

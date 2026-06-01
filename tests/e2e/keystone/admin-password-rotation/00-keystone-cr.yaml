@@ -1,0 +1,97 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Fixtures for the Keystone admin-password-rotation E2E test (CC-0108, REQ-009).
+# Managed mode; a distinct CR name (keystone-adminpw) and a dedicated logical
+# database (keystone_adminpw) keep this suite isolated from the other Keystone
+# CRs that share the `openstack` namespace under chainsaw `parallel: 4`.
+#
+# DECISION: a dedicated ESO ExternalSecret backed by a dedicated OpenBao path.
+# This suite rotates the admin password the production-faithful way: by writing a
+# new value to the OpenBao source (chainsaw-test.yaml step 3) and letting ESO
+# project it into the Kubernetes Secret, which the operator's
+# secretToKeystoneMapper (keystone_controller.go) observes to re-run the
+# idempotent bootstrap Job.
+#
+# Why NOT a plain Secret patched in-place: the operator's reconcileSecrets gates
+# SecretsReady on a Ready ExternalSecret for the admin credential
+# (reconcile_secrets.go → WaitForExternalSecret); a plain Secret with no backing
+# ExternalSecret never satisfies that gate, so the CR would never reach Ready.
+# The ESO path is therefore the only one that exercises the real contract.
+#
+# Why a DEDICATED OpenBao path (bootstrap/keystone-adminpw) and NOT the shared
+# bootstrap/keystone-admin: every other parallel Keystone CR reads
+# bootstrap/keystone-admin, so rotating that value would re-bootstrap every
+# referencing CR and make concurrent suites observe a mid-flight admin-password
+# change. A per-suite path scopes the rotation to THIS CR only. The
+# eso-management OpenBao policy already grants read on kv-v2/data/bootstrap/*
+# (deploy/openbao/policies/eso-management.hcl), so no new policy is required.
+# The path is seeded with a known initial password by chainsaw-test.yaml step 1
+# (re-seeded every run, so a leftover from a prior run is overwritten); it is
+# treated as a persistent bootstrap secret, mirroring bootstrap/keystone-admin
+# in deploy/openbao/bootstrap/write-bootstrap-secrets.sh.
+#
+# refreshInterval is short so step 3's rotated value reaches the Secret within
+# one ESO tick — ESO does not watch OpenBao for changes, it re-reads the source
+# on its interval (or on a spec change), so a 1h default would never propagate
+# the rotation inside the test window (CC-0108, REQ-009).
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: keystone-adminpw-admin
+  namespace: openstack
+spec:
+  refreshInterval: 10s
+  secretStoreRef:
+    name: openbao-cluster-store
+    kind: ClusterSecretStore
+  target:
+    name: keystone-adminpw-admin
+    creationPolicy: Owner
+  data:
+    - secretKey: password
+      remoteRef:
+        key: bootstrap/keystone-adminpw
+        property: password
+---
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-adminpw
+  namespace: openstack
+spec:
+  replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_adminpw
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-adminpw-admin
+    region: RegionOne
+  # Disable dogpile.cache for this fixture. The e2e-operator Chainsaw suite runs
+  # many Keystone CRs in parallel against a single shared `openstack-memcached`,
+  # and every instance caches `admin@default` identity-backend lookups under the
+  # same memcached keys. A concurrent instance's cache entry could answer this
+  # suite's auth request with a pre-rotation result, producing a false 201 where
+  # this test asserts 401 after rotation. Same rationale as the fernet-rotation
+  # fixture (CC-0074 follow-up: namespace cache keys per CR so shared memcached
+  # is safe).
+  extraConfig:
+    cache:
+      enabled: "false"

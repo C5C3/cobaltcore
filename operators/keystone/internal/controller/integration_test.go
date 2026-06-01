@@ -9,6 +9,8 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -4257,4 +4259,130 @@ func TestIntegration_DatabaseTLS_CertificateLifecycle(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Reason).To(Equal(reasonCertificatePending),
 		"DatabaseTLSReady reason must be CertificatePending while the Certificate has no Ready=True status (CC-0106, REQ-002)")
+}
+
+// --- Task 3.1 (CC-0108, REQ-010): admin-password rotation cutover ---
+
+// TestIntegration_AdminPasswordRotationCutover verifies the end-to-end rotation
+// cutover under envtest (CC-0108, REQ-010): once a Keystone CR is Ready, rotating
+// the keystone-admin Secret's `password` makes the operator detect the stale
+// bootstrap Job (its forge.c5c3.io/admin-password-hash no longer matches), delete
+// it, and recreate a bootstrap Job carrying the new SHA-256 digest. Completing the
+// recreated Job drives BootstrapReady and Ready back to True.
+func TestIntegration_AdminPasswordRotationCutover(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-adminpw-rotate-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	// Reach Ready=True with the initial admin password ("admin-password").
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+	bootstrapKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-bootstrap", ks.Name)}
+
+	// Capture the initial bootstrap Job UID and confirm it carries the OLD hash.
+	oldJob := &batchv1.Job{}
+	g.Expect(c.Get(ctx, bootstrapKey, oldJob)).To(Succeed())
+	oldUID := oldJob.UID
+	g.Expect(oldUID).NotTo(BeEmpty())
+	oldSum := sha256.Sum256([]byte("admin-password"))
+	g.Expect(oldJob.Spec.Template.ObjectMeta.Annotations).To(HaveKeyWithValue(
+		adminPasswordHashAnnotation, hex.EncodeToString(oldSum[:])),
+		"initial bootstrap Job must carry the initial admin-password hash (CC-0108, REQ-010)")
+
+	// Rotate the admin password by updating the keystone-admin Secret directly,
+	// simulating an ESO Owner-policy write of a new OpenBao value.
+	const newPassword = "rotated-admin-password"
+	adminSecret := &corev1.Secret{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "keystone-admin"}, adminSecret)).To(Succeed())
+	adminSecret.Data["password"] = []byte(newPassword)
+	g.Expect(c.Update(ctx, adminSecret)).To(Succeed())
+	newSum := sha256.Sum256([]byte(newPassword))
+	newHash := hex.EncodeToString(newSum[:])
+
+	// The operator must delete the stale bootstrap Job and recreate it with a
+	// fresh UID and the NEW admin-password hash.
+	g.Eventually(func(ig Gomega) {
+		j := &batchv1.Job{}
+		ig.Expect(c.Get(ctx, bootstrapKey, j)).To(Succeed())
+		ig.Expect(j.UID).NotTo(Equal(oldUID),
+			"rotated password must recreate the bootstrap Job with a new UID (CC-0108, REQ-010)")
+		ig.Expect(j.Spec.Template.ObjectMeta.Annotations).To(HaveKeyWithValue(
+			adminPasswordHashAnnotation, newHash),
+			"recreated bootstrap Job must carry the rotated admin-password hash (CC-0108, REQ-010)")
+	}, eventuallyTimeout, pollInterval).Should(Succeed())
+
+	// Completing the recreated Job drives BootstrapReady and Ready back to True.
+	g.Expect(simulators.SimulateJobComplete(ctx, c, bootstrapKey)).To(Succeed())
+	waitForCondition(t, ctx, c, key, "BootstrapReady", metav1.ConditionTrue, eventuallyTimeout)
+	waitForCondition(t, ctx, c, key, "Ready", metav1.ConditionTrue, eventuallyTimeout)
+}
+
+// --- Task 3.2 (CC-0108, REQ-003): admin-password no-churn ---
+
+// TestIntegration_AdminPasswordUnchangedNoChurn verifies that re-reconciling a
+// Ready Keystone WITHOUT rotating the admin password does not churn the bootstrap
+// Job: its UID stays stable and Ready stays True (CC-0108, REQ-003). This guards
+// the idempotent half of the rotation gate — an unchanged password must not
+// recreate the Job.
+func TestIntegration_AdminPasswordUnchangedNoChurn(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-adminpw-nochurn-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+	bootstrapKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-bootstrap", ks.Name)}
+
+	// Capture the completed bootstrap Job UID.
+	bootstrapJob := &batchv1.Job{}
+	g.Expect(c.Get(ctx, bootstrapKey, bootstrapJob)).To(Succeed())
+	stableUID := bootstrapJob.UID
+	g.Expect(stableUID).NotTo(BeEmpty())
+
+	// Re-trigger reconciliation WITHOUT touching the admin Secret by annotating
+	// the Keystone CR (a metadata-only update enqueues the CR via the For() watch
+	// and does not advance .Generation). The admin password is unchanged, so the
+	// bootstrap Job's admin-password hash still matches and the Job must NOT be
+	// recreated.
+	current := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, key, current)).To(Succeed())
+	if current.Annotations == nil {
+		current.Annotations = map[string]string{}
+	}
+	current.Annotations["test.c5c3.io/nudge"] = "1"
+	g.Expect(c.Update(ctx, current)).To(Succeed())
+
+	// Across the reconcile window the bootstrap Job UID must remain stable and
+	// Ready must stay True — no delete/recreate churn (CC-0108, REQ-003).
+	g.Consistently(func(ig Gomega) {
+		j := &batchv1.Job{}
+		ig.Expect(c.Get(ctx, bootstrapKey, j)).To(Succeed())
+		ig.Expect(j.UID).To(Equal(stableUID),
+			"unchanged admin password must not recreate the bootstrap Job (CC-0108, REQ-003)")
+
+		ksState := &keystonev1alpha1.Keystone{}
+		ig.Expect(c.Get(ctx, key, ksState)).To(Succeed())
+		ig.Expect(meta.IsStatusConditionTrue(ksState.Status.Conditions, "Ready")).To(BeTrue(),
+			"Ready must stay True when the admin password is unchanged (CC-0108, REQ-003)")
+	}, 3*time.Second, pollInterval).Should(Succeed())
 }

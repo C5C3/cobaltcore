@@ -94,7 +94,7 @@ func completedPolicyValidationJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 	j := buildPolicyValidationJob(ks, "keystone-config-abc123")
 	now := metav1.Now()
 	j.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&j.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&j.Spec.Template),
 	}
 	j.Status.Succeeded = 1
 	j.Status.CompletionTime = &now
@@ -109,7 +109,7 @@ func completedPolicyValidationJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 func failedPolicyValidationJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 	j := buildPolicyValidationJob(ks, "keystone-config-abc123")
 	j.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&j.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&j.Spec.Template),
 	}
 	j.Status.Failed = 3
 	j.Status.Conditions = []batchv1.JobCondition{
@@ -123,7 +123,7 @@ func failedPolicyValidationJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 func runningPolicyValidationJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 	j := buildPolicyValidationJob(ks, "keystone-config-abc123")
 	j.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&j.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&j.Spec.Template),
 	}
 	return j
 }
@@ -429,7 +429,7 @@ func TestReconcilePolicyValidation_StaleJob_DeletedAndRecreated(t *testing.T) {
 
 	// The new Job should have the correct hash.
 	desired := buildPolicyValidationJob(ks, "keystone-config-abc123")
-	expectedHash := job.PodSpecHash(&desired.Spec.Template.Spec)
+	expectedHash := job.PodSpecHash(&desired.Spec.Template)
 	g.Expect(newJob.Annotations[job.PodSpecHashAnnotation]).To(Equal(expectedHash))
 }
 

@@ -227,14 +227,21 @@ controller-observable semantics and are stable across releases — consumers
 | --- | --- | --- | --- | --- |
 | `forge.c5c3.io/rotation-target` | Label | Staging Secrets (`{name}-fernet-keys-rotation`, `{name}-credential-keys-rotation`) | `fernet-keys`, `credential-keys` | Distinguishes rotation staging Secrets from production key Secrets so the operator's Secret→Keystone mapper can enqueue the owning Keystone on staging PATCHes. |
 | `forge.c5c3.io/rotation-completed-at` | Annotation | Staging Secrets (written by the rotation CronJob) | RFC3339 UTC timestamp (e.g. `2026-04-18T12:34:56Z`) | Single-shot commit marker. The operator only applies a staging Secret's data to the production Secret when this annotation is present and parses cleanly; the annotation is removed implicitly when the staging Secret is deleted at the end of a successful apply. |
+| `forge.c5c3.io/admin-password-hash` | Annotation | Bootstrap Job pod template (`{name}-bootstrap`) | `hex(SHA-256(password))` of the `password` key of the admin Secret | Carries the admin-password digest into the pod template so a rotated password changes the pod-spec hash and re-runs the idempotent bootstrap Job (CC-0108, REQ-007). See [`reconcileBootstrap`](#reconcilebootstrap). |
+| `forge.c5c3.io/pod-spec-hash` | Annotation | Operator-managed Jobs (`{name}-bootstrap`, migration Jobs) | `hex(SHA-256(PodTemplateSpec))` stamped at creation time | Change-detection gate for completed Jobs. `job.RunJob` compares the desired hash against this annotation and recreates the Job (so it re-runs) when they differ, without normalizing API-server defaults. |
 
-The Go constants backing these keys are exported from
+The Go constants backing the rotation keys are exported from
 `operators/keystone/internal/controller/rotation_staging.go`:
 
 ```go
 const StagingSecretLabelKey       = "forge.c5c3.io/rotation-target"
 const RotationCompletedAnnotation = "forge.c5c3.io/rotation-completed-at"
 ```
+
+`forge.c5c3.io/pod-spec-hash` is backed by `job.PodSpecHashAnnotation` in
+`internal/common/job/job.go`; `forge.c5c3.io/admin-password-hash` by the
+unexported `adminPasswordHashAnnotation` const in
+`operators/keystone/internal/controller/reconcile_bootstrap.go`.
 
 See [Key Rotation RBAC Split](#key-rotation-rbac-split) under the
 Fernet and credential sub-reconciler sections for the full contract.
@@ -2473,20 +2480,47 @@ project, roles, and service catalog entries.
 | `--bootstrap-public-url` | `http://keystone.{namespace}.svc.cluster.local:5000/v3` |
 | `--bootstrap-region-id` | `spec.bootstrap.region` |
 
+**Admin-password rotation re-run (CC-0108, REQ-007):** Before building the Job,
+the reconciler reads the `password` key of the admin Secret named by
+`spec.bootstrap.adminPasswordSecretRef.Name` and stamps its digest —
+`hex(SHA-256(password))` — onto the bootstrap Job's pod template as the
+`forge.c5c3.io/admin-password-hash` annotation. Because `job.PodSpecHash` hashes
+the **full** `PodTemplateSpec` (metadata included), a rotated password changes
+this annotation and therefore the `forge.c5c3.io/pod-spec-hash` gate. On the next
+reconcile `job.RunJob` sees the desired hash diverge from the completed
+`{name}-bootstrap` Job's stored hash, deletes the stale Job, and recreates it so
+`keystone-manage bootstrap` re-runs against the new admin credentials. A missing
+or unreadable admin Secret, an absent `password` key, or an empty value is a hard
+precondition failure: the reconciler sets `BootstrapReady=False` with reason
+`AdminSecretInvalid`, emits a `Warning` event, and returns the error (requeue
+with backoff) rather than building a Job with empty credentials.
+
+**Pod-template annotation:** `forge.c5c3.io/admin-password-hash` is written to the
+Job's `Spec.Template.ObjectMeta.Annotations` (the pod template), not the Job's own
+metadata, so it participates in `job.PodSpecHash`. See the
+[Labels and Annotations](#labels-and-annotations) table for the cross-reconciler
+contract; the backing const is the unexported `adminPasswordHashAnnotation` in
+`reconcile_bootstrap.go`.
+
 **Condition Contract:**
 
 | Status | Reason | Message | RequeueAfter |
 | --- | --- | --- | --- |
+| `False` | `AdminSecretInvalid` | "Admin password Secret {ns}/{name} is missing, unreadable, or has an empty \"password\" value" | — (error returned) |
 | `False` | `BootstrapFailed` | "Keystone bootstrap job failed: {error}" | — (error returned) |
 | `False` | `BootstrapInProgress` | "Keystone bootstrap job is running" | 60s |
 | `True` | `BootstrapComplete` | "Keystone bootstrap completed successfully" | — |
 
-**Error handling:** The `BootstrapFailed` condition is set before returning the error,
-so the failure reason is visible in the CR status even when the error triggers
-controller-runtime backoff.
+**Error handling:** The `AdminSecretInvalid` and `BootstrapFailed` conditions are
+set before returning the error, so the failure reason is visible in the CR status
+even when the error triggers controller-runtime backoff.
 
 **Idempotency:** The bootstrap Job is idempotent — `keystone-manage bootstrap` can be
-run multiple times without side effects.
+run multiple times without side effects. This idempotency is what makes the
+admin-password-triggered re-run above safe: re-running bootstrap against an
+already-bootstrapped database simply re-applies the (now rotated) admin credentials
+rather than failing or duplicating the initial admin user, project, roles, and
+catalog entries.
 
 **Shared library calls:** `job.RunJob()`
 

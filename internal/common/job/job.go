@@ -21,17 +21,30 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
-// PodSpecHashAnnotation stores a SHA-256 hash of the desired PodSpec at
-// creation time. It is used to detect whether a completed Job's spec has
-// changed (e.g. operator upgrade) without relying on normalization of
-// API-server defaults (CC-0005).
+// PodSpecHashAnnotation stores a SHA-256 hash of the desired pod template
+// (PodTemplateSpec) at creation time. It is used to detect whether a completed
+// Job's template has changed (e.g. operator upgrade) without relying on
+// normalization of API-server defaults (CC-0005).
 const PodSpecHashAnnotation = "forge.c5c3.io/pod-spec-hash"
 
-// PodSpecHash computes a deterministic SHA-256 hash of the given PodSpec.
-func PodSpecHash(spec *corev1.PodSpec) string {
-	// json.Marshal cannot fail for *corev1.PodSpec — all fields are
+// PodSpecHash computes a deterministic SHA-256 hash of the given pod template.
+// It hashes the full corev1.PodTemplateSpec (metadata + spec), so pod-template
+// annotations participate in change detection: a content-derived annotation
+// (e.g. a rotated credential digest) changes the hash even when the underlying
+// PodSpec is byte-identical (CC-0108, REQ-001).
+//
+// DECISION: hash the full PodTemplateSpec vs. a container-env surrogate.
+// Ambiguity: the rotation signal could be carried either as a pod-template
+// annotation (requires hashing PodTemplateSpec) or as an extra container Env
+// entry (keeps the existing *corev1.PodSpec hash).
+// Chose: hash &job.Spec.Template (the full PodTemplateSpec).
+// Reason: it generalises to any Job and keeps the change signal in pod-template
+// metadata rather than leaking a synthetic dependency into the container spec.
+// Reviewer: please verify this matches intent (CC-0108, REQ-001).
+func PodSpecHash(template *corev1.PodTemplateSpec) string {
+	// json.Marshal cannot fail for *corev1.PodTemplateSpec — all fields are
 	// primitives, slices, or Kubernetes API types with known JSON serialization.
-	data, _ := json.Marshal(spec)
+	data, _ := json.Marshal(template)
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
@@ -69,7 +82,7 @@ func RunJob(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner 
 		// Comparison uses a hash annotation stored at creation time to
 		// avoid maintaining a normalization layer for API-server defaults
 		// (CC-0005).
-		desiredHash := PodSpecHash(&job.Spec.Template.Spec)
+		desiredHash := PodSpecHash(&job.Spec.Template)
 		existingHash := existing.Annotations[PodSpecHashAnnotation]
 		if desiredHash != existingHash {
 			// Intentional behavioral alignment: explicitly set Background propagation
@@ -105,7 +118,7 @@ func createJobWithHash(ctx context.Context, c client.Client, scheme *runtime.Sch
 	if toCreate.Annotations == nil {
 		toCreate.Annotations = make(map[string]string)
 	}
-	toCreate.Annotations[PodSpecHashAnnotation] = PodSpecHash(&job.Spec.Template.Spec)
+	toCreate.Annotations[PodSpecHashAnnotation] = PodSpecHash(&job.Spec.Template)
 	if err := c.Create(ctx, toCreate); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			// Old Job still terminating (e.g. finalizer pending); wait for the next reconcile.

@@ -6,6 +6,8 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -189,7 +191,7 @@ func testCompletedDBSyncJob(configMapName string) runtime.Object {
 	now := metav1.Now()
 	j := desired.DeepCopy()
 	j.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
 	}
 	j.Status.Succeeded = 1
 	j.Status.CompletionTime = &now
@@ -209,7 +211,7 @@ func testCompletedSchemaCheckJob(configMapName string) runtime.Object {
 	now := metav1.Now()
 	j := desired.DeepCopy()
 	j.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
 	}
 	j.Status.Succeeded = 1
 	j.Status.CompletionTime = &now
@@ -258,11 +260,17 @@ func testReadyKeystoneDeployment() runtime.Object {
 // testCompletedBootstrapJob returns a completed bootstrap Job for testKeystone.
 func testCompletedBootstrapJob(configMapName string) runtime.Object {
 	ks := testKeystone()
-	desired := buildBootstrapJob(ks, configMapName, fmt.Sprintf("%s-fernet-keys", ks.Name))
+	// The full-reconcile tests using this helper include testAdminCredentialsSecret()
+	// whose `password` value is "admin-password"; stamp the matching admin-password-hash
+	// so reconcileBootstrap (which derives the same digest from the Secret) does not see
+	// the Job as stale during full reconcile (CC-0108, REQ-004).
+	sum := sha256.Sum256([]byte("admin-password"))
+	adminHash := hex.EncodeToString(sum[:])
+	desired := buildBootstrapJob(ks, configMapName, fmt.Sprintf("%s-fernet-keys", ks.Name), adminHash)
 	now := metav1.Now()
 	j := desired.DeepCopy()
 	j.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
 	}
 	j.Status.Succeeded = 1
 	j.Status.CompletionTime = &now

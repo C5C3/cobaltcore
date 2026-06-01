@@ -529,7 +529,7 @@ func TestRunDBSyncJob_complete(t *testing.T) {
 		syncJob.Spec.Template.Spec.Containers[i].TerminationMessagePolicy = corev1.TerminationMessageReadFile
 	}
 	syncJob.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template.Spec),
+		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
 	}
 	syncJob.Status.Succeeded = 1
 	syncJob.Status.CompletionTime = &now
