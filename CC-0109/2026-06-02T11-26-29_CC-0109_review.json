@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-06-02T11:26:29.058063+00:00",
+  "feature_id": "CC-0109",
+  "task_type": "review",
+  "session_key": "CC-0109",
+  "model": "claude-opus-4-8",
+  "prompt": "Analyze the following external review that has been addressed.\nIdentify what our INTERNAL code review should have caught\nBEFORE the external reviewer found it.\n\n## External Review Feedback\n\n\n## Code Comments (with Resolutions)\n- [tests/unit/deploy/test_push_keystone_admin_policy.sh:1] The test file `tests/unit/deploy/test_push_keystone_admin_policy.sh` serves no relevant purpose and can be deleted entirely\n\n## Resolution Summary\n\n\nExtract 0-3 review improvement patterns. For each:\n- name: Short, action-oriented name IN ENGLISH\n- review_area: error-handling | security | testing | performance | type-safety | validation | architecture | naming | documentation\n- detection_hint: How should the reviewer detect this?\n- severity: BLOCKING | WARNING\n- what_to_check: What exactly to check\n- why_it_matters: Why it matters\n- example_feedback: Original quote from the reviewer\n- example_fix: What was changed\n\nQUALITY: Only real review blindspots. No subjective style opinions.\nNothing that only a domain expert could know.\nIf nothing extractable: empty array.\n\nLANGUAGE: ALL fields MUST be in English.\n\nResponse: ONLY JSON array.",
+  "prompt_length": 1129,
+  "caller": "run_claude_cli"
+}
