@@ -20,6 +20,8 @@ github.com/evanphx/json-patch/v5 v5.9.11 h1:/8HVnzMq13/3x9TPvjG08wUGqBTmZBsCWzjT
 github.com/evanphx/json-patch/v5 v5.9.11/go.mod h1:3j+LviiESTElxA4p3EMKAB9HXj3/XEtnUf6OZxqIQTM=
 github.com/external-secrets/external-secrets/apis v0.0.0-20260305123308-c0251c8d3184 h1:ZDer05TwcwAfKpdK+PwBjjQQBf1Y149zdmSRAx5GPP8=
 github.com/external-secrets/external-secrets/apis v0.0.0-20260305123308-c0251c8d3184/go.mod h1:Ne6H/bciRDZLiH8IB17B1BiIi7BtOoGN2TCRNsrCBsI=
+github.com/external-secrets/external-secrets/apis v0.0.0-20260602093541-61a0ac4155f6 h1:tdRlm9TLteGVmmfsG8lPIdXLlaEvlMj4xIHZ7kbDzCY=
+github.com/external-secrets/external-secrets/apis v0.0.0-20260602093541-61a0ac4155f6/go.mod h1:HQ9meq5potOFFYrr1rDYrIRyCMJ2MmbfhyDdRDqVpt0=
 github.com/fsnotify/fsnotify v1.9.0 h1:2Ml+OJNzbYCTzsxtv8vKSFD9PbJjmhYF14k/jKC7S9k=
 github.com/fsnotify/fsnotify v1.9.0/go.mod h1:8jBTzvmWwFyi3Pb8djgCCO5IBqzKJ/Jwo8TRcHyHii0=
 github.com/fxamacker/cbor/v2 v2.9.0 h1:NpKPmjDBgUfBms6tr6JZkTHtfFGcMKsw3eGcmD/sapM=
