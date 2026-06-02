@@ -231,6 +231,42 @@ func TestBootstrapSpecFields(t *testing.T) {
 	if bootstrap.Region != "" {
 		t.Errorf("expected empty Region, got %q", bootstrap.Region)
 	}
+	// CC-0109 (REQ-001): PasswordRotation is an optional pointer that defaults
+	// to nil so the feature stays off unless explicitly enabled.
+	if bootstrap.PasswordRotation != nil {
+		t.Errorf("expected nil PasswordRotation, got %v", bootstrap.PasswordRotation)
+	}
+}
+
+// TestBootstrapSpecPasswordRotationField verifies the optional
+// *PasswordRotationSpec field added for CC-0109 (REQ-001) round-trips through
+// DeepCopy with independent memory for the pointer, so mutating the clone does
+// not alias the original. Backs REQ-001 at the type level — webhook
+// defaulting/validation is covered separately in keystone_webhook_test.go.
+func TestBootstrapSpecPasswordRotationField(t *testing.T) {
+	spec := BootstrapSpec{
+		PasswordRotation: &PasswordRotationSpec{
+			Enabled:        true,
+			Schedule:       "0 0 1 * *",
+			Suspend:        false,
+			PasswordLength: 32,
+		},
+	}
+
+	clone := spec.DeepCopy()
+	if clone.PasswordRotation == spec.PasswordRotation {
+		t.Errorf("DeepCopy did not allocate a new *PasswordRotationSpec")
+	}
+	if *clone.PasswordRotation != *spec.PasswordRotation {
+		t.Errorf("DeepCopy altered PasswordRotation values: got %+v want %+v",
+			clone.PasswordRotation, spec.PasswordRotation)
+	}
+	// Mutating the clone must not affect the original (independent memory).
+	clone.PasswordRotation.Schedule = "*/5 * * * *"
+	if spec.PasswordRotation.Schedule != "0 0 1 * *" {
+		t.Errorf("DeepCopy aliased PasswordRotation: mutating clone changed original schedule to %q",
+			spec.PasswordRotation.Schedule)
+	}
 }
 
 func TestKeystoneStatusFields(t *testing.T) {

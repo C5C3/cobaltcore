@@ -45,6 +45,22 @@ const (
 	// and cannot reference Go constants.
 	DefaultTrustFlushSchedule = "0 * * * *"
 
+	// DefaultPasswordRotationSchedule is the cron expression materialized by the
+	// defaulting webhook when spec.bootstrap.passwordRotation.enabled is true and
+	// schedule is empty (CC-0109, REQ-004). It is the single source of truth
+	// shared by Default() and the validate() error message so the cadence cannot
+	// drift across call sites. The +kubebuilder:default marker on
+	// PasswordRotationSpec.Schedule must be kept in sync with this constant —
+	// kubebuilder markers require a string literal and cannot reference Go
+	// constants. The default is monthly (midnight on the 1st).
+	DefaultPasswordRotationSchedule = "0 0 1 * *" //nolint:gosec // G101 false positive: cron schedule, not a credential
+
+	// DefaultPasswordRotationLength is the generated-password length materialized
+	// by the defaulting webhook when passwordRotation is enabled and
+	// passwordLength is zero (CC-0109, REQ-004). It is kept in sync with the
+	// +kubebuilder:default marker on PasswordRotationSpec.PasswordLength.
+	DefaultPasswordRotationLength int32 = 32
+
 	// DefaultDatabaseTLSMode is the verification strength materialized by the
 	// defaulting webhook when spec.database.tls is present with an empty mode
 	// (CC-0106, REQ-013). "require" encrypts the connection without peer
@@ -123,6 +139,22 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 		obj.Spec.TrustFlush = &TrustFlushSpec{
 			Schedule: DefaultTrustFlushSchedule,
 			Suspend:  false,
+		}
+	}
+	// REQ-004 (CC-0109): When scheduled admin-password rotation is enabled, fill
+	// the leaf defaults so the sub-reconciler and generated CronJob have a single
+	// source of truth in the production admission path. Unlike TrustFlush, the
+	// block is deliberately NOT materialized when nil — scheduled rotation is
+	// strictly opt-in, so a CR that never set passwordRotation must never have it
+	// turned on, and a disabled block is left untouched because the sub-reconciler
+	// tears everything down when disabled. The leaf +kubebuilder:default markers
+	// remain as defense-in-depth for callers that bypass this webhook.
+	if pr := obj.Spec.Bootstrap.PasswordRotation; pr != nil && pr.Enabled {
+		if pr.Schedule == "" {
+			pr.Schedule = DefaultPasswordRotationSchedule
+		}
+		if pr.PasswordLength == 0 {
+			pr.PasswordLength = DefaultPasswordRotationLength
 		}
 	}
 	// REQ-002 (CC-0040): Default zero-valued sub-fields of spec.uwsgi when non-nil.
@@ -358,6 +390,57 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 				specPath.Child("trustFlush", "schedule"),
 				k.Spec.TrustFlush.Schedule,
 				fmt.Sprintf("invalid cron expression: %v", err),
+			))
+		}
+	}
+
+	// REQ-004 / REQ-014 (CC-0109): Validate scheduled admin-password rotation.
+	// Only enforced when the feature is enabled — a nil or disabled block leaves
+	// it off (the defaulting webhook does not materialize it), so a malformed
+	// schedule on a disabled block is tolerated. When enabled, the schedule must
+	// be a valid standard cron expression. The admin-password Secret reference is
+	// also required (boundary 3): Model B pushes the new password to OpenBao, from
+	// where the keystone-admin ExternalSecret round-trips it back into that Secret
+	// and Part 1 (CC-0108) re-bootstraps — a missing reference makes rotation a
+	// no-op.
+	if pr := k.Spec.Bootstrap.PasswordRotation; pr != nil && pr.Enabled {
+		prPath := specPath.Child("bootstrap", "passwordRotation")
+		if pr.Schedule == "" {
+			allErrs = append(allErrs, field.Required(
+				prPath.Child("schedule"),
+				fmt.Sprintf("schedule must be set when passwordRotation is enabled; default is %q", DefaultPasswordRotationSchedule),
+			))
+		} else if _, err := cron.ParseStandard(pr.Schedule); err != nil {
+			allErrs = append(allErrs, field.Invalid(
+				prPath.Child("schedule"),
+				pr.Schedule,
+				fmt.Sprintf("invalid cron expression: %v", err),
+			))
+		}
+		if k.Spec.Bootstrap.AdminPasswordSecretRef.Name == "" {
+			allErrs = append(allErrs, field.Required(
+				specPath.Child("bootstrap", "adminPasswordSecretRef", "name"),
+				"adminPasswordSecretRef.name must be set when passwordRotation is enabled",
+			))
+		}
+		// REQ-004 (CC-0109): Defense-in-depth passwordLength check alongside the
+		// +kubebuilder:validation:Minimum=24 marker on
+		// PasswordRotationSpec.PasswordLength. A zero value is tolerated — the
+		// defaulting webhook materializes DefaultPasswordRotationLength (32) before
+		// validation in the normal admission path, and the reconciler floors it at
+		// 24 (normalizedAdminPasswordLength). This guard rejects an explicit
+		// out-of-range value if CRD schema admission is bypassed, matching the
+		// defense-in-depth convention every other Minimum-marked field in this
+		// webhook follows (Fernet/CredentialKeys maxActiveKeys, UWSGI harakiri /
+		// httpKeepAliveTimeout, terminationGracePeriodSeconds). The literal 24
+		// mirrors the marker — kubebuilder markers cannot reference Go constants,
+		// and the api package cannot import the controller's adminPasswordMinLength
+		// without a cycle.
+		if pr.PasswordLength != 0 && pr.PasswordLength < 24 {
+			allErrs = append(allErrs, field.Invalid(
+				prPath.Child("passwordLength"),
+				pr.PasswordLength,
+				"passwordLength must be at least 24",
 			))
 		}
 	}

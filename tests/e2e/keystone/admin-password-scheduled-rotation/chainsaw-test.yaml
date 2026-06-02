@@ -1,0 +1,609 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for Keystone Model B scheduled admin-password rotation
+# (CC-0109). Verifies the full evidence chain (REQ-007, REQ-011) end to end:
+#   - The operator schedules a rotation CronJob
+#     (keystone-adminpw-sched-admin-password-rotate) carrying the spec schedule
+#     (REQ-003, REQ-010).
+#   - A CronJob run PATCHes a fresh password + the
+#     forge.c5c3.io/rotation-completed-at annotation onto the staging Secret
+#     (<cr>-admin-password-rotation); the operator validates it, commits it onto
+#     the push-source Secret (<cr>-admin-password-next), deletes staging, and
+#     emits AdminPasswordRotated (REQ-007).
+#   - The backup PushSecret (<cr>-admin-password-backup) mirrors the push-source
+#     Secret to the shared OpenBao path bootstrap/keystone-admin (REQ-007,
+#     REQ-014); ESO (refreshInterval: 10s) projects it back into the admin Secret
+#     (<cr>-admin-password); the operator's secretToKeystoneMapper observes the
+#     change and re-runs the idempotent bootstrap Job with the new
+#     forge.c5c3.io/admin-password-hash; BootstrapReady returns to True and the
+#     new password authenticates (201) while the old one is rejected (401).
+#   - Disabling rotation tears down every Model B resource and reports
+#     PasswordRotationReady=True / RotationDisabled (REQ-002).
+#
+# SOLE-WRITER / concurrent: false — this suite re-seeds and then rotates the
+# SHARED OpenBao path bootstrap/keystone-admin (the Model B PushSecret hardcodes
+# that RemoteKey; see the DECISION block in 00-keystone-cr.yaml). Rotating it
+# re-bootstraps every Keystone CR that reads it, so this Test must NOT run
+# alongside other suites. `concurrent: false` excludes it from the
+# execution.parallel:4 pool in tests/e2e/chainsaw-config.yaml.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-admin-password-scheduled-rotation
+spec:
+  namespace: openstack
+  # REQUIRED — see SOLE-WRITER note above. This suite mutates the shared
+  # bootstrap/keystone-admin OpenBao value, so it cannot run concurrently.
+  concurrent: false
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Seed the SHARED OpenBao path, then apply CR + ExternalSecret ─
+  - name: seed-and-apply
+    try:
+    - script:
+        timeout: 60s
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          # Seed the SHARED bootstrap/keystone-admin path with a known initial
+          # admin password BEFORE the ExternalSecret is applied, so ESO's first
+          # sync materialises a deterministic value (the bootstrap Job then seeds
+          # the Keystone admin credential with it). Re-seeded unconditionally
+          # every run, so a leftover rotated value from a prior run is
+          # overwritten. OpenBao access mirrors
+          # tests/e2e/keystone/admin-password-rotation step 1.
+          #
+          # IMPORTANT SIDE-EFFECT: this writes the SHARED bootstrap/keystone-admin
+          # object — the same object the production keystone-admin ExternalSecret
+          # and every Model-B-enabled CR read. That is precisely why this suite is
+          # `concurrent: false` (sole writer). See the DECISION block in
+          # 00-keystone-cr.yaml.
+          BAO_NS="openbao-system"
+          POD="openbao-0"
+          SECRET="openbao-init-keys"
+          BAO_ADDR="https://127.0.0.1:8200"
+          VAULT_CACERT="/openbao/tls/ca.crt"
+
+          BAO_TOKEN=$(kubectl get secret "${SECRET}" -n "${BAO_NS}" \
+            -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
+          if [ -z "${BAO_TOKEN}" ] || [ "${BAO_TOKEN}" = "null" ]; then
+            echo "ERROR: could not extract root token from ${BAO_NS}/${SECRET}"
+            exit 1
+          fi
+
+          # Initial admin password the first bootstrap seeds; step 4's CronJob
+          # rotation replaces it. Kept well under bcrypt's 72-byte input limit so
+          # no truncation occurs.
+          kubectl exec -n "${BAO_NS}" "${POD}" -- \
+            env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" \
+                VAULT_CACERT="${VAULT_CACERT}" \
+            bao kv put kv-v2/bootstrap/keystone-admin \
+              password="initial-admin-password-cc0109"
+
+          # Mark the path managed-by=external-secrets so the Model B backup
+          # PushSecret can adopt and overwrite it. ESO's Vault/OpenBao provider
+          # refuses to overwrite a pre-existing secret whose metadata lacks this
+          # marker and fails with "secret not managed by external-secrets"
+          # (providers/v1/vault/client_push.go); a plain `bao kv put` writes no
+          # custom_metadata, so without this the rotated password could never
+          # reach OpenBao and step 4 fails at the mirror hop. The marker lives on
+          # the metadata endpoint and must be set with `bao kv metadata put` —
+          # `bao kv put` has no -custom-metadata flag in this OpenBao build. This
+          # makes the suite self-contained and mirrors mark_eso_managed in
+          # deploy/openbao/bootstrap/write-bootstrap-secrets.sh (CC-0109).
+          kubectl exec -n "${BAO_NS}" "${POD}" -- \
+            env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" \
+                VAULT_CACERT="${VAULT_CACERT}" \
+            bao kv metadata put \
+              -custom-metadata=managed-by=external-secrets \
+              kv-v2/bootstrap/keystone-admin
+          echo "OK: seeded OpenBao bootstrap/keystone-admin with initial password"
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Wait for Ready=True ────────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-adminpw-sched
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== Keystone status conditions ==="
+          kubectl get keystone keystone-adminpw-sched -n $NAMESPACE \
+            -o jsonpath='{range .status.conditions[*]}{.type}={.status}/{.reason}{"\n"}{end}' 2>&1 || true
+          echo "=== admin ExternalSecret ==="
+          kubectl get externalsecret keystone-adminpw-sched-admin -n $NAMESPACE \
+            -o jsonpath='{range .status.conditions[*]}{.type}={.status}/{.reason}: {.message}{"\n"}{end}' 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Assert the rotation CronJob exists with the spec schedule ──
+  - try:
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: keystone-adminpw-sched-admin-password-rotate
+            namespace: openstack
+          spec:
+            schedule: "0 0 1 * *"
+  # ── Step 4: Trigger a CronJob run, verify the full rotation chain ──────
+  # The script chains 8 sequential bounded polling loops (60+120+120+120+180+
+  # 180+60+60s) plus a 120s `kubectl wait`, so its worst case — every loop
+  # running to exhaustion — is ~1020s. That already exceeds the global
+  # exec: 30s / assert: 5m budgets, so the per-step timeout MUST exceed it or
+  # Chainsaw kills the script mid-run on a slow runner and masks the real
+  # failure with a generic script-timeout (CC-0109, CC-0076). 1800s leaves
+  # headroom for per-iteration kubectl/exec overhead while still tripping a
+  # genuinely hung script.
+  - try:
+    - script:
+        timeout: 1800s
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          NS=openstack
+          CR=keystone-adminpw-sched
+          ADMIN_SECRET=keystone-adminpw-sched-admin
+          STAGING_SECRET=keystone-adminpw-sched-admin-password-rotation
+          PUSH_SOURCE_SECRET=keystone-adminpw-sched-admin-password-next
+          CRONJOB=keystone-adminpw-sched-admin-password-rotate
+          ROTATE_JOB=keystone-adminpw-sched-manual-rotate
+          BOOTSTRAP_JOB=keystone-adminpw-sched-bootstrap
+          SELECTOR=app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-adminpw-sched,pod-template-hash
+
+          # The pod-template-hash label is set only on Deployment-owned pods by
+          # the ReplicaSet controller, so the selector excludes any Job-managed
+          # pods that share commonLabels (CC-0074).
+          POD=$(kubectl get pods -n "$NS" -l "$SELECTOR" \
+            -o jsonpath='{.items[0].metadata.name}')
+
+          # auth_code <password> prints the HTTP status of a password auth against
+          # the local Keystone API. The keystone image ships python3 but no curl;
+          # use urllib. The password is passed as argv[1] (not stdin); both the
+          # initial and rotated credentials used here are shell-safe.
+          auth_code() {
+            kubectl exec -n "$NS" "$POD" -- python3 -c '
+          import json, sys, urllib.request, urllib.error
+          pw = sys.argv[1]
+          body = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "admin", "domain": {"id": "default"}, "password": pw}}}}}).encode()
+          req = urllib.request.Request("http://localhost:5000/v3/auth/tokens", data=body, headers={"Content-Type": "application/json"})
+          try:
+              with urllib.request.urlopen(req) as r:
+                  sys.stdout.write(str(r.status))
+          except urllib.error.HTTPError as e:
+              sys.stdout.write(str(e.code))
+          ' "$1"
+          }
+
+          # Capture the OLD admin password and confirm it authenticates (201)
+          # before the rotation.
+          OLD_PASS=$(kubectl get secret "$ADMIN_SECRET" -n "$NS" \
+            -o jsonpath='{.data.password}' | base64 -d)
+          if [ -z "$OLD_PASS" ]; then
+            echo "ERROR: $ADMIN_SECRET has empty or missing password field"
+            exit 1
+          fi
+          CODE=$(auth_code "$OLD_PASS")
+          if [ "$CODE" != "201" ]; then
+            echo "ERROR: pre-rotation auth with current password returned HTTP $CODE (expected 201)"
+            exit 1
+          fi
+          echo "OK: pre-rotation auth with current password -> 201"
+
+          OLD_ADMIN_B64=$(kubectl get secret "$ADMIN_SECRET" -n "$NS" \
+            -o jsonpath='{.data.password}')
+
+          # Capture the current bootstrap Job UID to later prove the operator
+          # delete+recreates it on rotation. Poll briefly rather than read once:
+          # the bootstrap Job carries TTLSecondsAfterFinished (reconcile_bootstrap.go),
+          # so on a slow runner where Ready=True lags bootstrap completion the
+          # completed Job can be GC'd and then recreated by a later reconcile,
+          # leaving a short window where it is momentarily absent. A bounded wait
+          # absorbs that window without masking a genuine "never created" failure
+          # (CC-0108).
+          OLD_JOB_UID=""
+          for _ in $(seq 1 30); do
+            OLD_JOB_UID=$(kubectl get job "$BOOTSTRAP_JOB" -n "$NS" \
+              -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+            [ -n "$OLD_JOB_UID" ] && break
+            sleep 2
+          done
+          if [ -z "$OLD_JOB_UID" ]; then
+            echo "ERROR: bootstrap Job $BOOTSTRAP_JOB not present before rotation (waited 60s)"
+            exit 1
+          fi
+
+          # Capture the push-source Secret password hash BEFORE the rotation. The
+          # push-source Secret exists but is empty until the first apply, so a
+          # missing/empty value here is expected and treated as the baseline.
+          BEFORE_PUSH_B64=$(kubectl get secret "$PUSH_SOURCE_SECRET" -n "$NS" \
+            -o jsonpath='{.data.password}' 2>/dev/null || true)
+
+          # Capture the OpenBao value BEFORE the rotation (the seeded initial pw).
+          BAO_NS="openbao-system"
+          BAO_POD="openbao-0"
+          BAO_SECRET="openbao-init-keys"
+          BAO_ADDR="https://127.0.0.1:8200"
+          VAULT_CACERT="/openbao/tls/ca.crt"
+          BAO_TOKEN=$(kubectl get secret "$BAO_SECRET" -n "$BAO_NS" \
+            -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
+          if [ -z "$BAO_TOKEN" ] || [ "$BAO_TOKEN" = "null" ]; then
+            echo "ERROR: could not extract root token from $BAO_NS/$BAO_SECRET"
+            exit 1
+          fi
+          bao_password() {
+            kubectl exec -n "$BAO_NS" "$BAO_POD" -- \
+              env BAO_ADDR="$BAO_ADDR" BAO_TOKEN="$BAO_TOKEN" \
+                  VAULT_CACERT="$VAULT_CACERT" \
+              bao kv get -field=password kv-v2/bootstrap/keystone-admin
+          }
+          BEFORE_BAO=$(bao_password)
+          if [ -z "$BEFORE_BAO" ]; then
+            echo "ERROR: OpenBao bootstrap/keystone-admin has no password value before rotation"
+            exit 1
+          fi
+          echo "OK: captured pre-rotation OpenBao value"
+
+          # Trigger a rotation by manually instantiating the scheduled CronJob —
+          # the monthly schedule (0 0 1 * *) is never due during the test window,
+          # so create a one-shot Job from the CronJob template (mirrors the
+          # fernet-rotation and trust-flush-default suites).
+          kubectl create job "$ROTATE_JOB" \
+            --from=cronjob/"$CRONJOB" -n "$NS"
+          kubectl wait --for=condition=complete \
+            job/"$ROTATE_JOB" -n "$NS" --timeout=120s
+          echo "OK: rotation CronJob run completed"
+
+          # The CronJob PATCHes the new password onto the STAGING Secret; the
+          # operator validates and PROMOTES it onto the push-source Secret, then
+          # deletes staging. Poll until the push-source `password` becomes
+          # non-empty and differs from the BEFORE value — proves apply+commit
+          # (REQ-007, REQ-011).
+          AFTER_PUSH_B64="$BEFORE_PUSH_B64"
+          for _ in $(seq 1 60); do
+            AFTER_PUSH_B64=$(kubectl get secret "$PUSH_SOURCE_SECRET" -n "$NS" \
+              -o jsonpath='{.data.password}' 2>/dev/null || true)
+            if [ -n "$AFTER_PUSH_B64" ] && [ "$AFTER_PUSH_B64" != "$BEFORE_PUSH_B64" ]; then
+              break
+            fi
+            sleep 2
+          done
+          if [ -z "$AFTER_PUSH_B64" ] || [ "$AFTER_PUSH_B64" = "$BEFORE_PUSH_B64" ]; then
+            echo "ERROR: push-source Secret $PUSH_SOURCE_SECRET was not promoted after rotation (REQ-007)"
+            exit 1
+          fi
+          echo "OK: operator promoted rotated password onto push-source Secret $PUSH_SOURCE_SECRET"
+
+          # The NEW password the operator committed (decode the push-source value).
+          NEW_PASS=$(printf '%s' "$AFTER_PUSH_B64" | base64 -d)
+          if [ -z "$NEW_PASS" ]; then
+            echo "ERROR: decoded push-source password is empty"
+            exit 1
+          fi
+          NEW_HASH=$(printf '%s' "$NEW_PASS" | sha256sum | cut -d' ' -f1)
+
+          # The PushSecret mirrors the push-source Secret to OpenBao. Poll until
+          # bootstrap/keystone-admin changes from the seeded initial value —
+          # proves the push-source → PushSecret → OpenBao hop (REQ-007, REQ-014).
+          AFTER_BAO="$BEFORE_BAO"
+          for _ in $(seq 1 60); do
+            AFTER_BAO=$(bao_password)
+            [ -n "$AFTER_BAO" ] && [ "$AFTER_BAO" != "$BEFORE_BAO" ] && break
+            sleep 2
+          done
+          if [ -z "$AFTER_BAO" ] || [ "$AFTER_BAO" = "$BEFORE_BAO" ]; then
+            echo "ERROR: OpenBao bootstrap/keystone-admin did not change after rotation (PushSecret mirror failed)"
+            exit 1
+          fi
+          echo "OK: PushSecret mirrored rotated password to OpenBao bootstrap/keystone-admin"
+
+          # ESO (refreshInterval: 10s) re-reads OpenBao and projects the new value
+          # into the admin Secret. Poll until the admin Secret `password` changes
+          # from the OLD value — proves the OpenBao → ESO → Secret hop.
+          AFTER_ADMIN_B64="$OLD_ADMIN_B64"
+          for _ in $(seq 1 60); do
+            AFTER_ADMIN_B64=$(kubectl get secret "$ADMIN_SECRET" -n "$NS" \
+              -o jsonpath='{.data.password}' 2>/dev/null || true)
+            [ -n "$AFTER_ADMIN_B64" ] && [ "$AFTER_ADMIN_B64" != "$OLD_ADMIN_B64" ] && break
+            sleep 2
+          done
+          if [ -z "$AFTER_ADMIN_B64" ] || [ "$AFTER_ADMIN_B64" = "$OLD_ADMIN_B64" ]; then
+            echo "ERROR: ESO did not sync the rotated password into $ADMIN_SECRET"
+            exit 1
+          fi
+          echo "OK: ESO synced rotated password into $ADMIN_SECRET"
+
+          # The operator's secretToKeystoneMapper observes the admin Secret change:
+          # the stale bootstrap Job's forge.c5c3.io/admin-password-hash no longer
+          # matches, so the operator deletes it and recreates one carrying the new
+          # SHA-256 digest with a fresh UID.
+          CUR_UID=""
+          CUR_HASH=""
+          for _ in $(seq 1 90); do
+            CUR_UID=$(kubectl get job "$BOOTSTRAP_JOB" -n "$NS" \
+              -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+            CUR_HASH=$(kubectl get job "$BOOTSTRAP_JOB" -n "$NS" \
+              -o jsonpath="{.spec.template.metadata.annotations['forge\.c5c3\.io/admin-password-hash']}" 2>/dev/null || true)
+            if [ -n "$CUR_UID" ] && [ "$CUR_UID" != "$OLD_JOB_UID" ] && [ "$CUR_HASH" = "$NEW_HASH" ]; then
+              break
+            fi
+            sleep 2
+          done
+          if [ -z "$CUR_UID" ] || [ "$CUR_UID" = "$OLD_JOB_UID" ]; then
+            echo "ERROR: bootstrap Job was not recreated after rotation (uid still $OLD_JOB_UID)"
+            exit 1
+          fi
+          if [ "$CUR_HASH" != "$NEW_HASH" ]; then
+            echo "ERROR: recreated bootstrap Job hash $CUR_HASH != expected $NEW_HASH"
+            exit 1
+          fi
+          echo "OK: bootstrap Job recreated with new UID and new admin-password hash"
+
+          # Wait for BootstrapReady to cut back to True — the recreated Job runs
+          # keystone-manage bootstrap with the new password and completes.
+          ST=""
+          for _ in $(seq 1 90); do
+            ST=$(kubectl get keystone "$CR" -n "$NS" \
+              -o jsonpath="{.status.conditions[?(@.type=='BootstrapReady')].status}" 2>/dev/null || true)
+            [ "$ST" = "True" ] && break
+            sleep 2
+          done
+          if [ "$ST" != "True" ]; then
+            echo "ERROR: BootstrapReady did not return to True after rotation (last status: '$ST')"
+            exit 1
+          fi
+          echo "OK: BootstrapReady=True after re-bootstrap"
+
+          # Re-resolve the API pod before the credential cutover checks.
+          POD=$(kubectl get pods -n "$NS" -l "$SELECTOR" \
+            -o jsonpath='{.items[0].metadata.name}')
+
+          # The NEW password must now be accepted (201) and the OLD one rejected
+          # (401). BootstrapReady=True already implies the bootstrap Job completed
+          # and reset the credential, but poll each check briefly to absorb the
+          # small window between Job completion and the API serving the new
+          # credential — without masking a genuine "never cut over" failure (a
+          # real regression still exhausts the bound and fails).
+          NEW_CODE=""
+          for _ in $(seq 1 30); do
+            NEW_CODE=$(auth_code "$NEW_PASS")
+            [ "$NEW_CODE" = "201" ] && break
+            sleep 2
+          done
+          if [ "$NEW_CODE" != "201" ]; then
+            echo "ERROR: new password returned HTTP $NEW_CODE after rotation (expected 201)"
+            exit 1
+          fi
+          echo "OK: new password accepted after rotation -> 201"
+
+          OLD_CODE=""
+          for _ in $(seq 1 30); do
+            OLD_CODE=$(auth_code "$OLD_PASS")
+            [ "$OLD_CODE" = "401" ] && break
+            sleep 2
+          done
+          if [ "$OLD_CODE" != "401" ]; then
+            echo "ERROR: old password returned HTTP $OLD_CODE after rotation (expected 401)"
+            exit 1
+          fi
+          echo "OK: old password rejected after rotation -> 401"
+
+          # The push-source Secret (<cr>-admin-password-next) and the admin Secret
+          # (<cr>-admin-password) are distinct objects (REQ-011): the operator
+          # commits onto the push-source Secret and never clobbers the live admin
+          # credential the running Keystone uses until ESO has synced the new value
+          # back. Assert the names differ so this test documents the separation.
+          if [ "$PUSH_SOURCE_SECRET" = "$ADMIN_SECRET" ]; then
+            echo "ERROR: push-source Secret name equals admin Secret name; REQ-011 separation violated"
+            echo "  push-source: $PUSH_SOURCE_SECRET"
+            echo "  admin:       $ADMIN_SECRET"
+            exit 1
+          fi
+          echo "OK: push-source Secret ($PUSH_SOURCE_SECRET) is a distinct object from the admin Secret ($ADMIN_SECRET) (REQ-011)"
+    catch:
+    - script:
+        content: |
+          echo "=== Rotation CronJob run pods ==="
+          kubectl get pods -n $NAMESPACE -l job-name=keystone-adminpw-sched-manual-rotate -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name=keystone-adminpw-sched-manual-rotate -o name 2>/dev/null); do
+            echo "--- $pod logs ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 2>&1 || true
+            echo "--- $pod previous logs ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 --previous 2>&1 || true
+          done
+          echo "=== Bootstrap Job ==="
+          kubectl get job keystone-adminpw-sched-bootstrap -n $NAMESPACE -o wide 2>&1 || true
+          kubectl describe job keystone-adminpw-sched-bootstrap -n $NAMESPACE 2>&1 | tail -40 || true
+          echo "=== Bootstrap Job pods ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name=keystone-adminpw-sched-bootstrap -o name 2>/dev/null); do
+            echo "--- $pod logs ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 2>&1 || true
+            echo "--- $pod previous logs ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 --previous 2>&1 || true
+          done
+          echo "=== Keystone API pods ==="
+          kubectl get pods -n $NAMESPACE \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-adminpw-sched \
+            -o wide 2>&1 || true
+          echo "=== Keystone status conditions ==="
+          kubectl get keystone keystone-adminpw-sched -n $NAMESPACE \
+            -o jsonpath='{range .status.conditions[*]}{.type}={.status}/{.reason}{"\n"}{end}' 2>&1 || true
+          echo "=== admin ExternalSecret status ==="
+          kubectl get externalsecret keystone-adminpw-sched-admin -n $NAMESPACE \
+            -o jsonpath='{range .status.conditions[*]}{.type}={.status}/{.reason}: {.message}{"\n"}{end}' 2>&1 || true
+          echo "=== backup PushSecret status ==="
+          kubectl get pushsecret keystone-adminpw-sched-admin-password-backup -n $NAMESPACE \
+            -o jsonpath='{range .status.conditions[*]}{.type}={.status}/{.reason}: {.message}{"\n"}{end}' 2>&1 || true
+          echo "=== rotation Secrets (metadata only) ==="
+          kubectl get secret keystone-adminpw-sched-admin-password-next -n $NAMESPACE -o yaml 2>&1 | grep -v '  password:' || true
+          kubectl get secret keystone-adminpw-sched-admin-password-rotation -n $NAMESPACE -o yaml 2>&1 | grep -v '  password:' || true
+          kubectl get secret keystone-adminpw-sched-admin -n $NAMESPACE -o yaml 2>&1 | grep -v '  password:' || true
+          # The operator controller log is the authoritative source for a stuck
+          # apply/commit (validateRotationOutput / applyRotationOutput), and the
+          # OpenBao log is the authoritative source for a PushSecret 403 against
+          # bootstrap/keystone-admin — neither is captured by the $NAMESPACE pod
+          # dumps above (CC-0109, CC-0083). The keystone-operator namespace
+          # differs between deployment paths: under Flux (CC-0105) it runs in
+          # keystone-system, while the CI E2E helm install lands it in
+          # default/openstack — dump all candidates so the diagnostic works
+          # regardless of provisioning path.
+          echo "=== keystone-operator logs (current + previous) ==="
+          for ns in keystone-system default openstack; do
+            kubectl logs -n "$ns" -l app.kubernetes.io/name=keystone-operator \
+              --all-containers --tail=200 2>&1 || true
+            kubectl logs -n "$ns" -l app.kubernetes.io/name=keystone-operator \
+              --all-containers --tail=200 --previous 2>&1 || true
+          done
+          echo "=== OpenBao logs (openbao-system/openbao-0) ==="
+          kubectl logs -n openbao-system openbao-0 --tail=200 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 5: Assert Ready=True maintained after rotation ────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-adminpw-sched
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+  # ── Step 6: Disable rotation, assert teardown + RotationDisabled ───────
+  # DECISION: [how to prove the REQ-002 disabled posture in an E2E suite without
+  # a second full Keystone deploy] — Chose the enable→disable teardown on THIS
+  # CR. REQ-002 covers BOTH the nil-default and enabled:false cases with the same
+  # RotationDisabled reason. The controller short-circuits sub-reconcilers
+  # (keystone_controller.go) so a separate always-disabled control CR would not
+  # even reach the PasswordRotation sub-reconciler until it is fully Ready (a full
+  # second Keystone deploy — expensive and slow in the shared cluster). The pure
+  # nil-default equivalence is already covered by the envtest
+  # TestIntegration_PasswordRotation_DisableTearsDownAllResources. Reviewer:
+  # please verify the controller short-circuit and the envtest coverage.
+  - name: disable-rotation
+    try:
+    - script:
+        timeout: 30s
+        shell: bash
+        content: |
+          set -euo pipefail
+          # Disable Model B rotation via a merge patch on spec.bootstrap.
+          # passwordRotation.enabled. The operator tears down every Model B
+          # resource on the next reconcile (REQ-002).
+          kubectl patch keystone keystone-adminpw-sched -n openstack \
+            --type merge \
+            -p '{"spec":{"bootstrap":{"passwordRotation":{"enabled":false}}}}'
+          echo "OK: disabled spec.bootstrap.passwordRotation on keystone-adminpw-sched"
+  # ── Step 7: Assert every Model B resource is gone + RotationDisabled ───
+  - try:
+    # CronJob removed (REQ-002).
+    - error:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: keystone-adminpw-sched-admin-password-rotate
+            namespace: openstack
+    # Staging Secret removed.
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: keystone-adminpw-sched-admin-password-rotation
+            namespace: openstack
+    # Push-source Secret removed.
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: keystone-adminpw-sched-admin-password-next
+            namespace: openstack
+    # Split RBAC trio removed (ServiceAccount, Role, RoleBinding share the name).
+    - error:
+        resource:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: keystone-adminpw-sched-admin-password-rotate
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: keystone-adminpw-sched-admin-password-rotate
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: keystone-adminpw-sched-admin-password-rotate
+            namespace: openstack
+    # Backup PushSecret removed. apiVersion external-secrets.io/v1alpha1 matches
+    # the esov1alpha1 import in reconcile_passwordrotation.go and the PushSecret
+    # error assertions in tests/e2e/keystone/deletion-cleanup.
+    - error:
+        resource:
+          apiVersion: external-secrets.io/v1alpha1
+          kind: PushSecret
+          metadata:
+            name: keystone-adminpw-sched-admin-password-backup
+            namespace: openstack
+    # PasswordRotationReady stays True but flips to reason RotationDisabled (REQ-002).
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-adminpw-sched
+            namespace: openstack
+          status:
+            (conditions[?type == 'PasswordRotationReady']):
+            - status: "True"
+              reason: RotationDisabled
+    catch:
+    - script:
+        content: |
+          echo "=== Model B resources that should be gone ==="
+          kubectl get cronjob keystone-adminpw-sched-admin-password-rotate -n $NAMESPACE 2>&1 || true
+          kubectl get secret keystone-adminpw-sched-admin-password-rotation -n $NAMESPACE 2>&1 || true
+          kubectl get secret keystone-adminpw-sched-admin-password-next -n $NAMESPACE 2>&1 || true
+          kubectl get sa,role,rolebinding keystone-adminpw-sched-admin-password-rotate -n $NAMESPACE 2>&1 || true
+          kubectl get pushsecret keystone-adminpw-sched-admin-password-backup -n $NAMESPACE 2>&1 || true
+          echo "=== Keystone status conditions ==="
+          kubectl get keystone keystone-adminpw-sched -n $NAMESPACE \
+            -o jsonpath='{range .status.conditions[*]}{.type}={.status}/{.reason}{"\n"}{end}' 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

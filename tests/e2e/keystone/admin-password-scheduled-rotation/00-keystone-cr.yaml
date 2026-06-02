@@ -1,0 +1,121 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Fixtures for the Keystone admin-password-scheduled-rotation E2E test
+# (CC-0109, Model B — REQ-002, REQ-007, REQ-010, REQ-011). Managed mode; a
+# distinct CR name (keystone-adminpw-sched) and a dedicated logical database
+# (keystone_adminpw_sched) keep this suite's Keystone instance isolated from the
+# other Keystone CRs that share the `openstack` namespace.
+#
+# This suite exercises Model B: the operator schedules a CronJob
+# (keystone-adminpw-sched-admin-password-rotate) that mints a fresh admin
+# password onto a staging Secret; the operator validates and commits it onto the
+# push-source Secret; a PushSecret mirrors that to OpenBao; ESO projects it back
+# into the admin Secret; and the bootstrap sub-reconciler re-runs to cut the
+# Keystone admin credential over to the new value (chainsaw-test.yaml step 4).
+#
+# DECISION: [whether this suite reads a DEDICATED OpenBao path (like CC-0108) or
+# the SHARED bootstrap/keystone-admin path] — Chose the SHARED
+# bootstrap/keystone-admin path because the Model B PushSecret hardcodes
+# RemoteKey: bootstrap/keystone-admin (single-CR assumption — REQ-014, boundary
+# 8, option a; see the DECISION comment on adminPasswordPushSecret in
+# operators/keystone/internal/controller/reconcile_passwordrotation.go). The
+# operator's backup PushSecret therefore writes the rotated password to
+# bootstrap/keystone-admin regardless of CR name, so this suite's dedicated admin
+# ExternalSecret MUST read from that SAME shared path for the evidence chain to
+# close (OpenBao change → ESO → admin Secret → re-bootstrap). Reviewer: please
+# verify this matches the hardcoded RemoteKey in reconcile_passwordrotation.go.
+#
+# Consequence of the shared path: rotating bootstrap/keystone-admin re-bootstraps
+# EVERY Keystone CR that reads it (the production keystone-admin ExternalSecret
+# in deploy/eso/externalsecrets/keystone-admin.yaml reads the same path). This
+# suite must therefore be the SOLE WRITER of that value while it runs:
+# chainsaw-test.yaml sets `concurrent: false` on the Test so it does not run
+# alongside other suites, and re-seeds bootstrap/keystone-admin with a known
+# initial password at the start for cross-run determinism. Unlike CC-0108 — which
+# used a dedicated bootstrap/keystone-adminpw path and so was parallel-safe — this
+# suite cannot be parallel-safe because the rotation target is shared.
+#
+# Why a DEDICATED CR/DB/admin Secret despite the shared OpenBao source: the
+# Keystone instance, its database, and the materialised admin Secret are all
+# per-suite so this test owns its own Deployment, bootstrap Job, and rotation
+# resources without colliding on names in the shared `openstack` namespace. Only
+# the OpenBao SOURCE object is shared (it has to be — see DECISION above).
+#
+# refreshInterval is short so the rotated value reaches the admin Secret within
+# one ESO tick — ESO does not watch OpenBao for changes, it re-reads the source
+# on its interval (or on a spec change), so a 1h default would never propagate
+# the rotation inside the test window (mirrors CC-0108).
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: keystone-adminpw-sched-admin
+  namespace: openstack
+spec:
+  refreshInterval: 10s
+  secretStoreRef:
+    name: openbao-cluster-store
+    kind: ClusterSecretStore
+  target:
+    name: keystone-adminpw-sched-admin
+    creationPolicy: Owner
+  data:
+    - secretKey: password
+      remoteRef:
+        # SHARED path — see the DECISION block above. The Model B backup
+        # PushSecret writes the rotated password here (hardcoded RemoteKey), so
+        # this ExternalSecret must read the same object to observe the rotation.
+        key: bootstrap/keystone-admin
+        property: password
+---
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-adminpw-sched
+  namespace: openstack
+spec:
+  replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_adminpw_sched
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-adminpw-sched-admin
+    region: RegionOne
+    # Model B scheduled admin-password rotation (CC-0109, REQ-010). The
+    # defaulting webhook fills passwordLength=32 and suspend=false when rotation
+    # is enabled; they are set explicitly here for reviewer clarity. The monthly
+    # schedule is never actually due during the test — chainsaw-test.yaml step 4
+    # triggers a rotation manually with `kubectl create job --from=cronjob`.
+    passwordRotation:
+      enabled: true
+      schedule: "0 0 1 * *"
+      passwordLength: 32
+      suspend: false
+  # Disable dogpile.cache for this fixture. The e2e-operator Chainsaw suite runs
+  # many Keystone CRs against a single shared `openstack-memcached`, and every
+  # instance caches `admin@default` identity-backend lookups under the same
+  # memcached keys. A cache entry could answer this suite's auth request with a
+  # pre-rotation result, producing a false 201 where this test asserts 401 after
+  # rotation. Same rationale as the fernet-rotation and admin-password-rotation
+  # fixtures (CC-0074 follow-up: namespace cache keys per CR so shared memcached
+  # is safe).
+  extraConfig:
+    cache:
+      enabled: "false"

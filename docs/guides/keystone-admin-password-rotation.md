@@ -280,4 +280,5 @@ only new authentications with the old password are rejected.
 
 - [reconcileBootstrap](../reference/keystone/keystone-reconciler.md#reconcilebootstrap) — the authoritative contract for the bootstrap sub-reconciler and the admin-password-hash re-run gate.
 - [Labels and Annotations](../reference/keystone/keystone-reconciler.md#labels-and-annotations) — stable metadata keys, including `forge.c5c3.io/admin-password-hash` and `forge.c5c3.io/pod-spec-hash`.
+- See also [Schedule Keystone Admin Password Rotation](keystone-admin-password-scheduled-rotation.md) — the Model B (CC-0109) scheduled flow, where a CronJob mints the password instead of an operator writing OpenBao by hand.
 - Chainsaw test: `tests/e2e/keystone/admin-password-rotation/chainsaw-test.yaml` asserts this guide's happy path end-to-end — re-bootstrap on Secret change, old-password `401` / new-password `201` cutover, and unchanged API pod UIDs.

@@ -473,6 +473,7 @@ func TestAggregateReady_AllTrue(t *testing.T) {
 		{Type: conditionTypeHTTPRouteReady, Status: metav1.ConditionTrue},
 		{Type: "BootstrapReady", Status: metav1.ConditionTrue},
 		{Type: "TrustFlushReady", Status: metav1.ConditionTrue},
+		{Type: conditionTypePasswordRotationReady, Status: metav1.ConditionTrue},
 	}
 	g.Expect(aggregateReady(conditions)).To(BeTrue())
 }
@@ -1211,6 +1212,7 @@ func TestAggregateReadyAllTrueWithKeystoneAPIReady(t *testing.T) {
 		{Type: conditionTypeHTTPRouteReady, Status: metav1.ConditionTrue},
 		{Type: "BootstrapReady", Status: metav1.ConditionTrue},
 		{Type: "TrustFlushReady", Status: metav1.ConditionTrue},
+		{Type: conditionTypePasswordRotationReady, Status: metav1.ConditionTrue},
 	}
 	g.Expect(aggregateReady(conditions)).To(BeTrue(),
 		"aggregateReady should return true when all conditions including KeystoneAPIReady are True")
@@ -1245,6 +1247,25 @@ func TestAggregateReady_MissingHTTPRouteReady_ReturnsFalse(t *testing.T) {
 	}
 	g.Expect(aggregateReady(conditions)).To(BeFalse(),
 		"aggregateReady should return false when HTTPRouteReady condition is missing (CC-0065)")
+}
+
+// TestSubConditionTypes_IncludesPasswordRotationReady verifies the
+// PasswordRotationReady condition participates in the aggregate Ready gating so
+// that a failed scheduled admin-password rotation flips Ready to False
+// (CC-0109, REQ-009).
+func TestSubConditionTypes_IncludesPasswordRotationReady(t *testing.T) {
+	g := NewGomegaWithT(t)
+	g.Expect(subConditionTypes).To(ContainElement(conditionTypePasswordRotationReady))
+}
+
+// TestSubReconcilerConditionTypes_MapsPasswordRotation verifies the
+// "PasswordRotation" sub_reconciler label resolves to the
+// PasswordRotationReady condition_type so error-counter metrics carry the
+// correct condition_type label rather than the UNKNOWN sentinel (CC-0109,
+// CC-0089, REQ-002).
+func TestSubReconcilerConditionTypes_MapsPasswordRotation(t *testing.T) {
+	g := NewGomegaWithT(t)
+	g.Expect(subReconcilerConditionTypes).To(HaveKeyWithValue("PasswordRotation", conditionTypePasswordRotationReady))
 }
 
 // ---------------------------------------------------------------------------

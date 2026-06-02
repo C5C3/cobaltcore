@@ -73,6 +73,37 @@ write_secret_if_missing() {
   log "Secret '${kv_path}' written."
 }
 
+# Mark a KV-v2 path as managed by the External Secrets Operator so its
+# Vault/OpenBao PushSecret provider will adopt and overwrite it.
+#
+# Usage: mark_eso_managed <kv_path>
+#
+# ESO refuses to push to a pre-existing secret whose metadata lacks
+# custom_metadata.managed-by=external-secrets and fails with the error
+# "secret not managed by external-secrets"
+# (external-secrets providers/v1/vault/client_push.go). A path seeded above with
+# `bao kv put` carries no custom_metadata, so the Model B scheduled
+# admin-password rotation backup PushSecret (RemoteKey bootstrap/keystone-admin,
+# see operators/keystone/internal/controller/reconcile_passwordrotation.go) could
+# never mirror the rotated password back into OpenBao without this marker
+# (CC-0109). Stamping the exact marker ESO itself writes lets ESO treat the
+# seeded value as its own on the first push.
+#
+# Idempotent and migration-safe: it runs unconditionally (not gated on
+# write_secret_if_missing's existence check), so it also marks a secret that a
+# prior deploy already created without the marker. `bao kv metadata put` updates
+# only the metadata — the stored password versions are left untouched.
+mark_eso_managed() {
+  local kv_path="$1"
+
+  log "Marking '${kv_path}' as managed-by=external-secrets (ESO PushSecret adoption)..."
+  kubectl exec -n "$NAMESPACE" openbao-0 -- \
+    env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" VAULT_CACERT="${VAULT_CACERT}" \
+    BAO_KV_PATH="${kv_path}" \
+    sh -c "bao kv metadata put -custom-metadata=managed-by=external-secrets \"\${BAO_KV_PATH}\""
+  log "Secret '${kv_path}' marked ESO-managed."
+}
+
 ###############################################################################
 # Main
 ###############################################################################
@@ -83,6 +114,10 @@ main() {
 
   write_secret_if_missing "kv-v2/bootstrap/keystone-admin" \
     "password=${GENERATED_PASSWORD}"
+  # CC-0109: let the Model B admin-password rotation PushSecret overwrite this
+  # pre-seeded path (ESO's managed-by guard rejects it otherwise). See
+  # mark_eso_managed.
+  mark_eso_managed "kv-v2/bootstrap/keystone-admin"
 
   write_secret_if_missing "kv-v2/infrastructure/mariadb" \
     "root-password=${GENERATED_PASSWORD}"

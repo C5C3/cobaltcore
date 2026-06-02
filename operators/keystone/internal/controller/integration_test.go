@@ -4386,3 +4386,326 @@ func TestIntegration_AdminPasswordUnchangedNoChurn(t *testing.T) {
 			"Ready must stay True when the admin password is unchanged (CC-0108, REQ-003)")
 	}, 3*time.Second, pollInterval).Should(Succeed())
 }
+
+// --- CC-0109 Model B: scheduled admin-password rotation envtest coverage ---
+
+// integrationBrownfieldKeystoneWithPasswordRotation returns a brownfield Keystone
+// CR with Model B scheduled admin-password rotation enabled (CC-0109, REQ-001,
+// REQ-003), mirroring integrationBrownfieldKeystoneWithTrustFlush. PasswordLength
+// is pinned to DefaultPasswordRotationLength so the generated-password length the
+// CronJob is told to produce — and the operator-side validation floor — are
+// deterministic in envtest regardless of whether the defaulting webhook runs.
+func integrationBrownfieldKeystoneWithPasswordRotation(name, namespace, schedule string) *keystonev1alpha1.Keystone {
+	ks := integrationBrownfieldKeystone(name, namespace)
+	ks.Spec.Bootstrap.PasswordRotation = &keystonev1alpha1.PasswordRotationSpec{
+		Enabled:        true,
+		Schedule:       schedule,
+		PasswordLength: keystonev1alpha1.DefaultPasswordRotationLength,
+	}
+	return ks
+}
+
+// TestIntegration_PasswordRotation_CronJobShape verifies the scheduled
+// admin-password rotation CronJob's shape end-to-end through the API server
+// (CC-0109, REQ-003, REQ-005): once a rotation-enabled Keystone reaches Ready,
+// the operator creates <name>-admin-password-rotate carrying the spec schedule,
+// the rotate-script command, SECRET_NAME pointing at the staging Secret (never
+// the push-source Secret), and a fieldRef SECRET_NAMESPACE, and reports
+// PasswordRotationReady=True / PasswordRotationConfigured.
+func TestIntegration_PasswordRotation_CronJobShape(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-pwrotate-shape-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	const schedule = "0 0 1 * *"
+	ks := integrationBrownfieldKeystoneWithPasswordRotation("test-keystone", ns.Name, schedule)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	// The rotation CronJob must appear (CC-0109, REQ-003).
+	cronJobKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-admin-password-rotate"}
+	cronJob := &batchv1.CronJob{}
+	g.Eventually(func() error {
+		return c.Get(ctx, cronJobKey, cronJob)
+	}, eventuallyTimeout, pollInterval).Should(Succeed(),
+		"admin-password rotation CronJob should appear (CC-0109, REQ-003)")
+
+	// Schedule mirrors spec.bootstrap.passwordRotation.schedule (CC-0109, REQ-003).
+	g.Expect(cronJob.Spec.Schedule).To(Equal(schedule),
+		"CronJob schedule must match spec.bootstrap.passwordRotation.schedule")
+
+	// Suspend defaults to false (CC-0109, REQ-005).
+	g.Expect(cronJob.Spec.Suspend).NotTo(BeNil())
+	g.Expect(*cronJob.Spec.Suspend).To(BeFalse(), "CronJob must not be suspended by default")
+
+	// Container shape: single container, rotate-script command (CC-0109, REQ-005).
+	podSpec := cronJob.Spec.JobTemplate.Spec.Template.Spec
+	g.Expect(podSpec.Containers).To(HaveLen(1))
+	container := podSpec.Containers[0]
+	g.Expect(container.Name).To(Equal("admin-password-rotate"))
+	g.Expect(container.Command).To(Equal([]string{"/scripts/admin_password_rotate.sh"}))
+
+	// Env: SECRET_NAME points at the staging Secret; SECRET_NAMESPACE is a
+	// fieldRef to the pod namespace (CC-0109, REQ-005).
+	envMap := map[string]corev1.EnvVar{}
+	for _, e := range container.Env {
+		envMap[e.Name] = e
+	}
+	g.Expect(envMap["SECRET_NAME"].Value).To(Equal("test-keystone-admin-password-rotation"),
+		"SECRET_NAME must point at the staging Secret, never the push-source Secret (CC-0109, REQ-005)")
+	secretNamespaceEnv, ok := envMap["SECRET_NAMESPACE"]
+	g.Expect(ok).To(BeTrue(), "SECRET_NAMESPACE env must be set")
+	g.Expect(secretNamespaceEnv.ValueFrom).NotTo(BeNil())
+	g.Expect(secretNamespaceEnv.ValueFrom.FieldRef).NotTo(BeNil())
+	g.Expect(secretNamespaceEnv.ValueFrom.FieldRef.FieldPath).To(Equal("metadata.namespace"))
+
+	// ServiceAccount, commonLabels, and ownerRef (CC-0109, REQ-003).
+	g.Expect(podSpec.ServiceAccountName).To(Equal("test-keystone-admin-password-rotate"))
+	g.Expect(cronJob.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
+	g.Expect(cronJob.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+	g.Expect(cronJob.OwnerReferences).To(HaveLen(1))
+	g.Expect(cronJob.OwnerReferences[0].Name).To(Equal("test-keystone"))
+
+	// PasswordRotationReady=True with reason PasswordRotationConfigured (CC-0109, REQ-009).
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+	cond := waitForCondition(t, ctx, c, key, "PasswordRotationReady", metav1.ConditionTrue, eventuallyTimeout)
+	g.Expect(cond.Reason).To(Equal("PasswordRotationConfigured"))
+}
+
+// TestIntegration_PasswordRotation_SuspendTruePreservesSiblings verifies that
+// setting spec.bootstrap.passwordRotation.suspend=true pauses the CronJob
+// (*spec.Suspend becomes true) WITHOUT deleting it or any sibling resource and
+// without altering the schedule (CC-0109, REQ-005). Suspend is the operator's
+// supported way to pause rotation; it must never tear down Model B resources.
+func TestIntegration_PasswordRotation_SuspendTruePreservesSiblings(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-pwrotate-suspend-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	const schedule = "0 0 1 * *"
+	ks := integrationBrownfieldKeystoneWithPasswordRotation("test-keystone", ns.Name, schedule)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	cronJobKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-admin-password-rotate"}
+	g.Eventually(func() error {
+		return c.Get(ctx, cronJobKey, &batchv1.CronJob{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "rotation CronJob should exist before suspend")
+
+	// Pause via spec.bootstrap.passwordRotation.suspend=true (CC-0109, REQ-005).
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+	updated := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
+	updated.Spec.Bootstrap.PasswordRotation.Suspend = true
+	g.Expect(c.Update(ctx, updated)).To(Succeed())
+
+	// *spec.Suspend must become true while the CronJob is preserved (CC-0109, REQ-005).
+	cj := &batchv1.CronJob{}
+	g.Eventually(func() bool {
+		if err := c.Get(ctx, cronJobKey, cj); err != nil {
+			return false
+		}
+		return cj.Spec.Suspend != nil && *cj.Spec.Suspend
+	}, eventuallyTimeout, pollInterval).Should(BeTrue(),
+		"CronJob *spec.Suspend should become true and the CronJob must be preserved (CC-0109, REQ-005)")
+	g.Expect(cj.Spec.Schedule).To(Equal(schedule),
+		"toggling spec.bootstrap.passwordRotation.suspend must not change the schedule (CC-0109, REQ-005)")
+
+	// Every sibling resource must survive suspend — pausing is not teardown
+	// (CC-0109, REQ-005).
+	g.Consistently(func(ig Gomega) {
+		ig.Expect(c.Get(ctx, cronJobKey, &batchv1.CronJob{})).To(Succeed(), "CronJob preserved")
+		ig.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-admin-password-rotation"}, &corev1.Secret{})).
+			To(Succeed(), "staging Secret preserved")
+		ig.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-admin-password-next"}, &corev1.Secret{})).
+			To(Succeed(), "push-source Secret preserved")
+		ig.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-admin-password-rotate"}, &corev1.ServiceAccount{})).
+			To(Succeed(), "ServiceAccount preserved")
+	}, 2*time.Second, pollInterval).Should(Succeed(),
+		"suspend must pause the CronJob without deleting any sibling resource (CC-0109, REQ-005)")
+
+	// Still reported ready while paused (CC-0109, REQ-009).
+	cond := waitForCondition(t, ctx, c, key, "PasswordRotationReady", metav1.ConditionTrue, eventuallyTimeout)
+	g.Expect(cond.Reason).To(Equal("PasswordRotationConfigured"))
+}
+
+// TestIntegration_PasswordRotation_ApplyCommitsAndPushes drives the full Model B
+// apply flow in envtest (CC-0109, REQ-007, REQ-011, REQ-014): the operator
+// creates the empty push-source Secret and withholds the PushSecret while it is
+// empty; the test simulates the CronJob PATCHing a fresh password + completion
+// annotation onto the staging Secret; the reconciler commits the password onto
+// the push-source Secret, deletes staging, emits AdminPasswordRotated, and — now
+// that the push-source holds a valid password — ensures the clobber-safe
+// PushSecret targeting the flat single-CR OpenBao path.
+func TestIntegration_PasswordRotation_ApplyCommitsAndPushes(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-pwrotate-apply-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystoneWithPasswordRotation("test-keystone", ns.Name, "0 0 1 * *")
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ns.Name}, ks)).
+		To(Succeed(), "re-fetch Keystone CR post-reconcile for event lookups (CC-0109)")
+
+	// The operator-owned push-source Secret exists and starts empty (CC-0109, REQ-007).
+	pushSourceKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-admin-password-next"}
+	pushSource := &corev1.Secret{}
+	g.Eventually(func() error {
+		return c.Get(ctx, pushSourceKey, pushSource)
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "push-source Secret should exist")
+	g.Expect(pushSource.Data).To(BeEmpty(), "push-source Secret Data should start empty (CC-0109, REQ-007)")
+
+	// Clobber-safe gate: no PushSecret while the push-source is empty, so the
+	// shared bootstrap/keystone-admin OpenBao value is never overwritten with an
+	// empty payload (CC-0109, REQ-011, REQ-014).
+	pushSecretKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-admin-password-backup"}
+	g.Consistently(func() bool {
+		return apierrors.IsNotFound(c.Get(ctx, pushSecretKey, &esov1alpha1.PushSecret{}))
+	}, 2*time.Second, pollInterval).Should(BeTrue(),
+		"no PushSecret must exist until the push-source Secret holds a valid password (CC-0109, REQ-011)")
+
+	// Simulate the CronJob run: stage a fresh >=32-byte password + completion
+	// annotation via the real strategic-merge PATCH shape the rotate script
+	// emits (CC-0109, REQ-007).
+	const newPassword = "rotated-admin-password-0123456789abcdef" // 39 bytes >= 32 minimum
+	stagingKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-admin-password-rotation"}
+	g.Expect(cronJobStrategicMergePatch(ctx, c, stagingKey, map[string][]byte{
+		adminPasswordSecretKey: []byte(newPassword),
+	})).To(Succeed(), "stage CronJob rotation output onto the staging Secret (CC-0109, REQ-007)")
+
+	// The operator commits the staged password onto the push-source Secret and
+	// stamps the completion annotation (CC-0109, REQ-007).
+	g.Eventually(func(ig Gomega) {
+		got := &corev1.Secret{}
+		ig.Expect(c.Get(ctx, pushSourceKey, got)).To(Succeed())
+		ig.Expect(got.Data).To(HaveKeyWithValue(adminPasswordSecretKey, []byte(newPassword)))
+		ig.Expect(got.Annotations).To(HaveKey(RotationCompletedAnnotation))
+	}, eventuallyTimeout, pollInterval).Should(Succeed(),
+		"push-source Secret should receive the rotated password and completion annotation (CC-0109, REQ-007)")
+
+	// Staging Secret is deleted, or re-created empty without the completion
+	// annotation on the next reconcile (mirrors the Fernet apply terminal state).
+	g.Eventually(func(ig Gomega) {
+		got := &corev1.Secret{}
+		err := c.Get(ctx, stagingKey, got)
+		if apierrors.IsNotFound(err) {
+			return
+		}
+		ig.Expect(err).NotTo(HaveOccurred())
+		ig.Expect(got.Data).To(BeEmpty(), "staging Secret Data should be cleared after apply (CC-0109, REQ-007)")
+		ig.Expect(got.Annotations).NotTo(HaveKey(RotationCompletedAnnotation),
+			"staging Secret completion annotation should be gone after apply (CC-0109, REQ-007)")
+	}, eventuallyTimeout, pollInterval).Should(Succeed(),
+		"staging Secret should be deleted or reset after a successful apply (CC-0109, REQ-007)")
+
+	// A Normal AdminPasswordRotated event is emitted on the Keystone CR (CC-0109, REQ-007).
+	eventuallyFindKeystoneEvent(t, ctx, c, ks, "AdminPasswordRotated", corev1.EventTypeNormal)
+
+	// With a valid push-source password, the clobber-safe PushSecret is ensured,
+	// selecting the push-source Secret and targeting the flat single-CR OpenBao
+	// path bootstrap/keystone-admin (CC-0109, REQ-007, REQ-014).
+	ps := &esov1alpha1.PushSecret{}
+	g.Eventually(func() error {
+		return c.Get(ctx, pushSecretKey, ps)
+	}, eventuallyTimeout, pollInterval).Should(Succeed(),
+		"PushSecret should be ensured once the push-source holds a valid password (CC-0109, REQ-007)")
+	g.Expect(ps.Spec.Selector.Secret).NotTo(BeNil())
+	g.Expect(ps.Spec.Selector.Secret.Name).To(Equal("test-keystone-admin-password-next"))
+	g.Expect(ps.Spec.Data).To(HaveLen(1))
+	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal("bootstrap/keystone-admin"),
+		"RemoteKey must be the flat, single-CR OpenBao path (CC-0109, REQ-014)")
+}
+
+// TestIntegration_PasswordRotation_DisableTearsDownAllResources verifies the
+// disabled/teardown branch (CC-0109, REQ-002): flipping
+// spec.bootstrap.passwordRotation.enabled to false removes every Model B
+// resource (CronJob, staging + push-source Secrets, the split RBAC trio, the
+// PushSecret, and the rotate-script ConfigMaps) and reports
+// PasswordRotationReady=True / RotationDisabled.
+func TestIntegration_PasswordRotation_DisableTearsDownAllResources(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-pwrotate-disable-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystoneWithPasswordRotation("test-keystone", ns.Name, "0 0 1 * *")
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	cronJobKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-admin-password-rotate"}
+	stagingKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-admin-password-rotation"}
+	pushSourceKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-admin-password-next"}
+	saKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-admin-password-rotate"}
+	pushSecretKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-admin-password-backup"}
+
+	// Confirm the Model B resources exist while rotation is enabled (CC-0109, REQ-003).
+	g.Eventually(func(ig Gomega) {
+		ig.Expect(c.Get(ctx, cronJobKey, &batchv1.CronJob{})).To(Succeed())
+		ig.Expect(c.Get(ctx, stagingKey, &corev1.Secret{})).To(Succeed())
+		ig.Expect(c.Get(ctx, pushSourceKey, &corev1.Secret{})).To(Succeed())
+		ig.Expect(c.Get(ctx, saKey, &corev1.ServiceAccount{})).To(Succeed())
+		ig.Expect(c.Get(ctx, saKey, &rbacv1.Role{})).To(Succeed())
+		ig.Expect(c.Get(ctx, saKey, &rbacv1.RoleBinding{})).To(Succeed())
+	}, eventuallyTimeout, pollInterval).Should(Succeed(),
+		"Model B resources should exist while rotation is enabled (CC-0109, REQ-003)")
+
+	// Disable rotation: spec.bootstrap.passwordRotation.enabled=false (CC-0109, REQ-002).
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+	updated := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
+	updated.Spec.Bootstrap.PasswordRotation.Enabled = false
+	g.Expect(c.Update(ctx, updated)).To(Succeed())
+
+	// Every Model B resource must be torn down; deletes tolerate NotFound so the
+	// terminal state is "all gone" (CC-0109, REQ-002).
+	g.Eventually(func(ig Gomega) {
+		ig.Expect(apierrors.IsNotFound(c.Get(ctx, cronJobKey, &batchv1.CronJob{}))).To(BeTrue(), "CronJob removed")
+		ig.Expect(apierrors.IsNotFound(c.Get(ctx, stagingKey, &corev1.Secret{}))).To(BeTrue(), "staging Secret removed")
+		ig.Expect(apierrors.IsNotFound(c.Get(ctx, pushSourceKey, &corev1.Secret{}))).To(BeTrue(), "push-source Secret removed")
+		ig.Expect(apierrors.IsNotFound(c.Get(ctx, saKey, &corev1.ServiceAccount{}))).To(BeTrue(), "ServiceAccount removed")
+		ig.Expect(apierrors.IsNotFound(c.Get(ctx, saKey, &rbacv1.Role{}))).To(BeTrue(), "Role removed")
+		ig.Expect(apierrors.IsNotFound(c.Get(ctx, saKey, &rbacv1.RoleBinding{}))).To(BeTrue(), "RoleBinding removed")
+		ig.Expect(apierrors.IsNotFound(c.Get(ctx, pushSecretKey, &esov1alpha1.PushSecret{}))).To(BeTrue(), "PushSecret removed")
+
+		// No hash-suffixed rotate-script ConfigMap may remain (CC-0109, REQ-002).
+		cmList := &corev1.ConfigMapList{}
+		ig.Expect(c.List(ctx, cmList, client.InNamespace(ns.Name))).To(Succeed())
+		for _, cm := range cmList.Items {
+			ig.Expect(strings.HasPrefix(cm.Name, "test-keystone-admin-password-rotate-script")).To(BeFalse(),
+				"rotate-script ConfigMap %q must be pruned on disable (CC-0109, REQ-002)", cm.Name)
+		}
+	}, eventuallyTimeout, pollInterval).Should(Succeed(),
+		"disabling rotation must remove every Model B resource (CC-0109, REQ-002)")
+
+	// PasswordRotationReady=True with reason RotationDisabled (CC-0109, REQ-002).
+	cond := waitForCondition(t, ctx, c, key, "PasswordRotationReady", metav1.ConditionTrue, eventuallyTimeout)
+	g.Expect(cond.Reason).To(Equal("RotationDisabled"))
+}

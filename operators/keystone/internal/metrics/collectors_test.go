@@ -203,6 +203,61 @@ func TestDeleteKeystoneSeriesRemovesGauge(t *testing.T) {
 		"db_sync_duration_seconds series for foo/bar must be removed (CC-0089 REQ-004)")
 }
 
+// TestAdminPasswordRotationAgeGaugeAndDelete proves the
+// keystone_operator_key_rotation_age_seconds gauge accepts the
+// key_type="admin-password" series emitted by reconcilePasswordRotation via
+// observeRotationAge, and that deleteForKeystone reaps it. The admin-password
+// key type is the CC-0109 addition to the existing fernet/credential rotations
+// (REQ-012); because DeletePartialMatch is scoped to (keystone, namespace), an
+// unrelated CR's series must survive.
+func TestAdminPasswordRotationAgeGaugeAndDelete(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	reg := prometheus.NewRegistry()
+	c := newCollectorsForTest(reg)
+
+	pastTime := time.Now().Add(-7 * 24 * time.Hour)
+	g.Expect(c.setKeyRotationAge("foo", "bar", "admin-password", pastTime)).To(Succeed())
+	// Another (keystone, namespace) pair that must survive the delete.
+	g.Expect(c.setKeyRotationAge("other", "other", "admin-password", pastTime)).To(Succeed())
+
+	fam := gatherMetric(t, reg, "keystone_operator_key_rotation_age_seconds")
+	g.Expect(fam).NotTo(BeNil(),
+		"key_rotation_age gauge must be visible for key_type=admin-password (CC-0109 REQ-012)")
+	g.Expect(fam.GetMetric()).To(HaveLen(2))
+
+	// Locate the foo/bar/admin-password series and assert its label set + value.
+	var fooSeries *dto.Metric
+	for _, m := range fam.GetMetric() {
+		labels := map[string]string{}
+		for _, l := range m.GetLabel() {
+			labels[l.GetName()] = l.GetValue()
+		}
+		if labels["keystone"] == "foo" && labels["namespace"] == "bar" {
+			fooSeries = m
+			g.Expect(labels).To(HaveKeyWithValue("key_type", "admin-password"),
+				"admin-password rotation must be labelled key_type=admin-password (CC-0109 REQ-012)")
+		}
+	}
+	g.Expect(fooSeries).NotTo(BeNil(),
+		"foo/bar/admin-password series must be present (CC-0109 REQ-012)")
+	g.Expect(fooSeries.GetGauge().GetValue()).To(BeNumerically(">", 0))
+
+	// DeletePartialMatch is keystone+namespace scoped, so only foo/bar is reaped.
+	c.deleteForKeystone("foo", "bar")
+
+	fam = gatherMetric(t, reg, "keystone_operator_key_rotation_age_seconds")
+	g.Expect(fam).NotTo(BeNil())
+	g.Expect(fam.GetMetric()).To(HaveLen(1),
+		"deleteForKeystone must remove the foo/bar admin-password series (CC-0109 REQ-012)")
+	for _, l := range fam.GetMetric()[0].GetLabel() {
+		if l.GetName() == "keystone" {
+			g.Expect(l.GetValue()).To(Equal("other"),
+				"unrelated CR's admin-password series must survive the delete (CC-0109 REQ-012)")
+		}
+	}
+}
+
 func TestDbSyncCounterIncrementsOnTerminalStateOnly(t *testing.T) {
 	g := NewGomegaWithT(t)
 

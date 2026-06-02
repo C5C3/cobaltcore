@@ -309,7 +309,11 @@ jobs:
   test-integration:
     needs: [changes]
     if: needs.changes.outputs.go == 'true'
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    # 4 vCPU (was 2): the keystone envtest leg sat at ~14m on a 2-vCPU runner
+    # against the 15m timeout, and the CC-0109 password-rotation integration
+    # tests tipped it over. envtest is CPU-bound, so the larger runner pulls the
+    # wall-clock back under the timeout without raising the limit (CC-0109).
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     strategy:
       fail-fast: false

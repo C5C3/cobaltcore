@@ -385,6 +385,54 @@ type FederationSpec struct {
 	Enabled bool `json:"enabled"`
 }
 
+// PasswordRotationSpec configures scheduled rotation of the Keystone admin
+// password (CC-0109, Model B / Part 2 of #381). When enabled, the operator runs
+// a CronJob that periodically generates a fresh strong password and delivers it
+// into OpenBao via a PushSecret; the existing keystone-admin ExternalSecret then
+// round-trips it back into the cluster Secret and Part 1 (CC-0108) re-bootstraps
+// Keystone with the new credential.
+//
+// Unlike TrustFlushSpec, the defaulting webhook does NOT materialize this block
+// when it is absent: scheduled rotation is strictly opt-in, so upgrading a CR
+// that never set passwordRotation must never silently enable it. The defaulting
+// webhook only fills the leaf defaults (Schedule, PasswordLength) once Enabled is
+// true; when the pointer is nil the sub-reconciler is a clean no-op. The leaf
+// +kubebuilder:default markers below remain as defense-in-depth for callers that
+// bypass the webhook (e.g. envtest without the defaulter wired up).
+//
+// Model B assumes a single Model-B-enabled Keystone CR per cluster (REQ-014,
+// boundary 8, option a): the push path is the single flat OpenBao key
+// bootstrap/keystone-admin shared with the hardcoded keystone-admin
+// ExternalSecret. Enabling rotation on more than one CR would clobber that
+// shared object.
+type PasswordRotationSpec struct {
+	// Enabled turns on scheduled admin-password rotation. Default false: the
+	// feature is opt-in, and disabling it tears down every Model B resource.
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled,omitempty"`
+
+	// The kubebuilder default literal below must stay in sync with
+	// DefaultPasswordRotationSchedule in keystone_webhook.go (kubebuilder markers
+	// require a string literal and cannot reference Go constants).
+
+	// Schedule is a cron expression controlling when a new admin password is
+	// generated. Defaults to monthly at midnight on the 1st.
+	// +kubebuilder:default="0 0 1 * *"
+	Schedule string `json:"schedule,omitempty"`
+
+	// Suspend pauses the CronJob without deleting it or any sibling resource,
+	// matching TrustFlushSpec.Suspend semantics.
+	// +kubebuilder:default=false
+	Suspend bool `json:"suspend,omitempty"`
+
+	// PasswordLength is the length of the generated password. The kubebuilder
+	// default literal below must stay in sync with DefaultPasswordRotationLength
+	// in keystone_webhook.go.
+	// +kubebuilder:validation:Minimum=24
+	// +kubebuilder:default=32
+	PasswordLength int32 `json:"passwordLength,omitempty"`
+}
+
 // BootstrapSpec defines Keystone bootstrap parameters.
 type BootstrapSpec struct {
 	// AdminUser is the admin username for the bootstrap.
@@ -404,6 +452,13 @@ type BootstrapSpec struct {
 	// require a routable address here (CC-0013).
 	// +optional
 	PublicEndpoint string `json:"publicEndpoint,omitempty"`
+
+	// PasswordRotation optionally enables scheduled rotation of the admin
+	// password (CC-0109). Nil (the default) leaves the feature off and the
+	// sub-reconciler is a clean no-op. See PasswordRotationSpec for the opt-in
+	// and single-CR semantics.
+	// +optional
+	PasswordRotation *PasswordRotationSpec `json:"passwordRotation,omitempty"`
 }
 
 // GatewaySpec configures the Gateway API HTTPRoute used to expose the Keystone

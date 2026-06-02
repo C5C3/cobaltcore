@@ -225,7 +225,7 @@ controller-observable semantics and are stable across releases — consumers
 
 | Key | Kind | Applied to | Value | Purpose |
 | --- | --- | --- | --- | --- |
-| `forge.c5c3.io/rotation-target` | Label | Staging Secrets (`{name}-fernet-keys-rotation`, `{name}-credential-keys-rotation`) | `fernet-keys`, `credential-keys` | Distinguishes rotation staging Secrets from production key Secrets so the operator's Secret→Keystone mapper can enqueue the owning Keystone on staging PATCHes. |
+| `forge.c5c3.io/rotation-target` | Label | Staging Secrets (`{name}-fernet-keys-rotation`, `{name}-credential-keys-rotation`, `{name}-admin-password-rotation`) | `fernet-keys`, `credential-keys`, `admin-password` | Distinguishes rotation staging Secrets from production key Secrets so the operator's Secret→Keystone mapper can enqueue the owning Keystone on staging PATCHes. |
 | `forge.c5c3.io/rotation-completed-at` | Annotation | Staging Secrets (written by the rotation CronJob) | RFC3339 UTC timestamp (e.g. `2026-04-18T12:34:56Z`) | Single-shot commit marker. The operator only applies a staging Secret's data to the production Secret when this annotation is present and parses cleanly; the annotation is removed implicitly when the staging Secret is deleted at the end of a successful apply. |
 | `forge.c5c3.io/admin-password-hash` | Annotation | Bootstrap Job pod template (`{name}-bootstrap`) | `hex(SHA-256(password))` of the `password` key of the admin Secret | Carries the admin-password digest into the pod template so a rotated password changes the pod-spec hash and re-runs the idempotent bootstrap Job (CC-0108, REQ-007). See [`reconcileBootstrap`](#reconcilebootstrap). |
 | `forge.c5c3.io/pod-spec-hash` | Annotation | Operator-managed Jobs (`{name}-bootstrap`, migration Jobs) | `hex(SHA-256(PodTemplateSpec))` stamped at creation time | Change-detection gate for completed Jobs. `job.RunJob` compares the desired hash against this annotation and recreates the Job (so it re-runs) when they differ, without normalizing API-server defaults. |
@@ -349,6 +349,13 @@ Fernet and credential sub-reconciler sections for the full contract.
 │  │ reconcileTrustFlush    │  Ensure trust_flush CronJob (default-on)         │
 │  │                        │  Sets: TrustFlushReady                           │
 │  └────────┬───────────────┘  Requeue: none                                   │
+│           │                                                                  │
+│           ▼                                                                  │
+│  ┌────────────────────────────┐                                              │
+│  │ reconcilePasswordRotation  │  Ensure admin-password rotation CronJob      │
+│  │                            │  (Model B); apply staged rotation            │
+│  │                            │  Sets: PasswordRotationReady                 │
+│  └────────┬───────────────────┘  Requeue: on apply only                      │
 │           │                                                                  │
 │           ▼                                                                  │
 │  setReadyCondition() — aggregate Ready from all sub-conditions               │
@@ -476,6 +483,7 @@ output (other than conditions merged after the group completes).
 | `reconcileHPA` | CR spec | `HPAReady` | Deployment (naming) | no |
 | `reconcileBootstrap` | configMapName | `BootstrapReady` | Deployment (API must be running) | no |
 | `reconcileTrustFlush` | configMapName | `TrustFlushReady` | Config | no |
+| `reconcilePasswordRotation` | `spec.bootstrap.passwordRotation` | `PasswordRotationReady` | Bootstrap (re-bootstrap is the downstream consumer) | no |
 
 Key constraints that prevent further parallelization:
 
@@ -1313,6 +1321,7 @@ after a full reconcile loop, every condition in the status carries the correct
 | `HPAReady` | `reconcileHPA` | HPA configured or not required |
 | `BootstrapReady` | `reconcileBootstrap` | Bootstrap Job completed successfully |
 | `TrustFlushReady` | `reconcileTrustFlush` | Trust flush CronJob configured or not required |
+| `PasswordRotationReady` | `reconcilePasswordRotation` | Model B admin-password rotation CronJob configured, or disabled/torn down |
 
 ---
 
@@ -2613,6 +2622,225 @@ controller-runtime for exponential backoff.
 
 ---
 
+### reconcilePasswordRotation
+
+**File:** `operators/keystone/internal/controller/reconcile_passwordrotation.go`
+
+**Signature:**
+
+```go
+func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
+    keystone *keystonev1alpha1.Keystone, _ string) (ctrl.Result, error)
+```
+
+The third parameter is the shared config ConfigMap name. It is accepted only for
+sub-reconciler call-site symmetry with `reconcileFernetKeys` and
+`reconcileTrustFlush` — the controller wires this sub-reconciler as
+`instrumentSubReconciler(ctx, "PasswordRotation", ...)` passing `configMapName`
+(CC-0109, REQ-009). It is intentionally unused (named `_`) because the rotate
+script never runs `keystone-manage` and therefore needs no keystone
+configuration.
+
+**Purpose:** Drive Model B scheduled admin-password rotation (CC-0109, REQ-002,
+REQ-003, REQ-009). A CronJob mints a fresh strong password and PATCHes it onto a
+staging Secret; the operator validates and commits it onto an operator-owned
+push-source Secret; a PushSecret mirrors that to OpenBao at the flat path
+`bootstrap/keystone-admin`; External Secrets Operator (ESO) then syncs it back
+into the admin Secret and [`reconcileBootstrap`](#reconcilebootstrap) re-runs
+`keystone-manage bootstrap` (admin-password-hash gate) to apply it.
+
+Two lifecycle paths:
+
+1. **Disabled / teardown** (`spec.bootstrap.passwordRotation` is nil OR
+   `enabled: false`): `teardownPasswordRotation` deletes every Model B resource
+   (CronJob, staging Secret, push-source Secret, ServiceAccount/Role/RoleBinding,
+   PushSecret, and all hash-suffixed script ConfigMaps), every delete tolerating
+   `NotFound` so teardown is idempotent and safe on a CR that never enabled
+   rotation. Sets `PasswordRotationReady=True` with reason `RotationDisabled`. A
+   nil pointer means the feature was never opted into (the defaulting webhook
+   deliberately does not materialize it); `enabled: false` means it was switched
+   off — both branches tear down. The PushSecret uses `DeletionPolicy=None` (see
+   below), so its deletion leaves the last-pushed password intact in OpenBao —
+   disabling rotation never locks the admin out.
+2. **Enabled**: the ordered steps below.
+
+**Steps (in order):**
+
+1. **Ensure push-source Secret** — `ensureAdminPasswordPushSourceSecret` ensures
+   the operator-owned `{name}-admin-password-next` Secret exists (metadata and
+   owner reference only). Its `.data` is owned exclusively by
+   `applyAdminPasswordRotation` and is never clobbered on reconcile.
+2. **Ensure staging Secret** — `ensureStagingSecret(..., "admin-password")`
+   ensures `{name}-admin-password-rotation`, which the CronJob PATCHes rotated
+   passwords into.
+3. **Refresh rotation-age gauge** — `observeRotationAge(..., key_type
+   "admin-password")` refreshes the rotation-age gauge from the push-source
+   Secret's `forge.c5c3.io/rotation-completed-at` annotation, falling back to the
+   staging Secret during the pre-first-apply window. Called before the apply so
+   the next reconcile picks up the freshest timestamp once the apply re-stamps
+   the push-source annotation.
+4. **Apply any completed rotation** — `applyAdminPasswordRotation` validates and
+   commits a staged rotation if one is present (REQ-007, REQ-011). On a
+   successful apply it sets `PasswordRotationReady=True` with reason
+   `AdminPasswordRotated` ("rotation applied; staging secret cleared") and
+   short-circuits with `Requeue: true` so the next pass re-enters the happy path
+   with the push-source Secret already updated.
+5. **Ensure rotation RBAC** — `ensureAdminPasswordRotationRBAC` creates or
+   updates the split ServiceAccount, Role, and RoleBinding
+   (`{name}-admin-password-rotate`).
+6. **Create script ConfigMap** — `config.CreateImmutableConfigMap()` of the
+   embedded `admin_password_rotate.sh` script into
+   `{name}-admin-password-rotate-script-{hash}`.
+7. **Ensure rotation CronJob** — `job.EnsureCronJob()` creates or updates
+   `{name}-admin-password-rotate`.
+8. **Clobber-safe PushSecret** — only ensure `adminPasswordPushSecret` once
+   `adminPasswordPushSourceReady` reports the push-source Secret holds a valid
+   password (≥ minLength). Before the first rotation completes the push-source is
+   empty, and pushing it would overwrite the seeded `bootstrap/keystone-admin`
+   value with nothing (REQ-007, REQ-011, REQ-014).
+9. **Report ready** — sets `PasswordRotationReady=True` with reason
+   `PasswordRotationConfigured` ("Admin password rotation CronJob is
+   configured").
+
+**Rotation CronJob (`adminPasswordRotationCronJob`):**
+
+| Field | Value |
+| --- | --- |
+| Name | `{name}-admin-password-rotate` |
+| Labels | `commonLabels(keystone)` |
+| Schedule | `spec.bootstrap.passwordRotation.schedule` |
+| Suspend | `&spec.bootstrap.passwordRotation.suspend` (pointer to CRD bool) |
+| ServiceAccount | `{name}-admin-password-rotate` |
+| Container name | `admin-password-rotate` |
+| Image | `{spec.image.repository}:{spec.image.tag}` |
+| Command | `["/scripts/admin_password_rotate.sh"]` |
+| SecurityContext | `restrictedSecurityContext()` (PSS Restricted) |
+| RestartPolicy | `OnFailure` |
+| Env `SECRET_NAME` | `{name}-admin-password-rotation` (staging Secret) |
+| Env `SECRET_NAMESPACE` | `fieldRef` to `metadata.namespace` |
+| Env `PASSWORD_LENGTH` | `normalizedAdminPasswordLength` (webhook default 32, defense-in-depth floor 24) |
+| Volume `scripts` | ConfigMap `{name}-admin-password-rotate-script-{hash}` (`defaultMode: 0555`), mounted read-only at `/scripts` |
+
+The CronJob mounts **only** the rotation script — no keystone configuration and
+no key repositories — because it never runs `keystone-manage`. `SECRET_NAME`
+points only at the staging Secret; the CronJob ServiceAccount can never patch the
+push-source Secret (see the RBAC split below).
+
+**PushSecret (`adminPasswordPushSecret`):**
+
+| Field | Value |
+| --- | --- |
+| Name | `{name}-admin-password-backup` |
+| Store | `ClusterSecretStore/openbao-cluster-store` |
+| Source Secret | `{name}-admin-password-next` (push-source) |
+| Remote Key | `bootstrap/keystone-admin` (hardcoded flat path — single-CR assumption, REQ-014, boundary 8) |
+| Property | `password` |
+| DeletionPolicy | `None` |
+
+The `RemoteKey` is hardcoded (not CR-scoped): Model B assumes a single
+Model-B-enabled Keystone CR per cluster sharing the `bootstrap/keystone-admin`
+object with the keystone-admin ExternalSecret. `DeletionPolicy=None` is chosen
+because `bootstrap/keystone-admin` is a shared, persistent bootstrap secret;
+keeping the last-pushed password in OpenBao when rotation is disabled (the
+teardown path deletes this PushSecret) means the admin is never locked out.
+
+**Condition Contract:**
+
+| Status | Reason | Message | RequeueAfter | Path |
+| --- | --- | --- | --- | --- |
+| `True` | `RotationDisabled` | "Scheduled admin password rotation is disabled; Model B resources removed" | — | Disabled/teardown — `spec.bootstrap.passwordRotation` nil or `enabled: false` |
+| `True` | `AdminPasswordRotated` | "rotation applied; staging secret cleared" | — (transient: apply-success short-circuit, requeues — operators see this immediately after an apply via `kubectl describe`, before the next reconcile transitions to steady state) | Enabled path |
+| `True` | `PasswordRotationConfigured` | "Admin password rotation CronJob is configured" | — | Enabled steady state |
+
+**Error handling:** Errors from the teardown, push-source/staging Secret ensure,
+the rotation apply, RBAC ensure, script ConfigMap creation, CronJob ensure, or
+PushSecret ensure are wrapped with context and returned directly. No requeue
+delays — errors trigger controller-runtime exponential backoff.
+
+**Idempotency:** The push-source Secret's metadata is reconciled but its `.data`
+is never touched outside `applyAdminPasswordRotation`, so a reconcile never
+clobbers a previously committed password. The script ConfigMap uses
+content-based naming — an unchanged script returns the existing ConfigMap name.
+All teardown deletes tolerate `NotFound`. The apply step is a no-op unless a
+completed rotation is staged, so reconciles in the steady state converge without
+side effects.
+
+**Shared library calls:** `config.CreateImmutableConfigMap()`,
+`job.EnsureCronJob()`, `secrets.EnsurePushSecret()`
+
+#### Admin Password Rotation RBAC Split
+
+The rotation path separates the **compute** of the new password (performed by
+the rotation CronJob) from the **write** onto the push-source Secret and the
+commit (performed by the operator). `ensureAdminPasswordRotationRBAC` creates a
+ServiceAccount, Role, and RoleBinding all named `{name}-admin-password-rotate`,
+mirroring `ensureFernetRotationRBAC`'s split shape (CC-0081, CC-0109).
+
+**Staging Secret naming.** Per `adminPasswordStagingSecretName`, the staging
+Secret is `{keystone.Name}-admin-password-rotation`. It is created and owned by
+the operator via `ensureStagingSecret`:
+
+- Empty `Data` on creation; the CronJob PATCHes `Data` on rotation.
+- Labels: `commonLabels(keystone)` + `forge.c5c3.io/rotation-target=admin-password`
+  (see [Labels and Annotations](#labels-and-annotations)).
+- Owner reference: the Keystone CR (garbage-collected with the CR).
+
+**Split Role.** The Role has **two** PolicyRules:
+
+- Rule 1 — `get` on the push-source Secret `{name}-admin-password-next`.
+- Rule 2 — `get`, `patch` scoped to the staging Secret
+  `{name}-admin-password-rotation`.
+
+The CronJob ServiceAccount has **no `create`, `update`, or `delete`** on either
+Secret. The operator — not the CronJob — writes the push-source Secret via
+`applyAdminPasswordRotation`'s GET-then-`Update` full replacement, keeping the
+token-forgery primitive (write access to a Secret a privileged workload consumes)
+out of the CronJob's attack surface.
+
+**RBAC verb matrix.** Two principals touch the push-source and staging Secrets,
+with strictly disjoint capabilities:
+
+| Principal | Resource | Verbs | Source |
+| --- | --- | --- | --- |
+| CronJob ServiceAccount (`{name}-admin-password-rotate`) | Secret `{name}-admin-password-next` (push-source) | `get` | Role rule 1 in `ensureAdminPasswordRotationRBAC` |
+| CronJob ServiceAccount (`{name}-admin-password-rotate`) | Secret `{name}-admin-password-rotation` (staging) | `get`, `patch` | Role rule 2 in `ensureAdminPasswordRotationRBAC` |
+| Operator ServiceAccount | Secret `{name}-admin-password-next` (push-source) | `get`, `create`, `update`, `patch`, `delete`, `list`, `watch` | Cluster-scoped core `secrets` verbs (see [RBAC Permissions](#rbac-permissions)) |
+| Operator ServiceAccount | Secret `{name}-admin-password-rotation` (staging) | `get`, `create`, `update`, `patch`, `delete`, `list`, `watch` | Cluster-scoped core `secrets` verbs |
+
+**Operator output contract.** `validateAdminPasswordRotationOutput` (REQ-007,
+REQ-011) requires a non-empty `password` value of at least minLength bytes, where
+minLength is the normalized `PasswordLength` (webhook default 32, defense-in-depth
+floor 24 via `adminPasswordMinLength`). On rejection the operator emits a Warning
+event `AdminPasswordRotationRejected` and **retains the staging Secret** for
+inspection. A malformed `forge.c5c3.io/rotation-completed-at` value emits a
+Warning event `AdminPasswordRotationAnnotationInvalid` and likewise retains
+staging. The password value is never logged or echoed in events.
+
+**Apply algorithm.** On a valid staging Secret, `applyAdminPasswordRotation`:
+
+1. GETs the staging Secret (absent ⇒ no-op).
+2. Requires `forge.c5c3.io/rotation-completed-at` to be present and RFC3339-parseable.
+3. Validates the staged password.
+4. GETs the push-source Secret, replaces its `.data` verbatim, stamps the
+   `rotation-completed-at` annotation, and issues an `Update` under the
+   controller-owned `ResourceVersion` (optimistic concurrency).
+5. DELETEs the staging Secret (tolerating `NotFound`).
+6. Emits a Normal event `AdminPasswordRotated`.
+
+UPDATE-then-DELETE ordering is deliberate: the push-source Secret is the durable
+record of the last successful rotation timestamp once staging is deleted, so the
+rotation-age gauge can refresh on every reconcile.
+
+**Downstream consumer.** [`reconcileBootstrap`](#reconcilebootstrap) is the
+consumer of the rotated password: once ESO syncs the new value from
+`bootstrap/keystone-admin` into the admin Secret, the bootstrap reconciler's
+`forge.c5c3.io/admin-password-hash` gate re-runs the idempotent bootstrap Job to
+apply it. See the [Labels and Annotations](#labels-and-annotations) entries for
+`forge.c5c3.io/rotation-target` (value `admin-password` for the staging Secret),
+`forge.c5c3.io/rotation-completed-at`, and `forge.c5c3.io/admin-password-hash`.
+
+---
+
 ## Error Handling Summary
 
 | Sub-Reconciler | Transient State | RequeueAfter | Permanent Failure |
@@ -2632,6 +2860,7 @@ controller-runtime for exponential backoff.
 | `reconcileHPA` | — | — | API error → exponential backoff |
 | `reconcileBootstrap` | Job running | 60s | `ErrJobFailed` from bootstrap |
 | `reconcileTrustFlush` | — | — | API error → exponential backoff |
+| `reconcilePasswordRotation` | Rotation applied (short-circuit) | `Requeue: true` | API error → exponential backoff |
 
 All errors are wrapped with descriptive context via `fmt.Errorf("...: %w", err)`.
 Unrecoverable API errors (e.g., permission denied, schema validation failure) are
@@ -2669,6 +2898,14 @@ Keystone CR via `controllerutil.SetControllerReference()`. This enables:
 | HTTPRoute | `{name}` | Keystone CR (only when `spec.gateway` is set; bare CR name) |
 | Job | `{name}-policy-validation` | Keystone CR (only when `spec.policyOverrides` is set) |
 | CronJob | `{name}-trust-flush` | Keystone CR (only when `spec.trustFlush` is set) |
+| Secret | `{name}-admin-password-rotation` | Keystone CR (rotation staging; only when `spec.bootstrap.passwordRotation.enabled`) |
+| Secret | `{name}-admin-password-next` | Keystone CR (rotation push-source; only when `spec.bootstrap.passwordRotation.enabled`) |
+| CronJob | `{name}-admin-password-rotate` | Keystone CR (only when `spec.bootstrap.passwordRotation.enabled`) |
+| PushSecret | `{name}-admin-password-backup` | Keystone CR (only when `spec.bootstrap.passwordRotation.enabled`) |
+| ServiceAccount | `{name}-admin-password-rotate` | Keystone CR (only when `spec.bootstrap.passwordRotation.enabled`) |
+| Role | `{name}-admin-password-rotate` | Keystone CR (only when `spec.bootstrap.passwordRotation.enabled`) |
+| RoleBinding | `{name}-admin-password-rotate` | Keystone CR (only when `spec.bootstrap.passwordRotation.enabled`) |
+| ConfigMap | `{name}-admin-password-rotate-script-{hash}` | Keystone CR (only when `spec.bootstrap.passwordRotation.enabled`) |
 | ConfigMap | `{name}-fernet-rotate-script-{hash}` | Keystone CR |
 | ConfigMap | `{name}-credential-rotate-script-{hash}` | Keystone CR |
 | Database | `keystone` | Keystone CR (managed mode only; additionally cleaned up by the finalizer) |
@@ -2840,6 +3077,7 @@ existing file (e.g. `reconcile_hpa_test.go`).
 | `reconcile_hpa_test.go` | HPA creation, update, deletion, metrics (CPU/memory), minReplicas defaulting, condition contract, error propagation, ObservedGeneration |
 | `reconcile_httproute_test.go` | HTTPRoute creation, update, deletion, gateway namespace defaulting, PathPrefix match, backend Service port 5000, parent Accepted reflection, status.endpoint derivation, condition contract, ObservedGeneration |
 | `reconcile_trustflush_test.go` | CronJob creation, deletion, schedule/suspend/args, security context, volume mounts, condition contract, error propagation, ObservedGeneration |
+| `reconcile_passwordrotation_test.go` | CronJob shape/suspend, staging + push-source Secrets, split-Role RBAC shape, apply/validate commit + reject (short/missing/malformed-annotation) paths, clobber-safe PushSecret gating, teardown idempotency (disabled and nil-spec), condition contract |
 | `reconcile_bootstrap_test.go` | Job creation, completion, failure, stale detection, TTL/backoff, ObservedGeneration |
 | `integration_test.go` | Full reconciliation envtest: CronJob spec, bootstrap Job spec, brownfield mode, condition progression, ObservedGeneration |
 
@@ -2869,10 +3107,12 @@ operators/keystone/
     │   ├── reconcile_hpa.go                   reconcileHPA sub-reconciler
     │   ├── reconcile_httproute.go             reconcileHTTPRoute sub-reconciler + keystoneStatusEndpoint helper
     │   ├── reconcile_trustflush.go            reconcileTrustFlush sub-reconciler
+    │   ├── reconcile_passwordrotation.go       reconcilePasswordRotation sub-reconciler (Model B)
     │   ├── reconcile_bootstrap.go              reconcileBootstrap sub-reconciler
     │   ├── scripts/
     │   │   ├── fernet_rotate.sh               Fernet key rotation script
-    │   │   └── credential_rotate.sh           Credential key rotation script
+    │   │   ├── credential_rotate.sh           Credential key rotation script
+    │   │   └── admin_password_rotate.sh       Admin password rotation script (Model B)
     │   ├── keystone_controller_test.go         Orchestration tests
     │   ├── reconcile_secrets_test.go           Secrets tests
     │   ├── reconcile_database_test.go          Database tests
@@ -2886,6 +3126,7 @@ operators/keystone/
     │   ├── reconcile_hpa_test.go              HPA tests
     │   ├── reconcile_httproute_test.go        HTTPRoute tests
     │   ├── reconcile_trustflush_test.go       Trust flush tests
+    │   ├── reconcile_passwordrotation_test.go  Admin password rotation tests (Model B)
     │   ├── reconcile_bootstrap_test.go         Bootstrap tests
     │   └── integration_test.go                 Envtest integration tests
     └── testutil/

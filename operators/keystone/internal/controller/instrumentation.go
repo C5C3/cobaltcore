@@ -67,6 +67,7 @@ var subReconcilerConditionTypes = map[string]string{
 	"HPA":                "HPAReady",
 	"Bootstrap":          "BootstrapReady",
 	"TrustFlush":         "TrustFlushReady",
+	"PasswordRotation":   conditionTypePasswordRotationReady,
 }
 
 // instrumentObserveDuration and instrumentRecordError indirect through

@@ -81,17 +81,25 @@ main() {
   # clusters come online — only `bao write auth/kubernetes/<cluster>/config`
   # is needed to activate them.
   for cluster in "${CLUSTERS[@]}"; do
-    # CC-0083: the management cluster's ESO instance runs the PushSecret that
-    # backs up Keystone fernet-keys and credential-keys into OpenBao, so its
-    # role additionally binds the push-keystone-keys policy. The other three
-    # clusters keep only their own read-only eso-<cluster> policy.
+    # The management cluster's ESO instance runs the PushSecrets that back up
+    # Keystone fernet-keys / credential-keys (CC-0083) and that write the
+    # operator-rotated admin password to the shared bootstrap path (CC-0109),
+    # so its role additionally binds the corresponding write policies (see the
+    # management branch below). The other three clusters keep only their own
+    # read-only eso-<cluster> policy.
     #
     # Start each iteration from the read-only baseline and only append
     # cluster-specific extras, so a future branch addition cannot silently
     # inherit the previous iteration's `token_policies` under `set -u`.
     local token_policies="eso-${cluster}"
     if [[ "${cluster}" == "management" ]]; then
+      # CC-0083: back up rotated fernet-keys / credential-keys to OpenBao.
       token_policies+=",push-keystone-keys"
+      # CC-0109 (REQ-008): write the operator-rotated admin password to the
+      # shared bootstrap/keystone-admin path (Model B scheduled rotation).
+      # eso-management stays read-only; write capability lives only in the
+      # narrowly-scoped push-keystone-admin policy.
+      token_policies+=",push-keystone-admin"
     fi
 
     log "Writing ESO role for cluster '${cluster}'..."

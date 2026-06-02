@@ -116,6 +116,7 @@ var subConditionTypes = []string{
 	conditionTypeHTTPRouteReady,
 	"BootstrapReady",
 	"TrustFlushReady",
+	conditionTypePasswordRotationReady,
 }
 
 // KeystoneReconciler reconciles a Keystone object.
@@ -374,6 +375,17 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	if result, err := instrumentSubReconciler(ctx, "TrustFlush", func(ctx context.Context) (ctrl.Result, error) {
 		return r.reconcileTrustFlush(ctx, &keystone, configMapName)
+	}); !result.IsZero() || err != nil {
+		return r.updateStatus(ctx, &keystone, result, err)
+	}
+
+	// Scheduled admin-password rotation (Model B). Runs after Bootstrap has
+	// seeded the initial admin credential so the rotation CronJob and PushSecret
+	// never race the bootstrap seed; configMapName is accepted for call-site
+	// symmetry only — the rotate script needs no keystone config (CC-0109,
+	// REQ-002, REQ-003, REQ-009).
+	if result, err := instrumentSubReconciler(ctx, "PasswordRotation", func(ctx context.Context) (ctrl.Result, error) {
+		return r.reconcilePasswordRotation(ctx, &keystone, configMapName)
 	}); !result.IsZero() || err != nil {
 		return r.updateStatus(ctx, &keystone, result, err)
 	}
