@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-06-03T15:04:22.856557+00:00",
+  "feature_id": "CC-0110",
+  "task_type": "commit",
+  "session_key": "CC-0110",
+  "model": "claude-opus-4-8",
+  "prompt": "Generate a detailed git commit body for this commit.\nSubject: fix(CC-0110): address review #1 feedback from gndrmnn\n\nReview feedback is in: /worktrees/CC-0110/.planwerk/reviews/CC-0110-github-review-by-gndrmnn-external-1.json\nUse `git diff --cached -- ':(exclude).planwerk'` to see the full staged diff.\n\nDiff stat:\n.../c5c3/api/v1alpha1/controlplane_status_test.go  |  66 -------------\n .../c5c3/api/v1alpha1/controlplane_types_test.go   |  10 --\n .../internal/controller/controlplane_controller.go |  12 +--\n .../controller/controlplane_controller_test.go     | 103 ++-------------------\n .../controller/credential_invariant_test.go        |   5 +-\n .../internal/controller/instrumentation_test.go    |  74 ---------------\n .../internal/controller/reconcile_korc_test.go     |  13 +--\n 7 files changed, 19 insertions(+), 264 deletions(-)\n\nWrite ONLY the body text, no subject line, no markdown.\nFor each changed file, write a bullet point: '- path/to/file: what was changed'\nDo NOT mention .planwerk directory changes.\nOutput ONLY plain text — no tool_call tags, no XML, no code blocks.",
+  "prompt_length": 1088,
+  "caller": "run_claude_cli"
+}

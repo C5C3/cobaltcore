@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-06-03T14:53:00.081589+00:00",
+  "feature_id": "CC-0110",
+  "task_type": "structure-review",
+  "session_key": "CC-0110",
+  "model": "claude-opus-4-8",
+  "prompt": "Convert this human code review feedback into a structured prompt for an AI coding agent.\n\nFeature: CC-0110 - Implement c5c3-operator ControlPlane for Keystone\nReviewer: gndrmnn\n\nRaw feedback:\n\n\n## Inline Comments\n- `operators/c5c3/api/v1alpha1/controlplane_status_test.go:1` — \"`operators/c5c3/api/v1alpha1/controlplane_status_test.go` adds no meaningful tests. Remove the file entirely.\"\n- `operators/c5c3/api/v1alpha1/controlplane_types_test.go:26` — \"We are not testing static constants for their static constant value. Remove Lines 18-26 from `operators/c5c3/api/v1alpha1/controlplane_types_test.go`\"\n- `operators/c5c3/internal/controller/controlplane_controller.go:179` — \"`aggregateReady` can be removed by in-lining `conditions.AllTrue`\"\n- `operators/c5c3/internal/controller/controlplane_controller_test.go:195` — \"Remove lexical test Lines 110-195 from `operators/c5c3/internal/controller/controlplane_controller_test.go`\"\n- `operators/c5c3/internal/controller/instrumentation_test.go:297` — \"Remove lexical tests Line 228-297 from `operators/c5c3/internal/controller/instrumentation_test.go`\"\n- `operators/c5c3/internal/controller/reconcile_korc_test.go:638` — \"Why reimplement this? Replace with `ptr.To`\"\n\nIMPORTANT: Preserve the reviewer's original scope exactly.\nIf the reviewer commented on specific files/lines, the structured prompt must target ONLY those locations.\nDo NOT broaden or generalize the reviewer's intent to other files.\n\nOutput a structured prompt in this format:\n\nPlease address the comments from this code review:\n## Overall Comments\n- (list each overall concern)\n## Individual Comments\n### Comment N\n<location path=\"...\" line_range=\"...\" />\n(description of change needed)\n\nBe specific about file paths and line numbers where available.\nOnly output the structured prompt, nothing else.",
+  "prompt_length": 1818,
+  "caller": "run_claude_cli"
+}
