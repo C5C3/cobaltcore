@@ -979,23 +979,25 @@ main() {
     log "Prometheus kind overlay applied (WITH_PROMETHEUS=true; CC-0100, REQ-005)."
   fi
 
-  # CC-0110 fast-follow: the c5c3-operator chart is not yet published to GHCR
-  # (oci://ghcr.io/c5c3/charts/c5c3-operator -> 403) and the k-orc HelmRepository
-  # index 404s, so both releases can never reconcile in the kind bring-up. They
-  # are not awaited (see helm_releases below), but left active they retry on
-  # interval and add reconcile churn that competes with external-secrets and
-  # kube-prometheus-stack for the helm/source controllers under the heavier
-  # WITH_PROMETHEUS deploy. Suspend them (best-effort) so the controllers spend
-  # their budget on the releases deploy-infra actually waits on. Drop this once
-  # the c5c3-operator chart + k-orc source are reachable in CI.
-  log "Suspending unreconcilable CC-0110 releases (c5c3-operator, k-orc) in the kind bring-up."
+  # CC-0110 fast-follow: keep the ControlPlane stack out of the kind bring-up for
+  # now. The c5c3-operator chart is not yet published to GHCR
+  # (oci://ghcr.io/c5c3/charts/c5c3-operator -> 403), so its HelmRelease can never
+  # reconcile here. K-ORC is now a valid GitRepository + Kustomization (no longer a
+  # 404 HelmRepository), but it stays suspended too: exercising the full chain on a
+  # real cluster is a separate follow-up, and an unsuspended K-ORC would clone and
+  # deploy on every bring-up (network + reconcile churn competing with
+  # external-secrets / kube-prometheus-stack for the controllers) for a chain the
+  # absent c5c3-operator cannot complete anyway. None are awaited (see
+  # helm_releases below). Drop these suspends once the c5c3-operator chart is
+  # published and the chain is wired to run instead of skip.
+  log "Suspending the CC-0110 ControlPlane stack (c5c3-operator, k-orc) in the kind bring-up."
   kubectl patch helmrelease c5c3-operator -n c5c3-system \
     --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
-  kubectl patch helmrelease k-orc -n orc-system \
+  kubectl patch kustomization k-orc -n flux-system \
     --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
   kubectl patch helmrepository c5c3-charts -n flux-system \
     --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
-  kubectl patch helmrepository k-orc -n flux-system \
+  kubectl patch gitrepository k-orc -n flux-system \
     --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
 
   # Force-reconcile HelmRepository sources so chart indexes are available

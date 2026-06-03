@@ -20,16 +20,17 @@ credential, mirrors it to OpenBao, and registers the K-ORC `Service` /
 `Endpoint` catalog — all reconciled link-by-link to an aggregate `Ready`.
 
 ::: warning Local-build path — published artifacts are a pending fast-follow
-The published c5c3-operator Helm chart (GHCR OCI) and the upstream K-ORC Helm
-repository are **not yet reachable**, so `make deploy-infra` deliberately
-**suspends** the `c5c3-operator` and `k-orc` Flux releases in kind. This guide
-therefore uses the **local-build** path: it builds and installs the
-c5c3-operator from the in-repo Helm chart and installs K-ORC from its upstream
-release manifest. Once the chart publishes to GHCR, the K-ORC chart repo comes
-online, and the suspend is lifted from `hack/deploy-infra.sh`, the
-`ControlPlane` becomes a Flux happy-path (`kubectl apply -f` the release files,
-exactly like the keystone-operator in the [Quick Start](./quick-start.md)) and
-this manual assembly is no longer needed.
+The published c5c3-operator Helm chart (GHCR OCI) is **not yet reachable**, so
+`make deploy-infra` deliberately **suspends** the `c5c3-operator` and `k-orc`
+Flux objects in kind (the K-ORC source is now a `GitRepository` + `Kustomization`
+over the upstream installer, but it stays suspended until the full chain is wired
+to run on a cluster). This guide therefore uses the **local-build** path: it
+builds and installs the c5c3-operator from the in-repo Helm chart and installs
+K-ORC from its upstream release manifest. Once the chart publishes to GHCR and
+the suspend is lifted from `hack/deploy-infra.sh`, the `ControlPlane` becomes a
+Flux happy-path (`kubectl apply -f` the manifests, exactly like the
+keystone-operator in the [Quick Start](./quick-start.md)) and this manual
+assembly is no longer needed.
 
 The end-to-end ControlPlane chain on kind is wired here by hand; the in-repo
 `tests/e2e/c5c3/full-controlplane-keystone` Chainsaw suite still **skips** when

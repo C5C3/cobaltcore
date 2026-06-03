@@ -1,12 +1,35 @@
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
+
+# Feature: CC-0110, REQ-023 — K-ORC (OpenStack Resource Controller) provides the
+# declarative Keystone resource CRDs (ApplicationCredential, Service, Endpoint,
+# ...) that the c5c3-operator drives.
+#
+# DECISION: GitRepository, not HelmRepository. K-ORC does NOT publish a Helm
+# chart — https://k-orc.github.io/openstack-resource-controller serves no Helm
+# index (404). Upstream ships a single flattened installer manifest as a release
+# asset (releases/download/<tag>/install.yaml), which is byte-identical to the
+# dist/install.yaml committed at the tag. So we pin a GitRepository to the
+# release tag and apply ./dist via a Flux Kustomization (releases/k-orc.yaml).
+#
+# The clone is scoped to /dist via spec.ignore so the source artifact stays small
+# (the full upstream repo carries a website/, examples/, tooling, etc.).
+#
+# Renovate: the pinned tag below is tracked by a customManager rule (see the
+# follow-up tracked in the GitHub issue that finalises the c5c3-operator stack).
 ---
 apiVersion: source.toolkit.fluxcd.io/v1
-kind: HelmRepository
+kind: GitRepository
 metadata:
   name: k-orc
   namespace: flux-system
 spec:
   interval: 1h
-  url: https://k-orc.github.io/openstack-resource-controller
+  url: https://github.com/k-orc/openstack-resource-controller
+  ref:
+    tag: v2.5.0
+  ignore: |
+    # Vendor only the released installer manifest; skip the rest of the repo.
+    /*
+    !/dist

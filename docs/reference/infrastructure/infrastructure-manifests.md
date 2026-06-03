@@ -124,7 +124,7 @@ applied via `kubectl apply -f install.yaml`) before this kustomization is applie
 
 ## HelmRepository Sources
 
-Seven HelmRepository CRs define the Helm chart registries that FluxCD pulls from. All
+Six HelmRepository CRs define the Helm chart registries that FluxCD pulls from. All
 use `apiVersion: source.toolkit.fluxcd.io/v1`, are deployed to the `flux-system`
 namespace, and poll at `interval: 1h`.
 
@@ -135,8 +135,14 @@ namespace, and poll at `interval: 1h`.
 | `sources/external-secrets.yaml` | `external-secrets` | `https://charts.external-secrets.io` | HTTPS |
 | `sources/openbao.yaml` | `openbao` | `https://openbao.github.io/openbao-helm` | HTTPS |
 | `sources/c5c3-charts.yaml` | `c5c3-charts` | `oci://ghcr.io/c5c3/charts` | OCI |
-| `sources/k-orc.yaml` | `k-orc` | `https://k-orc.github.io/openstack-resource-controller` | HTTPS |
 | `sources/prometheus-community.yaml` | `prometheus-community` | `oci://ghcr.io/prometheus-community/charts` | OCI |
+
+**K-ORC is sourced from Git, not Helm.** K-ORC publishes no Helm chart (its
+`github.io` page serves no Helm index), so `sources/k-orc.yaml` is a `GitRepository`
+— still `source.toolkit.fluxcd.io/v1`, in `flux-system`, polling at `interval: 1h`
+— pinned to the upstream release tag `v2.5.0` and scoped to `/dist` via `spec.ignore`.
+It is applied by a Flux `Kustomization`, not a HelmRelease; see
+[K-ORC (OpenStack Resource Controller)](#k-orc-openstack-resource-controller).
 
 The `chaos-mesh` HelmRepository ships in the kind-only opt-in overlay at
 `deploy/kind/chaos-mesh/source.yaml` — it is intentionally absent
@@ -151,7 +157,9 @@ use standard HTTPS Helm registries.
 
 ## HelmRelease Operators
 
-Ten HelmRelease CRs deploy the infrastructure operators and CRD charts. All use
+Nine HelmRelease CRs deploy the infrastructure operators and CRD charts (K-ORC is
+applied separately via a Flux `Kustomization` — see
+[K-ORC (OpenStack Resource Controller)](#k-orc-openstack-resource-controller)). All use
 `apiVersion: helm.toolkit.fluxcd.io/v2` and share these common settings:
 
 | Setting | Value | Purpose |
@@ -178,16 +186,21 @@ mariadb-operator-crds     (no dependencies)
 ├── memcached-operator    dependsOn: cert-manager, prometheus-operator-crds
 ├── openbao               dependsOn: cert-manager
 ├── keystone-operator     dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets
-├── k-orc                 (no dependsOn — installs the OpenStack resource CRDs the c5c3-operator drives)
-└── c5c3-operator         dependsOn: keystone-operator, external-secrets, mariadb-operator, memcached-operator, k-orc
+└── c5c3-operator         dependsOn: keystone-operator, external-secrets, mariadb-operator, memcached-operator
 ```
+
+K-ORC is **not** in this graph: it is applied by a Flux `Kustomization`, not a
+HelmRelease, and a HelmRelease `dependsOn` can only reference other HelmReleases. The
+c5c3-operator therefore does **not** `dependsOn` K-ORC — the reconciler tolerates the
+K-ORC CRDs being absent (it surfaces `KORCReady=False` / `KORCCRDNotInstalled` rather
+than crash-looping) and converges once they appear.
 
 The `c5c3-operator` HelmRelease sits at the top of this graph: it
 `dependsOn` the four operators whose CRs it projects (keystone-operator,
-external-secrets, mariadb-operator, memcached-operator) plus `k-orc`, whose
-ApplicationCredential / Service / Endpoint CRDs it drives. `k-orc` itself declares no
-`dependsOn` — it only needs its own chart CRDs installed before the c5c3-operator
-reconciles a `ControlPlane`.
+external-secrets, mariadb-operator, memcached-operator). It also drives K-ORC's
+ApplicationCredential / Service / Endpoint CRDs, but K-ORC is applied by the separate
+Flux `Kustomization` above, so it is not a `dependsOn` edge — the c5c3-operator simply
+waits out `KORCCRDNotInstalled` until those CRDs are present.
 
 FluxCD resolves this dependency graph and installs operators in the correct order.
 If cert-manager is not ready, dependent operators are held in a pending state.
@@ -412,30 +425,32 @@ provisioning, memcached-operator for caching, and external-secrets for secret ma
 
 | Property | Value |
 | --- | --- |
-| Target namespace | `orc-system` |
-| Chart | `openstack-resource-controller` |
-| Version constraint | `>=0.1.0` |
-| Source | `k-orc` HelmRepository |
+| Kind | `Kustomization` (`kustomize.toolkit.fluxcd.io/v1`) |
+| Target namespace | `orc-system` (the upstream installer self-namespaces) |
+| Source | `k-orc` `GitRepository` (tag `v2.5.0`) |
+| Path | `./dist` |
 | Dependencies | None |
 
 K-ORC (the OpenStack Resource Controller) installs the declarative Keystone resource
 CRDs — `ApplicationCredential`, `Service`, `Endpoint`, and related kinds — that the
 c5c3-operator drives to project a `ControlPlane`'s desired state into Keystone.
-The HelmRelease `metadata.name` is the short, stable `k-orc` (not
-the chart's own `openstack-resource-controller`) so the c5c3-operator HelmRelease can
-`dependsOn` it by that name. Per repo convention the HelmRelease lives in its target
-namespace (`orc-system`), so no explicit `spec.targetNamespace` is needed.
-`globalCloudConfig` mounts the `orc-system` copy of the `k-orc-clouds-yaml` Secret
-as K-ORC's global default; however K-ORC authenticates **per resource** via each
-CR's `CloudCredentialsRef`, resolved in the CR's own (control-plane) namespace, so
-the credential chain below also materialises a co-located copy there.
-See [Admin Credential Chain](#admin-credential-chain) below.
 
-**Helm values:**
+K-ORC ships no Helm chart, so it is applied as a Flux `Kustomization` over the upstream
+release manifest rather than a HelmRelease. The `GitRepository` source vendors `./dist`
+from the pinned tag `v2.5.0`; `dist/install.yaml` there is byte-identical to the
+published `install.yaml` release asset. The path carries no `kustomization.yaml`, so the
+kustomize-controller generates one over `dist/install.yaml` and applies it verbatim
+(`prune: true`, `wait: true`). The installer already declares the `orc-system`
+Namespace and namespaces every resource into it, so no `spec.targetNamespace` is set.
+The short, stable name `k-orc` (not the upstream `openstack-resource-controller`) keeps
+diagnostics and cross-references terse.
 
-| Key | Value | Purpose |
-| --- | --- | --- |
-| `globalCloudConfig.secretName` | `k-orc-clouds-yaml` | Secret holding the admin `clouds.yaml` Application Credential that K-ORC authenticates to Keystone with |
+The upstream installer has no global-cloud-config knob (the previous HelmRelease set
+`globalCloudConfig.secretName`). That is not on the credential critical path: K-ORC
+authenticates **per resource** via each CR's `CloudCredentialsRef`, resolved in the
+CR's own (control-plane) namespace, so the credential chain below materialises a
+co-located `k-orc-clouds-yaml` copy there. The `orc-system` copy remains for any global
+default K-ORC mounts. See [Admin Credential Chain](#admin-credential-chain) below.
 
 ### c5c3-operator
 
@@ -447,14 +462,16 @@ See [Admin Credential Chain](#admin-credential-chain) below.
 | Chart | `c5c3-operator` |
 | Version constraint | `>=0.1.0 <1.0.0` |
 | Source | `c5c3-charts` HelmRepository (shared OCI registry) |
-| Dependencies | `keystone-operator`, `external-secrets`, `mariadb-operator`, `memcached-operator`, `k-orc` |
+| Dependencies | `keystone-operator`, `external-secrets`, `mariadb-operator`, `memcached-operator` |
 
 The c5c3-operator runs the `ControlPlane` reconciler that orchestrates a Keystone
 control plane end-to-end. It depends on the four operators whose CRs
 it projects — `keystone-operator` for the Keystone instance, `external-secrets` and
-`mariadb-operator` and `memcached-operator` for the supporting platform services — plus
-`k-orc`, whose `ApplicationCredential` / `Service` / `Endpoint` CRDs it drives to
-register the catalog and rotate the admin credential. The operator child CRs are created
+`mariadb-operator` and `memcached-operator` for the supporting platform services. It
+also drives K-ORC's `ApplicationCredential` / `Service` / `Endpoint` CRDs to register
+the catalog and rotate the admin credential, but K-ORC is the separate Flux
+`Kustomization` above, not a `dependsOn` edge (the reconciler tolerates those CRDs being
+absent — `KORCCRDNotInstalled` — until they appear). The operator child CRs are created
 in the `ControlPlane`'s own namespace, not a hard-coded one. For the reconciliation
 contract see the upstream design chapter
 `architecture/docs/09-implementation/08-c5c3-operator.md`.
@@ -482,8 +499,11 @@ Each HelmRelease `sourceRef.name` must match a HelmRepository `metadata.name` in
 | `memcached-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
 | `openbao` | `openbao` | `sources/openbao.yaml` |
 | `keystone-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
-| `k-orc` | `k-orc` | `sources/k-orc.yaml` |
 | `c5c3-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
+
+`k-orc` is not in this table: it is a Flux `Kustomization` whose `sourceRef` is the
+`k-orc` `GitRepository` (`sources/k-orc.yaml`), not a HelmRelease backed by a
+HelmRepository.
 
 The kind-only `chaos-mesh` HelmRelease ships in the opt-in overlay at
 `deploy/kind/chaos-mesh/release.yaml`, with its own local
@@ -662,7 +682,7 @@ materialising the Kubernetes Secret `k-orc-clouds-yaml` from the same OpenBao ke
 | Namespace | Purpose |
 | --- | --- |
 | `openstack` (control-plane) | **C1 co-location** — the c5c3-operator creates the K-ORC `ApplicationCredential`/`Service`/`Endpoint` CRs in the control-plane namespace, and K-ORC resolves each CR's `CloudCredentialsRef` Secret in that *same* namespace, so the admin clouds.yaml must live here for K-ORC to authenticate. This is the copy the `AdminCredentialReady` gate waits on. |
-| `orc-system` | The copy the K-ORC HelmRelease's `globalCloudConfig.secretName` mounts as K-ORC's global default. |
+| `orc-system` | The copy K-ORC mounts as its global default `clouds.yaml` (off the credential critical path — see the [K-ORC section](#k-orc-openstack-resource-controller)). |
 
 Both read the OpenBao key `openstack/keystone/admin/app-credential` (property
 `clouds.yaml`, store-relative to the KV-v2 mount). On a fresh cluster that key is
@@ -708,8 +728,10 @@ These resources do not depend on any custom CRDs.
 | --- | --- | --- |
 | Namespace | 10 | cert-manager, mariadb-system, external-secrets, monitoring, memcached-system, keystone-system, openstack, openbao-system, c5c3-system, orc-system |
 | FluxInstance | 1 | flux (drives the flux-operator) |
-| HelmRepository | 7 | cert-manager, mariadb-operator, external-secrets, openbao, c5c3-charts, k-orc, prometheus-community |
-| HelmRelease | 10 | cert-manager, prometheus-operator-crds, mariadb-operator-crds, mariadb-operator, external-secrets, memcached-operator, openbao, keystone-operator, k-orc, c5c3-operator |
+| HelmRepository | 6 | cert-manager, mariadb-operator, external-secrets, openbao, c5c3-charts, prometheus-community |
+| GitRepository | 1 | k-orc |
+| HelmRelease | 9 | cert-manager, prometheus-operator-crds, mariadb-operator-crds, mariadb-operator, external-secrets, memcached-operator, openbao, keystone-operator, c5c3-operator |
+| Kustomization | 1 | k-orc |
 | **Total** | **28** | |
 
 The `chaos-mesh` HelmRepository, HelmRelease, and Namespace ship in the

@@ -4,8 +4,14 @@
 
 # Feature: CC-0110, REQ-023 — the c5c3-operator controller runs in its own
 # dedicated c5c3-system Namespace and orchestrates the Keystone ControlPlane.
-# It depends on the infrastructure + Keystone operators it projects CRs into and
-# on K-ORC, whose Application Credential / Service / Endpoint CRDs it drives.
+# It depends on the infrastructure + Keystone operators it projects CRs into.
+#
+# K-ORC is deliberately NOT in dependsOn: a HelmRelease dependsOn can only
+# reference other HelmReleases, and K-ORC is now a Flux Kustomization
+# (releases/k-orc.yaml), not a HelmRelease. Ordering is unnecessary anyway — the
+# reconciler tolerates the K-ORC CRDs being absent (it surfaces KORCReady=False
+# with reason KORCCRDNotInstalled via a NoKindMatchError instead of crash-looping),
+# so the operator may start before K-ORC and converge once the CRDs appear.
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
@@ -23,8 +29,6 @@ spec:
       namespace: mariadb-system
     - name: memcached-operator
       namespace: memcached-system
-    - name: k-orc
-      namespace: orc-system
   chart:
     spec:
       chart: c5c3-operator

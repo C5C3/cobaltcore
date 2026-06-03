@@ -19,9 +19,11 @@
 # in that SAME namespace (api/v1alpha1/credentials_ref.go GetCloudCredentialsRef
 # returns the resource's own Namespace). The admin clouds.yaml Secret MUST
 # therefore exist in "openstack" for K-ORC to authenticate — the first document
-# below. The second document keeps a copy in "orc-system" for the K-ORC
-# HelmRelease's globalCloudConfig default mount (deploy/flux-system/releases/
-# k-orc.yaml). Both read the same OpenBao path, so both stay in lockstep.
+# below. The second document keeps a copy in "orc-system" for any global default
+# clouds.yaml mount K-ORC uses there (deploy/flux-system/releases/k-orc.yaml
+# applies the upstream installer; the global mount is not on the credential
+# critical path — see C1 above). Both read the same OpenBao path, so both stay
+# in lockstep.
 #
 # Feature: CC-0110, REQ-023, REQ-024
 ---
@@ -47,7 +49,7 @@ spec:
         key: openstack/keystone/admin/app-credential
         property: clouds.yaml
 ---
-# Copy in orc-system for the K-ORC HelmRelease globalCloudConfig default mount.
+# Copy in orc-system for K-ORC's global default clouds.yaml mount.
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
