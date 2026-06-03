@@ -3,7 +3,7 @@
 **Review-Area**: testing
 **Detection-Hint**: Search for `sleep` directives in test manifests or test code. Any hard-coded sleep used as a synchronization mechanism before an assertion is a flakiness risk that should be flagged.
 **Severity**: WARNING
-**Occurrences**: 3
+**Occurrences**: 4
 
 ## What to check
 
@@ -29,3 +29,8 @@ Fixed sleeps are either too short (causing flakes on slow CI/clusters) or too lo
 - **Feedback**: This negative test's reliability depends on the controller's periodic requeue cadence being longer than 1s. If a future change reduces the period...
 - **What was missed**: Negative reconcile tests that assert 'did not reconcile' via a Consistently window should not silently depend on requeue periods. The window should either exceed known periodic cadences or the test should disable periodic requeues.
 - **Fix**: No code change; reviewer marked as ASK/optional follow-up.
+
+### CC-0110 — gndrmnn
+- **Feedback**: We are not testing static constants for their static constant value. Remove Lines 18-26 ... `controlplane_status_test.go` adds no meaningful tests. Remove the file entirely.
+- **What was missed**: Each test should exercise actual behavior or logic. Reject tests that assert static constant values equal their definitions, test naming/lexical properties, or files that add no meaningful coverage.
+- **Fix**: Deleted the empty status test file and removed the constant-value assertions and lexical test blocks (e.g. lines 110-195 in controlplane_controller_test.go and 228-297 in instrumentation_test.go).

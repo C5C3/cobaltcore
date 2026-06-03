@@ -78,6 +78,12 @@ jobs:
             keystone:
               - 'operators/keystone/**'
               - 'images/keystone/**'
+            # CC-0110: c5c3 orchestration operator. K-ORC is deployed from an
+            # upstream Helm chart (there is no images/k-orc/ to build), so only
+            # the operator source path triggers the c5c3 unit/integration/E2E
+            # and image-build/push jobs.
+            c5c3:
+              - 'operators/c5c3/**'
             # glance:                        # uncomment when glance is added
             #   - 'operators/glance/**'
             #   - 'images/glance/**'
@@ -129,8 +135,9 @@ jobs:
       - name: Resolve effective changes
         id: result
         env:
-          ALL_OPERATORS: keystone
+          ALL_OPERATORS: keystone c5c3
           FILTER_keystone: ${{ steps.filter.outputs.keystone }}
+          FILTER_c5c3: ${{ steps.filter.outputs.c5c3 }}
           # FILTER_glance: ${{ steps.filter.outputs.glance }}
           FILTER_docs: ${{ steps.filter.outputs.docs }}
           FILTER_helm: ${{ steps.filter.outputs.helm }}
@@ -312,9 +319,11 @@ jobs:
     # 4 vCPU (was 2): the keystone envtest leg sat at ~14m on a 2-vCPU runner
     # against the 15m timeout, and the CC-0109 password-rotation integration
     # tests tipped it over. envtest is CPU-bound, so the larger runner pulls the
-    # wall-clock back under the timeout without raising the limit (CC-0109).
+    # wall-clock back down (CC-0109). Even so the keystone controller envtest
+    # suite alone runs ~14m and intermittently brushed the 15m job wall (a 15m07s
+    # run was cancelled), so the limit is raised to 20m for headroom.
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -606,14 +615,16 @@ jobs:
           done
 
       # Build service images for every operator × release combination.
-      # Iterates releases/*/ directories which is the single source of truth
-      # for both e2e-operator (2025.2, 2026.1) and tempest matrix releases.
+      # ci-service-image-releases.sh derives the release list per operator from
+      # releases/<release>/source-refs.yaml (the single source of truth, also
+      # used by ci-generate-build-matrix.sh). Orchestration operators without a
+      # service image — e.g. c5c3 (CC-0110), which deploys K-ORC via an upstream
+      # Helm chart — yield no releases and are skipped, so a changed c5c3 no
+      # longer fails this step on a missing source-ref.
       - name: Build service images
         run: |
           for op in $BUILD_OPERATORS; do
-            for release_dir in releases/*/; do
-              release="${release_dir%/}"
-              release="${release##*/}"
+            for release in $(OPERATOR="${op}" hack/ci-service-image-releases.sh); do
               echo "::group::Building ${op}:${release}"
               OPERATOR="${op}" IMAGE_PREFIX="${IMAGE_PREFIX}" RELEASE="${release}" \
                 DOCKER_BUILD_CACHE_FROM="type=gha,scope=e2e-${op}-${release}" \
@@ -679,9 +690,9 @@ jobs:
           }
           for op in $BUILD_OPERATORS; do
             push_image "${IMAGE_PREFIX}/${op}-operator:dev"
-            for release_dir in releases/*/; do
-              release="${release_dir%/}"
-              release="${release##*/}"
+            # Only push service images that were actually built — operators
+            # without a source-ref (e.g. c5c3) build none, so push none.
+            for release in $(OPERATOR="${op}" hack/ci-service-image-releases.sh); do
               push_image "${IMAGE_PREFIX}/${op}:${release}"
             done
           done
@@ -722,23 +733,49 @@ jobs:
         with:
           config: hack/kind-config.yaml
           cluster_name: forge-e2e
+      # Resolve which images this operator needs: always its operator image,
+      # plus one service image per release that ships one. The release list
+      # comes from source-refs.yaml (ci-service-image-releases.sh), so an
+      # orchestration operator without a service image — e.g. c5c3 (CC-0110) —
+      # loads only its operator image instead of failing to pull a
+      # non-existent c5c3:<release>.
+      - name: Resolve E2E images
+        id: e2e-images
+        env:
+          OPERATOR: ${{ matrix.operator }}
+          IMAGE_PREFIX: ${{ env.IMAGE_PREFIX }}
+        run: |
+          releases="$(OPERATOR="${OPERATOR}" hack/ci-service-image-releases.sh)"
+          refs="${IMAGE_PREFIX}/${OPERATOR}-operator:dev"
+          for release in ${releases}; do
+            refs="${refs}"$'\n'"${IMAGE_PREFIX}/${OPERATOR}:${release}"
+          done
+          {
+            echo "releases<<EOF"; echo "${releases}"; echo "EOF"
+            echo "refs<<EOF"; echo "${refs}"; echo "EOF"
+          } >> "$GITHUB_OUTPUT"
       # GH-310: Pull pre-built images from GHCR (run-scoped tag).
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
         with:
-          images: |
-            ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator:dev
-            ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2025.2
-            ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2026.1
+          images: ${{ steps.e2e-images.outputs.refs }}
       - name: Load images into kind
+        env:
+          OPERATOR: ${{ matrix.operator }}
+          IMAGE_PREFIX: ${{ env.IMAGE_PREFIX }}
+          SERVICE_RELEASES: ${{ steps.e2e-images.outputs.releases }}
         run: |
-          # Tag the service image with the upgrade tag used by the image-upgrade E2E test.
-          docker tag ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2025.2 \
-            ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2025.2-upgraded
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator:dev --name forge-e2e
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2025.2 --name forge-e2e
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2025.2-upgraded --name forge-e2e
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}:2026.1 --name forge-e2e
+          kind load docker-image "${IMAGE_PREFIX}/${OPERATOR}-operator:dev" --name forge-e2e
+          for release in ${SERVICE_RELEASES}; do
+            kind load docker-image "${IMAGE_PREFIX}/${OPERATOR}:${release}" --name forge-e2e
+          done
+          # The image-upgrade E2E test re-tags the 2025.2 service image; only
+          # operators that ship a 2025.2 service image need it loaded.
+          if printf '%s\n' ${SERVICE_RELEASES} | grep -qx 2025.2; then
+            docker tag "${IMAGE_PREFIX}/${OPERATOR}:2025.2" \
+              "${IMAGE_PREFIX}/${OPERATOR}:2025.2-upgraded"
+            kind load docker-image "${IMAGE_PREFIX}/${OPERATOR}:2025.2-upgraded" --name forge-e2e
+          fi
       # CC-0050: Use composite action for shared Flux CLI + test deps + deploy-infra sequence (REQ-005).
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
@@ -1076,13 +1113,20 @@ jobs:
       needs.build-e2e-images.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Pruning run-scoped tags is best-effort housekeeping — a failure must not
+    # fail the PR. A brand-new package (e.g. c5c3-operator before it is first
+    # published to main) has only the run-scoped e2e tag, and GHCR refuses to
+    # delete the last tagged version of a package ("You must delete the package
+    # instead"), so this leg errors until a persistent tag exists. The nightly
+    # cleanup-images workflow is the safety net for any leaked e2e-* tags.
+    continue-on-error: true
     permissions:
       contents: read
       packages: write
     strategy:
       fail-fast: false
       matrix:
-        package: [keystone-operator, keystone, tempest]
+        package: [keystone-operator, keystone, c5c3-operator, tempest]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       # GH-312: do NOT pass delete-untagged here. This job runs in

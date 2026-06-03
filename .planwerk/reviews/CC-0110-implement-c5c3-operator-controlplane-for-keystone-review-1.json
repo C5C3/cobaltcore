@@ -1,0 +1,193 @@
+{
+  "summary": "CC-0110 turns the inert operators/c5c3 stub into a working ControlPlane orchestration operator for Keystone with K-ORC self-credentialing. The implementation is broad and largely high-quality: ControlPlane/CredentialRotation/SecretAggregate CRDs, a phased ControlPlaneReconciler (Infrastructure -> Keystone -> KORC -> AdminCredential -> Catalog) mirroring the keystone reference shape, dual defaulting+validation webhook, pure table-tested helpers (intervalToCron/projectPolicyOverrides), a complete Helm chart, CI wiring, deploy/ESO/OpenBao manifests, reference docs, and unit/envtest/Chainsaw tests. Verified directly in-sandbox: go vet clean; unit + envtest integration tests PASS (KUBEBUILDER_ASSETS=/usr/local/kubebuilder/bin/k8s/1.36.0-linux-amd64); make generate/manifests/sync-crds idempotent; make verify-crd-sync green; condition->metric drift guard and no-inline-literal guard PASS; REQ-013 credential-secrecy invariant enforced & tested (restricted:true, no workload leak); OpenBao narrow path added without widening the mid-glob; Helm ClusterRole RBAC matches the kubebuilder markers (secretaggregates read-only); servicemonitor defaults false; CI ALL_OPERATORS/FILTER_c5c3/paths-filter/Dockerfile-in-lint-dockerfiles all wired; SPDX present on all hand-authored files; architecture submodule untouched. HOWEVER, the K-ORC credential-bootstrap chain — the headline feature — contains two confirmed correctness defects that prevent a live cluster from ever bootstrapping, and the simulation-based tests mask both. These must be fixed before merge.",
+  "verdict": "NEEDS_CHANGES",
+  "tests_checklist": [
+    {"item": "Unit tests exist and pass (api, controller, metrics, main)", "checked": true},
+    {"item": "Envtest integration test exists and passes (TestIntegration_FullReconcile_ManagedToReady)", "checked": true},
+    {"item": "Chainsaw E2E suite exists under tests/e2e/c5c3/full-controlplane-keystone/", "checked": true},
+    {"item": "Condition->metric drift guard and no-inline-literal guard pass", "checked": true},
+    {"item": "Credential-secrecy invariant (REQ-013) enforced and non-vacuous", "checked": true},
+    {"item": "Tests exercise the real credential bootstrap (not just a pre-populated Ready ExternalSecret)", "checked": false},
+    {"item": "No tautological / language-semantics-only tests", "checked": false},
+    {"item": "Aggregate 'RunsAllValidations' webhook test present", "checked": false},
+    {"item": "Re-mint test asserts the full mutation cycle (new hash stamped)", "checked": false}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows the keystone reference reconciler shape (Owns/Watches, instrumentSubReconciler, early-return, condition aggregation)", "checked": true},
+    {"item": "Typed condition constants, no inline condition-type literals", "checked": true},
+    {"item": "Sub-resource names incorporate cp.Name (multi-instance safe)", "checked": true},
+    {"item": "Owner refs via controllerutil.SetControllerReference on every child", "checked": true},
+    {"item": "Helpers pure and immutability-safe; reuses ptr.To / shared conditions helpers", "checked": true},
+    {"item": "DECISION/Reviewer-please-verify notes resolved or backed by tests", "checked": false}
+  ],
+  "security_checklist": [
+    {"item": "Admin password / app-credential never mounted into service workloads (REQ-013)", "checked": true},
+    {"item": "Minted Application Credential is restricted:true (least privilege)", "checked": true},
+    {"item": "OpenBao write path matches policy; mid-path glob NOT widened; eso-management trailing glob covers read", "checked": true},
+    {"item": "No hardcoded secrets, no TLS-skip-verify, no secrets in cmdline args", "checked": true},
+    {"item": "SecretAggregate is types-only; chart RBAC grants only get/list/watch", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Single CR kind per reconciler; CRD lifecycle by Helm not reconciler", "checked": true},
+    {"item": "Phased sub-reconcilers gated in dependency order with status conditions + ObservedGeneration", "checked": true},
+    {"item": "Watch handler matches actual ownership model (EnqueueRequestsFromMapFunc + field indexer for ESO-owned Secret)", "checked": true},
+    {"item": "Credential bootstrap chain composes end-to-end on a fresh cluster", "checked": false},
+    {"item": "K-ORC auth secret co-located with the resource CR that consumes it", "checked": false}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "Reuses commonv1 types and internal/common helpers (secrets, conditions, bootstrap)", "checked": true},
+    {"item": "Missing-CRD safety and hash derivation centralized (no duplication)", "checked": true},
+    {"item": "Helm Role/ClusterRole share a single _helpers.tpl rbacRules partial (no rule drift)", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Bad rotation interval surfaces a clean condition before partial apply", "checked": true},
+    {"item": "Missing CRD surfaces a condition (no crash-loop) via meta.IsNoMatchError", "checked": true},
+    {"item": "Status update failures preserved via errors.Join", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Webhook defense-in-depth mirrors CRD markers (region, restricted, rotation.mode, secretName defaults; openStackRelease pattern; db/cache XOR; passwordSecretRef required)", "checked": true},
+    {"item": "PushSecret/owned-Secret writes are clobber-safe (mutate closure never touches K-ORC-owned .data)", "checked": true},
+    {"item": "Empty-value guard on openStackRelease validation (empty fails pattern, but no explicit 'required' message)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [
+    {
+      "severity": "BLOCKER",
+      "description": "The K-ORC admin-credential bootstrap chain cannot converge on a fresh cluster. K-ORC must authenticate (using k-orc-clouds-yaml) to mint the admin Application Credential, but k-orc-clouds-yaml is itself sourced from the minted credential's OpenBao path — with no admin-password-based bootstrap seed. There is no step that turns the root-of-trust admin password (kv-v2/bootstrap/keystone-admin) into an initial clouds.yaml K-ORC can use. Combined with the reconcileAdminCredential gate (see issues FC4/C1), the chain is circular and the AC never mints.",
+      "location": "operators/c5c3/internal/controller/reconcile_korc.go; deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml; deploy/openbao/bootstrap/write-bootstrap-secrets.sh",
+      "fix": "Introduce an explicit bootstrap seed for the K-ORC admin clouds.yaml derived from the admin password (e.g. a bootstrap ExternalSecret or a bootstrap step that writes a password-based clouds.yaml to openstack/keystone/admin/app-credential, marked ESO-managed so the operator's PushSecret can later overwrite it with the minted AC), and co-locate that Secret with the K-ORC resource CRs (see C1). Add a Chainsaw assertion that starts from an empty OpenBao AC path."
+    }
+  ],
+  "issues_found": [
+    {
+      "check_id": "FC4",
+      "severity": "BLOCKER",
+      "description": "Bootstrap circular dependency: reconcileAdminCredential GATES creation of the PushSecret (which writes openstack/keystone/admin/app-credential to OpenBao) on the k-orc-clouds-yaml ExternalSecret being Ready. But that ExternalSecret (deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml) materializes FROM that exact OpenBao path. On a fresh cluster the path is empty, the ExternalSecret never becomes Ready, the function returns early before ever creating the PushSecret, so the path is never written -> permanent deadlock. write-bootstrap-secrets.sh seeds bootstrap/keystone-admin, infrastructure/mariadb and openstack/keystone/db but deliberately NOT openstack/keystone/admin/app-credential, so nothing breaks the cycle. Independently flagged by two review dimensions (confidence 0.95).",
+      "location": "operators/c5c3/internal/controller/reconcile_korc.go:387-410",
+      "fix": "Do not gate the operator-owned-Secret/PushSecret creation on the consumer ExternalSecret it ultimately feeds. Reorder so the minted credential is pushed to OpenBao independently of clouds.yaml readiness, and/or seed openstack/keystone/admin/app-credential from the admin password at bootstrap (ESO-managed placeholder) so the ExternalSecret can become Ready before the first mint. Then re-add a readiness gate only on the downstream consumer if needed.",
+      "evidence": "reconcile_korc.go:388 `ready, err := secrets.WaitForExternalSecret(ctx, r.Client, types.NamespacedName{Namespace: korcCloudsYamlNamespace, Name: korcCloudsYamlSecretName})` ... :400 `if !ready { ... return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil }` — returns BEFORE the PushSecret at :442-443 `ps := adminAppCredentialPushSecret(cp); secrets.EnsurePushSecret(...)`. k-orc-clouds-yaml.yaml:29 `key: openstack/keystone/admin/app-credential`. write-bootstrap-secrets.sh seeds only bootstrap/keystone-admin (:115), infrastructure/mariadb, openstack/keystone/db — not the AC path.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "C1",
+      "severity": "BLOCKER",
+      "description": "Namespace mismatch for the K-ORC credential secret. The ApplicationCredential/Service/Endpoint CRs are created in childNamespace(cp)=cp.Namespace (production & E2E: 'openstack'), and the reconciler sets the REQUIRED Spec.CloudCredentialsRef.SecretName='k-orc-clouds-yaml'. Per K-ORC v2.5.0, CloudCredentialsRef is +required and GetCloudCredentialsRef() returns the resource's OWN namespace, i.e. K-ORC resolves 'k-orc-clouds-yaml' in 'openstack'. But the ESO ExternalSecret materializes 'k-orc-clouds-yaml' ONLY into 'orc-system'. K-ORC will not find the auth secret in 'openstack', so the AC never reaches Available, KORCReady stays False, and the whole chain stalls. (globalCloudConfig in the K-ORC HelmRelease does not save this: CloudCredentialsRef is required and per-resource, resolved in the resource namespace.)",
+      "location": "operators/c5c3/internal/controller/reconcile_korc.go:151,157-160; deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml:16-17",
+      "fix": "Co-locate the auth clouds.yaml Secret with the K-ORC resource CRs: either materialize 'k-orc-clouds-yaml' into the ControlPlane namespace (openstack) as well, or create the K-ORC ApplicationCredential/Service/Endpoint in orc-system, or set CloudCredentialsRef to a secret that exists in childNamespace. Verify on a live cluster.",
+      "evidence": "K-ORC v2.5.0 zz_generated.applicationcredential-resource.go:79-80 `// +required` `CloudCredentialsRef CloudCredentialsReference`; credentials_ref.go:28 'secretName is the name of a secret in the same namespace as the resource being provisioned'; GetCloudCredentialsRef() returns `&i.Namespace, &i.Spec.CloudCredentialsRef`. reconcile_korc.go:151 `Namespace: childNamespace(cp)` (=cp.Namespace per reconcile_infrastructure.go:41-43); :157-160 sets `CloudCredentialsRef.SecretName`. k-orc-clouds-yaml.yaml:17 `namespace: orc-system`.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "TE9",
+      "severity": "MAJOR",
+      "description": "The unit and integration tests mask the bootstrap defects above by pre-populating the k-orc-clouds-yaml ExternalSecret with Ready=True and pre-syncing it before creating the ControlPlane. As a result the suite passes while the live chain deadlocks. There is no fresh-cluster bootstrap test that starts from an empty OpenBao AC path / absent clouds.yaml.",
+      "location": "operators/c5c3/internal/controller/reconcile_korc_test.go (readyCloudsYamlES); operators/c5c3/internal/controller/integration_test.go (pre-sync of the clouds.yaml ExternalSecret before CR creation)",
+      "fix": "Add a test (envtest or Chainsaw) that does NOT pre-populate k-orc-clouds-yaml as Ready and instead drives the real bootstrap ordering, so the circular dependency surfaces as a failing test rather than being hidden.",
+      "evidence": "reconcile_korc_test.go defines readyCloudsYamlES() returning an ExternalSecret with Ready=True status; reconcileAdminCredential tests and integration_test.go rely on it so reconcileAdminCredential passes its gate. Without it the gate at reconcile_korc.go:400 would never clear.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "TE_TAUTOLOGY",
+      "severity": "MAJOR",
+      "description": "Tautological / language-semantics-only tests that exercise no production logic, contradicting the project's own reject-tautological-constant-tests and remove-tests-that-only-verify-language-semantics patterns. TestUpdatePhaseConstants/TestRotationModeConstants assert string(UpdatePhaseIdle)=='Idle' (constant equals its own literal); TestControlPlaneSpecZeroValues/TestControlPlaneStatusZeroValues assert uninitialized fields equal Go zero values; TestControlPlaneImplementsRuntimeObject is a compile-time blank-identifier assertion dressed as a test.",
+      "location": "operators/c5c3/api/v1alpha1/controlplane_status_test.go:41-56; operators/c5c3/api/v1alpha1/controlplane_types_test.go:101-118,42-45",
+      "fix": "Delete these tests; they add coverage noise without catching any behavior. Keep only tests that exercise webhook/reconciler logic.",
+      "evidence": "controlplane_status_test.go TestUpdatePhaseConstants/TestRotationModeConstants assert enum string == literal; controlplane_types_test.go TestControlPlaneSpecZeroValues asserts zero values; TestControlPlaneImplementsRuntimeObject uses `var _ runtime.Object = &ControlPlane{}`.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "TE3",
+      "severity": "MAJOR",
+      "description": "No aggregate webhook validation test. The webhook accumulates all field errors (no short-circuit), but there is no single test (e.g. RunsAllValidations) that puts every rule into a broken state simultaneously and asserts every error substring is present (openStackRelease pattern, database XOR, cache XOR, passwordSecretRef required). Per the project's update-aggregate-validation-tests / ensure-test-names-accurately-describe-coverage patterns this should exist so a future short-circuit regression is caught.",
+      "location": "operators/c5c3/api/v1alpha1/controlplane_webhook_test.go:126-193",
+      "fix": "Add TestValidateCreate_RunsAllValidations that violates all four rules at once and asserts the returned aggregate error contains each field-specific substring.",
+      "evidence": "controlplane_webhook.go validate() appends to allErrs for all four checks (no early return), but controlplane_webhook_test.go only has isolated single-rule tests.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "TE7",
+      "severity": "MAJOR",
+      "description": "Re-mint and no-op tests verify only half the mutation cycle. The re-mint test asserts the admin-password-hash annotation is cleared, but never drives the subsequent reconcile to assert the NEW hash is stamped and the AC re-minted. The hash-match no-op test asserts the annotation is unchanged but does not assert the ApplicationCredential spec is not otherwise mutated (no spurious update). Per assert-absence-of-old-state / full-mutation-cycle review patterns.",
+      "location": "operators/c5c3/internal/controller/reconcile_credentialrotation_test.go:122-181",
+      "fix": "Extend the re-mint test to run a second reconcile and assert the fresh hash is stamped; extend the no-op test to assert AC.Spec is unchanged (no churn).",
+      "evidence": "reconcile_credentialrotation_test.go TestRotation_ReMintClearsHashAnnotation asserts cleared annotation only; TestRotation_HashMatchIsNoOp asserts annotation unchanged only.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "TE7b",
+      "severity": "MAJOR",
+      "description": "The envtest integration test drives the full chain (Infra -> Keystone -> KORC -> AdminCredential -> Catalog -> Ready=True) but only asserts the final aggregate condition and observedGeneration. It does not assert the intermediate projected specs (Keystone image tag derived from openStackRelease, clusterRefs wired, merged policy, AC restricted/Unrestricted inversion, Service/Endpoint shape), so a projection regression would not be caught by the integration tier.",
+      "location": "operators/c5c3/internal/controller/integration_test.go:257-364",
+      "fix": "Add intermediate assertions on the projected child specs at each phase boundary, not just the final Ready=True.",
+      "evidence": "integration_test.go TestIntegration_FullReconcile_ManagedToReady asserts only the terminal ControlPlane Ready condition and sub-conditions; no Get+assert on the projected Keystone.Spec.Image.Tag, Database.ClusterRef, PolicyOverrides, or AC Unrestricted.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "PR1",
+      "severity": "MINOR",
+      "description": "The image-tag projection test asserts the exact value (Tag=='2025.2') for a single openStackRelease but does not prove the derivation rule (a different release yields a different tag). A second table row would lock in the derivation rather than a coincidental literal match.",
+      "location": "operators/c5c3/internal/controller/reconcile_keystone_test.go:96-115",
+      "fix": "Make it table-driven with at least two releases (e.g. 2025.2 and 2026.1) asserting Tag==release each time, plus one image-override case.",
+      "evidence": "reconcile_keystone.go:74 `Tag: cp.Spec.OpenStackRelease`; test asserts a single hardcoded '2025.2'.",
+      "fix_classification": "ASK"
+    },
+    {
+      "check_id": "D1",
+      "severity": "MINOR",
+      "description": "Several generated CRD field descriptions are truncated mid-sentence because a doc-comment sentence flows directly into a +kubebuilder marker line, which controller-gen treats as a marker (not description). e.g. rotation 'mode' renders 'Mode selects the rotation strategy. Defaults to PasswordDriven via BOTH the' then stops. Affects restricted, rotation.mode, and region descriptions; degrades `kubectl explain`.",
+      "location": "operators/c5c3/api/v1alpha1/controlplane_types.go:51-55,205-207,254-256 (rendered in config/crd/bases/c5c3.io_controlplanes.yaml:303-304)",
+      "fix": "Reword so the marker is not mid-sentence: end the human-readable sentence before the '// +kubebuilder:default=...' line (e.g. put the 'via BOTH the marker AND webhook' note on a line that precedes the marker, or drop it from the doc comment).",
+      "evidence": "c5c3.io_controlplanes.yaml:302-307 `default: PasswordDriven` / `description: Mode selects the rotation strategy. Defaults to PasswordDriven via BOTH the` / `enum:` — sentence cut at 'the'.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "FEATURE_ID",
+      "severity": "MINOR",
+      "description": "The scheduled-rotation deferral DECISION comment in credentialrotation_types.go does not cite the requirement ID (REQ-015), unlike the matching DECISION in reconcile_credentialrotation.go. Minor traceability gap. (Note: the deferral itself IS explicitly called out — DECISION comment + a 'ScheduledRotationDeferred' event — satisfying REQ-015's 'not silently dropped'; the PR description should also state it.)",
+      "location": "operators/c5c3/api/v1alpha1/credentialrotation_types.go:67-73",
+      "fix": "Add the (CC-0110, REQ-015) tag to the deferral DECISION comment, and ensure the PR description explicitly notes the scheduled loop is deferred.",
+      "evidence": "credentialrotation_types.go:67-73 documents the deferred intervalDays/preRotationDays/gracePeriodDays without a REQ-015 reference; reconcile_credentialrotation.go:96 references it.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "DA3",
+      "severity": "MINOR",
+      "description": "The architecture/ submodule pointer was not bumped and the PR (as represented in the worktree) carries no link to the upstream architecture commit/PR for 08-c5c3-operator.md / 05-korc.md / 01-credential-lifecycle.md. The acceptance criteria require the pointer bumped OR an upstream link. Submodule files are correctly NOT modified (read-only), so this is a process/traceability item, not a code defect.",
+      "location": ".gitmodules / architecture submodule (unchanged)",
+      "fix": "Bump the architecture submodule pointer once the upstream docs land, or add the upstream commit/PR link to the PR description.",
+      "evidence": "git diff main...HEAD shows no architecture/ entry and no submodule pointer change; git submodule status shows architecture at e3ba3b0 (heads/main), unchanged.",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "Resolve the four 'Reviewer: please verify' K-ORC integration decisions in reconcile_korc.go with live-cluster evidence: adminUserRef convention (CloudName -> sibling User CR), keystoneEndpointURL (http://keystone.<ns>.svc:5000/v3), AccessRule.Service -> serviceRef naming, and the PushSecret DeletionPolicy=None choice. These sit on the same credential path as the two confirmed defects.",
+    "Consider validating spec.services.keystone.rotationInterval in the webhook (only 168h or multiples of 24h are accepted by intervalToCron) so a bad interval is rejected at admission instead of surfacing as a steady-state KeystoneReady=False with no requeue.",
+    "intervalToCron maps any multiple of 24h (e.g. 48h, 336h) to a DAILY schedule, silently losing fidelity for non-weekly multi-day intervals; document this or reject non-{24h,168h} intervals explicitly.",
+    "Set the aggregate Ready=False condition on early-return paths too (currently setReadyCondition runs only after all five sub-reconcilers pass), so Status.Ready reflects in-progress state rather than remaining absent until full convergence."
+  ],
+  "next_steps": [
+    "FIX BEFORE MERGE (BLOCKER): break the K-ORC clouds.yaml bootstrap cycle (FC4) and co-locate the auth Secret with the K-ORC resource CRs (C1). Add an admin-password-derived bootstrap seed for openstack/keystone/admin/app-credential.",
+    "Add a non-masking bootstrap test (TE9) that starts from an empty OpenBao AC path so the circular dependency would fail the suite; validate the full chain on a real kind cluster via the Chainsaw suite.",
+    "Remove the tautological/language-semantics tests (TE_TAUTOLOGY) and add the aggregate webhook validation test (TE3); complete the re-mint mutation-cycle assertions (TE7) and integration intermediate-spec assertions (TE7b).",
+    "Address the MINOR items: CRD description truncation (D1), REQ-015 traceability (FEATURE_ID), image-tag derivation table test (PR1), and the architecture submodule pointer/upstream link (DA3)."
+  ],
+  "detected_patterns": [
+    {
+      "name": "Missing-CRD safety via meta.IsNoMatchError",
+      "component": "operators/c5c3/internal/controller",
+      "category": "error-handling",
+      "applies_when": "A sub-reconciler create-or-updates a CR whose CRD is owned by a third-party operator that may not be installed yet (e.g. K-ORC ApplicationCredential/Service/Endpoint)",
+      "description": "When create-or-update of a third-party CR fails, the error is checked with meta.IsNoMatchError. On a no-match (CRD absent) the sub-reconciler logs, sets its *Ready condition to False with a stable Reason ('KORCCRDNotInstalled') and a short RequeueAfter, and returns nil — so a missing optional CRD degrades to a clear condition instead of crash-looping the operator. Used consistently across the K-ORC mint and catalog phases; future operators that own optional third-party CRDs should follow the same shape.",
+      "examples": [
+        {
+          "location": "operators/c5c3/internal/controller/reconcile_korc.go:186-196",
+          "code": "if meta.IsNoMatchError(err) {\n\tlogger.Info(\"K-ORC ApplicationCredential CRD not installed; KORCReady=False\")\n\tconditions.SetCondition(&cp.Status.Conditions, metav1.Condition{\n\t\tType:               conditionTypeKORCReady,\n\t\tStatus:             metav1.ConditionFalse,\n\t\tObservedGeneration: cp.Generation,\n\t\tReason:             \"KORCCRDNotInstalled\",\n\t\tMessage:            \"K-ORC ApplicationCredential CRD is not installed\",\n\t})\n\treturn ctrl.Result{RequeueAfter: korcRequeueAfter}, nil\n}"
+        },
+        {
+          "location": "operators/c5c3/internal/controller/reconcile_korc.go:610-620",
+          "code": "func (r *ControlPlaneReconciler) catalogCRDMissing(cp *c5c3v1alpha1.ControlPlane, logger logr.Logger) (ctrl.Result, error) {\n\tlogger.Info(\"K-ORC Service/Endpoint CRD not installed; CatalogReady=False\")\n\tconditions.SetCondition(&cp.Status.Conditions, metav1.Condition{\n\t\tType:               conditionTypeCatalogReady,\n\t\tStatus:             metav1.ConditionFalse,\n\t\tObservedGeneration: cp.Generation,\n\t\tReason:             \"KORCCRDNotInstalled\",\n\t\tMessage:            \"K-ORC Service/Endpoint CRD is not installed\",\n\t})\n\treturn ctrl.Result{RequeueAfter: korcRequeueAfter}, nil\n}"
+        }
+      ]
+    }
+  ]
+}

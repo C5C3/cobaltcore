@@ -21,6 +21,7 @@ var (
 	GroupVersion = schema.GroupVersion{Group: "keystone.openstack.c5c3.io", Version: "v1alpha1"}
 
 	// SchemeBuilder is used to add go types to the GroupVersionKind scheme.
+	//nolint:staticcheck // SA1019: kubebuilder-scaffolded helper; no drop-in replacement that keeps the api package controller-runtime-free.
 	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}
 
 	// AddToScheme adds the types in this group-version to the given scheme.

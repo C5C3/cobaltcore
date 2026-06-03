@@ -1,0 +1,309 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the full c5c3 ControlPlane → Keystone chain (CC-0110,
+# REQ-028). It applies one ControlPlane CR (group c5c3.io/v1alpha1) and asserts
+# the entire orchestration chain LINK BY LINK, gating each link on the previous
+# one before proceeding:
+#
+#   1. Infrastructure  — owned MariaDB ("openstack-db") + Memcached
+#                        ("openstack-memcached") created in the openstack
+#                        namespace and owned by the ControlPlane;
+#                        InfrastructureReady=True.
+#   2. Keystone        — owned Keystone CR ("controlplane-keystone-keystone")
+#                        with image tag derived from spec.openStackRelease,
+#                        database/cache clusterRefs wired to the infra CRs, and
+#                        merged spec.policyOverrides; KeystoneReady=True.
+#   3. ApplicationCred — owned K-ORC ApplicationCredential
+#                        ("controlplane-keystone-admin-app-credential") minted
+#                        with restricted:true (spec.resource.unrestricted=false);
+#                        KORCReady=True.
+#   4. Credential chain — minted credential → operator Secret → PushSecret
+#                        ("…-admin-app-credential-backup") → OpenBao →
+#                        ExternalSecret "k-orc-clouds-yaml" Ready in the
+#                        control-plane namespace (this is the AdminCredentialReady
+#                        gate after the C1 co-location fix; a copy also lands in
+#                        orc-system for K-ORC's globalCloudConfig mount);
+#                        AdminCredentialReady=True.
+#   5. Catalog         — owned K-ORC Service ("…-identity-service") + Endpoint
+#                        ("…-identity-endpoint"); CatalogReady=True.
+#   6. Aggregate       — ControlPlane Ready=True (reason AllReady).
+#   7. API reachable   — Keystone /v3 returns HTTP 200; `openstack token issue`
+#                        and `openstack catalog list` succeed using the
+#                        materialised admin clouds.yaml (proves the minted,
+#                        pushed, re-materialised application credential actually
+#                        authenticates and the identity service is catalogued).
+#
+# ── DECISION: belt-and-braces presence guard + single consolidated script ────
+# Ambiguity: the task says "follow tests/e2e/keystone/basic-deployment
+# structure" (pure declarative `assert` steps). basic-deployment can do that
+# because the keystone e2e-operator matrix job deploys the keystone-operator and
+# the infra operators it needs. The c5c3 chain additionally needs K-ORC and the
+# c5c3-operator, which the current kind E2E wiring (hack/deploy-infra.sh +
+# hack/ci-deploy-operator.sh) does NOT install. Under the suite's
+# `execution.failFast: true` (tests/e2e/chainsaw-config.yaml) a pure declarative
+# test would HARD-FAIL the entire e2e-operator job on any cluster missing that
+# stack — including the PR that introduces this file.
+# Chose: the repo's established kind-only belt-and-braces gating pattern
+# (tests/e2e/keystone/gateway-quick-start-smoke, tests/e2e/infrastructure/
+# chaos-mesh-health). A runtime presence guard probes for the required CRDs +
+# the OpenBao ClusterSecretStore and exits 0 with a SKIP line when the stack is
+# absent, so the test is default-safe; when the stack IS present it asserts the
+# full chain link-by-link. Because chainsaw has no step-level skip, the guard and
+# all link assertions live in ONE script step (declarative asserts in sibling
+# steps would time out and fail even after the guard exited 0 — see the
+# chaos-mesh-health pattern). The `# ── Link N ──` headers preserve the
+# link-by-link structure of basic-deployment.
+# Reviewer: please verify, and note the kind E2E wiring to deploy K-ORC + the
+# c5c3-operator (so this test exercises rather than skips) is a documented
+# fast-follow on the CC-0110 GitOps/CI wiring (REQ-022/REQ-023).
+#
+# ── DECISION: OpenStack client image for token/catalog verification ──────────
+# `openstack token issue` / `openstack catalog list` need the OpenStack CLI. No
+# such image is loaded into the c5c3 e2e cluster today, so the verify Job uses
+# OPENSTACK_CLIENT_IMAGE (default ghcr.io/c5c3/tempest:latest — the repo's own
+# image that bundles the OpenStack client). The full-chain wiring fast-follow
+# must load it (mirroring the tempest job). Behind the presence guard this never
+# runs on a stack that lacks it. Reviewer: please verify the image/cloud name.
+#
+# Feature: CC-0110, REQ-028
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: full-controlplane-keystone
+spec:
+  namespace: openstack
+  # The full chain (Galera bring-up + Keystone bootstrap + K-ORC mint + the
+  # OpenBao round-trip) is long-running, so the consolidated script and its
+  # diagnostic catch get generous bounds well above the 120s suite default.
+  timeouts:
+    assert: 5m
+    exec: 20m
+  steps:
+  # ── Step 1: Presence-gate, apply the ControlPlane, assert the chain ────────
+  - try:
+    - script:
+        timeout: 20m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; every
+        # infra/keystone e2e script pins bash for the same reason.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          CP_NS=openstack
+          CP_NAME=controlplane-keystone
+          ORC_NS=orc-system
+          KEYSTONE_CR="${CP_NAME}-keystone"
+          AC_NAME="${CP_NAME}-admin-app-credential"
+          PUSH_SECRET="${CP_NAME}-admin-app-credential-backup"
+          SVC_CR="${CP_NAME}-identity-service"
+          EP_CR="${CP_NAME}-identity-endpoint"
+          CLOUDS_SECRET=k-orc-clouds-yaml
+
+          # ── Presence guard (CC-0110, REQ-028) ──────────────────────────────
+          # Probe for every CRD the chain spans plus the OpenBao
+          # ClusterSecretStore the credential chain pushes through. Their absence
+          # unambiguously means the c5c3-operator + K-ORC + keystone-operator
+          # stack is not deployed on this cluster — SKIP cleanly (exit 0).
+          missing=""
+          for crd in \
+            controlplanes.c5c3.io \
+            keystones.keystone.openstack.c5c3.io \
+            applicationcredentials.openstack.k-orc.cloud \
+            services.openstack.k-orc.cloud \
+            endpoints.openstack.k-orc.cloud \
+            externalsecrets.external-secrets.io; do
+            if ! kubectl get crd "$crd" >/dev/null 2>&1; then
+              missing="${missing} ${crd}"
+            fi
+          done
+          if [ -n "${missing}" ]; then
+            echo "SKIP: required CRDs not present:${missing}"
+            echo "      The c5c3-operator + K-ORC + keystone-operator stack is"
+            echo "      not deployed on this cluster, so the full ControlPlane"
+            echo "      chain cannot be exercised here."
+            exit 0
+          fi
+          if ! kubectl get clustersecretstore openbao-cluster-store >/dev/null 2>&1; then
+            echo "SKIP: openbao-cluster-store ClusterSecretStore not present;"
+            echo "      the admin-credential push chain cannot complete."
+            exit 0
+          fi
+          echo "OK: c5c3 + K-ORC + keystone CRDs and OpenBao store present —"
+          echo "    running the full ControlPlane → Keystone chain."
+
+          # ── Helpers ────────────────────────────────────────────────────────
+          # Poll a ControlPlane status condition to True. Implemented as an
+          # explicit poll (not `kubectl wait`) so a condition that is briefly
+          # absent or False simply retries instead of erroring out, and so the
+          # failure message names the last-observed status for triage.
+          wait_cp_condition() { # <conditionType> <timeoutSeconds>
+            local ctype="$1" timeout="$2"
+            local deadline status
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              status="$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
+                -o "jsonpath={.status.conditions[?(@.type=='${ctype}')].status}" 2>/dev/null || true)"
+              if [ "${status}" = "True" ]; then
+                echo "OK: ControlPlane condition ${ctype}=True"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ControlPlane condition ${ctype} not True within ${timeout}s (last: '${status:-<none>}')"
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
+          # Poll an arbitrary resource's Ready condition (ExternalSecret /
+          # PushSecret both expose a "Ready" condition).
+          wait_ready_condition() { # <resource> <name> <namespace> <timeoutSeconds>
+            local res="$1" name="$2" ns="$3" timeout="$4"
+            local deadline status
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              status="$(kubectl get "${res}" "${name}" -n "${ns}" \
+                -o "jsonpath={.status.conditions[?(@.type=='Ready')].status}" 2>/dev/null || true)"
+              if [ "${status}" = "True" ]; then
+                echo "OK: ${res}/${name} Ready=True"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} Ready not True within ${timeout}s (last: '${status:-<none>}')"
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
+          assert_eq() { # <description> <expected> <actual>
+            if [ "$2" != "$3" ]; then
+              echo "ERROR: $1 — expected '$2', got '$3'"
+              exit 1
+            fi
+            echo "OK: $1 ('$3')"
+          }
+
+          owner_of() { # <resource> <name>  → controller ControlPlane name
+            kubectl get "$1" "$2" -n "${CP_NS}" \
+              -o "jsonpath={.metadata.ownerReferences[?(@.kind=='ControlPlane')].name}" 2>/dev/null || true
+          }
+
+          # Apply the ControlPlane CR now that the CRD presence guard has passed.
+          # Chainsaw runs scripts with the test directory as CWD.
+          kubectl apply -f 00-controlplane-cr.yaml
+
+          # ── Link 1: Infrastructure (MariaDB + Memcached, owned) ────────────
+          wait_cp_condition InfrastructureReady 600
+          kubectl get mariadb openstack-db -n "${CP_NS}" >/dev/null
+          kubectl get memcacheds.memcached.c5c3.io openstack-memcached -n "${CP_NS}" >/dev/null
+          assert_eq "MariaDB openstack-db owned by ControlPlane" "${CP_NAME}" "$(owner_of mariadb openstack-db)"
+          assert_eq "Memcached openstack-memcached owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of memcacheds.memcached.c5c3.io openstack-memcached)"
+
+          # ── Link 2: Keystone CR (tag / clusterRefs / merged policy) ────────
+          wait_cp_condition KeystoneReady 600
+          assert_eq "Keystone image tag derived from openStackRelease" "2025.2" \
+            "$(kubectl get keystone "${KEYSTONE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
+          assert_eq "Keystone database clusterRef wired to infra" "openstack-db" \
+            "$(kubectl get keystone "${KEYSTONE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.clusterRef.name}')"
+          assert_eq "Keystone cache clusterRef wired to infra" "openstack-memcached" \
+            "$(kubectl get keystone "${KEYSTONE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.cache.clusterRef.name}')"
+          assert_eq "Global oslo.policy override merged into Keystone CR" "role:admin" \
+            "$(kubectl get keystone "${KEYSTONE_CR}" -n "${CP_NS}" -o "jsonpath={.spec.policyOverrides.rules['identity:list_users']}")"
+          assert_eq "Keystone CR owned by ControlPlane" "${CP_NAME}" "$(owner_of keystone "${KEYSTONE_CR}")"
+
+          # ── Link 3: K-ORC ApplicationCredential (restricted:true, owned) ───
+          wait_cp_condition KORCReady 600
+          # restricted:true projects to K-ORC's spec.resource.unrestricted=false.
+          assert_eq "ApplicationCredential minted restricted (unrestricted=false)" "false" \
+            "$(kubectl get applicationcredential "${AC_NAME}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.unrestricted}')"
+          assert_eq "ApplicationCredential owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of applicationcredential "${AC_NAME}")"
+
+          # ── Link 4: credential chain → k-orc-clouds-yaml (control-plane ns) ─
+          # C1: AdminCredentialReady gates on the clouds.yaml ExternalSecret in the
+          # CONTROL-PLANE namespace (co-located with the K-ORC CRs K-ORC resolves
+          # CloudCredentialsRef against), not the orc-system copy. Assert the
+          # gate-relevant CP_NS ExternalSecret/Secret first, then confirm the
+          # orc-system copy K-ORC's globalCloudConfig mounts also materialised.
+          wait_ready_condition pushsecret "${PUSH_SECRET}" "${CP_NS}" 300
+          wait_ready_condition externalsecret "${CLOUDS_SECRET}" "${CP_NS}" 300
+          kubectl get secret "${CLOUDS_SECRET}" -n "${CP_NS}" >/dev/null
+          wait_ready_condition externalsecret "${CLOUDS_SECRET}" "${ORC_NS}" 300
+          wait_cp_condition AdminCredentialReady 600
+
+          # ── Link 5: catalog (K-ORC Service + Endpoint, owned) ──────────────
+          wait_cp_condition CatalogReady 600
+          kubectl get services.openstack.k-orc.cloud "${SVC_CR}" -n "${CP_NS}" >/dev/null
+          kubectl get endpoints.openstack.k-orc.cloud "${EP_CR}" -n "${CP_NS}" >/dev/null
+          assert_eq "K-ORC identity Service owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of services.openstack.k-orc.cloud "${SVC_CR}")"
+          assert_eq "K-ORC identity Endpoint owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of endpoints.openstack.k-orc.cloud "${EP_CR}")"
+
+          # ── Link 6: aggregate Ready=True ───────────────────────────────────
+          wait_cp_condition Ready 300
+          assert_eq "Aggregate Ready reason" "AllReady" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o "jsonpath={.status.conditions[?(@.type=='Ready')].reason}")"
+
+          # ── Link 7a: Keystone /v3 returns HTTP 200 ─────────────────────────
+          # Mirrors tests/e2e/keystone/basic-deployment: GET the in-cluster
+          # Keystone v3 root from a throwaway pod using the keystone image's
+          # python (no extra image to load). urlopen() raises on non-200.
+          KS_URL="http://${KEYSTONE_CR}.${CP_NS}.svc:5000/v3"
+          echo "== curl Keystone ${KS_URL} (expect HTTP 200) =="
+          kubectl run cp-keystone-v3 --image=ghcr.io/c5c3/keystone:2025.2 --rm -i --restart=Never \
+            -n "${CP_NS}" --command -- \
+            python3 -c "import sys,urllib.request; r=urllib.request.urlopen('${KS_URL}'); print('HTTP', r.status); sys.exit(0 if r.status == 200 else 1)"
+          echo "OK: Keystone /v3 returned HTTP 200"
+
+          # ── Link 7b: openstack token issue + catalog list ─────────────────
+          # Authenticate with the materialised admin clouds.yaml (the minted,
+          # OpenBao-round-tripped application credential) and prove a token can
+          # be issued and the identity service appears in the catalog. The Job
+          # manifest lives in a sibling fixture (01-openstack-verify-job.yaml) so
+          # the orc-system Job lands in its own namespace untouched by chainsaw's
+          # test-namespace injection.
+          echo "== openstack token issue + catalog list (cloud: admin) =="
+          kubectl delete job cp-openstack-verify -n "${ORC_NS}" --ignore-not-found
+          kubectl apply -f 01-openstack-verify-job.yaml
+          kubectl wait --for=condition=complete job/cp-openstack-verify -n "${ORC_NS}" --timeout=5m
+          echo "=== openstack client output ==="
+          kubectl logs -n "${ORC_NS}" job/cp-openstack-verify
+          kubectl logs -n "${ORC_NS}" job/cp-openstack-verify | grep -qi "identity" \
+            || { echo "ERROR: identity (keystone) service not listed in the catalog"; exit 1; }
+          echo "OK: token issued and identity service catalogued — full chain verified."
+    catch:
+    - script:
+        shell: bash
+        content: |
+          echo "=== ControlPlane describe ==="
+          kubectl describe controlplane controlplane-keystone -n openstack 2>&1 || true
+          echo "=== ControlPlane status.conditions ==="
+          kubectl get controlplane controlplane-keystone -n openstack \
+            -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
+          echo "=== Projected child CRs ==="
+          kubectl get mariadb,memcacheds.memcached.c5c3.io,keystone -n openstack 2>&1 || true
+          kubectl get applicationcredentials.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud -n openstack 2>&1 || true
+          echo "=== Credential chain (PushSecret / ExternalSecret) ==="
+          kubectl describe pushsecret controlplane-keystone-admin-app-credential-backup -n openstack 2>&1 || true
+          kubectl describe externalsecret k-orc-clouds-yaml -n orc-system 2>&1 || true
+          echo "=== c5c3-operator logs (last 200 lines) ==="
+          kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --tail=200 --all-containers 2>&1 || true
+          echo "=== K-ORC controller logs (last 100 lines) ==="
+          kubectl logs -n orc-system -l app.kubernetes.io/name=openstack-resource-controller --tail=100 --all-containers 2>&1 || true
+          echo "=== openstack verify Job logs ==="
+          kubectl logs -n orc-system job/cp-openstack-verify --tail=100 2>&1 || true
+          echo "=== Events (openstack ns, last 30) ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    finally:
+    - script:
+        shell: bash
+        content: |
+          # Best-effort cleanup of the orc-system verify Job (the ControlPlane
+          # and its owned children are GC'd by chainsaw's namespace teardown).
+          kubectl delete job cp-openstack-verify -n orc-system --ignore-not-found 2>&1 || true

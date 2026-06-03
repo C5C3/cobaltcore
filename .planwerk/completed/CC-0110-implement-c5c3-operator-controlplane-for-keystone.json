@@ -2,8 +2,8 @@
   "feature_id": "CC-0110",
   "title": "Implement c5c3-operator ControlPlane for Keystone",
   "slug": "implement-c5c3-operator-controlplane-for-keystone",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #389: feat(c5c3-operator): initial implementation — ControlPlane orchestration for Keystone with K-ORC and the admin Application Credential\n\n**Description:**\n\nThis issue turns the inert `operators/c5c3/` stub into a working orchestration operator that reconciles a single `ControlPlane` CR into a running Keystone (the operator/CRD/Helm chart that already exists under `operators/keystone/`) and brings up K-ORC (`openstack-resource-controller`) self-credentialed via its own admin Application Credential. This is the first vertical slice of the c5c3-operator. K-ORC and the `KORCSpec`/`AdminCredentialSpec` shape are baked in from the start, replacing the older #364–#368 drafts that pre-dated the credential-model decision and never mentioned K-ORC.\n\nThe slice is intentionally Keystone-only: the same reconciler shape is meant to extend to Nova/Neutron/Glance/Cinder/Placement later, but those operators do not yet exist in this repo (`operators/` contains `c5c3` and `keystone` only — see `go.work`/`Makefile:15` `OPERATORS ?= keystone c5c3`), so they are out of scope here.\n\nConcrete boundaries between what exists and what this issue adds:\n\n1. **The `operators/c5c3/` module exists as a manager-only stub.** `operators/c5c3/main.go:32-41` calls `bootstrap.Run` with `LeaderElectionID: \"c5c3.openstack.c5c3.io\"` and a `SetupFunc` whose body is the `// +kubebuilder:scaffold:builder` marker — no controllers are registered, no schemes added beyond `clientgoscheme`, and there are no `api/`, `internal/`, `config/`, `helm/`, or `Dockerfile` directories under `operators/c5c3/`. The module's `go.mod` (`operators/c5c3/go.mod`) already depends on `github.com/c5c3/forge/internal/common` and `sigs.k8s.io/controller-runtime v0.24.1`, so the shared bootstrap, scheme, and conditions packages are already importable.\n\n2. **CI is wired for c5c3 but has nothing to test.** `.github/workflows/ci.yaml:286` and `:321` already list `c5c3` in the `target: [common, keystone, c5c3]` matrices for both `test` and `test-integration`; `Makefile:15` defaults `OPERATORS ?= keystone c5c3` so `make build`, `make test`, `make generate`, `make manifests`, and `make sync-crds` already iterate over c5c3 with the `if [ -d \"operators/$$op/api\" ]` guard (e.g. `Makefile:220-225`). However, `.github/workflows/ci.yaml:132` still sets `ALL_OPERATORS: keystone` (the matrix consumed by `hack/ci-resolve-changes.sh:42`), so the `build-e2e-images`/`e2e-operator` matrix only covers keystone today. Adding `c5c3` to that env, adding a `c5c3:` paths-filter block (`.github/workflows/ci.yaml:76-78` is the `keystone:` template), and wiring an `operators/c5c3/Dockerfile` path into `.github/workflows/build-images.yaml:46-56` (`lint-dockerfiles` matrix) is part of this scope.\n\n3. **K-ORC is not present anywhere.** A literal grep for `openstack-resource-controller`, `k-orc`, `K-ORC`, `orc-system`, or `k-orc-clouds-yaml` returns zero matches outside `.planwerk/` snapshots. There is no K-ORC HelmRelease, no `applicationcredentials.openstack.k-orc.cloud` CRD, no `orc-system` Namespace in `deploy/flux-system/namespaces.yaml`, and no ExternalSecret materialising `k-orc-clouds-yaml`. The K-ORC deployment, the namespace, the ESO wiring, and the operator-side `ApplicationCredential`/`Service`/`Endpoint` CR projection are all new.\n\n4. **The Keystone CRD that the c5c3 reconciler will own already exists.** The `Keystone` type is defined at `operators/keystone/api/v1alpha1/keystone_types.go:33-39` (group `keystone.openstack.c5c3.io`, version `v1alpha1`, see `operators/keystone/api/v1alpha1/groupversion_info.go:22`). `KeystoneSpec` (`keystone_types.go:51-225`) already accepts the fields the c5c3 reconciler must project from `ControlPlaneSpec.services.keystone`: `Replicas`, `Image`, `Database`/`Cache` with `clusterRef`-or-brownfield modes (`internal/common/types/types.go:20-77`), `Fernet.RotationSchedule`/`MaxActiveKeys`, `PolicyOverrides` (`keystone_types.go:110-116`), `Bootstrap.Region`, and the rest. The image tag must be derived from `openStackRelease` (the operator's `appVersion`/release matrix in `releases/` and the keystone image at `images/keystone/Dockerfile`); the existing `commonv1.ImageSpec{Repository, Tag}` shape carries that directly.\n\n5. **MariaDB and Memcached are the only infrastructure backends Keystone needs and both have working CRs.** `deploy/flux-system/infrastructure/mariadb.yaml:24-66` defines a `MariaDB` (`k8s.mariadb.com/v1alpha1`) Galera+MaxScale cluster with `serverCertIssuerRef`/`clientCertIssuerRef` pointing at `openstack-db-ca-issuer`; `deploy/flux-system/infrastructure/memcached.yaml:11-17` defines a `Memcached` (`memcached.c5c3.io/v1beta1`, 3 replicas). The `mariadb-operator` and `memcached-operator` HelmReleases that own those CRDs are listed in `deploy/flux-system/kustomization.yaml:43-50` and already declared as dependencies of `deploy/flux-system/releases/keystone-operator.yaml:22-28`. The c5c3 reconciler's Phase 1 (\"`reconcileInfrastructure`\") needs to project `spec.infrastructure.{database,cache}` into MariaDB/Memcached CRs and own them — the names, namespace (`openstack`), and shape are already proven by the existing static manifests above and should be the reference baseline.\n\n6. **The ESO → OpenBao chain is fully bootstrapped.** `deploy/eso/clustersecretstore.yaml` defines the `openbao-cluster-store` `ClusterSecretStore` that the rest of the repo references (e.g. `deploy/eso/externalsecrets/keystone-admin.yaml:18-21`, `operators/keystone/internal/controller/reconcile_secrets.go:25-30`). `deploy/openbao/policies/eso-management.hcl:11-36` grants `read` on `kv-v2/data/bootstrap/*`, `kv-v2/data/infrastructure/*`, and `kv-v2/data/openstack/keystone/*`; `deploy/openbao/policies/push-keystone-keys.hcl:73-86` grants `create/update/patch` on `kv-v2/data/openstack/keystone/+/{fernet,credential}-keys`; `deploy/openbao/policies/push-app-credentials.hcl:9-11` already grants `create/update/read` on `kv-v2/data/openstack/*/app-credential` — the K-ORC admin App Cred path will plug into that existing policy file without a new HCL grant if the path is chosen consistently (e.g. `kv-v2/data/openstack/keystone/admin/app-credential`). The OpenBao bootstrap scripts at `deploy/openbao/bootstrap/{init-unseal,setup-policies,setup-auth,write-bootstrap-secrets}.sh` already seed `kv-v2/bootstrap/keystone-admin` (`deploy/openbao/bootstrap/write-bootstrap-secrets.sh:115-120`), which is the root of trust this issue depends on.\n\n7. **The pattern for \"operator-owned Secret → ESO `PushSecret` → OpenBao → `ExternalSecret` → tenant Secret\" is already implemented and is the template the K-ORC slice mirrors.** The split-compute-write apply pattern lives in `reconcile_fernet.go:43-217` (Fernet) and `reconcile_credential.go` (credential keys); the admin-rotation Model B path in `operators/keystone/internal/controller/reconcile_passwordrotation.go:568-610` builds a `PushSecret` with `SecretStoreRefs[]{Kind: \"ClusterSecretStore\", Name: \"openbao-cluster-store\"}` and `RemoteKey: \"bootstrap/keystone-admin\"` via the shared `secrets.EnsurePushSecret` helper (`internal/common/secrets/secrets.go:128`). The K-ORC admin-App-Cred sub-reconciler must mirror this shape: mint the credential via a K-ORC `ApplicationCredential` CR (managed mode), commit it to an operator-owned Secret, push it to OpenBao at `openstack/keystone/admin/app-credential`, then let an ExternalSecret materialise `k-orc-clouds-yaml` into `orc-system`. The `secrets.WaitForExternalSecret` + `secrets.IsClusterSecretStoreReady` helpers (`internal/common/secrets/secrets.go:43-58`) are reusable as the readiness gate.\n\n8. **There is no `ControlPlane`, `KORCSpec`, `AdminCredentialSpec`, `CredentialRotation`, or `SecretAggregate` type defined anywhere.** Grep on `ControlPlaneSpec`/`KORCSpec`/`AdminCredentialSpec`/`CredentialRotation` returns no matches outside `.planwerk/` snapshots. All Go types, deepcopy methods (`zz_generated.deepcopy.go`), defaulting/validation webhooks, generated CRD YAMLs under `operators/c5c3/config/crd/bases/`, and Helm `crds/` copies under `operators/c5c3/helm/c5c3-operator/crds/` are created fresh by this issue. The `Makefile:238-246` `manifests` target and `Makefile:259-274` `sync-crds` target already iterate over `$(OPERATORS)` and `if [ -d \"operators/$$op/api\" ]`, so once `operators/c5c3/api/v1alpha1/` exists the CRDs regenerate without further Makefile changes.\n\n9. **The reference reconciler pattern this issue must follow lives in `operators/keystone/internal/controller/keystone_controller.go`.** That controller embeds `client.Client`, `Scheme`, `Recorder` (see `keystone_controller.go:122-135` shape), exposes `SetupWithManager` (`keystone_controller.go:687-762`) with `Owns(...)` on every child it manages plus `Watches(...)+EnqueueRequestsFromMapFunc(...)` for resources it does not own (Secrets, MariaDB, ClusterSecretStore, PushSecrets), and runs sub-reconcilers in dependency order with an early return on non-zero `ctrl.Result` (`keystone_controller.go:185-411`). Each sub-reconciler returns `(ctrl.Result, error)`, sets its own Status Condition via the shared `internal/common/conditions.SetCondition` helper (`internal/common/conditions/conditions.go:15-19`), and is wrapped in `instrumentSubReconciler` for per-reconciler Prometheus metrics (`operators/keystone/internal/controller/instrumentation.go:46-78`). The aggregate `Ready` condition is computed from `subConditionTypes` (`keystone_controller.go:102-119`). The c5c3 `ControlPlaneReconciler` should follow this exact shape: own MariaDB, Memcached, Keystone, and the K-ORC `ApplicationCredential`/`Service`/`Endpoint` CRs; declare its own `subConditionTypes = {InfrastructureReady, KeystoneReady, KORCReady, AdminCredentialReady, CatalogReady}` (the `ServiceUsersReady` condition listed in the issue body is deferred); wrap each phase in `instrumentSubReconciler` with a `c5c3_*` metric prefix mirroring the keystone metrics package (`operators/keystone/internal/metrics`).\n\n10. **The shared bootstrap, conditions, secrets, and job packages are operator-agnostic and ready to consume.** `internal/common/bootstrap/bootstrap.go` exposes `ManagerConfig{Scheme, LeaderElectionID, Namespace, SetupFunc}` and `Run(...)` (`bootstrap.go:90+`); `internal/common/conditions/conditions.go:15-43` provides `SetCondition`/`GetCondition`/`IsReady`/`AllTrue`; `internal/common/secrets/secrets.go:43-149` provides `WaitForExternalSecret`, `IsClusterSecretStoreReady`, `GetSecretValue`, `EnsurePushSecret`, and `IsMissingSecretOrKey`; `internal/common/types` provides `ImageSpec`, `DatabaseSpec`, `CacheSpec`, `SecretRefSpec`, `PolicySpec` that the c5c3 CRD reuses verbatim (the keystone CRD reuses them via `commonv1` — see `keystone_types.go:72-83`). Re-use of these types keeps the projection from `ControlPlaneSpec.{infrastructure,services.keystone}` → `KeystoneSpec` a near-trivial struct copy rather than a translation layer.\n\n11. **A `c5c3-operator` HelmRelease is not in the GitOps stack.** `deploy/flux-system/releases/` contains 8 entries today (`cert-manager.yaml`, `external-secrets.yaml`, `keystone-operator.yaml`, `mariadb-operator-crds.yaml`, `mariadb-operator.yaml`, `memcached-operator.yaml`, `openbao.yaml`, `prometheus-operator-crds.yaml`); `deploy/flux-system/kustomization.yaml:43-50` enumerates them. There is no `c5c3-operator.yaml` and no `c5c3-system` Namespace in `deploy/flux-system/namespaces.yaml:18-58` (the latter currently declares `cert-manager`, `mariadb-system`, `external-secrets`, `monitoring`, `memcached-system`, `openstack`, `openbao-system`, `keystone-system`). Adding the namespace, the HelmRelease (with `dependsOn: [keystone-operator, external-secrets, mariadb-operator, memcached-operator]`), and the resource entry to the kustomization is in scope; the existing `c5c3-charts` OCI HelmRepository (`deploy/flux-system/sources/c5c3-charts.yaml`, URL `oci://ghcr.io/c5c3/charts`) is already in place and is the registry the chart publishes to via `.github/workflows/ci.yaml:1263` `helm push`.\n\n12. **The Helm-chart template inventory is reusable.** `operators/keystone/helm/keystone-operator/{Chart.yaml, values.yaml, values.schema.json, templates/{deployment,service,serviceaccount,clusterrole,clusterrolebinding,role,rolebinding,webhook-configuration,certificate,networkpolicy,servicemonitor}.yaml, templates/tests/*}` is the reference layout. The c5c3 chart can be cloned and stripped down to the matching surface: a `Deployment` with `--leader-elect`/`--metrics-bind-address`/`--health-probe-bind-address` (same `bootstrap.Run` flags as keystone), `Service` for metrics+webhook, `ServiceAccount`, `ClusterRole`/`ClusterRoleBinding` derived from the new `+kubebuilder:rbac` markers on the `ControlPlaneReconciler`, `MutatingWebhookConfiguration`+`ValidatingWebhookConfiguration` with `cert-manager.io/inject-ca-from`, and a `certificate.yaml` for the webhook TLS. The `values.schema.json` shape (JSON Schema draft-07, additionalProperties=false) and the Helm test inventory under `templates/tests/*_test.yaml` are CRD/values-validation guards proven by CC-0069 and the existing chart tests (per the Helm Chart Testing pattern).\n\n13. **The `CredentialRotation` CRD is new and narrowly scoped.** The issue body restricts `CredentialRotation` to `target: adminApplicationCredential` only — not Fernet, not credential-keys, not workload service users (those rotate via the existing Keystone-operator CronJobs in `reconcile_fernet.go`/`reconcile_credential.go`/`reconcile_passwordrotation.go`). The acceptance criteria mark the **scheduled** re-mint reconciler as a fast-follow candidate; the **bootstrap + re-mint on password change** path is mandatory for this slice. The implementation surface is a single sub-reconciler that watches the admin password Secret (or its hash on the `ApplicationCredential` CR's pod-template-style annotation, mirroring `adminPasswordHashAnnotation` at `reconcile_bootstrap.go:38`) and re-mints the App Cred via K-ORC's `ApplicationCredential` CR when the password rotates.\n\n14. **The \"admin password / App Cred never reaches a workload pod\" invariant must be enforced in code.** Today `operators/keystone/internal/controller/reconcile_bootstrap.go:182-193` injects `BOOTSTRAP_PASSWORD` only into the one-shot bootstrap Job; the running Keystone Deployment never mounts it (see `reconcile_deployment.go`). The c5c3 operator must preserve this: the admin password Secret is read only inside the c5c3 operator (controller pod) and the K-ORC controller pod (via `k-orc-clouds-yaml` materialised in `orc-system`); it must not be mounted in the Keystone Deployment, the K-ORC client-facing workloads, or any service-user pod. A test should walk all Deployments/StatefulSets/DaemonSets owned (transitively) by the `ControlPlane` and assert their PodSpec has no env/volume reference to `keystone-admin` or the App Cred Secret outside the explicitly allowed pods.\n\n15. **Tests live in three layers and the conventions are fixed.** Unit tests sit next to source files in `*_test.go` (e.g. `keystone_webhook_test.go`, `reconcile_database_test.go`), `envtest` integration tests use `//go:build integration` (e.g. `operators/keystone/internal/controller/integration_test.go`) and are matrix-driven by `make test-integration OPERATOR=...` (`Makefile:309-345`), Chainsaw E2E suites live under `tests/e2e/<operator>/<feature>/chainsaw-test.yaml` and follow a strict \"one feature = one directory\" convention (currently 44 directories under `tests/e2e/keystone/`, see `ls tests/e2e/keystone/ | wc -l`). The c5c3 E2E suite belongs under `tests/e2e/c5c3/full-controlplane-keystone/`, with the chainsaw runner pulled in via the existing matrix in `.github/workflows/ci.yaml:699-777` once `c5c3` is added to `ALL_OPERATORS`.\n\n16. **Status condition naming follows the project's typed-constant convention.** The keystone reconciler declares `conditionType*Ready` constants for every typed condition (e.g. `reconcile_passwordrotation.go:53-55` `conditionTypePasswordRotationReady`, `reconcile_healthcheck.go` for `conditionTypeKeystoneAPIReady`, etc.) and aggregates them in `subConditionTypes` (`keystone_controller.go:102-119`). The c5c3 operator must adopt the same shape: declare `conditionTypeInfrastructureReady`, `conditionTypeKeystoneReady`, `conditionTypeKORCReady`, `conditionTypeAdminCredentialReady`, `conditionTypeCatalogReady` as typed constants in one file (probably `internal/controller/controlplane_controller.go`), reference them from both production code and tests via the constants (never inline string literals — see the project's \"Extract repeated condition strings into typed constants\" pattern).\n\n17. **Two helpers called out in the issue body — `intervalToCron` and `projectPolicyOverrides` — have no current equivalent.** Neither name appears in the codebase. `intervalToCron` converts `\"168h\"` → `\"0 0 * * 0\"` and is needed to translate `ControlPlaneSpec.…rotationInterval` (Go `time.Duration`) into the cron expressions the Keystone CR's `Fernet.RotationSchedule`/`CredentialKeys.RotationSchedule` accept (`keystone_types.go:336`, `:348`). `projectPolicyOverrides` merges `ControlPlaneSpec.global.policy` with `services.keystone.policyOverrides` into the `commonv1.PolicySpec{Rules,ConfigMapRef}` shape (`internal/common/types/types.go:110-121`) that Keystone's `PolicyOverrides` field consumes. Both are pure functions, table-driven unit-testable, and should live next to the reconciler (e.g. `operators/c5c3/internal/controller/helpers.go`).\n\n18. **The `SecretAggregate` CRD types-only stub is allowed but the reconciler is deferred.** The issue is explicit that `SecretAggregate` may be scaffolded as Go types + deepcopy + CRD YAML, but no reconciler is registered. This means the Helm chart RBAC must not (yet) grant write verbs on `secretaggregates.c5c3.io` — only the type lives, awaiting CC-0023 follow-up. Concretely: define the `SecretAggregate` Go type and CRD YAML; do not register a controller in `main.go`; do not include `+kubebuilder:rbac` markers for `secretaggregates`.\n\n**Motivation:**\n\n`operators/c5c3/` is the orchestration seam the rest of the architecture assumes exists but currently does not. Every downstream piece — Nova/Neutron/Glance/Cinder reconcilers, the multi-service `ControlPlane` lifecycle, the credential-rotation roadmap (planwerk P0/P1 → P2/P3), the documented \"ControlPlane → infra → services → catalog\" sequence in `docs/reference/keystone/keystone-upgrade-flow.md:723` and `docs/index.md:16` — depends on this slice being real before any second service is added. Shipping it Keystone-first matches the project's stated Keystone-first strategy (`README.md:12-15`) and lets the same operator skeleton extend to Nova later without re-architecting the credential model.\n\nFolding K-ORC into the **initial** vertical slice (rather than after the fact) is the critical change versus the older #364–#368 drafts: those drafts predate the settled K-ORC + admin-Application-Credential design and `gh issue view 366 | grep -i korc` correctly returns nothing. Reconciling Keystone without K-ORC produces a control plane that has identity but no managed catalog and no path to project/role/domain bootstrap that survives recreation — every later service operator would have to invent its own credential bootstrap, contradicting the \"K-ORC is the single OpenStack client\" architecture decision. By minting K-ORC's admin App Cred from the admin password (the existing root of trust at `kv-v2/bootstrap/keystone-admin` — see `deploy/openbao/bootstrap/write-bootstrap-secrets.sh:115`) and routing it through OpenBao → ESO → `orc-system`, this slice establishes the credential-lifecycle backbone (planwerk P0+P1) on which every subsequent service operator depends.\n\nThe blast-radius cost of waiting is high: every week without `ControlPlane` reconciliation means deployments use the existing hand-applied `deploy/flux-system/infrastructure/{mariadb,memcached}.yaml` static CRs plus a Keystone CR hand-crafted in `openstack`. That pattern doesn't compose to multi-service deployments, doesn't survive cluster recreation cleanly, and doesn't carry the K-ORC + admin-App-Cred invariants that the later service operators will assume. Landing this slice closes the gap with one well-bounded change.\n\n**Affected Areas:**\n\n- `operators/c5c3/api/v1alpha1/` (new) — `ControlPlane`/`ControlPlaneList`/`ControlPlaneSpec`/`ControlPlaneStatus`, `KORCSpec`/`AdminCredentialSpec`, `CredentialRotation`/`CredentialRotationList`, optional types-only `SecretAggregate`, plus `groupversion_info.go` (group `c5c3.io`, version `v1alpha1`), `controlplane_webhook.go` defaulter+validator, and `zz_generated.deepcopy.go` (controller-gen).\n- `operators/c5c3/internal/controller/controlplane_controller.go` (new) — `ControlPlaneReconciler` (embeds `client.Client`, `Scheme`, `Recorder`) with phased sub-reconcilers `reconcileInfrastructure`, `reconcileKeystone`, `reconcileKORC` (which itself splits into mint-admin-App-Cred → ESO push → import-bootstrap-resources → register-catalog steps), plus `SetupWithManager` with `Owns(&mariadbv1alpha1.MariaDB{})`, `Owns(&memcachedv1beta1.Memcached{})`, `Owns(&keystonev1alpha1.Keystone{})`, and `Owns(&orcv1alpha1.ApplicationCredential{})`/`Service{}`/`Endpoint{}` (K-ORC CRD types), plus `Watches(&corev1.Secret{}, …)` for the admin password Secret with a MapFunc/field-indexer pair mirroring `secretToKeystoneMapper` (`operators/keystone/internal/controller/keystone_controller.go:779-826`).\n- `operators/c5c3/internal/controller/reconcile_credentialrotation.go` (new) — `CredentialRotationReconciler` handling the `target: adminApplicationCredential` shape: bootstrap + re-mint on password change. The scheduled `intervalDays`/`preRotationDays`/`gracePeriodDays` loop is allowed to land as a fast-follow if it bloats the PR (the issue body explicitly authorises this).\n- `operators/c5c3/internal/controller/helpers.go` (new) — `intervalToCron(time.Duration) (string, error)` and `projectPolicyOverrides(global *commonv1.PolicySpec, perService *commonv1.PolicySpec) *commonv1.PolicySpec` with table-driven unit tests in `helpers_test.go`.\n- `operators/c5c3/main.go` — register the new schemes (`c5c3v1alpha1`, `keystonev1alpha1`, `mariadbv1alpha1`, `memcachedv1beta1`, `esov1`/`esov1alpha1`, `orcv1alpha1`), wire `ControlPlaneReconciler` and `CredentialRotationReconciler`, register the defaulting+validation webhooks behind the `webhooks` parameter (mirrors `operators/keystone/main.go:52-69`), and remove the `// +kubebuilder:scaffold:builder` placeholder body.\n- `operators/c5c3/Dockerfile` (new) — multi-stage `golang:1.26` builder → `gcr.io/distroless/static:nonroot` runtime, build context the workspace root, mirroring `operators/keystone/Dockerfile:1-30`. Add to the `lint-dockerfiles` matrix at `.github/workflows/build-images.yaml:46-56`.\n- `operators/c5c3/config/{crd,webhook}/` (new) — generated CRD YAMLs (`controlplanes.c5c3.io.yaml`, `credentialrotations.c5c3.io.yaml`, optionally `secretaggregates.c5c3.io.yaml`) emitted by `make manifests` (`Makefile:238-246`) and synced into `operators/c5c3/helm/c5c3-operator/crds/` via `make sync-crds` (`Makefile:259-274`); both work today via the `if [ -d \"operators/$$op/api\" ]` guard.\n- `operators/c5c3/helm/c5c3-operator/` (new) — `Chart.yaml`, `values.yaml`, `values.schema.json`, `templates/{deployment,service,serviceaccount,clusterrole,clusterrolebinding,role,rolebinding,webhook-configuration,certificate}.yaml`, `templates/_helpers.tpl`, `templates/tests/*_test.yaml`, `crds/`, mirroring the keystone-operator chart layout under `operators/keystone/helm/keystone-operator/`.\n- `internal/common/secrets/` — no new exported helpers expected, but verify `EnsurePushSecret` (`secrets.go:128`), `WaitForExternalSecret` (`secrets.go:43`), and `IsClusterSecretStoreReady` are sufficient for the `k-orc-clouds-yaml` flow. If not, extend in the same file with shape-compatible signatures.\n- `deploy/flux-system/namespaces.yaml` — add the `c5c3-system` Namespace for the c5c3-operator pod (mirrors `keystone-system` rationale at `namespaces.yaml:9-15`); add the `orc-system` Namespace where K-ORC and its `k-orc-clouds-yaml` Secret live.\n- `deploy/flux-system/sources/k-orc.yaml` (new) and `deploy/flux-system/releases/k-orc.yaml` (new) — K-ORC `HelmRepository` and `HelmRelease` with `globalCloudConfig.secretName: k-orc-clouds-yaml`, plus `deploy/flux-system/releases/c5c3-operator.yaml` (mirrors `keystone-operator.yaml` shape with `dependsOn: keystone-operator + external-secrets + mariadb-operator + memcached-operator + k-orc`). Update `deploy/flux-system/kustomization.yaml:33-50` `resources:` to include all three new files.\n- `deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml` (new) — the `ExternalSecret` materialising `k-orc-clouds-yaml` into `orc-system` from the operator-pushed OpenBao path (e.g. `openstack/keystone/admin/app-credential`); update `deploy/eso/kustomization.yaml:13-17` `resources:` to include it.\n- `deploy/openbao/policies/push-app-credentials.hcl:9-11` — verify the existing `kv-v2/data/openstack/*/app-credential` glob covers the chosen path. If the operator writes to `kv-v2/data/openstack/keystone/admin/app-credential`, this is already authorised by the existing glob; document the chosen path in an inline comment. If the chosen path falls outside `openstack/*/app-credential`, add a narrowly-scoped path to this file rather than widening the existing glob.\n- `.github/workflows/ci.yaml:132` — add `c5c3` to `ALL_OPERATORS` so `e2e-operator`/`build-e2e-images` matrix expands to cover c5c3. Add a `c5c3:` paths-filter block alongside `keystone:` at `ci.yaml:76-78` and a matching `FILTER_c5c3` env var at `:133-142`.\n- `.github/workflows/build-images.yaml:46-56` — add `operators/c5c3/Dockerfile` to the `lint-dockerfiles.matrix.dockerfile` list and update the `paths:` triggers (`build-images.yaml:13-34`) so changes to `operators/c5c3/Dockerfile` rebuild the image.\n- `tests/e2e/c5c3/full-controlplane-keystone/chainsaw-test.yaml` (new) — Chainsaw suite asserting: apply `ControlPlane` → MariaDB+Memcached CRs created → marked Ready (envtest simulator equivalent for unit runs) → Keystone CR projected with correct image tag, clusterRefs, merged policy → marked Ready → K-ORC `ApplicationCredential` CR present with `restricted: true`, `rotation.mode=PasswordDriven` → `k-orc-clouds-yaml` materialised in `orc-system` → Keystone `Service`/`Endpoint` registered in catalog → `ControlPlane.Status.Ready=True` with `AdminCredentialReady=True` and `CatalogReady=True` → HTTP probe of `/v3` reachable + admin token issue. Follow the structure of `tests/e2e/keystone/basic-deployment/chainsaw-test.yaml` and the existing 44 keystone E2E suites.\n- `tests/e2e/c5c3/` directory creation triggers the `tests_e2e_operator` paths filter at `.github/workflows/ci.yaml:124-125`, which already includes `tests/e2e/**`.\n- `operators/c5c3/internal/controller/integration_test.go` (new, `//go:build integration`) — envtest coverage of the create → infra-Ready (simulator) → Keystone projection → Keystone-Ready (simulator) → K-ORC ApplicationCredential/Service/Endpoint CR creation → ControlPlane.Status.Ready=True chain. Reuse `internal/common/testutil/envtest/setup.go` (referenced from `operators/keystone/internal/controller/integration_test.go`).\n- Unit tests at every level: `controlplane_webhook_test.go` (defaulting + validation), `controlplane_controller_test.go` (sub-reconciler dispatch + condition aggregation), `helpers_test.go` (`intervalToCron`, `projectPolicyOverrides`), `reconcile_credentialrotation_test.go` (bootstrap + re-mint on password change).\n- `docs/reference/c5c3/controlplane-crd.md`, `docs/reference/c5c3/controlplane-reconciler.md` (both new, mirror the `docs/reference/keystone/keystone-crd.md` and `docs/reference/keystone/keystone-reconciler.md` structure under the existing `docs/reference/` tree; `docs/reference/keystone/` is the structural template).\n- `docs/reference/infrastructure/infrastructure-manifests.md` — add a section for K-ORC and `c5c3-operator` matching the existing structure (`docs/reference/infrastructure/infrastructure-manifests.md:13-50`).\n- `architecture/docs/09-implementation/08-c5c3-operator.md`, `architecture/docs/03-components/01-control-plane/05-korc.md`, and `architecture/docs/05-deployment/01-gitops-fluxcd/01-credential-lifecycle.md` — live in the `architecture/` git submodule (`.gitmodules` → `github.com/C5C3/C5C3`). These need updates in the upstream repo and the submodule pointer bumped in this PR (the architecture/ directory is empty in clean clones until the submodule is initialised).\n\n**Acceptance Criteria:**\n\n- [ ] `operators/c5c3/api/v1alpha1/` exists with `ControlPlane`, `CredentialRotation`, and (types-only) `SecretAggregate` Go types compiling under group `c5c3.io`, version `v1alpha1`; `make generate` (`Makefile:219`) re-emits `zz_generated.deepcopy.go` cleanly and `make manifests` (`Makefile:238`) emits CRD YAMLs into `operators/c5c3/config/crd/bases/`; `make sync-crds` (`Makefile:259`) copies them into `operators/c5c3/helm/c5c3-operator/crds/`; `make verify-crd-sync` is green.\n- [ ] `ControlPlaneSpec` includes `openStackRelease` (validated by the regex `^\\d{4}\\.\\d$` via a kubebuilder `+kubebuilder:validation:Pattern`), `region` (defaulted to `RegionOne` by both the kubebuilder marker and the defaulting webhook, mirroring `BootstrapSpec.Region` at `keystone_types.go:446-447`), `infrastructure.{database,cache}`, `services.keystone`, `global`, and `korc` (`KORCSpec` with `adminCredential` of type `AdminCredentialSpec`). `AdminCredentialSpec` carries `cloudCredentialsRef` (`cloudName`, `secretName: k-orc-clouds-yaml`), `passwordSecretRef`, `applicationCredential` (with `restricted: true` default, optional `accessRules`, `rotation.mode=PasswordDriven` default), and `bootstrapResources`. `ControlPlaneStatus` carries `Conditions`, an `updatePhase` enum, `services` map, K-ORC admin App Cred ID/restricted/lastRotation, and catalog readiness.\n- [ ] Defaulting + validation webhooks for `ControlPlane` are registered behind the `webhooks` parameter (mirrors `operators/keystone/main.go:62-67`); webhook unit tests cover defaulting (region, App Cred restricted, rotation.mode) and validation (`openStackRelease` pattern, `infrastructure.database.clusterRef` vs `host` XOR, `cache.clusterRef` vs `servers` XOR, `korc.adminCredential.passwordSecretRef` present).\n- [ ] `ControlPlaneReconciler` reconciles infra → Keystone → K-ORC admin App Cred + catalog. Each phase sets a typed Status Condition via `internal/common/conditions.SetCondition`; `subConditionTypes = {InfrastructureReady, KeystoneReady, KORCReady, AdminCredentialReady, CatalogReady}` is declared as a `var` in the controller file with each entry referencing a typed `conditionType*Ready` constant (no inline string literals). Owner references are set on every child resource via `controllerutil.SetControllerReference`. The aggregate `Ready` condition flips True only when all five sub-conditions are True.\n- [ ] `intervalToCron(\"168h\")` returns `\"0 0 * * 0\"`; `intervalToCron(\"24h\")` returns `\"0 0 * * *\"`; an unsupported interval returns an error. `projectPolicyOverrides` merges `global` (base) + per-service `services.keystone.policyOverrides` (overrides win on key conflict) into the `commonv1.PolicySpec{Rules,ConfigMapRef}` shape. Both functions are pure, table-driven unit-tested in `helpers_test.go`, and called by `reconcileKeystone` when projecting `ControlPlaneSpec` → `KeystoneSpec`.\n- [ ] K-ORC is deployed via a HelmRelease in `deploy/flux-system/releases/k-orc.yaml` with `globalCloudConfig.secretName: k-orc-clouds-yaml`; the `orc-system` Namespace is declared in `deploy/flux-system/namespaces.yaml`; the K-ORC HelmRelease is listed in `deploy/flux-system/kustomization.yaml:43-50`. The K-ORC operator becomes self-credentialed via the operator-driven mint → `PushSecret` → OpenBao → ESO → `k-orc-clouds-yaml` chain; the Chainsaw E2E suite asserts the chain link by link (every resource on the path exists and reports Ready/synced before the next is checked) and `AdminCredentialReady=True` is asserted.\n- [ ] The admin Application Credential is minted with `restricted: true` (the K-ORC CR carries the literal field), the operator's re-mint path triggers when the admin password Secret's `password` byte hashes differently from the digest stored on the `ApplicationCredential` CR's pod-template-style annotation (mirroring `adminPasswordHashAnnotation` at `reconcile_bootstrap.go:38`), and a test walks every `Deployment`/`StatefulSet`/`DaemonSet` owned (transitively) by the `ControlPlane` and asserts none mounts the admin password Secret or the App Cred Secret in env or volumes (other than the c5c3-operator and K-ORC controller pods, which are out of the workload set).\n- [ ] `operators/c5c3/main.go` calls `bootstrap.Run` with all required schemes registered (c5c3, keystone, mariadb, memcached, external-secrets v1+v1alpha1, k-orc, gateway is optional); registers `ControlPlaneReconciler` + `CredentialRotationReconciler` + the webhooks behind the `webhooks` parameter; the health/ready probes and metrics flags supplied by `internal/common/bootstrap` are unchanged.\n- [ ] `operators/c5c3/Dockerfile` builds successfully under the workspace root context (mirrors `operators/keystone/Dockerfile`), is added to `.github/workflows/build-images.yaml`'s `lint-dockerfiles` matrix, and passes `hadolint --config .hadolint.yaml`.\n- [ ] `operators/c5c3/helm/c5c3-operator/` Helm chart renders cleanly with `helm template` against `values.yaml`, `helm lint --strict` passes, the chart-tests under `templates/tests/` pass (`make helm-test` or equivalent), and `helm push` to `oci://ghcr.io/c5c3/charts` (`.github/workflows/ci.yaml:1263`) succeeds.\n- [ ] `.github/workflows/ci.yaml` updates: `ALL_OPERATORS: c5c3 keystone` at line 132; new `c5c3:` paths-filter block at line 76-78 with paths `operators/c5c3/**` and `images/k-orc/**` (if any); new `FILTER_c5c3` env var; the test/test-integration/test-race/e2e-operator/build-e2e-images matrices already iterate over `c5c3` once it is added to `ALL_OPERATORS`. CI is green on the new code paths.\n- [ ] Unit suite covers: webhook rules, `intervalToCron` table, `projectPolicyOverrides` table, projection from `ControlPlaneSpec.services.keystone` → `keystonev1alpha1.KeystoneSpec` (image tag derived from `openStackRelease`, clusterRefs set, merged policy applied, rotation schedule converted from interval). Tests use `assertRestrictedSecurityContext`/equivalent helpers where applicable to avoid copy-pasted assertion blocks (per the project's pattern).\n- [ ] Envtest integration suite under `operators/c5c3/internal/controller/integration_test.go` (`//go:build integration`) applies a `ControlPlane` CR, asserts infra CRs created + simulator flips them Ready → Keystone CR projection (image, clusterRefs, policy merge) → Keystone simulator flips Ready → `ApplicationCredential`+`Service`+`Endpoint` CRs present → simulator flips Ready → `ControlPlane.Status.Ready=True` with `AdminCredentialReady`/`CatalogReady`. Runs under `make test-integration OPERATOR=c5c3` (`Makefile:309-345`).\n- [ ] Chainsaw E2E suite at `tests/e2e/c5c3/full-controlplane-keystone/chainsaw-test.yaml` applies a `ControlPlane` on a real kind cluster, asserts the full chain end-to-end including `curl -k https://keystone.127-0-0-1.nip.io/v3` returning HTTP 200, `openstack --os-auth-url … token issue` succeeding with the admin password, and the OpenBao → ESO → operator → K-ORC secret chain visible at each step (KV path readable by the eso-management role, ESO `Ready=True` on the `k-orc-clouds-yaml` ExternalSecret, Keystone `Service`/`Endpoint` registered in the catalog via `openstack catalog list`). The suite runs under the existing `e2e-operator` matrix once `c5c3` is added to `ALL_OPERATORS`.\n- [ ] `CredentialRotation` (target `adminApplicationCredential`) reconciler handles bootstrap (mint on absence) and re-mint (when admin password hash changes). The scheduled `intervalDays`/`preRotationDays`/`gracePeriodDays` loop is permitted to land as a fast-follow if it bloats this PR — that decision is called out explicitly in the PR description; it is not silently dropped.\n- [ ] `SecretAggregate` Go types and CRD YAML exist but no controller is registered in `main.go`. The chart's ClusterRole does not grant write verbs on `secretaggregates.c5c3.io`; only `get/list/watch` so the type is visible to API consumers.\n- [ ] Reference docs under `docs/reference/c5c3/{controlplane-crd,controlplane-reconciler}.md` exist and follow the structure of `docs/reference/keystone/{keystone-crd,keystone-reconciler}.md`. `docs/reference/infrastructure/infrastructure-manifests.md` has a K-ORC + c5c3-operator section.\n- [ ] The architecture submodule pointer is bumped (or the PR description links to the upstream commit/PR) capturing the c5c3-operator/K-ORC/credential-lifecycle updates in `architecture/docs/09-implementation/08-c5c3-operator.md`, `architecture/docs/03-components/01-control-plane/05-korc.md`, and `architecture/docs/05-deployment/01-gitops-fluxcd/01-credential-lifecycle.md`.\n\n**Non-Goals:**\n\n- **Per-pod / per-replica workload service users** (`ServiceUserSpec`, `User`/`Role` CRs per slot, env injection `OS_KEYSTONE_AUTHTOKEN__*`, finalizer + sweeper GC). This slice intentionally manages only K-ORC's own admin credential. `ServiceUsersReady` is omitted from `subConditionTypes`; the issue body labels this roadmap P2 and explicitly carves it out.\n- **Other service operators** (Nova, Neutron, Glance, Cinder, Placement). `operators/` contains `c5c3` and `keystone` only today; adding any second OpenStack service operator is a separate issue. The c5c3 reconciler is designed to extend but only Keystone is wired here.\n- **`SecretAggregate` reconciler** (from #366). Types are scaffolded so the API surface stabilises, but no controller is registered. The reconciler lands in a follow-up.\n- **Full update-phase / rollback state machine** beyond the phases needed for the slice. `UpdatePhase` is plumbed in `ControlPlaneStatus` as an enum surface for future use, but `UpdatingServices`/`Verifying`/`RollingBack` transitions are not implemented — those land with the wider multi-service set.\n- **`maxAge` rolling recreation and Ephemeral mode.** Roadmap P3/P4. The `ControlPlane` CRD does not introduce these fields.\n- **Scheduled re-mint of the admin Application Credential.** The `CredentialRotation` bootstrap + password-driven re-mint paths are mandatory; the scheduled loop with `intervalDays`/`preRotationDays`/`gracePeriodDays` may land as an immediate fast-follow if the PR bloats — but if so, this decision must be called out explicitly in the PR description, not silently dropped.\n- **Changing existing keystone-operator resources.** The c5c3 reconciler creates and owns Keystone CRs; it does not modify `operators/keystone/api/v1alpha1/` types, `operators/keystone/internal/controller/` reconciler shape, or the existing `tests/e2e/keystone/` suites.\n- **Modifying the existing OpenBao policy authorisation surface.** If the chosen K-ORC admin App Cred path is under `kv-v2/data/openstack/*/app-credential`, the existing `deploy/openbao/policies/push-app-credentials.hcl:9-11` glob already covers it. If the chosen path is outside this glob, a narrowly-scoped path is added rather than widening the existing one.\n- **A `c5c3-operator` ServiceMonitor.** The keystone-operator chart's `monitoring.serviceMonitor.enabled: false` opt-in pattern (`operators/keystone/helm/keystone-operator/values.yaml:37-40`) is the convention; a c5c3-operator ServiceMonitor lands when CC-0100's prometheus opt-in proves it for keystone.\n\n**References:**\n\n- `operators/c5c3/main.go:32-41` — manager stub with no controllers registered\n- `operators/c5c3/go.mod` — already depends on `internal/common` and `sigs.k8s.io/controller-runtime v0.24.1`\n- `operators/keystone/main.go:35-69` — reference pattern for scheme registration + `SetupFunc` + webhook setup\n- `operators/keystone/api/v1alpha1/keystone_types.go:33-225` — `Keystone`/`KeystoneSpec` shape the c5c3 reconciler projects into\n- `operators/keystone/api/v1alpha1/keystone_webhook.go:103-200` — `KeystoneWebhook.SetupWebhookWithManager`, `Default`, and the defaulting pattern\n- `operators/keystone/internal/controller/keystone_controller.go:185-411` — sub-reconciler ordering and early-return pattern\n- `operators/keystone/internal/controller/keystone_controller.go:687-762` — `SetupWithManager` with `Owns(...)` + `Watches(...)+EnqueueRequestsFromMapFunc(...)`\n- `operators/keystone/internal/controller/instrumentation.go:46-78` — `instrumentSubReconciler` + `subReconcilerConditionTypes` map\n- `operators/keystone/internal/controller/reconcile_fernet.go:43-217` — split-compute-write apply pattern, `EnsurePushSecret` usage, OpenBao backup chain\n- `operators/keystone/internal/controller/reconcile_passwordrotation.go:113-115`, `:568-610` — PushSecret to OpenBao at flat `bootstrap/keystone-admin` with `SecretStoreRefs[]{Kind: \"ClusterSecretStore\", Name: \"openbao-cluster-store\"}`\n- `operators/keystone/internal/controller/reconcile_bootstrap.go:38-75` — admin-password hash annotation forcing Job re-run on rotation (`forge.c5c3.io/admin-password-hash`)\n- `internal/common/bootstrap/bootstrap.go` — `ManagerConfig` and `Run`\n- `internal/common/conditions/conditions.go:15-43` — `SetCondition`, `IsReady`, `AllTrue`\n- `internal/common/secrets/secrets.go:43-149` — `WaitForExternalSecret`, `IsClusterSecretStoreReady`, `EnsurePushSecret`, `GetSecretValue`, `IsMissingSecretOrKey`\n- `internal/common/types/types.go:20-121` — `ImageSpec`, `DatabaseSpec`, `CacheSpec`, `SecretRefSpec`, `PolicySpec`\n- `deploy/flux-system/kustomization.yaml:43-50` — HelmRelease enumeration to extend\n- `deploy/flux-system/namespaces.yaml:18-58` — namespace enumeration to extend (`c5c3-system`, `orc-system`)\n- `deploy/flux-system/infrastructure/{mariadb,memcached}.yaml` — reference CR shapes for the new MariaDB/Memcached projections from `ControlPlaneSpec.infrastructure`\n- `deploy/flux-system/releases/keystone-operator.yaml` — HelmRelease shape template (`dependsOn`, `chart.spec.version`, `install.crds: CreateReplace`, namespace placement)\n- `deploy/flux-system/sources/c5c3-charts.yaml` — OCI HelmRepository at `oci://ghcr.io/c5c3/charts` (chart publish target)\n- `deploy/eso/clustersecretstore.yaml`, `deploy/eso/externalsecrets/keystone-admin.yaml`, `deploy/eso/kustomization.yaml` — ESO wiring template\n- `deploy/openbao/policies/{eso-management,push-app-credentials,push-keystone-keys}.hcl` — existing OpenBao policy surface\n- `deploy/openbao/bootstrap/write-bootstrap-secrets.sh:115-120` — `kv-v2/bootstrap/keystone-admin` seed (root of trust)\n- `Makefile:15`, `:219-274` — `OPERATORS ?= keystone c5c3` and the `generate`/`manifests`/`sync-crds`/`verify-crd-sync` iteration model\n- `Makefile:309-345` — `make test-integration OPERATOR=c5c3` envtest matrix\n- `.github/workflows/ci.yaml:132`, `:286`, `:321`, `:699-777` — `ALL_OPERATORS`, the unit + integration matrices that already include `c5c3`, and the `e2e-operator` matrix to extend\n- `.github/workflows/build-images.yaml:46-56` — `lint-dockerfiles.matrix.dockerfile` to extend with `operators/c5c3/Dockerfile`\n- `operators/keystone/Dockerfile:1-30` — multi-stage build template\n- `operators/keystone/helm/keystone-operator/` — chart layout reference (`Chart.yaml`, `values.yaml`, `values.schema.json`, `templates/{deployment,service,serviceaccount,clusterrole,clusterrolebinding,role,rolebinding,webhook-configuration,certificate}.yaml`, `templates/_helpers.tpl`, `templates/tests/*_test.yaml`, `crds/`)\n- `tests/e2e/keystone/basic-deployment/chainsaw-test.yaml` and the 44 sibling directories under `tests/e2e/keystone/` — one-feature-one-directory Chainsaw E2E convention\n- `tests/e2e/chainsaw-config.yaml:1-30` — Chainsaw configuration consumed by the matrix\n- `operators/keystone/internal/controller/integration_test.go:1-60` — envtest harness template\n- `docs/reference/keystone/{keystone-crd,keystone-reconciler}.md` — reference doc structural template for the new `docs/reference/c5c3/*` chapters\n- `docs/reference/infrastructure/infrastructure-manifests.md:13-50` — infrastructure-manifests doc shape to extend\n- `architecture/docs/09-implementation/08-c5c3-operator.md` (lives in `.gitmodules` `architecture` submodule pointing at `github.com/C5C3/C5C3`)\n- `architecture/docs/03-components/01-control-plane/05-korc.md` (submodule)\n- `architecture/docs/05-deployment/01-gitops-fluxcd/01-credential-lifecycle.md` (submodule)\n- Kubernetes Operator Design Principles (CNCF White Paper) — single CR Kind per reconciler, CRD lifecycle by Helm not by reconciler, owner-ref + finalizer ownership model\n- Kubernetes Operator Reconciliation (idempotency, status conditions, `observedGeneration`) — every sub-reconciler stamps `ObservedGeneration` on its conditions to satisfy the project's drift guard\n- Twelve-Factor App Factor III — secrets stay in environment/Secret refs, never in committed manifests; the admin password and admin App Cred satisfy this through OpenBao → ESO → operator-only access\n- OWASP A01 / A07 — single root-of-trust (admin password) with bounded blast radius via restricted Application Credential and absence from workload pods\n- Source GitHub issue `C5C3/forge#389` — https://github.com/C5C3/forge/issues/389\n- Consolidated drafts (per the issue body): `C5C3/forge#364`, `#365` (fully consolidated); Keystone/admin-App-Cred slice of `#366`, `#367`, `#368`\n- Planwerk roadmap items referenced in the issue body: CC-0019, CC-0020 (P0); CC-0021, CC-0022, CC-0023 (P1, Keystone/admin-App-Cred parts)\n\n---\n\n_Elaborated by [planwerk-review](https://github.com/planwerk/planwerk-review) with Claude Code_\n\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/389",
   "stories": [
@@ -1006,6 +1006,7 @@
       "title": "Wire API dependencies in operators/c5c3/go.mod + go.work.sum: add require+replace for github.com/c5c3/forge/operators/keystone (=> ../keystone), require github.com/mariadb-operator/mariadb-operator v0.38.1, github.com/external-secrets/external-secrets/apis (match keystone pin), the K-ORC API module (resolve exact path/version for group openstack.k-orc.cloud), and the memcached.c5c3.io/v1beta1 API module (resolve; fall back to unstructured if no Go module). Run go work sync / go mod tidy; verify all import paths compile. Leave a # DECISION comment if memcached/K-ORC fall back to unstructured. (REQ-019)",
       "level": 1,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-019",
         "REQ-008",
@@ -1017,6 +1018,7 @@
       "title": "Create operators/c5c3/api/v1alpha1/groupversion_info.go (group c5c3.io, version v1alpha1) mirroring operators/keystone/api/v1alpha1/groupversion_info.go: GroupVersion, SchemeBuilder, AddToScheme. (REQ-001)",
       "level": 1,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-001"
       ]
@@ -1026,6 +1028,7 @@
       "title": "Define ControlPlane/ControlPlaneList + ControlPlaneSpec in operators/c5c3/api/v1alpha1/controlplane_types.go: openStackRelease (+kubebuilder:validation:Pattern=`^\\d{4}\\.\\d$`), region (+default RegionOne), infrastructure.{database,cache} reusing commonv1.DatabaseSpec/CacheSpec, services.keystone, global, korc (KORCSpec). Root + status + printcolumn markers. Unit test controlplane_types_test.go for pattern + common-type reuse. (REQ-002)",
       "level": 1,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -1035,6 +1038,7 @@
       "title": "Define KORCSpec + AdminCredentialSpec in controlplane_types.go: cloudCredentialsRef{cloudName, secretName default k-orc-clouds-yaml}, passwordSecretRef, applicationCredential{restricted default true, accessRules, rotation.mode default PasswordDriven}, bootstrapResources. (REQ-003)",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -1044,6 +1048,7 @@
       "title": "Define ControlPlaneStatus in controlplane_types.go: Conditions []metav1.Condition, updatePhase enum (+kubebuilder:validation:Enum), services map, korc admin App Cred fields (id/restricted/lastRotation), catalog readiness. Add controlplane_status_test.go for ObservedGeneration + enum constraint. (REQ-004)",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -1053,6 +1058,7 @@
       "title": "Define CredentialRotation/CredentialRotationList types (operators/c5c3/api/v1alpha1/credentialrotation_types.go): target enum (adminApplicationCredential), bootstrap/re-mint fields, and accepted-but-deferred scheduled fields (intervalDays/preRotationDays/gracePeriodDays). (REQ-015)",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-015"
       ]
@@ -1062,6 +1068,7 @@
       "title": "Define types-only SecretAggregate/SecretAggregateList (operators/c5c3/api/v1alpha1/secretaggregate_types.go) with no controller; register in scheme. (REQ-018)",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-018"
       ]
@@ -1071,6 +1078,7 @@
       "title": "Implement controlplane_webhook.go defaulter+validator via builder.WebhookManagedBy mirroring keystone_webhook.go: Default() (region, App Cred restricted, rotation.mode, cloudCredentialsRef.secretName); ValidateCreate/Update (openStackRelease pattern, database/cache XOR, passwordSecretRef present). Unit tests controlplane_webhook_test.go. (REQ-005, REQ-006)",
       "level": 1,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-005",
         "REQ-006"
@@ -1081,6 +1089,7 @@
       "title": "Implement helpers.go intervalToCron(time.Duration)(string,error) + projectPolicyOverrides(global,perService *commonv1.PolicySpec)*commonv1.PolicySpec with table-driven helpers_test.go (168h/24h/unsupported; override-wins/nil/one-sided). (REQ-016, REQ-017)",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-016",
         "REQ-017"
@@ -1091,6 +1100,7 @@
       "title": "Run make generate (zz_generated.deepcopy.go), make manifests (config/crd/bases/{controlplanes,credentialrotations,secretaggregates}.c5c3.io.yaml), make sync-crds (chart crds/), confirm make verify-crd-sync green and idempotent. (REQ-001)",
       "level": 1,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-001"
       ]
@@ -1100,6 +1110,7 @@
       "title": "Create operators/c5c3/internal/metrics/collectors.go (c5c3_operator_* histogram/counter vectors mirroring keystone) + collectors_test.go (no CR labels, bucket boundaries). (REQ-026)",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-026"
       ]
@@ -1109,6 +1120,7 @@
       "title": "Create operators/c5c3/internal/controller/instrumentation.go (instrumentSubReconciler + subReconcilerConditionTypes map) + instrumentation_test.go drift guard (coverage of all names, valid condition types). (REQ-026)",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-026"
       ]
@@ -1118,6 +1130,7 @@
       "title": "Create controlplane_controller.go skeleton: ControlPlaneReconciler{client.Client, Scheme, Recorder}, typed conditionType{Infrastructure,Keystone,KORC,AdminCredential,Catalog}Ready constants, subConditionTypes var, Reconcile dispatch (early-return), setReadyCondition via conditions.AllTrue, +kubebuilder:rbac markers. Unit test aggregate-ready + early-return + no-inline-literals. (REQ-007)",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -1127,6 +1140,7 @@
       "title": "Implement SetupWithManager in controlplane_controller.go: For(&ControlPlane{}).Owns(MariaDB, Memcached, Keystone, K-ORC ApplicationCredential/Service/Endpoint).Watches(&corev1.Secret{}, secretToControlPlaneMapper) with a field-indexer for the admin password Secret name (mirror secretToKeystoneMapper). Unit test indexed watch enqueues only on the admin Secret. (REQ-012)",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-012",
         "REQ-007"
@@ -1137,6 +1151,7 @@
       "title": "Implement reconcile_infrastructure.go: project infrastructure.{database,cache} into owned MariaDB + Memcached CRs (openstack ns, issuerRefs matching baseline), set InfrastructureReady, handle brownfield (host/servers) skip. Unit tests reconcile_infrastructure_test.go. (REQ-008)",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -1146,6 +1161,7 @@
       "title": "Implement reconcile_keystone.go: project services.keystone into an owned keystonev1alpha1.Keystone CR (image tag from openStackRelease, Database/Cache clusterRefs, projectPolicyOverrides, intervalToCron for Fernet/CredentialKeys schedules), set KeystoneReady, gate on infra. Unit tests reconcile_keystone_test.go (projection + schedule conversion). (REQ-009)",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -1155,6 +1171,7 @@
       "title": "Implement reconcile_korc.go step 1+2 (mint + push): create owned K-ORC ApplicationCredential CR (restricted:true, rotation.mode=PasswordDriven); commit to operator-owned Secret; EnsurePushSecret to OpenBao openstack/keystone/admin/app-credential via openbao-cluster-store; gate AdminCredentialReady on WaitForExternalSecret(k-orc-clouds-yaml in orc-system) with clobber-safe guard. Unit tests (mint restricted, PushSecret shape, ES gate, missing-CRD no-panic). (REQ-010, REQ-011)",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-010",
         "REQ-011"
@@ -1165,6 +1182,7 @@
       "title": "Implement reconcile_korc.go step 3+4 (re-mint + catalog): re-mint on admin password SHA-256 vs forge.c5c3.io/admin-password-hash annotation mismatch (stamp new hash); register Keystone Service+Endpoint K-ORC CRs and set CatalogReady. Unit tests (re-mint/no-op, catalog gated, idempotent). (REQ-012, REQ-014)",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-012",
         "REQ-014"
@@ -1175,6 +1193,7 @@
       "title": "Add credential_invariant_test.go: walk every owned Deployment/StatefulSet/DaemonSet and assert no env/volume references keystone-admin or the app-credential Secret outside the c5c3-operator/K-ORC pods; assert minted App Cred restricted:true. (REQ-013)",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-013"
       ]
@@ -1184,6 +1203,7 @@
       "title": "Implement reconcile_credentialrotation.go (CredentialRotationReconciler, target adminApplicationCredential): bootstrap mint on absence + re-mint on password hash change; accept scheduled fields without implementing the loop. Unit tests reconcile_credentialrotation_test.go. Add a # DECISION comment if the scheduled loop is deferred. (REQ-015)",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-015"
       ]
@@ -1193,6 +1213,7 @@
       "title": "Rewrite operators/c5c3/main.go: register schemes (c5c3v1alpha1, keystonev1alpha1, mariadbv1alpha1, memcachedv1beta1, esov1+esov1alpha1, orcv1alpha1), wire ControlPlaneReconciler + CredentialRotationReconciler, register webhooks behind the webhooks bool, remove the scaffold placeholder; keep LeaderElectionID c5c3.openstack.c5c3.io. main_test.go for SetupFunc wiring. (REQ-019)",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-019"
       ]
@@ -1202,6 +1223,7 @@
       "title": "Create operators/c5c3/internal/testutil/envtest_setup.go (mirror operators/keystone/internal/testutil) exposing SetupC5c3EnvTestWithController + SkipIfEnvTestUnavailable, building the scheme with all child CRD types and loading CRD dirs. (REQ-027)",
       "level": 3,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-027"
       ]
@@ -1211,6 +1233,7 @@
       "title": "Create operators/c5c3/internal/controller/integration_test.go (//go:build integration): drive create -> infra simulated Ready -> Keystone projection+Ready -> ApplicationCredential/Service/Endpoint+Ready -> ControlPlane Ready=True (AdminCredentialReady/CatalogReady), reusing internal/common/testutil/simulators. Runnable via make test-integration OPERATOR=c5c3. (REQ-027)",
       "level": 3,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-027"
       ]
@@ -1220,6 +1243,7 @@
       "title": "Create operators/c5c3/Dockerfile (multi-stage golang:1.26 -> gcr.io/distroless/static:nonroot, workspace-root context, copying go.work + internal/common + operators/keystone + operators/c5c3) mirroring operators/keystone/Dockerfile; add it to .github/workflows/build-images.yaml lint-dockerfiles matrix + paths triggers; ensure hadolint passes. (REQ-020)",
       "level": 4,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-020"
       ]
@@ -1229,6 +1253,7 @@
       "title": "Create operators/c5c3/helm/c5c3-operator/{Chart.yaml, values.yaml, values.schema.json, templates/_helpers.tpl} cloned and stripped from keystone-operator (image, replicas, resources, rbac, leaderElection, webhook, metrics, monitoring.serviceMonitor opt-in default false). values.schema.json draft-07 additionalProperties:false. (REQ-021)",
       "level": 4,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-021"
       ]
@@ -1238,6 +1263,7 @@
       "title": "Create c5c3-operator chart templates: deployment, service, serviceaccount, clusterrole, clusterrolebinding, role, rolebinding, webhook-configuration (cert-manager.io/inject-ca-from), certificate. ClusterRole rbacRules from the reconciler markers; secretaggregates get/list/watch only. (REQ-021, REQ-018)",
       "level": 4,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-021",
         "REQ-018"
@@ -1248,6 +1274,7 @@
       "title": "Create helm-unittest tests under operators/c5c3/helm/c5c3-operator/templates/tests/ (deployment args/securityContext, clusterrole rbac + secretaggregates read-only); run make sync-crds to populate chart crds/; verify helm template + helm lint --strict + helm-unittest pass. (REQ-021)",
       "level": 4,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-021"
       ]
@@ -1257,6 +1284,7 @@
       "title": "Add c5c3-system and orc-system to deploy/flux-system/namespaces.yaml (SPDX header preserved). (REQ-023)",
       "level": 5,
       "estimate_minutes": 10,
+      "status": "done",
       "requirements": [
         "REQ-023"
       ]
@@ -1266,6 +1294,7 @@
       "title": "Create deploy/flux-system/sources/k-orc.yaml (HelmRepository) and deploy/flux-system/releases/k-orc.yaml (HelmRelease, targetNamespace orc-system, globalCloudConfig.secretName: k-orc-clouds-yaml). (REQ-023)",
       "level": 5,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-023"
       ]
@@ -1275,6 +1304,7 @@
       "title": "Create deploy/flux-system/releases/c5c3-operator.yaml (HelmRelease in c5c3-system, chart c5c3-operator from c5c3-charts, dependsOn keystone-operator+external-secrets+mariadb-operator+memcached-operator+k-orc, install.crds CreateReplace) mirroring keystone-operator.yaml; add namespaces.yaml(no-op), sources/k-orc.yaml, releases/k-orc.yaml, releases/c5c3-operator.yaml to deploy/flux-system/kustomization.yaml resources. (REQ-023)",
       "level": 5,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-023"
       ]
@@ -1284,6 +1314,7 @@
       "title": "Create deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml (ExternalSecret, target k-orc-clouds-yaml in orc-system, remoteRef key openstack/keystone/admin/app-credential, secretStoreRef openbao-cluster-store) mirroring keystone-admin.yaml; add it to deploy/eso/kustomization.yaml resources. (REQ-023)",
       "level": 5,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-023"
       ]
@@ -1293,6 +1324,7 @@
       "title": "Add a narrowly-scoped path to deploy/openbao/policies/push-app-credentials.hcl authorising create/update/read on kv-v2/data/openstack/keystone/admin/app-credential (do NOT widen the existing mid-path glob), with an inline comment documenting the chosen path and that the eso-management trailing-glob already covers the read. (REQ-024)",
       "level": 5,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-024"
       ]
@@ -1302,6 +1334,7 @@
       "title": "Update .github/workflows/ci.yaml: set ALL_OPERATORS to include c5c3 (line 132), add a c5c3: paths-filter block (operators/c5c3/**, images/k-orc/** if any) mirroring keystone, add FILTER_c5c3 env, add c5c3-operator to the cleanup-e2e-tags matrix. Verify ci-resolve-changes.sh emits c5c3 in e2e-operators. (REQ-022)",
       "level": 6,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-022"
       ]
@@ -1311,6 +1344,7 @@
       "title": "Create tests/e2e/c5c3/full-controlplane-keystone/chainsaw-test.yaml (+ 00-*.yaml manifests) asserting the chain link-by-link on kind: infra CRs -> Keystone CR (tag/clusterRefs/policy) -> ApplicationCredential(restricted:true) -> k-orc-clouds-yaml in orc-system -> Service/Endpoint -> ControlPlane Ready=True; curl -k .../v3 == 200; openstack token issue; openstack catalog list. Follow tests/e2e/keystone/basic-deployment structure. (REQ-028)",
       "level": 7,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-028"
       ]
@@ -1320,6 +1354,7 @@
       "title": "Write docs/reference/c5c3/controlplane-crd.md mirroring docs/reference/keystone/keystone-crd.md: API group/version, spec field tables (Field|Type|Required|Default|Description) for ControlPlaneSpec/KORCSpec/AdminCredentialSpec/CredentialRotation, validation rules, status conditions. (REQ-025)",
       "level": 8,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-025"
       ]
@@ -1329,6 +1364,7 @@
       "title": "Write docs/reference/c5c3/controlplane-reconciler.md mirroring keystone-reconciler.md: controller registration, Owns/Watches, phased sub-reconcilers, condition aggregation, the K-ORC credential chain, finalizer/owner-ref model. (REQ-025)",
       "level": 8,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-025"
       ]
@@ -1338,6 +1374,7 @@
       "title": "Add a K-ORC + c5c3-operator section to docs/reference/infrastructure/infrastructure-manifests.md matching the existing structure; note the architecture/ submodule changes (08-c5c3-operator.md, 05-korc.md, 01-credential-lifecycle.md) are upstream-only with a pointer bump (do not edit submodule files). (REQ-025)",
       "level": 8,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-025"
       ]
@@ -1742,6 +1779,804 @@
       "story": "Operator self-credentials K-ORC through the OpenBao credential backbone",
       "expected": "[e2e] each step asserts Ready/synced before the next: infra -> Keystone -> ApplicationCredential(restricted:true) -> k-orc-clouds-yaml -> Service/Endpoint",
       "requirement_id": "REQ-028"
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_status_test.go",
+      "test_function": "TestControlPlaneStatusZeroValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_status_test.go",
+      "test_function": "TestUpdatePhaseConstants",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_status_test.go",
+      "test_function": "TestStatusConditionsCarryObservedGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_status_test.go",
+      "test_function": "TestServiceStatusAndAdminCredStatus",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_types_test.go",
+      "test_function": "TestGroupVersion",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_types_test.go",
+      "test_function": "TestSchemeBuilderRegistersControlPlane",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_types_test.go",
+      "test_function": "TestControlPlaneImplementsRuntimeObject",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_types_test.go",
+      "test_function": "TestOpenStackReleasePattern",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_types_test.go",
+      "test_function": "TestControlPlaneSpecReusesCommonTypes",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_types_test.go",
+      "test_function": "TestControlPlaneSpecZeroValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_types_test.go",
+      "test_function": "TestServiceKeystoneSpecDeepCopy",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_types_test.go",
+      "test_function": "TestKORCSpecShape",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_types_test.go",
+      "test_function": "TestRotationModeConstants",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_webhook_test.go",
+      "test_function": "TestDefault_SetsZeroValueDefaults",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_webhook_test.go",
+      "test_function": "TestDefault_IsIdempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_webhook_test.go",
+      "test_function": "TestDefault_PreservesExplicitValues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_webhook_test.go",
+      "test_function": "TestValidateCreate_AcceptsValidControlPlane",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_webhook_test.go",
+      "test_function": "TestValidateCreate_RejectsBadOpenStackRelease",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_webhook_test.go",
+      "test_function": "TestValidateCreate_RejectsDatabaseBothSet",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_webhook_test.go",
+      "test_function": "TestValidateCreate_RejectsDatabaseNeitherSet",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_webhook_test.go",
+      "test_function": "TestValidateCreate_RejectsCacheBothSet",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_webhook_test.go",
+      "test_function": "TestValidateCreate_RejectsCacheNeitherSet",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_webhook_test.go",
+      "test_function": "TestValidateCreate_RejectsMissingPasswordSecretRef",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_webhook_test.go",
+      "test_function": "TestValidateUpdate_AcceptsValidChange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_webhook_test.go",
+      "test_function": "TestValidateDelete_AlwaysAllowed",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/credentialrotation_types_test.go",
+      "test_function": "TestSchemeBuilderRegistersCredentialRotation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/credentialrotation_types_test.go",
+      "test_function": "TestCredentialRotationImplementsRuntimeObject",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/credentialrotation_types_test.go",
+      "test_function": "TestRotationTargetConstant",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/credentialrotation_types_test.go",
+      "test_function": "TestCredentialRotationSpecDeferredFields",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/secretaggregate_types_test.go",
+      "test_function": "TestSchemeBuilderRegistersSecretAggregate",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/secretaggregate_types_test.go",
+      "test_function": "TestSecretAggregateImplementsRuntimeObject",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/helpers_test.go",
+      "test_function": "TestIntervalToCron",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/helpers_test.go",
+      "test_function": "TestIntervalToCronErrorNamesUnsupportedValue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/helpers_test.go",
+      "test_function": "TestProjectPolicyOverridesPerServiceWinsOnConflict",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/helpers_test.go",
+      "test_function": "TestProjectPolicyOverridesConfigMapRefFallsBackToGlobal",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/helpers_test.go",
+      "test_function": "TestProjectPolicyOverridesGlobalOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/helpers_test.go",
+      "test_function": "TestProjectPolicyOverridesPerServiceOnly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/helpers_test.go",
+      "test_function": "TestProjectPolicyOverridesBothNilReturnsNil",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/helpers_test.go",
+      "test_function": "TestProjectPolicyOverridesDoesNotMutateInputs",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/envtest/integration_test.go",
+      "test_function": "TestSetupEnvTest_StartStop",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/envtest/integration_test.go",
+      "test_function": "TestSetupEnvTest_CRDsInstalled",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/envtest/integration_test.go",
+      "test_function": "TestSetupEnvTest_CreateUnstructuredObjects",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/testutil/envtest/integration_test.go",
+      "test_function": "TestSetupEnvTest_TeardownCancelsContext",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/controlplane_controller_test.go",
+      "test_function": "TestAggregateReady_AllTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/controlplane_controller_test.go",
+      "test_function": "TestAggregateReady_MissingCondition",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/controlplane_controller_test.go",
+      "test_function": "TestAggregateReady_OneFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/controlplane_controller_test.go",
+      "test_function": "TestReconcile_NotFound_EarlyReturn",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/controlplane_controller_test.go",
+      "test_function": "TestNoInlineConditionTypeLiterals",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/credential_invariant_test.go",
+      "test_function": "TestCredentialInvariant_MintedACIsRestricted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/credential_invariant_test.go",
+      "test_function": "TestCredentialInvariant_AppCredentialSecretAbsentFromKeystoneSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/credential_invariant_test.go",
+      "test_function": "TestCredentialInvariant_AppCredentialSecretReferencedOnlyByPushSecretAndAC",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/credential_invariant_test.go",
+      "test_function": "TestCredentialInvariant_NoWorkloadReferencesAppCredentialSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/instrumentation_test.go",
+      "test_function": "TestInstrumentSubReconciler_Success_RecordsDuration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/instrumentation_test.go",
+      "test_function": "TestInstrumentSubReconciler_Error_RecordsMappedConditionType",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/instrumentation_test.go",
+      "test_function": "TestInstrumentSubReconciler_UnknownNameFallback",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/instrumentation_test.go",
+      "test_function": "TestInstrumentSubReconciler_PanicSafe",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/instrumentation_test.go",
+      "test_function": "TestSubReconcilerConditionTypesCoversAllCallSites",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_credentialrotation_test.go",
+      "test_function": "TestRotation_BootstrapNoOpWhenACExists",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_credentialrotation_test.go",
+      "test_function": "TestRotation_BootstrapWaitsWhenACAbsent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_credentialrotation_test.go",
+      "test_function": "TestRotation_ReMintClearsHashAnnotation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_credentialrotation_test.go",
+      "test_function": "TestRotation_PasswordHashChangeTriggersNudge",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_credentialrotation_test.go",
+      "test_function": "TestRotation_HashMatchIsNoOp",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_credentialrotation_test.go",
+      "test_function": "TestRotation_UnsupportedTargetReadyFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_credentialrotation_test.go",
+      "test_function": "TestRotation_NoControlPlaneReadyFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_credentialrotation_test.go",
+      "test_function": "TestRotation_ScheduledFieldsAcceptedNoError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_infrastructure_test.go",
+      "test_function": "TestReconcileInfrastructure_ManagedProjectsChildren",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_infrastructure_test.go",
+      "test_function": "TestReconcileInfrastructure_ManagedRequeuesWhileNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_infrastructure_test.go",
+      "test_function": "TestReconcileInfrastructure_ManagedReadyWhenChildrenReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_infrastructure_test.go",
+      "test_function": "TestReconcileInfrastructure_BrownfieldSkipsChildren",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_keystone_test.go",
+      "test_function": "TestReconcileKeystone_ImageTagFromRelease",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_keystone_test.go",
+      "test_function": "TestReconcileKeystone_ImageOverrideWins",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_keystone_test.go",
+      "test_function": "TestReconcileKeystone_ClusterRefsDerivedFromInfrastructure",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_keystone_test.go",
+      "test_function": "TestReconcileKeystone_PolicyMerge",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_keystone_test.go",
+      "test_function": "TestReconcileKeystone_ScheduleConversionWeekly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_keystone_test.go",
+      "test_function": "TestReconcileKeystone_InvalidRotationIntervalSetsFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_keystone_test.go",
+      "test_function": "TestReconcileKeystone_ReplicasPassthrough",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_keystone_test.go",
+      "test_function": "TestReconcileKeystone_InfraGatingNoKeystoneCreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_keystone_test.go",
+      "test_function": "TestReconcileKeystone_MirrorsChildReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_RestrictedTrueGivesUnrestrictedFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_RestrictedFalseGivesUnrestrictedTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_RestrictedNilDefaultsToUnrestrictedFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_AccessRulesProjected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_OwnerRefAndCloudCredsAndManagementPolicy",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_PasswordHashAnnotationStamped",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_KORCReadyTrueWhenACAvailable",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_KORCReadyFalseWhileACNotAvailable",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_MissingCRDNoPanic",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_WaitsForAdminPassword",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileAdminCredential_GatedOnKORC",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileAdminCredential_GatedFalseWhileCloudsYamlNotReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileAdminCredential_PushSecretBuiltAndReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileAdminCredential_PushSecretClobberSafeNoChurn",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_HashMismatchRemintsAndStampsNewHash",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_HashMatchNoRemint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileCatalog_GatedOnAdminCredential",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileCatalog_RegistersServiceAndEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileCatalog_Idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileCatalog_MissingCRDNoPanic",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/setupwithmanager_test.go",
+      "test_function": "TestControlPlaneSecretNameExtractor_ReturnsPasswordSecretRefName",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/setupwithmanager_test.go",
+      "test_function": "TestControlPlaneSecretNameExtractor_EmptyWhenUnset",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/setupwithmanager_test.go",
+      "test_function": "TestControlPlaneSecretNameExtractor_WrongTypeReturnsNil",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/setupwithmanager_test.go",
+      "test_function": "TestSecretToControlPlaneMapper_EnqueuesMatchingAdminSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/setupwithmanager_test.go",
+      "test_function": "TestSecretToControlPlaneMapper_IgnoresNonMatchingSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/setupwithmanager_test.go",
+      "test_function": "TestSecretToControlPlaneMapper_ScopedToNamespace",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/metrics/collectors_test.go",
+      "test_function": "TestReconcileDurationHistogramRegistered",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/metrics/collectors_test.go",
+      "test_function": "TestReconcileErrorsCounterLabels",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/metrics/collectors_test.go",
+      "test_function": "TestErrorCounterNotIncrementedOnSuccess",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/metrics/collectors_test.go",
+      "test_function": "TestRegisterIsIdempotentlyGuarded",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/metrics/collectors_test.go",
+      "test_function": "TestNewCollectorsDoesNotRegister",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/metrics/collectors_test.go",
+      "test_function": "TestTestRecorderRecordsThroughPrivateRegistry",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/main_test.go",
+      "test_function": "TestSchemeRegistersAllExpectedGVKs",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/main_test.go",
+      "test_function": "TestSchemeDoesNotRegisterMemcached",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/main_test.go",
+      "test_function": "TestLeaderElectionIDPinned",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FullReconcile_ManagedToReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],
@@ -1774,8 +2609,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-06-02T14:29:55.896800"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-06-02T15:25:33.151700"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-06-03T19:25:28.216952"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/391",
+  "pr_number": 391,
   "execution_history": [
     {
       "run_id": "546c7ec5-40fd-4521-846d-cb19cb748420",
@@ -1787,6 +2632,94 @@
           "name": "prepare",
           "duration": 870.2777979373932,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "6b871e8d-648a-4930-b641-77ade5260f5d",
+      "timestamp": "2026-06-02T19:40:14.775388",
+      "total_duration": 14775.638313531876,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (10 tasks)",
+          "duration": 1484.0865471363068,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (11 tasks)",
+          "duration": 4041.82057929039,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (2 tasks)",
+          "duration": 1051.2709391117096,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (4 tasks)",
+          "duration": 1019.9685416221619,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 5 (5 tasks)",
+          "duration": 860.4559376239777,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 6 (1 tasks)",
+          "duration": 470.4701244831085,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 7 (1 tasks)",
+          "duration": 1375.2760972976685,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 8 (3 tasks)",
+          "duration": 691.3454146385193,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0110] Code Review",
+          "duration": 1084.5710427761078,
+          "type": "review",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0110] Improvements",
+          "duration": 2483.1195657253265,
+          "type": "improve",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0110] Simplify",
+          "duration": 213.25352382659912,
+          "type": "simplify",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "3278c618-6372-4969-a6c5-6118eb191d37",
+      "timestamp": "2026-06-03T15:08:45.132778",
+      "total_duration": 945.1172108650208,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Address review #1",
+          "duration": 945.1172108650208,
+          "type": "review_address",
           "status": "done"
         }
       ]

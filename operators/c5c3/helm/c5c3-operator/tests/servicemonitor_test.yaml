@@ -1,0 +1,88 @@
+# CC-0089, REQ-006: ServiceMonitor template unit tests.
+suite: ServiceMonitor
+templates:
+  - templates/servicemonitor.yaml
+tests:
+  - it: should not render when monitoring disabled (CC-0089, REQ-006)
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders ServiceMonitor with correct fields (CC-0089, REQ-006)
+    set:
+      monitoring:
+        serviceMonitor:
+          enabled: true
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: ServiceMonitor
+      - isAPIVersion:
+          of: monitoring.coreos.com/v1
+      - equal:
+          path: spec.endpoints[0].port
+          value: metrics
+      - equal:
+          path: spec.endpoints[0].path
+          value: /metrics
+      - equal:
+          path: spec.endpoints[0].interval
+          value: 30s
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/name"]
+          value: c5c3-operator
+
+  - it: should honour a custom scrape interval (CC-0089, REQ-006)
+    set:
+      monitoring:
+        serviceMonitor:
+          enabled: true
+          interval: 15s
+    asserts:
+      - equal:
+          path: spec.endpoints[0].interval
+          value: 15s
+
+  # Prometheus operator's `Duration` type accepts the literal "0" to mean
+  # "use the global default scrape interval". The schema regex must allow
+  # this bare-zero form (CC-0089, I-002).
+  - it: should accept "0" as the scrape interval (CC-0089, REQ-006, I-002)
+    set:
+      monitoring:
+        serviceMonitor:
+          enabled: true
+          interval: "0"
+    asserts:
+      - equal:
+          path: spec.endpoints[0].interval
+          value: "0"
+
+  - it: should reject non-duration interval (CC-0089, REQ-006)
+    set:
+      monitoring:
+        serviceMonitor:
+          enabled: true
+          interval: "not-a-duration"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/monitoring/serviceMonitor/interval.*does not match pattern"
+
+  - it: should reject non-boolean monitoring.serviceMonitor.enabled (CC-0089, REQ-006)
+    set:
+      monitoring:
+        serviceMonitor:
+          enabled: "yes"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/monitoring/serviceMonitor/enabled.*got string, want boolean"
+
+  - it: should reject unknown property under monitoring.serviceMonitor (CC-0089, REQ-006)
+    set:
+      monitoring:
+        serviceMonitor:
+          enabled: true
+          scheme: https
+    asserts:
+      - failedTemplate:
+          errorPattern: "/monitoring/serviceMonitor.*additional properties.*not allowed"

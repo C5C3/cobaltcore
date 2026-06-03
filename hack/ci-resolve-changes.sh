@@ -19,6 +19,7 @@
 #
 # Per-operator filter outputs must be set as FILTER_<operator> env vars:
 #   FILTER_keystone           — paths-filter output for keystone paths
+#   FILTER_c5c3               — paths-filter output for c5c3 paths (CC-0110)
 #   FILTER_docs               — paths-filter output for docs paths
 #   FILTER_helm               — paths-filter output for helm paths
 #   FILTER_e2e_infra          — paths-filter output for e2e-infra paths

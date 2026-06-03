@@ -43,6 +43,12 @@ func allExpectedCRDs() []expectedCRD {
 		{name: "clustersecretstores.external-secrets.io", group: "external-secrets.io", version: "v1", kind: "ClusterSecretStore", namespaced: false},
 		{name: "databases.k8s.mariadb.com", group: "k8s.mariadb.com", version: "v1alpha1", kind: "Database", namespaced: true},
 		{name: "externalsecrets.external-secrets.io", group: "external-secrets.io", version: "v1", kind: "ExternalSecret", namespaced: true},
+		// K-ORC fake CRDs (CC-0110): the c5c3 ControlPlane reconciler mints/owns
+		// these openstack.k-orc.cloud kinds; they are faked here to keep envtest
+		// forgiving (the real CRDs carry strict CEL rules).
+		{name: "applicationcredentials.openstack.k-orc.cloud", group: "openstack.k-orc.cloud", version: "v1alpha1", kind: "ApplicationCredential", namespaced: true},
+		{name: "endpoints.openstack.k-orc.cloud", group: "openstack.k-orc.cloud", version: "v1alpha1", kind: "Endpoint", namespaced: true},
+		{name: "services.openstack.k-orc.cloud", group: "openstack.k-orc.cloud", version: "v1alpha1", kind: "Service", namespaced: true},
 		{name: "grants.k8s.mariadb.com", group: "k8s.mariadb.com", version: "v1alpha1", kind: "Grant", namespaced: true},
 		{name: "mariadbs.k8s.mariadb.com", group: "k8s.mariadb.com", version: "v1alpha1", kind: "MariaDB", namespaced: true},
 		{name: "memcacheds.memcached.c5c3.io", group: "memcached.c5c3.io", version: "v1beta1", kind: "Memcached", namespaced: true},

@@ -1,0 +1,18 @@
+{{- if .Values.rbac.namespaceScoped }}
+# CC-0043: Namespace-scoped RoleBinding (replaces ClusterRoleBinding).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "c5c3-operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "c5c3-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "c5c3-operator.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "c5c3-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

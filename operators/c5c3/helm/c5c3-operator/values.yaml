@@ -1,0 +1,45 @@
+# Default values for c5c3-operator.
+# Validated by values.schema.json (CC-0110).
+
+image:
+  repository: ghcr.io/c5c3/c5c3-operator
+  # tag defaults to .Chart.AppVersion when left empty; set explicitly to override (e.g. tag: "latest" for local dev)
+  tag: ""
+  pullPolicy: IfNotPresent
+
+replicas: 2
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+rbac:
+  # CC-0043: Set to true to deploy with namespace-scoped Role/RoleBinding
+  # instead of ClusterRole/ClusterRoleBinding. Restricts the operator to its
+  # release namespace. Requires webhook.enabled=false.
+  namespaceScoped: false
+
+leaderElection:
+  enabled: true
+
+webhook:
+  enabled: true
+
+metrics:
+  port: 8080
+
+# CC-0089, REQ-006: Prometheus ServiceMonitor integration.
+# When enabled, renders a monitoring.coreos.com/v1 ServiceMonitor targeting the
+# operator's metrics port; prometheus-operator CRDs must be installed in-cluster.
+monitoring:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+
+serviceAccount:
+  create: true
+  name: ""

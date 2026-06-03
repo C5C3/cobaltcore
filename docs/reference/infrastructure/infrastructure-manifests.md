@@ -25,6 +25,7 @@ deploy/
     │   ├── external-secrets.yaml         External Secrets Operator Helm chart registry
     │   ├── openbao.yaml                  OpenBao Helm chart registry
     │   ├── c5c3-charts.yaml              C5C3 shared OCI chart registry
+    │   ├── k-orc.yaml                    K-ORC (OpenStack Resource Controller) Helm chart registry
     │   ├── prometheus-community.yaml     Prometheus Community OCI chart registry
     │   └── chaos-mesh.yaml               Chaos Mesh Helm chart registry (kind-only addon — see "Kind Overlay Demo Addons")
     ├── releases/                         FluxCD HelmRelease CRs
@@ -36,6 +37,8 @@ deploy/
     │   ├── memcached-operator.yaml       Memcached Operator (from c5c3-charts)
     │   ├── openbao.yaml                  OpenBao HA Raft cluster
     │   ├── keystone-operator.yaml        Keystone Operator (from c5c3-charts)
+    │   ├── k-orc.yaml                    K-ORC OpenStack Resource Controller (CC-0110)
+    │   ├── c5c3-operator.yaml            c5c3-operator ControlPlane orchestrator (from c5c3-charts, CC-0110)
     │   └── chaos-mesh.yaml               Chaos Mesh (kind-only addon — see "Kind Overlay Demo Addons")
     └── infrastructure/                   CRD-dependent infrastructure resources
         ├── kustomization.yaml            Infrastructure kustomize overlay
@@ -50,7 +53,7 @@ comment, license identifier).
 
 ## Namespaces
 
-Eight `Namespace` resources are defined in `namespaces.yaml` and included as the first
+Ten `Namespace` resources are defined in `namespaces.yaml` and included as the first
 entry in the base kustomization. Kustomize applies `Namespace` resources before other
 resource kinds, ensuring target namespaces exist before any namespaced resources are
 created.
@@ -65,6 +68,8 @@ created.
 | `keystone-system` | Keystone Operator controller (workload CRs continue to live in `openstack`) |
 | `openstack` | Infrastructure instance CRs (MariaDB cluster, Memcached cluster) |
 | `openbao-system` | OpenBao HA Raft cluster |
+| `c5c3-system` | c5c3-operator controller (CC-0110, REQ-023); the `ControlPlane` and its child CRs are created in the `ControlPlane`'s own namespace |
+| `orc-system` | K-ORC (OpenStack Resource Controller) and the `k-orc-clouds-yaml` admin Secret (CC-0110, REQ-023) |
 
 The `chaos-mesh` namespace is **not** part of the production base. It is created
 inline by the kind-only opt-in overlay at `deploy/kind/chaos-mesh/` when
@@ -119,7 +124,7 @@ applied via `kubectl apply -f install.yaml`) before this kustomization is applie
 
 ## HelmRepository Sources
 
-Six HelmRepository CRs define the Helm chart registries that FluxCD pulls from. All
+Seven HelmRepository CRs define the Helm chart registries that FluxCD pulls from. All
 use `apiVersion: source.toolkit.fluxcd.io/v1`, are deployed to the `flux-system`
 namespace, and poll at `interval: 1h`.
 
@@ -130,6 +135,7 @@ namespace, and poll at `interval: 1h`.
 | `sources/external-secrets.yaml` | `external-secrets` | `https://charts.external-secrets.io` | HTTPS |
 | `sources/openbao.yaml` | `openbao` | `https://openbao.github.io/openbao-helm` | HTTPS |
 | `sources/c5c3-charts.yaml` | `c5c3-charts` | `oci://ghcr.io/c5c3/charts` | OCI |
+| `sources/k-orc.yaml` | `k-orc` | `https://k-orc.github.io/openstack-resource-controller` | HTTPS |
 | `sources/prometheus-community.yaml` | `prometheus-community` | `oci://ghcr.io/prometheus-community/charts` | OCI |
 
 The `chaos-mesh` HelmRepository ships in the kind-only opt-in overlay at
@@ -145,7 +151,7 @@ use standard HTTPS Helm registries.
 
 ## HelmRelease Operators
 
-Eight HelmRelease CRs deploy the infrastructure operators and CRD charts. All use
+Ten HelmRelease CRs deploy the infrastructure operators and CRD charts. All use
 `apiVersion: helm.toolkit.fluxcd.io/v2` and share these common settings:
 
 | Setting | Value | Purpose |
@@ -171,8 +177,17 @@ mariadb-operator-crds     (no dependencies)
 ├── external-secrets      dependsOn: cert-manager
 ├── memcached-operator    dependsOn: cert-manager, prometheus-operator-crds
 ├── openbao               dependsOn: cert-manager
-└── keystone-operator     dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets
+├── keystone-operator     dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets
+├── k-orc                 (no dependsOn — installs the OpenStack resource CRDs the c5c3-operator drives)
+└── c5c3-operator         dependsOn: keystone-operator, external-secrets, mariadb-operator, memcached-operator, k-orc
 ```
+
+The `c5c3-operator` HelmRelease (CC-0110, REQ-023) sits at the top of this graph: it
+`dependsOn` the four operators whose CRs it projects (keystone-operator,
+external-secrets, mariadb-operator, memcached-operator) plus `k-orc`, whose
+ApplicationCredential / Service / Endpoint CRDs it drives. `k-orc` itself declares no
+`dependsOn` — it only needs its own chart CRDs installed before the c5c3-operator
+reconciles a `ControlPlane`.
 
 FluxCD resolves this dependency graph and installs operators in the correct order.
 If cert-manager is not ready, dependent operators are held in a pending state.
@@ -391,6 +406,67 @@ provisioning, memcached-operator for caching, and external-secrets for secret ma
 | `leaderElection.enabled` | `true` | Enable leader election for HA |
 | `image.tag` | `latest` | Use latest image until a versioned release publishes a semver tag |
 
+### K-ORC (OpenStack Resource Controller)
+
+**File:** `deploy/flux-system/releases/k-orc.yaml`
+
+| Property | Value |
+| --- | --- |
+| Target namespace | `orc-system` |
+| Chart | `openstack-resource-controller` |
+| Version constraint | `>=0.1.0` |
+| Source | `k-orc` HelmRepository |
+| Dependencies | None |
+
+K-ORC (the OpenStack Resource Controller) installs the declarative Keystone resource
+CRDs — `ApplicationCredential`, `Service`, `Endpoint`, and related kinds — that the
+c5c3-operator drives to project a `ControlPlane`'s desired state into Keystone
+(CC-0110, REQ-023). The HelmRelease `metadata.name` is the short, stable `k-orc` (not
+the chart's own `openstack-resource-controller`) so the c5c3-operator HelmRelease can
+`dependsOn` it by that name. Per repo convention the HelmRelease lives in its target
+namespace (`orc-system`), so no explicit `spec.targetNamespace` is needed.
+`globalCloudConfig` mounts the `orc-system` copy of the `k-orc-clouds-yaml` Secret
+as K-ORC's global default; however K-ORC authenticates **per resource** via each
+CR's `CloudCredentialsRef`, resolved in the CR's own (control-plane) namespace, so
+the credential chain below also materialises a co-located copy there (CC-0110, C1).
+See [Admin Credential Chain](#admin-credential-chain) below.
+
+**Helm values:**
+
+| Key | Value | Purpose |
+| --- | --- | --- |
+| `globalCloudConfig.secretName` | `k-orc-clouds-yaml` | Secret holding the admin `clouds.yaml` Application Credential that K-ORC authenticates to Keystone with |
+
+### c5c3-operator
+
+**File:** `deploy/flux-system/releases/c5c3-operator.yaml`
+
+| Property | Value |
+| --- | --- |
+| Target namespace | `c5c3-system` |
+| Chart | `c5c3-operator` |
+| Version constraint | `>=0.1.0 <1.0.0` |
+| Source | `c5c3-charts` HelmRepository (shared OCI registry) |
+| Dependencies | `keystone-operator`, `external-secrets`, `mariadb-operator`, `memcached-operator`, `k-orc` |
+
+The c5c3-operator runs the `ControlPlane` reconciler that orchestrates a Keystone
+control plane end-to-end (CC-0110, REQ-023). It depends on the four operators whose CRs
+it projects — `keystone-operator` for the Keystone instance, `external-secrets` and
+`mariadb-operator` and `memcached-operator` for the supporting platform services — plus
+`k-orc`, whose `ApplicationCredential` / `Service` / `Endpoint` CRDs it drives to
+register the catalog and rotate the admin credential. The operator child CRs are created
+in the `ControlPlane`'s own namespace, not a hard-coded one. For the reconciliation
+contract see the upstream design chapter
+`architecture/docs/09-implementation/08-c5c3-operator.md` (CC-0110).
+
+**Helm values:**
+
+| Key | Value | Purpose |
+| --- | --- | --- |
+| `replicas` | `2` | Run 2 controller replicas for HA |
+| `leaderElection.enabled` | `true` | Enable leader election for HA |
+| `image.tag` | `latest` | Use latest image until a versioned release publishes a semver tag |
+
 ## HelmRelease–HelmRepository Cross-Reference
 
 Each HelmRelease `sourceRef.name` must match a HelmRepository `metadata.name` in
@@ -406,6 +482,8 @@ Each HelmRelease `sourceRef.name` must match a HelmRepository `metadata.name` in
 | `memcached-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
 | `openbao` | `openbao` | `sources/openbao.yaml` |
 | `keystone-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
+| `k-orc` | `k-orc` | `sources/k-orc.yaml` |
+| `c5c3-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
 
 The kind-only `chaos-mesh` HelmRelease ships in the opt-in overlay at
 `deploy/kind/chaos-mesh/release.yaml`, with its own local
@@ -568,6 +646,50 @@ service discovery for operator consumers.
 **API group:** The API group is `memcached.c5c3.io`, matching the CRD definition
 shipped by the [memcached-operator](https://github.com/C5C3/memcached-operator) Helm chart.
 
+### Admin Credential Chain
+
+The c5c3-operator mints a single restricted admin Application Credential per cluster and
+mirrors it to OpenBao, from where the External Secrets Operator materialises it as the
+`clouds.yaml` Secret that K-ORC authenticates with (CC-0110). Two manifests wire this
+chain:
+
+**ESO ExternalSecrets** — `deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml`
+
+The file declares **two** `ExternalSecret`s (both `external-secrets.io/v1`, store
+`openbao-cluster-store`, `creationPolicy: Owner`, `refreshInterval: 1h`), each
+materialising the Kubernetes Secret `k-orc-clouds-yaml` from the same OpenBao key:
+
+| Namespace | Purpose |
+| --- | --- |
+| `openstack` (control-plane) | **C1 co-location** — the c5c3-operator creates the K-ORC `ApplicationCredential`/`Service`/`Endpoint` CRs in the control-plane namespace, and K-ORC resolves each CR's `CloudCredentialsRef` Secret in that *same* namespace, so the admin clouds.yaml must live here for K-ORC to authenticate. This is the copy the `AdminCredentialReady` gate waits on. |
+| `orc-system` | The copy the K-ORC HelmRelease's `globalCloudConfig.secretName` mounts as K-ORC's global default. |
+
+Both read the OpenBao key `openstack/keystone/admin/app-credential` (property
+`clouds.yaml`, store-relative to the KV-v2 mount). On a fresh cluster that key is
+seeded with a password-based bootstrap clouds.yaml by
+`deploy/openbao/bootstrap/write-bootstrap-secrets.sh` (CC-0110, REQ-024) so the
+ExternalSecrets can materialise before any credential is minted; once the
+c5c3-operator mints the admin Application Credential its PushSecret overwrites the
+key with the App-Cred-based clouds.yaml (CC-0110, REQ-023, REQ-024).
+
+**OpenBao policy** — `deploy/openbao/policies/push-app-credentials.hcl`
+
+This policy grants the write path for the admin credential PushSecret (CC-0110,
+REQ-024). The pre-existing mid-path grant `kv-v2/data/openstack/*/app-credential`
+matches only a single mid-segment (`openstack/<svc>/app-credential`) and therefore does
+**not** cover the two-segment `openstack/keystone/admin/app-credential`. Rather than
+widening that glob, the policy adds two narrow, single-leaf grants:
+
+| Path | Capabilities | Purpose |
+| --- | --- | --- |
+| `kv-v2/data/openstack/keystone/admin/app-credential` | `create`, `update`, `read` | Write the admin Application Credential `clouds.yaml` data leaf |
+| `kv-v2/metadata/openstack/keystone/admin/app-credential` | `create`, `update`, `read` | Allow ESO's Vault provider to write `custom_metadata` on the KV-v2 PushSecret (a data-only grant 403s on the metadata PUT and the PushSecret never reaches Ready) |
+
+Both grants stay scoped to the single literal admin-credential leaf, adding no blast
+radius beyond this one credential. For the mTLS transport gate and the
+`openbao-cluster-store` auth path these manifests ride on, see
+[OpenBao Bootstrap Procedure](./openbao-bootstrap.md) (CC-0110).
+
 ## Kustomization
 
 Deployment is split into two kustomize overlays to separate base resources from
@@ -581,15 +703,15 @@ The base kustomization uses `apiVersion: kustomize.config.k8s.io/v1beta1` and in
 namespaces, the FluxInstance CR, HelmRepository sources, and HelmRelease operators.
 These resources do not depend on any custom CRDs.
 
-**Resource count:** 16 files producing 23 Kubernetes resources.
+**Resource count:** 19 files producing 28 Kubernetes resources.
 
 | Category | Count | Resources |
 | --- | --- | --- |
-| Namespace | 8 | cert-manager, mariadb-system, external-secrets, monitoring, memcached-system, keystone-system, openstack, openbao-system |
+| Namespace | 10 | cert-manager, mariadb-system, external-secrets, monitoring, memcached-system, keystone-system, openstack, openbao-system, c5c3-system, orc-system |
 | FluxInstance | 1 | flux (drives the flux-operator) |
-| HelmRepository | 6 | cert-manager, mariadb-operator, external-secrets, openbao, c5c3-charts, prometheus-community |
-| HelmRelease | 8 | cert-manager, prometheus-operator-crds, mariadb-operator-crds, mariadb-operator, external-secrets, memcached-operator, openbao, keystone-operator |
-| **Total** | **23** | |
+| HelmRepository | 7 | cert-manager, mariadb-operator, external-secrets, openbao, c5c3-charts, k-orc, prometheus-community |
+| HelmRelease | 10 | cert-manager, prometheus-operator-crds, mariadb-operator-crds, mariadb-operator, external-secrets, memcached-operator, openbao, keystone-operator, k-orc, c5c3-operator |
+| **Total** | **28** | |
 
 The `chaos-mesh` HelmRepository, HelmRelease, and Namespace ship in the
 kind-only opt-in overlay at `deploy/kind/chaos-mesh/` and are not
@@ -631,8 +753,8 @@ change. Reviewer: please verify the scope choice. -->
 kubectl apply -k deploy/flux-system/
 ```
 
-This applies 23 resources: 8 namespaces, 1 FluxInstance, 6 HelmRepository
-sources, and 8 HelmRelease operators. FluxCD resolves the dependency graph between
+This applies 28 resources: 10 namespaces, 1 FluxInstance, 7 HelmRepository
+sources, and 10 HelmRelease operators. FluxCD resolves the dependency graph between
 HelmReleases and installs operators in the correct order. Wait for all operators to
 finish installing before proceeding to step 2.
 
@@ -740,6 +862,21 @@ The Memcached Operator chart is sourced from the shared `c5c3-charts` OCI regist
 rather than a dedicated HelmRepository. This follows the project convention of publishing
 internally-built charts to `oci://ghcr.io/c5c3/charts` (see
 `architecture/docs/09-implementation/07-ci-cd-and-packaging.md`).
+
+### c5c3-operator and K-ORC design source
+
+The upstream design for the c5c3-operator, K-ORC, and the admin-credential lifecycle
+documented above lives in the `architecture/` git submodule (CC-0110):
+
+- `architecture/docs/09-implementation/08-c5c3-operator.md` — the c5c3-operator `ControlPlane` reconciler contract
+- `architecture/docs/03-components/01-control-plane/05-korc.md` — the K-ORC component and chart constraint
+- `architecture/docs/05-deployment/01-gitops-fluxcd/01-credential-lifecycle.md` — the restricted admin Application Credential lifecycle
+
+These chapters are the authoritative design source. They are **updated upstream only**
+and reach this repository through a submodule pointer bump — they are **not** edited from
+this repository or worktree (CC-0110). Treat any divergence between these chapters and
+the manifests above as a drift to reconcile at the source, not by editing the submodule
+in place.
 
 ## Kind Overlay Demo Addons
 

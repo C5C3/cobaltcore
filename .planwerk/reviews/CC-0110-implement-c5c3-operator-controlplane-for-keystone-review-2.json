@@ -1,0 +1,44 @@
+{
+  "summary": "Review #2 (external-review improvement cycle) of CC-0110. The diff (625ff0dc..HEAD, single commit) addresses all six code comments from external reviewer gndrmnn: (1) deleted controlplane_status_test.go (no meaningful coverage — only exercised generated DeepCopy and the shared conditions helper); (2) removed the tautological TestGroupVersion static-constant assertions from controlplane_types_test.go; (3) inlined the single-use aggregateReady wrapper into conditions.AllTrue(conds, subConditionTypes...) in controlplane_controller.go; (4) removed the AST/lexical TestNoInlineConditionTypeLiterals guard from controlplane_controller_test.go; (5) removed the AST/lexical TestSubReconcilerConditionTypesCoversAllCallSites guard from instrumentation_test.go; (6) replaced hand-rolled ptrBool/ptrString helpers with k8s.io/utils/ptr.To in reconcile_korc_test.go and credential_invariant_test.go. Two .planwerk/review_patterns files and the progress/external-review JSON were updated as knowledge-base metadata. All changes were verified to build, vet, gofmt-clean, and pass tests; no dangling references remain and the production condition->metric invariants still hold despite the guard-test removals.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Affected test packages pass fresh (go test -count=1 ./operators/c5c3/internal/controller/... ./operators/c5c3/api/v1alpha1/...)", "checked": true},
+    {"item": "No dangling references to removed symbols (aggregateReady, ptrBool, ptrString all return zero matches)", "checked": true},
+    {"item": "Removed tests were genuinely low-value (struct/DeepCopy, static-constant, and AST-lexical guards) — behavioral coverage (TestAggregateReady_*, TestReconcileKORC_Restricted*, TestSubReconcilerConditionTypesCoversAllNames) is retained", "checked": true},
+    {"item": "ptr.To migration is complete — every former ptrBool/ptrString call site converted, no partial adoption", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows existing codebase pattern of using shared/library helpers (use-existing-utility-functions-instead-of-reimplementing-them)", "checked": true},
+    {"item": "aggregateReady inlining is behavior-preserving — conditions.AllTrue(conds, subConditionTypes...) is identical to the removed wrapper body", "checked": true},
+    {"item": "gofmt clean on all changed Go files; go vet clean; build succeeds", "checked": true},
+    {"item": "No duplicate imports introduced (conditions x1 in controlplane_controller_test.go; ptr added once per file)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Admin-password/App-Cred secrecy invariant test (credential_invariant_test.go) unchanged in behavior — only ptrBool->ptr.To swap; the workload-walk assertion and restricted:true check are intact", "checked": true},
+    {"item": "No secrets, credentials, or sensitive data introduced by the diff", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible — removed a single-use wrapper and hand-rolled helpers rather than adding abstraction", "checked": true},
+    {"item": "Production condition->metric drift invariant still holds: all 5 instrumentSubReconciler call-site names (Infrastructure/Keystone/KORC/AdminCredential/Catalog) are exactly the keys of subReconcilerConditionTypes and map to the 5 subConditionTypes constants; every SetCondition call uses a conditionType* constant (no inline literals)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code — reimplemented helpers (ptrBool/ptrString/aggregateReady) eliminated in favor of canonical utilities", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "No error-handling paths changed by the diff (test-only and a behavior-preserving inline refactor)", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "No new external-input handling; diff is test removals + helper inlining", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Minor (metadata only): the CC-0110 example appended to .planwerk/review_patterns/replace-fixed-sleeps-with-condition-based-waits-in-tests.md describes removing tautological/lexical tests ('we are not testing static constants', 'lexical tests', 'adds no meaningful tests'), which is unrelated to fixed-sleep/condition-based-wait synchronization. This lesson would be more accurately filed under the existing reject-tautological-constant-tests.md or remove-tests-that-only-verify-language-semantics.md patterns. No code impact; consider relocating the example for knowledge-base accuracy."
+  ],
+  "next_steps": [
+    "No blocking or major action items. All six external-review requests are correctly addressed; the branch is ready to proceed.",
+    "Optionally relocate the mis-filed CC-0110 review-pattern example noted in suggested_improvements."
+  ],
+  "detected_patterns": []
+}

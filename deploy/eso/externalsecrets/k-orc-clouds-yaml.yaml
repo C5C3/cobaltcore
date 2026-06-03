@@ -1,0 +1,68 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# ExternalSecret(s) for the K-ORC admin Application Credential clouds.yaml.
+#
+# Both ExternalSecrets pull the admin clouds.yaml from the OpenBao path
+# "openstack/keystone/admin/app-credential" (store-relative to the kv-v2 mount)
+# and materialise it as the Kubernetes Secret "k-orc-clouds-yaml". On a fresh
+# cluster that OpenBao path is SEEDED with a password-based bootstrap clouds.yaml
+# by deploy/openbao/bootstrap/write-bootstrap-secrets.sh (CC-0110, REQ-024); once
+# the c5c3-operator mints the admin Application Credential its PushSecret
+# overwrites the path with the App-Cred-based clouds.yaml.
+#
+# CC-0110, C1 (co-location): the c5c3-operator creates the K-ORC
+# ApplicationCredential/Service/Endpoint CRs in the ControlPlane's OWN namespace
+# (the control-plane namespace, "openstack"), because cross-namespace owner
+# references are disallowed. K-ORC resolves each CR's CloudCredentialsRef Secret
+# in that SAME namespace (api/v1alpha1/credentials_ref.go GetCloudCredentialsRef
+# returns the resource's own Namespace). The admin clouds.yaml Secret MUST
+# therefore exist in "openstack" for K-ORC to authenticate — the first document
+# below. The second document keeps a copy in "orc-system" for the K-ORC
+# HelmRelease's globalCloudConfig default mount (deploy/flux-system/releases/
+# k-orc.yaml). Both read the same OpenBao path, so both stay in lockstep.
+#
+# Feature: CC-0110, REQ-023, REQ-024
+---
+# Co-located with the K-ORC ApplicationCredential/Service/Endpoint CRs the
+# c5c3-operator projects (control-plane namespace). This is the Secret K-ORC
+# resolves per-resource via CloudCredentialsRef.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: k-orc-clouds-yaml
+  namespace: openstack
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: openbao-cluster-store
+    kind: ClusterSecretStore
+  target:
+    name: k-orc-clouds-yaml
+    creationPolicy: Owner
+  data:
+    - secretKey: clouds.yaml
+      remoteRef:
+        key: openstack/keystone/admin/app-credential
+        property: clouds.yaml
+---
+# Copy in orc-system for the K-ORC HelmRelease globalCloudConfig default mount.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: k-orc-clouds-yaml
+  namespace: orc-system
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: openbao-cluster-store
+    kind: ClusterSecretStore
+  target:
+    name: k-orc-clouds-yaml
+    creationPolicy: Owner
+  data:
+    - secretKey: clouds.yaml
+      remoteRef:
+        key: openstack/keystone/admin/app-credential
+        property: clouds.yaml

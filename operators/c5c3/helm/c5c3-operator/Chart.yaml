@@ -1,0 +1,12 @@
+apiVersion: v2
+name: c5c3-operator
+description: A Helm chart for deploying the c5c3 ControlPlane operator
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+# CC-0110: Helm validates values against values.schema.json automatically.
+annotations:
+  artifacthub.io/prerelease: "true"
+  artifacthub.io/changes: |
+    - kind: added
+      description: Initial c5c3 ControlPlane operator chart (CC-0110)

@@ -1,0 +1,27 @@
+{{- if .Values.webhook.enabled -}}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "c5c3-operator.fullname" . }}-selfsigned
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "c5c3-operator.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "c5c3-operator.fullname" . }}-webhook
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "c5c3-operator.labels" . | nindent 4 }}
+spec:
+  dnsNames:
+    - {{ include "c5c3-operator.fullname" . }}.{{ .Release.Namespace }}.svc
+    - {{ include "c5c3-operator.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: {{ include "c5c3-operator.fullname" . }}-selfsigned
+  secretName: {{ include "c5c3-operator.fullname" . }}-webhook-cert
+{{- end }}

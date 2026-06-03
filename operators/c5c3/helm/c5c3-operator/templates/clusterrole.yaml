@@ -1,0 +1,11 @@
+{{- if not .Values.rbac.namespaceScoped }}
+# NOTE: Rules MUST be kept in sync with role.yaml (CC-0043).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "c5c3-operator.fullname" . }}
+  labels:
+    {{- include "c5c3-operator.labels" . | nindent 4 }}
+rules:
+  {{- include "c5c3-operator.rbacRules" . | nindent 2 }}
+{{- end }}

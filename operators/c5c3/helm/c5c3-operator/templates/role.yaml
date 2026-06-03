@@ -1,0 +1,15 @@
+{{- if and .Values.rbac.namespaceScoped .Values.webhook.enabled }}
+{{- fail "rbac.namespaceScoped=true requires webhook.enabled=false — namespace-scoped operators cannot manage cluster-scoped webhook configurations" }}
+{{- end }}
+{{- if .Values.rbac.namespaceScoped }}
+# CC-0043: Namespace-scoped Role using shared RBAC rules partial.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "c5c3-operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "c5c3-operator.labels" . | nindent 4 }}
+rules:
+  {{- include "c5c3-operator.rbacRules" . | nindent 2 }}
+{{- end }}

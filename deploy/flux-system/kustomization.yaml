@@ -35,6 +35,7 @@ resources:
   - sources/external-secrets.yaml
   - sources/openbao.yaml
   - sources/c5c3-charts.yaml
+  - sources/k-orc.yaml
   - sources/prometheus-community.yaml
 
   # HelmRelease operators (deployed via FluxCD).
@@ -48,3 +49,5 @@ resources:
   - releases/memcached-operator.yaml
   - releases/openbao.yaml
   - releases/keystone-operator.yaml
+  - releases/k-orc.yaml
+  - releases/c5c3-operator.yaml

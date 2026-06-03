@@ -1,0 +1,23 @@
+{{- /*
+ServiceMonitor for Prometheus scraping of the c5c3-operator metrics
+endpoint (CC-0089, REQ-006). Rendered only when monitoring.serviceMonitor.enabled
+is true; relies on prometheus-operator CRDs (monitoring.coreos.com/v1) being
+installed in the cluster.
+*/ -}}
+{{- if .Values.monitoring.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "c5c3-operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "c5c3-operator.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "c5c3-operator.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.monitoring.serviceMonitor.interval | quote }}
+{{- end }}

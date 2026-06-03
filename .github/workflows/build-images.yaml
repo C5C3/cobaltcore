@@ -12,6 +12,7 @@ name: Build Images
     paths:
       - images/**
       - operators/keystone/Dockerfile
+      - operators/c5c3/Dockerfile
       - releases/**
       - patches/**
       - scripts/**
@@ -24,6 +25,7 @@ name: Build Images
     paths:
       - images/**
       - operators/keystone/Dockerfile
+      - operators/c5c3/Dockerfile
       - releases/**
       - patches/**
       - scripts/**
@@ -54,6 +56,7 @@ jobs:
           - images/keystone/Dockerfile
           - images/tempest/Dockerfile
           - operators/keystone/Dockerfile
+          - operators/c5c3/Dockerfile
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 

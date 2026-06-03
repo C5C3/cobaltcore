@@ -1,0 +1,81 @@
+{
+  "feature_id": "CC-0110",
+  "title": "GitHub Review by gndrmnn",
+  "summary": "The reviewer wants several low-value tests removed or trimmed: delete `controlplane_status_test.go` entirely, drop the static-constant assertions (lines 18-26) from `controlplane_types_test.go`, and remove the \"lexical\" test blocks from `controlplane_controller_test.go` (110-195) and `instrumentation_test.go` (228-297). They also want the `aggregateReady` helper inlined with `conditions.AllTrue`, and the hand-rolled pointer helper in `reconcile_korc_test.go` replaced with `ptr.To`.",
+  "verdict": "ADDRESSED",
+  "tests_checklist": [],
+  "code_quality_checklist": [],
+  "security_checklist": [],
+  "architecture_checklist": [],
+  "dry_yagni_checklist": [],
+  "fail_fast_checklist": [],
+  "defensive_checklist": [],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [],
+  "next_steps": [],
+  "reviewer": "gndrmnn",
+  "date": "2026-06-03T12:28:58Z",
+  "commit_reference": "",
+  "review_type": "external",
+  "sequence_number": 1,
+  "external_feedback": "",
+  "code_comments": [
+    {
+      "body": "`operators/c5c3/api/v1alpha1/controlplane_status_test.go` adds no meaningful tests. Remove the file entirely.",
+      "path": "operators/c5c3/api/v1alpha1/controlplane_status_test.go",
+      "line": 1,
+      "author": "gndrmnn",
+      "created_at": "2026-06-03T09:49:51Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "We are not testing static constants for their static constant value. Remove Lines 18-26 from `operators/c5c3/api/v1alpha1/controlplane_types_test.go`",
+      "path": "operators/c5c3/api/v1alpha1/controlplane_types_test.go",
+      "line": 26,
+      "author": "gndrmnn",
+      "created_at": "2026-06-03T10:05:30Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "`aggregateReady` can be removed by in-lining `conditions.AllTrue`",
+      "path": "operators/c5c3/internal/controller/controlplane_controller.go",
+      "line": 179,
+      "author": "gndrmnn",
+      "created_at": "2026-06-03T10:31:09Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "Remove lexical test Lines 110-195 from `operators/c5c3/internal/controller/controlplane_controller_test.go`",
+      "path": "operators/c5c3/internal/controller/controlplane_controller_test.go",
+      "line": 195,
+      "author": "gndrmnn",
+      "created_at": "2026-06-03T10:34:06Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "Remove lexical tests Line 228-297 from `operators/c5c3/internal/controller/instrumentation_test.go`",
+      "path": "operators/c5c3/internal/controller/instrumentation_test.go",
+      "line": 297,
+      "author": "gndrmnn",
+      "created_at": "2026-06-03T10:39:03Z",
+      "id": null,
+      "resolution": ""
+    },
+    {
+      "body": "Why reimplement this? Replace with `ptr.To`",
+      "path": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "line": 638,
+      "author": "gndrmnn",
+      "created_at": "2026-06-03T11:12:10Z",
+      "id": null,
+      "resolution": ""
+    }
+  ],
+  "github_review_id": 4417346322
+}

@@ -1,0 +1,104 @@
+# CC-0110: Webhook configuration unit tests.
+# The ControlPlane CR lives in group c5c3.io (DECISION CC-0110 plan #1); the
+# validating webhook additionally intercepts DELETE so deletion invariants can
+# be enforced at admission time.
+suite: Webhook Configuration
+templates:
+  - templates/webhook-configuration.yaml
+tests:
+  - it: should render MutatingWebhookConfiguration when webhook is enabled
+    documentIndex: 0
+    asserts:
+      - isKind:
+          of: MutatingWebhookConfiguration
+      - matchRegex:
+          path: metadata.name
+          pattern: -mutating$
+      - equal:
+          path: webhooks[0].name
+          value: mcontrolplane.kb.io
+      - equal:
+          path: webhooks[0].clientConfig.service.path
+          value: /mutate-c5c3-io-v1alpha1-controlplane
+      - equal:
+          path: webhooks[0].admissionReviewVersions
+          value:
+            - v1
+      - equal:
+          path: webhooks[0].failurePolicy
+          value: Fail
+      - equal:
+          path: webhooks[0].sideEffects
+          value: None
+      - equal:
+          path: webhooks[0].rules[0].apiGroups
+          value:
+            - c5c3.io
+      - equal:
+          path: webhooks[0].rules[0].resources
+          value:
+            - controlplanes
+
+  - it: should render ValidatingWebhookConfiguration when webhook is enabled
+    documentIndex: 1
+    asserts:
+      - isKind:
+          of: ValidatingWebhookConfiguration
+      - matchRegex:
+          path: metadata.name
+          pattern: -validating$
+      - equal:
+          path: webhooks[0].name
+          value: vcontrolplane.kb.io
+      - equal:
+          path: webhooks[0].clientConfig.service.path
+          value: /validate-c5c3-io-v1alpha1-controlplane
+      - equal:
+          path: webhooks[0].admissionReviewVersions
+          value:
+            - v1
+      - equal:
+          path: webhooks[0].failurePolicy
+          value: Fail
+      - equal:
+          path: webhooks[0].sideEffects
+          value: None
+      - equal:
+          path: webhooks[0].rules[0].apiGroups
+          value:
+            - c5c3.io
+      - equal:
+          path: webhooks[0].rules[0].resources
+          value:
+            - controlplanes
+      - contains:
+          path: webhooks[0].rules[0].operations
+          content: CREATE
+      - contains:
+          path: webhooks[0].rules[0].operations
+          content: UPDATE
+      - contains:
+          path: webhooks[0].rules[0].operations
+          content: DELETE
+
+  - it: should set cert-manager CA injection annotation on the MutatingWebhookConfiguration
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.annotations["cert-manager.io/inject-ca-from"]
+          value: NAMESPACE/RELEASE-NAME-c5c3-operator-webhook
+
+  - it: should set cert-manager CA injection annotation on the ValidatingWebhookConfiguration
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: metadata.annotations["cert-manager.io/inject-ca-from"]
+          value: NAMESPACE/RELEASE-NAME-c5c3-operator-webhook
+
+  - it: should not render any documents when webhook is disabled
+    set:
+      webhook:
+        enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

@@ -11,9 +11,10 @@
 //
 //	cert-manager/        — cert-manager.io CRDs (Certificate, ClusterIssuer)
 //	external-secrets/    — external-secrets.io CRDs (ExternalSecret, PushSecret, ClusterSecretStore)
+//	k-orc/               — openstack.k-orc.cloud CRDs (ApplicationCredential, Service, Endpoint)
 //	mariadb-operator/    — k8s.mariadb.com CRDs (MariaDB, Database, Grant, User)
 //	memcached-operator/  — memcached.c5c3.io CRDs (Memcached)
 //	rabbitmq-operator/   — rabbitmq.com CRDs (RabbitmqCluster)
 //
-// Feature: CC-0002
+// Feature: CC-0002, CC-0110
 package fake_crds

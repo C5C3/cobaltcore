@@ -1,0 +1,374 @@
+# CC-0043: Role RBAC tests for namespace-scoped mode.
+# Individual rule verification tests mirror clusterrole_test.yaml structure
+# to catch regressions in apiGroups, resources, or verbs (CC-0043).
+suite: Role
+templates:
+  - templates/role.yaml
+tests:
+  - it: should render Role when rbac.namespaceScoped is true
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: kind
+          value: Role
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-c5c3-operator
+      - isSubset:
+          path: metadata.labels
+          content:
+            app.kubernetes.io/name: c5c3-operator
+            app.kubernetes.io/instance: RELEASE-NAME
+
+  - it: should fail when rbac.namespaceScoped is true and webhook.enabled is true
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "webhook/enabled"
+
+  - it: should not render Role when rbac.namespaceScoped is false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: should have 15 rules matching ClusterRole
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - lengthEqual:
+          path: rules
+          count: 15
+
+  - it: should grant full CRUD on controlplanes
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - c5c3.io
+            resources:
+              - controlplanes
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant get/update/patch on controlplanes/status
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - c5c3.io
+            resources:
+              - controlplanes/status
+            verbs:
+              - get
+              - update
+              - patch
+
+  - it: should grant update on controlplanes/finalizers
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - c5c3.io
+            resources:
+              - controlplanes/finalizers
+            verbs:
+              - update
+
+  - it: should grant full CRUD on credentialrotations
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - c5c3.io
+            resources:
+              - credentialrotations
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant get/update/patch on credentialrotations/status
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - c5c3.io
+            resources:
+              - credentialrotations/status
+            verbs:
+              - get
+              - update
+              - patch
+
+  - it: should grant read-only on secretaggregates
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - c5c3.io
+            resources:
+              - secretaggregates
+            verbs:
+              - get
+              - list
+              - watch
+
+  - it: should grant full CRUD on mariadbs
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - k8s.mariadb.com
+            resources:
+              - mariadbs
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on memcacheds
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - memcached.c5c3.io
+            resources:
+              - memcacheds
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on keystones
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - keystone.openstack.c5c3.io
+            resources:
+              - keystones
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on k-orc applicationcredentials, services, endpoints
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - openstack.k-orc.cloud
+            resources:
+              - applicationcredentials
+              - services
+              - endpoints
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on externalsecrets and pushsecrets
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - external-secrets.io
+            resources:
+              - externalsecrets
+              - pushsecrets
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant read-only on clustersecretstores
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - external-secrets.io
+            resources:
+              - clustersecretstores
+            verbs:
+              - get
+              - list
+              - watch
+
+  - it: should grant full CRUD on core secrets
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - secrets
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should restrict events to create and patch only
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - events
+            verbs:
+              - create
+              - patch
+
+  - it: should grant full CRUD on leases for leader election
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - coordination.k8s.io
+            resources:
+              - leases
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete

@@ -979,6 +979,25 @@ main() {
     log "Prometheus kind overlay applied (WITH_PROMETHEUS=true; CC-0100, REQ-005)."
   fi
 
+  # CC-0110 fast-follow: the c5c3-operator chart is not yet published to GHCR
+  # (oci://ghcr.io/c5c3/charts/c5c3-operator -> 403) and the k-orc HelmRepository
+  # index 404s, so both releases can never reconcile in the kind bring-up. They
+  # are not awaited (see helm_releases below), but left active they retry on
+  # interval and add reconcile churn that competes with external-secrets and
+  # kube-prometheus-stack for the helm/source controllers under the heavier
+  # WITH_PROMETHEUS deploy. Suspend them (best-effort) so the controllers spend
+  # their budget on the releases deploy-infra actually waits on. Drop this once
+  # the c5c3-operator chart + k-orc source are reachable in CI.
+  log "Suspending unreconcilable CC-0110 releases (c5c3-operator, k-orc) in the kind bring-up."
+  kubectl patch helmrelease c5c3-operator -n c5c3-system \
+    --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
+  kubectl patch helmrelease k-orc -n orc-system \
+    --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
+  kubectl patch helmrepository c5c3-charts -n flux-system \
+    --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
+  kubectl patch helmrepository k-orc -n flux-system \
+    --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
+
   # Force-reconcile HelmRepository sources so chart indexes are available
   # before HelmReleases attempt to resolve charts. Without this, the
   # helm-controller may see unindexed sources and wait until the next
@@ -1030,10 +1049,18 @@ main() {
   fi
   # CC-0100, REQ-005: kube-prometheus-stack is appended last so the relative
   # ordering of the seven base releases (and chaos-mesh) is preserved exactly.
+  local release_wait_timeout="${HELMRELEASE_TIMEOUT}"
   if [[ "${WITH_PROMETHEUS}" == "true" ]]; then
     helm_releases+=(kube-prometheus-stack)
+    # The monitoring stack is heavy (prometheus + grafana + alertmanager +
+    # operator); on a loaded 4-vCPU runner it was still Progressing at the 600s
+    # mark. Give the wait more headroom, but never shorten a caller-pinned
+    # HELMRELEASE_TIMEOUT that is already larger. CC-0110.
+    if [[ "${release_wait_timeout}" -lt 1200 ]]; then
+      release_wait_timeout=1200
+    fi
   fi
-  wait_for_helmreleases "${HELMRELEASE_TIMEOUT}" "${helm_releases[@]}"
+  wait_for_helmreleases "${release_wait_timeout}" "${helm_releases[@]}"
 
   # CC-0100, REQ-005: with kube-prometheus-stack Ready, flip the operator
   # chart's monitoring.serviceMonitor.enabled to true so Prometheus picks up

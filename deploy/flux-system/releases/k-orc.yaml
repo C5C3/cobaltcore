@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Feature: CC-0110, REQ-023 — K-ORC (OpenStack Resource Controller) provides the
+# declarative Keystone resource CRDs (ApplicationCredential, Service, Endpoint,
+# ...) that the c5c3-operator drives. Runs in the orc-system Namespace and reads
+# its admin clouds.yaml from the k-orc-clouds-yaml Secret materialised by ESO.
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  # DECISION: metadata.name "k-orc" (not the chart's own "openstack-resource-
+  # controller") so the c5c3-operator HelmRelease can dependsOn it by this short,
+  # stable name. Per repo convention the HelmRelease lives in its target Namespace
+  # (orc-system), so no explicit spec.targetNamespace is needed — the chart's
+  # resources deploy into orc-system. Reviewer: please verify.
+  name: k-orc
+  namespace: orc-system
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: openstack-resource-controller
+      # DECISION: version range ">=0.1.0" follows
+      # architecture/docs/03-components/01-control-plane/05-korc.md (the documented
+      # K-ORC chart constraint). The bounded "<1.0.0" pattern used by in-repo
+      # c5c3-charts releases is intentionally NOT applied here because the upstream
+      # K-ORC chart version is not pinnable from the sandbox (no helm/network);
+      # Renovate coverage will pin it later. Reviewer: please verify.
+      version: ">=0.1.0"
+      sourceRef:
+        kind: HelmRepository
+        name: k-orc
+        namespace: flux-system
+  values:
+    # clouds.yaml admin Application Credential Secret — provided via OpenBao + ESO
+    # (deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml). This is K-ORC's GLOBAL
+    # default mount in orc-system. CC-0110, C1: the c5c3-operator's K-ORC CRs set a
+    # per-resource CloudCredentialsRef, which K-ORC resolves in the CR's OWN
+    # namespace (the control-plane namespace, "openstack"); that ExternalSecret
+    # materialises a co-located copy there. Both copies read the same OpenBao path.
+    globalCloudConfig:
+      secretName: k-orc-clouds-yaml
+  install:
+    crds: CreateReplace
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3

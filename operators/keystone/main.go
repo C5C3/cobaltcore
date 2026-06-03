@@ -57,7 +57,7 @@ func main() {
 			if err := (&controller.KeystoneReconciler{
 				Client:   mgr.GetClient(),
 				Scheme:   mgr.GetScheme(),
-				Recorder: mgr.GetEventRecorderFor("keystone-controller"),
+				Recorder: mgr.GetEventRecorderFor("keystone-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
 			}).SetupWithManager(mgr); err != nil {
 				return err
 			}

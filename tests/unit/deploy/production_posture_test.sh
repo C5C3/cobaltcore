@@ -89,11 +89,11 @@ test_production_overlay_unchanged() {
   # remain byte-identical.
   local groups_label=(
     "deploy/flux-system/fluxinstance.yaml"
-    "deploy/flux-system/releases (excluding chaos-mesh.yaml relocated by CC-0097 and openbao.yaml edited in place by CC-0107)"
+    "deploy/flux-system/releases (excluding chaos-mesh.yaml relocated by CC-0097, openbao.yaml edited in place by CC-0107, external-secrets.yaml edited in place by CC-0110, and the c5c3-operator.yaml/k-orc.yaml releases added by CC-0110)"
   )
   local groups_specs=(
     "deploy/flux-system/fluxinstance.yaml"
-    "deploy/flux-system/releases :(exclude)deploy/flux-system/releases/chaos-mesh.yaml :(exclude)deploy/flux-system/releases/openbao.yaml"
+    "deploy/flux-system/releases :(exclude)deploy/flux-system/releases/chaos-mesh.yaml :(exclude)deploy/flux-system/releases/openbao.yaml :(exclude)deploy/flux-system/releases/external-secrets.yaml :(exclude)deploy/flux-system/releases/c5c3-operator.yaml :(exclude)deploy/flux-system/releases/k-orc.yaml"
   )
 
   local diff_output=""

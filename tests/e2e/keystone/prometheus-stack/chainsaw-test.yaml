@@ -109,9 +109,9 @@ spec:
   #             slowness).
   #   Step 2  — kubectl get ServiceMonitor:          <1s budget,
   #             timeout: 60s (margin for kube-apiserver slowness).
-  #   Step 3  — Prometheus target poll loop:         18 × (5s curl + 10s sleep)
-  #             = 270s + ~30s pod-startup cold = ~300s budget,
-  #             timeout: 6m  (margin above the 300s worst case so the
+  #   Step 3  — Prometheus target poll loop:         24 × (5s curl + 10s sleep)
+  #             = 360s + ~30s pod-startup cold = ~390s budget,
+  #             timeout: 7m  (margin above the 390s worst case so the
   #             FAIL line and catch-block dump always reach the log
   #             instead of being hidden behind a chainsaw-killed-script
   #             timeout — see review_pattern
@@ -119,14 +119,14 @@ spec:
   #             The budget must cover prometheus-operator's ServiceMonitor
   #             reconciliation (~10–30s after the operator helm install),
   #             a Prometheus config reload, and the first 30s scrape
-  #             window — empirically ~75–90s after the test starts, which
-  #             the previous 8-attempt budget caught right at its edge.
+  #             window — empirically ~200s with the full WITH_PROMETHEUS
+  #             stack, which the previous 18-attempt budget caught at its edge.
   #   Step 4  — Grafana search poll loop:            6 × (5s curl + 5s sleep)
   #             = 60s + ~30s pod-startup cold = ~90s budget,
   #             timeout: 3m  (same margin reasoning as Step 3).
   #   Step 4b — Dashboard sha256 byte-equality check: <2s budget,
   #             timeout: 60s (margin for kube-apiserver slowness).
-  # Aggregate worst case: 5m + 1m + 1m + 6m + 3m + 1m = 17m. In the
+  # Aggregate worst case: 5m + 1m + 1m + 7m + 3m + 1m = 18m. In the
   # realistic success path the HelmRelease wait returns in <1s because
   # deploy-infra's Phase 3 `wait_for_helmreleases` already blocked on
   # Ready=True before this test runs. `timeouts.exec` and `timeouts.assert`
@@ -338,19 +338,20 @@ spec:
   - name: prometheus-target-up
     try:
     - script:
-        # Worst-case loop: 18 × (5s curl-timeout + 10s sleep) = 270s,
-        # plus ~30s pod-startup on a cold kind node = ~300s. Set the
-        # script-level timeout to 6m so the FAIL line and catch-block
+        # Worst-case loop: 24 × (5s curl-timeout + 10s sleep) = 360s,
+        # plus ~30s pod-startup on a cold kind node = ~390s. Set the
+        # script-level timeout to 7m so the FAIL line and catch-block
         # dump always reach the log instead of being hidden behind a
         # chainsaw-killed-script timeout (per review_pattern
         # test-script-timeout-must-exceed-worst-case-loop-duration).
-        # The 8-attempt budget previously used here ended ~10s before
-        # prometheus-operator finished reconciling the freshly-installed
-        # ServiceMonitor (helm install runs immediately before chainsaw,
-        # so the Prometheus config reload + first 30s scrape window are
-        # both inside the test's wall-clock — empirically health=up only
-        # appears ~75–90s after start).
-        timeout: 6m
+        # The earlier 18-attempt (~270s worst / ~200s typical) budget
+        # caught this race right at its edge on a loaded runner: with the
+        # full WITH_PROMETHEUS stack up, the keystone-operator target only
+        # reached health=up ~10s after the loop gave up (helm install runs
+        # immediately before chainsaw, so prometheus-operator's reconcile +
+        # config reload + first 30s scrape window all fall inside the test's
+        # wall-clock). 24 attempts add ~60s of headroom over that edge.
+        timeout: 7m
         shell: bash
         content: |
           set -euo pipefail
@@ -379,23 +380,23 @@ spec:
           kubectl delete pod prom-targets-probe -n monitoring \
             --ignore-not-found=true --grace-period=0 --force >/dev/null 2>&1 || true
 
-          # Retry budget: 18 × (5s curl-timeout + 10s sleep) = 270s
-          # (~300s including cold-cache pod startup). The HelmRelease for
+          # Retry budget: 24 × (5s curl-timeout + 10s sleep) = 360s
+          # (~390s including cold-cache pod startup). The HelmRelease for
           # kube-prometheus-stack is already Ready when chainsaw starts,
           # but the keystone-operator ServiceMonitor was just created by
           # `helm install` in the preceding CI step — so the loop must
           # cover prometheus-operator's reconcile (~10–30s), Prometheus's
           # config reload (~1s), and the first 30s scrape window. The
-          # previous 8-attempt (~120s) budget caught this race right at
-          # its edge: in the failing run the target only reached
-          # health=up ~10s after the loop gave up.
+          # previous 18-attempt (~270s) budget caught this race right at
+          # its edge on a loaded WITH_PROMETHEUS runner: the target only
+          # reached health=up ~10s after the loop gave up.
           kubectl run prom-targets-probe -n monitoring \
             --image=docker.io/nicolaka/netshoot:v0.13@sha256:a20c2531bf35436ed3766cd6cfe89d352b050ccc4d7005ce6400adf97503da1b \
             --restart=Never \
             --rm -i \
             --command -- sh -c '
               set -eu
-              for i in $(seq 1 18); do
+              for i in $(seq 1 24); do
                 resp=$(curl -fsS -m 5 \
                   "http://kube-prometheus-stack-prometheus.monitoring.svc:9090/api/v1/targets?state=active" \
                   2>/dev/null || echo "")
@@ -406,13 +407,13 @@ spec:
                     echo "OK: keystone-operator target is up after ${i} attempt(s)"
                     exit 0
                   fi
-                  echo "attempt ${i}/18: keystone-operator target health=${health}"
+                  echo "attempt ${i}/24: keystone-operator target health=${health}"
                 else
-                  echo "attempt ${i}/18: Prometheus /api/v1/targets unreachable"
+                  echo "attempt ${i}/24: Prometheus /api/v1/targets unreachable"
                 fi
                 sleep 10
               done
-              echo "FAIL: keystone-operator target never reached health=up within 18 attempts (~270s)"
+              echo "FAIL: keystone-operator target never reached health=up within 24 attempts (~360s)"
               exit 1
             '
           echo "OK: Prometheus is scraping keystone-operator (CC-0100, REQ-003)"

@@ -55,7 +55,7 @@ func validateRotationOutput(keys map[string][]byte, minKeys, maxKeys int) error 
 		}
 		decoded, err := base64.URLEncoding.DecodeString(string(value))
 		if err != nil {
-			return fmt.Errorf("%w: key %q base64 decode: %v", ErrInvalidKeyFormat, idx, err)
+			return fmt.Errorf("%w: key %q base64 decode: %w", ErrInvalidKeyFormat, idx, err)
 		}
 		if len(decoded) != 32 {
 			return fmt.Errorf("%w: key %q decoded length=%d, want 32", ErrInvalidKeyFormat, idx, len(decoded))

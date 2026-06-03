@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "c5c3-operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "c5c3-operator.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "c5c3-operator.selectorLabels" . | nindent 4 }}
+  ports:
+    {{- if .Values.webhook.enabled }}
+    - name: webhook
+      port: 443
+      targetPort: 9443
+      protocol: TCP
+    {{- end }}
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: {{ .Values.metrics.port }}
+      protocol: TCP

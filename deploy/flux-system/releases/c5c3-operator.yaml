@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Feature: CC-0110, REQ-023 — the c5c3-operator controller runs in its own
+# dedicated c5c3-system Namespace and orchestrates the Keystone ControlPlane.
+# It depends on the infrastructure + Keystone operators it projects CRs into and
+# on K-ORC, whose Application Credential / Service / Endpoint CRDs it drives.
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: c5c3-operator
+  namespace: c5c3-system
+spec:
+  interval: 30m
+  dependsOn:
+    - name: keystone-operator
+      namespace: keystone-system
+    - name: external-secrets
+      namespace: external-secrets
+    - name: mariadb-operator
+      namespace: mariadb-system
+    - name: memcached-operator
+      namespace: memcached-system
+    - name: k-orc
+      namespace: orc-system
+  chart:
+    spec:
+      chart: c5c3-operator
+      version: ">=0.1.0 <1.0.0"
+      sourceRef:
+        kind: HelmRepository
+        name: c5c3-charts
+        namespace: flux-system
+  values:
+    replicas: 2
+    leaderElection:
+      enabled: true
+    image:
+      # Use latest until a versioned release (v* git tag) publishes a semver image tag.
+      # The chart default (appVersion) only works once 0.1.0 has been released.
+      tag: latest
+  install:
+    crds: CreateReplace
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3

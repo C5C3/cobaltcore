@@ -1,0 +1,165 @@
+// SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package controller
+
+import (
+	"context"
+	"fmt"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	"github.com/c5c3/forge/internal/common/conditions"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
+	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
+	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+)
+
+// DECISION (CC-0110, task 2.6): the projected Keystone CR is named
+// "{controlplane.Name}-keystone" — a deterministic, collision-free name derived
+// from the owning ControlPlane so a single namespace can host the Keystone CRs
+// of multiple ControlPlanes without clashing, and so re-reconciles always target
+// the same child. It lives in the ControlPlane's own namespace (childNamespace),
+// for the same cross-namespace-owner-reference reason documented on
+// childNamespace in reconcile_infrastructure.go.
+const keystoneNameSuffix = "-keystone"
+
+// DECISION (CC-0110, task 2.6): the default Keystone image repository is
+// "ghcr.io/c5c3/keystone" — the canonical repo the keystone operator's own
+// fixtures, tempest CRs, and e2e manifests all use (e.g.
+// tests/tempest/keystone-2025-2/00-keystone-cr.yaml). The tag is derived from
+// spec.openStackRelease unless spec.services.keystone.image overrides the whole
+// image reference.
+const defaultKeystoneRepository = "ghcr.io/c5c3/keystone"
+
+// keystoneName returns the deterministic name of the Keystone CR projected from
+// the given ControlPlane (see keystoneNameSuffix).
+func keystoneName(cp *c5c3v1alpha1.ControlPlane) string {
+	return cp.Name + keystoneNameSuffix
+}
+
+// reconcileKeystone projects spec.services.keystone into an owned Keystone CR
+// and drives the KeystoneReady condition (CC-0110, REQ-007, REQ-009).
+//
+// The sub-reconciler is GATED on InfrastructureReady: until the infrastructure
+// sub-reconciler reports the managed MariaDB/Memcached as Ready, no Keystone CR
+// is created (a half-provisioned database would only make Keystone crash-loop).
+// Once gated through, it create-or-updates the Keystone CR, pointing it at the
+// same backing services the ControlPlane provisioned, and mirrors the child's
+// Ready condition back into KeystoneReady.
+func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	// Gate on InfrastructureReady.
+	if !conditions.AllTrue(cp.Status.Conditions, conditionTypeInfrastructureReady) {
+		logger.Info("Infrastructure not ready, deferring Keystone projection")
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeKeystoneReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "WaitingForInfrastructure",
+			Message:            "InfrastructureReady is not True; Keystone projection deferred",
+		})
+		return ctrl.Result{RequeueAfter: keystoneInfraGateRequeueAfter}, nil
+	}
+
+	// Resolve the Keystone image. spec.services.keystone.image overrides the
+	// release-derived default when set.
+	image := commonv1.ImageSpec{
+		Repository: defaultKeystoneRepository,
+		Tag:        cp.Spec.OpenStackRelease,
+	}
+	if override := cp.Spec.Services.Keystone.Image; override != nil {
+		image = *override
+	}
+
+	keystone := &keystonev1alpha1.Keystone{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      keystoneName(cp),
+			Namespace: childNamespace(cp),
+		},
+	}
+
+	// Compute the Fernet/CredentialKeys rotation schedule before the mutate
+	// closure so a bad rotation interval surfaces a clean condition rather than
+	// a partial apply.
+	var rotationSchedule string
+	if interval := cp.Spec.Services.Keystone.RotationInterval; interval != nil {
+		cron, err := intervalToCron(interval.Duration)
+		if err != nil {
+			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+				Type:               conditionTypeKeystoneReady,
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: cp.Generation,
+				Reason:             "InvalidRotationInterval",
+				Message:            fmt.Sprintf("invalid keystone rotation interval: %v", err),
+			})
+			return ctrl.Result{}, nil
+		}
+		rotationSchedule = cron
+	}
+
+	policy := projectPolicyOverrides(cp.Spec.Global, cp.Spec.Services.Keystone.PolicyOverrides)
+
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, keystone, func() error {
+		keystone.Spec.Image = image
+
+		// Point Keystone at the SAME backing services the ControlPlane
+		// provisioned by reusing the infrastructure specs verbatim.
+		keystone.Spec.Database = cp.Spec.Infrastructure.Database
+		keystone.Spec.Cache = cp.Spec.Infrastructure.Cache
+
+		// Bootstrap admin password is delivered via the K-ORC admin credential
+		// Secret so Keystone and K-ORC agree on the admin password source.
+		keystone.Spec.Bootstrap.AdminPasswordSecretRef = cp.Spec.KORC.AdminCredential.PasswordSecretRef
+		keystone.Spec.Bootstrap.Region = cp.Spec.Region
+
+		if cp.Spec.Services.Keystone.Replicas != nil {
+			keystone.Spec.Replicas = *cp.Spec.Services.Keystone.Replicas
+		}
+
+		keystone.Spec.PolicyOverrides = policy
+
+		if rotationSchedule != "" {
+			keystone.Spec.Fernet.RotationSchedule = rotationSchedule
+			keystone.Spec.CredentialKeys.RotationSchedule = rotationSchedule
+		}
+
+		return controllerutil.SetControllerReference(cp, keystone, r.Scheme)
+	}); err != nil {
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeKeystoneReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "KeystoneError",
+			Message:            fmt.Sprintf("create-or-update Keystone: %v", err),
+		})
+		return ctrl.Result{}, err
+	}
+
+	// Mirror the child's Ready condition into KeystoneReady.
+	if !conditions.IsReady(keystone.Status.Conditions) {
+		logger.Info("Keystone CR not ready, requeuing", "keystone", keystone.Name)
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeKeystoneReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "WaitingForKeystone",
+			Message:            fmt.Sprintf("Keystone %q is not ready", keystone.Name),
+		})
+		return ctrl.Result{RequeueAfter: infraRequeueAfter}, nil
+	}
+
+	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+		Type:               conditionTypeKeystoneReady,
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: cp.Generation,
+		Reason:             "KeystoneReady",
+		Message:            "Projected Keystone CR is ready",
+	})
+	return ctrl.Result{}, nil
+}

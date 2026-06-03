@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: k-orc
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://k-orc.github.io/openstack-resource-controller

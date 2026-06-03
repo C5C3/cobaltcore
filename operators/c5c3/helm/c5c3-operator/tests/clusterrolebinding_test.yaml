@@ -1,0 +1,39 @@
+# CC-0110: ClusterRoleBinding unit tests.
+suite: ClusterRoleBinding
+templates:
+  - templates/clusterrolebinding.yaml
+tests:
+  - it: should reference the correct ClusterRole
+    asserts:
+      - equal:
+          path: roleRef.apiGroup
+          value: rbac.authorization.k8s.io
+      - equal:
+          path: roleRef.kind
+          value: ClusterRole
+      - equal:
+          path: roleRef.name
+          value: RELEASE-NAME-c5c3-operator
+
+  - it: should bind to the correct ServiceAccount
+    asserts:
+      - equal:
+          path: subjects[0].kind
+          value: ServiceAccount
+      - equal:
+          path: subjects[0].name
+          value: RELEASE-NAME-c5c3-operator
+      - equal:
+          path: subjects[0].namespace
+          value: NAMESPACE
+
+  # CC-0043: ClusterRoleBinding must not render in namespace-scoped mode.
+  - it: should not render ClusterRoleBinding when rbac.namespaceScoped is true
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

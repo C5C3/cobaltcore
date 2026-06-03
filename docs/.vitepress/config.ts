@@ -52,6 +52,14 @@ export default defineConfig({
             ],
           },
           {
+            text: 'c5c3 (ControlPlane)',
+            collapsed: true,
+            items: [
+              { text: 'ControlPlane CRD', link: '/reference/c5c3/controlplane-crd' },
+              { text: 'Reconciler Architecture', link: '/reference/c5c3/controlplane-reconciler' },
+            ],
+          },
+          {
             text: 'Testing',
             collapsed: true,
             items: [

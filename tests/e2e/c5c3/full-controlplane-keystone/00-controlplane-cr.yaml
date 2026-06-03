@@ -1,0 +1,61 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# ControlPlane CR fixture for the full-controlplane-keystone E2E test
+# (CC-0110, REQ-028).
+#
+# Managed mode: database and cache reference managed clusters by clusterRef, so
+# the c5c3-operator reconcileInfrastructure sub-reconciler projects an owned
+# MariaDB ("openstack-db") and Memcached ("openstack-memcached") in the
+# ControlPlane's own namespace (openstack). These are the same cluster names the
+# deploy stack provisions (deploy/flux-system/infrastructure/), so the chain
+# reads against the production-shaped infrastructure.
+#
+# The K-ORC admin credential is (re-)minted from the admin password Secret
+# (keystone-admin, materialised by deploy/eso/externalsecrets/keystone-admin.yaml)
+# and the minted application credential is mirrored to OpenBao and back to
+# orc-system/k-orc-clouds-yaml. restricted:true keeps the credential
+# least-privilege so a leak is scoped (REQ-013).
+#
+# `global.rules` carries one oslo.policy override so the test can assert that the
+# reconciler merges policy into the projected Keystone CR's spec.policyOverrides
+# (the per-service override path is left empty here so the global rule wins).
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: controlplane-keystone
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  region: RegionOne
+  infrastructure:
+    database:
+      clusterRef:
+        name: openstack-db
+      database: keystone
+      secretRef:
+        name: keystone-db
+    cache:
+      clusterRef:
+        name: openstack-memcached
+      backend: dogpile.cache.pymemcache
+      replicas: 3
+  services:
+    keystone:
+      replicas: 3
+  global:
+    rules:
+      "identity:list_users": "role:admin"
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+        secretName: k-orc-clouds-yaml
+      passwordSecretRef:
+        name: keystone-admin
+        key: password
+      applicationCredential:
+        restricted: true
+        rotation:
+          mode: PasswordDriven

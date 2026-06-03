@@ -1,0 +1,35 @@
+// SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package controller
+
+import "time"
+
+// Requeue intervals used by the ControlPlane sub-reconcilers while waiting on a
+// projected child CR to converge (CC-0110, REQ-008, REQ-009). Centralised here
+// so the wait cadence is consistent and tunable in one place.
+const (
+	// infraRequeueAfter is the backoff used while a managed MariaDB/Memcached
+	// child is still converging to Ready.
+	infraRequeueAfter = 15 * time.Second
+
+	// keystoneInfraGateRequeueAfter is the short backoff used while the Keystone
+	// sub-reconciler is gated on InfrastructureReady; it is small so the Keystone
+	// CR is projected promptly once the infrastructure converges.
+	keystoneInfraGateRequeueAfter = 5 * time.Second
+
+	// korcRequeueAfter is the backoff used by the K-ORC / admin-credential /
+	// catalog sub-reconcilers while waiting on a gate (KORCReady,
+	// AdminCredentialReady, the K-ORC clouds.yaml ExternalSecret) or on a K-ORC
+	// child CR (ApplicationCredential/Service/Endpoint) to converge, and while a
+	// missing K-ORC CRD keeps the sub-reconciler from making progress
+	// (CC-0110, REQ-010, REQ-011, REQ-014).
+	korcRequeueAfter = 10 * time.Second
+
+	// credentialRotationWaitInterval is the short backoff the CredentialRotation
+	// reconciler uses while waiting for the ControlPlane reconciler to mint the
+	// admin ApplicationCredential CR (Bootstrap) or for a ControlPlane / admin
+	// password Secret to appear (CC-0110, REQ-015).
+	credentialRotationWaitInterval = 10 * time.Second
+)
