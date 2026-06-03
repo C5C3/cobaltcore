@@ -5,7 +5,7 @@ go 1.26.4
 require (
 	github.com/c5c3/forge/internal/common v0.0.0
 	github.com/c5c3/forge/operators/keystone v0.0.0
-	github.com/external-secrets/external-secrets/apis v0.0.0-20260602093541-61a0ac4155f6
+	github.com/external-secrets/external-secrets/apis v0.0.0-20260603083646-a38e5b08e076
 	github.com/go-logr/logr v1.4.3
 	github.com/k-orc/openstack-resource-controller/v2 v2.5.0
 	github.com/mariadb-operator/mariadb-operator v0.38.1
@@ -13,6 +13,7 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	k8s.io/api v0.36.1
+	k8s.io/apiextensions-apiserver v0.36.1
 	k8s.io/apimachinery v0.36.1
 	k8s.io/client-go v0.36.1
 	k8s.io/utils v0.0.0-20260507154919-ff6756f316d2
@@ -74,9 +75,9 @@ require (
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
-	k8s.io/apiextensions-apiserver v0.36.1 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20260317180543-43fb72c5454a // indirect
+	sigs.k8s.io/gateway-api v1.5.1 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.2 // indirect
