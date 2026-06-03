@@ -365,11 +365,45 @@ export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n openbao-system \
 echo "$BAO_TOKEN"
 ```
 
-Open `https://localhost:8200/ui/` and paste the token to sign in.
+### Present a client certificate (mutual TLS)
 
-> **Note:** The OpenBao listener uses a self-signed certificate issued by the in-cluster
-> `selfsigned-cluster-issuer`. Your browser will warn that the certificate is not trusted —
-> this is expected for a kind cluster; accept the warning to reach the UI.
+The listener enforces **mutual TLS**: every connection must present a client certificate that
+chains to the in-cluster CA *before* the application-layer token login runs. A browser without
+one never reaches the login screen — the TLS handshake is reset, which the tooling surfaces as
+`connection reset by peer` / `lost connection to pod`. The kind overlay matches the production
+mTLS posture here.
+
+Build a PKCS#12 bundle from the `openbao-client-tls` Secret. Its keypair is signed by the same
+`selfsigned-cluster-issuer` CA as the server cert, and the listener verifies only chain-to-CA
+(not SANs) on client auth, so this certificate is accepted:
+
+```bash
+kubectl get secret openbao-client-tls -n openbao-system \
+  -o jsonpath='{.data.tls\.crt}' | base64 -d > openbao-client.crt
+kubectl get secret openbao-client-tls -n openbao-system \
+  -o jsonpath='{.data.tls\.key}' | base64 -d > openbao-client.key
+kubectl get secret openbao-client-tls -n openbao-system \
+  -o jsonpath='{.data.ca\.crt}'  | base64 -d > openbao-ca.crt
+# The passphrase only protects this throwaway local .p12 during the browser
+# import — it is not an OpenBao credential, so pick any value you like.
+openssl pkcs12 -export -inkey openbao-client.key -in openbao-client.crt \
+  -certfile openbao-ca.crt -name "OpenBao Client (kind)" \
+  -out openbao-client.p12 -passout pass:changeit
+```
+
+Import the bundle into Firefox once. This walkthrough is verified with Firefox;
+Chrome, Edge, and Safari also accept client certificates but import them through
+the OS keychain / system certificate store, so the menu path differs:
+
+1. *Settings → Privacy & Security → Certificates → View Certificates…*
+2. Tab **Your Certificates → Import…** → select `openbao-client.p12` and enter the
+   passphrase you chose above.
+3. *(Optional — removes the trust warning.)* Tab **Authorities → Import…** → select
+   `openbao-ca.crt` → tick "Trust this CA to identify websites". The server cert carries
+   `IP:127.0.0.1` as a SAN, so `https://localhost:8200` then validates cleanly.
+
+Open `https://localhost:8200/ui/`. Firefox asks which client certificate to send — pick
+**"OpenBao Client (kind)"** — then paste the root token to sign in.
 
 For the full token lifecycle, secret engines, auth methods, and the bootstrap sequence that
 produced this token, see

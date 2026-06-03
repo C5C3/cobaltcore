@@ -54,7 +54,7 @@ kubectl wait helmrelease/keystone-operator -n keystone-system \
 
 ## Step 4 — Keystone service image
 
-> Note: the keystone-operator controller runs in `keystone-system`; the Keystone workload it manages runs in `openstack` (controller-vs-workload split, CC-0105).
+> Note: the keystone-operator controller runs in `keystone-system`; the Keystone workload it manages runs in `openstack` (controller-vs-workload split).
 
 ```bash
 RELEASE=2025.2
@@ -168,8 +168,11 @@ kubectl get secret openbao-init-keys -n openbao-system \
 kubectl port-forward svc/openbao -n openbao-system 8200:8200
 ```
 
-Open <https://localhost:8200/ui/>, accept the self-signed cert warning,
-paste the token.
+The listener enforces mutual TLS, so the browser must present a client
+certificate before it reaches the UI. Build a PKCS#12 bundle from the
+`openbao-client-tls` Secret, import it into Firefox, and sign in with the
+token — see [Extended Quick Start — Step 4b](./quick-start-extended.md#step-4b-openbao-ui)
+for the exact commands, CA trust, and browser notes.
 
 > **Grafana (kind-only, opt-in):** for the keystone-operator metrics dashboard, run `WITH_PROMETHEUS=true make deploy-infra` and follow [Extended Quick Start — Step 4c](./quick-start-extended.md#step-4c-grafana-ui). The compact path stays Grafana-free by default.
 
