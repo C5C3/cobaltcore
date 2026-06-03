@@ -305,7 +305,7 @@ invisible to the CR's status conditions.
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-chaos-op` with database `keystone_chaos_op` |
 | 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady — confirms healthy state before fault injection |
-| 3 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml` — PodChaos `kill-operator` targeting `app.kubernetes.io/name: keystone-operator` in `keystone-system` (CC-0105: the operator controller lives in its own Namespace; the PodChaos CR itself is still created in the test's `openstack` namespace) |
+| 3 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml` — PodChaos `kill-operator` targeting `app.kubernetes.io/name: keystone-operator` in `keystone-system` (the operator controller lives in its own Namespace; the PodChaos CR itself is still created in the test's `openstack` namespace) |
 | 4 | Wait for operator pod crash and recovery | `wait` (2m + 2m) | Condition-based waits: operator pod `Ready=false` (kill took effect), then `Ready=true` (Deployment controller restarted pod) |
 | 5 | Delete PodChaos | `delete` | Removes PodChaos `kill-operator` to clean up |
 | 6 | Assert Ready=True after re-reconciliation | `assert` (5m) | Ready=True with reason AllReady — no sub-condition stuck in False state |
@@ -526,7 +526,7 @@ recovery to confirm the new leader processes spec changes end-to-end.
 
 **Design notes:**
 
-- The operator pod runs in the `keystone-system` Namespace (CC-0105 — see
+- The operator pod runs in the `keystone-system` Namespace (see
   [Infrastructure Manifests › Keystone Operator](../infrastructure/infrastructure-manifests.md#keystone-operator));
   the operator-managed Keystone workload remains in `openstack`. The PodChaos
   `selector.namespaces` targets `keystone-system` accordingly.
@@ -751,7 +751,7 @@ spec:
 | Field | Value | Rationale |
 | --- | --- | --- |
 | `mode` | `all` | Kills every operator pod — unlike SC-CHAOS-004 (`mode: one`) which leaves other replicas running |
-| `selector.namespaces` | `keystone-system` | Operator controller runs in `keystone-system` (CC-0105); the operator-managed Keystone workload stays in `openstack` |
+| `selector.namespaces` | `keystone-system` | Operator controller runs in `keystone-system`; the operator-managed Keystone workload stays in `openstack` |
 
 ### Fault cleanup
 

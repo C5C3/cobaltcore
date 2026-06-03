@@ -8,7 +8,7 @@ quadrant: operator
 
 ---
 
-<!-- CC-0105: operator namespace is `keystone-system`; workload (Keystone CR) stays in `openstack`. -->
+<!-- operator namespace is `keystone-system`; workload (Keystone CR) stays in `openstack`. -->
 
 # How-to: Enable the Keystone Operator Metrics Endpoint
 
@@ -21,7 +21,7 @@ For the authoritative metric catalogue (names, labels, buckets), see
 For the controller-side instrumentation contract, see
 [Keystone Reconciler — Metrics Instrumentation](../reference/keystone/keystone-reconciler.md#metrics-instrumentation).
 
-::: tip On kind (CC-0100)
+::: tip On kind
 If you are running the kind Quick Start, the prometheus-operator CRDs,
 Prometheus, Grafana, and the bundled `Keystone Operator` dashboard are
 already wrapped behind a single opt-in flag — none of the manual steps

@@ -6,7 +6,7 @@ quadrant: operator
 # ControlPlane CRD API Reference
 
 Reference documentation for the c5c3-operator ControlPlane Custom Resource
-Definition (CC-0110). The ControlPlane CRD is the top-level aggregate that
+Definition. The ControlPlane CRD is the top-level aggregate that
 projects an OpenStack control plane: it owns the shared infrastructure
 references (database, cache), a curated set of per-service specs (today:
 Keystone), and the K-ORC (OpenStack Resource Controller) integration that
@@ -175,8 +175,8 @@ status:
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `openStackRelease` | `string` | Yes | — | OpenStack release the control plane targets (e.g. `"2025.2"`). The reconciler (L2) projects this into each service CR's image tag. Must match the date-based release pattern `^\d{4}\.\d$` (CC-0110, REQ-006), enforced by both the CRD `+kubebuilder:validation:Pattern` marker and the validating webhook. |
-| `region` | `string` | No | `"RegionOne"` | OpenStack region name applied across the control plane. Projected into the Keystone CR's `bootstrap.region`. Defaulted to `RegionOne` by **both** the `+kubebuilder:default` marker (normal admission) and the defaulting webhook (callers that bypass the CRD default) (CC-0110, plan decision #4). |
+| `openStackRelease` | `string` | Yes | — | OpenStack release the control plane targets (e.g. `"2025.2"`). The reconciler (L2) projects this into each service CR's image tag. Must match the date-based release pattern `^\d{4}\.\d$`, enforced by both the CRD `+kubebuilder:validation:Pattern` marker and the validating webhook. |
+| `region` | `string` | No | `"RegionOne"` | OpenStack region name applied across the control plane. Projected into the Keystone CR's `bootstrap.region`. Defaulted to `RegionOne` by **both** the `+kubebuilder:default` marker (normal admission) and the defaulting webhook (callers that bypass the CRD default). |
 | `infrastructure` | [`InfrastructureSpec`](#infrastructurespec) | Yes | — | Shared backing services (database, cache) the control plane's services connect to. |
 | `services` | [`ServicesSpec`](#servicesspec) | Yes | — | Per-service configuration projected into the individual service CRs. |
 | `global` | [`*commonv1.PolicySpec`](../keystone/keystone-crd.md#policyspec) | No | `nil` | oslo.policy overrides applied across every service in the control plane. Per-service overrides (e.g. `services.keystone.policyOverrides`) take precedence over these global rules when both are set. |
@@ -186,7 +186,7 @@ status:
 
 ## InfrastructureSpec
 
-Declares the shared backing services for the control plane (CC-0110). Both
+Declares the shared backing services for the control plane. Both
 fields reuse the canonical `commonv1` shapes so the ControlPlane and the
 per-service CRs validate the database/cache the same way.
 
@@ -206,7 +206,7 @@ services.
 
 ## ServicesSpec
 
-Declares the per-service configuration of the control plane (CC-0110). Today
+Declares the per-service configuration of the control plane. Today
 only Keystone is modeled; additional services are added as fields as the
 operator grows.
 
@@ -219,10 +219,10 @@ operator grows.
 ## ServiceKeystoneSpec
 
 A **curated local subset** of the knobs the ControlPlane exposes for the
-Keystone service (CC-0110).
+Keystone service.
 
-> **DECISION (CC-0110, plan decision #2):** This struct is intentionally **not**
-> an import of `keystonev1alpha1.KeystoneSpec`. Per REQ-009 the reconciler (L2)
+> **DECISION:** This struct is intentionally **not**
+> an import of `keystonev1alpha1.KeystoneSpec`. The reconciler (L2)
 > **projects** this struct into a Keystone CR; the database, cache, and Fernet
 > rotation schedule of that Keystone CR are **derived** from the ControlPlane
 > (`infrastructure.*` and operator policy) rather than set by the user here.
@@ -244,7 +244,7 @@ Keystone service (CC-0110).
 ## KORCSpec
 
 Configures the K-ORC (OpenStack Resource Controller) integration of the control
-plane (CC-0110). It declares how the admin application credential is
+plane. It declares how the admin application credential is
 bootstrapped and rotated and which bootstrap resources are reconciled.
 
 | Field | Type | Required | Default | Description |
@@ -256,7 +256,7 @@ bootstrapped and rotated and which bootstrap resources are reconciled.
 ## AdminCredentialSpec
 
 Declares the admin OpenStack credential and the application-credential rotation
-policy for the control plane (CC-0110).
+policy for the control plane.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
@@ -270,18 +270,18 @@ policy for the control plane (CC-0110).
 ## CloudCredentialsRef
 
 References the `clouds.yaml` Secret and the cloud entry within it that K-ORC
-authenticates as (CC-0110).
+authenticates as.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `cloudName` | `string` | Yes | — | The entry in `clouds.yaml` K-ORC authenticates as. Also used by the reconciler as the conventional K-ORC `User` reference name (defaulting to `admin` when empty) and projected onto the catalog `Service`/`Endpoint` CRs. |
-| `secretName` | `string` | No | `"k-orc-clouds-yaml"` | Name of the Secret holding the `clouds.yaml` document. Defaulted to `k-orc-clouds-yaml` by **both** the `+kubebuilder:default` marker and the defaulting webhook (CC-0110). |
+| `secretName` | `string` | No | `"k-orc-clouds-yaml"` | Name of the Secret holding the `clouds.yaml` document. Defaulted to `k-orc-clouds-yaml` by **both** the `+kubebuilder:default` marker and the defaulting webhook. |
 
 ---
 
 ## ApplicationCredentialSpec
 
-Declares the K-ORC admin application-credential policy (CC-0110).
+Declares the K-ORC admin application-credential policy.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
@@ -294,7 +294,7 @@ Declares the K-ORC admin application-credential policy (CC-0110).
 The ControlPlane spec exposes a **`restricted`** flag (the safe, least-privilege
 posture). K-ORC's `ApplicationCredentialResourceSpec` exposes the inverse field,
 **`unrestricted`**. The reconciler performs the inversion when projecting the
-K-ORC `ApplicationCredential` CR (CC-0110, REQ-010):
+K-ORC `ApplicationCredential` CR:
 
 ```
 restricted=true  → K-ORC spec.resource.unrestricted=false
@@ -308,8 +308,8 @@ state back into `status.adminApplicationCredential.restricted`.
 
 ## AccessRule
 
-Narrows an application credential to a specific service endpoint and method
-(CC-0110), mirroring the Keystone application-credential access-rule shape.
+Narrows an application credential to a specific service endpoint and method,
+mirroring the Keystone application-credential access-rule shape.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
@@ -321,7 +321,7 @@ Narrows an application credential to a specific service endpoint and method
 
 ## RotationSpec
 
-Declares the rotation policy for the admin application credential (CC-0110).
+Declares the rotation policy for the admin application credential.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
@@ -335,15 +335,15 @@ Declares the rotation policy for the admin application credential (CC-0110).
 | Value | Status | Meaning |
 | --- | --- | --- |
 | `PasswordDriven` | Active (default) | Re-mints the application credential whenever the underlying admin password changes. The reconciler compares the SHA-256 of the admin password against an annotation stamped on the K-ORC `ApplicationCredential` CR; a mismatch drives a re-mint. |
-| `Scheduled` | **Reserved** | Rotates the application credential on a schedule. Surfaced in the enum now so the CRD schema is stable, but the scheduled-rotation logic is deferred to a later level (CC-0110). |
+| `Scheduled` | **Reserved** | Rotates the application credential on a schedule. Surfaced in the enum now so the CRD schema is stable, but the scheduled-rotation logic is deferred to a later level. |
 | `Manual` | **Reserved** | Rotates only when a [`CredentialRotation`](#credentialrotationspec) CR requests it. The `CredentialRotation` flow is the mechanism; the `Manual` mode value itself is reserved at this level. |
 
 ---
 
 ## BootstrapResourceSpec
 
-Declares an OpenStack resource K-ORC bootstraps with the control plane
-(CC-0110). The shape is intentionally minimal at L1 — the reconciler interprets
+Declares an OpenStack resource K-ORC bootstraps with the control plane.
+The shape is intentionally minimal at L1 — the reconciler interprets
 the kind/name and applies it.
 
 | Field | Type | Required | Default | Description |
@@ -366,7 +366,7 @@ the kind/name and applies it.
 
 ### ServiceStatus
 
-Reports the observed readiness of a single projected service CR (CC-0110).
+Reports the observed readiness of a single projected service CR.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -375,7 +375,7 @@ Reports the observed readiness of a single projected service CR (CC-0110).
 
 ### AdminApplicationCredentialStatus
 
-Reports the observed state of the K-ORC admin application credential (CC-0110).
+Reports the observed state of the K-ORC admin application credential.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -388,7 +388,7 @@ Reports the observed state of the K-ORC admin application credential (CC-0110).
 `UpdatePhase` is a string enum
 (`+kubebuilder:validation:Enum=Idle;Updating;UpdatingServices;Verifying;RollingBack`).
 
-> **DECISION (CC-0110):** the enum surfaces the future phases alongside the
+> **DECISION:** the enum surfaces the future phases alongside the
 > active ones so the CRD schema is stable across levels and does not need a
 > breaking change when the update state machine is implemented. The reserved
 > values below are never set by the current reconciler; they are documented so
@@ -407,7 +407,7 @@ Reports the observed state of the K-ORC admin application credential (CC-0110).
 ## CredentialRotationSpec
 
 Defines the desired state of a `CredentialRotation` — a one-shot request to
-rotate a control-plane credential (CC-0110). The reconciler re-mints the target
+rotate a control-plane credential. The reconciler re-mints the target
 credential and reports progress via status conditions.
 
 | Field | Type | Required | Default | Description |
@@ -419,7 +419,7 @@ credential and reports progress via status conditions.
 | `preRotationDays` | `*int32` | No | `nil` | **Deferred** — accepted but ignored. Days before expiry a replacement credential is minted (the overlap window). Minimum: 0. |
 | `gracePeriodDays` | `*int32` | No | `nil` | **Deferred** — accepted but ignored. Days the superseded credential remains valid after a rotation before it is revoked. Minimum: 0. |
 
-> **DECISION (CC-0110):** the scheduled-rotation fields (`intervalDays`,
+> **DECISION:** the scheduled-rotation fields (`intervalDays`,
 > `preRotationDays`, `gracePeriodDays`) surface in the CRD schema now so the
 > contract is stable, but the L1 reconciler **ignores** them — scheduled
 > rotation (and the two-credential pre-rotation/grace overlap) is implemented in
@@ -448,20 +448,20 @@ credential and reports progress via status conditions.
 ## SecretAggregate
 
 `SecretAggregate` aggregates the Secrets produced by a control plane into a
-single materialized Secret (CC-0110).
+single materialized Secret.
 
-> **DECISION (CC-0110):** this is **types-only** at this level — there is **no
-> controller**. The reconciler is **deferred to CC-0023**, and the operator RBAC
+> **DECISION:** this is **types-only** at this level — there is **no
+> controller**. The reconciler is **deferred to a later level**, and the operator RBAC
 > for this kind is **read-only** (`get`/`list`/`watch`) until that reconciler
 > lands, so the operator can observe `SecretAggregate` CRs without being granted
 > write access to a kind it does not yet manage. The `Spec`/`Status` below are
-> intentionally minimal placeholders; CC-0023 will flesh them out.
+> intentionally minimal placeholders; a later level will flesh them out.
 
 ### SecretAggregateSpec
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `targetSecretName` | `string` | No | `""` | Name of the materialized aggregate Secret the (deferred, CC-0023) reconciler will produce. |
+| `targetSecretName` | `string` | No | `""` | Name of the materialized aggregate Secret the (deferred) reconciler will produce. |
 
 ### SecretAggregateStatus
 
@@ -491,7 +491,7 @@ truth.
 | `PolicySpec` | `global`, `services.keystone.policyOverrides` | [Keystone CRD → PolicySpec](../keystone/keystone-crd.md#policyspec) |
 
 > **Note on `DatabaseSpec.tls` / `CacheSpec`:** the `commonv1` shapes carry the
-> full Keystone field set, including the optional `database.tls` block (CC-0106).
+> full Keystone field set, including the optional `database.tls` block.
 > Those fields are part of the reused struct and are validated by the API server,
 > but the ControlPlane reconciler projects the `DatabaseSpec`/`CacheSpec` onto the
 > Keystone CR verbatim — TLS behavior is therefore governed by the
@@ -526,7 +526,7 @@ Keystone discipline:
 
 | Field | Rule |
 | --- | --- |
-| `spec.openStackRelease` | Pattern `^\d{4}\.\d$` (CC-0110, REQ-006) |
+| `spec.openStackRelease` | Pattern `^\d{4}\.\d$` |
 | `spec.korc.adminCredential.applicationCredential.rotation.mode` | Enum: `PasswordDriven`, `Scheduled`, `Manual` |
 | `spec.services.keystone.replicas` | Minimum: 1 |
 | `CredentialRotation spec.target` | Enum: `adminApplicationCredential` |
@@ -544,10 +544,10 @@ short-circuit on the first error.
 
 | Rule | Field Path | Error Type | Condition |
 | --- | --- | --- | --- |
-| Release pattern | `spec.openStackRelease` | `field.Invalid` | Value does not match `^\d{4}\.\d$`. Defense-in-depth alongside the CRD `+kubebuilder:validation:Pattern` marker (CC-0110, REQ-006). |
+| Release pattern | `spec.openStackRelease` | `field.Invalid` | Value does not match `^\d{4}\.\d$`. Defense-in-depth alongside the CRD `+kubebuilder:validation:Pattern` marker. |
 | Database mutual exclusivity | `spec.infrastructure.database` | `field.Invalid` | Both `clusterRef` and `host` set, or neither (`(clusterRef != nil) == (host != "")`). **Webhook-only** — there is no CEL rule for this on the c5c3 CRD. |
 | Cache mutual exclusivity | `spec.infrastructure.cache` | `field.Invalid` | Both `clusterRef` and `servers` set, or neither (`(clusterRef != nil) == (len(servers) > 0)`). **Webhook-only**. |
-| Admin password Secret required | `spec.korc.adminCredential.passwordSecretRef.name` | `field.Required` | `name` is empty — without it the reconciler cannot (re-)mint the admin application credential. **Webhook-only** (CC-0110, REQ-006). |
+| Admin password Secret required | `spec.korc.adminCredential.passwordSecretRef.name` | `field.Required` | `name` is empty — without it the reconciler cannot (re-)mint the admin application credential. **Webhook-only**. |
 
 ---
 
@@ -587,8 +587,8 @@ Fills only zero-valued fields with their documented defaults, leaving any
 explicit value untouched. It is **idempotent**: applying it twice produces the
 same result. Each default is also expressed as a `+kubebuilder:default` marker
 on the corresponding spec field, so the two layers agree — the markers cover the
-normal admission path; the webhook covers callers that bypass the CRD default
-(CC-0110, REQ-005). The defaulting constants `DefaultRegion` (`"RegionOne"`) and
+normal admission path; the webhook covers callers that bypass the CRD default.
+The defaulting constants `DefaultRegion` (`"RegionOne"`) and
 `DefaultCloudCredentialsSecretName` (`"k-orc-clouds-yaml"`) are the single source
 of truth shared with the markers' documented values.
 
@@ -621,7 +621,7 @@ func (w *ControlPlaneWebhook) ValidateDelete(_ context.Context, _ *ControlPlane)
 The ControlPlane status is driven by five sub-reconcilers, each owning one
 condition type, plus an aggregate `Ready` condition. The condition-type
 constants in `controlplane_controller.go` are the single source of truth; call
-sites reference the constants rather than inline literals (CC-0110, REQ-007).
+sites reference the constants rather than inline literals.
 
 The sub-reconcilers run in dependency order, each **gated** on the previous
 one's condition being `True`:
@@ -637,7 +637,7 @@ InfrastructureReady → KeystoneReady → KORCReady → AdminCredentialReady →
 
 ### InfrastructureReady
 
-Set by `reconcileInfrastructure` (CC-0110, REQ-008).
+Set by `reconcileInfrastructure`.
 
 | Status | Reason | When |
 | --- | --- | --- |
@@ -649,7 +649,7 @@ Set by `reconcileInfrastructure` (CC-0110, REQ-008).
 
 ### KeystoneReady
 
-Set by `reconcileKeystone` (gated on `InfrastructureReady`) (CC-0110, REQ-009).
+Set by `reconcileKeystone` (gated on `InfrastructureReady`).
 
 | Status | Reason | When |
 | --- | --- | --- |
@@ -661,7 +661,7 @@ Set by `reconcileKeystone` (gated on `InfrastructureReady`) (CC-0110, REQ-009).
 
 ### KORCReady
 
-Set by `reconcileKORC` (CC-0110, REQ-010, REQ-012).
+Set by `reconcileKORC`.
 
 | Status | Reason | When |
 | --- | --- | --- |
@@ -675,7 +675,7 @@ Set by `reconcileKORC` (CC-0110, REQ-010, REQ-012).
 ### AdminCredentialReady
 
 Set by `reconcileAdminCredential` (gated on `KORCReady` **and** the K-ORC
-`clouds.yaml` ExternalSecret being Ready) (CC-0110, REQ-011).
+`clouds.yaml` ExternalSecret being Ready).
 
 | Status | Reason | When |
 | --- | --- | --- |
@@ -688,7 +688,7 @@ Set by `reconcileAdminCredential` (gated on `KORCReady` **and** the K-ORC
 
 ### CatalogReady
 
-Set by `reconcileCatalog` (gated on `AdminCredentialReady`) (CC-0110, REQ-014).
+Set by `reconcileCatalog` (gated on `AdminCredentialReady`).
 Also flips `status.catalogReady` to `true`.
 
 | Status | Reason | When |
@@ -701,7 +701,7 @@ Also flips `status.catalogReady` to `true`.
 
 ### Ready (aggregate)
 
-Set by `setReadyCondition` (CC-0110, REQ-007).
+Set by `setReadyCondition`.
 
 | Status | Reason | When |
 | --- | --- | --- |
@@ -712,7 +712,7 @@ Set by `setReadyCondition` (CC-0110, REQ-007).
 
 ## Child Namespace
 
-> **DECISION (CC-0110):** every child the reconciler projects — the `MariaDB`,
+> **DECISION:** every child the reconciler projects — the `MariaDB`,
 > `Memcached`, and `Keystone` CRs, the K-ORC `ApplicationCredential` /
 > `Service` / `Endpoint` CRs, the owned Secret, and the OpenBao `PushSecret` —
 > is created in the **ControlPlane's own namespace** (`childNamespace =

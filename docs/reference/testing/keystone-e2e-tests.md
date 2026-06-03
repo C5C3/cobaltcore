@@ -612,7 +612,7 @@ patching with a valid class sets it; patching with empty string removes it.
 
 **File:** `tests/e2e/keystone/semantic-invariants/chainsaw-test.yaml`
 
-**Purpose:** Asserts five Keystone CR `status` semantic invariants that no other E2E suite gates today: `status.endpoint` URL format (CC-0101 REQ-001), `ownerReferences` fan-out across every operator-managed kind (CC-0101 REQ-002), `status.observedGeneration` catch-up after a `spec` change (CC-0101 REQ-003), `condition.lastTransitionTime` monotonicity across a `True → False → True` flip (CC-0101 REQ-004), and immutability of the generated config ConfigMap (CC-0101 REQ-005). The fixture intentionally omits `spec.gateway`, `spec.networkPolicy`, and `spec.autoscaling` so the cluster-local `status.endpoint` surfaces and the `observedGeneration` assertion stays exact regardless of optional sub-condition reasons.
+**Purpose:** Asserts five Keystone CR `status` semantic invariants that no other E2E suite gates today: `status.endpoint` URL format, `ownerReferences` fan-out across every operator-managed kind, `status.observedGeneration` catch-up after a `spec` change, `condition.lastTransitionTime` monotonicity across a `True → False → True` flip, and immutability of the generated config ConfigMap. The fixture intentionally omits `spec.gateway`, `spec.networkPolicy`, and `spec.autoscaling` so the cluster-local `status.endpoint` surfaces and the `observedGeneration` assertion stays exact regardless of optional sub-condition reasons.
 
 **Steps:**
 
@@ -626,8 +626,6 @@ patching with a valid class sets it; patching with empty string removes it.
 | 6 | Assert ConfigMap immutability | `script` | Resolves the active config ConfigMap by `forge.c5c3.io/config-base=keystone-invariants-config` (never by hash suffix), runs `kubectl patch` against `data.keystone.conf`, and asserts non-zero exit with `field is immutable` in stderr |
 
 **Fixtures:** `00-keystone-cr.yaml`
-
-**Requirements covered:** CC-0101 REQ-001, REQ-002, REQ-003, REQ-004, REQ-005.
 
 **Source files contributing managed kinds.** Step 3 is the tracked counterpart of these files — a reviewer adding a new managed kind in any of them MUST extend the iteration list in Step 3, otherwise the ownership invariant can regress unnoticed:
 
@@ -762,7 +760,7 @@ Deployment/Job/CronJob is identifiable. Mirrors the catch-block shape from
 
 **Cross-references:**
 
-- Feature: **CC-0104** (this test).
+- Feature: **Pod Security Standards (restricted) admission gate** (this test).
 - Parent issue: **#317** — PSS-restricted admission gate for Keystone.
 - Phase 1 baseline: **#277** — security/compliance baseline. The Keystone
   unit-test evidence for `restrictedSecurityContext()` lives in
@@ -956,7 +954,7 @@ tests/e2e/keystone/
 │   ├── 01-patch-update-ingress.yaml    Patch ingress rule
 │   └── 02-patch-disable-networkpolicy.yaml Patch to disable NetworkPolicy
 ├── pod-security-restricted/
-│   ├── chainsaw-test.yaml              PSS-restricted admission gate (CC-0104)
+│   ├── chainsaw-test.yaml              PSS-restricted admission gate
 │   ├── 00-namespace.yaml               PSS-labelled test namespace + plain Secrets
 │   ├── 00-brownfield-db-setup.yaml     Brownfield Database/User/Grant + db-pw Secret
 │   └── 01-keystone-cr.yaml             Keystone CR with brownfield db + cache

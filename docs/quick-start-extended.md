@@ -418,7 +418,7 @@ Grafana + the prometheus-operator) under the `monitoring` namespace. This is a
 **kind-only opt-in** — production overlays (`deploy/flux-system/`) deliberately
 omit the stack so production clusters can wire their own Prometheus. If you
 have not already opted in, see the
-[Enabling Prometheus & Grafana](#enabling-prometheus--grafana-cc-0100) tip in
+[Enabling Prometheus & Grafana](#enabling-prometheus--grafana) tip in
 Step 3 (`WITH_PROMETHEUS=true make deploy-infra`).
 
 Forward the Grafana service port:

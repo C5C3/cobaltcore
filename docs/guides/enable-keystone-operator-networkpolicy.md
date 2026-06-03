@@ -3,7 +3,7 @@ title: Enable the Keystone Operator NetworkPolicy
 quadrant: operator
 ---
 
-<!-- CC-0105: operator namespace is `keystone-system`; workload (Keystone CR) stays in `openstack`. -->
+<!-- operator namespace is `keystone-system`; workload (Keystone CR) stays in `openstack`. -->
 
 # How-to: Enable the Keystone Operator NetworkPolicy
 

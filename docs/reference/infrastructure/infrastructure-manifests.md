@@ -37,14 +37,14 @@ deploy/
     │   ├── memcached-operator.yaml       Memcached Operator (from c5c3-charts)
     │   ├── openbao.yaml                  OpenBao HA Raft cluster
     │   ├── keystone-operator.yaml        Keystone Operator (from c5c3-charts)
-    │   ├── k-orc.yaml                    K-ORC OpenStack Resource Controller (CC-0110)
-    │   ├── c5c3-operator.yaml            c5c3-operator ControlPlane orchestrator (from c5c3-charts, CC-0110)
+    │   ├── k-orc.yaml                    K-ORC OpenStack Resource Controller
+    │   ├── c5c3-operator.yaml            c5c3-operator ControlPlane orchestrator (from c5c3-charts)
     │   └── chaos-mesh.yaml               Chaos Mesh (kind-only addon — see "Kind Overlay Demo Addons")
     └── infrastructure/                   CRD-dependent infrastructure resources
         ├── kustomization.yaml            Infrastructure kustomize overlay
         ├── cluster-issuer.yaml           Self-signed ClusterIssuer (requires cert-manager CRDs)
-        ├── db-ca-issuer.yaml             OpenStack DB CA Certificate + ClusterIssuer (CC-0106, REQ-009)
-        ├── mariadb.yaml                  MariaDB Galera cluster for OpenStack (with TLS, CC-0106, REQ-009)
+        ├── db-ca-issuer.yaml             OpenStack DB CA Certificate + ClusterIssuer
+        ├── mariadb.yaml                  MariaDB Galera cluster for OpenStack (with TLS)
         └── memcached.yaml                Memcached cluster for OpenStack
 ```
 
@@ -68,8 +68,8 @@ created.
 | `keystone-system` | Keystone Operator controller (workload CRs continue to live in `openstack`) |
 | `openstack` | Infrastructure instance CRs (MariaDB cluster, Memcached cluster) |
 | `openbao-system` | OpenBao HA Raft cluster |
-| `c5c3-system` | c5c3-operator controller (CC-0110, REQ-023); the `ControlPlane` and its child CRs are created in the `ControlPlane`'s own namespace |
-| `orc-system` | K-ORC (OpenStack Resource Controller) and the `k-orc-clouds-yaml` admin Secret (CC-0110, REQ-023) |
+| `c5c3-system` | c5c3-operator controller; the `ControlPlane` and its child CRs are created in the `ControlPlane`'s own namespace |
+| `orc-system` | K-ORC (OpenStack Resource Controller) and the `k-orc-clouds-yaml` admin Secret |
 
 The `chaos-mesh` namespace is **not** part of the production base. It is created
 inline by the kind-only opt-in overlay at `deploy/kind/chaos-mesh/` when
@@ -182,7 +182,7 @@ mariadb-operator-crds     (no dependencies)
 └── c5c3-operator         dependsOn: keystone-operator, external-secrets, mariadb-operator, memcached-operator, k-orc
 ```
 
-The `c5c3-operator` HelmRelease (CC-0110, REQ-023) sits at the top of this graph: it
+The `c5c3-operator` HelmRelease sits at the top of this graph: it
 `dependsOn` the four operators whose CRs it projects (keystone-operator,
 external-secrets, mariadb-operator, memcached-operator) plus `k-orc`, whose
 ApplicationCredential / Service / Endpoint CRDs it drives. `k-orc` itself declares no
@@ -324,7 +324,7 @@ OCI registry (`oci://ghcr.io/c5c3/charts`), not a dedicated HelmRepository. The
 | Dependencies | `cert-manager` in `cert-manager` namespace |
 
 OpenBao is deployed as a 3-replica HA Raft cluster with **mutual TLS (mTLS)
-enforced on the API listener** (CC-0107). The injector is disabled. The server
+enforced on the API listener**. The injector is disabled. The server
 TLS certificate is sourced from a cert-manager-provisioned Secret
 (`openbao-tls`), and two additional cert-manager-provisioned client
 certificates (`openbao-client-tls`, `eso-openbao-client-tls`) are required so
@@ -349,15 +349,15 @@ rationale.
 | `server.ha.enabled` | `true` | Enable HA mode |
 | `server.ha.replicas` | `3` | 3-node Raft cluster |
 | `server.ha.raft.enabled` | `true` | Use Raft storage backend |
-| `server.ha.raft.config` listener `tls_client_ca_file` (CC-0107) | `/openbao/tls/ca.crt` | CA the listener uses to verify presented client certs (same bundle as server cert) |
-| `server.ha.raft.config` listener `tls_require_and_verify_client_cert` (CC-0107) | `true` | Reject any TLS handshake without a valid client cert before app-layer auth runs |
-| `server.ha.raft.config` `retry_join.leader_client_cert_file` × 3 (CC-0107) | `/openbao/client-tls/tls.crt` | Client cert each Raft peer presents on `retry_join` to every other peer (same value in all three stanzas) |
-| `server.ha.raft.config` `retry_join.leader_client_key_file` × 3 (CC-0107) | `/openbao/client-tls/tls.key` | Matching private key for `leader_client_cert_file` |
-| `server.volumes` / `server.volumeMounts` — `client-tls` (CC-0107) | Secret `openbao-client-tls` → `/openbao/client-tls` (`readOnly: true`) | Mounts the in-pod client keypair distinct from the server cert at `/openbao/tls` so server and client lifecycles do not collide |
+| `server.ha.raft.config` listener `tls_client_ca_file` | `/openbao/tls/ca.crt` | CA the listener uses to verify presented client certs (same bundle as server cert) |
+| `server.ha.raft.config` listener `tls_require_and_verify_client_cert` | `true` | Reject any TLS handshake without a valid client cert before app-layer auth runs |
+| `server.ha.raft.config` `retry_join.leader_client_cert_file` × 3 | `/openbao/client-tls/tls.crt` | Client cert each Raft peer presents on `retry_join` to every other peer (same value in all three stanzas) |
+| `server.ha.raft.config` `retry_join.leader_client_key_file` × 3 | `/openbao/client-tls/tls.key` | Matching private key for `leader_client_cert_file` |
+| `server.volumes` / `server.volumeMounts` — `client-tls` | Secret `openbao-client-tls` → `/openbao/client-tls` (`readOnly: true`) | Mounts the in-pod client keypair distinct from the server cert at `/openbao/tls` so server and client lifecycles do not collide |
 | `server.dataStorage.size` | `10Gi` | Persistent volume size |
 | `injector.enabled` | `false` | Disable the Vault/Bao agent injector |
 
-**Client certificates (CC-0107).** The two client `Certificate` resources are
+**Client certificates.** The two client `Certificate` resources are
 declared in `deploy/flux-system/infrastructure/openbao-client-tls-cert.yaml`
 and registered in `deploy/flux-system/infrastructure/kustomization.yaml`
 immediately after `openbao-tls-cert.yaml`, so cert-manager reconciles them
@@ -388,7 +388,7 @@ operator interface, and the runnable mTLS-enforcement probe.
 
 | Property | Value |
 | --- | --- |
-| Target namespace | `keystone-system` (controller); operator-managed Keystone workload remains in `openstack` (CC-0105, REQ-001) |
+| Target namespace | `keystone-system` (controller); operator-managed Keystone workload remains in `openstack` |
 | Chart | `keystone-operator` |
 | Version constraint | `>=0.1.0 <1.0.0` |
 | Source | `c5c3-charts` HelmRepository (shared OCI registry) |
@@ -420,15 +420,15 @@ provisioning, memcached-operator for caching, and external-secrets for secret ma
 
 K-ORC (the OpenStack Resource Controller) installs the declarative Keystone resource
 CRDs — `ApplicationCredential`, `Service`, `Endpoint`, and related kinds — that the
-c5c3-operator drives to project a `ControlPlane`'s desired state into Keystone
-(CC-0110, REQ-023). The HelmRelease `metadata.name` is the short, stable `k-orc` (not
+c5c3-operator drives to project a `ControlPlane`'s desired state into Keystone.
+The HelmRelease `metadata.name` is the short, stable `k-orc` (not
 the chart's own `openstack-resource-controller`) so the c5c3-operator HelmRelease can
 `dependsOn` it by that name. Per repo convention the HelmRelease lives in its target
 namespace (`orc-system`), so no explicit `spec.targetNamespace` is needed.
 `globalCloudConfig` mounts the `orc-system` copy of the `k-orc-clouds-yaml` Secret
 as K-ORC's global default; however K-ORC authenticates **per resource** via each
 CR's `CloudCredentialsRef`, resolved in the CR's own (control-plane) namespace, so
-the credential chain below also materialises a co-located copy there (CC-0110, C1).
+the credential chain below also materialises a co-located copy there.
 See [Admin Credential Chain](#admin-credential-chain) below.
 
 **Helm values:**
@@ -450,14 +450,14 @@ See [Admin Credential Chain](#admin-credential-chain) below.
 | Dependencies | `keystone-operator`, `external-secrets`, `mariadb-operator`, `memcached-operator`, `k-orc` |
 
 The c5c3-operator runs the `ControlPlane` reconciler that orchestrates a Keystone
-control plane end-to-end (CC-0110, REQ-023). It depends on the four operators whose CRs
+control plane end-to-end. It depends on the four operators whose CRs
 it projects — `keystone-operator` for the Keystone instance, `external-secrets` and
 `mariadb-operator` and `memcached-operator` for the supporting platform services — plus
 `k-orc`, whose `ApplicationCredential` / `Service` / `Endpoint` CRDs it drives to
 register the catalog and rotate the admin credential. The operator child CRs are created
 in the `ControlPlane`'s own namespace, not a hard-coded one. For the reconciliation
 contract see the upstream design chapter
-`architecture/docs/09-implementation/08-c5c3-operator.md` (CC-0110).
+`architecture/docs/09-implementation/08-c5c3-operator.md`.
 
 **Helm values:**
 
@@ -517,7 +517,7 @@ by the cert-manager HelmRelease.
 **File:** `deploy/flux-system/infrastructure/db-ca-issuer.yaml`
 
 Provisions the dedicated cert-manager CA that anchors the OpenStack database trust
-domain (CC-0106, REQ-009). The file declares two resources:
+domain. The file declares two resources:
 
 | Resource | API version | Kind | Name | Namespace |
 | --- | --- | --- | --- | --- |
@@ -538,7 +538,7 @@ the OpenStack DB trust domain:
   `reconcileDatabaseTLS` sub-reconciler — the constant
   [`dbCAIssuerName`](https://github.com/c5c3/forge/blob/main/operators/keystone/internal/controller/reconcile_databasetls.go)
   hard-codes the same string (`"openstack-db-ca-issuer"`), so a rename here MUST be
-  matched in the operator (CC-0106, REQ-002).
+  matched in the operator.
 
 **Apply ordering.** This manifest is also applied out-of-band from the infrastructure
 kustomization by `hack/deploy-infra.sh` (Phase 2, alongside `cluster-issuer.yaml` and
@@ -580,7 +580,7 @@ The root password is sourced from a Kubernetes Secret (`mariadb-root-password`, 
 
 **Monitoring:** Prometheus metrics are enabled (`spec.metrics.enabled: true`).
 
-**TLS (CC-0106, REQ-009).** Galera inter-node replication, the MaxScale client
+**TLS.** Galera inter-node replication, the MaxScale client
 listener, and every Keystone-to-database connection all sit inside the OpenStack DB
 trust domain rooted at the `openstack-db-ca-issuer` ClusterIssuer documented above.
 The MariaDB CR enables TLS in `spec.tls` and the MaxScale sub-spec inherits it:
@@ -650,7 +650,7 @@ shipped by the [memcached-operator](https://github.com/C5C3/memcached-operator) 
 
 The c5c3-operator mints a single restricted admin Application Credential per cluster and
 mirrors it to OpenBao, from where the External Secrets Operator materialises it as the
-`clouds.yaml` Secret that K-ORC authenticates with (CC-0110). Two manifests wire this
+`clouds.yaml` Secret that K-ORC authenticates with. Two manifests wire this
 chain:
 
 **ESO ExternalSecrets** — `deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml`
@@ -667,15 +667,14 @@ materialising the Kubernetes Secret `k-orc-clouds-yaml` from the same OpenBao ke
 Both read the OpenBao key `openstack/keystone/admin/app-credential` (property
 `clouds.yaml`, store-relative to the KV-v2 mount). On a fresh cluster that key is
 seeded with a password-based bootstrap clouds.yaml by
-`deploy/openbao/bootstrap/write-bootstrap-secrets.sh` (CC-0110, REQ-024) so the
+`deploy/openbao/bootstrap/write-bootstrap-secrets.sh` so the
 ExternalSecrets can materialise before any credential is minted; once the
 c5c3-operator mints the admin Application Credential its PushSecret overwrites the
-key with the App-Cred-based clouds.yaml (CC-0110, REQ-023, REQ-024).
+key with the App-Cred-based clouds.yaml.
 
 **OpenBao policy** — `deploy/openbao/policies/push-app-credentials.hcl`
 
-This policy grants the write path for the admin credential PushSecret (CC-0110,
-REQ-024). The pre-existing mid-path grant `kv-v2/data/openstack/*/app-credential`
+This policy grants the write path for the admin credential PushSecret. The pre-existing mid-path grant `kv-v2/data/openstack/*/app-credential`
 matches only a single mid-segment (`openstack/<svc>/app-credential`) and therefore does
 **not** cover the two-segment `openstack/keystone/admin/app-credential`. Rather than
 widening that glob, the policy adds two narrow, single-leaf grants:
@@ -688,7 +687,7 @@ widening that glob, the policy adds two narrow, single-leaf grants:
 Both grants stay scoped to the single literal admin-credential leaf, adding no blast
 radius beyond this one credential. For the mTLS transport gate and the
 `openbao-cluster-store` auth path these manifests ride on, see
-[OpenBao Bootstrap Procedure](./openbao-bootstrap.md) (CC-0110).
+[OpenBao Bootstrap Procedure](./openbao-bootstrap.md).
 
 ## Kustomization
 
@@ -732,17 +731,16 @@ CA-type ClusterIssuer that signs from it).
 | Category | Count | Resources |
 | --- | --- | --- |
 | ClusterIssuer | 3 | `selfsigned-cluster-issuer`, `openstack-db-ca-issuer`, `openbao-ca-issuer` (all require cert-manager CRDs) |
-| Certificate | 2 | `openstack-db-ca` (CC-0106, REQ-009), `openbao-ca` (CC-0107) — both CA keypair Secrets in the `cert-manager` namespace, signed by `selfsigned-cluster-issuer` |
+| Certificate | 2 | `openstack-db-ca`, `openbao-ca` — both CA keypair Secrets in the `cert-manager` namespace, signed by `selfsigned-cluster-issuer` |
 | MariaDB | 1 | `openstack-db` (requires mariadb-operator CRDs; TLS enabled per [MariaDB Galera Cluster](#mariadb-galera-cluster)) |
 | Memcached | 1 | `openstack-memcached` (requires memcached-operator CRDs) |
 | **Total** | **6** | |
 
-<!-- DECISION: count excludes openbao-tls-cert.yaml and the ../../eso overlay that
-the infrastructure kustomization also references. Those resources predate
-CC-0106 and are documented in their own reference pages
-(reference/infrastructure/openbao-bootstrap.md and the ESO reference docs); a
-full audit of the kustomization resource list is out of scope for this CC-0106
-change. Reviewer: please verify the scope choice. -->
+<!-- NOTE: count excludes openbao-tls-cert.yaml and the ../../eso overlay that
+the infrastructure kustomization also references. Those resources are documented
+in their own reference pages (reference/infrastructure/openbao-bootstrap.md and
+the ESO reference docs); a full audit of the kustomization resource list is out
+of scope here. -->
 
 
 ## Deployment
@@ -766,8 +764,8 @@ kubectl apply -k deploy/flux-system/infrastructure/
 
 This applies the CRD-dependent resources: the `selfsigned-cluster-issuer`
 ClusterIssuer, the `openstack-db-ca-issuer` ClusterIssuer plus its backing CA
-`Certificate` (CC-0106, REQ-009), the `openbao-ca-issuer` ClusterIssuer plus
-its backing CA `Certificate` (CC-0107), the MariaDB Galera cluster, and the
+`Certificate`, the `openbao-ca-issuer` ClusterIssuer plus
+its backing CA `Certificate`, the MariaDB Galera cluster, and the
 Memcached cluster. These resources require CRDs that are installed by the operator
 HelmReleases in step 1. If CRDs are not yet available, the apply will fail — wait
 for the operators to finish installing and retry.
@@ -866,7 +864,7 @@ internally-built charts to `oci://ghcr.io/c5c3/charts` (see
 ### c5c3-operator and K-ORC design source
 
 The upstream design for the c5c3-operator, K-ORC, and the admin-credential lifecycle
-documented above lives in the `architecture/` git submodule (CC-0110):
+documented above lives in the `architecture/` git submodule:
 
 - `architecture/docs/09-implementation/08-c5c3-operator.md` — the c5c3-operator `ControlPlane` reconciler contract
 - `architecture/docs/03-components/01-control-plane/05-korc.md` — the K-ORC component and chart constraint
@@ -874,7 +872,7 @@ documented above lives in the `architecture/` git submodule (CC-0110):
 
 These chapters are the authoritative design source. They are **updated upstream only**
 and reach this repository through a submodule pointer bump — they are **not** edited from
-this repository or worktree (CC-0110). Treat any divergence between these chapters and
+this repository or worktree. Treat any divergence between these chapters and
 the manifests above as a drift to reconcile at the source, not by editing the submodule
 in place.
 
@@ -1004,12 +1002,12 @@ WITH_CHAOS_MESH=true make deploy-infra
 This is the prerequisite for `make e2e-chaos`. See
 [Chaos E2E Tests](../testing/chaos-e2e-tests.md) for the full workflow.
 
-### kube-prometheus-stack (kind-only opt-in, CC-0100)
+### kube-prometheus-stack (kind-only opt-in)
 
 **File:** `deploy/kind/prometheus/kustomization.yaml`
 
 [`kube-prometheus-stack`](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack)
-ships as a separate **opt-in** kind overlay (CC-0100). The default
+ships as a separate **opt-in** kind overlay. The default
 `make deploy-infra` flow does **not** install it — the `monitoring`
 namespace stays absent, and Prometheus / Grafana / the prometheus-operator
 pods do not consume any of the kind node's CPU or memory budget unless a
@@ -1038,7 +1036,7 @@ the production tree). The overlay bundles the resources with:
 
 **Kind-tuned values** (deliberately too lean for a real workload — they exist
 so the stack fits in a single-node kind cluster alongside Flux, the operators,
-and the OpenStack control plane — CC-0100, REQ-002, REQ-003):
+and the OpenStack control plane):
 
 | Helm value | Override | Purpose |
 | --- | --- | --- |
@@ -1052,7 +1050,7 @@ and the OpenStack control plane — CC-0100, REQ-002, REQ-003):
 | `prometheus.prometheusSpec.serviceMonitorNamespaceSelector` | `{}` | Match every namespace (kind only — see above) |
 | `prometheus.prometheusSpec.resources` / `grafana.resources` | `100m CPU / 256Mi mem` caps | Hard cap on kind resource use |
 
-**Dashboard provisioning** (CC-0100, REQ-004). The overlay also adds a
+**Dashboard provisioning**. The overlay also adds a
 `configMapGenerator` that bundles the keystone-operator dashboard JSON
 (`operators/keystone/dashboards/keystone-operator.json` — the **single source
 of truth**, never forked into the overlay) with the
@@ -1083,7 +1081,7 @@ deploy time, so local renders match CI exactly. `make deploy-infra`
 re-runs the copy on every invocation, so explicit staging is not needed
 when going through the full deploy path.
 
-**ServiceMonitor enablement** (CC-0100, REQ-005). The keystone-operator
+**ServiceMonitor enablement**. The keystone-operator
 chart defaults to `monitoring.serviceMonitor.enabled=false` so production
 overlays inherit the safe default. When `WITH_PROMETHEUS=true`,
 `hack/deploy-infra.sh` waits for the `kube-prometheus-stack` HelmRelease to
@@ -1118,4 +1116,4 @@ documented name (`WITH_PROMETHEUS`), and the kind overlay is self-contained
 under `deploy/kind/prometheus/` so the production kustomization root is
 untouched. The
 [`document-intentional-environment-divergence-in-overlays`](https://github.com/c5c3/forge/blob/main/.planwerk/review_patterns/document-intentional-environment-divergence-in-overlays.md)
-review pattern's CC-0100 follow-up section catalogues the full surface area.
+review pattern catalogues the full surface area.

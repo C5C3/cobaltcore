@@ -6,16 +6,16 @@ quadrant: operator
 # Schedule Keystone Admin Password Rotation
 
 This guide walks an operator through enabling *scheduled* rotation of a Keystone
-instance's admin password (CC-0109, "Model B"), understanding the resource chain
+instance's admin password ("Model B"), understanding the resource chain
 it stands up, and proving end-to-end that a rotation reached the running Keystone.
 
 This is a companion to
 [Rotate the Keystone Admin Password](keystone-admin-password-rotation.md), which
 covers the **manual** flow. The difference in one line:
 
-- **Manual (CC-0108).** *You* write the new password into OpenBao by hand; ESO
+- **Manual.** *You* write the new password into OpenBao by hand; ESO
   projects it into the admin Secret and the operator re-bootstraps.
-- **Scheduled / Model B (CC-0109).** A CronJob *mints* a fresh password on a
+- **Scheduled / Model B.** A CronJob *mints* a fresh password on a
   schedule, the operator validates it and pushes it to OpenBao, and then the same
   re-bootstrap path applies it. You configure the schedule once and the operator
   does the minting.
@@ -57,7 +57,7 @@ spec:
       passwordLength: 32       # default; minimum 24
 ```
 
-The four fields of `passwordRotation` (CC-0109):
+The four fields of `passwordRotation`:
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
@@ -67,7 +67,7 @@ The four fields of `passwordRotation` (CC-0109):
 | `passwordLength` | int | `32` (minimum `24`) | Length of the generated password. |
 
 > **Note.** The defaulting webhook only fills `schedule` and `passwordLength`
-> *once `enabled: true`* (CC-0109, REQ-004). A **nil** `passwordRotation` block is
+> *once `enabled: true`*. A **nil** `passwordRotation` block is
 > never materialized — upgrading a CR that never set it must not silently enable
 > rotation. The leaf fields above are shown explicitly for clarity; you can omit
 > `schedule`, `suspend`, and `passwordLength` and let the webhook default them.
@@ -256,7 +256,7 @@ never clobbers the credential the running Keystone is using mid-flight.
 ## 4. Single-CR precondition
 
 Model B hardcodes the OpenBao RemoteKey to the flat path
-`bootstrap/keystone-admin` (CC-0109, REQ-014). It therefore assumes a **single**
+`bootstrap/keystone-admin`. It therefore assumes a **single**
 Model-B-enabled Keystone CR per cluster, sharing that one OpenBao object with the
 `keystone-admin` ExternalSecret.
 

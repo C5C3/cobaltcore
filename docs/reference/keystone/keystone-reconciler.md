@@ -227,7 +227,7 @@ controller-observable semantics and are stable across releases — consumers
 | --- | --- | --- | --- | --- |
 | `forge.c5c3.io/rotation-target` | Label | Staging Secrets (`{name}-fernet-keys-rotation`, `{name}-credential-keys-rotation`, `{name}-admin-password-rotation`) | `fernet-keys`, `credential-keys`, `admin-password` | Distinguishes rotation staging Secrets from production key Secrets so the operator's Secret→Keystone mapper can enqueue the owning Keystone on staging PATCHes. |
 | `forge.c5c3.io/rotation-completed-at` | Annotation | Staging Secrets (written by the rotation CronJob) | RFC3339 UTC timestamp (e.g. `2026-04-18T12:34:56Z`) | Single-shot commit marker. The operator only applies a staging Secret's data to the production Secret when this annotation is present and parses cleanly; the annotation is removed implicitly when the staging Secret is deleted at the end of a successful apply. |
-| `forge.c5c3.io/admin-password-hash` | Annotation | Bootstrap Job pod template (`{name}-bootstrap`) | `hex(SHA-256(password))` of the `password` key of the admin Secret | Carries the admin-password digest into the pod template so a rotated password changes the pod-spec hash and re-runs the idempotent bootstrap Job (CC-0108, REQ-007). See [`reconcileBootstrap`](#reconcilebootstrap). |
+| `forge.c5c3.io/admin-password-hash` | Annotation | Bootstrap Job pod template (`{name}-bootstrap`) | `hex(SHA-256(password))` of the `password` key of the admin Secret | Carries the admin-password digest into the pod template so a rotated password changes the pod-spec hash and re-runs the idempotent bootstrap Job. See [`reconcileBootstrap`](#reconcilebootstrap). |
 | `forge.c5c3.io/pod-spec-hash` | Annotation | Operator-managed Jobs (`{name}-bootstrap`, migration Jobs) | `hex(SHA-256(PodTemplateSpec))` stamped at creation time | Change-detection gate for completed Jobs. `job.RunJob` compares the desired hash against this annotation and recreates the Job (so it re-runs) when they differ, without normalizing API-server defaults. |
 
 The Go constants backing the rotation keys are exported from
@@ -1483,14 +1483,14 @@ and disaster recovery backup to OpenBao.
 | Schedule | `spec.fernet.rotationSchedule` |
 | ServiceAccount | `{name}-fernet-rotate` |
 | Init container | Copies keys from `fernet-keys-src` (Secret) to `fernet-keys` (emptyDir) |
-| Command | `/scripts/fernet_rotate.sh` (CC-0073) |
-| Volume `fernet-keys-src` | Secret `{name}-fernet-keys` (read-only source, `defaultMode: 0400`) (CC-0099) |
-| Volume `fernet-keys` | emptyDir (writable working copy; init container writes files with `install -m 0400`) (CC-0099) |
-| Volume `credential-keys` | Secret `{name}-credential-keys` (read-only, required by config, `defaultMode: 0400`) (CC-0099) |
+| Command | `/scripts/fernet_rotate.sh` |
+| Volume `fernet-keys-src` | Secret `{name}-fernet-keys` (read-only source, `defaultMode: 0400`) |
+| Volume `fernet-keys` | emptyDir (writable working copy; init container writes files with `install -m 0400`) |
+| Volume `credential-keys` | Secret `{name}-credential-keys` (read-only, required by config, `defaultMode: 0400`) |
 | Volume `config` | ConfigMap `{configMapName}` |
-| Volume `scripts` | ConfigMap `{name}-fernet-rotate-script-{hash}` (`defaultMode: 0555`) (CC-0073) |
-| Pod `fsGroup` | `42424` (openstack GID — grants the rotation Pod's UID 42424 group access to projected key files at mode `0400`) (CC-0099) |
-| Rationale | Mirrors upstream Keystone's `keystone.common.fernet_utils._check_key_repository`, which logs a `WARNING` when the key directory or any key file is world-readable (`stat.S_IROTH`); pinning `defaultMode: 0400` plus `fsGroup: 42424` keeps the projected files group-readable to UID 42424 only and silences the warning (CC-0099) |
+| Volume `scripts` | ConfigMap `{name}-fernet-rotate-script-{hash}` (`defaultMode: 0555`) |
+| Pod `fsGroup` | `42424` (openstack GID — grants the rotation Pod's UID 42424 group access to projected key files at mode `0400`) |
+| Rationale | Mirrors upstream Keystone's `keystone.common.fernet_utils._check_key_repository`, which logs a `WARNING` when the key directory or any key file is world-readable (`stat.S_IROTH`); pinning `defaultMode: 0400` plus `fsGroup: 42424` keeps the projected files group-readable to UID 42424 only and silences the warning |
 
 **PushSecret:**
 
@@ -1654,14 +1654,14 @@ with credential migration, and disaster recovery backup to OpenBao.
 | Schedule | `spec.credentialKeys.rotationSchedule` |
 | ServiceAccount | `{name}-credential-rotate` |
 | Init container | Copies keys from `credential-keys-src` (Secret) to `credential-keys` (emptyDir) |
-| Command | `/scripts/credential_rotate.sh` (CC-0073) |
-| Volume `credential-keys-src` | Secret `{name}-credential-keys` (read-only source, `defaultMode: 0400`) (CC-0099) |
-| Volume `credential-keys` | emptyDir (writable working copy; init container writes files with `install -m 0400`) (CC-0099) |
-| Volume `fernet-keys` | Secret `{name}-fernet-keys` (read-only, required by config, `defaultMode: 0400`) (CC-0099) |
+| Command | `/scripts/credential_rotate.sh` |
+| Volume `credential-keys-src` | Secret `{name}-credential-keys` (read-only source, `defaultMode: 0400`) |
+| Volume `credential-keys` | emptyDir (writable working copy; init container writes files with `install -m 0400`) |
+| Volume `fernet-keys` | Secret `{name}-fernet-keys` (read-only, required by config, `defaultMode: 0400`) |
 | Volume `config` | ConfigMap `{configMapName}` |
-| Volume `scripts` | ConfigMap `{name}-credential-rotate-script-{hash}` (`defaultMode: 0555`) (CC-0073) |
-| Pod `fsGroup` | `42424` (openstack GID — grants the rotation Pod's UID 42424 group access to projected key files at mode `0400`) (CC-0099) |
-| Rationale | Mirrors upstream Keystone's `keystone.common.fernet_utils._check_key_repository`, which logs a `WARNING` when the key directory or any key file is world-readable (`stat.S_IROTH`); pinning `defaultMode: 0400` plus `fsGroup: 42424` keeps the projected files group-readable to UID 42424 only and silences the warning (CC-0099) |
+| Volume `scripts` | ConfigMap `{name}-credential-rotate-script-{hash}` (`defaultMode: 0555`) |
+| Pod `fsGroup` | `42424` (openstack GID — grants the rotation Pod's UID 42424 group access to projected key files at mode `0400`) |
+| Rationale | Mirrors upstream Keystone's `keystone.common.fernet_utils._check_key_repository`, which logs a `WARNING` when the key directory or any key file is world-readable (`stat.S_IROTH`); pinning `defaultMode: 0400` plus `fsGroup: 42424` keeps the projected files group-readable to UID 42424 only and silences the warning |
 
 > **Note:** The `credential_rotate.sh` script runs both `credential_rotate` and
 > `credential_migrate`. The migrate step re-encrypts existing credentials in the
@@ -2050,15 +2050,15 @@ The liveness and readiness probes are intentionally separated. The liveness prob
 | Volume Name | Mount Path | Source | ReadOnly |
 | --- | --- | --- | --- |
 | `config` | `/etc/keystone/keystone.conf.d/` | ConfigMap `{configMapName}` | Yes |
-| `fernet-keys` | `/etc/keystone/fernet-keys/` | Secret `keystone-fernet-keys` (`defaultMode: 0400`) (CC-0099) | Yes |
-| `credential-keys` | `/etc/keystone/credential-keys/` | Secret `keystone-credential-keys` (`defaultMode: 0400`) (CC-0099) | Yes |
+| `fernet-keys` | `/etc/keystone/fernet-keys/` | Secret `keystone-fernet-keys` (`defaultMode: 0400`) | Yes |
+| `credential-keys` | `/etc/keystone/credential-keys/` | Secret `keystone-credential-keys` (`defaultMode: 0400`) | Yes |
 
 **Pod-level Security:**
 
 | Field | Value |
 | --- | --- |
-| `spec.template.spec.securityContext.fsGroup` | `42424` (openstack GID — grants the API Pod's UID 42424 group access to projected key files at mode `0400`) (CC-0099) |
-| Rationale | Mirrors upstream Keystone's `keystone.common.fernet_utils._check_key_repository`, which logs a `WARNING` when the key directory or any key file is world-readable (`stat.S_IROTH`); pinning `defaultMode: 0400` plus `fsGroup: 42424` keeps the projected files group-readable to UID 42424 only and silences the warning (CC-0099) |
+| `spec.template.spec.securityContext.fsGroup` | `42424` (openstack GID — grants the API Pod's UID 42424 group access to projected key files at mode `0400`) |
+| Rationale | Mirrors upstream Keystone's `keystone.common.fernet_utils._check_key_repository`, which logs a `WARNING` when the key directory or any key file is world-readable (`stat.S_IROTH`); pinning `defaultMode: 0400` plus `fsGroup: 42424` keeps the projected files group-readable to UID 42424 only and silences the warning |
 
 **Service Spec:**
 
@@ -2489,7 +2489,7 @@ project, roles, and service catalog entries.
 | `--bootstrap-public-url` | `http://keystone.{namespace}.svc.cluster.local:5000/v3` |
 | `--bootstrap-region-id` | `spec.bootstrap.region` |
 
-**Admin-password rotation re-run (CC-0108, REQ-007):** Before building the Job,
+**Admin-password rotation re-run:** Before building the Job,
 the reconciler reads the `password` key of the admin Secret named by
 `spec.bootstrap.adminPasswordSecretRef.Name` and stamps its digest —
 `hex(SHA-256(password))` — onto the bootstrap Job's pod template as the
@@ -2636,13 +2636,12 @@ func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
 The third parameter is the shared config ConfigMap name. It is accepted only for
 sub-reconciler call-site symmetry with `reconcileFernetKeys` and
 `reconcileTrustFlush` — the controller wires this sub-reconciler as
-`instrumentSubReconciler(ctx, "PasswordRotation", ...)` passing `configMapName`
-(CC-0109, REQ-009). It is intentionally unused (named `_`) because the rotate
+`instrumentSubReconciler(ctx, "PasswordRotation", ...)` passing `configMapName`.
+It is intentionally unused (named `_`) because the rotate
 script never runs `keystone-manage` and therefore needs no keystone
 configuration.
 
-**Purpose:** Drive Model B scheduled admin-password rotation (CC-0109, REQ-002,
-REQ-003, REQ-009). A CronJob mints a fresh strong password and PATCHes it onto a
+**Purpose:** Drive Model B scheduled admin-password rotation. A CronJob mints a fresh strong password and PATCHes it onto a
 staging Secret; the operator validates and commits it onto an operator-owned
 push-source Secret; a PushSecret mirrors that to OpenBao at the flat path
 `bootstrap/keystone-admin`; External Secrets Operator (ESO) then syncs it back
@@ -2680,7 +2679,7 @@ Two lifecycle paths:
    the next reconcile picks up the freshest timestamp once the apply re-stamps
    the push-source annotation.
 4. **Apply any completed rotation** — `applyAdminPasswordRotation` validates and
-   commits a staged rotation if one is present (REQ-007, REQ-011). On a
+   commits a staged rotation if one is present. On a
    successful apply it sets `PasswordRotationReady=True` with reason
    `AdminPasswordRotated` ("rotation applied; staging secret cleared") and
    short-circuits with `Requeue: true` so the next pass re-enters the happy path
@@ -2697,7 +2696,7 @@ Two lifecycle paths:
    `adminPasswordPushSourceReady` reports the push-source Secret holds a valid
    password (≥ minLength). Before the first rotation completes the push-source is
    empty, and pushing it would overwrite the seeded `bootstrap/keystone-admin`
-   value with nothing (REQ-007, REQ-011, REQ-014).
+   value with nothing.
 9. **Report ready** — sets `PasswordRotationReady=True` with reason
    `PasswordRotationConfigured` ("Admin password rotation CronJob is
    configured").
@@ -2733,7 +2732,7 @@ push-source Secret (see the RBAC split below).
 | Name | `{name}-admin-password-backup` |
 | Store | `ClusterSecretStore/openbao-cluster-store` |
 | Source Secret | `{name}-admin-password-next` (push-source) |
-| Remote Key | `bootstrap/keystone-admin` (hardcoded flat path — single-CR assumption, REQ-014, boundary 8) |
+| Remote Key | `bootstrap/keystone-admin` (hardcoded flat path — single-CR assumption, boundary 8) |
 | Property | `password` |
 | DeletionPolicy | `None` |
 
@@ -2774,7 +2773,7 @@ The rotation path separates the **compute** of the new password (performed by
 the rotation CronJob) from the **write** onto the push-source Secret and the
 commit (performed by the operator). `ensureAdminPasswordRotationRBAC` creates a
 ServiceAccount, Role, and RoleBinding all named `{name}-admin-password-rotate`,
-mirroring `ensureFernetRotationRBAC`'s split shape (CC-0081, CC-0109).
+mirroring `ensureFernetRotationRBAC`'s split shape.
 
 **Staging Secret naming.** Per `adminPasswordStagingSecretName`, the staging
 Secret is `{keystone.Name}-admin-password-rotation`. It is created and owned by
@@ -2807,8 +2806,7 @@ with strictly disjoint capabilities:
 | Operator ServiceAccount | Secret `{name}-admin-password-next` (push-source) | `get`, `create`, `update`, `patch`, `delete`, `list`, `watch` | Cluster-scoped core `secrets` verbs (see [RBAC Permissions](#rbac-permissions)) |
 | Operator ServiceAccount | Secret `{name}-admin-password-rotation` (staging) | `get`, `create`, `update`, `patch`, `delete`, `list`, `watch` | Cluster-scoped core `secrets` verbs |
 
-**Operator output contract.** `validateAdminPasswordRotationOutput` (REQ-007,
-REQ-011) requires a non-empty `password` value of at least minLength bytes, where
+**Operator output contract.** `validateAdminPasswordRotationOutput` requires a non-empty `password` value of at least minLength bytes, where
 minLength is the normalized `PasswordLength` (webhook default 32, defense-in-depth
 floor 24 via `adminPasswordMinLength`). On rejection the operator emits a Warning
 event `AdminPasswordRotationRejected` and **retains the staging Secret** for

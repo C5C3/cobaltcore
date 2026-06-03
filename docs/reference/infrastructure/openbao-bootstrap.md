@@ -157,8 +157,8 @@ injection:
 | --- | --- | --- |
 | `BAO_ADDR` | `https://127.0.0.1:8200` | OpenBao API address (pod-local loopback) |
 | `VAULT_CACERT` | `/openbao/tls/ca.crt` | CA certificate path for TLS verification |
-| `VAULT_CLIENT_CERT` (CC-0107) | `/openbao/client-tls/tls.crt` | Client certificate the in-pod `bao` CLI presents on every API call. Required because `tls_require_and_verify_client_cert = true` is enabled on the listener; without it the TLS handshake fails before any application-layer auth runs. |
-| `VAULT_CLIENT_KEY` (CC-0107) | `/openbao/client-tls/tls.key` | Matching private key for `VAULT_CLIENT_CERT`. Both files are mounted from the `openbao-client-tls` Secret at `/openbao/client-tls`. |
+| `VAULT_CLIENT_CERT` | `/openbao/client-tls/tls.crt` | Client certificate the in-pod `bao` CLI presents on every API call. Required because `tls_require_and_verify_client_cert = true` is enabled on the listener; without it the TLS handshake fails before any application-layer auth runs. |
+| `VAULT_CLIENT_KEY` | `/openbao/client-tls/tls.key` | Matching private key for `VAULT_CLIENT_CERT`. Both files are mounted from the `openbao-client-tls` Secret at `/openbao/client-tls`. |
 
 Defaults are set in `deploy/openbao/bootstrap/common.sh` and forwarded by every
 `bao`-invoking wrapper (`bao_exec`, `bao_exec_stdin` in `common.sh`, the private
@@ -456,8 +456,8 @@ headless service DNS names (`openbao-0.openbao-internal`, `openbao-1.openbao-int
 | Certificate source | `openbao-tls` Secret (cert-manager) |
 | Certificate duration | `8760h` (1 year) |
 | Renewal window | `720h` (30 days before expiry) |
-| `tls_client_ca_file` (CC-0107) | `/openbao/tls/ca.crt` — CA the listener uses to verify presented client certs. The file resolves to the `openbao-ca` CA bundle because the server cert (`openbao-tls`) and every client cert are signed by the same `openbao-ca-issuer` (see below) |
-| `tls_require_and_verify_client_cert` (CC-0107) | `true` — every TLS handshake on `:8200` must present a valid client cert; the listener rejects any connection that does not, before any application-layer auth (Kubernetes JWT, AppRole, root token) runs |
+| `tls_client_ca_file` | `/openbao/tls/ca.crt` — CA the listener uses to verify presented client certs. The file resolves to the `openbao-ca` CA bundle because the server cert (`openbao-tls`) and every client cert are signed by the same `openbao-ca-issuer` (see below) |
+| `tls_require_and_verify_client_cert` | `true` — every TLS handshake on `:8200` must present a valid client cert; the listener rejects any connection that does not, before any application-layer auth (Kubernetes JWT, AppRole, root token) runs |
 
 The TLS certificate is issued by the `openbao-ca-issuer` (a CA-type ClusterIssuer)
 via a cert-manager Certificate resource at
@@ -465,9 +465,9 @@ via a cert-manager Certificate resource at
 is bootstrapped by `selfsigned-cluster-issuer` in
 `deploy/flux-system/infrastructure/openbao-ca-issuer.yaml` — a SelfSigned issuer
 cannot sign leaves for a separate trust chain, so the openbao trust domain owns
-its own CA (mirrors the `openstack-db-ca` precedent in CC-0106).
+its own CA (mirrors the `openstack-db-ca` precedent).
 
-**Client certificates (CC-0107).** Two additional `cert-manager.io/v1` Certificates
+**Client certificates.** Two additional `cert-manager.io/v1` Certificates
 issue *client*-auth keypairs from the same `openbao-ca-issuer`, both
 declared in `deploy/flux-system/infrastructure/openbao-client-tls-cert.yaml`:
 
@@ -491,8 +491,8 @@ the OpenBao listener does not verify SANs on client auth, only the issuing CA.
 | `openbao.openbao-system.svc` | DNS | `openbao-tls` (server) | `server auth` | Kubernetes Service endpoint |
 | `127.0.0.1` | IP | `openbao-tls` (server) | `server auth` | Pod-local loopback (bootstrap scripts, `bao_exec`) |
 | `::1` | IP | `openbao-tls` (server) | `server auth` | IPv6 loopback |
-| `openbao-client.openbao-system.svc` | DNS | `openbao-client-tls` (CC-0107) | `client auth` | Identifier only; presented by OpenBao pods on Raft `retry_join` and in-pod `bao` exec. SANs are not verified by the listener for client auth — chain-to-CA is. |
-| `eso-openbao-client.openbao-system.svc` | DNS | `eso-openbao-client-tls` (CC-0107) | `client auth` | Identifier only; presented by ESO `ClusterSecretStore/openbao-cluster-store` on every Vault call. SANs are not verified. |
+| `openbao-client.openbao-system.svc` | DNS | `openbao-client-tls` | `client auth` | Identifier only; presented by OpenBao pods on Raft `retry_join` and in-pod `bao` exec. SANs are not verified by the listener for client auth — chain-to-CA is. |
+| `eso-openbao-client.openbao-system.svc` | DNS | `eso-openbao-client-tls` | `client auth` | Identifier only; presented by ESO `ClusterSecretStore/openbao-cluster-store` on every Vault call. SANs are not verified. |
 
 ### Resource Limits
 
@@ -586,7 +586,7 @@ Common causes:
 - OpenBao is sealed (re-run `init-unseal.sh`)
 - ESO service account missing (verify `external-secrets` SA exists in `external-secrets` namespace)
 - TLS trust failure (verify `openbao-tls` Secret contains `ca.crt` key)
-- Missing client certificate (CC-0107): verify the `eso-openbao-client-tls`
+- Missing client certificate: verify the `eso-openbao-client-tls`
   Secret exists in `openbao-system` and the `ClusterSecretStore`
   `spec.provider.vault.tls.certSecretRef` / `keySecretRef` point at it. With
   `tls_require_and_verify_client_cert = true` on the listener, an absent or
@@ -594,7 +594,7 @@ Common causes:
   ESO controller log (`remote error: tls: bad certificate` or similar), not as
   an HTTP 401/403.
 
-### Verify mTLS enforcement (CC-0107)
+### Verify mTLS enforcement
 
 Confirm the listener rejects a client that does not present a valid certificate.
 The probe runs entirely inside the pod (so the CA bundle is on the
@@ -638,6 +638,6 @@ reconciled (`kubectl get helmrelease openbao -n openbao-system`).
 - [Infrastructure Manifests](./infrastructure-manifests.md) — FluxCD base deployment
 - `deploy/flux-system/releases/openbao.yaml` — OpenBao HelmRelease
 - `deploy/flux-system/infrastructure/openbao-tls-cert.yaml` — server TLS Certificate
-- `deploy/flux-system/infrastructure/openbao-client-tls-cert.yaml` — client TLS Certificates (CC-0107)
-- `deploy/eso/clustersecretstore.yaml` — ClusterSecretStore configuration (CC-0107: now uses client-cert mTLS)
+- `deploy/flux-system/infrastructure/openbao-client-tls-cert.yaml` — client TLS Certificates
+- `deploy/eso/clustersecretstore.yaml` — ClusterSecretStore configuration (now uses client-cert mTLS)
 - `deploy/eso/externalsecrets/` — ExternalSecret resources

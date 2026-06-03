@@ -8,7 +8,7 @@
 #   - a subsection references deploy/kind/base/flux-web.yaml
 #   - the chart URL oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator
 #     is cited in that subsection
-#   - the Renovate customManager / pin story is mentioned (REQ-004 cross-link)
+#   - the Renovate customManager / pin story is mentioned
 #   - an explicit note clarifies that deploy/flux-system/kustomization.yaml
 #     does NOT reference this file (production stays opt-out)
 #   - the document still parses as a sequence of well-formed Markdown
@@ -86,16 +86,13 @@ test_helm_values_cited() {
     'installCRDs'
 }
 
-# --- Test 6: Renovate customManager cross-reference (CC-0086, REQ-008, REQ-004) ---
+# --- Test 6: Renovate customManager cross-reference (CC-0086, REQ-008) ---
 test_renovate_cross_reference() {
-  echo "Test: the flux-web subsection cross-references the Renovate customManager (CC-0086, REQ-008 → REQ-004)"
+  echo "Test: the flux-web subsection cross-references the Renovate customManager (CC-0086, REQ-008)"
 
   assert_file_contains "Renovate customManager cross-reference present" \
     "$MANIFESTS_DOC" \
     'customManager'
-  assert_file_contains "REQ-004 cross-reference present" \
-    "$MANIFESTS_DOC" \
-    'REQ-004'
 }
 
 # --- Test 7: explicit note that production flux-system does NOT reference

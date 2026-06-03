@@ -347,6 +347,14 @@ verify-invalid-cr-fixtures:
 	@echo "Running CC-0094 invalid-CR fixture unit tests..."
 	@python3 tests/e2e/keystone/invalid-cr/test_generate.py
 
+.PHONY: check-docs-ids
+# check-docs-ids fails if any internal feature / requirement ID (CC-NNNN or
+# REQ-NNN) appears in the published documentation under docs/. User-facing docs
+# describe behaviour, not internal tracking IDs. Mirrors the CI docs-job gate
+# and needs no cluster or toolchain beyond grep.
+check-docs-ids:
+	@bash scripts/check-docs-no-feature-ids.sh
+
 .PHONY: e2e
 # CC-0088: chainsaw auto-discovers chainsaw-test.yaml recursively, so new suites
 # under tests/e2e/**/ (e.g. keystone/gateway-quick-start, infrastructure/gateway-quick-start-smoke)

@@ -6,7 +6,7 @@ quadrant: operator
 # ControlPlane Reconciler Architecture
 
 Reference documentation for the `ControlPlaneReconciler`, the
-`CredentialRotationReconciler`, and their sub-reconciler contracts (CC-0110).
+`CredentialRotationReconciler`, and their sub-reconciler contracts.
 The `ControlPlaneReconciler` implements the control loop that drives a
 `ControlPlane` CR from desired state to a fully operational Keystone control
 plane: backing infrastructure, the projected Keystone service, the K-ORC admin
@@ -28,8 +28,7 @@ owns child CRs (MariaDB, Memcached, Keystone, K-ORC `ApplicationCredential` /
 re-implement the per-service logic those child operators already own. As a
 consequence the c5c3 API surface is deliberately smaller than the
 [Keystone reconciler](../keystone/keystone-reconciler.md)'s: there is no
-finalizer, no parallel sub-reconciler group, and no per-CR metric cardinality
-(CC-0110).
+finalizer, no parallel sub-reconciler group, and no per-CR metric cardinality.
 
 ## Controller Registration
 
@@ -38,8 +37,7 @@ controller manager in `operators/c5c3/main.go` via the shared bootstrap package
 (`github.com/c5c3/forge/internal/common/bootstrap`). The bootstrap helper builds
 the manager, wires leader election, and invokes the operator's `SetupFunc`; the
 same pattern is documented in detail under
-[Keystone Reconciler — Controller Registration](../keystone/keystone-reconciler.md#controller-registration)
-(CC-0110, REQ-007).
+[Keystone Reconciler — Controller Registration](../keystone/keystone-reconciler.md#controller-registration).
 
 ```go
 import (
@@ -87,7 +85,7 @@ bootstrap.Run(bootstrap.ManagerConfig{
 ### Scheme Registration
 
 The operator registers these schemes in `main.go`'s `init()` so the reconcilers
-can interact with the typed child CRDs (CC-0110):
+can interact with the typed child CRDs:
 
 | Module | Scheme | Types Used |
 | --- | --- | --- |
@@ -105,7 +103,7 @@ can interact with the typed child CRDs (CC-0110):
 > `*unstructured.Unstructured` carrying the shared `memcachedGVK`
 > (`memcached.c5c3.io/v1beta1`, kind `Memcached`), and `SetupWithManager`
 > `Owns` the same unstructured GVK. The GVK is resolved against the cluster
-> `RESTMapper` at runtime, so no scheme entry is required (CC-0110).
+> `RESTMapper` at runtime, so no scheme entry is required.
 
 ### Watches
 
@@ -130,8 +128,7 @@ it is owned by the ExternalSecret controller, not by the ControlPlane CR — so 
 owner-reference filter would never match it. The index-backed namespace List is
 exactly what wakes the ControlPlane when its admin password rotates, so the
 re-mint chain (see [K-ORC admin credential chain](#k-orc-admin-credential-chain))
-converges on watch delivery instead of waiting for the next periodic requeue
-(CC-0110, REQ-012).
+converges on watch delivery instead of waiting for the next periodic requeue.
 
 #### Secret Field Indexer
 
@@ -139,7 +136,7 @@ The controller registers a controller-runtime field indexer on the
 `ControlPlane` kind so that a Secret event resolves to the referencing
 ControlPlane CR(s) via an O(1) cache lookup instead of an unfiltered
 namespace-scoped List, mirroring the keystone operator's
-`KeystoneSecretNameIndexKey` (CC-0110, REQ-012).
+`KeystoneSecretNameIndexKey`.
 
 | Aspect | Value |
 | --- | --- |
@@ -153,7 +150,7 @@ namespace-scoped List, mirroring the keystone operator's
 > mapper has a **pure index-backed** lookup with no owner-reference fallback
 > branch — the ControlPlane projects no rotation-staging Secrets that are
 > owned-but-unreferenced, so the union/owner-ref complexity of
-> `secretToKeystoneMapper` is not needed here (CC-0110).
+> `secretToKeystoneMapper` is not needed here.
 
 ---
 
@@ -294,7 +291,7 @@ This guarantees:
 
 Only when all five sub-reconcilers return a zero result with no error does
 control reach `setReadyCondition(&cp)` and the final `updateStatus(ctx, &cp,
-ctrl.Result{}, nil)` (CC-0110, REQ-007).
+ctrl.Result{}, nil)`.
 
 ### Status Update Pattern
 
@@ -312,8 +309,7 @@ remains visible in controller-runtime logs:
 | non-nil | fails | `errors.Join(reconcileErr, fmt.Errorf("updating status: %w", statusErr))` |
 
 Because `ObservedGeneration` is stamped on **every** `updateStatus` call (early
-return or final), a stale status is always distinguishable from a current one
-(CC-0110, REQ-007).
+return or final), a stale status is always distinguishable from a current one.
 
 ### Ready Condition Aggregation
 
@@ -334,7 +330,7 @@ InfrastructureReady, KeystoneReady, KORCReady, AdminCredentialReady, CatalogRead
 ```
 
 The `Ready` condition carries `ObservedGeneration = cp.Generation` so clients can
-detect a stale aggregate (CC-0110, REQ-007).
+detect a stale aggregate.
 
 ---
 
@@ -345,7 +341,7 @@ each one's gate, what it projects/owns, and the condition reasons it sets on the
 `True`, requeue, and error paths. All condition constants are the exported
 source-of-truth strings in `controlplane_controller.go`; sub-reconcilers
 reference the constants (never inline literals) so a rename is a compile error
-and is caught by the no-inline-literals drift guard (CC-0110, REQ-007).
+and is caught by the no-inline-literals drift guard.
 
 Every condition is stamped with `ObservedGeneration = cp.Generation` on every
 path.
@@ -385,7 +381,7 @@ occurs; readiness is evaluated collectively afterwards.
 > `conditions.IsReady(mariadb.Status.Conditions)`; Memcached readiness is read
 > from the unstructured `status.conditions[type=Ready].status == "True"`
 > (`unstructuredReady`), where a missing/malformed list is treated as not-ready
-> rather than an error (CC-0110, REQ-008).
+> rather than an error.
 
 ### reconcileKeystone
 
@@ -440,8 +436,7 @@ the ControlPlane provisioned:
 | Requeue | `korcRequeueAfter` = **10s** while deferring, while the CRD is missing, or while the AC is not yet Available |
 
 `reconcileKORC` create-or-updates an **owned** K-ORC `ApplicationCredential` CR
-that instructs K-ORC to mint the admin application credential, and drives re-mint
-(CC-0110, REQ-010, REQ-012). Key behaviours:
+that instructs K-ORC to mint the admin application credential, and drives re-mint. Key behaviours:
 
 - **Restricted → Unrestricted inversion (CRITICAL).** Our
   `ApplicationCredentialSpec.restricted` is the inverse of K-ORC's
@@ -459,8 +454,7 @@ that instructs K-ORC to mint the admin application credential, and drives re-min
 - **Re-mint trigger.** The SHA-256 of the admin password is stamped onto the AC
   CR under the `forge.c5c3.io/admin-password-hash` annotation
   (`adminPasswordHashAnnotation`). On a later pass, a mismatch between the
-  freshly computed hash and the stamped annotation drives K-ORC to re-mint
-  (CC-0110, REQ-012). The hash is computed by the package-level
+  freshly computed hash and the stamped annotation drives K-ORC to re-mint. The hash is computed by the package-level
   `computeAdminPasswordHash`, shared with the CredentialRotation reconciler so
   both agree on one derivation.
 - **Status reflection.** `updateAdminApplicationCredentialStatus` reflects the
@@ -491,7 +485,7 @@ that instructs K-ORC to mint the admin application credential, and drives re-min
 | Requeue | `korcRequeueAfter` = **10s** while either gate is unmet |
 
 `reconcileAdminCredential` commits the minted credential and mirrors it to
-OpenBao (CC-0110, REQ-011):
+OpenBao:
 
 - **Clobber-safe operator Secret.** The Secret K-ORC writes the minted
   credential into is ensured by the operator, but the `CreateOrUpdate` mutate
@@ -503,7 +497,7 @@ OpenBao (CC-0110, REQ-011):
   The Secret is co-located with the K-ORC CRs (C1) because K-ORC resolves
   `CloudCredentialsRef` in the resource's own namespace; on a fresh cluster the
   underlying OpenBao path is seeded with a password-based bootstrap clouds.yaml by
-  `write-bootstrap-secrets.sh` (CC-0110, REQ-024) so the ExternalSecret can
+  `write-bootstrap-secrets.sh` so the ExternalSecret can
   materialise — the c5c3 PushSecret then overwrites it with the minted credential.
 - **PushSecret to OpenBao.** `secrets.EnsurePushSecret` (idempotent; only Updates
   on a `DeepEqual` diff so ESO is not woken to re-push an unchanged credential)
@@ -532,7 +526,7 @@ OpenBao (CC-0110, REQ-011):
 | Requeue | `korcRequeueAfter` = **10s** while gated or while the K-ORC CRD is missing |
 
 `reconcileCatalog` registers the OpenStack service-catalog entries for Keystone
-as owned K-ORC CRs (CC-0110, REQ-014): an `identity`-type `Service` named
+as owned K-ORC CRs: an `identity`-type `Service` named
 `keystone`, plus a `public` `Endpoint` whose URL defaults to the conventional
 in-cluster identity URL `http://keystone.<namespace>.svc:5000/v3` and whose
 `serviceRef` points at the identity Service. Both children are idempotent
@@ -559,7 +553,7 @@ create-or-updates; the K-ORC missing-CRD safety mirrors `reconcileKORC` via
 
 The `CredentialRotationReconciler` drives one-shot rotations of a control-plane
 credential by **nudging** the ControlPlane reconciler rather than duplicating any
-mint logic (CC-0110, REQ-015). Its model:
+mint logic. Its model:
 
 - **Nudge, never mint.** To force a re-mint it simply **clears** (zeroes) the
   `forge.c5c3.io/admin-password-hash` annotation on the owned AC CR via
@@ -599,15 +593,14 @@ mint logic (CC-0110, REQ-015). Its model:
 
 The CredentialRotation reconciler is registered with the manager via a plain
 `For(&CredentialRotation{})` — it owns no children and registers no watches or
-field indexers (CC-0110, REQ-015).
+field indexers.
 
 ---
 
 ## K-ORC admin credential chain
 
 The end-to-end path that delivers the admin application credential to the K-ORC
-controller spans three sub-reconcilers and the ESO/OpenBao backend
-(CC-0110, REQ-010, REQ-011, REQ-012, REQ-013):
+controller spans three sub-reconcilers and the ESO/OpenBao backend:
 
 ```text
 keystone-admin Secret (admin password; ESO-managed, read by c5c3-operator)
@@ -655,7 +648,7 @@ owner).
 > [Keystone reconciler](../keystone/keystone-reconciler.md#finalizer), the
 > ControlPlane reconciler installs **no finalizer**. Teardown is driven entirely
 > by owner-reference garbage collection — there is no ordered external cleanup
-> the operator must perform before the CR leaves etcd (CC-0110).
+> the operator must perform before the CR leaves etcd.
 
 > **Children live in the owner's namespace.** Every projected child is created in
 > `childNamespace(cp) = cp.Namespace`, **not** a hardcoded `openstack`. A
@@ -664,8 +657,7 @@ owner).
 > single namespace; co-locating children with their owner keeps the owner
 > reference valid and the GC cascade intact. In production the ControlPlane is
 > deployed into the `openstack` namespace, so the children land there exactly as
-> before — the namespace is now *derived from the owner* rather than assumed
-> (CC-0110).
+> before — the namespace is now *derived from the owner* rather than assumed.
 
 | Resource | Name | Owner | Notes |
 | --- | --- | --- | --- |
@@ -678,11 +670,11 @@ owner).
 | `Service` (K-ORC) | `{name}-identity-service` | ControlPlane CR | identity catalog entry |
 | `Endpoint` (K-ORC) | `{name}-identity-endpoint` | ControlPlane CR | public interface |
 
-### Security invariant (REQ-013)
+### Security invariant
 
 The admin password and the minted application-credential Secret are read **only**
 by the c5c3-operator and the K-ORC controller pods — they are **never** mounted
-into Keystone or any OpenStack service workload (CC-0110, REQ-013). Keystone
+into Keystone or any OpenStack service workload. Keystone
 receives the admin password solely through its own bootstrap Secret ref for the
 one-time `keystone-manage bootstrap`; the long-lived application credential lives
 exclusively on the c5c3↔K-ORC↔OpenBao path. `restricted: true` (the default)
@@ -696,8 +688,7 @@ invariants are enforced by the `credential_invariant_test.go` checks
 The `PushSecret`'s `DeletionPolicy: None` is the one deliberate exception to the
 GC cascade: tearing down a ControlPlane removes the PushSecret CR but leaves the
 last-pushed credential in OpenBao, so a fresh control plane (or a consumer that
-already depends on the shared bootstrap secret) is not locked out mid-rotation
-(CC-0110, REQ-011).
+already depends on the shared bootstrap secret) is not locked out mid-rotation.
 
 ---
 
@@ -707,7 +698,7 @@ Every sub-reconciler invocation is instrumented for Prometheus via a single
 helper, `instrumentSubReconciler`, defined in
 `operators/c5c3/internal/controller/instrumentation.go`. `Reconcile` wraps every
 sub-reconciler call with it; a direct call that bypasses the helper is a contract
-violation (CC-0110, REQ-026).
+violation.
 
 ```go
 func instrumentSubReconciler(
@@ -730,8 +721,7 @@ Behavioural contract:
 - Carries **no per-CR labels** (no `controlplane` / `namespace`). The two label
   dimensions (`sub_reconciler`, and `condition_type` on the error counter) are
   bounded by the number of sub-reconcilers, keeping the series count
-  fleet-independent. Per-CR collectors are intentionally out of scope (CC-0110,
-  REQ-026).
+  fleet-independent. Per-CR collectors are intentionally out of scope.
 
 Both vectors are registered exactly once on the controller-runtime registry via
 `sync.Once`; the histogram buckets are a fixed contract
@@ -759,7 +749,7 @@ visible in dashboards/alerts. Two static drift guards keep the map honest:
 `TestSubReconcilerConditionTypesCoversAllCallSites` walks the source AST to
 assert every `instrumentSubReconciler` call-site name is a map key. Adding a new
 sub-reconciler therefore requires updating `subConditionTypes` **and**
-`subReconcilerConditionTypes` or CI fails (CC-0110, REQ-026).
+`subReconcilerConditionTypes` or CI fails.
 
 ---
 
@@ -779,7 +769,7 @@ test that drives the full chain in a real manager against a live API server.
 ### Integration test
 
 `TestIntegration_FullReconcile_ManagedToReady` (`integration_test.go`, build tag
-`integration`, CC-0110 REQ-027) registers the real controller wiring (the inline
+`integration`) registers the real controller wiring (the inline
 builder is kept byte-for-byte in step with `SetupWithManager`) and drives a
 managed-mode ControlPlane through every sub-reconciler to the aggregate
 `Ready=True`. It simulates each external dependency's readiness **in dependency
@@ -790,7 +780,7 @@ every sub-condition and the aggregate `Ready` (reason `AllReady`) reach `True`,
 that `status.observedGeneration` and every condition's `ObservedGeneration` match
 the CR generation, and that `status.adminApplicationCredential` mirrors the
 simulated AC. Beyond the aggregate condition it also asserts the **intermediate
-projected specs** (REQ-027) so a projection regression is caught: the Keystone
+projected specs** so a projection regression is caught: the Keystone
 image tag derived from `openStackRelease`, the database/cache `clusterRef`s wired
 to the infra CRs, the merged `policyOverrides`, the `restricted→Unrestricted=false`
 inversion on the AC, and the identity `Service`/`Endpoint` shape.
@@ -857,7 +847,7 @@ operators/c5c3/
 The `ControlPlane` reconciler and the K-ORC self-credentialing chain implement
 the following upstream architecture chapters (in the `architecture/` submodule,
 [github.com/C5C3/C5C3](https://github.com/C5C3/C5C3)). They are the authoritative
-design source for this reconciler (CC-0110):
+design source for this reconciler:
 
 - `architecture/docs/09-implementation/08-c5c3-operator.md` — the c5c3-operator
   `ControlPlane` reconciler contract and sub-reconciler ordering.

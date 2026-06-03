@@ -10,7 +10,7 @@ quadrant: operator
 # How-to: Enable Keystone Database TLS/mTLS
 
 This guide walks an operator through opting a `Keystone` CR into encrypted,
-mutually-authenticated connections to MariaDB/MaxScale (CC-0106). When enabled,
+mutually-authenticated connections to MariaDB/MaxScale. When enabled,
 the keystone-operator provisions a cert-manager `Certificate` from the shared
 OpenStack DB CA, mounts the resulting keypair into every Keystone workload that
 opens a database connection, and appends the `ssl_*` parameters to the database
@@ -36,8 +36,8 @@ and
    ```
 
 2. **`openstack-db-ca-issuer` ClusterIssuer Ready.** The dedicated DB CA is
-   declared in `deploy/flux-system/infrastructure/db-ca-issuer.yaml` (CC-0106,
-   REQ-009). `hack/deploy-infra.sh` applies it in Phase 2 so MariaDB can resolve
+   declared in `deploy/flux-system/infrastructure/db-ca-issuer.yaml`.
+   `hack/deploy-infra.sh` applies it in Phase 2 so MariaDB can resolve
    the issuer when it renders its server certificate. Verify:
 
    ```bash
@@ -50,7 +50,7 @@ and
 3. **MariaDB CR with `spec.tls.enabled=true, required=true`.** The MariaDB
    manifest under `deploy/flux-system/infrastructure/mariadb.yaml` enables TLS
    on the Galera nodes and the MaxScale listener via the same
-   `openstack-db-ca-issuer` (CC-0106, REQ-009). Confirm the cluster is healthy:
+   `openstack-db-ca-issuer`. Confirm the cluster is healthy:
 
    ```bash
    kubectl -n openstack get mariadb openstack-db
@@ -61,12 +61,12 @@ and
 4. **keystone-operator running.** Either via the Helm release in
    `deploy/flux-system/releases/keystone-operator.yaml` or a local
    `make deploy-operator`. The operator's RBAC must include the
-   `cert-manager.io/certificates` rule (CC-0106, REQ-008); the chart's
+   `cert-manager.io/certificates` rule; the chart's
    ClusterRole carries it by default.
 
 5. **A `Keystone` CR you control.** New CRs and existing plaintext CRs both
    work — the `tls` block is an optional pointer (a `nil` value preserves the
-   pre-CC-0106 plaintext behavior), so flipping it on is a no-mutation patch.
+   previous plaintext behavior), so flipping it on is a no-mutation patch.
 
 ---
 
@@ -114,7 +114,7 @@ spec:
 ```
 
 The mutating webhook does **not** materialize the `tls` block when it is
-omitted, and never sets `enabled` — TLS is strictly opt-in (CC-0106, REQ-013).
+omitted, and never sets `enabled` — TLS is strictly opt-in.
 When `tls` is present with an empty `mode`, the webhook materializes
 `mode: "require"` as the documented baseline.
 
@@ -124,7 +124,7 @@ When `tls` is present with an empty `mode`, the webhook materializes
 `<keystone-name>-db-client` with `issuerRef = openstack-db-ca-issuer`
 (ClusterIssuer). cert-manager writes the resulting keypair into a Secret of the
 same name. The reconciler reports progress via the `DatabaseTLSReady` status
-condition (CC-0106, REQ-002, REQ-014):
+condition:
 
 | Condition reason | Meaning |
 | --- | --- |
@@ -200,7 +200,7 @@ encrypted — re-check `DatabaseTLSReady` and confirm the MariaDB CR has
 
 ### 3. Plaintext connections are rejected by MariaDB
 
-Because the MariaDB CR sets `spec.tls.required=true` (CC-0106, REQ-009), any
+Because the MariaDB CR sets `spec.tls.required=true`, any
 connection that does not negotiate TLS is rejected at the transport layer
 before authentication. Probe from inside the Keystone Pod by deliberately
 omitting the `ssl=` kwarg:
@@ -223,7 +223,7 @@ Expected: `PLAINTEXT_REJECTED: …` from the server's TLS-required enforcement.
 ### 4. Run the end-to-end chainsaw test (canonical check)
 
 The repository ships a chainsaw E2E suite that pins all three of the above
-verifications (CC-0106, REQ-011):
+verifications:
 
 ```bash
 chainsaw test --test-dir tests/e2e/keystone/database-tls/
@@ -247,7 +247,7 @@ the Keystone CRD reference.
 > is a prerequisite for a working plaintext deployment.
 
 To revert a CR to plaintext without uninstalling the operator, drop the `tls`
-block. The mutating webhook never re-materializes it (CC-0106, REQ-013), so the
+block. The mutating webhook never re-materializes it, so the
 absence is persistent:
 
 ```bash
@@ -270,4 +270,4 @@ turned off (see warning above).
 - [Keystone CRD — Mode → connect-args mapping](../reference/keystone/keystone-crd.md#mode--connect-args-mapping) — DSN parameters per mode.
 - [Infrastructure Manifests — OpenStack DB CA Issuer](../reference/infrastructure/infrastructure-manifests.md#openstack-db-ca-issuer) — CA keypair and ClusterIssuer.
 - [Infrastructure Manifests — MariaDB Galera Cluster](../reference/infrastructure/infrastructure-manifests.md#mariadb-galera-cluster) — server-side TLS configuration.
-- [`tests/e2e/keystone/database-tls/`](https://github.com/c5c3/forge/tree/main/tests/e2e/keystone/database-tls) — chainsaw E2E suite (CC-0106, REQ-011).
+- [`tests/e2e/keystone/database-tls/`](https://github.com/c5c3/forge/tree/main/tests/e2e/keystone/database-tls) — chainsaw E2E suite.

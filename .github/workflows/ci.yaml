@@ -443,6 +443,11 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
+      # Gate: published docs must describe behaviour, never cite internal
+      # feature/requirement IDs (CC-NNNN / REQ-NNN). Runs first so it fails fast
+      # without needing the Node toolchain.
+      - name: Check docs are free of internal feature IDs
+        run: make check-docs-ids
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 24
