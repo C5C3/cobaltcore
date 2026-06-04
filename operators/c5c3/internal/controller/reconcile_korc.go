@@ -147,6 +147,25 @@ func generateAppCredSecretValue() (string, error) {
 // control plane authenticates K-ORC with after minting: the credential id comes
 // from the minted AC, the secret from the generated "value", and the auth_url from
 // the projected Keystone Service (keystoneEndpointURL).
+//
+// CRITICAL (endpoint_type: internal): gophercloud only uses the auth_url to obtain
+// a token; for every subsequent API call it resolves the endpoint from the returned
+// service catalog, picking the interface set here. K-ORC runs IN-CLUSTER, so it
+// must use the "internal" (cluster-DNS) identity endpoint. Once the ControlPlane
+// exposes Keystone via the shared Gateway the catalog's "public" identity endpoint
+// becomes the external host (e.g. https://keystone.<host>.nip.io:8443/v3), which
+// from inside a pod is unreachable — so "public" makes every list/get fail. Worse,
+// K-ORC swallows that failure (osclients ListDomains does `_ = pager.EachPage(...)`)
+// and reports it as an EMPTY import, so the admin Domain/User imports hang forever
+// on "Waiting for OpenStack resource to be created externally".
+//
+// The key MUST be "endpoint_type", NOT "interface": K-ORC's scope builder copies
+// only clientconfig.Cloud.EndpointType (the `endpoint_type` key) into the client
+// options and drops Cloud.Interface (the `interface` key) — see vendored
+// internal/scope/provider.go NewProviderClient. An "interface:" value is therefore
+// ignored and the endpoint defaults to "public". The auth_url already points at the
+// in-cluster Service for the same reason (keystoneEndpointURL, never the external
+// endpoint).
 func buildAppCredCloudsYAML(cp *c5c3v1alpha1.ControlPlane, acID, secret string) string {
 	region := cp.Spec.Region
 	if region == "" {
@@ -160,7 +179,7 @@ func buildAppCredCloudsYAML(cp *c5c3v1alpha1.ControlPlane, acID, secret string) 
       application_credential_secret: %q
     auth_type: v3applicationcredential
     region_name: %q
-    interface: public
+    endpoint_type: internal
     identity_api_version: 3
 `, keystoneEndpointURL(cp), acID, secret, region)
 }

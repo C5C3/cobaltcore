@@ -141,6 +141,16 @@ seed_korc_bootstrap_clouds_yaml() {
   local auth_url="${KORC_KEYSTONE_AUTH_URL:-http://keystone.openstack.svc:5000/v3}"
 
   log "Seeding K-ORC bootstrap clouds.yaml at '${kv_path}' (auth_url=${auth_url}, if missing)..."
+  # endpoint_type MUST be "internal", and the key MUST be "endpoint_type" (NOT
+  # "interface"): gophercloud uses auth_url only to mint a token, then resolves every
+  # subsequent call against the catalog endpoint for this interface. K-ORC runs
+  # in-cluster and only honours clientconfig.Cloud.EndpointType (the endpoint_type
+  # key) — it drops the "interface" key entirely. A missing/"interface" value
+  # defaults to "public", whose catalog endpoint becomes the external Gateway host
+  # (https://keystone.<host>.nip.io:8443/v3) once Keystone is exposed; that is
+  # unreachable from a pod, and K-ORC swallows the connection error and reports the
+  # admin Domain/User imports as empty ("Waiting for OpenStack resource to be created
+  # externally"), so the application credential never mints.
   # shellcheck disable=SC2016  # $vars are intentionally expanded IN-POD, not by the host shell.
   kubectl exec -n "$NAMESPACE" openbao-0 -- \
     env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" VAULT_CACERT="${VAULT_CACERT}" \
@@ -162,7 +172,7 @@ seed_korc_bootstrap_clouds_yaml() {
       user_domain_name: Default
       project_domain_name: Default
     region_name: RegionOne
-    interface: public
+    endpoint_type: internal
     identity_api_version: 3
 "
       bao kv put "${BAO_KV_PATH}" clouds.yaml="${clouds}"
