@@ -410,7 +410,7 @@ func TestReconcileAdminCredential_PushSecretBuiltAndReady(t *testing.T) {
 	setKORCReady(cp)
 	cp.Status.AdminApplicationCredential = &c5c3v1alpha1.AdminApplicationCredentialStatus{ID: "test-ac-id"}
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(cp, readyCloudsYamlES(cp), mintedAppCredSecret(cp)).Build()
+		WithObjects(cp, readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	_, err := r.reconcileAdminCredential(context.Background(), cp)
@@ -452,7 +452,7 @@ func TestReconcileAdminCredential_PushSecretClobberSafeNoChurn(t *testing.T) {
 	setKORCReady(cp)
 	cp.Status.AdminApplicationCredential = &c5c3v1alpha1.AdminApplicationCredentialStatus{ID: "test-ac-id"}
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(cp, readyCloudsYamlES(cp), mintedAppCredSecret(cp)).Build()
+		WithObjects(cp, readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	_, err := r.reconcileAdminCredential(context.Background(), cp)
@@ -697,6 +697,18 @@ func mintedAppCredSecret(cp *c5c3v1alpha1.ControlPlane) *corev1.Secret {
 	}
 }
 
+// readyAppCredPushSecret returns the admin app-credential PushSecret with the exact
+// spec the operator builds (so EnsurePushSecret performs no update) plus a Ready
+// condition — the state after ESO has successfully synced it to OpenBao. The
+// AdminCredentialReady gate requires the PushSecret to be Ready.
+func readyAppCredPushSecret(cp *c5c3v1alpha1.ControlPlane) *esov1alpha1.PushSecret {
+	ps := adminAppCredentialPushSecret(cp)
+	ps.Status.Conditions = []esov1alpha1.PushSecretStatusCondition{
+		{Type: esov1alpha1.PushSecretReady, Status: corev1.ConditionTrue},
+	}
+	return ps
+}
+
 func setAdminCredentialReady(cp *c5c3v1alpha1.ControlPlane) {
 	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeAdminCredentialReady,
@@ -799,4 +811,29 @@ func TestReconcileKORC_CreatesAppCredentialSecretWithValue(t *testing.T) {
 	g.Expect(sec.Data).To(HaveKey(appCredSecretValueKey))
 	g.Expect(sec.Data[appCredSecretValueKey]).NotTo(BeEmpty(), "value must be a generated secret")
 	g.Expect(sec.OwnerReferences).To(HaveLen(1))
+}
+
+// TestReconcileAdminCredential_WaitsForPushSecretSync verifies AdminCredentialReady
+// does NOT go True merely because the PushSecret CR exists: until it has synced to
+// OpenBao (Ready), a backend permission failure must surface as WaitingForPushSecret
+// rather than a false-positive Ready (Befund #7).
+func TestReconcileAdminCredential_WaitsForPushSecretSync(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	setKORCReady(cp)
+	cp.Status.AdminApplicationCredential = &c5c3v1alpha1.AdminApplicationCredentialStatus{ID: "test-ac-id"}
+	// No pre-existing Ready PushSecret — EnsurePushSecret creates it, but it has not
+	// synced to the backend yet.
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, readyCloudsYamlES(cp), mintedAppCredSecret(cp)).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileAdminCredential(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeAdminCredentialReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForPushSecret"))
 }

@@ -100,6 +100,12 @@ main() {
       # eso-management stays read-only; write capability lives only in the
       # narrowly-scoped push-keystone-admin policy.
       token_policies+=",push-keystone-admin"
+      # CC-0110 (REQ-011): the c5c3-operator mirrors the minted admin Application
+      # Credential clouds.yaml to OpenBao via a PushSecret through the
+      # openbao-cluster-store (which binds this management role). Without the
+      # push-app-credentials policy that PushSecret 403s on the app-credential
+      # path and K-ORC silently falls back to the bootstrap admin password.
+      token_policies+=",push-app-credentials"
     fi
 
     log "Writing ESO role for cluster '${cluster}'..."

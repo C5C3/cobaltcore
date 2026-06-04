@@ -674,6 +674,33 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 		return ctrl.Result{}, err
 	}
 
+	// Gate AdminCredentialReady on the PushSecret actually syncing to OpenBao — not
+	// merely on the CR existing. Otherwise a backend permission failure (e.g. the
+	// ESO role missing the push-app-credentials policy) yields a false-positive
+	// Ready while OpenBao still serves the password-based bootstrap clouds.yaml.
+	pushed := &esov1alpha1.PushSecret{}
+	if err := r.Client.Get(ctx, types.NamespacedName{Name: ps.Name, Namespace: ps.Namespace}, pushed); err != nil {
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeAdminCredentialReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "PushSecretError",
+			Message:            fmt.Sprintf("reading admin app-credential PushSecret: %v", err),
+		})
+		return ctrl.Result{}, err
+	}
+	if !pushSecretReady(pushed) {
+		logger.Info("admin app-credential PushSecret not yet synced, requeuing")
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeAdminCredentialReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "WaitingForPushSecret",
+			Message:            "admin app-credential PushSecret has not synced to OpenBao yet",
+		})
+		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+	}
+
 	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeAdminCredentialReady,
 		Status:             metav1.ConditionTrue,
@@ -682,6 +709,17 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 		Message:            "Admin application credential committed and mirrored to OpenBao",
 	})
 	return ctrl.Result{}, nil
+}
+
+// pushSecretReady reports whether an ESO PushSecret has synced to its backend
+// (its "Ready" condition is True).
+func pushSecretReady(ps *esov1alpha1.PushSecret) bool {
+	for _, c := range ps.Status.Conditions {
+		if c.Type == esov1alpha1.PushSecretReady && c.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
 }
 
 // adminAppCredentialPushSecret builds the PushSecret that mirrors the minted
