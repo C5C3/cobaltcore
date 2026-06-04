@@ -9,10 +9,12 @@ import (
 	"fmt"
 
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -164,25 +166,42 @@ func (r *ControlPlaneReconciler) reconcileInfrastructure(ctx context.Context, cp
 // ensureMariaDB create-or-updates the owned MariaDB CR named after
 // spec.infrastructure.database.clusterRef and reports whether it is Ready.
 func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (bool, error) {
-	size, err := resource.ParseQuantity(infraMariaDBStorageSize)
-	if err != nil {
-		return false, fmt.Errorf("parsing MariaDB storage size %q: %w", infraMariaDBStorageSize, err)
+	key := types.NamespacedName{
+		Name:      cp.Spec.Infrastructure.Database.ClusterRef.Name,
+		Namespace: childNamespace(cp),
 	}
-
-	mariadb := &mariadbv1alpha1.MariaDB{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cp.Spec.Infrastructure.Database.ClusterRef.Name,
-			Namespace: childNamespace(cp),
-		},
-	}
-
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, mariadb, func() error {
+	mariadb := &mariadbv1alpha1.MariaDB{}
+	err := r.Client.Get(ctx, key, mariadb)
+	switch {
+	case apierrors.IsNotFound(err):
+		// Create fresh with the projected, production-shaped spec.
+		size, perr := resource.ParseQuantity(infraMariaDBStorageSize)
+		if perr != nil {
+			return false, fmt.Errorf("parsing MariaDB storage size %q: %w", infraMariaDBStorageSize, perr)
+		}
+		mariadb.Name = key.Name
+		mariadb.Namespace = key.Namespace
 		mariadb.Spec.Replicas = infraMariaDBReplicas
 		mariadb.Spec.Galera = &mariadbv1alpha1.Galera{Enabled: true}
 		mariadb.Spec.Storage = mariadbv1alpha1.Storage{Size: &size}
-		return controllerutil.SetControllerReference(cp, mariadb, r.Scheme)
-	}); err != nil {
-		return false, fmt.Errorf("create-or-update MariaDB %q: %w", mariadb.Name, err)
+		if serr := controllerutil.SetControllerReference(cp, mariadb, r.Scheme); serr != nil {
+			return false, fmt.Errorf("setting owner reference on MariaDB %q: %w", key.Name, serr)
+		}
+		if cerr := r.Client.Create(ctx, mariadb); cerr != nil {
+			return false, fmt.Errorf("creating MariaDB %q: %w", key.Name, cerr)
+		}
+	case err != nil:
+		return false, fmt.Errorf("getting MariaDB %q: %w", key.Name, err)
+	default:
+		// Adoption-safe: a MariaDB with this clusterRef name already exists (e.g.
+		// the infrastructure stack provisions "openstack-db" under the same name).
+		// Adopt it as-is and reconcile against its status:
+		//   - its storage fields are immutable (the mariadb-operator webhook rejects
+		//     changing spec.storage.storageClassName / ephemeral), and
+		//   - its replica/Galera topology is authoritative for that cluster,
+		// so re-projecting our defaults would be rejected or would needlessly reshape
+		// a running database. We also do not claim GC ownership of a resource we did
+		// not create, so deleting the ControlPlane never cascades into shared infra.
 	}
 
 	return conditions.IsReady(mariadb.Status.Conditions), nil
@@ -193,21 +212,32 @@ func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1al
 // Memcached CR is handled as an unstructured.Unstructured because
 // memcached.c5c3.io ships no Go module (see memcachedGVK).
 func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (bool, error) {
+	key := types.NamespacedName{
+		Name:      cp.Spec.Infrastructure.Cache.ClusterRef.Name,
+		Namespace: childNamespace(cp),
+	}
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(memcachedGVK)
-	u.SetName(cp.Spec.Infrastructure.Cache.ClusterRef.Name)
-	u.SetNamespace(childNamespace(cp))
-
-	replicas := cp.Spec.Infrastructure.Cache.Replicas
-
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, u, func() error {
+	err := r.Client.Get(ctx, key, u)
+	switch {
+	case apierrors.IsNotFound(err):
+		u.SetName(key.Name)
+		u.SetNamespace(key.Namespace)
 		// int32 must be widened to int64 for unstructured nested-field storage.
-		if err := unstructured.SetNestedField(u.Object, int64(replicas), "spec", "replicas"); err != nil {
-			return fmt.Errorf("setting spec.replicas: %w", err)
+		if serr := unstructured.SetNestedField(u.Object, int64(cp.Spec.Infrastructure.Cache.Replicas), "spec", "replicas"); serr != nil {
+			return false, fmt.Errorf("setting spec.replicas: %w", serr)
 		}
-		return controllerutil.SetControllerReference(cp, u, r.Scheme)
-	}); err != nil {
-		return false, fmt.Errorf("create-or-update Memcached %q: %w", u.GetName(), err)
+		if serr := controllerutil.SetControllerReference(cp, u, r.Scheme); serr != nil {
+			return false, fmt.Errorf("setting owner reference on Memcached %q: %w", key.Name, serr)
+		}
+		if cerr := r.Client.Create(ctx, u); cerr != nil {
+			return false, fmt.Errorf("creating Memcached %q: %w", key.Name, cerr)
+		}
+	case err != nil:
+		return false, fmt.Errorf("getting Memcached %q: %w", key.Name, err)
+	default:
+		// Adoption-safe: adopt an existing Memcached as-is and do not claim GC
+		// ownership — same rationale as ensureMariaDB.
 	}
 
 	return unstructuredReady(u), nil

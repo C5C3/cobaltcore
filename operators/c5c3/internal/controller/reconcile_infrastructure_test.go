@@ -12,6 +12,7 @@ import (
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -170,6 +171,66 @@ func TestReconcileInfrastructure_ManagedReadyWhenChildrenReady(t *testing.T) {
 	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeInfrastructureReady)
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+}
+
+// TestReconcileInfrastructure_ManagedAdoptsExistingWithoutMutating verifies the
+// adoption-safe path: when a MariaDB / Memcached with the clusterRef name already
+// exists (e.g. the infrastructure stack provisions "openstack-db" / "openstack-
+// memcached" under the same name), reconcileInfrastructure adopts it as-is. It
+// must NOT overwrite immutable storage fields (which the mariadb-operator webhook
+// rejects) and must NOT claim GC ownership of a resource it did not create.
+func TestReconcileInfrastructure_ManagedAdoptsExistingWithoutMutating(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := infraTestScheme(t)
+	cp := managedInfraControlPlane()
+
+	existingSize := resource.MustParse("1Gi")
+	existingMariaDB := &mariadbv1alpha1.MariaDB{
+		ObjectMeta: metav1.ObjectMeta{Name: "openstack-db", Namespace: childNamespace(cp)},
+		Spec: mariadbv1alpha1.MariaDBSpec{
+			Replicas: 1,
+			Storage: mariadbv1alpha1.Storage{
+				Size:             &existingSize,
+				StorageClassName: "standard",
+			},
+		},
+	}
+	existingMemcached := &unstructured.Unstructured{}
+	existingMemcached.SetGroupVersionKind(memcachedGVK)
+	existingMemcached.SetName("openstack-memcached")
+	existingMemcached.SetNamespace(childNamespace(cp))
+	_ = unstructured.SetNestedField(existingMemcached.Object, int64(1), "spec", "replicas")
+
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, existingMariaDB, existingMemcached).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileInfrastructure(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred(), "adopting pre-existing infra must not error")
+
+	// MariaDB: immutable storage preserved, topology untouched, NOT adopted for GC.
+	var mariadb mariadbv1alpha1.MariaDB
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: "openstack-db", Namespace: childNamespace(cp),
+	}, &mariadb)).To(Succeed())
+	g.Expect(mariadb.Spec.Storage.StorageClassName).To(Equal("standard"),
+		"existing storageClassName must be preserved (it is immutable)")
+	g.Expect(mariadb.Spec.Replicas).To(Equal(int32(1)),
+		"existing replica topology must be preserved, not reshaped to the projected default")
+	g.Expect(mariadb.OwnerReferences).To(BeEmpty(),
+		"must not claim GC ownership of pre-existing infrastructure")
+
+	// Memcached: replicas untouched, NOT adopted for GC.
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(memcachedGVK)
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: "openstack-memcached", Namespace: childNamespace(cp),
+	}, u)).To(Succeed())
+	replicas, _, _ := unstructured.NestedInt64(u.Object, "spec", "replicas")
+	g.Expect(replicas).To(Equal(int64(1)), "existing Memcached replicas must be preserved")
+	g.Expect(u.GetOwnerReferences()).To(BeEmpty(),
+		"must not claim GC ownership of pre-existing Memcached")
 }
 
 func TestReconcileInfrastructure_BrownfieldSkipsChildren(t *testing.T) {
