@@ -25,7 +25,7 @@ ExternalSecrets) into a local kind cluster and validate it with Chainsaw E2E tes
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  Kind Cluster (forge-e2e)                                               │
+│  Kind Cluster (forge)                                               │
 │                                                                         │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                   │
 │  │ cert-manager │  │   OpenBao    │  │     ESO      │                   │
@@ -199,7 +199,7 @@ The deployment script supports configurable timeouts via environment variables:
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `CLUSTER_NAME` | `forge-e2e` | Kind cluster name |
+| `CLUSTER_NAME` | `forge` | Kind cluster name |
 | `FLUX_OPERATOR_VERSION` | _pinned in script_ | Tag of the flux-operator `install.yaml` release applied in Step 2; kept in sync by Renovate via a `customManager` on `hack/deploy-infra.sh` |
 | `HELMRELEASE_TIMEOUT` | `600` | Seconds to wait for HelmReleases Ready (also bounds the `wait_for_fluxinstance` poll in Step 2) |
 | `POD_TIMEOUT` | `300` | Seconds to wait for OpenBao pods Ready |

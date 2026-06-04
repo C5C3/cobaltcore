@@ -36,7 +36,7 @@ cd forge
 KIND_HOST_PORT=8443 make deploy-infra
 ```
 
-Creates the `forge-e2e` kind cluster with `host:8443 → nodePort 31443`,
+Creates the `forge` kind cluster with `host:8443 → nodePort 31443`,
 then installs Flux, cert-manager, the Gateway API CRDs,
 prometheus-operator-crds, OpenBao (initialised, unsealed and bootstrapped),
 MariaDB operator + `openstack-db`, External Secrets, Memcached operator +
@@ -59,7 +59,7 @@ kubectl wait helmrelease/keystone-operator -n keystone-system \
 ```bash
 RELEASE=2025.2
 docker pull ghcr.io/c5c3/keystone:${RELEASE}
-kind load docker-image ghcr.io/c5c3/keystone:${RELEASE} --name forge-e2e
+kind load docker-image ghcr.io/c5c3/keystone:${RELEASE} --name forge
 ```
 
 ## Step 5 — Keystone CR

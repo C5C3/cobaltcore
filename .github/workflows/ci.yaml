@@ -18,6 +18,10 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/c5c3
+  # Kind cluster name — single source of truth for every e2e job's
+  # helm/kind-action cluster_name and `kind load --name`. Mirrors the
+  # CLUSTER_NAME default in hack/deploy-infra.sh.
+  KIND_CLUSTER: forge
   # CC-0018: Pin tool versions for CI reproducibility (single source of truth).
   CONTROLLER_GEN_VERSION: v0.20.1
   GOFUMPT_VERSION: v0.9.2  # CC-0053
@@ -506,7 +510,7 @@ jobs:
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
         with:
           config: hack/kind-config.yaml
-          cluster_name: forge-e2e
+          cluster_name: ${{ env.KIND_CLUSTER }}
       # CC-0050: Use composite action for shared Flux CLI + test deps + deploy-infra sequence (REQ-005).
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
@@ -737,7 +741,7 @@ jobs:
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
         with:
           config: hack/kind-config.yaml
-          cluster_name: forge-e2e
+          cluster_name: ${{ env.KIND_CLUSTER }}
       # Resolve which images this operator needs: always its operator image,
       # plus one service image per release that ships one. The release list
       # comes from source-refs.yaml (ci-service-image-releases.sh), so an
@@ -769,17 +773,18 @@ jobs:
           OPERATOR: ${{ matrix.operator }}
           IMAGE_PREFIX: ${{ env.IMAGE_PREFIX }}
           SERVICE_RELEASES: ${{ steps.e2e-images.outputs.releases }}
+          KIND_CLUSTER: ${{ env.KIND_CLUSTER }}
         run: |
-          kind load docker-image "${IMAGE_PREFIX}/${OPERATOR}-operator:dev" --name forge-e2e
+          kind load docker-image "${IMAGE_PREFIX}/${OPERATOR}-operator:dev" --name "${KIND_CLUSTER}"
           for release in ${SERVICE_RELEASES}; do
-            kind load docker-image "${IMAGE_PREFIX}/${OPERATOR}:${release}" --name forge-e2e
+            kind load docker-image "${IMAGE_PREFIX}/${OPERATOR}:${release}" --name "${KIND_CLUSTER}"
           done
           # The image-upgrade E2E test re-tags the 2025.2 service image; only
           # operators that ship a 2025.2 service image need it loaded.
           if printf '%s\n' ${SERVICE_RELEASES} | grep -qx 2025.2; then
             docker tag "${IMAGE_PREFIX}/${OPERATOR}:2025.2" \
               "${IMAGE_PREFIX}/${OPERATOR}:2025.2-upgraded"
-            kind load docker-image "${IMAGE_PREFIX}/${OPERATOR}:2025.2-upgraded" --name forge-e2e
+            kind load docker-image "${IMAGE_PREFIX}/${OPERATOR}:2025.2-upgraded" --name "${KIND_CLUSTER}"
           fi
       # CC-0050: Use composite action for shared Flux CLI + test deps + deploy-infra sequence (REQ-005).
       - name: Setup E2E infrastructure
@@ -896,7 +901,7 @@ jobs:
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
         with:
           config: hack/kind-config.yaml
-          cluster_name: forge-e2e
+          cluster_name: ${{ env.KIND_CLUSTER }}
       # GH-310: Pull pre-built images from GHCR (run-scoped tag).
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
@@ -906,8 +911,8 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/keystone:2025.2
       - name: Load images into kind
         run: |
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name forge-e2e
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name forge-e2e
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name ${{ env.KIND_CLUSTER }}
       # CC-0050: Use composite action for shared Flux CLI + test deps + deploy-infra sequence (REQ-005).
       # CC-0097: Opt in to Chaos Mesh - required for the chaos suites; covers both matrix entries.
       - name: Setup E2E infrastructure
@@ -976,7 +981,7 @@ jobs:
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
         with:
           config: hack/kind-config.yaml
-          cluster_name: forge-e2e
+          cluster_name: ${{ env.KIND_CLUSTER }}
       # GH-310: Pull pre-built images from GHCR (run-scoped tag).
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
@@ -986,8 +991,8 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/keystone:2025.2
       - name: Load images into kind
         run: |
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name forge-e2e
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name forge-e2e
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name ${{ env.KIND_CLUSTER }}
       # CC-0050: Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       # CC-0100: Opt in to kube-prometheus-stack — required for the prometheus suite.
       - name: Setup E2E infrastructure
@@ -1056,7 +1061,7 @@ jobs:
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
         with:
           config: hack/kind-config.yaml
-          cluster_name: forge-e2e
+          cluster_name: ${{ env.KIND_CLUSTER }}
       # -- Keystone --------------------------------------------------------
       # GH-310: Pull pre-built images from GHCR (run-scoped tag).
       - name: Load E2E images
@@ -1068,8 +1073,8 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/tempest:${{ matrix.release }}
       - name: Load images into kind
         run: |
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name forge-e2e
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }} --name forge-e2e
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
       # CC-0050: Use composite action for shared Flux CLI + test deps + deploy-infra sequence (REQ-005).
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra

@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-CLUSTER_NAME="${CLUSTER_NAME:-forge-e2e}"
+CLUSTER_NAME="${CLUSTER_NAME:-forge}"
 
 # ---------------------------------------------------------------------------
 # log — Print a timestamped log message (ISO 8601 UTC).

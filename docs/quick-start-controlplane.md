@@ -66,7 +66,7 @@ use `https://keystone.127-0-0-1.nip.io/v3` everywhere below. deploy-infra sets
 the ControlPlane's `publicEndpoint` to match whichever port it brought the
 cluster up with.
 
-This creates the `forge-e2e` kind cluster, the shared infrastructure
+This creates the `forge` kind cluster, the shared infrastructure
 (cert-manager, OpenBao initialised/unsealed/bootstrapped, the MariaDB and
 Memcached operators, External Secrets, Envoy Gateway and the shared
 `openstack-gw`), and then — because `WITH_CONTROLPLANE=true` — the ControlPlane

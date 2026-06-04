@@ -380,9 +380,9 @@ test_e2e_chaos_kind_cluster() {
     "config: hack/kind-config.yaml"
 
   assert_contains \
-    "e2e-chaos cluster name is forge-e2e" \
+    "e2e-chaos cluster name resolves to the shared KIND_CLUSTER env" \
     "$E2E_CHAOS_JOB_SECTION" \
-    "cluster_name: forge-e2e"
+    "cluster_name: \${{ env.KIND_CLUSTER }}"
 
   assert_contains \
     "e2e-chaos uses setup-e2e-infra composite" \

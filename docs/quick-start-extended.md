@@ -82,7 +82,7 @@ The project provides a `hack/kind-config.yaml` with a single control-plane node 
 
 ```bash
 kind create cluster \
-  --name forge-e2e \
+  --name forge \
   --config hack/kind-config.yaml \
   --wait 60s
 ```
@@ -90,7 +90,7 @@ kind create cluster \
 Verify the cluster is ready:
 
 ```bash
-kubectl cluster-info --context kind-forge-e2e
+kubectl cluster-info --context kind-forge
 ```
 
 ::: warning Host port 443 binding requirement
@@ -505,7 +505,7 @@ Build the operator image, load it into kind, and install the chart directly from
 make docker-build OPERATOR=keystone IMG=ghcr.io/c5c3/keystone-operator:dev
 
 # 2. Load the image into the kind cluster (no registry needed)
-kind load docker-image ghcr.io/c5c3/keystone-operator:dev --name forge-e2e
+kind load docker-image ghcr.io/c5c3/keystone-operator:dev --name forge
 
 # 3. Pre-install CRDs so the API server watch cache is ready before the
 #    operator starts (avoids missing initial watch events)
@@ -554,7 +554,7 @@ RELEASE=2025.2   # update to the target release
 
 ```bash
 docker pull ghcr.io/c5c3/keystone:"${RELEASE}"
-kind load docker-image ghcr.io/c5c3/keystone:"${RELEASE}" --name forge-e2e
+kind load docker-image ghcr.io/c5c3/keystone:"${RELEASE}" --name forge
 ```
 
 ### Build locally
@@ -585,7 +585,7 @@ docker build -t "ghcr.io/c5c3/keystone:${RELEASE}" \
   images/keystone/
 
 # Load into kind
-kind load docker-image "ghcr.io/c5c3/keystone:${RELEASE}" --name forge-e2e
+kind load docker-image "ghcr.io/c5c3/keystone:${RELEASE}" --name forge
 ```
 
 ---
@@ -984,4 +984,4 @@ Delete the kind cluster and all its resources:
 make teardown-infra
 ```
 
-This runs `kind delete cluster --name forge-e2e` and removes all local state.
+This runs `kind delete cluster --name forge` and removes all local state.

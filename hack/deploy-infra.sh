@@ -46,7 +46,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # ---------------------------------------------------------------------------
 # Configuration (REQ-012)
 # ---------------------------------------------------------------------------
-CLUSTER_NAME="${CLUSTER_NAME:-forge-e2e}"
+CLUSTER_NAME="${CLUSTER_NAME:-forge}"
 HELMRELEASE_TIMEOUT="${HELMRELEASE_TIMEOUT:-600}"
 POD_TIMEOUT="${POD_TIMEOUT:-300}"
 EXTERNALSECRET_TIMEOUT="${EXTERNALSECRET_TIMEOUT:-120}"
