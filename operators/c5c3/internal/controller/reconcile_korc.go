@@ -6,7 +6,9 @@ package controller
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 
@@ -82,10 +84,83 @@ func adminAppCredentialName(cp *c5c3v1alpha1.ControlPlane) string {
 	return cp.Name + adminAppCredentialNameSuffix
 }
 
-// adminAppCredentialSecretName returns the name of the operator-owned Secret
-// K-ORC writes the minted application credential into.
+// adminAppCredentialSecretName returns the name of the operator-owned Secret that
+// holds the application-credential secret K-ORC mints with (key "value") and,
+// after minting, the assembled app-credential clouds.yaml pushed to OpenBao.
 func adminAppCredentialSecretName(cp *c5c3v1alpha1.ControlPlane) string {
 	return cp.Name + adminAppCredentialSecretSuffix
+}
+
+// appCredSecretValueKey is the Secret data key K-ORC reads the application
+// credential's secret from (the actuator reads Secret.Data["value"]).
+const appCredSecretValueKey = "value"
+
+// appCredCloudsYAMLKey is the Secret data key the assembled app-credential
+// clouds.yaml is stored under; the PushSecret mirrors it to OpenBao and the
+// k-orc-clouds-yaml ExternalSecret reads it back as the "clouds.yaml" property.
+const appCredCloudsYAMLKey = "clouds.yaml"
+
+// ensureAppCredentialSecret ensures the operator-owned Secret that K-ORC reads the
+// application-credential secret from exists with a generated "value". K-ORC's
+// managed ApplicationCredential reads Secret.Data["value"] and creates the AC in
+// Keystone with it, so this MUST exist before the AC is reconciled. The value is
+// generated once and preserved across reconciles — regenerating it would force a
+// re-mint and invalidate the stored clouds.yaml.
+func (r *ControlPlaneReconciler) ensureAppCredentialSecret(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      adminAppCredentialSecretName(cp),
+			Namespace: childNamespace(cp),
+		},
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
+		if secret.Data == nil {
+			secret.Data = map[string][]byte{}
+		}
+		if len(secret.Data[appCredSecretValueKey]) == 0 {
+			v, gerr := generateAppCredSecretValue()
+			if gerr != nil {
+				return gerr
+			}
+			secret.Data[appCredSecretValueKey] = []byte(v)
+		}
+		return controllerutil.SetControllerReference(cp, secret, r.Scheme)
+	}); err != nil {
+		return fmt.Errorf("ensuring app-credential secret %q: %w", secret.Name, err)
+	}
+	return nil
+}
+
+// generateAppCredSecretValue returns a 256-bit, URL-safe random string used as the
+// application credential's secret.
+func generateAppCredSecretValue() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generating application-credential secret: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// buildAppCredCloudsYAML assembles the application-credential clouds.yaml the
+// control plane authenticates K-ORC with after minting: the credential id comes
+// from the minted AC, the secret from the generated "value", and the auth_url from
+// the projected Keystone Service (keystoneEndpointURL).
+func buildAppCredCloudsYAML(cp *c5c3v1alpha1.ControlPlane, acID, secret string) string {
+	region := cp.Spec.Region
+	if region == "" {
+		region = "RegionOne"
+	}
+	return fmt.Sprintf(`clouds:
+  admin:
+    auth:
+      auth_url: %q
+      application_credential_id: %q
+      application_credential_secret: %q
+    auth_type: v3applicationcredential
+    region_name: %q
+    interface: public
+    identity_api_version: 3
+`, keystoneEndpointURL(cp), acID, secret, region)
 }
 
 // adminAppCredentialPushSecretName returns the PushSecret name backing up the
@@ -182,6 +257,22 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 			ObservedGeneration: cp.Generation,
 			Reason:             "AdminImportError",
 			Message:            fmt.Sprintf("ensuring K-ORC admin User/Domain imports: %v", err),
+		})
+		return ctrl.Result{}, err
+	}
+
+	// K-ORC's managed ApplicationCredential reads the DESIRED secret from
+	// Secret.Data["value"] and passes it to Keystone when creating the credential
+	// (it does NOT generate or write the secret itself). So the operator-owned
+	// Secret MUST exist with a generated "value" BEFORE the AC is reconciled —
+	// otherwise the AC blocks on "Waiting for Secret … to be created".
+	if err := r.ensureAppCredentialSecret(ctx, cp); err != nil {
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeKORCReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "SecretError",
+			Message:            fmt.Sprintf("ensuring application-credential secret: %v", err),
 		})
 		return ctrl.Result{}, err
 	}
@@ -516,11 +607,28 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
-	// Ensure the operator-owned Secret K-ORC writes the minted AC into exists.
-	// CLOBBER-SAFE: the operator only owns the Secret's metadata/owner-reference;
-	// the .data is written by K-ORC (Resource.SecretRef target). The mutate
-	// closure deliberately never touches secret.Data so a reconcile can never
-	// overwrite a freshly minted credential.
+	// Assemble the application-credential clouds.yaml into the operator-owned Secret
+	// so the PushSecret mirrors it to OpenBao (and ESO re-materialises it as the
+	// admin clouds.yaml, replacing the password-based bootstrap seed). K-ORC does
+	// NOT write this — it only consumed Secret.Data["value"] to mint — so we build
+	// it from the minted credential id (AC status, surfaced on cp.Status) and the
+	// generated secret value. The "value" key is preserved untouched.
+	acID := ""
+	if cp.Status.AdminApplicationCredential != nil {
+		acID = cp.Status.AdminApplicationCredential.ID
+	}
+	if acID == "" {
+		logger.Info("admin application credential id not yet reported, deferring credential assembly")
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeAdminCredentialReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "WaitingForCredentialID",
+			Message:            "minted application credential id is not yet reported by K-ORC",
+		})
+		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+	}
+
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      adminAppCredentialSecretName(cp),
@@ -528,7 +636,15 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 		},
 	}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
-		// Do NOT touch secret.Data — K-ORC owns it.
+		if secret.Data == nil {
+			secret.Data = map[string][]byte{}
+		}
+		value := secret.Data[appCredSecretValueKey]
+		if len(value) == 0 {
+			return fmt.Errorf("app-credential secret %q has no %q key (mint not complete?)",
+				secret.Name, appCredSecretValueKey)
+		}
+		secret.Data[appCredCloudsYAMLKey] = []byte(buildAppCredCloudsYAML(cp, acID, string(value)))
 		return controllerutil.SetControllerReference(cp, secret, r.Scheme)
 	}); err != nil {
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
@@ -536,7 +652,7 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: cp.Generation,
 			Reason:             "SecretError",
-			Message:            fmt.Sprintf("ensuring admin app-credential secret: %v", err),
+			Message:            fmt.Sprintf("assembling admin app-credential clouds.yaml: %v", err),
 		})
 		return ctrl.Result{}, err
 	}

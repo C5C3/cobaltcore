@@ -408,7 +408,9 @@ func TestReconcileAdminCredential_PushSecretBuiltAndReady(t *testing.T) {
 	s := korcTestScheme(t)
 	cp := korcControlPlane()
 	setKORCReady(cp)
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyCloudsYamlES(cp)).Build()
+	cp.Status.AdminApplicationCredential = &c5c3v1alpha1.AdminApplicationCredentialStatus{ID: "test-ac-id"}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, readyCloudsYamlES(cp), mintedAppCredSecret(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	_, err := r.reconcileAdminCredential(context.Background(), cp)
@@ -430,11 +432,16 @@ func TestReconcileAdminCredential_PushSecretBuiltAndReady(t *testing.T) {
 	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal(adminAppCredentialRemoteKey))
 	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal("openstack/keystone/admin/app-credential"))
 
-	// Operator-owned minted-credential Secret ensured (clobber-safe: data untouched).
+	// The operator-owned Secret now carries the assembled app-credential clouds.yaml
+	// (id from cp.Status, secret from the preserved "value") for the OpenBao push.
 	sec := &corev1.Secret{}
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
 		Name: adminAppCredentialSecretName(cp), Namespace: childNamespace(cp),
 	}, sec)).To(Succeed())
+	g.Expect(sec.Data).To(HaveKey("value"), "the K-ORC-read \"value\" must be preserved")
+	g.Expect(sec.Data).To(HaveKey("clouds.yaml"))
+	g.Expect(string(sec.Data["clouds.yaml"])).To(ContainSubstring("application_credential_id"))
+	g.Expect(string(sec.Data["clouds.yaml"])).To(ContainSubstring("test-ac-id"))
 }
 
 func TestReconcileAdminCredential_PushSecretClobberSafeNoChurn(t *testing.T) {
@@ -443,7 +450,9 @@ func TestReconcileAdminCredential_PushSecretClobberSafeNoChurn(t *testing.T) {
 	s := korcTestScheme(t)
 	cp := korcControlPlane()
 	setKORCReady(cp)
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyCloudsYamlES(cp)).Build()
+	cp.Status.AdminApplicationCredential = &c5c3v1alpha1.AdminApplicationCredentialStatus{ID: "test-ac-id"}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, readyCloudsYamlES(cp), mintedAppCredSecret(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	_, err := r.reconcileAdminCredential(context.Background(), cp)
@@ -674,6 +683,20 @@ func setKORCReady(cp *c5c3v1alpha1.ControlPlane) {
 	})
 }
 
+// mintedAppCredSecret returns the operator-owned Secret pre-populated with the
+// generated application-credential "value" — the state reconcileKORC's
+// ensureAppCredentialSecret leaves before reconcileAdminCredential assembles the
+// clouds.yaml.
+func mintedAppCredSecret(cp *c5c3v1alpha1.ControlPlane) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      adminAppCredentialSecretName(cp),
+			Namespace: childNamespace(cp),
+		},
+		Data: map[string][]byte{appCredSecretValueKey: []byte("generated-app-cred-secret")},
+	}
+}
+
 func setAdminCredentialReady(cp *c5c3v1alpha1.ControlPlane) {
 	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeAdminCredentialReady,
@@ -753,4 +776,27 @@ func TestEnsureKORCAdminImports_CreatesUnmanagedUserAndDomain(t *testing.T) {
 	g.Expect(user.Spec.Import.Filter.DomainRef).NotTo(BeNil())
 	g.Expect(string(*user.Spec.Import.Filter.DomainRef)).To(Equal(adminDomainRef(cp)))
 	g.Expect(user.OwnerReferences).To(HaveLen(1))
+}
+
+// TestReconcileKORC_CreatesAppCredentialSecretWithValue verifies that reconcileKORC
+// provisions the operator-owned Secret with a generated "value" BEFORE the AC —
+// K-ORC's managed ApplicationCredential reads Secret.Data["value"] to mint, so
+// without this it blocks on "Waiting for Secret … to be created".
+func TestReconcileKORC_CreatesAppCredentialSecretWithValue(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, adminPasswordSecret()).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	sec := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: adminAppCredentialSecretName(cp), Namespace: childNamespace(cp),
+	}, sec)).To(Succeed(), "the app-credential Secret must exist before the AC is reconciled")
+	g.Expect(sec.Data).To(HaveKey(appCredSecretValueKey))
+	g.Expect(sec.Data[appCredSecretValueKey]).NotTo(BeEmpty(), "value must be a generated secret")
+	g.Expect(sec.OwnerReferences).To(HaveLen(1))
 }
