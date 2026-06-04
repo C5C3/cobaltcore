@@ -406,6 +406,62 @@ spec:
                     description: Keystone configures the Keystone service projected
                       by the reconciler.
                     properties:
+                      gateway:
+                        description: |-
+                          Gateway optionally exposes the projected Keystone API externally via a
+                          Gateway API HTTPRoute. When nil (the default) the reconciler does NOT
+                          project a gateway and the Keystone API is reachable in-cluster only (its
+                          ClusterIP Service); when set, the reconciler projects this onto the Keystone
+                          CR's spec.gateway so the keystone-operator attaches an HTTPRoute to the
+                          referenced Gateway.
+                        properties:
+                          annotations:
+                            additionalProperties:
+                              type: string
+                            description: |-
+                              Annotations are passed through to the generated HTTPRoute metadata verbatim,
+                              allowing implementation-specific configuration (rate limits, timeouts, CORS)
+                              without extending the CRD.
+                            type: object
+                          hostname:
+                            description: |-
+                              Hostname is the externally reachable host (SNI / Host header) the HTTPRoute
+                              matches, e.g. "keystone.127-0-0-1.nip.io". Required.
+                            minLength: 1
+                            type: string
+                          parentRef:
+                            description: |-
+                              ParentRef identifies the pre-existing Gateway that the HTTPRoute attaches
+                              to. The Gateway (and GatewayClass) are platform-team infrastructure managed
+                              outside this CR.
+                            properties:
+                              name:
+                                description: Name is the Gateway resource name. Required.
+                                minLength: 1
+                                type: string
+                              namespace:
+                                description: |-
+                                  Namespace is the namespace of the referenced Gateway. When empty, the
+                                  Gateway is assumed to live in the projected Keystone CR's namespace.
+                                type: string
+                              sectionName:
+                                description: |-
+                                  SectionName targets a specific listener on the Gateway (e.g. "https") when
+                                  the Gateway defines multiple listeners. When empty, the HTTPRoute attaches
+                                  to all compatible listeners.
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          path:
+                            description: |-
+                              Path is the URL path prefix matched by the HTTPRoute. Defaults to "/" in the
+                              keystone operator when empty.
+                            type: string
+                        required:
+                        - hostname
+                        - parentRef
+                        type: object
                       image:
                         description: |-
                           Image optionally overrides the Keystone container image. When nil the
@@ -450,6 +506,17 @@ spec:
                               Inline rules take precedence over ConfigMap rules.
                             type: object
                         type: object
+                      publicEndpoint:
+                        description: |-
+                          PublicEndpoint is the externally routable Keystone identity endpoint URL
+                          (e.g. "https://keystone.127-0-0-1.nip.io:8443/v3"). The reconciler projects
+                          it into the Keystone bootstrap (--bootstrap-public-url) and uses it for the
+                          K-ORC identity catalog Endpoint, so external clients resolve the same URL
+                          Keystone advertises. When empty and Gateway is set, the reconciler derives
+                          "https://{gateway.hostname}/v3" (the default-443 form); set it explicitly
+                          when the externally reachable port differs (e.g. a kind host-port mapping
+                          like :8443), since the port cannot be derived from the hostname alone.
+                        type: string
                       replicas:
                         description: |-
                           Replicas overrides the number of Keystone API replicas. When nil the

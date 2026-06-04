@@ -87,6 +87,12 @@ spec:
     keystone:
       replicas: 3
       rotationInterval: 168h
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: keystone.example.com
+        path: /
+      publicEndpoint: https://keystone.example.com/v3
   korc:
     adminCredential:
       cloudCredentialsRef:
@@ -228,9 +234,9 @@ Keystone service.
 > (`infrastructure.*` and operator policy) rather than set by the user here.
 > Keeping a curated subset avoids leaking every Keystone knob through the
 > aggregate and keeps the L1 API package free of a dependency on the keystone
-> module. Fields not present below (replica strategy, uWSGI, gateway, network
-> policy, fernet key count, etc.) are governed by the Keystone operator's own
-> defaults on the projected CR, not by the ControlPlane.
+> module. Fields not present below (replica strategy, uWSGI, network policy,
+> fernet key count, etc.) are governed by the Keystone operator's own defaults on
+> the projected CR, not by the ControlPlane.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
@@ -238,6 +244,39 @@ Keystone service.
 | `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the Keystone container image. When `nil`, the reconciler derives the image as `ghcr.io/c5c3/keystone:{spec.openStackRelease}`. When set, the whole image reference is used verbatim. |
 | `policyOverrides` | [`*commonv1.PolicySpec`](../keystone/keystone-crd.md#policyspec) | No | `nil` | Per-service oslo.policy overrides for Keystone. When set, these take precedence over `spec.global` for the Keystone service. |
 | `rotationInterval` | `*metav1.Duration` | No | `nil` | Overrides the Fernet / credential-key rotation interval the reconciler derives for the projected Keystone CR. When `nil`, the reconciler derives a default schedule. When set, the duration is converted to a cron expression and applied to both `fernet.rotationSchedule` and `credentialKeys.rotationSchedule` on the projected Keystone CR; an unconvertible interval surfaces `KeystoneReady=False` with reason `InvalidRotationInterval`. |
+| `gateway` | [`*GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Keystone API externally via a Gateway API HTTPRoute. When `nil`, no HTTPRoute is projected and the Keystone API is reachable in-cluster only (its ClusterIP Service). When set, the reconciler projects it onto the Keystone CR's `spec.gateway`, so the Keystone operator attaches an HTTPRoute to the referenced Gateway. |
+| `publicEndpoint` | `string` | No | `""` | Externally routable Keystone identity endpoint URL (e.g. `https://keystone.example.com/v3`). Projected into the Keystone bootstrap (`--bootstrap-public-url`) and used for the K-ORC identity catalog Endpoint, so external clients resolve the same URL Keystone advertises. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}/v3` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
+
+---
+
+## GatewaySpec
+
+A **curated local subset** of the Gateway API HTTPRoute knobs the ControlPlane
+exposes for the projected Keystone service. Mirrors the Keystone operator's
+[`GatewaySpec`](../keystone/keystone-crd.md#gatewayspec) field-for-field; the
+reconciler (L2) maps it onto the projected Keystone CR's `spec.gateway`. As with
+`ServiceKeystoneSpec`, this is intentionally **not** an import of the keystone
+module — it keeps the L1 API package dependency-free.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `parentRef` | [`GatewayParentRefSpec`](#gatewayparentrefspec) | Yes | — | The pre-existing Gateway the HTTPRoute attaches to. The Gateway (and GatewayClass) are platform-team infrastructure managed outside this CR. |
+| `hostname` | `string` | Yes | — | Externally reachable host (SNI / Host header) the HTTPRoute matches, e.g. `keystone.example.com`. Minimum length 1. |
+| `path` | `string` | No | `"/"` (Keystone operator default) | URL path prefix matched by the HTTPRoute. |
+| `annotations` | `map[string]string` | No | `nil` | Passed through to the generated HTTPRoute metadata verbatim (rate limits, timeouts, CORS) without extending the CRD. |
+
+---
+
+## GatewayParentRefSpec
+
+References a pre-existing Gateway that the projected Keystone's HTTPRoute
+attaches to. Mirrors the Keystone operator's `GatewayParentRefSpec`.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | Yes | — | Gateway resource name. Minimum length 1. |
+| `namespace` | `string` | No | `""` | Namespace of the referenced Gateway. When empty, the projected Keystone CR's namespace is assumed. |
+| `sectionName` | `string` | No | `""` | Targets a specific listener on the Gateway (e.g. `https`) when it defines multiple listeners. When empty, the HTTPRoute attaches to all compatible listeners. |
 
 ---
 

@@ -1225,16 +1225,36 @@ main() {
       log "  Preloaded ghcr.io/c5c3/keystone:${cp_release} into kind."
     fi
 
+    # Render the ControlPlane overlay; when KIND_HOST_PORT is overridden, inject the
+    # host port into spec.services.keystone.publicEndpoint so Keystone advertises the
+    # externally reachable URL. The checked-in CR omits publicEndpoint on purpose: at
+    # the default port 443 the operator derives https://keystone.127-0-0-1.nip.io/v3
+    # from the gateway hostname, so no rewrite is needed. This mirrors the
+    # render_kind_config host-port discipline (yq is a hard dependency on this path).
+    local cp_manifest
+    cp_manifest="$(mktemp)"
+    kubectl kustomize "${REPO_ROOT}/deploy/kind/controlplane" > "${cp_manifest}"
+    if [[ "${KIND_HOST_PORT}" != "443" ]]; then
+      # Name-scope the rewrite to the bundled CR (metadata.name == "controlplane")
+      # so adding further ControlPlanes to the overlay does not get silently
+      # rewritten with this hostname/port.
+      KIND_HOST_PORT="${KIND_HOST_PORT}" yq -i \
+        '(select(.kind == "ControlPlane" and .metadata.name == "controlplane") | .spec.services.keystone.publicEndpoint) = "https://keystone.127-0-0-1.nip.io:" + strenv(KIND_HOST_PORT) + "/v3"' \
+        "${cp_manifest}"
+      log "  Set ControlPlane publicEndpoint to https://keystone.127-0-0-1.nip.io:${KIND_HOST_PORT}/v3 (KIND_HOST_PORT override)."
+    fi
+
     # Apply the ControlPlane CR. Retry briefly: the c5c3-operator validating webhook
     # may need a moment after the chart install before it accepts the CR.
     local cp_attempt
     for cp_attempt in 1 2 3 4 5; do
-      if kubectl apply -k "${REPO_ROOT}/deploy/kind/controlplane" 2>/dev/null; then
+      if kubectl apply -f "${cp_manifest}" 2>/dev/null; then
         break
       fi
       log "  ControlPlane CR apply attempt ${cp_attempt} failed (webhook warming up?); retrying..."
       sleep 10
     done
+    rm -f "${cp_manifest}"
     log "  ControlPlane CR applied. Watch the chain with:"
     log "    kubectl get controlplane -n openstack -w"
     log "  It provisions MariaDB/Memcached, projects Keystone, mints the K-ORC admin"

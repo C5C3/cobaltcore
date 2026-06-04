@@ -15,6 +15,11 @@
 # keystone replicas are pinned to 1 to fit the single-node kind cluster; the
 # MariaDB/Memcached topology is operator-derived (not exposed on the ControlPlane
 # spec), so on kind it follows the c5c3-operator defaults.
+#
+# The projected Keystone is exposed externally via the shared Envoy Gateway
+# (services.keystone.gateway), so it is reachable from the host at
+# https://keystone.127-0-0-1.nip.io:<KIND_HOST_PORT>/v3 — the same path the
+# per-service Quick Start uses — not just in-cluster.
 apiVersion: c5c3.io/v1alpha1
 kind: ControlPlane
 metadata:
@@ -37,6 +42,21 @@ spec:
   services:
     keystone:
       replicas: 1
+      # Expose the projected Keystone externally through the shared Envoy Gateway,
+      # exactly like the per-service Quick Start's Keystone CR. The keystone-operator
+      # attaches an HTTPRoute to Gateway/openstack-gw for this hostname; combined with
+      # the kind host-port mapping the API is reachable from the host at
+      # https://keystone.127-0-0-1.nip.io:<KIND_HOST_PORT>/v3.
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: keystone.127-0-0-1.nip.io
+        path: /
+      # publicEndpoint is intentionally omitted: with the default KIND_HOST_PORT=443
+      # the operator derives https://keystone.127-0-0-1.nip.io/v3 from the gateway
+      # hostname. When KIND_HOST_PORT is overridden (e.g. 8443 on macOS) deploy-infra
+      # injects spec.services.keystone.publicEndpoint carrying the host port so
+      # Keystone advertises the reachable URL in its catalog.
   korc:
     adminCredential:
       cloudCredentialsRef:

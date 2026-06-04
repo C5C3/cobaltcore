@@ -55,13 +55,22 @@ cd forge
 ## Step 2 — Cluster + ControlPlane stack
 
 ```bash
-WITH_CONTROLPLANE=true make deploy-infra
+KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 ```
+
+`KIND_HOST_PORT=8443` maps the Gateway to a non-privileged host port so the
+Keystone API is reachable at `https://keystone.127-0-0-1.nip.io:8443/v3` on
+macOS — the same convention as the [Quick Start](./quick-start.md). On Linux
+with rootful Docker you can drop the override (the default port `443` works) and
+use `https://keystone.127-0-0-1.nip.io/v3` everywhere below. deploy-infra sets
+the ControlPlane's `publicEndpoint` to match whichever port it brought the
+cluster up with.
 
 This creates the `forge-e2e` kind cluster, the shared infrastructure
 (cert-manager, OpenBao initialised/unsealed/bootstrapped, the MariaDB and
-Memcached operators, External Secrets, Envoy Gateway), and then — because
-`WITH_CONTROLPLANE=true` — the ControlPlane stack on top:
+Memcached operators, External Secrets, Envoy Gateway and the shared
+`openstack-gw`), and then — because `WITH_CONTROLPLANE=true` — the ControlPlane
+stack on top:
 
 - deploys **keystone-operator**, **K-ORC** (a Flux `GitRepository` +
   `Kustomization` over the pinned `v2.5.0` installer), and **c5c3-operator** from
@@ -157,27 +166,41 @@ kubectl get controlplane controlplane -n openstack \
   -o jsonpath='{.status.catalogReady}{"\n"}'
 ```
 
-**An authenticated token** — the ControlPlane exposes a curated Keystone subset
-with no `gateway` field, so the projected Keystone is reachable in-cluster only.
-Port-forward its Service and issue a token with the admin password:
+**An authenticated token** — the ControlPlane exposes the projected Keystone
+externally through the shared Envoy Gateway (`services.keystone.gateway` points
+at `openstack-gw` with hostname `keystone.127-0-0-1.nip.io`), so it is reachable
+from the host at `https://keystone.127-0-0-1.nip.io:8443/v3` — the same path as
+the per-service [Quick Start](./quick-start.md), no port-forward. Check the
+version document first:
 
 ```bash
-# In a separate terminal:
-kubectl port-forward svc/controlplane-keystone -n openstack 5000:5000
+curl -k https://keystone.127-0-0-1.nip.io:8443/v3
+```
 
-# Then, in your shell:
-export OS_AUTH_URL=http://localhost:5000/v3
+Then issue a token with the admin password:
+
+```bash
+export OS_AUTH_URL=https://keystone.127-0-0-1.nip.io:8443/v3
 export OS_USERNAME=admin
 export OS_PASSWORD=$(kubectl get secret keystone-admin -n openstack -o jsonpath='{.data.password}' | base64 -d)
 export OS_PROJECT_NAME=admin
 export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
-openstack token issue
+openstack --insecure token issue
 ```
 
-> The projected Keystone Service is named `{controlplane-name}-keystone` —
-> `controlplane-keystone` for the CR applied by deploy-infra. Confirm with
-> `kubectl get svc -n openstack`.
+> The `:8443` host port matches `KIND_HOST_PORT` from Step 2. With the default
+> `KIND_HOST_PORT=443` use `https://keystone.127-0-0-1.nip.io/v3` instead.
+
+> **In-cluster fallback (no Gateway):** if you drive your own `ControlPlane`
+> that omits `services.keystone.gateway`, the projected Keystone is reachable
+> only via its ClusterIP Service. Port-forward it and use the in-cluster URL:
+> ```bash
+> kubectl port-forward svc/controlplane-keystone -n openstack 5000:5000
+> export OS_AUTH_URL=http://localhost:5000/v3
+> ```
+> The Service is named `{controlplane-name}-keystone` (`controlplane-keystone`
+> for the deploy-infra CR); confirm with `kubectl get svc -n openstack`.
 
 ## Customising the ControlPlane
 

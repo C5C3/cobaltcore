@@ -872,13 +872,14 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 			endpoint.Spec.Resource = &orcv1alpha1.EndpointResourceSpec{}
 		}
 		endpoint.Spec.Resource.Interface = "public"
-		// DECISION (Endpoint URL): our spec carries no catalog URL, but K-ORC's
-		// EndpointResourceSpec.URL is REQUIRED. We derive the in-cluster Keystone
-		// identity URL from the PROJECTED Keystone Service — keystoneName(cp) =
-		// "{cp.Name}-keystone" in the ControlPlane namespace — which is the Service
-		// the keystone-operator actually exposes. Sites that expose Keystone
-		// externally should override via bootstrap resources.
-		endpoint.Spec.Resource.URL = keystoneEndpointURL(cp)
+		// DECISION (Endpoint URL): K-ORC's EndpointResourceSpec.URL is REQUIRED.
+		// When the ControlPlane exposes Keystone externally (a gateway or explicit
+		// publicEndpoint is set) we register that public URL so the catalog matches
+		// what Keystone's own bootstrap advertises; otherwise we fall back to the
+		// in-cluster Keystone Service URL derived from the PROJECTED Keystone
+		// Service — keystoneName(cp) = "{cp.Name}-keystone" in the ControlPlane
+		// namespace — which is the Service the keystone-operator actually exposes.
+		endpoint.Spec.Resource.URL = keystoneCatalogURL(cp)
 		endpoint.Spec.Resource.ServiceRef = orcv1alpha1.KubernetesNameRef(keystoneServiceName(cp))
 		endpoint.Spec.Resource.Enabled = ptr.To(true)
 		return controllerutil.SetControllerReference(cp, endpoint, r.Scheme)
@@ -935,7 +936,21 @@ func keystoneEndpointName(cp *c5c3v1alpha1.ControlPlane) string {
 // projected Keystone Service — keystoneName(cp) = "{cp.Name}-keystone" — in the
 // ControlPlane namespace (see DECISION on Endpoint URL in reconcileCatalog). It
 // must NOT hard-code "keystone": the keystone-operator names the Service after
-// the projected Keystone CR, so a fixed name would not resolve.
+// the projected Keystone CR, so a fixed name would not resolve. This is the URL
+// K-ORC authenticates against (the seeded clouds.yaml auth_url): K-ORC runs
+// in-cluster, so it must always use the Service DNS, never the external endpoint.
 func keystoneEndpointURL(cp *c5c3v1alpha1.ControlPlane) string {
 	return fmt.Sprintf("http://%s.%s.svc:5000/v3", keystoneName(cp), childNamespace(cp))
+}
+
+// keystoneCatalogURL returns the URL registered for the K-ORC identity catalog
+// Endpoint. It prefers the externally routable publicEndpoint (keystonePublicEndpoint)
+// so the catalog matches what Keystone's own bootstrap advertises when exposed
+// via a Gateway; absent external exposure it falls back to the in-cluster
+// Service URL (keystoneEndpointURL).
+func keystoneCatalogURL(cp *c5c3v1alpha1.ControlPlane) string {
+	if pe := keystonePublicEndpoint(cp.Spec.Services.Keystone); pe != "" {
+		return pe
+	}
+	return keystoneEndpointURL(cp)
 }

@@ -118,6 +118,28 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 		keystone.Spec.Bootstrap.AdminPasswordSecretRef = cp.Spec.KORC.AdminCredential.PasswordSecretRef
 		keystone.Spec.Bootstrap.Region = cp.Spec.Region
 
+		// Project external exposure. When a curated gateway is set, map it onto the
+		// Keystone CR's spec.gateway (the keystone-operator then attaches an
+		// HTTPRoute to the referenced Gateway) and advertise the externally
+		// routable URL via the bootstrap public endpoint. When nil, clear any
+		// previously-projected gateway/endpoint so removing it tears the route down
+		// and Keystone falls back to its in-cluster DNS.
+		if gw := cp.Spec.Services.Keystone.Gateway; gw != nil {
+			keystone.Spec.Gateway = &keystonev1alpha1.GatewaySpec{
+				ParentRef: keystonev1alpha1.GatewayParentRefSpec{
+					Name:        gw.ParentRef.Name,
+					Namespace:   gw.ParentRef.Namespace,
+					SectionName: gw.ParentRef.SectionName,
+				},
+				Hostname:    gw.Hostname,
+				Path:        gw.Path,
+				Annotations: gw.Annotations,
+			}
+		} else {
+			keystone.Spec.Gateway = nil
+		}
+		keystone.Spec.Bootstrap.PublicEndpoint = keystonePublicEndpoint(cp.Spec.Services.Keystone)
+
 		if cp.Spec.Services.Keystone.Replicas != nil {
 			keystone.Spec.Replicas = *cp.Spec.Services.Keystone.Replicas
 		}
@@ -162,4 +184,26 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 		Message:            "Projected Keystone CR is ready",
 	})
 	return ctrl.Result{}, nil
+}
+
+// keystonePublicEndpoint returns the externally routable Keystone identity URL
+// the reconciler projects into the Keystone bootstrap (--bootstrap-public-url)
+// and reuses for the K-ORC identity catalog Endpoint (keystoneCatalogURL). An
+// explicit publicEndpoint wins; otherwise, when a gateway is set, it is derived
+// as "https://{gateway.hostname}/v3" (the default-443 form, matching the
+// keystone-operator's own status.endpoint convention). When neither is set it
+// returns "" — Keystone then falls back to its in-cluster Service DNS and no
+// external URL is advertised.
+//
+// It takes the ServiceKeystoneSpec by value (rather than the ControlPlane) so it
+// operates only on the keystone service block: that field is a required,
+// non-pointer member of ServicesSpec, so there is nothing to nil-check here.
+func keystonePublicEndpoint(ks c5c3v1alpha1.ServiceKeystoneSpec) string {
+	if ks.PublicEndpoint != "" {
+		return ks.PublicEndpoint
+	}
+	if ks.Gateway != nil {
+		return fmt.Sprintf("https://%s/v3", ks.Gateway.Hostname)
+	}
+	return ""
 }

@@ -796,6 +796,34 @@ func TestKeystoneEndpointURL_DerivesFromProjectedService(t *testing.T) {
 		To(Equal("http://controlplane-keystone.openstack.svc:5000/v3"))
 }
 
+// TestKeystoneCatalogURL_PrefersPublicEndpoint locks in that the catalog Endpoint
+// registers the external publicEndpoint when Keystone is exposed via a Gateway,
+// so the catalog matches what Keystone's own bootstrap advertises — while
+// keystoneEndpointURL (K-ORC's in-cluster auth_url) is unaffected.
+func TestKeystoneCatalogURL_PrefersPublicEndpoint(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "controlplane", Namespace: "openstack"},
+	}
+
+	// No external exposure → in-cluster Service URL (unchanged behaviour).
+	g.Expect(keystoneCatalogURL(cp)).
+		To(Equal("http://controlplane-keystone.openstack.svc:5000/v3"))
+
+	// A gateway without an explicit publicEndpoint → derived default-443 URL.
+	cp.Spec.Services.Keystone.Gateway = &c5c3v1alpha1.GatewaySpec{
+		ParentRef: c5c3v1alpha1.GatewayParentRefSpec{Name: "openstack-gw"},
+		Hostname:  "keystone.127-0-0-1.nip.io",
+	}
+	g.Expect(keystoneCatalogURL(cp)).
+		To(Equal("https://keystone.127-0-0-1.nip.io/v3"))
+
+	// An explicit publicEndpoint (carrying the kind :8443 host port) wins.
+	cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.127-0-0-1.nip.io:8443/v3"
+	g.Expect(keystoneCatalogURL(cp)).
+		To(Equal("https://keystone.127-0-0-1.nip.io:8443/v3"))
+}
+
 // TestEnsureKORCAdminImports_CreatesUnmanagedUserAndDomain verifies that the
 // admin ApplicationCredential's prerequisites are provisioned as UNMANAGED K-ORC
 // imports — without them K-ORC blocks on "Waiting for User/admin to be created".

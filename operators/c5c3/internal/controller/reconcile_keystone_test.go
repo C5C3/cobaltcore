@@ -289,6 +289,77 @@ func TestReconcileKeystone_InfraGatingNoKeystoneCreated(t *testing.T) {
 	g.Expect(err).To(HaveOccurred(), "no Keystone CR may exist while InfrastructureReady is absent")
 }
 
+func TestReconcileKeystone_GatewayProjection(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	cp.Spec.Services.Keystone.Gateway = &c5c3v1alpha1.GatewaySpec{
+		ParentRef: c5c3v1alpha1.GatewayParentRefSpec{
+			Name:        "openstack-gw",
+			Namespace:   "openstack",
+			SectionName: "https",
+		},
+		Hostname:    "keystone.127-0-0-1.nip.io",
+		Path:        "/",
+		Annotations: map[string]string{"foo": "bar"},
+	}
+	cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.127-0-0-1.nip.io:8443/v3"
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	k := getProjectedKeystone(t, c, cp)
+	g.Expect(k.Spec.Gateway).NotTo(BeNil(), "a curated gateway must be projected onto the Keystone CR")
+	g.Expect(k.Spec.Gateway.ParentRef.Name).To(Equal("openstack-gw"))
+	g.Expect(k.Spec.Gateway.ParentRef.Namespace).To(Equal("openstack"))
+	g.Expect(k.Spec.Gateway.ParentRef.SectionName).To(Equal("https"))
+	g.Expect(k.Spec.Gateway.Hostname).To(Equal("keystone.127-0-0-1.nip.io"))
+	g.Expect(k.Spec.Gateway.Path).To(Equal("/"))
+	g.Expect(k.Spec.Gateway.Annotations).To(HaveKeyWithValue("foo", "bar"))
+	// Explicit publicEndpoint (carrying the kind :8443 host port) wins verbatim.
+	g.Expect(k.Spec.Bootstrap.PublicEndpoint).To(Equal("https://keystone.127-0-0-1.nip.io:8443/v3"))
+}
+
+func TestReconcileKeystone_GatewayNilStaysInCluster(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	k := getProjectedKeystone(t, c, cp)
+	g.Expect(k.Spec.Gateway).To(BeNil(), "no gateway must be projected when the curated gateway is unset (in-cluster only is the default)")
+	g.Expect(k.Spec.Bootstrap.PublicEndpoint).To(BeEmpty(), "no public endpoint must be advertised when neither gateway nor publicEndpoint is set")
+}
+
+func TestReconcileKeystone_PublicEndpointDerivedFromHostname(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	cp.Spec.Services.Keystone.Gateway = &c5c3v1alpha1.GatewaySpec{
+		ParentRef: c5c3v1alpha1.GatewayParentRefSpec{Name: "openstack-gw"},
+		Hostname:  "keystone.example.com",
+	}
+	// publicEndpoint intentionally left empty → derived from the gateway hostname.
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	k := getProjectedKeystone(t, c, cp)
+	g.Expect(k.Spec.Bootstrap.PublicEndpoint).To(Equal("https://keystone.example.com/v3"),
+		"publicEndpoint must derive from the gateway hostname (default-443 form) when not set explicitly")
+}
+
 func TestReconcileKeystone_MirrorsChildReady(t *testing.T) {
 	g := NewGomegaWithT(t)
 
