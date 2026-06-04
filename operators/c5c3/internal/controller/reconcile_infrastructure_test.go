@@ -21,6 +21,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -231,6 +232,83 @@ func TestReconcileInfrastructure_ManagedAdoptsExistingWithoutMutating(t *testing
 	g.Expect(replicas).To(Equal(int64(1)), "existing Memcached replicas must be preserved")
 	g.Expect(u.GetOwnerReferences()).To(BeEmpty(),
 		"must not claim GC ownership of pre-existing Memcached")
+}
+
+// TestEnsureMariaDB_OwnedReconcilesReplicas verifies the owner-aware path: a
+// MariaDB this ControlPlane OWNS (created on an earlier pass) has its mutable
+// projection — spec.replicas — reconciled back to the projected default when it
+// has drifted, while its immutable storage is left untouched. This is what keeps
+// a ControlPlane-owned database evolving with the projection without reshaping a
+// pre-existing/adopted cluster (which the adoption test covers).
+func TestEnsureMariaDB_OwnedReconcilesReplicas(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := infraTestScheme(t)
+	cp := managedInfraControlPlane()
+
+	existingSize := resource.MustParse("100Gi")
+	ownedMariaDB := &mariadbv1alpha1.MariaDB{
+		ObjectMeta: metav1.ObjectMeta{Name: "openstack-db", Namespace: childNamespace(cp)},
+		Spec: mariadbv1alpha1.MariaDBSpec{
+			Replicas: 1, // drifted below the projected default (infraMariaDBReplicas)
+			Storage: mariadbv1alpha1.Storage{
+				Size:             &existingSize,
+				StorageClassName: "standard",
+			},
+		},
+	}
+	// Mark the MariaDB as owned by this ControlPlane (controller owner reference).
+	g.Expect(controllerutil.SetControllerReference(cp, ownedMariaDB, s)).To(Succeed())
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ownedMariaDB).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.ensureMariaDB(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var mariadb mariadbv1alpha1.MariaDB
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: "openstack-db", Namespace: childNamespace(cp),
+	}, &mariadb)).To(Succeed())
+	g.Expect(mariadb.Spec.Replicas).To(Equal(infraMariaDBReplicas),
+		"an owned MariaDB must have its replicas reconciled to the projected default")
+	g.Expect(mariadb.Spec.Storage.StorageClassName).To(Equal("standard"),
+		"storage stays immutable even for an owned MariaDB")
+}
+
+// TestEnsureMemcached_OwnedReconcilesReplicas verifies the owner-aware path for
+// Memcached: a Memcached this ControlPlane OWNS has spec.replicas reconciled to
+// cp.Spec.Infrastructure.Cache.Replicas when they differ, so a ControlPlane spec
+// change scales the owned cache instead of being ignored after first creation.
+func TestEnsureMemcached_OwnedReconcilesReplicas(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := infraTestScheme(t)
+	cp := managedInfraControlPlane() // Cache.Replicas = 3
+
+	ownedMemcached := &unstructured.Unstructured{}
+	ownedMemcached.SetGroupVersionKind(memcachedGVK)
+	ownedMemcached.SetName("openstack-memcached")
+	ownedMemcached.SetNamespace(childNamespace(cp))
+	_ = unstructured.SetNestedField(ownedMemcached.Object, int64(1), "spec", "replicas") // drifted
+	g.Expect(controllerutil.SetControllerReference(cp, ownedMemcached, s)).To(Succeed())
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ownedMemcached).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.ensureMemcached(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(memcachedGVK)
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: "openstack-memcached", Namespace: childNamespace(cp),
+	}, u)).To(Succeed())
+	replicas, found, nerr := unstructured.NestedInt64(u.Object, "spec", "replicas")
+	g.Expect(nerr).NotTo(HaveOccurred())
+	g.Expect(found).To(BeTrue())
+	g.Expect(replicas).To(Equal(int64(3)),
+		"an owned Memcached must have spec.replicas reconciled to the ControlPlane spec")
 }
 
 func TestReconcileInfrastructure_BrownfieldSkipsChildren(t *testing.T) {

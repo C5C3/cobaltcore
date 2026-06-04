@@ -5,6 +5,7 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -17,6 +18,7 @@ import (
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -629,32 +631,71 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      adminAppCredentialSecretName(cp),
-			Namespace: childNamespace(cp),
-		},
+	// The operator-owned Secret (with its generated "value" and owner reference)
+	// was created by ensureAppCredentialSecret during reconcileKORC, which KORCReady
+	// — gated above — guarantees has run and K-ORC has read the "value" to mint.
+	// Get it directly rather than CreateOrUpdate: a NotFound here is an invariant
+	// violation (the minted secret vanished), NOT a create opportunity — minting a
+	// fresh "value" would not match the credential Keystone already issued, so we
+	// requeue and let reconcileKORC re-establish the Secret instead of writing a
+	// brand-new empty one that would immediately fail the "value" check.
+	secretKey := types.NamespacedName{
+		Name:      adminAppCredentialSecretName(cp),
+		Namespace: childNamespace(cp),
 	}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
-		if secret.Data == nil {
-			secret.Data = map[string][]byte{}
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, secretKey, secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			logger.Info("app-credential secret not found, deferring credential assembly", "secret", secretKey.Name)
+			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+				Type:               conditionTypeAdminCredentialReady,
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: cp.Generation,
+				Reason:             "WaitingForAppCredentialSecret",
+				Message:            fmt.Sprintf("app-credential secret %q does not exist yet", secretKey.Name),
+			})
+			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 		}
-		value := secret.Data[appCredSecretValueKey]
-		if len(value) == 0 {
-			return fmt.Errorf("app-credential secret %q has no %q key (mint not complete?)",
-				secret.Name, appCredSecretValueKey)
-		}
-		secret.Data[appCredCloudsYAMLKey] = []byte(buildAppCredCloudsYAML(cp, acID, string(value)))
-		return controllerutil.SetControllerReference(cp, secret, r.Scheme)
-	}); err != nil {
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeAdminCredentialReady,
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: cp.Generation,
 			Reason:             "SecretError",
-			Message:            fmt.Sprintf("assembling admin app-credential clouds.yaml: %v", err),
+			Message:            fmt.Sprintf("reading admin app-credential secret %q: %v", secretKey.Name, err),
 		})
 		return ctrl.Result{}, err
+	}
+
+	value := secret.Data[appCredSecretValueKey]
+	if len(value) == 0 {
+		logger.Info("app-credential secret has no value yet, deferring credential assembly", "secret", secretKey.Name)
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeAdminCredentialReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "WaitingForAppCredentialSecret",
+			Message: fmt.Sprintf("app-credential secret %q has no %q key (mint not complete?)",
+				secret.Name, appCredSecretValueKey),
+		})
+		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+	}
+
+	// Persist the assembled clouds.yaml under appCredCloudsYAMLKey, leaving the
+	// "value" key untouched. Skip the write when it already matches so repeated
+	// reconciles do not churn the Secret (and wake ESO to re-push).
+	cloudsYAML := []byte(buildAppCredCloudsYAML(cp, acID, string(value)))
+	if !bytes.Equal(secret.Data[appCredCloudsYAMLKey], cloudsYAML) {
+		secret.Data[appCredCloudsYAMLKey] = cloudsYAML
+		if err := r.Update(ctx, secret); err != nil {
+			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+				Type:               conditionTypeAdminCredentialReady,
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: cp.Generation,
+				Reason:             "SecretError",
+				Message:            fmt.Sprintf("assembling admin app-credential clouds.yaml: %v", err),
+			})
+			return ctrl.Result{}, err
+		}
 	}
 
 	// CLOBBER-SAFE PushSecret: EnsurePushSecret is idempotent — it only Updates
@@ -679,7 +720,7 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 	// ESO role missing the push-app-credentials policy) yields a false-positive
 	// Ready while OpenBao still serves the password-based bootstrap clouds.yaml.
 	pushed := &esov1alpha1.PushSecret{}
-	if err := r.Client.Get(ctx, types.NamespacedName{Name: ps.Name, Namespace: ps.Namespace}, pushed); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Name: ps.Name, Namespace: ps.Namespace}, pushed); err != nil {
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeAdminCredentialReady,
 			Status:             metav1.ConditionFalse,

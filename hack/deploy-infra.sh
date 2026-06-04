@@ -512,6 +512,16 @@ preflight_checks() {
     fi
   done
 
+  # yq is a hard dependency only on the WITH_CONTROLPLANE path: Step 5 pipes the
+  # rendered infrastructure overlay through `yq eval` to drop the MariaDB/Memcached
+  # CRs (the ControlPlane provisions those in managed mode). Check it up front so
+  # the run fails here instead of deep in Step 5 after a kind cluster already
+  # exists. The default Quick Start stays yq-free (CC-0110).
+  if [[ "${WITH_CONTROLPLANE}" == "true" ]] && ! command -v yq &>/dev/null; then
+    log "ERROR: WITH_CONTROLPLANE=true requires 'yq' on PATH (used to drop MariaDB/Memcached from the infrastructure overlay)."
+    exit 1
+  fi
+
   # Check that Docker is running.
   if ! docker info &>/dev/null; then
     log "ERROR: Docker is not running. Please start Docker and try again."

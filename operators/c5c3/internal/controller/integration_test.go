@@ -255,6 +255,23 @@ func simulateApplicationCredentialAvailableWhenPresent(t testing.TB, ctx context
 	g.Expect(c.Status().Update(ctx, ac)).To(Succeed(), "set ApplicationCredential Available=True")
 }
 
+// simulatePushSecretSyncedWhenPresent waits for the named PushSecret to be
+// created, then sets its Ready condition True via the shared simulator. There is
+// no ESO controller in envtest, so reconcileAdminCredential — which gates
+// AdminCredentialReady on the admin app-credential PushSecret actually syncing to
+// OpenBao (CC-0110, REQ-011) — would otherwise wait forever. SimulatePushSecretSynced
+// returns an error until the PushSecret exists, so polling it doubles as the
+// "WhenPresent" wait without needing the esov1alpha1 type here.
+func simulatePushSecretSyncedWhenPresent(t testing.TB, ctx context.Context, c client.Client, key client.ObjectKey) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	g.Eventually(func() error {
+		return simulators.SimulatePushSecretSynced(ctx, c, key)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"admin app-credential PushSecret should be created and synced")
+}
+
 // TestIntegration_FullReconcile_ManagedToReady drives a managed-mode ControlPlane
 // through every sub-reconciler to the aggregate Ready=True, simulating each
 // external dependency's readiness in dependency order. It is the single primary
@@ -315,10 +332,12 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		client.ObjectKey{Name: adminAppCredentialName(cp), Namespace: ns.Name})
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeKORCReady, metav1.ConditionTrue, itEventuallyTimeout)
 
-	// --- Phase 4: AdminCredential push (gated on the clouds.yaml ES, already
-	// synced above). The owned minted-credential Secret and the OpenBao
-	// PushSecret are not status-gated, so AdminCredentialReady flips once the
-	// gate passes. ---
+	// --- Phase 4: AdminCredential push. Gated on the clouds.yaml ES (synced
+	// above) AND on the admin app-credential PushSecret syncing to OpenBao
+	// (CC-0110, REQ-011). The latter is status-gated, so simulate the ESO sync —
+	// otherwise AdminCredentialReady never flips in envtest. ---
+	simulatePushSecretSyncedWhenPresent(t, ctx, c,
+		client.ObjectKey{Name: adminAppCredentialPushSecretName(cp), Namespace: childNamespace(cp)})
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeAdminCredentialReady, metav1.ConditionTrue, itEventuallyTimeout)
 
 	// --- Phase 5: Catalog (Service + Endpoint). Not status-gated. ---

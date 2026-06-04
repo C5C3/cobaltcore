@@ -171,7 +171,7 @@ func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1al
 		Namespace: childNamespace(cp),
 	}
 	mariadb := &mariadbv1alpha1.MariaDB{}
-	err := r.Client.Get(ctx, key, mariadb)
+	err := r.Get(ctx, key, mariadb)
 	switch {
 	case apierrors.IsNotFound(err):
 		// Create fresh with the projected, production-shaped spec.
@@ -187,21 +187,34 @@ func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1al
 		if serr := controllerutil.SetControllerReference(cp, mariadb, r.Scheme); serr != nil {
 			return false, fmt.Errorf("setting owner reference on MariaDB %q: %w", key.Name, serr)
 		}
-		if cerr := r.Client.Create(ctx, mariadb); cerr != nil {
+		if cerr := r.Create(ctx, mariadb); cerr != nil {
 			return false, fmt.Errorf("creating MariaDB %q: %w", key.Name, cerr)
 		}
 	case err != nil:
 		return false, fmt.Errorf("getting MariaDB %q: %w", key.Name, err)
 	default:
-		// Adoption-safe: a MariaDB with this clusterRef name already exists (e.g.
-		// the infrastructure stack provisions "openstack-db" under the same name).
-		// Adopt it as-is and reconcile against its status:
-		//   - its storage fields are immutable (the mariadb-operator webhook rejects
-		//     changing spec.storage.storageClassName / ephemeral), and
-		//   - its replica/Galera topology is authoritative for that cluster,
-		// so re-projecting our defaults would be rejected or would needlessly reshape
-		// a running database. We also do not claim GC ownership of a resource we did
-		// not create, so deleting the ControlPlane never cascades into shared infra.
+		// A MariaDB with this clusterRef name already exists. Two sub-cases:
+		//
+		//  1. It is OWNED by this ControlPlane (we created it on an earlier pass):
+		//     reconcile the MUTABLE projection — spec.replicas — so a changed
+		//     projection default (infraMariaDBReplicas) takes effect on the cluster
+		//     we own, rather than being frozen at first-creation. spec.storage is
+		//     deliberately NOT re-projected even when owned: the mariadb-operator
+		//     webhook rejects changing spec.storage.* on an existing CR, so storage
+		//     stays as first created.
+		//
+		//  2. It is NOT owned (e.g. the infrastructure stack provisions
+		//     "openstack-db" under the same name): adopt it as-is and reconcile only
+		//     against its status. Re-projecting our defaults would be rejected
+		//     (immutable storage) or needlessly reshape a running database, and we
+		//     never claim GC ownership of a resource we did not create, so deleting
+		//     the ControlPlane never cascades into shared infra.
+		if metav1.IsControlledBy(mariadb, cp) && mariadb.Spec.Replicas != infraMariaDBReplicas {
+			mariadb.Spec.Replicas = infraMariaDBReplicas
+			if uerr := r.Update(ctx, mariadb); uerr != nil {
+				return false, fmt.Errorf("updating owned MariaDB %q replicas: %w", key.Name, uerr)
+			}
+		}
 	}
 
 	return conditions.IsReady(mariadb.Status.Conditions), nil
@@ -218,7 +231,7 @@ func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, cp *c5c3v1
 	}
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(memcachedGVK)
-	err := r.Client.Get(ctx, key, u)
+	err := r.Get(ctx, key, u)
 	switch {
 	case apierrors.IsNotFound(err):
 		u.SetName(key.Name)
@@ -230,14 +243,34 @@ func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, cp *c5c3v1
 		if serr := controllerutil.SetControllerReference(cp, u, r.Scheme); serr != nil {
 			return false, fmt.Errorf("setting owner reference on Memcached %q: %w", key.Name, serr)
 		}
-		if cerr := r.Client.Create(ctx, u); cerr != nil {
+		if cerr := r.Create(ctx, u); cerr != nil {
 			return false, fmt.Errorf("creating Memcached %q: %w", key.Name, cerr)
 		}
 	case err != nil:
 		return false, fmt.Errorf("getting Memcached %q: %w", key.Name, err)
 	default:
-		// Adoption-safe: adopt an existing Memcached as-is and do not claim GC
-		// ownership — same rationale as ensureMariaDB.
+		// An existing Memcached. If this ControlPlane OWNS it (we created it on an
+		// earlier pass), reconcile spec.replicas so a ControlPlane spec change
+		// (cp.Spec.Infrastructure.Cache.Replicas) actually scales the cache we own
+		// instead of being ignored after first creation. If it is a pre-existing /
+		// externally-provisioned instance (NOT owned) we adopt it as-is and never
+		// reshape it — same rationale as ensureMariaDB — nor claim GC ownership of
+		// shared infra.
+		if metav1.IsControlledBy(u, cp) {
+			desired := int64(cp.Spec.Infrastructure.Cache.Replicas)
+			current, found, gerr := unstructured.NestedInt64(u.Object, "spec", "replicas")
+			if gerr != nil {
+				return false, fmt.Errorf("reading Memcached %q spec.replicas: %w", key.Name, gerr)
+			}
+			if !found || current != desired {
+				if serr := unstructured.SetNestedField(u.Object, desired, "spec", "replicas"); serr != nil {
+					return false, fmt.Errorf("setting Memcached %q spec.replicas: %w", key.Name, serr)
+				}
+				if uerr := r.Update(ctx, u); uerr != nil {
+					return false, fmt.Errorf("updating owned Memcached %q replicas: %w", key.Name, uerr)
+				}
+			}
+		}
 	}
 
 	return unstructuredReady(u), nil

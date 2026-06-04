@@ -69,6 +69,22 @@ run_preflight() {
   ) 2>&1
 }
 
+# run_preflight_with_controlplane <stub_dir>
+# As run_preflight, but with WITH_CONTROLPLANE=true exported so the yq gate on
+# the ControlPlane path is exercised (CC-0110).
+run_preflight_with_controlplane() {
+  local stub_dir="$1"
+  (
+    PATH="$stub_dir"
+    export PATH
+    WITH_CONTROLPLANE=true
+    export WITH_CONTROLPLANE
+    # shellcheck source=/dev/null
+    source "$DEPLOY_INFRA_SH"
+    preflight_checks
+  ) 2>&1
+}
+
 # ---------------------------------------------------------------------------
 # Test 1: preflight passes when flux is absent (CC-0085, REQ-005)
 # ---------------------------------------------------------------------------
@@ -114,10 +130,54 @@ test_preflight_fails_without_kubectl() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 3: preflight fails when WITH_CONTROLPLANE=true but yq is absent (CC-0110)
+# ---------------------------------------------------------------------------
+test_preflight_fails_without_yq_when_controlplane() {
+  echo "Test: preflight_checks fails when WITH_CONTROLPLANE=true and yq is missing (CC-0110)"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  # Every base tool present, but NOT yq — the WITH_CONTROLPLANE path needs it to
+  # drop MariaDB/Memcached from the infrastructure overlay in Step 5.
+  make_stub_path "$tmp" docker kind kubectl jq
+
+  local output exit_code
+  output="$(run_preflight_with_controlplane "$tmp")"
+  exit_code=$?
+
+  assert_nonzero_exit "preflight_checks exits non-zero without yq under WITH_CONTROLPLANE" "$exit_code"
+  assert_contains "preflight reports yq required for WITH_CONTROLPLANE" "$output" "requires 'yq'"
+}
+
+# ---------------------------------------------------------------------------
+# Test 4: preflight passes when WITH_CONTROLPLANE=true and yq is present (CC-0110)
+# ---------------------------------------------------------------------------
+test_preflight_passes_with_yq_when_controlplane() {
+  echo "Test: preflight_checks passes when WITH_CONTROLPLANE=true and yq is present (CC-0110)"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  make_stub_path "$tmp" docker kind kubectl jq yq
+
+  local output exit_code
+  output="$(run_preflight_with_controlplane "$tmp")"
+  exit_code=$?
+
+  assert_eq "preflight_checks exits 0 with yq under WITH_CONTROLPLANE" "0" "$exit_code"
+  assert_contains "preflight log reports success" "$output" "Pre-flight checks passed."
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 test_preflight_passes_without_flux
 test_preflight_fails_without_kubectl
+test_preflight_fails_without_yq_when_controlplane
+test_preflight_passes_with_yq_when_controlplane
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

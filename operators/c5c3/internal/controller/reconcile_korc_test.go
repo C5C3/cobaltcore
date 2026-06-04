@@ -402,6 +402,50 @@ func TestReconcileAdminCredential_FreshClusterWithoutCloudsYamlSeedDoesNotPush(t
 			"otherwise the bootstrap cycle is masked")
 }
 
+// TestReconcileAdminCredential_MissingAppCredSecretDefers verifies the Get-and-fail
+// flow: the operator-owned app-credential Secret is created with its "value" by
+// ensureAppCredentialSecret during reconcileKORC, so by the time the credential is
+// assembled it MUST exist. If it is absent (invariant violation), reconcileAdminCredential
+// must defer with a clear reason — NOT CreateOrUpdate a fresh, value-less Secret and
+// then push an empty credential to OpenBao.
+func TestReconcileAdminCredential_MissingAppCredSecretDefers(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	setKORCReady(cp)
+	cp.Status.AdminApplicationCredential = &c5c3v1alpha1.AdminApplicationCredentialStatus{ID: "test-ac-id"}
+	// clouds.yaml ExternalSecret is Ready, but the app-credential Secret is absent.
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyCloudsYamlES(cp)).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileAdminCredential(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeAdminCredentialReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForAppCredentialSecret"))
+
+	// No empty app-credential Secret may be created as a side effect — that Secret
+	// is owned by ensureAppCredentialSecret, not by this assembly step.
+	sec := &corev1.Secret{}
+	secErr := c.Get(context.Background(), types.NamespacedName{
+		Name: adminAppCredentialSecretName(cp), Namespace: childNamespace(cp),
+	}, sec)
+	g.Expect(apierrors.IsNotFound(secErr)).To(BeTrue(),
+		"a missing app-credential Secret must not be re-created here with an empty value")
+
+	// And nothing may be pushed to OpenBao while the credential is unassembled.
+	ps := &esov1alpha1.PushSecret{}
+	psErr := c.Get(context.Background(), types.NamespacedName{
+		Name: adminAppCredentialPushSecretName(cp), Namespace: childNamespace(cp),
+	}, ps)
+	g.Expect(apierrors.IsNotFound(psErr)).To(BeTrue(),
+		"no PushSecret may be created while the app-credential Secret is missing")
+}
+
 func TestReconcileAdminCredential_PushSecretBuiltAndReady(t *testing.T) {
 	g := NewGomegaWithT(t)
 
