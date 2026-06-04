@@ -154,6 +154,38 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 		restricted = *adminCred.ApplicationCredential.Restricted
 	}
 
+	credRef := orcv1alpha1.CloudCredentialsReference{
+		SecretName: adminCred.CloudCredentialsRef.SecretName,
+		CloudName:  adminCred.CloudCredentialsRef.CloudName,
+	}
+
+	// The admin ApplicationCredential's UserRef points at a K-ORC User that must
+	// already exist. The Keystone bootstrap creates the real admin user in the
+	// Default domain, so import it (and its domain) as UNMANAGED K-ORC resources
+	// before minting — otherwise the AC blocks forever on "Waiting for User/admin
+	// to be created".
+	if err := r.ensureKORCAdminImports(ctx, cp, credRef); err != nil {
+		if meta.IsNoMatchError(err) {
+			logger.Info("K-ORC User/Domain CRD not installed; KORCReady=False")
+			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+				Type:               conditionTypeKORCReady,
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: cp.Generation,
+				Reason:             "KORCCRDNotInstalled",
+				Message:            "K-ORC User/Domain CRD is not installed",
+			})
+			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+		}
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeKORCReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "AdminImportError",
+			Message:            fmt.Sprintf("ensuring K-ORC admin User/Domain imports: %v", err),
+		})
+		return ctrl.Result{}, err
+	}
+
 	ac := &orcv1alpha1.ApplicationCredential{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      adminAppCredentialName(cp),
@@ -163,10 +195,7 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 
 	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, ac, func() error {
 		ac.Spec.ManagementPolicy = orcv1alpha1.ManagementPolicyManaged
-		ac.Spec.CloudCredentialsRef = orcv1alpha1.CloudCredentialsReference{
-			SecretName: adminCred.CloudCredentialsRef.SecretName,
-			CloudName:  adminCred.CloudCredentialsRef.CloudName,
-		}
+		ac.Spec.CloudCredentialsRef = credRef
 
 		if ac.Spec.Resource == nil {
 			ac.Spec.Resource = &orcv1alpha1.ApplicationCredentialResourceSpec{}
@@ -247,22 +276,71 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 	return ctrl.Result{}, nil
 }
 
-// adminUserRef derives the K-ORC User reference the admin application credential
-// is associated with.
-//
-// DECISION (UserRef): our AdminCredentialSpec has no UserRef field, but K-ORC's
-// ApplicationCredentialResourceSpec.UserRef is REQUIRED. We derive it
-// conventionally from the CloudName the admin authenticates as (defaulting to
-// "admin" when unset), assuming a sibling K-ORC User CR of that name exists in
-// the same namespace. This keeps the CR deterministic and valid; if a site uses
-// a different admin user-CR name the bootstrap resources (REQ-014) should
-// provision a User CR matching the CloudName. Reviewer: please verify the User
-// naming convention matches the deploy stack.
+// adminUserRef derives the name of the K-ORC User CR the admin application
+// credential is associated with. AdminCredentialSpec has no UserRef field, but
+// K-ORC's ApplicationCredentialResourceSpec.UserRef is REQUIRED, so we derive it
+// from the CloudName the admin authenticates as (defaulting to "admin"). The
+// matching User CR is provisioned by ensureKORCAdminImports as an unmanaged
+// import, so the reference always resolves.
 func adminUserRef(cp *c5c3v1alpha1.ControlPlane) string {
 	if name := cp.Spec.KORC.AdminCredential.CloudCredentialsRef.CloudName; name != "" {
 		return name
 	}
 	return "admin"
+}
+
+// korcAdminUsername / korcAdminDomainName identify the OpenStack admin user and
+// its domain that the Keystone bootstrap creates; the c5c3-operator imports them
+// into K-ORC (unmanaged) rather than creating them.
+const (
+	korcAdminUsername   = "admin"
+	korcAdminDomainName = "Default"
+)
+
+// adminDomainRef is the deterministic name of the K-ORC Domain CR the admin User
+// import is scoped to.
+func adminDomainRef(cp *c5c3v1alpha1.ControlPlane) string {
+	return cp.Name + "-domain-default"
+}
+
+// ensureKORCAdminImports ensures the K-ORC Domain and User that the admin
+// ApplicationCredential's UserRef depends on exist as UNMANAGED imports. The
+// Keystone bootstrap creates the real admin user (in the Default domain); K-ORC
+// must import — not create — it, otherwise the ApplicationCredential blocks on
+// "Waiting for User/admin to be created". Both CRs are owned by the ControlPlane
+// for GC and reuse the admin clouds.yaml credentials.
+func (r *ControlPlaneReconciler) ensureKORCAdminImports(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, credRef orcv1alpha1.CloudCredentialsReference) error {
+	domain := &orcv1alpha1.Domain{
+		ObjectMeta: metav1.ObjectMeta{Name: adminDomainRef(cp), Namespace: childNamespace(cp)},
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, domain, func() error {
+		domain.Spec.ManagementPolicy = orcv1alpha1.ManagementPolicyUnmanaged
+		domain.Spec.CloudCredentialsRef = credRef
+		domain.Spec.Import = &orcv1alpha1.DomainImport{
+			Filter: &orcv1alpha1.DomainFilter{Name: ptr.To(orcv1alpha1.KeystoneName(korcAdminDomainName))},
+		}
+		return controllerutil.SetControllerReference(cp, domain, r.Scheme)
+	}); err != nil {
+		return fmt.Errorf("admin Domain import %q: %w", domain.Name, err)
+	}
+
+	user := &orcv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{Name: adminUserRef(cp), Namespace: childNamespace(cp)},
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, user, func() error {
+		user.Spec.ManagementPolicy = orcv1alpha1.ManagementPolicyUnmanaged
+		user.Spec.CloudCredentialsRef = credRef
+		user.Spec.Import = &orcv1alpha1.UserImport{
+			Filter: &orcv1alpha1.UserFilter{
+				Name:      ptr.To(orcv1alpha1.OpenStackName(korcAdminUsername)),
+				DomainRef: ptr.To(orcv1alpha1.KubernetesNameRef(adminDomainRef(cp))),
+			},
+		}
+		return controllerutil.SetControllerReference(cp, user, r.Scheme)
+	}); err != nil {
+		return fmt.Errorf("admin User import %q: %w", user.Name, err)
+	}
+	return nil
 }
 
 // projectAccessRules maps our AccessRule{Service,Method,Path} list onto K-ORC's

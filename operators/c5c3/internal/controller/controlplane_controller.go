@@ -78,7 +78,7 @@ type ControlPlaneReconciler struct {
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=mariadbs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=memcached.c5c3.io,resources=memcacheds,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials;services;endpoints,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials;services;endpoints;users;domains,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets;pushsecrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
@@ -273,6 +273,8 @@ func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&orcv1alpha1.ApplicationCredential{}).
 		Owns(&orcv1alpha1.Service{}).
 		Owns(&orcv1alpha1.Endpoint{}).
+		Owns(&orcv1alpha1.User{}).
+		Owns(&orcv1alpha1.Domain{}).
 		Owns(memcached).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
 			secretToControlPlaneMapper(mgr.GetClient()),

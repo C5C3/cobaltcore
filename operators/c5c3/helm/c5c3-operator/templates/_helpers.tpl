@@ -172,14 +172,18 @@ coordination.k8s.io/leases rule required for leader election.
     - update
     - patch
     - delete
-# openstack.k-orc.cloud - applicationcredentials, services, endpoints (CC-0110)
-# Minted and Owned by reconcileKORC and reconcileCatalog.
+# openstack.k-orc.cloud - applicationcredentials, services, endpoints, users,
+# domains (CC-0110). Minted/owned by reconcileKORC and reconcileCatalog; users +
+# domains are imported (unmanaged) so the admin ApplicationCredential's UserRef
+# resolves (ensureKORCAdminImports).
 - apiGroups:
     - openstack.k-orc.cloud
   resources:
     - applicationcredentials
     - services
     - endpoints
+    - users
+    - domains
   verbs:
     - get
     - list

@@ -716,3 +716,41 @@ func TestKeystoneEndpointURL_DerivesFromProjectedService(t *testing.T) {
 	g.Expect(keystoneEndpointURL(cp)).
 		To(Equal("http://controlplane-keystone.openstack.svc:5000/v3"))
 }
+
+// TestEnsureKORCAdminImports_CreatesUnmanagedUserAndDomain verifies that the
+// admin ApplicationCredential's prerequisites are provisioned as UNMANAGED K-ORC
+// imports — without them K-ORC blocks on "Waiting for User/admin to be created".
+func TestEnsureKORCAdminImports_CreatesUnmanagedUserAndDomain(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	credRef := orcv1alpha1.CloudCredentialsReference{SecretName: "k-orc-clouds-yaml", CloudName: "admin"}
+	g.Expect(r.ensureKORCAdminImports(context.Background(), cp, credRef)).To(Succeed())
+
+	var domain orcv1alpha1.Domain
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: adminDomainRef(cp), Namespace: childNamespace(cp),
+	}, &domain)).To(Succeed())
+	g.Expect(domain.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyUnmanaged))
+	g.Expect(domain.Spec.Import).NotTo(BeNil())
+	g.Expect(domain.Spec.Import.Filter).NotTo(BeNil())
+	g.Expect(domain.Spec.Import.Filter.Name).NotTo(BeNil())
+	g.Expect(string(*domain.Spec.Import.Filter.Name)).To(Equal("Default"))
+	g.Expect(domain.OwnerReferences).To(HaveLen(1))
+
+	var user orcv1alpha1.User
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: adminUserRef(cp), Namespace: childNamespace(cp),
+	}, &user)).To(Succeed())
+	g.Expect(user.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyUnmanaged))
+	g.Expect(user.Spec.Import).NotTo(BeNil())
+	g.Expect(user.Spec.Import.Filter).NotTo(BeNil())
+	g.Expect(user.Spec.Import.Filter.Name).NotTo(BeNil())
+	g.Expect(string(*user.Spec.Import.Filter.Name)).To(Equal("admin"))
+	g.Expect(user.Spec.Import.Filter.DomainRef).NotTo(BeNil())
+	g.Expect(string(*user.Spec.Import.Filter.DomainRef)).To(Equal(adminDomainRef(cp)))
+	g.Expect(user.OwnerReferences).To(HaveLen(1))
+}
