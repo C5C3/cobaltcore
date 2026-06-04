@@ -74,6 +74,14 @@ WITH_CHAOS_MESH="${WITH_CHAOS_MESH:-false}"
 # WITH_PROMETHEUS=true to install the monitoring stack (CC-0100, REQ-005).
 WITH_PROMETHEUS="${WITH_PROMETHEUS:-false}"
 
+# Gates the opt-in c5c3 ControlPlane bring-up (CC-0110). When true, deploy-infra
+# does NOT create the shared MariaDB/Memcached CRs — the c5c3 ControlPlane
+# provisions them in managed mode — and the c5c3-operator, K-ORC, and
+# keystone-operator are deployed (not suspended) so an applied ControlPlane CR
+# (deploy/kind/controlplane) reconciles the full chain end-to-end. Defaults to
+# false so the default Quick Start and the keystone E2E path are unchanged.
+WITH_CONTROLPLANE="${WITH_CONTROLPLANE:-false}"
+
 # Gateway API CRD release installed before the keystone-operator HelmRelease so
 # the operator's HTTPRoute watch has a registered kind at startup (CC-0065).
 # Keep aligned with sigs.k8s.io/gateway-api in operators/keystone/go.mod.
@@ -852,6 +860,7 @@ main() {
   log "Kind host port      : ${KIND_HOST_PORT} → 31443 (override via KIND_HOST_PORT)"
   log "Chaos Mesh         : ${WITH_CHAOS_MESH} (set WITH_CHAOS_MESH=true to install)"
   log "Prometheus stack    : ${WITH_PROMETHEUS} (set WITH_PROMETHEUS=true to install)"
+  log "ControlPlane stack  : ${WITH_CONTROLPLANE} (set WITH_CONTROLPLANE=true to provision infra via the c5c3 ControlPlane)"
   log ""
 
   # Pre-flight checks
@@ -979,26 +988,35 @@ main() {
     log "Prometheus kind overlay applied (WITH_PROMETHEUS=true; CC-0100, REQ-005)."
   fi
 
-  # CC-0110 fast-follow: keep the ControlPlane stack out of the kind bring-up for
-  # now. The c5c3-operator chart is not yet published to GHCR
-  # (oci://ghcr.io/c5c3/charts/c5c3-operator -> 403), so its HelmRelease can never
-  # reconcile here. K-ORC is now a valid GitRepository + Kustomization (no longer a
-  # 404 HelmRepository), but it stays suspended too: exercising the full chain on a
-  # real cluster is a separate follow-up, and an unsuspended K-ORC would clone and
-  # deploy on every bring-up (network + reconcile churn competing with
-  # external-secrets / kube-prometheus-stack for the controllers) for a chain the
-  # absent c5c3-operator cannot complete anyway. None are awaited (see
-  # helm_releases below). Drop these suspends once the c5c3-operator chart is
-  # published and the chain is wired to run instead of skip.
-  log "Suspending the CC-0110 ControlPlane stack (c5c3-operator, k-orc) in the kind bring-up."
-  kubectl patch helmrelease c5c3-operator -n c5c3-system \
-    --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
-  kubectl patch kustomization k-orc -n flux-system \
-    --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
-  kubectl patch helmrepository c5c3-charts -n flux-system \
-    --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
-  kubectl patch gitrepository k-orc -n flux-system \
-    --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
+  # CC-0110: the c5c3 ControlPlane stack (c5c3-operator + image and the K-ORC
+  # GitRepository/Kustomization) is published and valid, so it would reconcile —
+  # but running the full chain is opt-in. WITH_CONTROLPLANE=true deploys it; the
+  # default leaves it suspended so the bring-up stays light and the keystone E2E
+  # path is unchanged.
+  if [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
+    # Deploy the full ControlPlane stack via Flux from the published c5c3-operator
+    # chart and the K-ORC GitRepository/Kustomization. The kind base overlay
+    # suspends keystone-operator for the local-build E2E path; un-suspend it here
+    # so the c5c3-operator HelmRelease's dependsOn is satisfied and the projected
+    # Keystone CR can reconcile. c5c3-operator, k-orc, and the c5c3-charts /
+    # k-orc sources are left un-suspended (the base applied them active).
+    log "WITH_CONTROLPLANE=true: deploying the c5c3 ControlPlane stack (keystone-operator, k-orc, c5c3-operator)."
+    kubectl patch helmrelease keystone-operator -n keystone-system \
+      --type merge -p '{"spec":{"suspend":false}}' 2>/dev/null || true
+  else
+    # Suspend the stack (best-effort, not awaited — see helm_releases below) so it
+    # does not add idle reconcile churn competing with external-secrets /
+    # kube-prometheus-stack for the controllers.
+    log "Suspending the CC-0110 ControlPlane stack (c5c3-operator, k-orc); set WITH_CONTROLPLANE=true to deploy it."
+    kubectl patch helmrelease c5c3-operator -n c5c3-system \
+      --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
+    kubectl patch kustomization k-orc -n flux-system \
+      --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
+    kubectl patch helmrepository c5c3-charts -n flux-system \
+      --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
+    kubectl patch gitrepository k-orc -n flux-system \
+      --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
+  fi
 
   # Force-reconcile HelmRepository sources so chart indexes are available
   # before HelmReleases attempt to resolve charts. Without this, the
@@ -1091,8 +1109,19 @@ main() {
   # Invalidate kubectl's client-side discovery cache so that the newly
   # registered CRDs are visible to kubectl apply.
   kubectl api-resources > /dev/null 2>&1 || true
-  kubectl apply -k "${REPO_ROOT}/deploy/kind/infrastructure"
-  log "Infrastructure kustomize overlay applied."
+  if [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
+    # The c5c3 ControlPlane provisions MariaDB/Memcached itself (managed mode), so
+    # render the infrastructure overlay and drop those two CRs before applying —
+    # everything else (TLS issuers, OpenBao certs, ESO ExternalSecrets, Gateway
+    # certs) is still required.
+    kubectl kustomize "${REPO_ROOT}/deploy/kind/infrastructure" \
+      | yq eval 'select(.kind != "MariaDB" and .kind != "Memcached")' - \
+      | kubectl apply -f -
+    log "Infrastructure overlay applied WITHOUT MariaDB/Memcached (WITH_CONTROLPLANE=true; the ControlPlane provisions them)."
+  else
+    kubectl apply -k "${REPO_ROOT}/deploy/kind/infrastructure"
+    log "Infrastructure kustomize overlay applied."
+  fi
 
   # Gateway/openstack-gw can only report Programmed=True after the
   # EnvoyProxy CR (applied via the infrastructure overlay above) binds
@@ -1140,20 +1169,59 @@ main() {
   wait_for_externalsecrets "openstack" "${EXTERNALSECRET_TIMEOUT}" \
     keystone-admin keystone-db mariadb-root-password
 
-  # Trigger MariaDB operator re-reconciliation.
-  # The MariaDB CR was applied in Step 5 before the root password Secret
-  # existed (it is created by ExternalSecrets in this step). The operator
-  # may have stopped retrying; patching an annotation forces a new
-  # reconciliation now that the Secret is available.
-  log "Triggering MariaDB CR re-reconciliation..."
-  kubectl patch mariadb openstack-db -n openstack --type merge \
-    -p "{\"metadata\":{\"annotations\":{\"deploy.c5c3.io/reconcile-trigger\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}}}"
+  if [[ "${WITH_CONTROLPLANE}" != "true" ]]; then
+    # Trigger MariaDB operator re-reconciliation.
+    # The MariaDB CR was applied in Step 5 before the root password Secret
+    # existed (it is created by ExternalSecrets in this step). The operator
+    # may have stopped retrying; patching an annotation forces a new
+    # reconciliation now that the Secret is available.
+    log "Triggering MariaDB CR re-reconciliation..."
+    kubectl patch mariadb openstack-db -n openstack --type merge \
+      -p "{\"metadata\":{\"annotations\":{\"deploy.c5c3.io/reconcile-trigger\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}}}"
 
-  # Wait for MariaDB to become Ready before declaring deployment complete.
-  log "Waiting for MariaDB CR to become Ready..."
-  kubectl wait mariadb/openstack-db -n openstack \
-    --for=condition=Ready --timeout="${POD_TIMEOUT}s"
-  log "MariaDB CR is Ready."
+    # Wait for MariaDB to become Ready before declaring deployment complete.
+    log "Waiting for MariaDB CR to become Ready..."
+    kubectl wait mariadb/openstack-db -n openstack \
+      --for=condition=Ready --timeout="${POD_TIMEOUT}s"
+    log "MariaDB CR is Ready."
+  else
+    # WITH_CONTROLPLANE: the shared MariaDB/Memcached are NOT created here — the
+    # ControlPlane provisions them. Wait (best-effort) for the operator stack, then
+    # apply the ControlPlane CR; the chain reconciles in the background.
+    log "=== WITH_CONTROLPLANE: bringing up the c5c3 ControlPlane ==="
+    kubectl wait helmrelease/keystone-operator -n keystone-system \
+      --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s" 2>/dev/null \
+      || log "  keystone-operator not Ready yet (continuing; the ControlPlane tolerates it)."
+    kubectl wait kustomization/k-orc -n flux-system \
+      --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s" 2>/dev/null \
+      || log "  k-orc Kustomization not Ready yet (continuing)."
+    kubectl wait helmrelease/c5c3-operator -n c5c3-system \
+      --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s" 2>/dev/null \
+      || log "  c5c3-operator not Ready yet (continuing)."
+
+    # The projected Keystone references ghcr.io/c5c3/keystone:<release>; preload it
+    # so kind need not pull it in-cluster. Best-effort — the image is public on GHCR.
+    local cp_release="2025.2"
+    if docker pull "ghcr.io/c5c3/keystone:${cp_release}" >/dev/null 2>&1; then
+      kind load docker-image "ghcr.io/c5c3/keystone:${cp_release}" --name "${CLUSTER_NAME}" >/dev/null 2>&1 || true
+      log "  Preloaded ghcr.io/c5c3/keystone:${cp_release} into kind."
+    fi
+
+    # Apply the ControlPlane CR. Retry briefly: the c5c3-operator validating webhook
+    # may need a moment after the chart install before it accepts the CR.
+    local cp_attempt
+    for cp_attempt in 1 2 3 4 5; do
+      if kubectl apply -k "${REPO_ROOT}/deploy/kind/controlplane" 2>/dev/null; then
+        break
+      fi
+      log "  ControlPlane CR apply attempt ${cp_attempt} failed (webhook warming up?); retrying..."
+      sleep 10
+    done
+    log "  ControlPlane CR applied. Watch the chain with:"
+    log "    kubectl get controlplane -n openstack -w"
+    log "  It provisions MariaDB/Memcached, projects Keystone, mints the K-ORC admin"
+    log "  credential, and registers the identity catalog (not awaited here)."
+  fi
 
   log ""
   log "=========================================="

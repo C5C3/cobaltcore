@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# ControlPlane CR applied by `WITH_CONTROLPLANE=true make deploy-infra` (CC-0110).
+#
+# Managed mode: database/cache reference managed clusters by clusterRef, so the
+# c5c3-operator provisions the MariaDB ("openstack-db") and Memcached
+# ("openstack-memcached") itself — which is why deploy-infra does NOT create them
+# when WITH_CONTROLPLANE=true (hack/deploy-infra.sh). The c5c3-operator then
+# projects a {name}-keystone Keystone CR, mints the K-ORC admin Application
+# Credential from the admin password, mirrors it to OpenBao, and registers the
+# identity catalog.
+#
+# keystone replicas are pinned to 1 to fit the single-node kind cluster; the
+# MariaDB/Memcached topology is operator-derived (not exposed on the ControlPlane
+# spec), so on kind it follows the c5c3-operator defaults.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: controlplane
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  region: RegionOne
+  infrastructure:
+    database:
+      clusterRef:
+        name: openstack-db
+      database: keystone
+      secretRef:
+        name: keystone-db
+    cache:
+      clusterRef:
+        name: openstack-memcached
+      backend: dogpile.cache.pymemcache
+  services:
+    keystone:
+      replicas: 1
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+        secretName: k-orc-clouds-yaml
+      passwordSecretRef:
+        name: keystone-admin
+        key: password
+      applicationCredential:
+        restricted: true
+        rotation:
+          mode: PasswordDriven
