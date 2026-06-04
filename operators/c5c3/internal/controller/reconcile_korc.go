@@ -600,11 +600,11 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 		}
 		endpoint.Spec.Resource.Interface = "public"
 		// DECISION (Endpoint URL): our spec carries no catalog URL, but K-ORC's
-		// EndpointResourceSpec.URL is REQUIRED. We derive a conventional in-cluster
-		// Keystone identity URL from the ControlPlane namespace
-		// (http://keystone.<ns>.svc:5000/v3), matching the keystone operator's
-		// in-cluster Service name. Sites that expose Keystone externally should
-		// override via bootstrap resources. Reviewer: please verify the Service DNS.
+		// EndpointResourceSpec.URL is REQUIRED. We derive the in-cluster Keystone
+		// identity URL from the PROJECTED Keystone Service — keystoneName(cp) =
+		// "{cp.Name}-keystone" in the ControlPlane namespace — which is the Service
+		// the keystone-operator actually exposes. Sites that expose Keystone
+		// externally should override via bootstrap resources.
 		endpoint.Spec.Resource.URL = keystoneEndpointURL(cp)
 		endpoint.Spec.Resource.ServiceRef = orcv1alpha1.KubernetesNameRef(keystoneServiceName(cp))
 		endpoint.Spec.Resource.Enabled = ptr.To(true)
@@ -658,8 +658,11 @@ func keystoneEndpointName(cp *c5c3v1alpha1.ControlPlane) string {
 	return cp.Name + "-identity-endpoint"
 }
 
-// keystoneEndpointURL derives the conventional in-cluster Keystone identity URL
-// (see DECISION on Endpoint URL in reconcileCatalog).
+// keystoneEndpointURL derives the in-cluster Keystone identity URL from the
+// projected Keystone Service — keystoneName(cp) = "{cp.Name}-keystone" — in the
+// ControlPlane namespace (see DECISION on Endpoint URL in reconcileCatalog). It
+// must NOT hard-code "keystone": the keystone-operator names the Service after
+// the projected Keystone CR, so a fixed name would not resolve.
 func keystoneEndpointURL(cp *c5c3v1alpha1.ControlPlane) string {
-	return fmt.Sprintf("http://keystone.%s.svc:5000/v3", childNamespace(cp))
+	return fmt.Sprintf("http://%s.%s.svc:5000/v3", keystoneName(cp), childNamespace(cp))
 }

@@ -702,3 +702,17 @@ func readyCloudsYamlES(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalSecret {
 		},
 	}
 }
+
+// TestKeystoneEndpointURL_DerivesFromProjectedService locks in that the catalog
+// Endpoint URL points at the PROJECTED Keystone Service ("{cp.Name}-keystone")
+// rather than a hardcoded "keystone" — the keystone-operator names the Service
+// after the projected Keystone CR, so a fixed name does not resolve (the K-ORC
+// auth / catalog otherwise fails with "lookup keystone.<ns>.svc: no such host").
+func TestKeystoneEndpointURL_DerivesFromProjectedService(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "controlplane", Namespace: "openstack"},
+	}
+	g.Expect(keystoneEndpointURL(cp)).
+		To(Equal("http://controlplane-keystone.openstack.svc:5000/v3"))
+}

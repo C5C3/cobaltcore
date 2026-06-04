@@ -130,18 +130,21 @@ mark_eso_managed() {
 seed_korc_bootstrap_clouds_yaml() {
   local kv_path="kv-v2/openstack/keystone/admin/app-credential"
   local admin_path="kv-v2/bootstrap/keystone-admin"
+  # DECISION (CC-0110, REQ-024): auth_url MUST match the Keystone API Service the
+  # keystone-operator exposes. For the per-service Quick Start that Service is
+  # "keystone" (the default below). The c5c3 ControlPlane instead projects
+  # "{controlplane}-keystone" (keystoneName() / keystoneEndpointURL() in
+  # reconcile_korc.go), so callers that bring up a ControlPlane
+  # (WITH_CONTROLPLANE=true make deploy-infra) override KORC_KEYSTONE_AUTH_URL to
+  # that Service DNS. K-ORC uses this auth_url for the very first mint, so it has
+  # to be correct before the c5c3-operator runs.
+  local auth_url="${KORC_KEYSTONE_AUTH_URL:-http://keystone.openstack.svc:5000/v3}"
 
-  log "Seeding K-ORC bootstrap clouds.yaml at '${kv_path}' (if missing)..."
-  # DECISION (CC-0110, REQ-024): auth_url uses the in-cluster Keystone identity
-  # Service DNS the c5c3-operator also derives (keystoneEndpointURL:
-  # http://keystone.<ns>.svc:5000/v3, control-plane namespace "openstack"). It
-  # MUST match the Keystone API Service the keystone-operator exposes; this is the
-  # same convention as reconcile_korc.go's keystoneEndpointURL. Reviewer: please
-  # verify the Service DNS on a live cluster.
+  log "Seeding K-ORC bootstrap clouds.yaml at '${kv_path}' (auth_url=${auth_url}, if missing)..."
   # shellcheck disable=SC2016  # $vars are intentionally expanded IN-POD, not by the host shell.
   kubectl exec -n "$NAMESPACE" openbao-0 -- \
     env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" VAULT_CACERT="${VAULT_CACERT}" \
-    BAO_KV_PATH="${kv_path}" BAO_ADMIN_PATH="${admin_path}" \
+    BAO_KV_PATH="${kv_path}" BAO_ADMIN_PATH="${admin_path}" KORC_AUTH_URL="${auth_url}" \
     sh -c '
       set -eu
       if bao kv get "${BAO_KV_PATH}" >/dev/null 2>&1; then
@@ -152,7 +155,7 @@ seed_korc_bootstrap_clouds_yaml() {
       clouds="clouds:
   admin:
     auth:
-      auth_url: http://keystone.openstack.svc:5000/v3
+      auth_url: ${KORC_AUTH_URL}
       username: admin
       password: ${admin_pw}
       project_name: admin

@@ -1138,6 +1138,14 @@ main() {
 
   # Step 7: OpenBao bootstrap (init, unseal, configure)
   log "=== Step 7/8: OpenBao bootstrap ==="
+  # WITH_CONTROLPLANE: the bootstrap seeds the K-ORC admin clouds.yaml, whose
+  # auth_url must point at the Keystone Service the ControlPlane projects. The
+  # deploy/kind/controlplane CR is named "controlplane", so its Keystone Service is
+  # "controlplane-keystone" (keystoneName = "{controlplane}-keystone"). Override the
+  # seed default ("keystone.openstack.svc") so K-ORC can authenticate the first mint.
+  if [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
+    export KORC_KEYSTONE_AUTH_URL="http://controlplane-keystone.openstack.svc:5000/v3"
+  fi
   openbao_init_unseal
   openbao_bootstrap
 
