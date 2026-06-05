@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"testing"
+	"time"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
@@ -215,8 +216,11 @@ func TestReconcileKORC_OwnerRefAndCloudCredsAndManagementPolicy(t *testing.T) {
 	g.Expect(ac.OwnerReferences[0].Name).To(Equal("cp"))
 	g.Expect(ac.OwnerReferences[0].Kind).To(Equal("ControlPlane"))
 
-	// CloudCredentialsRef.SecretName matches the admin clouds.yaml secret.
-	g.Expect(ac.Spec.CloudCredentialsRef.SecretName).To(Equal("k-orc-clouds-yaml"))
+	// CloudCredentialsRef.SecretName points at the operator-owned password-cloud
+	// (NOT k-orc-clouds-yaml) so a delete+recreate re-mint can always re-authenticate
+	// as admin. The CloudName is preserved from the spec.
+	g.Expect(ac.Spec.CloudCredentialsRef.SecretName).To(Equal(adminPasswordCloudSecretName(cp)))
+	g.Expect(ac.Spec.CloudCredentialsRef.CloudName).To(Equal("admin"))
 	g.Expect(ac.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyManaged))
 
 	// SecretRef points at the operator-owned minted-credential Secret.
@@ -245,9 +249,14 @@ func TestReconcileKORC_KORCReadyTrueWhenACAvailable(t *testing.T) {
 
 	s := korcTestScheme(t)
 	cp := korcControlPlane()
-	// Pre-create an Available AC so KORCReady flips True on this pass.
+	// Pre-create an Available AC stamped with the CURRENT password hash so KORCReady
+	// flips True on this pass (a missing/mismatched hash would trigger a re-mint).
 	existing := &orcv1alpha1.ApplicationCredential{
-		ObjectMeta: metav1.ObjectMeta{Name: adminAppCredentialName(cp), Namespace: childNamespace(cp)},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        adminAppCredentialName(cp),
+			Namespace:   childNamespace(cp),
+			Annotations: map[string]string{adminPasswordHashAnnotation: testPasswordHash()},
+		},
 		Status: orcv1alpha1.ApplicationCredentialStatus{
 			ID: ptr.To("ac-id-123"),
 			Conditions: []metav1.Condition{{
@@ -521,12 +530,17 @@ func TestReconcileAdminCredential_PushSecretClobberSafeNoChurn(t *testing.T) {
 
 // --- 2.8: re-mint (hash) ---
 
-func TestReconcileKORC_HashMismatchRemintsAndStampsNewHash(t *testing.T) {
+// TestReconcileKORC_HashMismatchDeletesACForRemint asserts the re-mint trigger:
+// K-ORC's AC actuator cannot re-mint in place, so a stale stamped hash (the admin
+// password rotated) must DELETE the AC — driving K-ORC's finalizer to revoke the
+// old Keystone credential — and regenerate the secret "value" so the recreated AC
+// mints a fresh credential. KORCReady reports the transient ReMinting reason.
+func TestReconcileKORC_HashMismatchDeletesACForRemint(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	s := korcTestScheme(t)
 	cp := korcControlPlane()
-	// Pre-create an Available AC stamped with a STALE hash and an old ID.
+	// Pre-create an Available AC stamped with a STALE hash (the rotation signal).
 	existing := &orcv1alpha1.ApplicationCredential{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        adminAppCredentialName(cp),
@@ -543,17 +557,103 @@ func TestReconcileKORC_HashMismatchRemintsAndStampsNewHash(t *testing.T) {
 			}},
 		},
 	}
-	// Seed prior status so a re-mint (ID change) is observable as a new rotation.
 	cp.Status.AdminApplicationCredential = &c5c3v1alpha1.AdminApplicationCredentialStatus{ID: "old-id"}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, adminPasswordSecret(), existing).Build()
+	// Seed the app-credential secret with a KNOWN value so the regeneration is observable.
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, adminPasswordSecret(), existing, mintedAppCredSecret(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	_, err := r.reconcileKORC(context.Background(), cp)
+	res, err := r.reconcileKORC(context.Background(), cp)
 	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
 
-	ac := getAC(t, c, cp)
-	g.Expect(ac.Annotations).To(HaveKeyWithValue(adminPasswordHashAnnotation, testPasswordHash()),
-		"hash mismatch must re-stamp the annotation with the new password hash")
+	// The AC was deleted (no finalizer in the fake client => removed immediately).
+	deleted := &orcv1alpha1.ApplicationCredential{}
+	getErr := c.Get(context.Background(), types.NamespacedName{
+		Name: adminAppCredentialName(cp), Namespace: childNamespace(cp),
+	}, deleted)
+	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
+		"a hash mismatch must delete the AC to trigger a re-mint")
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("ReMinting"))
+
+	// The secret "value" was regenerated so the recreated AC mints a NEW credential.
+	sec := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: adminAppCredentialSecretName(cp), Namespace: childNamespace(cp),
+	}, sec)).To(Succeed())
+	g.Expect(sec.Data[appCredSecretValueKey]).NotTo(Equal([]byte("generated-app-cred-secret")),
+		"the app-credential secret value must be regenerated on re-mint")
+}
+
+// TestReconcileKORC_RemintStalledAfterTimeout asserts the ReMintStalled escape: an
+// AC stuck Terminating longer than remintStallTimeout (a finalizer K-ORC cannot
+// clear because it cannot revoke the old credential) escalates KORCReady from the
+// transient ReMinting reason to the operator-visible ReMintStalled reason.
+func TestReconcileKORC_RemintStalledAfterTimeout(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	// An AC mid-delete (DeletionTimestamp + finalizer) whose stamped hash mismatches,
+	// terminating since well before the stall timeout.
+	staleDeletion := metav1.NewTime(metav1.Now().Add(-2 * remintStallTimeout))
+	existing := &orcv1alpha1.ApplicationCredential{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              adminAppCredentialName(cp),
+			Namespace:         childNamespace(cp),
+			Annotations:       map[string]string{adminPasswordHashAnnotation: "stale-hash"},
+			Finalizers:        []string{"openstack.k-orc.cloud/applicationcredential"},
+			DeletionTimestamp: &staleDeletion,
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, adminPasswordSecret(), existing).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("ReMintStalled"),
+		"an AC Terminating past remintStallTimeout must escalate to ReMintStalled")
+}
+
+// TestReconcileKORC_RemintTerminatingReportsReMinting asserts that an AC mid-delete
+// but WITHIN the stall timeout reports the transient ReMinting reason (not stalled).
+func TestReconcileKORC_RemintTerminatingReportsReMinting(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	justDeleted := metav1.Now()
+	existing := &orcv1alpha1.ApplicationCredential{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              adminAppCredentialName(cp),
+			Namespace:         childNamespace(cp),
+			Annotations:       map[string]string{adminPasswordHashAnnotation: "stale-hash"},
+			Finalizers:        []string{"openstack.k-orc.cloud/applicationcredential"},
+			DeletionTimestamp: &justDeleted,
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, adminPasswordSecret(), existing).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("ReMinting"))
 }
 
 func TestReconcileKORC_HashMatchNoRemint(t *testing.T) {
@@ -589,6 +689,152 @@ func TestReconcileKORC_HashMatchNoRemint(t *testing.T) {
 	// ResourceVersion stable (CC-0110, TE7 full-mutation-cycle).
 	g.Expect(*ac2.Spec.Resource).To(Equal(specBefore),
 		"hash match must not otherwise mutate the ApplicationCredential ResourceSpec")
+}
+
+// TestReconcileKORC_FreshMintUsesPasswordCloud asserts the first mint renders the
+// operator-owned password-based clouds.yaml tracking the current admin password,
+// and points the AC's CloudCredentialsRef at it (not k-orc-clouds-yaml).
+func TestReconcileKORC_FreshMintUsesPasswordCloud(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, adminPasswordSecret()).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	sec := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: adminPasswordCloudSecretName(cp), Namespace: childNamespace(cp),
+	}, sec)).To(Succeed())
+	clouds := string(sec.Data[appCredCloudsYAMLKey])
+	g.Expect(clouds).To(ContainSubstring(testAdminPassword), "password-cloud must carry the live admin password")
+	g.Expect(clouds).To(ContainSubstring("username:"), "password-cloud must be password-based")
+	g.Expect(clouds).To(ContainSubstring("endpoint_type: internal"))
+	g.Expect(sec.OwnerReferences).To(HaveLen(1), "password-cloud must be owned by the ControlPlane")
+
+	ac := getAC(t, c, cp)
+	g.Expect(ac.Spec.CloudCredentialsRef.SecretName).To(Equal(adminPasswordCloudSecretName(cp)),
+		"the AC must mint via the password-cloud, not k-orc-clouds-yaml")
+}
+
+// TestReconcileKORC_PasswordCloudTracksRotation asserts the password-cloud is
+// re-rendered when the admin password rotates and is not churned otherwise.
+func TestReconcileKORC_PasswordCloudTracksRotation(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, adminPasswordSecret()).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+	pcKey := types.NamespacedName{Name: adminPasswordCloudSecretName(cp), Namespace: childNamespace(cp)}
+
+	_, err := r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	sec1 := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(), pcKey, sec1)).To(Succeed())
+	g.Expect(string(sec1.Data[appCredCloudsYAMLKey])).To(ContainSubstring(testAdminPassword))
+
+	// Unchanged password => no churn.
+	_, err = r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	sec2 := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(), pcKey, sec2)).To(Succeed())
+	g.Expect(sec2.ResourceVersion).To(Equal(sec1.ResourceVersion),
+		"an unchanged admin password must not churn the password-cloud")
+
+	// Rotate the admin password; the password-cloud must track the new value.
+	pw := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: "keystone-admin", Namespace: "default"}, pw)).To(Succeed())
+	pw.Data["password"] = []byte("rotated-admin-password")
+	g.Expect(c.Update(context.Background(), pw)).To(Succeed())
+
+	_, err = r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	sec3 := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(), pcKey, sec3)).To(Succeed())
+	g.Expect(string(sec3.Data[appCredCloudsYAMLKey])).To(ContainSubstring("rotated-admin-password"))
+	g.Expect(string(sec3.Data[appCredCloudsYAMLKey])).NotTo(ContainSubstring(testAdminPassword),
+		"the password-cloud must drop the stale password after rotation")
+}
+
+// TestReconcileKORC_RecreatePreservesRegeneratedValue asserts the recreate after a
+// re-mint delete mints with the regenerated "value" (rather than generating yet
+// another), stamps the current hash, and points at the password-cloud.
+func TestReconcileKORC_RecreatePreservesRegeneratedValue(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	// State right after a re-mint delete: no AC, the app-cred secret carries a
+	// freshly regenerated value.
+	freshValue := []byte("freshly-regenerated-value")
+	appSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: adminAppCredentialSecretName(cp), Namespace: childNamespace(cp)},
+		Data:       map[string][]byte{appCredSecretValueKey: freshValue},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, adminPasswordSecret(), appSecret).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	ac := getAC(t, c, cp)
+	g.Expect(ac.Annotations).To(HaveKeyWithValue(adminPasswordHashAnnotation, testPasswordHash()))
+	g.Expect(ac.Spec.CloudCredentialsRef.SecretName).To(Equal(adminPasswordCloudSecretName(cp)))
+	g.Expect(string(ac.Spec.Resource.SecretRef)).To(Equal(adminAppCredentialSecretName(cp)))
+
+	sec := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: adminAppCredentialSecretName(cp), Namespace: childNamespace(cp),
+	}, sec)).To(Succeed())
+	g.Expect(sec.Data[appCredSecretValueKey]).To(Equal(freshValue),
+		"recreate must mint with the regenerated value, not generate a new one")
+}
+
+// TestReconcileKORC_FreshCredentialIDAdvancesLastRotation asserts that once the
+// recreated AC reports a NEW credential id, status.adminApplicationCredential
+// advances lastRotation (the observable signal a re-mint completed).
+func TestReconcileKORC_FreshCredentialIDAdvancesLastRotation(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	oldRotation := metav1.NewTime(metav1.Now().Add(-time.Hour))
+	cp.Status.AdminApplicationCredential = &c5c3v1alpha1.AdminApplicationCredentialStatus{
+		ID: "old-id", LastRotation: &oldRotation,
+	}
+	// A recreated, now-Available AC with a NEW id whose hash already matches.
+	existing := &orcv1alpha1.ApplicationCredential{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        adminAppCredentialName(cp),
+			Namespace:   childNamespace(cp),
+			Annotations: map[string]string{adminPasswordHashAnnotation: testPasswordHash()},
+		},
+		Status: orcv1alpha1.ApplicationCredentialStatus{
+			ID: ptr.To("new-id"),
+			Conditions: []metav1.Condition{{
+				Type:               orcv1alpha1.ConditionAvailable,
+				Status:             metav1.ConditionTrue,
+				Reason:             orcv1alpha1.ConditionReasonSuccess,
+				LastTransitionTime: metav1.Now(),
+			}},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, adminPasswordSecret(), existing, mintedAppCredSecret(cp)).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(cp.Status.AdminApplicationCredential).NotTo(BeNil())
+	g.Expect(cp.Status.AdminApplicationCredential.ID).To(Equal("new-id"))
+	g.Expect(cp.Status.AdminApplicationCredential.LastRotation).NotTo(BeNil())
+	g.Expect(cp.Status.AdminApplicationCredential.LastRotation.Time.After(oldRotation.Time)).To(BeTrue(),
+		"a re-minted credential with a new id must advance lastRotation")
 }
 
 // --- 2.8: reconcileCatalog ---

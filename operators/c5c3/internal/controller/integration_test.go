@@ -411,7 +411,9 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	g.Expect(ac.Spec.Resource.Unrestricted).NotTo(BeNil())
 	g.Expect(*ac.Spec.Resource.Unrestricted).To(BeFalse(),
 		"restricted:true (default) MUST project to K-ORC Unrestricted=false (critical inversion)")
-	g.Expect(ac.Spec.CloudCredentialsRef.SecretName).To(Equal(korcCloudsYamlSecretName))
+	// The AC mints via the operator-owned password-cloud (so a delete+recreate
+	// re-mint can always re-authenticate), NOT k-orc-clouds-yaml.
+	g.Expect(ac.Spec.CloudCredentialsRef.SecretName).To(Equal(adminPasswordCloudSecretName(final)))
 
 	// Catalog: identity Service + public Endpoint shape.
 	svc := &orcv1alpha1.Service{}
@@ -419,6 +421,9 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		To(Succeed(), "get projected identity Service CR")
 	g.Expect(svc.Spec.Resource).NotTo(BeNil())
 	g.Expect(svc.Spec.Resource.Type).To(Equal("identity"), "Service type must be identity")
+	// The catalog keeps using k-orc-clouds-yaml (only the AC moves to the
+	// password-cloud); this locks in that split.
+	g.Expect(svc.Spec.CloudCredentialsRef.SecretName).To(Equal(korcCloudsYamlSecretName))
 
 	ep := &orcv1alpha1.Endpoint{}
 	g.Expect(c.Get(ctx, types.NamespacedName{Name: keystoneEndpointName(final), Namespace: ns.Name}, ep)).

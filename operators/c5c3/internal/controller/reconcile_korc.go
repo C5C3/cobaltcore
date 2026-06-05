@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
 
@@ -80,10 +81,27 @@ const adminPasswordHashAnnotation = "forge.c5c3.io/admin-password-hash" //nolint
 // REQ-023).
 const korcCloudsYamlSecretName = "k-orc-clouds-yaml" //nolint:gosec // G101 false positive: Secret name, not a credential.
 
+// adminPasswordCloudSecretSuffix names the operator-owned Secret holding a
+// PASSWORD-based clouds.yaml that always tracks the current admin password. The
+// admin ApplicationCredential mints against THIS secret (not k-orc-clouds-yaml),
+// which breaks the self-referential bootstrap deadlock: k-orc-clouds-yaml is the
+// minted app-credential itself, so deleting the AC to re-mint would invalidate
+// the very clouds.yaml needed to re-authenticate. A restricted application
+// credential also cannot mint a new application credential — only a
+// password-authenticated session can — so password auth is required for the
+// delete+recreate re-mint to work at all.
+const adminPasswordCloudSecretSuffix = "-admin-password-cloud" //nolint:gosec // G101 false positive: Secret name suffix, not a credential.
+
 // adminAppCredentialName returns the deterministic name of the owned K-ORC
 // ApplicationCredential CR for the given ControlPlane.
 func adminAppCredentialName(cp *c5c3v1alpha1.ControlPlane) string {
 	return cp.Name + adminAppCredentialNameSuffix
+}
+
+// adminPasswordCloudSecretName returns the name of the operator-owned Secret that
+// holds the password-based clouds.yaml the admin ApplicationCredential mints with.
+func adminPasswordCloudSecretName(cp *c5c3v1alpha1.ControlPlane) string {
+	return cp.Name + adminPasswordCloudSecretSuffix
 }
 
 // adminAppCredentialSecretName returns the name of the operator-owned Secret that
@@ -184,6 +202,71 @@ func buildAppCredCloudsYAML(cp *c5c3v1alpha1.ControlPlane, acID, secret string) 
 `, keystoneEndpointURL(cp), acID, secret, region)
 }
 
+// ensureAdminPasswordCloud ensures the operator-owned Secret holding the
+// PASSWORD-based clouds.yaml the admin ApplicationCredential mints with exists and
+// always tracks the CURRENT admin password. Unlike ensureAppCredentialSecret's
+// "value" (generated once and preserved), this clouds.yaml is rebuilt from the
+// live admin password on every pass, so a password rotation flows through to it —
+// the credential K-ORC uses to re-authenticate and revoke/re-mint never goes
+// stale. CreateOrUpdate only writes when the rendered clouds.yaml differs, so a
+// steady-state pass does not churn the Secret (and does not wake any consumer).
+//
+// The Secret lives in childNamespace(cp) — the same namespace as the K-ORC CRs —
+// because K-ORC resolves CloudCredentialsRef in the resource's own namespace (C1).
+func (r *ControlPlaneReconciler) ensureAdminPasswordCloud(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, password string) error {
+	cloudsYAML := []byte(buildPasswordCloudsYAML(cp, password))
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      adminPasswordCloudSecretName(cp),
+			Namespace: childNamespace(cp),
+		},
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
+		if secret.Data == nil {
+			secret.Data = map[string][]byte{}
+		}
+		secret.Data[appCredCloudsYAMLKey] = cloudsYAML
+		return controllerutil.SetControllerReference(cp, secret, r.Scheme)
+	}); err != nil {
+		return fmt.Errorf("ensuring admin password-cloud secret %q: %w", secret.Name, err)
+	}
+	return nil
+}
+
+// buildPasswordCloudsYAML assembles the password-based clouds.yaml the admin
+// ApplicationCredential authenticates with to mint (and, on re-mint, revoke) the
+// Keystone credential. It mirrors the bootstrap seed
+// (deploy/openbao/bootstrap/write-bootstrap-secrets.sh) so the in-cluster and
+// operator-owned credentials are byte-compatible: the cloud key matches the
+// CloudCredentialsRef.CloudName, auth_url is the in-cluster Keystone Service
+// (keystoneEndpointURL — never the external endpoint), and endpoint_type is
+// "internal" (the key MUST be "endpoint_type", not "interface"; see
+// buildAppCredCloudsYAML for the full rationale).
+func buildPasswordCloudsYAML(cp *c5c3v1alpha1.ControlPlane, password string) string {
+	region := cp.Spec.Region
+	if region == "" {
+		region = "RegionOne"
+	}
+	cloudName := cp.Spec.KORC.AdminCredential.CloudCredentialsRef.CloudName
+	if cloudName == "" {
+		cloudName = korcAdminUsername
+	}
+	return fmt.Sprintf(`clouds:
+  %s:
+    auth:
+      auth_url: %q
+      username: %q
+      password: %q
+      project_name: %q
+      user_domain_name: %q
+      project_domain_name: %q
+    region_name: %q
+    endpoint_type: internal
+    identity_api_version: 3
+`, cloudName, keystoneEndpointURL(cp), korcAdminUsername, password,
+		korcAdminUsername, korcAdminDomainName, korcAdminDomainName, region)
+}
+
 // adminAppCredentialPushSecretName returns the PushSecret name backing up the
 // minted application credential to OpenBao.
 func adminAppCredentialPushSecretName(cp *c5c3v1alpha1.ControlPlane) string {
@@ -196,16 +279,20 @@ func adminAppCredentialPushSecretName(cp *c5c3v1alpha1.ControlPlane) string {
 // It create-or-updates an OWNED ApplicationCredential CR that instructs K-ORC to
 // mint the admin application credential. The CR maps the ControlPlane's
 // AdminCredential spec onto the K-ORC ApplicationCredentialSpec, taking care of
-// the Restricted <-> Unrestricted inversion (see below). Re-mint (REQ-012) is
-// driven here by comparing the SHA-256 of the admin password against the
-// adminPasswordHashAnnotation stamped on the AC CR.
+// the Restricted <-> Unrestricted inversion (see below). The AC authenticates via
+// the operator-owned password-cloud (ensureAdminPasswordCloud), NOT
+// k-orc-clouds-yaml, so it can always re-authenticate as admin even while the
+// minted app credential is being revoked.
 //
-// DECISION (re-mint placement): the password-hash compare and re-mint trigger
-// live in reconcileKORC rather than reconcileAdminCredential. The AC CR is the
-// object K-ORC reacts to, so stamping the hash annotation here keeps the
-// re-mint signal co-located with the resource whose change actually causes
-// K-ORC to rotate the credential. reconcileAdminCredential then only deals with
-// committing/pushing the already-(re-)minted secret. Reviewer: please verify.
+// RE-MINT (REQ-012): K-ORC's AC actuator implements only Create + Delete, so a
+// rotated admin password cannot re-mint the credential in place. reconcileKORC
+// therefore compares the SHA-256 of the current admin password against the
+// adminPasswordHashAnnotation stamped on the AC; on a mismatch it DELETES the AC
+// (the finalizer revokes the old credential) and regenerates the secret "value"
+// (remintAdminApplicationCredential), and the next pass recreates it for a fresh
+// mint. The hash compare and the delete+recreate live here, co-located with the
+// resource K-ORC reacts to; reconcileAdminCredential only commits/pushes the
+// already-(re-)minted secret.
 //
 // MISSING-CRD SAFETY: if the K-ORC CRD is not installed the apiserver / RESTMapper
 // returns a no-match error; this is detected via meta.IsNoMatchError and surfaced
@@ -216,11 +303,12 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 
 	adminCred := cp.Spec.KORC.AdminCredential
 
-	// Compute the SHA-256 of the admin password used to (re-)mint the AC
-	// (REQ-012). A read failure (missing Secret/key) is surfaced as KORCReady
-	// False with a requeue rather than a hard error so a not-yet-seeded admin
-	// password simply defers minting.
-	pwHash, err := r.adminPasswordHash(ctx, cp)
+	// Read the admin password used to (re-)mint the AC (REQ-012). The cleartext is
+	// needed both to derive the rotation hash AND to render the password-based
+	// clouds.yaml the AC mints with. A read failure (missing Secret/key) is
+	// surfaced as KORCReady False with a requeue rather than a hard error so a
+	// not-yet-seeded admin password simply defers minting.
+	password, err := readAdminPassword(ctx, r.Client, cp)
 	if err != nil {
 		if secrets.IsMissingSecretOrKey(err) {
 			logger.Info("admin password not yet available, deferring K-ORC mint")
@@ -242,6 +330,23 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 		})
 		return ctrl.Result{}, err
 	}
+	pwHash := hashAdminPassword(password)
+
+	// Ensure the operator-owned password-based clouds.yaml the AC mints with always
+	// tracks the current admin password. This is what breaks the self-referential
+	// bootstrap deadlock and lets the delete+recreate re-mint below re-authenticate
+	// as admin even while k-orc-clouds-yaml still holds the (about-to-be-revoked)
+	// app credential.
+	if err := r.ensureAdminPasswordCloud(ctx, cp, password); err != nil {
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeKORCReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "PasswordCloudError",
+			Message:            fmt.Sprintf("ensuring admin password-cloud secret: %v", err),
+		})
+		return ctrl.Result{}, err
+	}
 
 	// restricted defaults to true (the safe least-privilege baseline) when unset,
 	// matching the +kubebuilder:default=true marker and the defaulting webhook.
@@ -250,8 +355,18 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 		restricted = *adminCred.ApplicationCredential.Restricted
 	}
 
-	credRef := orcv1alpha1.CloudCredentialsReference{
+	// importCredRef authenticates the Domain/User imports and the catalog
+	// Service/Endpoint: they stay on the spec's CloudCredentialsRef
+	// (k-orc-clouds-yaml) and tolerate the brief auth gap during a re-mint by
+	// requeueing. acCredRef points the AC itself at the operator-owned
+	// password-cloud so a delete+recreate can always re-authenticate (see
+	// adminPasswordCloudSecretSuffix).
+	importCredRef := orcv1alpha1.CloudCredentialsReference{
 		SecretName: adminCred.CloudCredentialsRef.SecretName,
+		CloudName:  adminCred.CloudCredentialsRef.CloudName,
+	}
+	acCredRef := orcv1alpha1.CloudCredentialsReference{
+		SecretName: adminPasswordCloudSecretName(cp),
 		CloudName:  adminCred.CloudCredentialsRef.CloudName,
 	}
 
@@ -260,7 +375,7 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 	// Default domain, so import it (and its domain) as UNMANAGED K-ORC resources
 	// before minting — otherwise the AC blocks forever on "Waiting for User/admin
 	// to be created".
-	if err := r.ensureKORCAdminImports(ctx, cp, credRef); err != nil {
+	if err := r.ensureKORCAdminImports(ctx, cp, importCredRef); err != nil {
 		if meta.IsNoMatchError(err) {
 			logger.Info("K-ORC User/Domain CRD not installed; KORCReady=False")
 			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
@@ -298,6 +413,45 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 		return ctrl.Result{}, err
 	}
 
+	// Decide between steady-state convergence and a re-mint BEFORE the
+	// CreateOrUpdate: K-ORC's ApplicationCredential actuator only implements
+	// Create + Delete (no in-place re-mint), so the only way to a fresh Keystone
+	// credential on a password rotation is to delete the AC (finalizer revokes the
+	// old credential) and let the next pass recreate it. A hash mismatch — a stale
+	// stamped hash after a password rotation, or the empty annotation the
+	// CredentialRotation reconciler writes to nudge — is the re-mint signal.
+	acKey := types.NamespacedName{Name: adminAppCredentialName(cp), Namespace: childNamespace(cp)}
+	existing := &orcv1alpha1.ApplicationCredential{}
+	switch getErr := r.Get(ctx, acKey, existing); {
+	case getErr == nil:
+		if existing.Annotations[adminPasswordHashAnnotation] != pwHash {
+			return r.remintAdminApplicationCredential(ctx, cp, existing)
+		}
+		// Hash matches: fall through to the idempotent CreateOrUpdate below, which
+		// converges the spec without re-minting (no-op when nothing changed).
+	case apierrors.IsNotFound(getErr):
+		// First mint, or the recreate after a re-mint delete: CreateOrUpdate below.
+	case meta.IsNoMatchError(getErr):
+		logger.Info("K-ORC ApplicationCredential CRD not installed; KORCReady=False")
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeKORCReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "KORCCRDNotInstalled",
+			Message:            "K-ORC ApplicationCredential CRD is not installed",
+		})
+		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+	default:
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeKORCReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "ApplicationCredentialError",
+			Message:            fmt.Sprintf("reading ApplicationCredential: %v", getErr),
+		})
+		return ctrl.Result{}, getErr
+	}
+
 	ac := &orcv1alpha1.ApplicationCredential{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      adminAppCredentialName(cp),
@@ -307,7 +461,7 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 
 	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, ac, func() error {
 		ac.Spec.ManagementPolicy = orcv1alpha1.ManagementPolicyManaged
-		ac.Spec.CloudCredentialsRef = credRef
+		ac.Spec.CloudCredentialsRef = acCredRef
 
 		if ac.Spec.Resource == nil {
 			ac.Spec.Resource = &orcv1alpha1.ApplicationCredentialResourceSpec{}
@@ -319,10 +473,10 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 		ac.Spec.Resource.SecretRef = orcv1alpha1.KubernetesNameRef(adminAppCredentialSecretName(cp))
 		ac.Spec.Resource.AccessRules = projectAccessRules(adminCred.ApplicationCredential.AccessRules)
 
-		// Stamp the password hash so a later spec change (admin password rotated)
-		// flips the annotation and triggers K-ORC to re-mint (REQ-012). Because
-		// the AC ResourceSpec is immutable in K-ORC, the annotation is the
-		// rotation signal the CredentialRotation flow (task 2.10) reacts to.
+		// Stamp the password hash this credential was minted against. On a later
+		// pass a mismatch (the hash moved because the admin password rotated, or
+		// the CredentialRotation reconciler zeroed the annotation to nudge) is what
+		// the re-mint decision above keys off to delete+recreate the AC (REQ-012).
 		if ac.Annotations == nil {
 			ac.Annotations = map[string]string{}
 		}
@@ -386,6 +540,121 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 		Message:            "K-ORC admin application credential is minted and available",
 	})
 	return ctrl.Result{}, nil
+}
+
+// remintAdminApplicationCredential drives the actual re-mint when the stamped
+// password hash no longer matches the current admin password. K-ORC's AC actuator
+// has no in-place re-mint, so it DELETES the AC (the finalizer revokes the old
+// Keystone credential, authenticating via the operator-owned password-cloud) and
+// regenerates the app-credential secret "value" so the recreated AC mints a
+// brand-new credential. The next reconcileKORC pass observes the now-absent AC and
+// recreates it via CreateOrUpdate.
+//
+// While the old AC is Terminating it reports KORCReady=False/ReMinting, escalating
+// to ReMintStalled once it has been deleting longer than remintStallTimeout — a
+// stuck finalizer (e.g. K-ORC cannot reach Keystone to revoke) otherwise loops on
+// ReMinting forever with no operator-visible signal.
+func (r *ControlPlaneReconciler) remintAdminApplicationCredential(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, ac *orcv1alpha1.ApplicationCredential,
+) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	// Already Terminating: wait for K-ORC's finalizer to revoke + remove the AC
+	// before the next pass recreates it. Escalate to ReMintStalled past the timeout.
+	if !ac.DeletionTimestamp.IsZero() {
+		reason := "ReMinting"
+		message := fmt.Sprintf("re-minting admin application credential %q; awaiting revoke of the previous credential", ac.Name)
+		if time.Since(ac.DeletionTimestamp.Time) > remintStallTimeout {
+			reason = "ReMintStalled"
+			message = fmt.Sprintf("admin application credential %q has been Terminating longer than %s; "+
+				"K-ORC may be unable to revoke the previous Keystone credential", ac.Name, remintStallTimeout)
+			logger.Info("admin application credential re-mint stalled",
+				"name", ac.Name, "terminatingSince", ac.DeletionTimestamp.Time)
+		}
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeKORCReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             reason,
+			Message:            message,
+		})
+		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+	}
+
+	// Trigger the re-mint: delete the AC, then regenerate the secret "value" so the
+	// recreated AC mints a fresh credential (a NotFound on delete is benign — the
+	// AC is already gone, the recreate happens next pass).
+	if err := r.Delete(ctx, ac); err != nil && !apierrors.IsNotFound(err) {
+		if meta.IsNoMatchError(err) {
+			logger.Info("K-ORC ApplicationCredential CRD not installed; KORCReady=False")
+			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+				Type:               conditionTypeKORCReady,
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: cp.Generation,
+				Reason:             "KORCCRDNotInstalled",
+				Message:            "K-ORC ApplicationCredential CRD is not installed",
+			})
+			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+		}
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeKORCReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "ApplicationCredentialError",
+			Message:            fmt.Sprintf("deleting ApplicationCredential for re-mint: %v", err),
+		})
+		return ctrl.Result{}, err
+	}
+
+	if err := r.regenerateAppCredentialSecretValue(ctx, cp); err != nil {
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeKORCReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "SecretError",
+			Message:            fmt.Sprintf("regenerating application-credential secret value for re-mint: %v", err),
+		})
+		return ctrl.Result{}, err
+	}
+
+	logger.Info("deleted admin application credential to trigger re-mint", "name", ac.Name)
+	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+		Type:               conditionTypeKORCReady,
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: cp.Generation,
+		Reason:             "ReMinting",
+		Message:            fmt.Sprintf("deleted admin application credential %q; a fresh credential will be minted from the rotated admin password", ac.Name),
+	})
+	return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+}
+
+// regenerateAppCredentialSecretValue overwrites the app-credential secret "value"
+// with a fresh random secret and drops any stale assembled clouds.yaml. The new
+// "value" makes the recreated AC mint a NEW Keystone credential; dropping the
+// clouds.yaml forces reconcileAdminCredential to rebuild it from the fresh id+value
+// rather than keep serving the just-revoked credential.
+func (r *ControlPlaneReconciler) regenerateAppCredentialSecretValue(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      adminAppCredentialSecretName(cp),
+			Namespace: childNamespace(cp),
+		},
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
+		v, gerr := generateAppCredSecretValue()
+		if gerr != nil {
+			return gerr
+		}
+		if secret.Data == nil {
+			secret.Data = map[string][]byte{}
+		}
+		secret.Data[appCredSecretValueKey] = []byte(v)
+		delete(secret.Data, appCredCloudsYAMLKey)
+		return controllerutil.SetControllerReference(cp, secret, r.Scheme)
+	}); err != nil {
+		return fmt.Errorf("regenerating app-credential secret value: %w", err)
+	}
+	return nil
 }
 
 // adminUserRef derives the name of the K-ORC User CR the admin application
@@ -496,40 +765,44 @@ func projectAccessRules(rules []c5c3v1alpha1.AccessRule) []orcv1alpha1.Applicati
 	return out
 }
 
-// adminPasswordHash reads the admin password from the configured PasswordSecretRef
-// and returns its SHA-256 as a lowercase hex string (CC-0110, REQ-012). It
-// delegates to the package-level computeAdminPasswordHash so the ControlPlane
-// reconciler (which stamps the hash onto the AC CR during a mint) and the
-// CredentialRotation reconciler (which compares the hash to drive a re-mint
-// nudge, task 2.10) share ONE source of truth for the hash derivation.
-func (r *ControlPlaneReconciler) adminPasswordHash(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (string, error) {
-	return computeAdminPasswordHash(ctx, r.Client, cp)
-}
-
 // computeAdminPasswordHash reads the admin password from the ControlPlane's
 // configured PasswordSecretRef and returns its SHA-256 as a lowercase hex string
 // (CC-0110, REQ-012). The data key defaults to "password" when the SecretRef.Key
 // is unset, matching the keystone admin-password Secret convention.
 //
 // DECISION (hash-helper extraction): the hash derivation lives here as a
-// package-level function (rather than only as a method on ControlPlaneReconciler)
-// so BOTH the ControlPlane reconciler and the CredentialRotation reconciler
-// (task 2.10) compute the SAME hash without duplicating the SHA-256 logic. The
-// ControlPlaneReconciler.adminPasswordHash method is retained as a thin delegator
-// so reconcile_korc.go's external behaviour and tests are unchanged.
+// package-level function so BOTH the ControlPlane reconciler (which reads the
+// cleartext via readAdminPassword and hashes it via hashAdminPassword inline) and
+// the CredentialRotation reconciler compute the SAME hash without duplicating the
+// SHA-256 logic.
 func computeAdminPasswordHash(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane) (string, error) {
+	pw, err := readAdminPassword(ctx, c, cp)
+	if err != nil {
+		return "", err
+	}
+	return hashAdminPassword(pw), nil
+}
+
+// readAdminPassword reads the cleartext admin password from the configured
+// PasswordSecretRef (data key defaults to "password"). reconcileKORC needs the
+// cleartext — not just its hash — to render the password-based clouds.yaml the
+// admin ApplicationCredential mints with, so the read is factored out here and the
+// hash derived from it via hashAdminPassword.
+func readAdminPassword(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane) (string, error) {
 	ref := cp.Spec.KORC.AdminCredential.PasswordSecretRef
 	key := ref.Key
 	if key == "" {
 		key = "password"
 	}
-	pw, err := secrets.GetSecretValue(ctx, c,
+	return secrets.GetSecretValue(ctx, c,
 		types.NamespacedName{Namespace: cp.Namespace, Name: ref.Name}, key)
-	if err != nil {
-		return "", err
-	}
+}
+
+// hashAdminPassword returns the SHA-256 of the admin password as a lowercase hex
+// string — the value stamped onto the AC CR's adminPasswordHashAnnotation.
+func hashAdminPassword(pw string) string {
 	sum := sha256.Sum256([]byte(pw))
-	return hex.EncodeToString(sum[:]), nil
+	return hex.EncodeToString(sum[:])
 }
 
 // updateAdminApplicationCredentialStatus reflects the observed AC CR into

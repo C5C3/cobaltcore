@@ -32,4 +32,12 @@ const (
 	// admin ApplicationCredential CR (Bootstrap) or for a ControlPlane / admin
 	// password Secret to appear (CC-0110, REQ-015).
 	credentialRotationWaitInterval = 10 * time.Second
+
+	// remintStallTimeout bounds how long the admin ApplicationCredential may stay
+	// Terminating during a re-mint before reconcileKORC escalates KORCReady from
+	// the transient "ReMinting" reason to "ReMintStalled". A stuck finalizer (e.g.
+	// K-ORC cannot reach Keystone to revoke the old credential) otherwise loops on
+	// "ReMinting" indefinitely with no operator-visible signal. The window is
+	// generous so a slow-but-progressing revoke is not flagged as stalled.
+	remintStallTimeout = 5 * time.Minute
 )

@@ -13,6 +13,7 @@ import (
 
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	. "github.com/onsi/gomega"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
@@ -142,11 +143,12 @@ func TestRotation_ReMintClearsHashAnnotation(t *testing.T) {
 
 // TestRotation_ReMintFullCycleReStampsHash drives the COMPLETE re-mint mutation
 // cycle, not just the nudge half (CC-0110, TE7). It (1) runs the CredentialRotation
-// reconciler to clear the password-hash annotation (the nudge), then (2) runs the
-// ControlPlane reconciler's reconcileKORC pass against the SAME client to prove the
-// nudge is consumed: reconcileKORC observes the now-empty annotation, re-mints, and
-// re-stamps the current password hash. Asserting both halves guards against a
-// regression where the nudge fires but the re-stamp never happens (or vice versa).
+// reconciler to clear the password-hash annotation (the nudge), then runs two
+// reconcileKORC passes against the SAME client to prove the nudge is consumed:
+// (2a) the cleared annotation drives reconcileKORC to DELETE the AC (the re-mint
+// trigger), and (2b) the next pass recreates it stamped with the current hash.
+// Asserting all three steps guards against a regression where the nudge fires but
+// the delete+recreate never happens (or vice versa).
 func TestRotation_ReMintFullCycleReStampsHash(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -173,14 +175,25 @@ func TestRotation_ReMintFullCycleReStampsHash(t *testing.T) {
 	g.Expect(nudged.Annotations[adminPasswordHashAnnotation]).To(BeEmpty(),
 		"reMint must clear the password-hash annotation to nudge a re-mint")
 
-	// --- Half 2: the ControlPlane reconciler consumes the nudge and re-stamps. ---
+	// --- Half 2a: reconcileKORC consumes the nudge and DELETES the AC to re-mint. ---
 	cpr := &ControlPlaneReconciler{Client: c, Scheme: s}
+	_, err = cpr.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	deleted := &orcv1alpha1.ApplicationCredential{}
+	getErr := c.Get(context.Background(), types.NamespacedName{
+		Name: adminAppCredentialName(cp), Namespace: childNamespace(cp),
+	}, deleted)
+	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
+		"the cleared annotation must drive reconcileKORC to delete the AC for a re-mint")
+
+	// --- Half 2b: the next pass recreates the AC stamped with the current hash. ---
 	_, err = cpr.reconcileKORC(context.Background(), cp)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	reminted := getAC(t, c, cp)
 	g.Expect(reminted.Annotations).To(HaveKeyWithValue(adminPasswordHashAnnotation, testPasswordHash()),
-		"reconcileKORC must consume the cleared annotation and re-stamp the current password hash (re-mint)")
+		"reconcileKORC must recreate the AC and stamp the current password hash (re-mint)")
 }
 
 func TestRotation_PasswordHashChangeTriggersNudge(t *testing.T) {

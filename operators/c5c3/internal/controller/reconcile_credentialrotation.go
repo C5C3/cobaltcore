@@ -64,15 +64,15 @@ type CredentialRotationReconciler struct {
 //     credential; an operator must split the control planes into separate
 //     namespaces or add an explicit reference (a later-level field).
 //
-// DECISION (re-mint nudge): the reconciler NEVER mints the credential itself.
-// reconcileKORC stamps the SHA-256 of the admin password onto the owned AC CR via
-// adminPasswordHashAnnotation and re-mints whenever its computed hash differs
-// from that annotation. To force a re-mint this reconciler simply CLEARS
+// DECISION (re-mint nudge): the reconciler NEVER mints or deletes the credential
+// itself. reconcileKORC stamps the SHA-256 of the admin password onto the owned
+// AC CR via adminPasswordHashAnnotation and, on a hash mismatch, re-mints by
+// deleting + recreating the AC. To force a re-mint this reconciler simply CLEARS
 // (zeroes) the annotation on the AC CR — the lightest possible nudge. On its next
-// pass reconcileKORC observes the mismatch (computed hash != "") and re-mints,
-// re-stamping the fresh hash. Clearing the annotation (rather than deleting the
-// AC CR) avoids a window where the admin credential is absent and keeps K-ORC's
-// resource lifecycle owned solely by the ControlPlane reconciler.
+// pass reconcileKORC observes the mismatch (computed hash != "") and performs the
+// delete+recreate re-mint, re-stamping the fresh hash. Keeping the AC's resource
+// lifecycle (including the delete) owned solely by the ControlPlane reconciler
+// avoids two controllers racing on the same object.
 func (r *CredentialRotationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -172,8 +172,8 @@ func (r *CredentialRotationReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 
 	// Perform the nudge: clear the password-hash annotation so reconcileKORC
-	// re-mints on its next pass. Clearing (vs deleting the key) keeps the AC CR
-	// schema-valid and the change minimal.
+	// deletes+recreates the AC (the re-mint) on its next pass. Clearing (vs
+	// deleting the key) keeps the AC CR schema-valid and the change minimal.
 	if err := r.clearPasswordHashAnnotation(ctx, ac); err != nil {
 		return ctrl.Result{}, fmt.Errorf("clearing password-hash annotation to nudge re-mint: %w", err)
 	}

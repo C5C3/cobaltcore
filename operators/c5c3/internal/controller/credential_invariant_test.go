@@ -100,13 +100,15 @@ func invariantControlPlane() *c5c3v1alpha1.ControlPlane {
 	return cp
 }
 
-// availableAC pre-seeds an Available ApplicationCredential so reconcileKORC flips
-// KORCReady=True on its single pass.
+// availableAC pre-seeds an Available ApplicationCredential whose stamped password
+// hash already matches, so reconcileKORC flips KORCReady=True on its single pass
+// (a missing/mismatched hash would instead trigger a delete+recreate re-mint).
 func availableAC(cp *c5c3v1alpha1.ControlPlane) *orcv1alpha1.ApplicationCredential {
 	return &orcv1alpha1.ApplicationCredential{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      adminAppCredentialName(cp),
-			Namespace: childNamespace(cp),
+			Name:        adminAppCredentialName(cp),
+			Namespace:   childNamespace(cp),
+			Annotations: map[string]string{adminPasswordHashAnnotation: testPasswordHash()},
 		},
 		Status: orcv1alpha1.ApplicationCredentialStatus{
 			ID: ptr.To("ac-id-invariant"),
@@ -258,6 +260,44 @@ func TestCredentialInvariant_NoWorkloadReferencesAppCredentialSecret(t *testing.
 	g.Expect(leaks).To(BeEmpty(),
 		"REQ-013: no operator-created workload Pod template may reference the app-credential "+
 			"or keystone-admin Secret in an env var or volume. Leaks: %v", leaks)
+}
+
+// TestCredentialInvariant_PasswordCloudConfinedToAC asserts the operator-owned
+// password-cloud — which carries the CLEARTEXT admin password in its clouds.yaml —
+// is confined to the admin ApplicationCredential's CloudCredentialsRef: it must not
+// appear in the projected Keystone CR spec, and (like the app-credential secret)
+// must not leak into any operator-created workload Pod template.
+func TestCredentialInvariant_PasswordCloudConfinedToAC(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := invariantScheme(t)
+	cp := invariantControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, adminPasswordSecret(), availableAC(cp), readyCloudsYamlES(cp)).
+		Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	driveCredentialChain(t, r, cp)
+
+	ctx := context.Background()
+	pwCloud := adminPasswordCloudSecretName(cp)
+
+	// (a) The password-cloud name must NOT appear in the projected Keystone CR.
+	k := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Name: keystoneName(cp), Namespace: childNamespace(cp)}, k)).To(Succeed())
+	g.Expect(renderObjectStrings(k.Spec)).NotTo(ContainSubstring(pwCloud),
+		"the password-cloud secret (cleartext admin password) must not appear in the Keystone CR spec")
+
+	// (b) The admin AC references it via CloudCredentialsRef — the one allowed use.
+	ac := getAC(t, c, cp)
+	g.Expect(ac.Spec.CloudCredentialsRef.SecretName).To(Equal(pwCloud),
+		"the admin AC is the only object that may reference the password-cloud")
+
+	// (c) No operator-created workload references it (c5c3 creates none).
+	workloadCount, leaks := walkPodTemplatesForSecretLeaks(ctx, t, c, pwCloud)
+	g.Expect(workloadCount).To(BeZero())
+	g.Expect(leaks).To(BeEmpty(),
+		"no operator-created workload Pod template may reference the password-cloud. Leaks: %v", leaks)
 }
 
 // --- shared walkers / helpers ---

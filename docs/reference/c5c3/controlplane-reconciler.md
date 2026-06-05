@@ -432,8 +432,8 @@ the ControlPlane provisioned:
 | File | `reconcile_korc.go` |
 | Condition | `KORCReady` |
 | Gate | none (but defers until the admin-password Secret is readable) |
-| Projects / Owns | one K-ORC `ApplicationCredential` named `{controlplane.Name}-admin-app-credential` in `childNamespace(cp)` |
-| Requeue | `korcRequeueAfter` = **10s** while deferring, while the CRD is missing, or while the AC is not yet Available |
+| Projects / Owns | one K-ORC `ApplicationCredential` named `{controlplane.Name}-admin-app-credential` and the password-based clouds.yaml Secret `{controlplane.Name}-admin-password-cloud`, both in `childNamespace(cp)` |
+| Requeue | `korcRequeueAfter` = **10s** while deferring, while the CRD is missing, while a re-mint is in progress, or while the AC is not yet Available |
 
 `reconcileKORC` create-or-updates an **owned** K-ORC `ApplicationCredential` CR
 that instructs K-ORC to mint the admin application credential, and drives re-mint. Key behaviours:
@@ -443,24 +443,44 @@ that instructs K-ORC to mint the admin application credential, and drives re-min
   `spec.resource.unrestricted`: `restricted=true ⇒ Unrestricted=false`
   (`ptr.To(!restricted)`). `restricted` defaults to `true` (least-privilege)
   when unset, matching the defaulting webhook.
-- **CloudCredentialsRef / UserRef.** `CloudCredentialsRef` (`secretName` /
-  `cloudName`) is copied through; the required K-ORC `UserRef` is derived
-  conventionally from the admin `cloudName` (defaulting to `"admin"`), assuming a
-  sibling K-ORC `User` CR of that name.
+- **Password-cloud (breaks the self-referential deadlock).** The AC authenticates
+  via an operator-owned, password-based clouds.yaml Secret
+  `{controlplane.Name}-admin-password-cloud` (`ensureAdminPasswordCloud`), **not**
+  `k-orc-clouds-yaml`. That matters because `k-orc-clouds-yaml` *is* the minted
+  application credential itself, so deleting the AC to re-mint would invalidate the
+  very clouds.yaml needed to re-authenticate; a restricted application credential
+  also cannot mint a new application credential. The password-cloud is re-rendered
+  from the live admin password on every pass (so a rotation flows through to it)
+  and is not churned when the password is unchanged. The Domain/User imports and
+  the catalog Service/Endpoint keep using the spec's `CloudCredentialsRef`
+  (`k-orc-clouds-yaml`) and tolerate the brief auth gap during a re-mint by
+  requeueing.
+- **UserRef.** The required K-ORC `UserRef` is derived conventionally from the
+  admin `cloudName` (defaulting to `"admin"`), assuming a sibling K-ORC `User` CR
+  of that name (imported as unmanaged by `ensureKORCAdminImports`).
 - **Access rules.** `projectAccessRules` maps our `{service, method, path}` list
   onto K-ORC's rule shape: `service` becomes a `serviceRef` (Kubernetes name ref
   to an ORC `Service` CR, e.g. `identity`), `method` becomes the typed
   `HTTPMethod` enum, and `path` becomes a string pointer.
-- **Re-mint trigger.** The SHA-256 of the admin password is stamped onto the AC
-  CR under the `forge.c5c3.io/admin-password-hash` annotation
-  (`adminPasswordHashAnnotation`). On a later pass, a mismatch between the
-  freshly computed hash and the stamped annotation drives K-ORC to re-mint. The hash is computed by the package-level
-  `computeAdminPasswordHash`, shared with the CredentialRotation reconciler so
-  both agree on one derivation.
+- **Re-mint trigger (delete + recreate).** K-ORC's AC actuator implements only
+  Create + Delete, so a rotated admin password cannot re-mint in place. The SHA-256
+  of the admin password is stamped onto the AC CR under the
+  `forge.c5c3.io/admin-password-hash` annotation (`adminPasswordHashAnnotation`);
+  on a later pass a mismatch (the hash moved, or the CredentialRotation reconciler
+  zeroed the annotation to nudge) drives `reconcileKORC` to **delete** the AC — the
+  finalizer revokes the old Keystone credential, authenticating via the
+  password-cloud — and **regenerate** the secret `value`, so the next pass recreates
+  the AC for a fresh mint. The hash is computed by the package-level
+  `computeAdminPasswordHash`, shared with the CredentialRotation reconciler so both
+  agree on one derivation.
+- **Re-mint progress / stall.** While the old AC is `Terminating` the condition is
+  `KORCReady=False/ReMinting`; if it stays terminating longer than
+  `remintStallTimeout` (**5m**) — a finalizer K-ORC cannot clear, e.g. it cannot
+  reach Keystone to revoke — it escalates to `KORCReady=False/ReMintStalled`.
 - **Status reflection.** `updateAdminApplicationCredentialStatus` reflects the
   observed AC into `cp.Status.AdminApplicationCredential` (`ID`, the inverted
-  `Restricted`, and a `LastRotation` re-stamped whenever the credential ID
-  changes).
+  `Restricted`, and a `LastRotation` re-stamped whenever the credential ID changes —
+  i.e. advanced by a completed re-mint).
 - **Missing-CRD safety.** If the K-ORC CRD is absent the apiserver/RESTMapper
   returns a no-match error, detected via `meta.IsNoMatchError` and surfaced as a
   clean condition **without** crash-looping the operator.
@@ -469,8 +489,12 @@ that instructs K-ORC to mint the admin application credential, and drives re-min
 | --- | --- | --- | --- |
 | Admin password Secret/key missing | False | `WaitingForAdminPassword` | requeue 10s (via `secrets.IsMissingSecretOrKey`) |
 | Admin password read fails otherwise | False | `AdminPasswordError` | returns the error |
+| Password-cloud ensure fails | False | `PasswordCloudError` | returns the error |
 | K-ORC AC CRD not installed | False | `KORCCRDNotInstalled` | requeue 10s (no hard error) |
-| AC create/update fails otherwise | False | `ApplicationCredentialError` | returns the error |
+| Hash mismatch → AC deleted for re-mint | False | `ReMinting` | requeue 10s; AC deleted + `value` regenerated, recreated next pass |
+| Re-mint stuck `Terminating` past `remintStallTimeout` (5m) | False | `ReMintStalled` | requeue 10s; finalizer cannot revoke the old credential |
+| AC create/update/delete/read fails otherwise | False | `ApplicationCredentialError` | returns the error |
+| `value` regeneration fails | False | `SecretError` | returns the error |
 | AC not yet `Available` | False | `WaitingForApplicationCredential` | requeue 10s; gated on `orcv1alpha1.IsAvailable(ac)` (K-ORC uses `Available`, not `Ready`) |
 | AC minted and Available | True | `ApplicationCredentialMinted` | — |
 
@@ -555,13 +579,13 @@ The `CredentialRotationReconciler` drives one-shot rotations of a control-plane
 credential by **nudging** the ControlPlane reconciler rather than duplicating any
 mint logic. Its model:
 
-- **Nudge, never mint.** To force a re-mint it simply **clears** (zeroes) the
-  `forge.c5c3.io/admin-password-hash` annotation on the owned AC CR via
-  `clearPasswordHashAnnotation` (a no-op `Update` when already empty). On its
-  next pass `reconcileKORC` observes the mismatch and re-mints, re-stamping the
-  fresh hash. Clearing (rather than deleting the AC) avoids a window where the
-  admin credential is absent and keeps K-ORC's resource lifecycle owned solely by
-  the ControlPlane reconciler.
+- **Nudge, never mint or delete.** To force a re-mint it simply **clears** (zeroes)
+  the `forge.c5c3.io/admin-password-hash` annotation on the owned AC CR via
+  `clearPasswordHashAnnotation` (a no-op `Update` when already empty). On its next
+  pass `reconcileKORC` observes the mismatch and performs the delete+recreate
+  re-mint, re-stamping the fresh hash. Keeping the AC's resource lifecycle
+  (including the delete) owned solely by the ControlPlane reconciler avoids two
+  controllers racing on the same object.
 - **ControlPlane resolution (one-per-namespace).** A `CredentialRotation`
   carries no explicit ControlPlane reference, so `resolveControlPlane` lists
   ControlPlanes in the CredentialRotation's **own** namespace and requires
