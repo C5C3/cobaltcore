@@ -77,10 +77,29 @@ WITH_PROMETHEUS="${WITH_PROMETHEUS:-false}"
 # Gates the opt-in c5c3 ControlPlane bring-up (CC-0110). When true, deploy-infra
 # does NOT create the shared MariaDB/Memcached CRs — the c5c3 ControlPlane
 # provisions them in managed mode — and the c5c3-operator, K-ORC, and
-# keystone-operator are deployed (not suspended) so an applied ControlPlane CR
-# (deploy/kind/controlplane) reconciles the full chain end-to-end. Defaults to
-# false so the default Quick Start and the keystone E2E path are unchanged.
+# keystone-operator are deployed (not suspended) so a ControlPlane CR can
+# reconcile the full chain end-to-end. The CR itself is NOT applied by default:
+# the ControlPlane Quick Start has the user create and apply it by hand (just as
+# the per-service Quick Start applies the Keystone CR), so deploy-infra only
+# brings up the operator stack. Defaults to false so the default Quick Start and
+# the keystone E2E path are unchanged.
 WITH_CONTROLPLANE="${WITH_CONTROLPLANE:-false}"
+
+# Companion to WITH_CONTROLPLANE: when both are true, deploy-infra also applies
+# the bundled ControlPlane CR (deploy/kind/controlplane) automatically — the old
+# all-in-one behaviour, kept for demos and automation. Defaults to false so the
+# Quick Start's manual `kubectl apply` step is the norm. Ignored unless
+# WITH_CONTROLPLANE=true.
+WITH_CONTROLPLANE_CR="${WITH_CONTROLPLANE_CR:-false}"
+
+# Name of the ControlPlane CR brought up under WITH_CONTROLPLANE=true. The
+# c5c3-operator projects its Keystone Service as "{CONTROLPLANE_NAME}-keystone",
+# and the OpenBao bootstrap seeds the K-ORC admin clouds.yaml with that Service's
+# in-cluster auth_url — which must be correct before the first credential mint.
+# Keep this in lockstep with metadata.name of the CR you apply (by hand, or the
+# bundled one under WITH_CONTROLPLANE_CR=true, which is renamed to match). Defaults
+# to "controlplane". Ignored unless WITH_CONTROLPLANE=true.
+CONTROLPLANE_NAME="${CONTROLPLANE_NAME:-controlplane}"
 
 # Gateway API CRD release installed before the keystone-operator HelmRelease so
 # the operator's HTTPRoute watch has a registered kind at startup (CC-0065).
@@ -1150,11 +1169,12 @@ main() {
   log "=== Step 7/8: OpenBao bootstrap ==="
   # WITH_CONTROLPLANE: the bootstrap seeds the K-ORC admin clouds.yaml, whose
   # auth_url must point at the Keystone Service the ControlPlane projects. The
-  # deploy/kind/controlplane CR is named "controlplane", so its Keystone Service is
-  # "controlplane-keystone" (keystoneName = "{controlplane}-keystone"). Override the
-  # seed default ("keystone.openstack.svc") so K-ORC can authenticate the first mint.
+  # c5c3-operator names that Service "{CONTROLPLANE_NAME}-keystone" (keystoneName =
+  # "{controlplane}-keystone"), so derive the auth_url from CONTROLPLANE_NAME and
+  # override the seed default ("keystone.openstack.svc") — K-ORC needs it correct
+  # before the first mint. Keep CONTROLPLANE_NAME in lockstep with the applied CR.
   if [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
-    export KORC_KEYSTONE_AUTH_URL="http://controlplane-keystone.openstack.svc:5000/v3"
+    export KORC_KEYSTONE_AUTH_URL="http://${CONTROLPLANE_NAME}-keystone.openstack.svc:5000/v3"
   fi
   openbao_init_unseal
   openbao_bootstrap
@@ -1204,9 +1224,10 @@ main() {
     log "MariaDB CR is Ready."
   else
     # WITH_CONTROLPLANE: the shared MariaDB/Memcached are NOT created here — the
-    # ControlPlane provisions them. Wait (best-effort) for the operator stack, then
-    # apply the ControlPlane CR; the chain reconciles in the background.
-    log "=== WITH_CONTROLPLANE: bringing up the c5c3 ControlPlane ==="
+    # ControlPlane provisions them. Bring up the operator stack so a ControlPlane
+    # CR can reconcile; whether that CR is applied here or by hand depends on
+    # WITH_CONTROLPLANE_CR (default: by hand — see the ControlPlane Quick Start).
+    log "=== WITH_CONTROLPLANE: bringing up the c5c3 ControlPlane stack ==="
     kubectl wait helmrelease/keystone-operator -n keystone-system \
       --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s" 2>/dev/null \
       || log "  keystone-operator not Ready yet (continuing; the ControlPlane tolerates it)."
@@ -1225,40 +1246,60 @@ main() {
       log "  Preloaded ghcr.io/c5c3/keystone:${cp_release} into kind."
     fi
 
-    # Render the ControlPlane overlay; when KIND_HOST_PORT is overridden, inject the
-    # host port into spec.services.keystone.publicEndpoint so Keystone advertises the
-    # externally reachable URL. The checked-in CR omits publicEndpoint on purpose: at
-    # the default port 443 the operator derives https://keystone.127-0-0-1.nip.io/v3
-    # from the gateway hostname, so no rewrite is needed. This mirrors the
-    # render_kind_config host-port discipline (yq is a hard dependency on this path).
-    local cp_manifest
-    cp_manifest="$(mktemp)"
-    kubectl kustomize "${REPO_ROOT}/deploy/kind/controlplane" > "${cp_manifest}"
-    if [[ "${KIND_HOST_PORT}" != "443" ]]; then
-      # Name-scope the rewrite to the bundled CR (metadata.name == "controlplane")
-      # so adding further ControlPlanes to the overlay does not get silently
-      # rewritten with this hostname/port.
-      KIND_HOST_PORT="${KIND_HOST_PORT}" yq -i \
-        '(select(.kind == "ControlPlane" and .metadata.name == "controlplane") | .spec.services.keystone.publicEndpoint) = "https://keystone.127-0-0-1.nip.io:" + strenv(KIND_HOST_PORT) + "/v3"' \
-        "${cp_manifest}"
-      log "  Set ControlPlane publicEndpoint to https://keystone.127-0-0-1.nip.io:${KIND_HOST_PORT}/v3 (KIND_HOST_PORT override)."
-    fi
-
-    # Apply the ControlPlane CR. Retry briefly: the c5c3-operator validating webhook
-    # may need a moment after the chart install before it accepts the CR.
-    local cp_attempt
-    for cp_attempt in 1 2 3 4 5; do
-      if kubectl apply -f "${cp_manifest}" 2>/dev/null; then
-        break
+    if [[ "${WITH_CONTROLPLANE_CR}" == "true" ]]; then
+      # Render the ControlPlane overlay; when KIND_HOST_PORT is overridden, inject the
+      # host port into spec.services.keystone.publicEndpoint so Keystone advertises the
+      # externally reachable URL. The checked-in CR omits publicEndpoint on purpose: at
+      # the default port 443 the operator derives https://keystone.127-0-0-1.nip.io/v3
+      # from the gateway hostname, so no rewrite is needed. This mirrors the
+      # render_kind_config host-port discipline (yq is a hard dependency on this path).
+      local cp_manifest
+      cp_manifest="$(mktemp)"
+      kubectl kustomize "${REPO_ROOT}/deploy/kind/controlplane" > "${cp_manifest}"
+      # The bundled CR is named "controlplane"; honour a CONTROLPLANE_NAME override
+      # so the applied CR matches the {name}-keystone auth_url seeded above. Scope by
+      # the original name so a growing overlay is not blindly renamed.
+      if [[ "${CONTROLPLANE_NAME}" != "controlplane" ]]; then
+        CONTROLPLANE_NAME="${CONTROLPLANE_NAME}" yq -i \
+          '(select(.kind == "ControlPlane" and .metadata.name == "controlplane") | .metadata.name) = strenv(CONTROLPLANE_NAME)' \
+          "${cp_manifest}"
+        log "  Renamed bundled ControlPlane CR to '${CONTROLPLANE_NAME}' (CONTROLPLANE_NAME override)."
       fi
-      log "  ControlPlane CR apply attempt ${cp_attempt} failed (webhook warming up?); retrying..."
-      sleep 10
-    done
-    rm -f "${cp_manifest}"
-    log "  ControlPlane CR applied. Watch the chain with:"
-    log "    kubectl get controlplane -n openstack -w"
-    log "  It provisions MariaDB/Memcached, projects Keystone, mints the K-ORC admin"
-    log "  credential, and registers the identity catalog (not awaited here)."
+      if [[ "${KIND_HOST_PORT}" != "443" ]]; then
+        # Name-scope the rewrite to the CR we just (possibly) renamed so adding
+        # further ControlPlanes to the overlay does not get silently rewritten
+        # with this hostname/port.
+        KIND_HOST_PORT="${KIND_HOST_PORT}" CONTROLPLANE_NAME="${CONTROLPLANE_NAME}" yq -i \
+          '(select(.kind == "ControlPlane" and .metadata.name == strenv(CONTROLPLANE_NAME)) | .spec.services.keystone.publicEndpoint) = "https://keystone.127-0-0-1.nip.io:" + strenv(KIND_HOST_PORT) + "/v3"' \
+          "${cp_manifest}"
+        log "  Set ControlPlane publicEndpoint to https://keystone.127-0-0-1.nip.io:${KIND_HOST_PORT}/v3 (KIND_HOST_PORT override)."
+      fi
+
+      # Apply the ControlPlane CR. Retry briefly: the c5c3-operator validating webhook
+      # may need a moment after the chart install before it accepts the CR.
+      local cp_attempt
+      for cp_attempt in 1 2 3 4 5; do
+        if kubectl apply -f "${cp_manifest}" 2>/dev/null; then
+          break
+        fi
+        log "  ControlPlane CR apply attempt ${cp_attempt} failed (webhook warming up?); retrying..."
+        sleep 10
+      done
+      rm -f "${cp_manifest}"
+      log "  ControlPlane CR applied (WITH_CONTROLPLANE_CR=true). Watch the chain with:"
+      log "    kubectl get controlplane -n openstack -w"
+      log "  It provisions MariaDB/Memcached, projects Keystone, mints the K-ORC admin"
+      log "  credential, and registers the identity catalog (not awaited here)."
+    else
+      log "  Operator stack is up. The ControlPlane CR is NOT applied automatically —"
+      log "  create and apply it yourself (see docs/quick-start-controlplane.md), e.g.:"
+      log "    kubectl apply -f deploy/kind/controlplane/controlplane.yaml"
+      log "  Name the CR '${CONTROLPLANE_NAME}' (the OpenBao seed points K-ORC at the"
+      log "  ${CONTROLPLANE_NAME}-keystone Service — set CONTROLPLANE_NAME to change it);"
+      log "  on a KIND_HOST_PORT override set spec.services.keystone.publicEndpoint to"
+      log "  the matching :<port> URL. Or re-run with WITH_CONTROLPLANE_CR=true to apply"
+      log "  the bundled CR for you."
+    fi
   fi
 
   log ""

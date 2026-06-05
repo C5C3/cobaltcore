@@ -2,10 +2,6 @@
 SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 SPDX-License-Identifier: Apache-2.0
 -->
----
-title: Claude Code skills
-description: The repository-specific Claude Code skill suite under .claude/skills/ — what each audit covers, how to invoke it, and where its deterministic script lives.
----
 
 # Claude Code skills
 

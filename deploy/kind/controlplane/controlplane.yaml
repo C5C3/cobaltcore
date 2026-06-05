@@ -2,7 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# ControlPlane CR applied by `WITH_CONTROLPLANE=true make deploy-infra` (CC-0110).
+# ControlPlane CR for the kind ControlPlane Quick Start (CC-0110). Apply it by
+# hand (`kubectl apply -f deploy/kind/controlplane/controlplane.yaml`) once the
+# operator stack from `WITH_CONTROLPLANE=true make deploy-infra` is up, or re-run
+# deploy-infra with WITH_CONTROLPLANE_CR=true to have it applied automatically.
 #
 # Managed mode: database/cache reference managed clusters by clusterRef, so the
 # c5c3-operator provisions the MariaDB ("openstack-db") and Memcached

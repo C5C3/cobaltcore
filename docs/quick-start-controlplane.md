@@ -5,45 +5,26 @@ SPDX-License-Identifier: Apache-2.0
 
 # Quick Start (ControlPlane): C5C3 + K-ORC on Kind
 
-This guide brings up the **c5c3 ControlPlane** — the top-level aggregate that
-projects a full Keystone control plane from a single CR — together with
-[K-ORC](https://github.com/k-orc/openstack-resource-controller) (the OpenStack
-Resource Controller), which the c5c3-operator drives to mint and rotate the
-admin application credential and to register the identity service catalog.
-
-Where the [Quick Start](./quick-start.md) and
-[Quick Start (Extended)](./quick-start-extended.md) stop at a hand-applied
-`Keystone` CR (the per-service operator), this page goes one level up: a single
-`ControlPlane` CR makes the c5c3-operator provision the `MariaDB`, `Memcached`,
-and `Keystone` children, mint the K-ORC admin application credential, mirror it to
-OpenBao, and register the K-ORC `Service` / `Endpoint` catalog — all reconciled
-link-by-link to an aggregate `Ready`.
-
-::: tip One opt-in flag brings up the whole stack
-`WITH_CONTROLPLANE=true make deploy-infra` deploys the full ControlPlane stack
-(keystone-operator, K-ORC, c5c3-operator) from the **published** charts plus the
-pinned K-ORC installer, and applies a `ControlPlane` CR for you. In this mode
-deploy-infra does **not** create the shared MariaDB/Memcached — the ControlPlane
-provisions them itself (managed mode), as designed. The plain `make deploy-infra`
-(without the flag) leaves the ControlPlane stack suspended so the per-service
-Keystone Quick Start path stays light.
-:::
+The shortest path from `git clone` to an authenticated Keystone API call driven
+by a single **c5c3 ControlPlane** CR. Where the [Quick Start](./quick-start.md)
+stops at a hand-applied `Keystone` CR, here one `ControlPlane` CR makes the
+c5c3-operator provision the `MariaDB`, `Memcached`, and `Keystone` children, mint
+the admin application credential through
+[K-ORC](https://github.com/k-orc/openstack-resource-controller), mirror it to
+OpenBao, and register the identity catalog — all reconciled to an aggregate
+`Ready`.
 
 ## Prerequisites
 
-Same toolchain as the [Quick Start](./quick-start.md), and an internet connection
-(the K-ORC source is cloned from GitHub at a pinned tag):
+Same toolchain as the [Quick Start](./quick-start.md), plus an internet
+connection (K-ORC is cloned from GitHub at a pinned tag). Docker Desktop needs
+ample CPU/memory — the ControlPlane provisions a production-shaped (Galera)
+MariaDB, heavier than the single-replica database the per-service path uses.
 
-- Docker Desktop running, with enough resources for the full stack — the
-  ControlPlane provisions its own MariaDB with the operator's default
-  (production-shaped, Galera) topology, which is heavier than the single-replica
-  database the per-service Quick Start patches in. Give Docker ample CPU/memory.
-- Pinned `kind`, `kubectl`, `Helm`, `jq`, `yq` on `PATH`:
-
-  ```bash
-  make install-test-deps
-  export PATH="${HOME}/.local/bin:${PATH}"
-  ```
+```bash
+make install-test-deps
+export PATH="${HOME}/.local/bin:${PATH}"
+```
 
 ## Step 1 — Clone
 
@@ -58,72 +39,88 @@ cd forge
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 ```
 
-`KIND_HOST_PORT=8443` maps the Gateway to a non-privileged host port so the
-Keystone API is reachable at `https://keystone.127-0-0-1.nip.io:8443/v3` on
-macOS — the same convention as the [Quick Start](./quick-start.md). On Linux
-with rootful Docker you can drop the override (the default port `443` works) and
-use `https://keystone.127-0-0-1.nip.io/v3` everywhere below. deploy-infra sets
-the ControlPlane's `publicEndpoint` to match whichever port it brought the
-cluster up with.
+`WITH_CONTROLPLANE=true` brings up the shared infrastructure and then the
+ControlPlane operator stack (keystone-operator, K-ORC, c5c3-operator) from the
+published charts — but **not** the `ControlPlane` CR itself; you create and apply
+that in Step 3. In this mode the ControlPlane provisions its own MariaDB/Memcached
+(managed mode), so deploy-infra does not create the shared ones. `KIND_HOST_PORT=8443`
+maps the Gateway to a non-privileged host port for macOS; on Linux with rootful
+Docker drop the override and use port `443`. Expect **5–10 minutes**.
 
-This creates the `forge` kind cluster, the shared infrastructure
-(cert-manager, OpenBao initialised/unsealed/bootstrapped, the MariaDB and
-Memcached operators, External Secrets, Envoy Gateway and the shared
-`openstack-gw`), and then — because `WITH_CONTROLPLANE=true` — the ControlPlane
-stack on top:
+## Step 3 — Create the ControlPlane CR
 
-- deploys **keystone-operator**, **K-ORC** (a Flux `GitRepository` +
-  `Kustomization` over the pinned `v2.5.0` installer), and **c5c3-operator** from
-  the published charts — nothing is built locally;
-- does **not** create the `openstack-db` MariaDB / `openstack-memcached` Memcached
-  CRs — the ControlPlane provisions them;
-- seeds a password-based admin `clouds.yaml` in OpenBao and materialises
-  `k-orc-clouds-yaml` via ESO into `openstack` (where the projected K-ORC CRs
-  resolve it) and `orc-system`;
-- applies a `ControlPlane` CR (`deploy/kind/controlplane`) that drives the chain.
+Apply a `ControlPlane` CR — the c5c3-operator reconciles it into the whole stack.
+Keep the name `controlplane`: the OpenBao seed from Step 2 points K-ORC at the
+projected `controlplane-keystone` Service (pass `CONTROLPLANE_NAME=foo` to Step 2
+to use a different name, then name the CR `foo`). The `clusterRef` / `secretRef` /
+`passwordSecretRef` values point at the MariaDB, Memcached, and OpenBao-seeded
+Secrets the infrastructure layer already provides — the operator consumes them,
+it does not invent credentials. Every other field is defaulted.
 
-Expect **5–10 minutes** for the infrastructure; the ControlPlane chain then
-reconciles in the background (Step 3).
+```yaml
+# controlplane.yaml
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: controlplane
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      clusterRef:
+        name: openstack-db        # MariaDB the operator provisions (managed mode)
+      database: keystone
+      secretRef:
+        name: keystone-db         # DB credentials, seeded by infra via ESO
+    cache:
+      clusterRef:
+        name: openstack-memcached
+      backend: dogpile.cache.pymemcache
+  services:
+    keystone:
+      replicas: 1
+      # Drop publicEndpoint on the default port 443 — the operator then derives
+      # https://keystone.127-0-0-1.nip.io/v3 from the gateway hostname.
+      publicEndpoint: https://keystone.127-0-0-1.nip.io:8443/v3
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: keystone.127-0-0-1.nip.io
+        path: /
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin           # entry in the seeded k-orc-clouds-yaml Secret
+      passwordSecretRef:
+        name: keystone-admin       # admin password, seeded by infra via ESO
+        key: password
+      applicationCredential:
+        rotation:
+          mode: PasswordDriven
+```
 
-::: tip The OpenBao seed avoids a chicken-and-egg deadlock
-K-ORC needs a `clouds.yaml` to authenticate, but the application credential it
-should use does not exist until the c5c3-operator mints it through K-ORC. The
-bootstrap seeds a *password-based* `clouds.yaml` so the first reconcile can
-authenticate; once the operator mints the application credential, its PushSecret
-overwrites the OpenBao path with the credential-based `clouds.yaml` and ESO
-re-materialises it.
-:::
+```bash
+kubectl apply -f controlplane.yaml
+```
 
-## Step 3 — Watch the chain reconcile
+## Step 4 — Watch the chain reconcile
 
-The aggregate `Ready` becomes `True` only after all five sub-conditions are
-`True`, gated in dependency order:
+The aggregate `Ready` flips to `True` once all five sub-conditions are met, in
+dependency order:
 
 ```
 InfrastructureReady → KeystoneReady → KORCReady → AdminCredentialReady → CatalogReady
 ```
 
-Watch the ControlPlane and its sub-conditions:
-
 ```bash
-kubectl get controlplane controlplane -n openstack -w
 kubectl get controlplane controlplane -n openstack \
   -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}){"\n"}{end}'
 ```
 
-Inspect the projected children:
-
-```bash
-# Infrastructure + Keystone provisioned by the ControlPlane
-kubectl get mariadb,memcached,keystone -n openstack
-
-# K-ORC resources the operator drives (group openstack.k-orc.cloud)
-kubectl get applicationcredentials,services,endpoints.openstack.k-orc.cloud -n openstack
-```
-
 If `AdminCredentialReady` lingers on `WaitingForCloudsYaml`, force the
-`k-orc-clouds-yaml` ExternalSecret to sync (it is not in the deploy-infra wait
-list, so it may otherwise refresh only on its hourly interval):
+`k-orc-clouds-yaml` ExternalSecret to sync (deploy-infra does not wait on it, so
+it may otherwise refresh only on its hourly interval):
 
 ```bash
 kubectl annotate externalsecret/k-orc-clouds-yaml -n openstack \
@@ -137,41 +134,11 @@ kubectl wait controlplane/controlplane -n openstack \
   --for=condition=Ready --timeout=15m
 ```
 
-## Step 4 — Verify
+## Step 5 — Verify
 
-**The minted application credential** — the operator mints one restricted admin
-application credential through K-ORC and records its ID on the ControlPlane
-status:
-
-```bash
-kubectl get controlplane controlplane -n openstack \
-  -o jsonpath='{.status.adminApplicationCredential}' | jq .
-kubectl get applicationcredentials.openstack.k-orc.cloud -n openstack
-```
-
-**The OpenBao round-trip** — the minted credential is pushed to OpenBao and
-re-materialised; a `SecretSynced` ExternalSecret confirms the loop closed:
-
-```bash
-kubectl get externalsecret k-orc-clouds-yaml -n openstack \
-  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}{"\n"}'
-```
-
-**The identity catalog** — the catalog sub-reconciler registers the Keystone
-identity `Service` and public `Endpoint` as K-ORC CRs:
-
-```bash
-kubectl get services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud -n openstack
-kubectl get controlplane controlplane -n openstack \
-  -o jsonpath='{.status.catalogReady}{"\n"}'
-```
-
-**An authenticated token** — the ControlPlane exposes the projected Keystone
-externally through the shared Envoy Gateway (`services.keystone.gateway` points
-at `openstack-gw` with hostname `keystone.127-0-0-1.nip.io`), so it is reachable
-from the host at `https://keystone.127-0-0-1.nip.io:8443/v3` — the same path as
-the per-service [Quick Start](./quick-start.md), no port-forward. Check the
-version document first:
+The ControlPlane exposes the projected Keystone through the shared Envoy Gateway
+at `https://keystone.127-0-0-1.nip.io:8443/v3` — the same path as the per-service
+[Quick Start](./quick-start.md), no port-forward.
 
 ```bash
 curl -k https://keystone.127-0-0-1.nip.io:8443/v3
@@ -189,25 +156,8 @@ export OS_PROJECT_DOMAIN_NAME=Default
 openstack --insecure token issue
 ```
 
-> The `:8443` host port matches `KIND_HOST_PORT` from Step 2. With the default
-> `KIND_HOST_PORT=443` use `https://keystone.127-0-0-1.nip.io/v3` instead.
-
-> **In-cluster fallback (no Gateway):** if you drive your own `ControlPlane`
-> that omits `services.keystone.gateway`, the projected Keystone is reachable
-> only via its ClusterIP Service. Port-forward it and use the in-cluster URL:
-> ```bash
-> kubectl port-forward svc/controlplane-keystone -n openstack 5000:5000
-> export OS_AUTH_URL=http://localhost:5000/v3
-> ```
-> The Service is named `{controlplane-name}-keystone` (`controlplane-keystone`
-> for the deploy-infra CR); confirm with `kubectl get svc -n openstack`.
-
-## Customising the ControlPlane
-
-`WITH_CONTROLPLANE=true` applies the CR at `deploy/kind/controlplane/controlplane.yaml`.
-To drive your own, edit that manifest (or apply a different `ControlPlane` CR after
-the bring-up) — see the [ControlPlane CRD API Reference](./reference/c5c3/controlplane-crd.md)
-for every `spec.*` field.
+> With the default `KIND_HOST_PORT=443` use `https://keystone.127-0-0-1.nip.io/v3`
+> and drop the `publicEndpoint` line from the CR in Step 3.
 
 ## Teardown
 

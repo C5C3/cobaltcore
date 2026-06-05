@@ -114,7 +114,7 @@ kubectl wait keystone/keystone -n openstack \
 curl -k https://keystone.127-0-0-1.nip.io:8443/v3
 ```
 
-Erwartete Ausgabe:
+Expected output:
 
 ```json
 {"version": {"id": "v3.14", "status": "stable", "updated": "2020-04-07T00:00:00Z", "links": [{"rel": "self", "href": "https://keystone.127-0-0-1.nip.io:8443/v3/"}], "media-types": [{"base": "application/json", "type": "application/vnd.openstack.identity-v3+json"}]}}
@@ -132,7 +132,7 @@ export OS_PROJECT_DOMAIN_NAME=Default
 openstack --insecure token issue
 ```
 
-Erwartete Ausgabe:
+Expected output:
 
 ```text
 +------------+-------------------------------------------------------------------------------------------------------+

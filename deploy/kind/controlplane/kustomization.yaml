@@ -3,10 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Kustomize overlay for the kind-only, opt-in c5c3 ControlPlane bring-up.
-# Applied by `WITH_CONTROLPLANE=true make deploy-infra` after the operator stack
-# (keystone-operator, K-ORC, c5c3-operator) is up. The ControlPlane CR then
-# provisions the shared MariaDB/Memcached (which deploy-infra deliberately does
-# NOT create in this mode) and drives the full chain. Feature: CC-0110.
+# `WITH_CONTROLPLANE=true make deploy-infra` brings up the operator stack
+# (keystone-operator, K-ORC, c5c3-operator) but leaves applying this CR to you —
+# the ControlPlane Quick Start has you `kubectl apply` it by hand (or re-run with
+# WITH_CONTROLPLANE_CR=true to have deploy-infra apply it). The ControlPlane CR
+# then provisions the shared MariaDB/Memcached (which deploy-infra deliberately
+# does NOT create in this mode) and drives the full chain. Feature: CC-0110.
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
