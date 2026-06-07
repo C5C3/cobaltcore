@@ -1,0 +1,1817 @@
+{
+  "feature_id": "CC-0113",
+  "title": "Fix TTL-driven re-creation loop for keystone Jobs",
+  "slug": "fix-ttl-driven-re-creation-loop-for-keystone-jobs",
+  "status": "completed",
+  "phase": "awaiting_external_review",
+  "summary": "",
+  "description": "# GitHub Issue #415: fix(keystone-operator): stop the TTL-driven re-creation loop for the bootstrap and schema-check Jobs\n\n## Summary\n\nThe `bootstrap` and `schema-check` Jobs are re-created and re-run roughly every 5 minutes for the lifetime of every Keystone CR, even in steady state. On a quickstart ControlPlane this produces continuous Pod churn (~2 Jobs/Pods every 5 min), event spam, and a periodic burst of reconciles (~40–49/min vs. 3–9/min at rest) that in turn drives a wave of `Status().Update` conflicts (see #361 for the broader reconcile-loop-performance context).\n\nThe bootstrap Job runs `keystone-manage bootstrap`, so each cycle issues real (idempotent) DB writes against the admin user; the schema-check Job issues a DB query each cycle.\n\n## Root cause\n\n`job.RunJob` (`internal/common/job/job.go:63`) is a \"create-if-absent, report-completion\" helper. Its not-found branch (`job.go:67-69`) re-creates the Job whenever it is missing.\n\nBoth Job builders stamp a 5-minute cleanup TTL:\n\n- `buildBootstrapJob` — `TTLSecondsAfterFinished: 300` (`operators/keystone/internal/controller/reconcile_bootstrap.go:139,220`)\n- `buildSchemaCheckJob` — `TTLSecondsAfterFinished: 300` (`operators/keystone/internal/controller/reconcile_database.go:892-894`)\n\nThe loop is then: Job completes → after 300 s the Kubernetes TTL controller deletes it → the `Owns(&batchv1.Job{})` watch (`operators/keystone/internal/controller/keystone_controller.go:715`) delivers the delete event → reconcile → `RunJob` sees `IsNotFound` → re-create. Repeat every ~5 min.\n\n`buildDBSyncJob` (`reconcile_database.go:845`) sets **no** TTL, so its Job lingers, `RunJob` finds it `Complete`, and it is **not** re-created. db-sync is the correct model; bootstrap and schema-check diverge from it.\n\nThis is a systematic pattern, not two isolated cases: every `RunJob` caller that sets a TTL loops. That also includes the policy-validation Job (`reconcile_policyvalidation.go:159`), which only avoids the loop here because no policy overrides are configured — it would loop the moment they are.\n\n## Proposed fix (Option A)\n\nRemove `TTLSecondsAfterFinished` from `buildBootstrapJob` and `buildSchemaCheckJob` (and, consistently, from `buildPolicyValidationJob`), matching the db-sync behaviour. The completed Job then lingers and acts as the state record `RunJob` already relies on; the TTL-driven re-create trigger disappears.\n\nCost: one completed Pod per Job type lingers — negligible; it is GC'd via the owner reference on CR deletion, and replaced on the next genuine re-run.\n\n### Why this does not break admin-password rotation\n\nThis is the critical constraint: `keystone-manage bootstrap` is also how the admin user's DB password is (re)set, so rotation must keep working. It does, because rotation rides a **different** re-create trigger than the TTL:\n\n- `reconcileBootstrap` hashes the admin Secret's `password` and stamps it as a pod-template annotation `forge.c5c3.io/admin-password-hash` (`reconcile_bootstrap.go:38-43,89,223-224`).\n- `PodSpecHash` hashes the full `PodTemplateSpec` incl. annotations (`job.go:44`), so a rotated password changes `forge.c5c3.io/pod-spec-hash`.\n- The rotation re-create lives in the hash-gate at `job.go:78-104`: an existing `Complete` Job whose stored hash differs from the desired hash is deleted and re-created with the new password.\n\nThat gate requires the existing completed Job as the record of the last-applied hash — exactly the record the TTL destroys today. Removing the TTL preserves it. In steady state the TTL only ever re-created the Job with the *same* hash, so the two triggers are cleanly separable:\n\n| Trigger | Re-creates Job | After fix |\n| --- | --- | --- |\n| TTL delete (`job.go:67`) | every 5 min, same hash | **gone** |\n| Hash mismatch / rotation (`job.go:85`) | on real password change | **kept** |\n\nRotation latency is unaffected: a password change still enters via the Secret watch (`keystone_controller.go:731`), not via the TTL.\n\n## Affected tests\n\nThese pin `TTLSecondsAfterFinished == 300` and must be updated to assert the TTL is unset:\n\n- `operators/keystone/internal/controller/reconcile_bootstrap_test.go:421-423`\n- `operators/keystone/internal/controller/reconcile_database_test.go:1581-1582`\n- `operators/keystone/internal/controller/reconcile_policyvalidation_test.go:497-498`\n\n## Design decision (resolved)\n\nNo periodic schema-drift check is wanted. schema-check re-running only on an image/config (hash) change — not every 5 min — is the accepted behaviour. The fix is therefore a plain TTL removal with **no** added `RequeueAfter` drift interval. Intent confirmed; implementation can proceed.\n\n## Out of scope (tracked separately)\n\nThe `Status().Update` conflicts this loop amplifies are a related but distinct hardening item (wrap `updateStatus` in `RetryOnConflict` / optimistic patch). Filing only the loop fix here; happy to split or fold in per maintainer preference.\n\nRelated: #361\n\n\n**Labels:** bug\n\n---\nSource: https://github.com/C5C3/forge/issues/415",
+  "stories": [
+    {
+      "title": "Cluster operator: steady-state ControlPlane stops churning Jobs/Pods",
+      "role": "cluster operator / SRE",
+      "want": "the bootstrap and schema-check Jobs to stop being re-created and re-run roughly every 5 minutes once a Keystone CR reaches steady state",
+      "so_that": "a quickstart ControlPlane stops producing continuous Pod churn (~2 Jobs/Pods per 5 min), event spam, and the periodic reconcile burst (~40-49/min) that amplifies Status().Update conflicts (CC-0113, #415, #361)",
+      "criteria": [
+        "buildBootstrapJob returns a Job with TTLSecondsAfterFinished == nil",
+        "buildSchemaCheckJob returns a Job with TTLSecondsAfterFinished == nil",
+        "A completed bootstrap/schema-check Job with a matching pod-spec hash is NOT deleted or re-created on subsequent reconciles (RunJob returns done=true)",
+        "The bootstrap and schema-check Job UID is stable across repeated steady-state reconciles (no re-creation)"
+      ]
+    },
+    {
+      "title": "Operator developer: Job builders follow the consistent no-TTL db-sync model",
+      "role": "keystone operator developer",
+      "want": "the bootstrap, schema-check, and policy-validation Job builders to omit TTLSecondsAfterFinished exactly like buildDBSyncJob/buildDBJob",
+      "so_that": "every RunJob caller uses the same 'completed Job lingers as the state record' model and no caller silently re-creates a TTL-deleted Job (CC-0113, #415)",
+      "criteria": [
+        "buildPolicyValidationJob returns a Job with TTLSecondsAfterFinished == nil while keeping backoffLimit == 2",
+        "No `int32(300)` TTL literal remains in operators/keystone for the bootstrap, schema-check, or policy-validation Jobs",
+        "backoffLimit, RestartPolicy, command, env, volumes, and owner references of each affected Job are unchanged by the diff",
+        "buildDBSyncJob/buildDBJob remain the reference model (already no TTL) and are not modified"
+      ]
+    },
+    {
+      "title": "Security owner: admin-password rotation still re-runs bootstrap",
+      "role": "security / credential owner",
+      "want": "removing the TTL to NOT change admin-password rotation behaviour",
+      "so_that": "rotating the admin Secret's password still forces keystone-manage bootstrap to re-run via the pod-spec-hash gate, not via the deleted TTL trigger (CC-0113, #415, CC-0108)",
+      "criteria": [
+        "When the admin password changes, forge.c5c3.io/admin-password-hash changes, the pod-spec hash differs, and RunJob deletes the stale bootstrap Job and re-creates it",
+        "The re-created bootstrap Job carries the current admin-password-hash and has TTLSecondsAfterFinished == nil",
+        "When the admin password is unchanged, the completed bootstrap Job's hash matches and RunJob returns done=true without re-creating it",
+        "TestReconcileBootstrap_PasswordChangeRecreatesJob continues to pass after the TTL removal"
+      ]
+    },
+    {
+      "title": "Operator: completed Jobs are still garbage-collected on CR deletion",
+      "role": "cluster operator",
+      "want": "the now-lingering completed Jobs to be cleaned up when the Keystone CR is deleted",
+      "so_that": "no orphaned completed Jobs/Pods accumulate beyond one per Job type per CR (CC-0113, #415)",
+      "criteria": [
+        "createJobWithHash still sets the controller owner reference on every created Job",
+        "Deleting the Keystone CR cascades to the completed bootstrap/schema-check/policy-validation Jobs via ownerReference garbage collection",
+        "At most one completed Job per type lingers per CR in steady state",
+        "The owner-reference GC path is unchanged by the TTL removal"
+      ]
+    },
+    {
+      "title": "Documentation reader: keystone reference docs match the new behaviour",
+      "role": "documentation reader / operator",
+      "want": "the user-facing keystone reference docs and source godoc to stop claiming the Jobs are TTL-cleaned after 5 minutes",
+      "so_that": "the documented Job lifecycle matches the implementation and explains the lingering-Job/no-loop rationale (CC-0113, #415)",
+      "criteria": [
+        "docs/reference/keystone/keystone-schema-drift-detection.md no longer claims ttlSecondsAfterFinished=300 / automatic 5-minute cleanup for schema-check",
+        "docs/reference/keystone/keystone-reconciler.md TTL rows for the policy-validation and bootstrap Jobs read 'not set'",
+        "buildSchemaCheckJob and buildPolicyValidationJob godoc no longer claim ttlSecondsAfterFinished=300 / auto-cleanup",
+        "Grepping docs/reference/keystone for the TTL=300 claim on these three Jobs returns nothing"
+      ]
+    },
+    {
+      "title": "Reviewer: tests pin the new no-TTL contract so the loop cannot regress",
+      "role": "code reviewer",
+      "want": "every test that previously asserted TTL == 300 updated to assert TTL is unset, across all four assertion sites",
+      "so_that": "a future change that re-introduces a TTL (and therefore the re-creation loop) fails CI (CC-0113, #415)",
+      "criteria": [
+        "reconcile_bootstrap_test.go, reconcile_database_test.go, reconcile_policyvalidation_test.go, and integration_test.go assert TTLSecondsAfterFinished is nil for these Jobs",
+        "No test in operators/keystone still asserts TTLSecondsAfterFinished == int32(300) for these Jobs",
+        "A steady-state regression test asserts a completed matching-hash Job is not re-created",
+        "go test ./operators/keystone/internal/controller/... (unit + envtest) is green"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "description": "buildBootstrapJob SHALL NOT set TTLSecondsAfterFinished; the returned Job's Spec.TTLSecondsAfterFinished SHALL be nil.",
+      "priority": "SHALL",
+      "rationale": "The 300s TTL is the trigger that lets the K8s TTL controller delete the completed bootstrap Job, which via the Owns(&batchv1.Job{}) watch drives RunJob's IsNotFound branch to re-create it every ~5 min (CC-0113, #415).",
+      "scenarios": [
+        {
+          "name": "Built bootstrap Job has no TTL",
+          "when": "buildBootstrapJob(keystone, configMapName, fernetSecretName, adminPasswordHash) constructs the Job",
+          "then": "job.Spec.TTLSecondsAfterFinished is nil",
+          "and_then": [
+            "the completed bootstrap Job lingers as the RunJob pod-spec-hash record",
+            "the local `ttl := int32(300)` declaration is removed from buildBootstrapJob"
+          ]
+        },
+        {
+          "name": "No TTL even with DB TLS enabled",
+          "when": "dbTLSEnabled(keystone) is true so the db-tls volume/mount is appended",
+          "then": "the bootstrap Job still has Spec.TTLSecondsAfterFinished == nil",
+          "and_then": [
+            "the TLS code path does not re-introduce a TTL"
+          ]
+        },
+        {
+          "name": "Completed bootstrap Job is not TTL-deleted",
+          "when": "the bootstrap Job has completed and the K8s TTL controller would previously have deleted it after 300s",
+          "then": "no TTL exists, so the Job is not deleted and is not re-created with the same hash",
+          "and_then": [
+            "steady-state reconciles see the existing Complete Job and return done without churn"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "description": "buildSchemaCheckJob SHALL NOT set TTLSecondsAfterFinished (nil) while continuing to set BackoffLimit == 2.",
+      "priority": "SHALL",
+      "rationale": "schema-check diverges from the correct db-sync model only by its TTL; removing it stops the loop while keeping the faster-fail backoffLimit for the read-only check. No periodic schema-drift re-check is wanted (resolved design decision) (CC-0113, #415, CC-0064).",
+      "scenarios": [
+        {
+          "name": "Built schema-check Job has no TTL but keeps backoffLimit",
+          "when": "buildSchemaCheckJob(keystone, configMapName) constructs the Job",
+          "then": "job.Spec.TTLSecondsAfterFinished is nil and *job.Spec.BackoffLimit == 2",
+          "and_then": [
+            "the `ttl := int32(300)` and `j.Spec.TTLSecondsAfterFinished = &ttl` lines are removed",
+            "the `j.Spec.BackoffLimit = &backoffLimit` assignment is retained"
+          ]
+        },
+        {
+          "name": "Re-runs only on hash change, not periodically",
+          "when": "a completed schema-check Job exists with a pod-spec hash matching the desired template",
+          "then": "RunJob returns done=true and does not re-run the check",
+          "and_then": [
+            "schema-check re-runs only when the image/config (hash) changes, never every 5 min"
+          ]
+        },
+        {
+          "name": "No TTL even with DB TLS enabled",
+          "when": "dbTLSEnabled(keystone) is true for the schema-check Job",
+          "then": "the schema-check Job still has Spec.TTLSecondsAfterFinished == nil",
+          "and_then": [
+            "the shared buildDBJob TLS path does not add a TTL"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "description": "buildPolicyValidationJob SHALL NOT set TTLSecondsAfterFinished (nil) while continuing to set BackoffLimit == 2 and RestartPolicy == Never.",
+      "priority": "SHALL",
+      "rationale": "The policy-validation Job is the same systematic pattern; it only avoids the loop today because no policy overrides are configured, and would loop the moment they are. Removing its TTL keeps the fix consistent and forward-safe (CC-0113, #415, CC-0058).",
+      "scenarios": [
+        {
+          "name": "Built policy-validation Job has no TTL",
+          "when": "buildPolicyValidationJob(keystone, configMapName) constructs the Job with policyOverrides set",
+          "then": "job.Spec.TTLSecondsAfterFinished is nil, *job.Spec.BackoffLimit == 2, and RestartPolicy == Never",
+          "and_then": [
+            "the `ttl := int32(300)` declaration and the `TTLSecondsAfterFinished: &ttl` field are removed"
+          ]
+        },
+        {
+          "name": "No TTL-driven re-creation when validation completes",
+          "when": "policy overrides are configured and the validation Job has completed with a matching hash",
+          "then": "RunJob returns done=true and the Job is not re-created until a config (hash) change",
+          "and_then": [
+            "the previously latent loop cannot start when overrides are configured"
+          ]
+        },
+        {
+          "name": "nil-overrides teardown path unchanged",
+          "when": "keystone.Spec.PolicyOverrides is nil",
+          "then": "reconcilePolicyValidation still calls deleteValidationJob and sets PolicyValidReady=True/PolicyValidationNotRequired",
+          "and_then": [
+            "the explicit delete-on-nil path is independent of the TTL and remains intact"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "description": "Admin-password rotation SHALL continue to re-run the bootstrap Job via the pod-spec-hash gate after the TTL is removed.",
+      "priority": "SHALL",
+      "rationale": "keystone-manage bootstrap is also how the admin DB password is reset; rotation must keep working. Rotation rides the hash-mismatch trigger (job.go:78-104), not the TTL, and the hash gate requires the lingering completed Job as the last-applied-hash record the TTL used to destroy (CC-0113, #415, CC-0108).",
+      "scenarios": [
+        {
+          "name": "Password change re-creates the bootstrap Job",
+          "when": "the admin Secret's password key changes so adminPasswordHash (and thus forge.c5c3.io/admin-password-hash) changes",
+          "then": "RunJob detects the desired pod-spec hash differs from the completed Job's stored hash, deletes the stale Job, and re-creates it; reconcileBootstrap requeues with RequeueBootstrapWait",
+          "and_then": [
+            "the re-created bootstrap Job carries the current admin-password-hash"
+          ]
+        },
+        {
+          "name": "Re-created rotation Job is also TTL-free",
+          "when": "the rotation re-create path builds the replacement bootstrap Job",
+          "then": "the new Job's Spec.TTLSecondsAfterFinished is nil (consistent with REQ-001)",
+          "and_then": [
+            "the lingering replacement Job becomes the new last-applied-hash record"
+          ]
+        },
+        {
+          "name": "Unchanged password does not re-run bootstrap",
+          "when": "the admin password is unchanged and a completed bootstrap Job exists with a matching hash",
+          "then": "RunJob returns done=true and does not re-create the Job",
+          "and_then": [
+            "no spurious idempotent bootstrap DB write is issued in steady state"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "description": "In steady state, a completed bootstrap, schema-check, or policy-validation Job whose stored pod-spec hash matches the desired template SHALL NOT be deleted or re-created on subsequent reconciles.",
+      "priority": "SHALL",
+      "rationale": "This is the core promise of the fix: the only remaining re-create triggers are genuine Job absence and hash mismatch; the TTL-driven same-hash re-create is gone (CC-0113, #415).",
+      "scenarios": [
+        {
+          "name": "Matching-hash completed Job is left in place",
+          "when": "reconcile runs against a Complete Job whose forge.c5c3.io/pod-spec-hash equals PodSpecHash(desired template)",
+          "then": "RunJob returns (true, nil) and performs no Delete/Create",
+          "and_then": [
+            "the Job's UID is unchanged across reconciles"
+          ]
+        },
+        {
+          "name": "Genuinely missing Job is still re-created",
+          "when": "the Job is actually absent (manual delete, fresh CR, or CR re-create) and RunJob's Get returns IsNotFound",
+          "then": "RunJob still creates the Job via createJobWithHash",
+          "and_then": [
+            "the necessary create-if-absent behaviour for real deletes is preserved"
+          ]
+        },
+        {
+          "name": "Repeated reconciles cause no churn",
+          "when": "the reconcile loop runs many times in steady state",
+          "then": "the bootstrap and schema-check Jobs are neither deleted nor re-created and emit no new Job/Pod events",
+          "and_then": [
+            "the periodic reconcile burst tied to the TTL delete event disappears"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "description": "The change SHALL be surgical: BackoffLimit, RestartPolicy, container command, env, volumes/volumeMounts, and owner references of every affected Job SHALL remain unchanged, and the owner-reference garbage-collection path SHALL be unaffected.",
+      "priority": "SHALL",
+      "rationale": "Only the TTL drives the loop; touching any other field would be scope creep and risk regressions in unrelated, already-correct behaviour (CC-0113, #415).",
+      "scenarios": [
+        {
+          "name": "Bootstrap Job non-TTL fields unchanged",
+          "when": "buildBootstrapJob builds the Job",
+          "then": "*BackoffLimit == 4, RestartPolicy == Never, command/env/volumes are byte-identical to before, and createJobWithHash still sets the controller owner reference",
+          "and_then": [
+            "the diff for buildBootstrapJob touches only the two TTL lines"
+          ]
+        },
+        {
+          "name": "CR deletion still GCs the lingering Jobs",
+          "when": "the Keystone CR is deleted",
+          "then": "the completed Jobs are garbage-collected through their ownerReference to the CR",
+          "and_then": [
+            "no orphaned Jobs/Pods remain after CR deletion"
+          ]
+        },
+        {
+          "name": "schema-check command and backoff unchanged",
+          "when": "buildSchemaCheckJob builds the Job",
+          "then": "the container command is still `/bin/sh -eu -c` running keystone-manage db_sync --check and *BackoffLimit == 2",
+          "and_then": [
+            "only the TTL declaration and assignment are removed"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "description": "All four existing tests that pin TTLSecondsAfterFinished == 300 for these Jobs SHALL be updated to assert the TTL is unset, and the keystone controller test suite (unit + envtest) SHALL pass.",
+      "priority": "SHALL",
+      "rationale": "The issue listed three test sites; a fourth assertion exists in integration_test.go (TestIntegration_BootstrapJobDetailedSpec). All four must flip or the build fails, and they become the regression guard against re-introducing the loop (CC-0113, #415).",
+      "scenarios": [
+        {
+          "name": "Unit TTL assertions flip to nil",
+          "when": "the unit suite runs the three updated builder tests",
+          "then": "each asserts TTLSecondsAfterFinished is nil (BeNil) and passes",
+          "and_then": [
+            "TestReconcileBootstrap_JobSpec_TTLAndBackoff still also asserts backoffLimit==4 and ownerRef len 1"
+          ]
+        },
+        {
+          "name": "Integration TTL assertion flips to nil",
+          "when": "envtest runs TestIntegration_BootstrapJobDetailedSpec",
+          "then": "it asserts the bootstrap Job TTLSecondsAfterFinished is nil and the full reconciliation still progresses",
+          "and_then": [
+            "backoffLimit==4 and the container/image assertions are unchanged"
+          ]
+        },
+        {
+          "name": "No stale 300 assertion remains",
+          "when": "go test ./operators/keystone/internal/controller/... runs",
+          "then": "no test asserts To(Equal(int32(300))) against TTLSecondsAfterFinished for these Jobs",
+          "and_then": [
+            "a grep for `TTLSecondsAfterFinished` + `int32(300)` in operators/keystone tests returns nothing for these Jobs"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "description": "Source godoc/comments and user-facing docs under docs/reference/keystone SHALL be updated to remove the ttlSecondsAfterFinished=300 / automatic-cleanup claims for these three Jobs and to describe the lingering-Job model.",
+      "priority": "SHALL",
+      "rationale": "Docs and godoc currently state TTL=300 / auto-cleanup; leaving them stale causes documentation drift (CC-0113, #415).",
+      "scenarios": [
+        {
+          "name": "Source godoc no longer claims a TTL",
+          "when": "reading the buildSchemaCheckJob and buildPolicyValidationJob godoc and the schema-check inline comment",
+          "then": "they no longer claim ttlSecondsAfterFinished=300 / auto-cleanup and note the Job lingers as the RunJob state record (CC-0113, #415)",
+          "and_then": [
+            "the schema-check inline 'auto-cleanup after 5 min' comment is removed/replaced"
+          ]
+        },
+        {
+          "name": "Reference docs reflect 'not set'",
+          "when": "reading docs/reference/keystone/keystone-schema-drift-detection.md and keystone-reconciler.md",
+          "then": "the TTLSecondsAfterFinished rows for schema-check, bootstrap, and policy-validation read 'not set' and the schema-drift rationale and troubleshooting no longer reference the 5-minute TTL cleanup",
+          "and_then": [
+            "the keystone-reconciler.md test-coverage note no longer says 'TTL/backoff' for the bootstrap tests"
+          ]
+        },
+        {
+          "name": "No residual TTL=300 claim",
+          "when": "grepping docs/reference/keystone for `TTLSecondsAfterFinished` / `300` against these three Jobs",
+          "then": "no stale 300-TTL claim remains for them",
+          "and_then": [
+            "any remaining TTL mention refers to a different resource (e.g. trust-flush) and is intentionally untouched"
+          ]
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1.1",
+      "title": "Remove TTL from buildBootstrapJob and flip its unit TTL assertion (REQ-001, REQ-006, REQ-007). In operators/keystone/internal/controller/reconcile_bootstrap.go, delete `ttl := int32(300)` (~line 139) and the `TTLSecondsAfterFinished: &ttl,` field (~line 220), keeping BackoffLimit/RestartPolicy/env/volumes intact. In reconcile_bootstrap_test.go TestReconcileBootstrap_JobSpec_TTLAndBackoff (lines 421-423), first change the assertion to expect Spec.TTLSecondsAfterFinished to be nil (RED), then make the source change (GREEN). Keep the backoffLimit==4 and ownerRef assertions.",
+      "level": 1,
+      "estimate_minutes": 15,
+      "status": "done",
+      "requirements": [
+        "REQ-001",
+        "REQ-006",
+        "REQ-007"
+      ]
+    },
+    {
+      "id": "1.2",
+      "title": "Remove TTL from buildSchemaCheckJob, update godoc/comment, and flip its unit TTL assertion (REQ-002, REQ-007, REQ-008). In reconcile_database.go buildSchemaCheckJob, delete `ttl := int32(300)` (~line 892) and `j.Spec.TTLSecondsAfterFinished = &ttl` (~line 894); retain `j.Spec.BackoffLimit = &backoffLimit`. Update the godoc (~line 879) and the inline 'auto-cleanup after 5 min' comment (~line 890) to drop the TTL claim and note the Job lingers as the RunJob state record (CC-0113, #415). In reconcile_database_test.go TestBuildSchemaCheckJob_TTL (lines 1573-1583), flip to assert nil and update its godoc; leave TestBuildSchemaCheckJob_BackoffLimit (==2) intact.",
+      "level": 1,
+      "estimate_minutes": 20,
+      "status": "done",
+      "requirements": [
+        "REQ-002",
+        "REQ-007",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "1.3",
+      "title": "Remove TTL from buildPolicyValidationJob, update godoc, and flip its unit TTL assertion (REQ-003, REQ-007, REQ-008). In reconcile_policyvalidation.go buildPolicyValidationJob, delete `ttl := int32(300)` (~line 150) and the `TTLSecondsAfterFinished: &ttl,` field (~line 159); keep BackoffLimit==2 and RestartPolicy Never. Update the godoc (~line 145) to drop 'TTL=300'. In reconcile_policyvalidation_test.go TestBuildPolicyValidationJob_BackoffAndTTL (lines 486-501), flip the TTL assertion to nil, keep backoff==2 and RestartPolicy Never, and update the test godoc (~line 487).",
+      "level": 1,
+      "estimate_minutes": 15,
+      "status": "done",
+      "requirements": [
+        "REQ-003",
+        "REQ-007",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "2.1",
+      "title": "Flip the integration TTL assertion the issue missed (REQ-001, REQ-007). In operators/keystone/internal/controller/integration_test.go TestIntegration_BootstrapJobDetailedSpec (lines 1002-1004), change the assertion to expect bootstrapJob.Spec.TTLSecondsAfterFinished to be nil; keep the backoffLimit==4 and container/image assertions. This site is NOT in the issue's affected-tests list but pins TTL=300 and would otherwise fail the build.",
+      "level": 2,
+      "estimate_minutes": 10,
+      "status": "done",
+      "requirements": [
+        "REQ-001",
+        "REQ-007"
+      ]
+    },
+    {
+      "id": "2.2",
+      "title": "Confirm and lock admin-password rotation after TTL removal (REQ-004). Verify TestReconcileBootstrap_PasswordChangeRecreatesJob (reconcile_bootstrap_test.go ~line 803) still passes, then extend it (or add TestReconcileBootstrap_RecreatedRotationJob_HasNoTTL) to assert the re-created bootstrap Job has Spec.TTLSecondsAfterFinished == nil and carries the current admin-password-hash — proving rotation rides the pod-spec-hash gate, not the deleted TTL.",
+      "level": 2,
+      "estimate_minutes": 15,
+      "status": "done",
+      "requirements": [
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "2.3",
+      "title": "Add steady-state no-recreation regression tests (REQ-005). Add unit tests (e.g. TestReconcileDatabase_CompletedSchemaCheck_SameHash_NotRecreated, a bootstrap counterpart, and a policy-validation counterpart with overrides configured) that seed a completed Job carrying job.PodSpecHashAnnotation == PodSpecHash(desired template) (mirroring testCompletedSchemaCheckJob), run reconcile, and assert RunJob returns done, the Job is not deleted (UID stable), and TTL stays nil. This locks the core promise that steady state no longer churns — including the policy-validation Job the issue flags as the next to loop once overrides exist.",
+      "level": 2,
+      "estimate_minutes": 25,
+      "status": "done",
+      "requirements": [
+        "REQ-005"
+      ]
+    },
+    {
+      "id": "3.1",
+      "title": "Update the schema-drift reference doc (REQ-008). In docs/reference/keystone/keystone-schema-drift-detection.md: replace the 'enables ttlSecondsAfterFinished for automatic cleanup' rationale (line ~32) with the lingering-Job/no-loop rationale (cite CC-0113, #415); change the TTLSecondsAfterFinished row (line ~79) and the db-sync-vs-schema-check comparison row (line ~90) to 'not set'; and remove the 'TTL controller will also automatically clean up the Job after 5 minutes' troubleshooting note (line ~280).",
+      "level": 3,
+      "estimate_minutes": 15,
+      "status": "done",
+      "requirements": [
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "3.2",
+      "title": "Update the keystone reconciler reference doc (REQ-008). In docs/reference/keystone/keystone-reconciler.md: change the policy-validation Job TTL row (line ~1955) and the bootstrap Job TTL row (line ~2479) to 'not set'; update the bootstrap test-coverage description (line ~3079) so it no longer says 'TTL/backoff'; add a one-line note that completed Jobs linger as the RunJob pod-spec-hash record and are GC'd via ownerReference on CR deletion (CC-0113, #415). Do NOT touch the pre-existing RestartPolicy row discrepancy (see deferred items).",
+      "level": 3,
+      "estimate_minutes": 15,
+      "status": "done",
+      "requirements": [
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "4.1",
+      "title": "Completeness verification sweep (REQ-006, REQ-007). Grep operators/keystone for `TTLSecondsAfterFinished` and `int32(300)` and confirm no TTL declaration or assertion remains for the bootstrap, schema-check, or policy-validation Jobs (only buildDBSyncJob's already-TTL-free model remains). Honest blocker note: the production TTL re-creation loop is NOT reproducible in envtest because the TTLAfterFinished controller lives in kube-controller-manager (absent in envtest), so the 'TTL unset' unit/integration assertions plus the steady-state regression test are the regression guard — not a live loop test.",
+      "level": 4,
+      "estimate_minutes": 15,
+      "status": "done",
+      "requirements": [
+        "REQ-006",
+        "REQ-007"
+      ]
+    }
+  ],
+  "test_specifications": [
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_JobSpec_TTLAndBackoff",
+      "story": "Cluster operator: steady-state ControlPlane stops churning Jobs/Pods",
+      "expected": "[unit] After reconcileBootstrap, the created bootstrap Job has Spec.TTLSecondsAfterFinished == nil (BeNil) while BackoffLimit remains 4 and the owner reference is still set.",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_BootstrapJobDetailedSpec",
+      "story": "Reviewer: tests pin the new no-TTL contract so the loop cannot regress",
+      "expected": "[integration] In envtest, the reconciled bootstrap Job has Spec.TTLSecondsAfterFinished == nil while backoffLimit stays 4 and the container/image assertions still pass.",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildSchemaCheckJob_TTL",
+      "story": "Cluster operator: steady-state ControlPlane stops churning Jobs/Pods",
+      "expected": "[unit] buildSchemaCheckJob returns a Job with Spec.TTLSecondsAfterFinished == nil (BeNil); test godoc updated to reflect 'TTL unset'.",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildSchemaCheckJob_BackoffLimit",
+      "story": "Operator developer: Job builders follow the consistent no-TTL db-sync model",
+      "expected": "[unit] buildSchemaCheckJob still sets *BackoffLimit == 2 (regression guard that only the TTL was removed).",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestBuildPolicyValidationJob_BackoffAndTTL",
+      "story": "Operator developer: Job builders follow the consistent no-TTL db-sync model",
+      "expected": "[unit] buildPolicyValidationJob returns Spec.TTLSecondsAfterFinished == nil (BeNil) while *BackoffLimit == 2 and RestartPolicy == Never; test godoc updated.",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestReconcilePolicyValidation_NoOverrides_DeletesJob_Unchanged",
+      "story": "Operator developer: Job builders follow the consistent no-TTL db-sync model",
+      "expected": "[unit] With nil policyOverrides, reconcilePolicyValidation still deletes any existing validation Job and sets PolicyValidReady=True/PolicyValidationNotRequired (existing behaviour unaffected by the TTL removal; reuse/extend existing nil-overrides test).",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_PasswordChangeRecreatesJob",
+      "story": "Security owner: admin-password rotation still re-runs bootstrap",
+      "expected": "[unit] A completed bootstrap Job stamped with the OLD password hash is detected stale, deleted, and re-created with the current admin-password-hash; reconcile requeues with RequeueBootstrapWait. Still passes post-TTL-removal.",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_RecreatedRotationJob_HasNoTTL",
+      "story": "Security owner: admin-password rotation still re-runs bootstrap",
+      "expected": "[unit] After the rotation re-create path runs, the new bootstrap Job has Spec.TTLSecondsAfterFinished == nil (consistency with REQ-001). Add as a focused assertion or extend the rotation test.",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_CompletedSchemaCheck_SameHash_NotRecreated",
+      "story": "Cluster operator: steady-state ControlPlane stops churning Jobs/Pods",
+      "expected": "[unit] Seed a completed schema-check Job with a matching PodSpecHash annotation; after reconcile, RunJob returns done, the Job is NOT deleted (same UID), and TTLSecondsAfterFinished stays nil.",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_CompletedSameHash_NotRecreated",
+      "story": "Cluster operator: steady-state ControlPlane stops churning Jobs/Pods",
+      "expected": "[unit] Seed a completed bootstrap Job with a matching hash and the current admin-password-hash; reconcile returns BootstrapReady=True without deleting/re-creating the Job (steady-state regression guard).",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_JobSpec_TTLAndBackoff",
+      "story": "Operator: completed Jobs are still garbage-collected on CR deletion",
+      "expected": "[unit] The created bootstrap Job still has exactly one owner reference pointing to the Keystone CR (ownerReference GC path unaffected by TTL removal).",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildSchemaCheckJob_Command",
+      "story": "Operator developer: Job builders follow the consistent no-TTL db-sync model",
+      "expected": "[unit] schema-check container command remains `/bin/sh -eu -c` with keystone-manage db_sync --check (no collateral change beyond TTL).",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_BootstrapJobDetailedSpec",
+      "story": "Reviewer: tests pin the new no-TTL contract so the loop cannot regress",
+      "expected": "[integration] The full envtest reconcile still reaches a Ready Keystone with the bootstrap Job present and TTL unset (no behavioural regression).",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestBuildPolicyValidationJob_BackoffAndTTL",
+      "story": "Reviewer: tests pin the new no-TTL contract so the loop cannot regress",
+      "expected": "[unit] Confirms no remaining To(Equal(int32(300))) TTL assertion for the policy-validation Job after the flip.",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "docs/reference/keystone/keystone-schema-drift-detection.md",
+      "test_function": "doc-verify-no-ttl-claim",
+      "story": "Documentation reader: keystone reference docs match the new behaviour",
+      "expected": "[doc] Manual/grep verification: the schema-check TTLSecondsAfterFinished rows read 'not set', the 'enables ttlSecondsAfterFinished for automatic cleanup' rationale is replaced with the lingering-Job/no-loop rationale, and the troubleshooting note no longer claims a 5-minute TTL cleanup.",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "docs/reference/keystone/keystone-reconciler.md",
+      "test_function": "doc-verify-no-ttl-claim",
+      "story": "Documentation reader: keystone reference docs match the new behaviour",
+      "expected": "[doc] Manual/grep verification: the policy-validation (line ~1955) and bootstrap (line ~2479) TTL rows read 'not set' and the bootstrap test-coverage note (line ~3079) no longer says 'TTL/backoff'.",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestReconcilePolicyValidation_CompletedSameHash_NotRecreated",
+      "story": "Cluster operator: steady-state ControlPlane stops churning Jobs/Pods",
+      "expected": "[unit] With policyOverrides configured, seed a completed policy-validation Job carrying job.PodSpecHashAnnotation == PodSpecHash(desired template); after reconcile, RunJob returns done, the Job is NOT deleted (same UID), and Spec.TTLSecondsAfterFinished stays nil. Locks REQ-005 for the policy-validation Job, which the issue flags as the one that would loop the moment overrides are configured and which no existing steady-state spec covers (only the no-overrides delete path is tested).",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_JobCreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_JobComplete",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_JobRunning",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_JobFailed",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_StaleJobDetection",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_JobFailed_ConditionMessage",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_JobComplete_ConditionMessageAndGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestBuildBootstrapJob_SecurityContext",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_PublicEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_ConditionObservedGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestBuildBootstrapJob_PriorityClassNameSet",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestBuildBootstrapJob_PriorityClassNameNil",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestBuildBootstrapJob_PreInsertScriptReadsDBConnectionEnvVar",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestBootstrapServiceURL_ComposesViaHelper",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestBootstrapServiceURL_NoApiLiteral",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestBuildBootstrapJob_AdminInternalURLsUseBareName",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestBuildBootstrapJob_DBTLSDisabled_NoDBTLSVolume",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestBuildBootstrapJob_DBTLSDisabledExplicit_NoDBTLSVolume",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestBuildBootstrapJob_DBTLSEnabled_MountsClientSecret",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestBuildBootstrapJob_DBTLSEnabled_BrownfieldUsesUserSuppliedSecretNames",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestBuildBootstrapJob_PreInsertScript_ParsesSSLDSNParams",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestBuildBootstrapJob_AdminPasswordHashAnnotation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_UnchangedPasswordRetainsJob",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_CutoverConditionTransitions",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_MissingPasswordKeyCleanError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_EmptyPasswordCleanError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_AllReady_DatabaseSynced",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_DatabaseNotReady_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_UserNotReady_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_ClusterMissing_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_ClusterNotReady_FlipsDatabaseReadyFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Brownfield_DBSyncComplete_DatabaseSynced",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_DBSyncRunning_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_DBSyncFailed_ReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Brownfield_SkipsMariaDBCRs_CreatesDBSyncJob",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildDBSyncJob_SecurityContext",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildDBJobVariants_DBConnectionEnv",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_StaleDBSyncJob_Recreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildUpgradeJobs",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestIsUpgrade",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestInitiateUpgrade_SequentialUpgrade",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestInitiateUpgrade_SkipLevelRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestInitiateUpgrade_DowngradeRejected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestInitiateUpgrade_InvalidVersionFormat",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_FreshDeploy_SetsInstalledRelease",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_PatchOnly_UsesSimpleDBSync",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_ActiveUpgrade_DelegatesToReconcileUpgrade",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_SameVersionWithInstalledRelease_UsesSimpleDBSync",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_ConditionMessages",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileExpand_NoExistingJob_CreatesJob",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileExpand_JobRunning_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileExpand_JobCompleted_TransitionsToMigrating",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileExpand_JobFailed_ReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileMigrate_JobRunning_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileMigrate_JobCompleted_TransitionsToRollingUpdate",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileMigrate_JobFailed_ReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileRollingUpdate_PassesThrough",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileContract_NoExistingJob_CreatesJobAndRequeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileContract_JobRunning_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileContract_JobCompleted_CompletesUpgrade",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileContract_JobFailed_ReturnsError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileContract_UsesNewImage",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_InterruptedExpand_Resumes",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_TagChangedDuringUpgrade_Blocks",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildSchemaCheckJob_Name",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildSchemaCheckJob_Image",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildSchemaCheckJob_SecurityContext",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildSchemaCheckJob_ConfigVolume",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildSchemaCheckJob_RestartPolicy",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_SchemaCheckRunning_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_SchemaCheckComplete_DatabaseSynced",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_SchemaCheckFailed_SchemaDriftDetected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_AllReady_WithSchemaCheck",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_SchemaCheckStale_Recreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_SchemaCheckNotCreatedWhenDBSyncRunning",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_SchemaCheckNotCreatedWhenDBSyncFails",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_SchemaCheckFailed_InstalledReleaseNotUpdated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_ConditionObservedGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildDBSyncJob_PriorityClassNameSet",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildDBSyncJob_PriorityClassNameNil",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestFinalizeDatabaseResources_DeletesAllThreeCRs",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestFinalizeDatabaseResources_BrownfieldIsNoop",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestFinalizeDatabaseResources_NotFoundIsTolerated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestFinalizeDatabaseResources_IsIdempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestFinalizeDatabaseResources_IssuesDeleteWhenTerminating",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestFinalizeDatabaseResources_DeleteErrorIsPropagated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestDbSyncCompletionRecordsMetric",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestDbSyncFailureRecordsMetric",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestDbSyncInProgressDoesNotRecord",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestUpgradePhaseFailureRecordsDBSyncMetric",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestRecordDBJobTerminalState_DefersOnPatchFailure",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildDBJobVariants_DBTLSVolumeAndMount_WhenEnabled",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildDBJobVariants_DBTLSVolume_UsesUserSuppliedSecretNames",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildDBJobVariants_DBTLSVolumeAbsent_WhenNil",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestBuildDBJobVariants_DBTLSVolumeAbsent_WhenDisabled",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestReconcilePolicyValidation_NoPolicyOverrides_SkipsValidation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestReconcilePolicyValidation_PolicyRemoved_JobCleanedUp",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestReconcilePolicyValidation_PolicyRemoved_NoJob_NoError",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestReconcilePolicyValidation_PolicySet_JobCreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestReconcilePolicyValidation_JobRunning_Requeues",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestReconcilePolicyValidation_JobComplete_ConditionTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestReconcilePolicyValidation_JobFailed_ConditionFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestReconcilePolicyValidation_JobFailed_DescriptiveErrorMessage",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestReconcilePolicyValidation_JobFailed_FallbackMessage",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestReconcilePolicyValidation_StaleJob_DeletedAndRecreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestBuildPolicyValidationJob_ImageMatchesDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestBuildPolicyValidationJob_SecurityContext",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestBuildPolicyValidationJob_ConfigMapMount",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestBuildPolicyValidationJob_Command",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestBuildPolicyValidationJob_TerminationMessagePolicy",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestReconcilePolicyValidation_ConditionObservedGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FullReconcile_Brownfield",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_ConditionProgression",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_ResourceCreation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_StatusEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_ObservedGeneration",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FullReconcile_Managed",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_CronJobDetailedSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PDBSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PDBUpdatedOnReplicaChange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HPASpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HPAUpdatedOnAutoscalingChange",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HPADeletedWhenAutoscalingRemoved",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FreshDeployment_InstalledReleaseTracking",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_UpgradeCycle_ExpandMigrateContract",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_TrustFlush_CronJobCreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_TrustFlush_SuspendTruePreservesCronJob",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_TrustFlush_OmittedFieldMaterializedAndCronJobCreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_TrustFlush_PatchToNullReDefaultsAndPreservesCronJob",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_GracefulShutdownSpec",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PolicyValidation_GatesDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PolicyValidation_NotRequired",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HTTPRoute_CreatedWhenGatewaySet",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HTTPRoute_DeletedWhenGatewayRemoved",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HTTPRoute_UpdatedWhenGatewayChanged",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_HTTPRoute_EndpointDerivedFromGateway",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FinalizerLifecycle_AddAndRemove",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FinalizerBrownfieldDeletion",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestRotationApplyEndToEnd_EnvTest",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestRotationApplyRejectsMalformedKeys_EnvTest",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestRotationApplyReplacesDisjointIndices_EnvTest",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_KeystonePodReachesDatabaseViaEnvOverride",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_RecreateDerivedSecretWhenDeleted",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_OpenBaoFinalizerLifecycle_AddAndRemove",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_OpenBaoFinalizer_BlockedWhenPushSecretStuck",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegrationKeystone_DeleteRacingESOAdoption",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_SecretEventTriggersReconcileViaIndexer",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_UnrelatedSecretDoesNotTriggerReconcile",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_IndexerRegistrationFailsManagerStartCleanly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_TerminationGracePeriodAppliedToDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_DefaultStrategyAppliedToDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_StrategyOverrideAppliedToDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegrationKeystone_PushSecretRemoteKeyIsPerCR",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_ReconcileProducesRenamedSubResources",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_FreshReconcileEmitsNoLegacyApiSuffixedResources",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestMetricsEndpointServesKeystoneOperatorCollectors",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_LoggingDebugTogglesRollsConfigMapAndDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_LoggingNoOpReconcileDoesNotRollDeployment",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_DatabaseTLS_CertificateLifecycle",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_AdminPasswordRotationCutover",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_AdminPasswordUnchangedNoChurn",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PasswordRotation_CronJobShape",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PasswordRotation_SuspendTruePreservesSiblings",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PasswordRotation_ApplyCommitsAndPushes",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PasswordRotation_DisableTearsDownAllResources",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_CompletedSameHash_NotRecreated_NoTTL",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    }
+  ],
+  "affected_files": [],
+  "similar_patterns": [],
+  "review_criteria": [
+    "Correctness: buildBootstrapJob, buildSchemaCheckJob, and buildPolicyValidationJob each return a Job with TTLSecondsAfterFinished == nil; no `int32(300)` TTL literal remains for these Jobs in operators/keystone.",
+    "Surgical boundary: BackoffLimit (4 bootstrap, 2 schema-check, 2 policy-validation), RestartPolicy, container command, env, volumes/volumeMounts, and owner references are unchanged; the source diff for each builder touches only the TTL lines (plus godoc/comments).",
+    "Tests: all four TTL assertion sites (reconcile_bootstrap_test.go, reconcile_database_test.go, reconcile_policyvalidation_test.go, integration_test.go) assert TTL is unset; no test still asserts TTLSecondsAfterFinished == int32(300) for these Jobs.",
+    "Rotation/security: TestReconcileBootstrap_PasswordChangeRecreatesJob passes and the re-created bootstrap Job has no TTL — admin-password rotation still re-runs via the pod-spec-hash gate.",
+    "Regression: a steady-state test proves a completed Job with a matching hash is not deleted/re-created (RunJob returns done, UID stable), and the nil-policyOverrides delete path is unchanged.",
+    "Docs: docs/reference/keystone/keystone-schema-drift-detection.md and keystone-reconciler.md plus the buildSchemaCheckJob/buildPolicyValidationJob godoc no longer claim TTL=300/auto-cleanup and describe the lingering-Job model (CC-0113, #415).",
+    "Build/quality: go test ./operators/keystone/internal/controller/... (unit + envtest) is green; go vet and golangci-lint are clean for the touched files.",
+    "Scope: no frontend/API/CRD surface is touched; buildDBSyncJob/buildDBJob (the correct no-TTL model) are not modified; no RequeueAfter schema-drift interval is added (resolved design decision)."
+  ],
+  "implementation_notes": "ARCHITECTURE DECISION (Option A, resolved): Remove TTLSecondsAfterFinished from the bootstrap, schema-check, and policy-validation Job builders so each completed Job lingers and serves as the state record RunJob already relies on. This deletes the only steady-state re-create trigger (the K8s TTL controller deleting the Job, which the Owns(&batchv1.Job{}) watch turns into a reconcile that hits RunJob's IsNotFound branch). buildDBSyncJob/buildDBJob already set no TTL and are the reference model. No periodic schema-drift RequeueAfter is added (confirmed design decision). The Status().Update conflict hardening is out of scope (#361).\n\nTWO RE-CREATE TRIGGERS (cleanly separable):\n| Trigger | Re-creates Job (today) | After fix |\n| TTL delete (job.go:67 IsNotFound branch) | every ~5 min, SAME hash | gone |\n| Hash mismatch / rotation (job.go:78-104) | only on real image/config/password change | kept |\nRemoving the TTL preserves the completed Job as the last-applied-hash record that the hash gate (and rotation) requires — exactly the record the TTL used to destroy.\n\nTHE LOOP (before) vs FIX (after):\n  Job completes --> [TTL controller deletes after 300s] --> Owns(Job) watch delivers delete\n        ^                                                              |\n        |                                                              v\n  RunJob.IsNotFound re-creates  <-------------------------------  reconcile\n  After fix: no TTL -> no delete -> watch quiet -> RunJob sees Complete (matching hash) -> returns done. No churn.\n\nEXACT EDIT SITES (verified):\n  - reconcile_bootstrap.go: remove `ttl := int32(300)` (~139) and `TTLSecondsAfterFinished: &ttl,` (~220).\n  - reconcile_database.go (buildSchemaCheckJob): remove `ttl := int32(300)` (~892) and `j.Spec.TTLSecondsAfterFinished = &ttl` (~894); keep backoffLimit; update godoc (~879) + inline comment (~890).\n  - reconcile_policyvalidation.go (buildPolicyValidationJob): remove `ttl := int32(300)` (~150) and `TTLSecondsAfterFinished: &ttl,` (~159); keep backoffLimit; update godoc (~145).\n  - Tests to flip to nil: reconcile_bootstrap_test.go:421-423, reconcile_database_test.go:1573-1583, reconcile_policyvalidation_test.go:486-501, AND integration_test.go:1002-1004 (the 4th site, NOT in the issue's list).\n\nPITFALLS:\n  1) Do not remove the backoffLimit lines alongside the TTL lines in buildSchemaCheckJob/buildPolicyValidationJob — `ttl` and `backoffLimit` are adjacent; only the TTL ones go.\n  2) integration_test.go:1003-1004 will fail the build if missed (the issue's affected-tests list is incomplete).\n  3) envtest does NOT run the TTLAfterFinished controller, so the loop is not reproducible there; the unit/integration 'TTL unset' assertions + the steady-state regression test are the guard. State this honestly rather than claiming a live-loop test.\n  4) Keep buildDBSyncJob/buildDBJob untouched — they are already correct.\n  5) Architecture docs under architecture/docs are read-only reference; do not edit them (only docs/ is user-facing/editable).\n\nFEATURE ID: CC-0113 (GitHub issue #415). Use 'CC-0113' (and reference #415) in any new comments, godoc, doc edits, and the eventual commit message per project convention.\n\nTASK-COUNT NOTE: This is a surgical, single-layer (operator Go) fix; 9 well-scoped tasks fully cover it. The 12-task floor was intentionally NOT padded per the 'never invent tasks to hit numbers' rule — every task maps to a real edit or verification.",
+  "status_history": {
+    "draft": {
+      "github_account": "berendt",
+      "timestamp": "2026-06-05T19:15:23.914331"
+    },
+    "preparing": {
+      "github_account": "berendt",
+      "timestamp": "2026-06-05T19:15:24.298882"
+    },
+    "prepared": {
+      "github_account": "berendt",
+      "timestamp": "2026-06-05T19:24:18.565152"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-06-05T19:25:16.035710"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-06-07T15:25:22.778168"
+    }
+  },
+  "github_pr": "https://github.com/C5C3/forge/pull/416",
+  "pr_number": 416,
+  "execution_history": [
+    {
+      "run_id": "77be27b0-0a15-46a9-9ea3-112194d48f23",
+      "timestamp": "2026-06-05T19:24:18.565181",
+      "total_duration": 531.7751519680023,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "prepare",
+          "duration": 531.7751519680023,
+          "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "11d9f48f-422b-4424-af8b-936f9e7b8171",
+      "timestamp": "2026-06-05T20:52:17.939528",
+      "total_duration": 4766.253153324127,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (3 tasks)",
+          "duration": 817.9482395648956,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (3 tasks)",
+          "duration": 657.0222775936127,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (2 tasks)",
+          "duration": 560.3876760005951,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (1 tasks)",
+          "duration": 1666.5757901668549,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0113] Code Review",
+          "duration": 1064.319169998169,
+          "type": "review",
+          "status": "done"
+        }
+      ]
+    }
+  ]
+}

@@ -175,7 +175,7 @@ assertion windows.
 | [openbao-pod-kill](#openbao-pod-kill) | SC-CHAOS-003 | `keystone-chaos-bao` | Degradation and recovery | `SecretsReady=False` → `SecretsReady=True`, `Ready=True` |
 | [operator-pod-crash](#operator-pod-crash) | SC-CHAOS-004 | `keystone-chaos-op` | Operator self-recovery (no-regression) | Operator pod `Ready=false` → `Ready=true`, CR `Ready=True` maintained |
 | [cronjob-rotation-failure](#cronjob-rotation-failure) | SC-CHAOS-005 | `keystone-chaos-cron` | Workload fault tolerance | `FernetKeysReady=True` maintained, `Ready=True` maintained |
-| [mariadb-network-partition](#mariadb-network-partition) | SC-CHAOS-006 | `keystone-chaos-net-part` | Degradation and recovery (NetworkChaos) | `DatabaseReady=False` → `DatabaseReady=True`, `Ready=True` |
+| [mariadb-network-partition](#mariadb-network-partition) | SC-CHAOS-006 | `keystone-chaos-net-part` | Degradation and recovery (NetworkChaos) | `DeploymentReady=False`, `Ready=False` → `DeploymentReady=True`, `Ready=True` |
 | [mariadb-network-latency](#mariadb-network-latency) | SC-CHAOS-007 | `keystone-chaos-net-lat` | Latency tolerance (no-regression) | `Ready=True` maintained, operator `restartCount=0` |
 | [api-pod-kill-pdb](#api-pod-kill-pdb) | SC-CHAOS-008 | `keystone-chaos-api` | PDB availability guarantee | PDB `minAvailable: 1`, `DeploymentReady=True` maintained, `Ready=True` maintained |
 | [operator-pod-kill](#operator-pod-kill) | SC-CHAOS-009 | `keystone-chaos-opk` | Operator pod kill (all) with failover reconciliation | All 6 conditions `True` maintained, replica patch reconciled by new leader |
@@ -371,10 +371,14 @@ ensures every pod spawned by the targeted Job is affected.
 
 **Scenario:** SC-CHAOS-006
 
-**Purpose:** Validates that the Keystone operator detects a MariaDB network partition
-(unidirectional traffic block from keystone to mariadb), transitions `DatabaseReady` to
-`False`, and recovers autonomously when the partition is lifted by deleting the
-NetworkChaos CR.
+**Purpose:** Validates that a keystone↔MariaDB network partition is surfaced and
+recovers autonomously. The partition is enforced on the MariaDB (server) side so it severs
+the ClusterIP-routed connection keystone actually uses; the MariaDB cluster CR stays `Ready`
+and the operator cannot see the fault from its own vantage point.
+Detection happens at the keystone API pods instead: their database-aware readiness probe
+fails while they cannot reach MariaDB, the pods are depooled, the Deployment drops below its
+desired ready replicas, and the operator reports `DeploymentReady=False` / `Ready=False`.
+Lifting the partition restores readiness and the CR returns to `Ready=True`.
 
 **Steps:**
 
@@ -382,11 +386,11 @@ NetworkChaos CR.
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-chaos-net-part` with database `keystone_chaos_net_part` |
 | 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady — confirms healthy state before fault injection |
-| 3 | Inject NetworkChaos | `apply` | Applies `01-networkchaos.yaml` — NetworkChaos `partition-mariadb` partitioning keystone→mariadb traffic in `openstack` |
+| 3 | Inject NetworkChaos | `apply` | Applies `01-networkchaos.yaml` — NetworkChaos `partition-mariadb` severing keystone↔MariaDB traffic at the MariaDB pods in `openstack` |
 | 4 | Assert NetworkChaos injection active | `assert` (5m) | NetworkChaos `partition-mariadb` has `AllInjected=True` — confirms fault is active before checking effects |
-| 5 | Assert degradation | `assert` (5m) | DatabaseReady=False — operator detects MariaDB is unreachable via network partition |
+| 5 | Assert degradation | `assert` (5m) | DeploymentReady=False and Ready=False — keystone pods fail the database-aware readiness probe and are depooled. `DatabaseReady` stays True (the operator still sees the cluster CR as Ready) |
 | 6 | Delete NetworkChaos | `delete` | Removes NetworkChaos `partition-mariadb` to lift the partition |
-| 7 | Assert recovery | `assert` (5m) | DatabaseReady=True and Ready=True with reason AllReady |
+| 7 | Assert recovery | `assert` (5m) | DeploymentReady=True and Ready=True with reason AllReady |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-networkchaos.yaml`
 
@@ -396,14 +400,31 @@ mode (`baseline`/`chaos`) and `--dep-label=app.kubernetes.io/name=mariadb`.
 
 **Design notes:**
 
-- Uses `NetworkChaos` with `action: partition` instead of `PodChaos` with `action: pod-kill`.
-  The partition is unidirectional (keystone→mariadb) via `direction: to`, simulating a
-  network failure without killing the MariaDB pod.
-- `duration: 300s` acts as a safety net for auto-expiry if the test does not explicitly
-  delete the CR. The duration matches the Chainsaw assert timeout (5m/300s) to ensure the
-  partition persists through the full assertion window.
-- Step 4 verifies `AllInjected=True` before checking `DatabaseReady=False` to prevent
-  vacuous test passes when the Chaos Mesh selector doesn't match.
+- Uses `NetworkChaos` with `action: partition` instead of `PodChaos` with `action: pod-kill`,
+  simulating a network failure without killing the MariaDB pod.
+- The chaos is applied on the MariaDB pods (`selector`) and drops traffic to/from the keystone
+  API pods (`target`, `direction: both`). It must be enforced on the server side: keystone
+  connects to the ClusterIP Service `openstack-db.openstack.svc:3306`, and a client-side rule
+  would match MariaDB pod IPs while the packet still carries the Service ClusterIP (kube-proxy
+  DNATs ClusterIP→pod IP later, in the node root namespace), so it would never match. Dropping
+  at the MariaDB side works because the packet is already DNATed and carries the keystone pod
+  source IP there — the same reason NetworkPolicies match Service-routed traffic by client pod IP.
+- Because the MariaDB cluster CR stays `Ready` under a keystone-only partition, detection
+  cannot come from the operator's view of the cluster — it comes from the keystone API pods'
+  database-aware readiness probe (a TCP connect to the configured DB endpoint, run from
+  inside the pod). The probe's connect timeout is sized above the latency scenario's ~12s
+  handshake and below an unbounded partition, so a reachable-but-slow database keeps the Pod
+  Ready while a partitioned one depools it. The complementary full-outage case (cluster CR
+  goes NotReady) is covered by `mariadb-pod-kill`.
+- `duration: 600s` is a safety net for auto-expiry if the test does not explicitly delete
+  the CR; step 6 lifts the partition explicitly. It must *exceed* the assert window, not
+  equal it: an equal duration self-heals at the exact deadline, re-pooling the Deployment
+  and flipping `DeploymentReady` back to `True` in the same instant the detect assertion
+  times out. This test therefore overrides the default assert timeout to `8m`, because
+  end-to-end detection (readiness-probe failures plus the operator observing the Deployment
+  drop below its ready replicas) runs close to 5m and the default window left no margin.
+- Step 4 verifies `AllInjected=True` before checking the degradation to prevent vacuous
+  test passes when the Chaos Mesh selector doesn't match.
 
 ---
 
@@ -835,8 +856,8 @@ tests/e2e-chaos/
 │   └── chainsaw-test.yaml            Test: FernetKeysReady=True maintained
 ├── mariadb-network-partition/        SC-CHAOS-006: MariaDB network partition
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-net-part)
-│   ├── 01-networkchaos.yaml          NetworkChaos partitioning keystone→mariadb traffic
-│   └── chainsaw-test.yaml            Test: DatabaseReady=False → recovery
+│   ├── 01-networkchaos.yaml          NetworkChaos severing keystone↔mariadb traffic (server-side)
+│   └── chainsaw-test.yaml            Test: DeploymentReady=False → recovery
 ├── mariadb-network-latency/          SC-CHAOS-007: MariaDB network latency
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-net-lat)
 │   ├── 01-networkchaos.yaml          NetworkChaos injecting 10s latency on keystone→mariadb

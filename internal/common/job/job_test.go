@@ -250,6 +250,79 @@ func TestRunJob_existingComplete_specUnchanged(t *testing.T) {
 	g.Expect(ready).To(BeTrue(), "should return true when completed Job has unchanged spec")
 }
 
+// completedJobWithRerunKey returns a completed Job stamped with an explicit
+// re-run key in the PodSpecHashAnnotation, simulating a Job created via
+// RunJobWithRerunKey.
+func completedJobWithRerunKey(key string) *batchv1.Job {
+	j := testJob()
+	j.UID = "existing-uid"
+	j.Annotations = map[string]string{PodSpecHashAnnotation: key}
+	now := metav1.Now()
+	j.Status.Succeeded = 1
+	j.Status.CompletionTime = &now
+	j.Status.Conditions = []batchv1.JobCondition{
+		{Type: batchv1.JobComplete, Status: corev1.ConditionTrue},
+	}
+	return j
+}
+
+// TestRunJobWithRerunKey_keyUnchanged_imageChanged locks the CC-0113 behavior:
+// with an explicit re-run key, a completed Job is NOT re-run on a pod-template
+// change (here a new container image) as long as the key is unchanged. The
+// keystone bootstrap Job relies on this so a release upgrade does not re-run
+// keystone-manage bootstrap against the already-migrated admin user.
+func TestRunJobWithRerunKey_keyUnchanged_imageChanged(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	existing := completedJobWithRerunKey("rerun-key-1")
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		WithStatusSubresource(existing).
+		Build()
+
+	// Desired Job has a DIFFERENT image but the SAME re-run key.
+	newJob := testJob()
+	newJob.Spec.Template.Spec.Containers[0].Image = "busybox:v2"
+
+	ready, err := RunJobWithRerunKey(context.Background(), c, s, owner, newJob, "rerun-key-1")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ready).To(BeTrue(), "unchanged re-run key must not re-run the completed Job despite an image change (CC-0113)")
+
+	// The original Job must be retained unchanged (same UID, original image).
+	fetched := &batchv1.Job{}
+	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "test-job", Namespace: "default"}, fetched)).To(Succeed())
+	g.Expect(fetched.UID).To(Equal(existing.UID), "completed Job must be retained, not recreated (CC-0113)")
+	g.Expect(fetched.Spec.Template.Spec.Containers[0].Image).To(Equal("busybox:latest"))
+}
+
+// TestRunJobWithRerunKey_keyChanged verifies that a completed Job IS re-run when
+// the supplied re-run key changes, and the replacement carries the new key.
+func TestRunJobWithRerunKey_keyChanged(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	existing := completedJobWithRerunKey("rerun-key-1")
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		WithStatusSubresource(existing).
+		Build()
+
+	ready, err := RunJobWithRerunKey(context.Background(), c, s, owner, testJob(), "rerun-key-2")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ready).To(BeFalse(), "a changed re-run key must re-run the completed Job")
+
+	fetched := &batchv1.Job{}
+	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "test-job", Namespace: "default"}, fetched)).To(Succeed())
+	g.Expect(fetched.Annotations[PodSpecHashAnnotation]).To(Equal("rerun-key-2"), "replacement Job must carry the new re-run key")
+}
+
 // TestRunJob_existingComplete_noHashAnnotation verifies that a completed Job
 // without a hash annotation (e.g. created before the hash mechanism was
 // introduced) is treated as stale and recreated (CC-0005).

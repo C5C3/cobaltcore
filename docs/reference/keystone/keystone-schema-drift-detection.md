@@ -29,7 +29,10 @@ separate Kubernetes Job (not an init container) because:
    for stale detection.
 2. It allows an independent `backoffLimit` (2 vs 4 for `db_sync`) to fail faster on
    permanent schema drift while still retrying transient database connection failures.
-3. It enables `ttlSecondsAfterFinished` for automatic cleanup of completed/failed Jobs.
+3. The completed Job lingers as the `job.RunJob` pod-spec-hash state record;
+   `ttlSecondsAfterFinished` is intentionally left unset so the TTL-after-finished
+   controller cannot delete the finished Job and trigger re-creation on the next
+   reconcile.
 4. It cleanly separates the write operation (`db_sync`) from the read-only verification
    (`schema-check`).
 
@@ -76,7 +79,7 @@ reconcileDatabase()
 | Image | `{spec.image.repository}:{spec.image.tag}` |
 | Command | `/bin/sh -eu -c {schema-check-script}` |
 | BackoffLimit | 2 |
-| TTLSecondsAfterFinished | 300 (5 minutes) |
+| TTLSecondsAfterFinished | not set |
 | RestartPolicy | `Never` |
 | SecurityContext | PSS Restricted profile via `restrictedSecurityContext()` |
 | Config mount | Keystone configuration ConfigMap at `/etc/keystone/keystone.conf.d/` (read-only) |
@@ -87,7 +90,7 @@ mount as the `db_sync` Job. The differences are:
 | Property | db_sync | schema-check |
 | --- | --- | --- |
 | BackoffLimit | 4 | 2 |
-| TTLSecondsAfterFinished | not set | 300 |
+| TTLSecondsAfterFinished | not set | not set |
 | Command | `keystone-manage db_sync` | `/bin/sh -eu -c` with embedded Python script |
 
 ### Stale Job Detection
@@ -277,7 +280,6 @@ kubectl describe job/<name>-schema-check
    ```bash
    kubectl delete job <name>-schema-check
    ```
-   The TTL controller will also automatically clean up the Job after 5 minutes.
 
 #### SchemaCheckInProgress Stuck
 

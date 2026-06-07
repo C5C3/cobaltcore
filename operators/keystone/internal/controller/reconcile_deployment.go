@@ -53,6 +53,55 @@ func buildDBConnectionEnvVar(keystone *keystonev1alpha1.Keystone) corev1.EnvVar 
 	}
 }
 
+// dbReadinessProbeConnectTimeoutSeconds bounds the TCP connect attempt in
+// dbReadinessProbeScript. It is deliberately generous: it must sit above the
+// worst-case handshake under a *degraded but reachable* database (the chaos
+// latency scenario injects ~10s + 2s jitter, so the handshake completes in
+// ~12s) and below the unbounded wait of a genuine partition. A reachable-but-
+// slow database therefore keeps the Pod Ready, while a partitioned one trips
+// the probe (SC-CHAOS-006 vs. SC-CHAOS-007).
+const dbReadinessProbeConnectTimeoutSeconds = 20
+
+// dbReadinessProbeScript opens a short-lived TCP connection to the database host
+// and port parsed out of the OS_DATABASE__CONNECTION URL that the keystone
+// container already consumes. It uses only the Python standard library (present
+// in every keystone image) so the probe carries no extra dependency, and it
+// connects from the keystone Pod itself — the only network vantage point that
+// shares keystone's fate. A keystone-side loss of database connectivity (e.g. a
+// network partition that leaves the database CR Ready but cuts keystone off)
+// therefore fails the per-Pod readiness check and removes the Pod from the
+// Service, surfacing as DeploymentReady=False / Ready=False instead of a silent
+// blind spot (SC-CHAOS-006).
+var dbReadinessProbeScript = fmt.Sprintf(
+	`python3 -c "import os,socket; from urllib.parse import urlparse; raw=os.environ.get('OS_DATABASE__CONNECTION',''); u=urlparse('//'+raw.split('://',1)[-1]); socket.create_connection((u.hostname, u.port or 3306), %d).close()"`,
+	dbReadinessProbeConnectTimeoutSeconds,
+)
+
+// dbReadinessProbe returns the keystone container readiness probe. Readiness —
+// not liveness — depends on database reachability so a database outage depools
+// the Pod from the Service without restarting it; liveness stays a plain
+// TCP check on the API port so uWSGI is only killed when it is genuinely dead.
+// The /v3 version document, by contrast, is served without touching the
+// database, so an HTTP probe against it cannot observe a lost DB connection.
+//
+// Timings tolerate a slow-but-reachable database without depooling: the probe
+// timeout sits above the connect timeout, the period above the probe timeout
+// (so probes never overlap), and three consecutive failures (~90s of sustained
+// unreachability) are required before the Pod leaves the Service.
+func dbReadinessProbe() *corev1.Probe {
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			Exec: &corev1.ExecAction{
+				Command: []string{"/bin/sh", "-c", dbReadinessProbeScript},
+			},
+		},
+		InitialDelaySeconds: 10,
+		PeriodSeconds:       30,
+		TimeoutSeconds:      25,
+		FailureThreshold:    3,
+	}
+}
+
 // reconcileDeployment ensures the Keystone API Deployment and Service exist
 // with the correct spec. It sets the DeploymentReady condition and the
 // status endpoint when the Deployment becomes available (CC-0013, REQ-006, REQ-012).
@@ -188,16 +237,7 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 							InitialDelaySeconds: 15,
 							PeriodSeconds:       20,
 						},
-						ReadinessProbe: &corev1.Probe{
-							ProbeHandler: corev1.ProbeHandler{
-								HTTPGet: &corev1.HTTPGetAction{
-									Path: "/v3",
-									Port: intstr.FromInt32(5000),
-								},
-							},
-							InitialDelaySeconds: 5,
-							PeriodSeconds:       10,
-						},
+						ReadinessProbe: dbReadinessProbe(),
 						StartupProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
 								HTTPGet: &corev1.HTTPGetAction{

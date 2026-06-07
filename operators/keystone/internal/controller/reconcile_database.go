@@ -876,7 +876,11 @@ func buildContractJob(keystone *keystonev1alpha1.Keystone, configMapName, imageT
 // The Job runs keystone-manage db_sync --check which exits 0 when the schema is
 // up-to-date, and 1..4 when expand/migrate/contract migrations are pending.
 // It delegates to buildDBJob for the shared pod spec and overrides backoffLimit=2
-// and ttlSecondsAfterFinished=300 for automatic cleanup (CC-0064, REQ-003, REQ-004).
+// for a read-only check (CC-0064, REQ-003, REQ-004). TTLSecondsAfterFinished is
+// intentionally left unset: the completed Job is the RunJob state record, and a
+// TTL-driven garbage-collection would re-create it on the next reconcile, causing
+// a re-creation loop (CC-0113, #415). The Job is cleaned up via owner-reference GC
+// with the Keystone CR.
 func buildSchemaCheckJob(keystone *keystonev1alpha1.Keystone, configMapName string) *batchv1.Job {
 	// Read-only schema verification via keystone-manage db_sync --check.
 	// Exit codes: 0 = up-to-date, 1..4 = needs expand/migrate/contract.
@@ -887,11 +891,11 @@ func buildSchemaCheckJob(keystone *keystonev1alpha1.Keystone, configMapName stri
 	j := buildDBJob(keystone, configMapName, keystone.Spec.Image.Tag, "schema-check",
 		[]string{"/bin/sh", "-eu", "-c", schemaCheckScript})
 
-	// Override defaults: fewer retries for a read-only check, auto-cleanup after 5 min.
+	// Override defaults: fewer retries for a read-only check. The completed Job
+	// lingers as the RunJob state record (no TTL) to avoid a TTL-driven
+	// re-creation loop (CC-0113, #415).
 	backoffLimit := int32(2)
-	ttl := int32(300)
 	j.Spec.BackoffLimit = &backoffLimit
-	j.Spec.TTLSecondsAfterFinished = &ttl
 
 	return j
 }

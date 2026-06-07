@@ -1570,16 +1570,17 @@ func TestBuildSchemaCheckJob_BackoffLimit(t *testing.T) {
 	g.Expect(*j.Spec.BackoffLimit).To(Equal(int32(2)))
 }
 
-// TestBuildSchemaCheckJob_TTL verifies that the schema-check Job has
-// ttlSecondsAfterFinished=300 for automatic cleanup (CC-0064, REQ-004).
+// TestBuildSchemaCheckJob_TTL verifies that the schema-check Job leaves
+// ttlSecondsAfterFinished unset so the completed Job lingers as the RunJob
+// state record instead of being garbage-collected and re-created in a loop
+// (CC-0113, #415).
 func TestBuildSchemaCheckJob_TTL(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := brownfieldKeystone()
 
 	j := buildSchemaCheckJob(ks, "keystone-config-abc123")
 
-	g.Expect(j.Spec.TTLSecondsAfterFinished).NotTo(BeNil())
-	g.Expect(*j.Spec.TTLSecondsAfterFinished).To(Equal(int32(300)))
+	g.Expect(j.Spec.TTLSecondsAfterFinished).To(BeNil())
 }
 
 // TestBuildSchemaCheckJob_RestartPolicy verifies that the schema-check Job pod
@@ -2770,4 +2771,43 @@ func TestBuildDBJobVariants_DBTLSVolumeAbsent_WhenDisabled(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestReconcileDatabase_CompletedSchemaCheck_SameHash_NotRecreated verifies the
+// CC-0113 steady state (#415, REQ-005): when the schema-check Job is already
+// complete and its pod-spec hash matches the desired spec, the reconciler must
+// NOT delete or recreate the Job. Since TTL was removed, the completed Job
+// lingers as the RunJob pod-spec-hash state record and must carry no TTL.
+// Recreation is detected via the retained Job's UID staying unchanged.
+func TestReconcileDatabase_CompletedSchemaCheck_SameHash_NotRecreated(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := brownfieldKeystone()
+
+	completed := completedSchemaCheckJob(ks)
+	originalUID := completed.UID
+
+	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), completed)
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	// Steady state: no churn, no requeue.
+	g.Expect(result.RequeueAfter).To(BeZero())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonDatabaseSynced))
+
+	// The completed schema-check Job must still exist with the SAME UID,
+	// proving it was neither deleted nor recreated.
+	var retained batchv1.Job
+	g.Expect(r.Client.Get(context.Background(), client.ObjectKey{
+		Name:      fmt.Sprintf("%s-schema-check", ks.Name),
+		Namespace: ks.Namespace,
+	}, &retained)).To(Succeed())
+	g.Expect(retained.UID).To(Equal(originalUID))
+
+	// The lingering Job carries no TTL (CC-0113: TTL removed to stop the loop).
+	g.Expect(retained.Spec.TTLSecondsAfterFinished).To(BeNil())
 }

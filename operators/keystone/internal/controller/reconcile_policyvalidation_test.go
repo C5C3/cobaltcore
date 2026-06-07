@@ -484,7 +484,8 @@ func TestBuildPolicyValidationJob_ConfigMapMount(t *testing.T) {
 }
 
 // TestBuildPolicyValidationJob_BackoffAndTTL verifies backoffLimit=2,
-// ttlSecondsAfterFinished=300, restartPolicy=Never (CC-0058, REQ-007).
+// restartPolicy=Never, and that ttlSecondsAfterFinished is unset so the
+// completed Job lingers as the RunJob state record (CC-0113, #415).
 func TestBuildPolicyValidationJob_BackoffAndTTL(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := policyValidationKeystoneWithPolicy()
@@ -494,8 +495,7 @@ func TestBuildPolicyValidationJob_BackoffAndTTL(t *testing.T) {
 	g.Expect(j.Spec.BackoffLimit).NotTo(BeNil())
 	g.Expect(*j.Spec.BackoffLimit).To(Equal(int32(2)))
 
-	g.Expect(j.Spec.TTLSecondsAfterFinished).NotTo(BeNil())
-	g.Expect(*j.Spec.TTLSecondsAfterFinished).To(Equal(int32(300)))
+	g.Expect(j.Spec.TTLSecondsAfterFinished).To(BeNil())
 
 	g.Expect(j.Spec.Template.Spec.RestartPolicy).To(Equal(corev1.RestartPolicyNever))
 }
@@ -597,4 +597,44 @@ func TestReconcilePolicyValidation_ConditionObservedGeneration(t *testing.T) {
 		g.Expect(cond).NotTo(BeNil())
 		g.Expect(cond.ObservedGeneration).To(Equal(int64(11)))
 	})
+}
+
+// TestReconcilePolicyValidation_CompletedSameHash_NotRecreated verifies the
+// CC-0113 steady state (#415, REQ-005): with policy overrides configured and a
+// completed validation Job whose pod-spec hash matches the desired spec, the
+// reconciler must NOT delete or recreate the Job. Since TTL was removed, the
+// completed Job lingers as the RunJob pod-spec-hash state record and must carry
+// no TTL. Recreation is detected via the retained Job's UID staying unchanged.
+func TestReconcilePolicyValidation_CompletedSameHash_NotRecreated(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := policyValidationTestScheme()
+	ks := policyValidationKeystoneWithPolicy()
+
+	completed := completedPolicyValidationJob(ks)
+	completed.UID = "policy-validation-job-uid"
+	originalUID := completed.UID
+
+	r := newPolicyValidationTestReconciler(s, ks, completed)
+
+	result, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	// Steady state: no churn, no requeue.
+	g.Expect(result.RequeueAfter).To(BeZero())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, conditionTypePolicyValidReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonPolicyValidationPassed))
+
+	// The completed validation Job must still exist with the SAME UID,
+	// proving it was neither deleted nor recreated.
+	var retained batchv1.Job
+	g.Expect(r.Client.Get(context.Background(), client.ObjectKey{
+		Name:      "test-keystone-policy-validation",
+		Namespace: "default",
+	}, &retained)).To(Succeed())
+	g.Expect(retained.UID).To(Equal(originalUID))
+
+	// The lingering Job carries no TTL (CC-0113: TTL removed to stop the loop).
+	g.Expect(retained.Spec.TTLSecondsAfterFinished).To(BeNil())
 }

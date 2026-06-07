@@ -240,13 +240,25 @@ func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
 	g.Expect(container.LivenessProbe.InitialDelaySeconds).To(Equal(int32(15)))
 	g.Expect(container.LivenessProbe.PeriodSeconds).To(Equal(int32(20)))
 
-	// Verify readiness probe.
+	// Verify readiness probe (SC-CHAOS-006): a database-aware exec probe that
+	// TCP-connects to the DB endpoint from inside the keystone pod, so a
+	// keystone-side loss of database connectivity depools the pod
+	// (DeploymentReady=False) instead of going unobserved. /v3 is served without
+	// the database and therefore cannot detect a lost DB connection.
 	g.Expect(container.ReadinessProbe).NotTo(BeNil())
-	g.Expect(container.ReadinessProbe.HTTPGet).NotTo(BeNil())
-	g.Expect(container.ReadinessProbe.HTTPGet.Path).To(Equal("/v3"))
-	g.Expect(container.ReadinessProbe.HTTPGet.Port.IntValue()).To(Equal(5000))
-	g.Expect(container.ReadinessProbe.InitialDelaySeconds).To(Equal(int32(5)))
-	g.Expect(container.ReadinessProbe.PeriodSeconds).To(Equal(int32(10)))
+	g.Expect(container.ReadinessProbe.HTTPGet).To(BeNil(), "readiness probe must not use HTTPGet (/v3 ignores the DB)")
+	g.Expect(container.ReadinessProbe.Exec).NotTo(BeNil(), "readiness probe must use exec")
+	g.Expect(container.ReadinessProbe.Exec.Command).To(HaveLen(3))
+	g.Expect(container.ReadinessProbe.Exec.Command[0]).To(Equal("/bin/sh"))
+	g.Expect(container.ReadinessProbe.Exec.Command[1]).To(Equal("-c"))
+	g.Expect(container.ReadinessProbe.Exec.Command[2]).To(ContainSubstring("OS_DATABASE__CONNECTION"))
+	g.Expect(container.ReadinessProbe.Exec.Command[2]).To(ContainSubstring("create_connection"))
+	// Timings tolerate a slow-but-reachable DB (chaos latency ~10s + 2s jitter):
+	// period > probe timeout > connect timeout, with 3 failures before depooling.
+	g.Expect(container.ReadinessProbe.InitialDelaySeconds).To(Equal(int32(10)))
+	g.Expect(container.ReadinessProbe.PeriodSeconds).To(Equal(int32(30)))
+	g.Expect(container.ReadinessProbe.TimeoutSeconds).To(Equal(int32(25)))
+	g.Expect(container.ReadinessProbe.FailureThreshold).To(Equal(int32(3)))
 
 	// Verify startup probe (CC-0063, REQ-003): httpGet /v3 port 5000 with generous
 	// failure threshold to survive slow cold starts (large DB, cold caches).

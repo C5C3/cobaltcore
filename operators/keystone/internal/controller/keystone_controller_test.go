@@ -261,16 +261,18 @@ func testReadyKeystoneDeployment() runtime.Object {
 func testCompletedBootstrapJob(configMapName string) runtime.Object {
 	ks := testKeystone()
 	// The full-reconcile tests using this helper include testAdminCredentialsSecret()
-	// whose `password` value is "admin-password"; stamp the matching admin-password-hash
-	// so reconcileBootstrap (which derives the same digest from the Secret) does not see
-	// the Job as stale during full reconcile (CC-0108, REQ-004).
+	// whose `password` value is "admin-password". The bootstrap Job's re-run key is
+	// the admin-password digest (NOT the pod-template hash, so a release upgrade does
+	// not re-trigger it — CC-0113); stamp the matching digest so reconcileBootstrap
+	// (which derives the same key from the Secret) does not see the Job as stale
+	// during full reconcile (CC-0108, REQ-004; CC-0113).
 	sum := sha256.Sum256([]byte("admin-password"))
 	adminHash := hex.EncodeToString(sum[:])
 	desired := buildBootstrapJob(ks, configMapName, fmt.Sprintf("%s-fernet-keys", ks.Name), adminHash)
 	now := metav1.Now()
 	j := desired.DeepCopy()
 	j.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
+		job.PodSpecHashAnnotation: adminHash,
 	}
 	j.Status.Succeeded = 1
 	j.Status.CompletionTime = &now
@@ -681,6 +683,17 @@ func TestReconcile_ReadyFalseWhenDeploymentNotAvailable(t *testing.T) {
 	g.Expect(deployCond).NotTo(BeNil(), "DeploymentReady condition should be set")
 	g.Expect(deployCond.Status).To(Equal(metav1.ConditionFalse))
 
+	// The aggregate Ready must follow DeploymentReady=False even though the
+	// chain short-circuited at the deployment stage — updateStatus recomputes it
+	// on every persist. This is the keystone-side network-partition contract:
+	// a depooled Pod must surface as Ready=False, not a stale Ready=True
+	// (SC-CHAOS-006, CC-0113).
+	readyCond := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
+	g.Expect(readyCond).NotTo(BeNil(), "Ready condition should be set")
+	g.Expect(readyCond.Status).To(Equal(metav1.ConditionFalse),
+		"Ready must be False when the deployment is not available")
+	g.Expect(readyCond.Reason).To(Equal("NotAllReady"))
+
 	// NetworkPolicyReady runs before Deployment in the reconcile chain, so it
 	// should be set even when the deployment is not available (CC-0039).
 	npCond := meta.FindStatusCondition(updated.Status.Conditions, "NetworkPolicyReady")
@@ -742,9 +755,15 @@ func TestReconcile_HealthCheckStopsChainOnFailure(t *testing.T) {
 		g.Expect(cond).To(BeNil(), "condition %s should not be set when health check fails", condType)
 	}
 
-	// Ready should not be set (updateStatus was called from health check, not from the end).
+	// Ready must be re-aggregated to False even though the chain short-circuited
+	// at the health check: updateStatus recomputes it on every persist, so a
+	// KeystoneAPIReady=False (plus the unset downstream conditions) drives the
+	// aggregate to False rather than leaving it stale (SC-CHAOS-006, CC-0113).
 	readyCond := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
-	g.Expect(readyCond).To(BeNil(), "Ready should not be set when health check short-circuits the chain")
+	g.Expect(readyCond).NotTo(BeNil(), "Ready should be set when the chain short-circuits")
+	g.Expect(readyCond.Status).To(Equal(metav1.ConditionFalse),
+		"Ready must be False when a sub-condition short-circuits the chain")
+	g.Expect(readyCond.Reason).To(Equal("NotAllReady"))
 }
 
 func TestReconcile_ObservedGenerationTracked(t *testing.T) {
@@ -1168,6 +1187,51 @@ func TestUpdateStatus_ResultPassthrough_WithRequeueAfter(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(inputResult),
 		"result must be passed through unchanged when status update succeeds")
+}
+
+// TestUpdateStatus_ReaggregatesReadyWhenSubConditionDegrades verifies that
+// updateStatus recomputes the aggregate Ready condition on every persist, so a
+// CR that was fully Ready flips to Ready=False the moment a sub-condition
+// degrades and short-circuits the reconcile chain — rather than leaving Ready
+// stale at True. This is the keystone-side network-partition scenario: the
+// database-aware readiness probe depools the Pods, reconcileDeployment requeues
+// with DeploymentReady=False, and the aggregate Ready must follow it down. A
+// missing re-aggregation here was why the mariadb-network-partition chaos test
+// timed out waiting for Ready=False (SC-CHAOS-006, CC-0113).
+func TestUpdateStatus_ReaggregatesReadyWhenSubConditionDegrades(t *testing.T) {
+	g := NewGomegaWithT(t)
+	r, ks := newUpdateStatusReconciler(t, testKeystone(), nil)
+
+	// Seed a status as if a prior fully-healthy pass had completed — every
+	// sub-condition True and the aggregate Ready True — except DeploymentReady,
+	// which has just degraded to False under the partition.
+	for _, ct := range subConditionTypes {
+		status := metav1.ConditionTrue
+		if ct == "DeploymentReady" {
+			status = metav1.ConditionFalse
+		}
+		meta.SetStatusCondition(&ks.Status.Conditions, metav1.Condition{
+			Type:   ct,
+			Status: status,
+			Reason: "Seed",
+		})
+	}
+	meta.SetStatusCondition(&ks.Status.Conditions, metav1.Condition{
+		Type:   "Ready",
+		Status: metav1.ConditionTrue,
+		Reason: "AllReady",
+	})
+
+	_, err := r.updateStatus(context.Background(), ks, ctrl.Result{RequeueAfter: time.Second}, nil)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	updated := &keystonev1alpha1.Keystone{}
+	g.Expect(r.Get(context.Background(), client.ObjectKeyFromObject(ks), updated)).To(Succeed())
+	readyCond := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
+	g.Expect(readyCond).NotTo(BeNil(), "Ready condition must be present")
+	g.Expect(readyCond.Status).To(Equal(metav1.ConditionFalse),
+		"Ready must flip to False once DeploymentReady degrades, not stay stale at True")
+	g.Expect(readyCond.Reason).To(Equal("NotAllReady"))
 }
 
 func TestSubConditionTypesIncludesKeystoneAPIReady(t *testing.T) {

@@ -21,10 +21,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
-// PodSpecHashAnnotation stores a SHA-256 hash of the desired pod template
-// (PodTemplateSpec) at creation time. It is used to detect whether a completed
-// Job's template has changed (e.g. operator upgrade) without relying on
-// normalization of API-server defaults (CC-0005).
+// PodSpecHashAnnotation stores a Job's re-run gate value at creation time. By
+// default (RunJob) this is a SHA-256 hash of the desired pod template
+// (PodTemplateSpec), so a completed Job is re-run when its template changes
+// (e.g. an operator/release upgrade swaps the container image). A caller may
+// instead supply an explicit key via RunJobWithRerunKey; the annotation then
+// holds that key. Either way the value is compared on subsequent passes without
+// relying on normalization of API-server defaults (CC-0005, CC-0113).
 const PodSpecHashAnnotation = "forge.c5c3.io/pod-spec-hash"
 
 // PodSpecHash computes a deterministic SHA-256 hash of the given pod template.
@@ -60,12 +63,33 @@ var ErrJobFailed = errors.New("job has permanently failed")
 // finished, (false, nil) when the Job exists but is still running,
 // (false, error) when the Job has permanently failed (e.g. exceeded
 // backoffLimit), and (false, error) on unexpected failures (CC-0005).
+//
+// A completed Job is re-run when its full pod template changes — the correct
+// trigger for migration-style Jobs (db-sync, expand/migrate/contract,
+// schema-check) that must re-execute against a new container image on an
+// operator/release upgrade.
 func RunJob(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, job *batchv1.Job) (bool, error) {
+	return RunJobWithRerunKey(ctx, c, scheme, owner, job, PodSpecHash(&job.Spec.Template))
+}
+
+// RunJobWithRerunKey behaves like RunJob but uses an explicit rerunKey, rather
+// than the full pod-template hash, to decide whether a *completed* Job must be
+// re-run. The key is stored at creation time and compared on subsequent passes;
+// a completed Job is re-run only when the key changes.
+//
+// This lets a Job opt out of image-sensitive re-runs. The keystone bootstrap
+// Job uses the admin-password digest as its key so it re-runs when the password
+// rotates (CC-0108) but NOT when the container image changes on a release
+// upgrade: re-running keystone-manage bootstrap after the cross-version DB
+// migration fails on the already-migrated admin user (oslo_db DBDuplicateEntry
+// 'default-admin'), which would otherwise hold BootstrapReady — and the
+// aggregate Ready — False for the whole upgrade (CC-0113).
+func RunJobWithRerunKey(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, job *batchv1.Job, rerunKey string) (bool, error) {
 	existing := &batchv1.Job{}
 	err := c.Get(ctx, client.ObjectKeyFromObject(job), existing)
 
 	if apierrors.IsNotFound(err) {
-		return false, createJobWithHash(ctx, c, scheme, owner, job)
+		return false, createJobWithRerunKey(ctx, c, scheme, owner, job, rerunKey)
 	}
 	if err != nil {
 		return false, fmt.Errorf("getting Job %s/%s: %w", job.Namespace, job.Name, err)
@@ -76,15 +100,14 @@ func RunJob(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner 
 	}
 
 	if IsJobComplete(existing) {
-		// Guard against stale completed Jobs: if the pod spec has changed
-		// (e.g. operator upgrade with a new container image), delete the
-		// old Job and create a new one so the updated migration runs.
-		// Comparison uses a hash annotation stored at creation time to
+		// Guard against stale completed Jobs: if the re-run key has changed
+		// (e.g. a new container image for migration Jobs, or a rotated admin
+		// password for the bootstrap Job) delete the old Job and create a new
+		// one. The key is compared against the value stored at creation time to
 		// avoid maintaining a normalization layer for API-server defaults
-		// (CC-0005).
-		desiredHash := PodSpecHash(&job.Spec.Template)
-		existingHash := existing.Annotations[PodSpecHashAnnotation]
-		if desiredHash != existingHash {
+		// (CC-0005, CC-0113).
+		existingKey := existing.Annotations[PodSpecHashAnnotation]
+		if rerunKey != existingKey {
 			// Intentional behavioral alignment: explicitly set Background propagation
 			// policy for both envtest and production consistency. The default on most
 			// API servers is already Background, so this is a no-op in production but
@@ -96,7 +119,7 @@ func RunJob(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner 
 			if err := c.Delete(ctx, existing, &client.DeleteOptions{PropagationPolicy: &propagation}); err != nil {
 				return false, fmt.Errorf("deleting stale Job %s/%s: %w", existing.Namespace, existing.Name, err)
 			}
-			if err := createJobWithHash(ctx, c, scheme, owner, job); err != nil {
+			if err := createJobWithRerunKey(ctx, c, scheme, owner, job, rerunKey); err != nil {
 				return false, err
 			}
 			return false, nil
@@ -107,10 +130,10 @@ func RunJob(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner 
 	return false, nil
 }
 
-// createJobWithHash sets the owner reference, stores a pod-spec hash
-// annotation, and creates the Job. It returns nil on success and on
+// createJobWithRerunKey sets the owner reference, stores the re-run key in the
+// PodSpecHashAnnotation, and creates the Job. It returns nil on success and on
 // AlreadyExists (old Job still terminating) (CC-0005).
-func createJobWithHash(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, job *batchv1.Job) error {
+func createJobWithRerunKey(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, job *batchv1.Job, rerunKey string) error {
 	toCreate := job.DeepCopy()
 	if err := controllerutil.SetControllerReference(owner, toCreate, scheme); err != nil {
 		return fmt.Errorf("setting owner reference on Job %s/%s: %w", job.Namespace, job.Name, err)
@@ -118,7 +141,7 @@ func createJobWithHash(ctx context.Context, c client.Client, scheme *runtime.Sch
 	if toCreate.Annotations == nil {
 		toCreate.Annotations = make(map[string]string)
 	}
-	toCreate.Annotations[PodSpecHashAnnotation] = PodSpecHash(&job.Spec.Template)
+	toCreate.Annotations[PodSpecHashAnnotation] = rerunKey
 	if err := c.Create(ctx, toCreate); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			// Old Job still terminating (e.g. finalizer pending); wait for the next reconcile.

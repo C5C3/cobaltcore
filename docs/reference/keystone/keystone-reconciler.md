@@ -1952,7 +1952,7 @@ invalid policy overrides are caught before reaching running pods. Two lifecycle 
 | Image | `{spec.image.repository}:{spec.image.tag}` |
 | Command | `oslopolicy-validator --namespace keystone --config-dir /etc/keystone/keystone.conf.d/` |
 | BackoffLimit | 2 |
-| TTLSecondsAfterFinished | 300 |
+| TTLSecondsAfterFinished | not set |
 | RestartPolicy | Never |
 | SecurityContext | `restrictedSecurityContext()` (PSS Restricted) |
 | TerminationMessagePolicy | `FallbackToLogsOnError` |
@@ -2476,8 +2476,14 @@ project, roles, and service catalog entries.
 | Image | `{spec.image.repository}:{spec.image.tag}` |
 | Command | `keystone-manage bootstrap` |
 | BackoffLimit | 4 |
-| TTLSecondsAfterFinished | 300 |
+| TTLSecondsAfterFinished | not set |
 | RestartPolicy | OnFailure |
+
+> **Note:** `TTLSecondsAfterFinished` is intentionally unset. The completed Job
+> lingers as the `job.RunJob` pod-spec-hash state record and is garbage-collected
+> via its `ownerReference` when the Keystone CR is deleted. Setting a TTL would let
+> the TTL-after-finished controller delete the finished Job and trigger re-creation
+> on the next reconcile.
 
 **Bootstrap Arguments:**
 
@@ -3076,7 +3082,7 @@ existing file (e.g. `reconcile_hpa_test.go`).
 | `reconcile_httproute_test.go` | HTTPRoute creation, update, deletion, gateway namespace defaulting, PathPrefix match, backend Service port 5000, parent Accepted reflection, status.endpoint derivation, condition contract, ObservedGeneration |
 | `reconcile_trustflush_test.go` | CronJob creation, deletion, schedule/suspend/args, security context, volume mounts, condition contract, error propagation, ObservedGeneration |
 | `reconcile_passwordrotation_test.go` | CronJob shape/suspend, staging + push-source Secrets, split-Role RBAC shape, apply/validate commit + reject (short/missing/malformed-annotation) paths, clobber-safe PushSecret gating, teardown idempotency (disabled and nil-spec), condition contract |
-| `reconcile_bootstrap_test.go` | Job creation, completion, failure, stale detection, TTL/backoff, ObservedGeneration |
+| `reconcile_bootstrap_test.go` | Job creation, completion, failure, stale detection, backoff, ObservedGeneration |
 | `integration_test.go` | Full reconciliation envtest: CronJob spec, bootstrap Job spec, brownfield mode, condition progression, ObservedGeneration |
 
 ---

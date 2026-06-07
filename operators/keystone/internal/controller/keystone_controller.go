@@ -390,9 +390,8 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return r.updateStatus(ctx, &keystone, result, err)
 	}
 
-	// Aggregate the Ready condition.
-	setReadyCondition(&keystone)
-
+	// The aggregate Ready condition is recomputed inside updateStatus, which
+	// every return path — this final success path included — funnels through.
 	return r.updateStatus(ctx, &keystone, ctrl.Result{}, nil)
 }
 
@@ -552,6 +551,15 @@ func (r *KeystoneReconciler) hasLiveOpenBaoBackupPushSecrets(ctx context.Context
 // When both reconcileErr and the status update fail, both errors are preserved via errors.Join
 // so that the original reconcile failure is visible in controller-runtime logs (CC-0068).
 func (r *KeystoneReconciler) updateStatus(ctx context.Context, keystone *keystonev1alpha1.Keystone, result ctrl.Result, reconcileErr error) (ctrl.Result, error) {
+	// Re-aggregate the Ready condition on every status persist, including the
+	// early-return paths a sub-reconciler takes when it degrades after the CR
+	// was already Ready. reconcileDeployment, for example, requeues with
+	// DeploymentReady=False the moment the database-aware readiness probe
+	// depools the keystone Pods under a network partition. Aggregating only at
+	// the end of a fully-successful chain left Ready stale at True whenever such
+	// an early return short-circuited the chain, so a degraded CR kept
+	// reporting Ready=True (SC-CHAOS-006, CC-0113).
+	setReadyCondition(keystone)
 	if err := r.Status().Update(ctx, keystone); err != nil {
 		log.FromContext(ctx).Error(err, "unable to update Keystone status")
 		return ctrl.Result{}, errors.Join(reconcileErr, fmt.Errorf("updating status: %w", err))

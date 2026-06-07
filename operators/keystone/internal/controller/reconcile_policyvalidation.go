@@ -142,12 +142,14 @@ func getValidationErrorMessage(ctx context.Context, c client.Client, jobName, na
 // buildPolicyValidationJob constructs the validation Job that runs
 // oslopolicy-validator against the rendered policy.yaml in the ConfigMap.
 // The Job uses the same container image as the Keystone API Deployment,
-// mounts the ConfigMap read-only, and has backoffLimit=2 / TTL=300.
+// mounts the ConfigMap read-only, and has backoffLimit=2. No
+// ttlSecondsAfterFinished is set: the completed Job lingers as the RunJob
+// state record so reconciliation does not re-create it in a loop once it
+// finishes (CC-0113, #415).
 // oslopolicy-validator reads keystone.conf from the mounted config dir to
 // resolve [oslo_policy] policy_file (CC-0058, REQ-007).
 func buildPolicyValidationJob(keystone *keystonev1alpha1.Keystone, configMapName string) *batchv1.Job {
 	backoffLimit := int32(2)
-	ttl := int32(300)
 
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -155,8 +157,7 @@ func buildPolicyValidationJob(keystone *keystonev1alpha1.Keystone, configMapName
 			Namespace: keystone.Namespace,
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit:            &backoffLimit,
-			TTLSecondsAfterFinished: &ttl,
+			BackoffLimit: &backoffLimit,
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyNever,

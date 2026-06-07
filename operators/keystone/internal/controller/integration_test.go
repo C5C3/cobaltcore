@@ -999,9 +999,10 @@ func TestIntegration_BootstrapJobDetailedSpec(t *testing.T) {
 	g.Expect(bootstrapJob.Spec.BackoffLimit).NotTo(BeNil())
 	g.Expect(*bootstrapJob.Spec.BackoffLimit).To(Equal(int32(4)), "backoffLimit should be 4")
 
-	// Verify ttlSecondsAfterFinished (REQ-007).
-	g.Expect(bootstrapJob.Spec.TTLSecondsAfterFinished).NotTo(BeNil())
-	g.Expect(*bootstrapJob.Spec.TTLSecondsAfterFinished).To(Equal(int32(300)), "ttlSecondsAfterFinished should be 300")
+	// CC-0113 (#415): ttlSecondsAfterFinished is intentionally unset so the
+	// finished Job lingers as the RunJob pod-spec-hash state record and does
+	// not trigger a TTL-driven re-creation loop (REQ-001, REQ-007).
+	g.Expect(bootstrapJob.Spec.TTLSecondsAfterFinished).To(BeNil())
 
 	// Verify container spec.
 	podSpec := bootstrapJob.Spec.Template.Spec
@@ -1432,6 +1433,19 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 
 	expectedNewImage := fmt.Sprintf("%s:2025.2", ks.Spec.Image.Repository)
 
+	// Capture the completed bootstrap Job from the initial release. A pure image
+	// change must NOT re-run the bootstrap Job (CC-0113): identity bootstrap is
+	// one-time and gated on the admin-password digest, so it stays put across a
+	// release upgrade while the migration Jobs (db-sync / schema-check /
+	// expand / migrate / contract) re-run with the new image.
+	oldImage := fmt.Sprintf("%s:2025.1", ks.Spec.Image.Repository)
+	bootstrapKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-bootstrap", ks.Name)}
+	preUpgradeBootstrap := &batchv1.Job{}
+	g.Expect(c.Get(ctx, bootstrapKey, preUpgradeBootstrap)).To(Succeed())
+	g.Expect(preUpgradeBootstrap.Spec.Template.Spec.Containers[0].Image).To(Equal(oldImage),
+		"pre-upgrade bootstrap Job should carry the initial image")
+	preUpgradeBootstrapUID := preUpgradeBootstrap.UID
+
 	// --- Trigger upgrade: update image tag to 2025.2 (CC-0056, REQ-001) ---
 	current := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, current)).To(Succeed())
@@ -1596,22 +1610,23 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 
 	waitForCondition(t, ctx, c, key, "DatabaseReady", metav1.ConditionTrue, eventuallyTimeout)
 
-	// Bootstrap Job is also re-created with new image (CC-0005).
-	bootstrapKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-bootstrap", ks.Name)}
-	g.Eventually(func() bool {
-		j := &batchv1.Job{}
-		if err := c.Get(ctx, bootstrapKey, j); err != nil {
-			return false
-		}
-		if len(j.Spec.Template.Spec.Containers) == 0 {
-			return false
-		}
-		return j.Spec.Template.Spec.Containers[0].Image == expectedNewImage
-	}, eventuallyTimeout, pollInterval).Should(BeTrue(), "bootstrap Job should be re-created with new image")
-	g.Expect(simulators.SimulateJobComplete(ctx, c, bootstrapKey)).To(Succeed(), "simulate post-upgrade bootstrap completion")
+	// CC-0113: the bootstrap Job is NOT re-created on a pure image change — its
+	// re-run is gated on the admin-password digest only, so the completed
+	// bootstrap Job from the initial release stays in place and BootstrapReady
+	// remains True. Re-running keystone-manage bootstrap across a cross-release
+	// DB migration would otherwise fail on the migrated admin user.
 
 	// Verify the system returns to Ready=True after the full upgrade cycle (CC-0056).
 	waitForCondition(t, ctx, c, key, "Ready", metav1.ConditionTrue, eventuallyTimeout)
+
+	// The retained bootstrap Job must be the same object (unchanged UID) carrying
+	// the original image — proof the upgrade did not re-run it (CC-0113).
+	postUpgradeBootstrap := &batchv1.Job{}
+	g.Expect(c.Get(ctx, bootstrapKey, postUpgradeBootstrap)).To(Succeed())
+	g.Expect(postUpgradeBootstrap.UID).To(Equal(preUpgradeBootstrapUID),
+		"bootstrap Job must be retained across an image-only upgrade, not re-created (CC-0113)")
+	g.Expect(postUpgradeBootstrap.Spec.Template.Spec.Containers[0].Image).To(Equal(oldImage),
+		"retained bootstrap Job must keep the original image (CC-0113)")
 
 	final := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, final)).To(Succeed())
@@ -1962,6 +1977,23 @@ func TestIntegration_GracefulShutdownSpec(t *testing.T) {
 	g.Expect(container.StartupProbe.HTTPGet.Port.IntValue()).To(Equal(5000))
 	g.Expect(container.StartupProbe.FailureThreshold).To(Equal(int32(30)))
 	g.Expect(container.StartupProbe.PeriodSeconds).To(Equal(int32(10)))
+
+	// Verify readiness probe (SC-CHAOS-006): an exec probe that TCP-connects to
+	// the database from the keystone Pod, so a keystone-side loss of database
+	// connectivity depools the Pod (DeploymentReady=False) rather than going
+	// unobserved. /v3 is served without the database and cannot detect this.
+	g.Expect(container.ReadinessProbe).NotTo(BeNil(), "ReadinessProbe must be set")
+	g.Expect(container.ReadinessProbe.Exec).NotTo(BeNil(), "ReadinessProbe must use exec")
+	g.Expect(container.ReadinessProbe.HTTPGet).To(BeNil(), "ReadinessProbe must not use httpGet (/v3 ignores the DB)")
+	g.Expect(container.ReadinessProbe.Exec.Command).To(HaveLen(3))
+	g.Expect(container.ReadinessProbe.Exec.Command[0]).To(Equal("/bin/sh"))
+	g.Expect(container.ReadinessProbe.Exec.Command[2]).To(ContainSubstring("OS_DATABASE__CONNECTION"))
+	g.Expect(container.ReadinessProbe.Exec.Command[2]).To(ContainSubstring("create_connection"))
+
+	// Liveness must stay independent of the database so a DB outage depools the
+	// Pod without restarting uWSGI.
+	g.Expect(container.LivenessProbe).NotTo(BeNil(), "LivenessProbe must be set")
+	g.Expect(container.LivenessProbe.TCPSocket).NotTo(BeNil(), "LivenessProbe must use a plain TCP check")
 }
 
 // --- Task CC-0058/3.1: PolicyValidation gating tests (REQ-004, REQ-008) ---

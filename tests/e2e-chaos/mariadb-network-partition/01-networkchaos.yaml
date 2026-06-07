@@ -2,15 +2,41 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# NetworkChaos CR to partition MariaDB traffic (CC-0049).
-# Partitions keystone pods FROM mariadb pods (unidirectional), simulating a
-# network partition where keystone cannot reach the database.
-# Selector targets keystone (source), target specifies mariadb (destination),
-# direction 'to' makes the partition unidirectional per architecture doc
-# (10-chaos-e2e-testing.md:312-336).
-# Duration 300s acts as a safety net for auto-expiry if the test does not
-# explicitly delete the CR. Matches the Chainsaw assert timeout (5m/300s)
-# to ensure the partition persists through the full assertion window.
+# NetworkChaos CR to partition keystone <-> MariaDB traffic (CC-0049).
+#
+# The partition is enforced on the MariaDB (server) side on purpose. keystone
+# does not connect to a MariaDB pod IP — it connects to the ClusterIP Service
+# openstack-db.openstack.svc:3306 (see resolveDatabaseHost). chaos-mesh installs
+# its drop rule inside the *selector* pods' network namespace and matches the
+# *target* pods by their pod IPs. If the rule were installed on the keystone
+# (client) side, it would match MariaDB pod IPs — but at that point the packet
+# still carries the Service ClusterIP, because kube-proxy only DNATs ClusterIP
+# -> pod IP later, in the node's root namespace, after the packet has left the
+# pod. The rule would therefore never match and the partition would be a no-op
+# for Service-routed traffic (the keystone readiness probe kept connecting for
+# the entire assertion window in the previous revision).
+#
+# Installing the rule on the MariaDB pods and dropping traffic *from* the
+# keystone pods works because, by the time the packet reaches the MariaDB
+# namespace, it has already been DNATed and carries the real keystone pod source
+# IP — the same reason Kubernetes NetworkPolicies can match Service-routed
+# traffic by client pod IP. direction 'both' fully severs the link in either
+# direction.
+#
+# Blast radius: target matches only pods labelled app.kubernetes.io/name=keystone
+# (the API Deployment pods). The keystone DB Job pods (db-sync, schema-check,
+# bootstrap) carry no such label, so they stay reachable and the operator's
+# DatabaseReady stays True; only the API pods lose connectivity, fail their
+# database-aware readiness probe, and drop the Deployment below ready replicas.
+#
+# Duration is a safety net for auto-expiry if the test does not explicitly
+# delete the CR; step 6 lifts the partition explicitly. It must *exceed* the
+# Chainsaw assert window, not equal it. An equal duration self-heals at the
+# exact deadline: chaos-mesh recovers and the Deployment is re-pooled in the
+# same instant the detect assertion (step 5) times out, flipping DeploymentReady
+# back to True before the assert can observe the degraded state — which is
+# exactly how the previous revision failed. 600s sits above the 8m detect
+# window (see chainsaw-test.yaml) with margin.
 apiVersion: chaos-mesh.org/v1alpha1
 kind: NetworkChaos
 metadata:
@@ -23,13 +49,13 @@ spec:
     namespaces:
       - openstack
     labelSelectors:
-      app.kubernetes.io/name: keystone
-  direction: to
+      app.kubernetes.io/name: mariadb
+  direction: both
   target:
     mode: all
     selector:
       namespaces:
         - openstack
       labelSelectors:
-        app.kubernetes.io/name: mariadb
-  duration: "300s"
+        app.kubernetes.io/name: keystone
+  duration: "600s"

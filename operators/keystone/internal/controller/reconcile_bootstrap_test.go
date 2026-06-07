@@ -101,13 +101,15 @@ func newBootstrapTestReconciler(s *runtime.Scheme, objs ...client.Object) *Keyst
 }
 
 // completedBootstrapJob returns a bootstrap Job that matches what buildBootstrapJob
-// produces for the given keystone and is marked as complete with the correct pod-spec hash.
+// produces for the given keystone and is marked as complete with the correct
+// re-run key. The bootstrap Job's re-run key is the admin-password digest (NOT
+// the pod-template hash), so a release upgrade does not re-trigger it (CC-0113).
 func completedBootstrapJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 	desired := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash())
 	now := metav1.Now()
 	j := desired.DeepCopy()
 	j.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
+		job.PodSpecHashAnnotation: bootstrapAdminPasswordHash(),
 	}
 	j.Status.Succeeded = 1
 	j.Status.CompletionTime = &now
@@ -122,10 +124,9 @@ func completedBootstrapJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 
 // failedBootstrapJob returns a bootstrap Job that is marked as permanently failed.
 func failedBootstrapJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
-	desired := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash())
-	j := desired.DeepCopy()
+	j := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash()).DeepCopy()
 	j.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
+		job.PodSpecHashAnnotation: bootstrapAdminPasswordHash(),
 	}
 	j.Status.Failed = 5
 	j.Status.Conditions = []batchv1.JobCondition{
@@ -139,10 +140,9 @@ func failedBootstrapJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 
 // runningBootstrapJob returns a bootstrap Job that exists but is still running.
 func runningBootstrapJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
-	desired := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash())
-	j := desired.DeepCopy()
+	j := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash()).DeepCopy()
 	j.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
+		job.PodSpecHashAnnotation: bootstrapAdminPasswordHash(),
 	}
 	return j
 }
@@ -297,9 +297,9 @@ func TestReconcileBootstrap_StaleJobDetection(t *testing.T) {
 	s := bootstrapTestScheme()
 	ks := bootstrapKeystone()
 
-	// Create a completed Job with a stale hash (simulating a spec change).
+	// Create a completed Job with a stale re-run key (simulating a changed input).
 	staleJob := completedBootstrapJob(ks)
-	staleJob.Annotations[job.PodSpecHashAnnotation] = "stale-hash-from-previous-spec"
+	staleJob.Annotations[job.PodSpecHashAnnotation] = "stale-key-from-previous-spec"
 
 	r := newBootstrapTestReconciler(s, ks, staleJob, bootstrapAdminSecret(ks))
 
@@ -314,10 +314,8 @@ func TestReconcileBootstrap_StaleJobDetection(t *testing.T) {
 		Namespace: "default",
 	}, &newJob)).To(Succeed())
 
-	// The new Job should have the correct hash.
-	desired := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash())
-	expectedHash := job.PodSpecHash(&desired.Spec.Template)
-	g.Expect(newJob.Annotations[job.PodSpecHashAnnotation]).To(Equal(expectedHash))
+	// The new Job should carry the current re-run key (the admin-password digest).
+	g.Expect(newJob.Annotations[job.PodSpecHashAnnotation]).To(Equal(bootstrapAdminPasswordHash()))
 }
 
 func TestReconcileBootstrap_JobFailed_ConditionMessage(t *testing.T) {
@@ -418,9 +416,11 @@ func TestReconcileBootstrap_JobSpec_TTLAndBackoff(t *testing.T) {
 		Namespace: "default",
 	}, &createdJob)).To(Succeed())
 
-	// Verify TTLSecondsAfterFinished.
-	g.Expect(createdJob.Spec.TTLSecondsAfterFinished).NotTo(BeNil())
-	g.Expect(*createdJob.Spec.TTLSecondsAfterFinished).To(Equal(int32(300)))
+	// CC-0113 (#415): TTLSecondsAfterFinished must be unset so the finished
+	// bootstrap Job is not garbage-collected by the TTL controller; a deleted
+	// Job would otherwise be re-created on the next reconcile, causing a
+	// TTL-driven re-creation loop.
+	g.Expect(createdJob.Spec.TTLSecondsAfterFinished).To(BeNil())
 
 	// Verify BackoffLimit.
 	g.Expect(createdJob.Spec.BackoffLimit).NotTo(BeNil())
@@ -811,9 +811,11 @@ func TestReconcileBootstrap_PasswordChangeRecreatesJob(t *testing.T) {
 		return hex.EncodeToString(sum[:])
 	}
 
-	// Build an OLD completed bootstrap Job stamped with a DIFFERENT password's hash.
+	// Build an OLD completed bootstrap Job stamped with a DIFFERENT password's
+	// re-run key. The bootstrap re-run key is the admin-password digest, NOT the
+	// pod-template hash, so the image plays no part (CC-0113).
 	oldDesired := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", hashOf("old-password"))
-	oldHash := job.PodSpecHash(&oldDesired.Spec.Template)
+	oldHash := hashOf("old-password")
 	oldJob := oldDesired.DeepCopy()
 	oldJob.Annotations = map[string]string{job.PodSpecHashAnnotation: oldHash}
 	now := metav1.Now()
@@ -841,14 +843,13 @@ func TestReconcileBootstrap_PasswordChangeRecreatesJob(t *testing.T) {
 		"forge.c5c3.io/admin-password-hash", bootstrapAdminPasswordHash()),
 		"recreated Job must carry the current admin-password-hash (CC-0108, REQ-003)")
 
-	// The new pod-spec-hash must match the current desired template and differ
-	// from the old stamped hash.
-	curDesired := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash())
-	curHash := job.PodSpecHash(&curDesired.Spec.Template)
+	// The new re-run key must be the current admin-password digest and differ
+	// from the old stamped key.
+	curHash := bootstrapAdminPasswordHash()
 	g.Expect(newJob.Annotations[job.PodSpecHashAnnotation]).To(Equal(curHash),
-		"recreated Job's pod-spec-hash must match the current desired template (CC-0108, REQ-003)")
+		"recreated Job's re-run key must be the current admin-password digest (CC-0108, REQ-003)")
 	g.Expect(curHash).NotTo(Equal(oldHash),
-		"a rotated admin password must change the pod-spec-hash gate (CC-0108, REQ-003)")
+		"a rotated admin password must change the bootstrap re-run gate (CC-0108, REQ-003)")
 }
 
 // TestReconcileBootstrap_UnchangedPasswordRetainsJob verifies that when the
@@ -1013,4 +1014,154 @@ func TestReconcileBootstrap_EmptyPasswordCleanError(t *testing.T) {
 	}, &createdJob)
 	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
 		"no bootstrap Job may be created when the admin password is empty (CC-0108, REQ-005)")
+}
+
+// TestReconcileBootstrap_RecreatedRotationJob_HasNoTTL locks the CC-0113
+// (#415, REQ-004) invariant on the password-rotation path: when the admin
+// password rotates, the previously completed bootstrap Job (stamped with the
+// OLD password's hash) is detected as stale and recreated — and the recreated
+// Job must carry NO TTLSecondsAfterFinished. The TTL was removed (commit on
+// feature/CC-0113) so the finished Job lingers as the RunJob pod-spec-hash
+// state record; recreation must ride the pod-spec-hash gate (a changed
+// admin-password-hash annotation), NOT a TTL that garbage-collects the Job and
+// triggers a TTL-driven re-creation loop. This complements
+// TestReconcileBootstrap_PasswordChangeRecreatesJob (which locks the hash) by
+// additionally pinning TTL-nil on the rotation output.
+func TestReconcileBootstrap_RecreatedRotationJob_HasNoTTL(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := bootstrapTestScheme()
+	ks := bootstrapKeystone()
+
+	// hashOf returns hex(sha256(pw)) — the same digest reconcileBootstrap derives.
+	hashOf := func(pw string) string {
+		sum := sha256.Sum256([]byte(pw))
+		return hex.EncodeToString(sum[:])
+	}
+
+	// Build an OLD completed bootstrap Job stamped with a DIFFERENT password's
+	// re-run key. The bootstrap re-run key is the admin-password digest, NOT the
+	// pod-template hash, so the image plays no part (CC-0113).
+	oldDesired := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", hashOf("old-password"))
+	oldHash := hashOf("old-password")
+	oldJob := oldDesired.DeepCopy()
+	oldJob.Annotations = map[string]string{job.PodSpecHashAnnotation: oldHash}
+	now := metav1.Now()
+	oldJob.Status.Succeeded = 1
+	oldJob.Status.CompletionTime = &now
+	oldJob.Status.Conditions = []batchv1.JobCondition{
+		{Type: batchv1.JobComplete, Status: corev1.ConditionTrue},
+	}
+
+	// The admin Secret holds the CURRENT password ("admin-password").
+	r := newBootstrapTestReconciler(s, ks, bootstrapAdminSecret(ks), oldJob)
+
+	_, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// The recreated Job must exist and carry the CURRENT admin-password-hash.
+	var newJob batchv1.Job
+	g.Expect(r.Client.Get(context.Background(), client.ObjectKey{
+		Name:      "test-keystone-bootstrap",
+		Namespace: "default",
+	}, &newJob)).To(Succeed())
+	g.Expect(newJob.Spec.Template.ObjectMeta.Annotations).To(HaveKeyWithValue(
+		"forge.c5c3.io/admin-password-hash", bootstrapAdminPasswordHash()),
+		"recreated rotation Job must carry the current admin-password-hash (CC-0113, #415, REQ-004)")
+
+	// CC-0113 (#415, REQ-004): the recreated rotation Job must have no TTL —
+	// rotation rides the pod-spec-hash gate, not a deleted TTL.
+	g.Expect(newJob.Spec.TTLSecondsAfterFinished).To(BeNil(),
+		"recreated rotation Job must not set TTLSecondsAfterFinished (CC-0113, #415, REQ-004)")
+}
+
+// TestReconcileBootstrap_CompletedSameHash_NotRecreated_NoTTL locks the
+// CC-0113 (#415, REQ-005) steady-state regression: once the bootstrap Job has
+// completed with the current pod-spec hash, subsequent reconciles must NOT
+// churn it. Before CC-0113 the finished Job carried a TTL; the TTL controller
+// would garbage-collect it and the next reconcile would re-create it, an
+// endless delete/recreate loop. With the TTL removed the completed Job lingers
+// as the pod-spec-hash state record and reconcile reaches steady state. This
+// test pins three invariants: no requeue churn + BootstrapReady=True, the Job
+// is retained with the SAME UID (proving no delete/recreate), and the lingering
+// Job carries no TTLSecondsAfterFinished.
+func TestReconcileBootstrap_CompletedSameHash_NotRecreated_NoTTL(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := bootstrapTestScheme()
+	ks := bootstrapKeystone()
+
+	// Completed Job built with the CURRENT password hash; pin a UID so a
+	// delete/recreate would surface as a changed UID.
+	completed := completedBootstrapJob(ks)
+	completed.UID = "bootstrap-job-uid"
+
+	r := newBootstrapTestReconciler(s, ks, bootstrapAdminSecret(ks), completed)
+
+	result, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(BeZero(),
+		"steady-state bootstrap must not requeue — no churn (CC-0113, #415, REQ-005)")
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "BootstrapReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue),
+		"completed bootstrap must report BootstrapReady=True (CC-0113, #415, REQ-005)")
+
+	// The Job must be the same object (unchanged UID) — not deleted/recreated.
+	var retained batchv1.Job
+	g.Expect(r.Client.Get(context.Background(), client.ObjectKey{
+		Name:      "test-keystone-bootstrap",
+		Namespace: "default",
+	}, &retained)).To(Succeed())
+	g.Expect(retained.UID).To(Equal(completed.UID),
+		"steady-state must retain the existing Job (same UID), not recreate it (CC-0113, #415, REQ-005)")
+
+	// CC-0113 (#415, REQ-005): the lingering completed Job carries no TTL, so
+	// the TTL controller cannot garbage-collect it and re-trigger the loop.
+	g.Expect(retained.Spec.TTLSecondsAfterFinished).To(BeNil(),
+		"lingering completed Job must not set TTLSecondsAfterFinished (CC-0113, #415, REQ-005)")
+}
+
+// TestReconcileBootstrap_ImageChangeRetainsJob locks the CC-0113 regression: a
+// release upgrade (changed container image) must NOT re-run the completed
+// bootstrap Job while the admin password is unchanged. The bootstrap re-run is
+// gated on the admin-password digest only, so the image change is ignored.
+// Before this fix the image was part of the re-run key (the full pod-template
+// hash), so an upgrade re-ran keystone-manage bootstrap against the
+// already-migrated admin user; it failed with DBDuplicateEntry 'default-admin',
+// holding BootstrapReady — and the aggregate Ready — False for the whole
+// upgrade and timing out keystone-release-upgrade / keystone-upgrade-flow.
+func TestReconcileBootstrap_ImageChangeRetainsJob(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := bootstrapTestScheme()
+	ks := bootstrapKeystone()
+
+	// A completed bootstrap Job from the pre-upgrade release (image 2025.2),
+	// stamped with the current admin-password digest. Pin a UID so a
+	// delete/recreate would surface as a changed UID.
+	completed := completedBootstrapJob(ks)
+	completed.UID = "bootstrap-job-uid"
+
+	// Reconcile after a release upgrade to a NEW image — same admin password.
+	ks.Spec.Image.Tag = "2026.1"
+	r := newBootstrapTestReconciler(s, ks, bootstrapAdminSecret(ks), completed)
+
+	result, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(BeZero(),
+		"an image-only change must not re-run the bootstrap Job (CC-0113)")
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "BootstrapReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue),
+		"image-only change must keep BootstrapReady=True (CC-0113)")
+	g.Expect(cond.Reason).To(Equal("BootstrapComplete"))
+
+	// The Job must be the same object (unchanged UID) — not deleted/recreated.
+	var retained batchv1.Job
+	g.Expect(r.Client.Get(context.Background(), client.ObjectKey{
+		Name:      "test-keystone-bootstrap",
+		Namespace: "default",
+	}, &retained)).To(Succeed())
+	g.Expect(retained.UID).To(Equal(completed.UID),
+		"an image-only change must retain the existing bootstrap Job (same UID) (CC-0113)")
 }

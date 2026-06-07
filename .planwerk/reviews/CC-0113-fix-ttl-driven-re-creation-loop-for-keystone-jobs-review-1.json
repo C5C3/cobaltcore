@@ -1,0 +1,55 @@
+{
+  "summary": "CC-0113 removes TTLSecondsAfterFinished (300s) from the three RunJob-backed one-shot Job builders in the keystone operator — buildBootstrapJob (reconcile_bootstrap.go), buildSchemaCheckJob (reconcile_database.go), and buildPolicyValidationJob (reconcile_policyvalidation.go) — so completed Jobs linger as the RunJob pod-spec-hash state record instead of being garbage-collected by the kube TTL-after-finished controller and re-created on the next reconcile. This stops the ~5-minute re-creation/Pod-churn loop while preserving admin-password rotation, which rides the pod-spec-hash gate (forge.c5c3.io/admin-password-hash), not the TTL. The change is surgical: only the ttl declarations/fields and their godoc/comments are touched; BackoffLimit (4/2/2), RestartPolicy, command, env, volumes, and owner references are unchanged, and buildDBSyncJob/buildDBJob (the already-correct no-TTL model) are untouched. All four TTL assertion sites (reconcile_bootstrap_test.go, reconcile_database_test.go, reconcile_policyvalidation_test.go, integration_test.go) now assert TTL is nil, and new regression tests lock the rotation path and steady-state no-recreation for all three Jobs (UID-stable, no requeue, TTL nil). Two user-facing reference docs were updated to drop the TTL=300/auto-cleanup claims. go vet, golangci-lint (v2.12.2, 0 issues), the full unit suite, and the integration tests exercising the changed Jobs are all green.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "Unit + relevant integration tests exist and pass (go vet clean, golangci-lint 0 issues, unit suite ok, TestIntegration_BootstrapJobDetailedSpec / PolicyValidation_GatesDeployment / NotRequired all PASS under envtest)", "checked": true},
+    {"item": "All four TTL assertion sites flipped from ==int32(300) to BeNil() (reconcile_bootstrap_test.go:425, reconcile_database_test.go:1583, reconcile_policyvalidation_test.go:498, integration_test.go:1005)", "checked": true},
+    {"item": "Rotation regression covered: TestReconcileBootstrap_PasswordChangeRecreatesJob passes; new TestReconcileBootstrap_RecreatedRotationJob_HasNoTTL asserts recreated Job carries current admin-password-hash AND no TTL", "checked": true},
+    {"item": "Steady-state no-recreation regression for all three Jobs (bootstrap, schema-check, policy-validation-with-overrides) — asserts no requeue, Ready=True, UID unchanged (no delete/recreate), TTL nil", "checked": true},
+    {"item": "Negative/absence assertion present: UID-stable check proves the completed Job is neither deleted nor recreated", "checked": true},
+    {"item": "Policy-validation steady-state test configures PolicyOverrides (the Job the issue flags as next-to-loop once overrides exist)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows the established no-TTL db-sync model — all RunJob callers now use the same 'completed Job lingers as state record' convention", "checked": true},
+    {"item": "Comments explain WHY (TTL-driven re-creation loop, owner-reference GC) with Feature ID CC-0113 (#415)", "checked": true},
+    {"item": "No leftover dead code — ttl:=int32(300) declarations removed; grep confirms no int32(300) or stray ttl:= remains in operators/keystone", "checked": true},
+    {"item": "Naming and structure consistent with existing reconciler/test conventions (Go TestXxx_Scenario)", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Admin-password rotation behaviour preserved — re-run rides the pod-spec-hash gate (changed forge.c5c3.io/admin-password-hash annotation), proven by a dedicated test", "checked": true},
+    {"item": "No secrets, credentials, or sensitive data introduced or exposed by the change", "checked": true},
+    {"item": "Rotation latency unaffected — password change still enters via the Secret watch, not the removed TTL", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Simplest possible solution — pure field removal, no new abstraction", "checked": true},
+    {"item": "Surgical boundary respected — only TTL lines + godoc/comments changed; BackoffLimit/RestartPolicy/command/env/volumes/ownerRefs intact", "checked": true},
+    {"item": "Resolved design decision honoured — no RequeueAfter schema-drift interval added", "checked": true},
+    {"item": "buildDBSyncJob/buildDBJob (correct model) not modified; no CRD/API/frontend/helm surface touched", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated production code introduced", "checked": true},
+    {"item": "No speculative features or future-proofing", "checked": true},
+    {"item": "Relies on existing RunJob pod-spec-hash gate rather than re-implementing recreation logic", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "RunJob create/stale-detection/error paths unchanged — failure semantics preserved", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Lingering completed Jobs are cleaned up via ownerReference GC on Keystone CR deletion (documented and covered by docs note)", "checked": true},
+    {"item": "Honest limitation acknowledged: the live TTL loop is not reproducible in envtest (TTL-after-finished controller lives in kube-controller-manager); TTL-unset unit/integration assertions + steady-state UID-stability tests are the regression guard", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [],
+  "suggested_improvements": [
+    "Minor (non-blocking): the three steady-state no-recreation tests (TestReconcileBootstrap_CompletedSameHash_NotRecreated_NoTTL, TestReconcileDatabase_CompletedSchemaCheck_SameHash_NotRecreated, TestReconcilePolicyValidation_CompletedSameHash_NotRecreated) share a near-identical shape (seed completed Job with matching hash -> reconcile -> assert no requeue + Ready=True + UID stable + TTL nil). They live in three separate test files for three different sub-reconcilers using distinct fixtures/reconcilers, so consolidation would introduce cross-file coupling; keeping them per-reconciler is a reasonable call. If a future change adds a fourth such Job, consider a shared table-driven helper to keep the invariant defined once."
+  ],
+  "next_steps": [],
+  "detected_patterns": [],
+  "metadata": {
+    "feature_id": "CC-0113",
+    "title": "Fix TTL-driven re-creation loop for keystone Jobs",
+    "date": "2026-06-05",
+    "verdict": "APPROVED"
+  }
+}

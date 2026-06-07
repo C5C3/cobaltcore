@@ -89,7 +89,15 @@ func (r *KeystoneReconciler) reconcileBootstrap(ctx context.Context, keystone *k
 	adminPasswordHash := hex.EncodeToString(sum[:])
 
 	fernetSecretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
-	done, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, buildBootstrapJob(keystone, configMapName, fernetSecretName, adminPasswordHash))
+	// Gate the bootstrap re-run on the admin-password digest only — NOT the full
+	// pod template, which includes the container image. A release upgrade swaps
+	// the image; re-running keystone-manage bootstrap after the cross-version DB
+	// migration fails on the already-migrated admin user (DBDuplicateEntry
+	// 'default-admin'), which would hold BootstrapReady — and the aggregate
+	// Ready — False for the whole upgrade. Identity bootstrap is one-time; the
+	// only input that must force a re-run is a rotated admin password
+	// (CC-0113, CC-0108).
+	done, err := job.RunJobWithRerunKey(ctx, r.Client, r.Scheme, keystone, buildBootstrapJob(keystone, configMapName, fernetSecretName, adminPasswordHash), adminPasswordHash)
 	if err != nil {
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               "BootstrapReady",
@@ -136,7 +144,6 @@ func bootstrapServiceURL(keystone *keystonev1alpha1.Keystone) string {
 
 func buildBootstrapJob(keystone *keystonev1alpha1.Keystone, configMapName string, fernetSecretName string, adminPasswordHash string) *batchv1.Job {
 	backoffLimit := int32(4)
-	ttl := int32(300)
 
 	internalURL := bootstrapServiceURL(keystone)
 	publicURL := internalURL
@@ -216,8 +223,13 @@ exec keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap \
 			Namespace: keystone.Namespace,
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit:            &backoffLimit,
-			TTLSecondsAfterFinished: &ttl,
+			// CC-0113 (#415): TTLSecondsAfterFinished is intentionally left unset.
+			// A TTL-expired bootstrap Job would be garbage-collected by the
+			// TTL-after-finished controller and then re-created on the next
+			// reconcile, producing a TTL-driven re-creation loop. Leaving the Job
+			// in place (owner-reference GC removes it with the Keystone CR) keeps
+			// the idempotent bootstrap from re-running on a timer.
+			BackoffLimit: &backoffLimit,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{

@@ -3,9 +3,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Chainsaw chaos E2E test for MariaDB network partition (CC-0049).
-# Verifies the Keystone operator detects a MariaDB network partition
-# (DatabaseReady=False) and recovers autonomously when the partition
-# is lifted by deleting the NetworkChaos CR.
+# The partition severs keystone <-> MariaDB traffic. It is enforced on the
+# MariaDB (server) side so it catches the ClusterIP-routed connection keystone
+# actually uses (see 01-networkchaos.yaml for why a client-side rule would be a
+# no-op). The MariaDB cluster CR stays Ready and the operator cannot observe the
+# fault from its own (unpartitioned) vantage point. Detection therefore happens
+# at the keystone API pods: their database-aware readiness probe fails while they
+# cannot reach MariaDB, the pods are depooled, the Deployment loses its ready
+# replica, and the operator reports DeploymentReady=False / Ready=False. When
+# the partition is lifted the probe succeeds again and the CR returns to
+# Ready=True autonomously.
 #
 # SC-CHAOS-006, REQ-001, REQ-002, REQ-008 (CC-0049)
 apiVersion: chainsaw.kyverno.io/v1alpha1
@@ -15,7 +22,15 @@ metadata:
 spec:
   namespace: openstack
   timeouts:
-    assert: 5m
+    # Detecting a keystone-side partition is slow end to end: the database-aware
+    # readiness probe must accumulate three failures (3 x 30s) before the pod is
+    # depooled, then the operator must observe the Deployment drop below its
+    # ready replicas before it reports DeploymentReady=False. Observed detection
+    # latency is ~5m, so the default 5m window left no margin and the assert
+    # raced (and lost to) the NetworkChaos auto-expiry. 8m gives detection room;
+    # the partition (duration 600s, see 01-networkchaos.yaml) stays active for
+    # the whole window and is lifted explicitly in step 6, not by self-heal.
+    assert: 8m
   steps:
   # ── Step 1: Apply Keystone CR ──────────────────────────────────────────
   - try:
@@ -61,7 +76,13 @@ spec:
         content: kubectl get networkchaos/partition-mariadb -n openstack -o yaml 2>&1 || true
     - script:
         content: ../diagnostics.sh chaos keystone-chaos-net-part --dep-label=app.kubernetes.io/name=mariadb --log-label=app.kubernetes.io/name=keystone-operator
-  # ── Step 5: Assert DatabaseReady=False after network partition ─────────
+  # ── Step 5: Assert Ready=False after network partition ─────────────────
+  # The keystone pods cannot reach MariaDB, so their database-aware readiness
+  # probe fails and the pods are depooled. The Deployment drops below its
+  # desired ready replicas, so the operator reports DeploymentReady=False and
+  # the aggregate Ready=False. DatabaseReady stays True because the unpartitioned
+  # operator still sees the MariaDB cluster CR as Ready — the fault is keystone-
+  # side, which is exactly what the readiness probe surfaces.
   - try:
     - assert:
         resource:
@@ -71,7 +92,9 @@ spec:
             name: keystone-chaos-net-part
             namespace: openstack
           status:
-            (conditions[?type == 'DatabaseReady']):
+            (conditions[?type == 'DeploymentReady']):
+            - status: "False"
+            (conditions[?type == 'Ready']):
             - status: "False"
     catch:
     - script:
@@ -84,6 +107,9 @@ spec:
           kind: NetworkChaos
           name: partition-mariadb
   # ── Step 7: Assert full recovery to Ready=True ─────────────────────────
+  # Once the partition is lifted the readiness probe reaches MariaDB again, the
+  # pods are re-pooled, the Deployment regains its ready replica, and the
+  # aggregate Ready returns to True autonomously.
   - try:
     - assert:
         resource:
@@ -93,7 +119,7 @@ spec:
             name: keystone-chaos-net-part
             namespace: openstack
           status:
-            (conditions[?type == 'DatabaseReady']):
+            (conditions[?type == 'DeploymentReady']):
             - status: "True"
             (conditions[?type == 'Ready']):
             - status: "True"
