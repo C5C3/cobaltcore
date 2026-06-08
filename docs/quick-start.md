@@ -102,6 +102,11 @@ spec:
     path: /
 ```
 
+> `spec.gateway` creates the `HTTPRoute` and `spec.bootstrap.publicEndpoint`
+> sets the advertised catalog URL — see
+> [Expose Keystone via the Gateway](./guides/expose-keystone-via-gateway.md)
+> for both fields, the `HTTPRouteReady` condition, and troubleshooting.
+
 ```bash
 kubectl apply -f keystone.yaml
 kubectl wait keystone/keystone -n openstack \

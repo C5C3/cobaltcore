@@ -57,7 +57,7 @@ openstack   keystone   True    http://keystone.openstack.svc.cluster.local:5000/
 | `KeystoneAPIReady` | Keystone API is responding to `/v3` health probes |
 | `HPAReady` | HorizontalPodAutoscaler created (if `spec.autoscaling` is set) |
 | `NetworkPolicyReady` | NetworkPolicy created (if `spec.networkPolicy` is set) |
-| `HTTPRouteReady` | Gateway API HTTPRoute reconciled, or not required when `spec.gateway` is unset |
+| `HTTPRouteReady` | Gateway API HTTPRoute reconciled, or `NotRequired` when `spec.gateway` is unset — see [Expose Keystone via the Gateway](./expose-keystone-via-gateway.md) |
 | `BootstrapReady` | Bootstrap Job completed (admin user, region, endpoints) |
 | `TrustFlushReady` | Trust-flush CronJob created — defaults to hourly |
 | `PasswordRotationReady` | Scheduled admin-password rotation reconciled, or `RotationDisabled` when `spec.bootstrap.passwordRotation` is unset — see [Schedule Keystone Admin Password Rotation](./keystone-admin-password-scheduled-rotation.md) |

@@ -36,6 +36,7 @@ export default defineConfig({
           { text: 'Enable Keystone Database TLS', link: '/guides/enable-keystone-database-tls' },
           { text: 'Enable Keystone Operator Metrics', link: '/guides/enable-keystone-operator-metrics' },
           { text: 'Enable Keystone Operator NetworkPolicy', link: '/guides/enable-keystone-operator-networkpolicy' },
+          { text: 'Expose Keystone via the Gateway', link: '/guides/expose-keystone-via-gateway' },
           { text: 'Dependency Management', link: '/guides/dependency-management' },
         ],
       },
