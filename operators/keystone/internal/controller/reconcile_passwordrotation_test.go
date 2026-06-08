@@ -7,6 +7,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -443,12 +444,40 @@ func TestAdminPasswordPushSecret_Shape(t *testing.T) {
 	g.Expect(ps.Spec.SecretStoreRefs[0].Kind).To(Equal("ClusterSecretStore"))
 	g.Expect(ps.Spec.SecretStoreRefs[0].Name).To(Equal("openbao-cluster-store"))
 	g.Expect(ps.Spec.Selector.Secret.Name).To(Equal(adminPasswordNextSecretName(ks)))
-	// Shared, persistent bootstrap path: never purge OpenBao on PushSecret delete.
+	// Persistent bootstrap path: never purge OpenBao on PushSecret delete.
 	g.Expect(ps.Spec.DeletionPolicy).To(Equal(esov1alpha1.PushSecretDeletionPolicyNone))
-	// RemoteKey is the flat single-CR path (not CR-scoped).
+	// RemoteKey is the per-CR path bootstrap/{namespace}/{name}/admin (CC-0112, REQ-002).
 	g.Expect(ps.Spec.Data).To(HaveLen(1))
-	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal("bootstrap/keystone-admin"))
+	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal(fmt.Sprintf("bootstrap/%s/%s/admin", ks.Namespace, ks.Name)))
 	g.Expect(ps.Spec.Data[0].Match.SecretKey).To(Equal("password"))
+}
+
+// TestAdminPasswordPushSecret_RemoteKeyIsPerCR pins CC-0112 (REQ-002): the
+// admin-password RemoteKey embeds both the CR namespace and name as path
+// segments, so two Keystone CRs sharing a Name in different namespaces resolve
+// to distinct OpenBao leaves and never clobber each other's bootstrap secret.
+func TestAdminPasswordPushSecret_RemoteKeyIsPerCR(t *testing.T) {
+	g := NewWithT(t)
+
+	ksA := &keystonev1alpha1.Keystone{
+		ObjectMeta: metav1.ObjectMeta{Name: "keystone", Namespace: "openstack"},
+	}
+	ksB := &keystonev1alpha1.Keystone{
+		ObjectMeta: metav1.ObjectMeta{Name: "keystone", Namespace: "tenant-b"},
+	}
+
+	psA := adminPasswordPushSecret(ksA)
+	psB := adminPasswordPushSecret(ksB)
+
+	g.Expect(psA.Spec.Data).To(HaveLen(1))
+	g.Expect(psB.Spec.Data).To(HaveLen(1))
+	keyA := psA.Spec.Data[0].Match.RemoteRef.RemoteKey
+	keyB := psB.Spec.Data[0].Match.RemoteRef.RemoteKey
+
+	g.Expect(keyA).To(Equal("bootstrap/openstack/keystone/admin"))
+	g.Expect(keyB).To(Equal("bootstrap/tenant-b/keystone/admin"))
+	g.Expect(keyA).NotTo(Equal(keyB),
+		"same-named CRs in different namespaces must produce distinct RemoteKeys (CC-0112)")
 }
 
 func TestAdminPasswordPushSourceReady_Gating(t *testing.T) {

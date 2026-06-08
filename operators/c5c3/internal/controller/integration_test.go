@@ -20,6 +20,7 @@ import (
 	"time"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
+	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	. "github.com/onsi/gomega"
@@ -433,4 +434,156 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	g.Expect(string(ep.Spec.Resource.ServiceRef)).To(Equal(keystoneServiceName(final)),
 		"Endpoint serviceRef must reference the identity Service CR")
 	g.Expect(ep.Spec.Resource.URL).NotTo(BeEmpty(), "Endpoint URL must be derived")
+
+	// --- Per-CR OpenBao RemoteKey lock (CC-0112, REQ-013). ---
+	//
+	// On the single-ControlPlane path the admin app-credential PushSecret must
+	// already mirror to the per-CR OpenBao path scoped by the CR's Namespace and
+	// Name (adminAppCredentialRemoteKeyFor), NOT the legacy flat
+	// openstack/keystone/admin/app-credential. Locking this here on the baseline
+	// end-to-end test guards the single-CP rendering of the path the multi-CP test
+	// asserts is distinct between CRs.
+	adminPS := &esov1alpha1.PushSecret{}
+	g.Expect(c.Get(ctx, types.NamespacedName{
+		Namespace: childNamespace(final), Name: adminAppCredentialPushSecretName(final),
+	}, adminPS)).To(Succeed(), "get admin app-credential PushSecret")
+	g.Expect(adminPS.Spec.Data).NotTo(BeEmpty(), "admin app-credential PushSecret must declare a Data entry")
+	g.Expect(adminPS.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal(adminAppCredentialRemoteKeyFor(final)),
+		"admin app-credential PushSecret RemoteKey must be the per-CR OpenBao path (CC-0112, REQ-013)")
+}
+
+// driveControlPlaneToAdminCredentialReady provisions the full per-ControlPlane
+// dependency set in cp.Namespace and drives the CR through phases 1-4 of the
+// sub-reconciler chain (Infrastructure -> Keystone -> KORC -> AdminCredential) to
+// conditionTypeAdminCredentialReady=True, simulating each external dependency's
+// readiness exactly as TestIntegration_FullReconcile_ManagedToReady does. It
+// stops short of the Catalog/aggregate-Ready phases, which the multi-CP test
+// (CC-0112, REQ-012) does not need. The namespace and the CR must already exist.
+func driveControlPlaneToAdminCredentialReady(
+	t testing.TB, ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
+) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	ns := cp.Namespace
+
+	// Admin password Secret the KORC sub-reconciler hashes to drive the mint.
+	adminSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "keystone-admin", Namespace: ns},
+		Data:       map[string][]byte{"password": []byte("super-secret-admin-password")},
+	}
+	g.Expect(c.Create(ctx, adminSecret)).To(Succeed(), "create admin password Secret")
+
+	// The K-ORC clouds.yaml ExternalSecret AdminCredentialReady gates on, in the
+	// CR's own namespace (the C1 co-location fix), plus its simulated ESO sync.
+	cloudsYamlES := &esov1.ExternalSecret{
+		ObjectMeta: metav1.ObjectMeta{Name: korcCloudsYamlSecretName, Namespace: ns},
+		Spec: esov1.ExternalSecretSpec{
+			SecretStoreRef: esov1.SecretStoreRef{Kind: "ClusterSecretStore", Name: "openbao-cluster-store"},
+			Target:         esov1.ExternalSecretTarget{Name: korcCloudsYamlSecretName},
+		},
+	}
+	g.Expect(c.Create(ctx, cloudsYamlES)).To(Succeed(), "create k-orc clouds.yaml ExternalSecret")
+	g.Expect(simulators.SimulateExternalSecretSync(ctx, c,
+		client.ObjectKey{Namespace: ns, Name: korcCloudsYamlSecretName})).
+		To(Succeed(), "simulate k-orc clouds.yaml ExternalSecret sync")
+
+	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns}
+
+	// --- Phase 1: Infrastructure (MariaDB + Memcached). ---
+	simulateMariaDBReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "openstack-db", Namespace: ns})
+	simulateMemcachedReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "openstack-memcached", Namespace: ns})
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeInfrastructureReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// --- Phase 2: Keystone child. ---
+	simulateKeystoneReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: keystoneName(cp), Namespace: ns})
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeKeystoneReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// --- Phase 3: K-ORC admin ApplicationCredential. ---
+	simulateApplicationCredentialAvailableWhenPresent(t, ctx, c,
+		client.ObjectKey{Name: adminAppCredentialName(cp), Namespace: ns})
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeKORCReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// --- Phase 4: AdminCredential push (gated on the synced clouds.yaml ES and the
+	// admin app-credential PushSecret syncing to OpenBao). ---
+	simulatePushSecretSyncedWhenPresent(t, ctx, c,
+		client.ObjectKey{Name: adminAppCredentialPushSecretName(cp), Namespace: childNamespace(cp)})
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeAdminCredentialReady, metav1.ConditionTrue, itEventuallyTimeout)
+}
+
+// TestIntegration_MultiControlPlane_DistinctAdminCredentialPaths brings up TWO
+// ControlPlanes and drives both to AdminCredentialReady=True, then asserts each
+// CR's admin-credential OpenBao path (the app-credential PushSecret RemoteKey) and
+// its imported admin User CR name are scoped per-ControlPlane and distinct, so two
+// ControlPlanes never clobber each other's admin credential on the cluster-global
+// OpenBao backend (CC-0112, REQ-012).
+//
+// DECISION (CC-0112, REQ-012): the two ControlPlanes use DIFFERENT names (cp-a,
+// cp-b) in DIFFERENT namespaces (generated from test-mcp-a- / test-mcp-b-). The
+// validating webhook enforces one ControlPlane per namespace (CC-0112, task 3.1),
+// so the CRs MUST live in separate namespaces; the distinct names additionally
+// make the imported admin User CR names (adminUserRef = "<name>-user-admin")
+// differ, which the per-CR-name assertion below requires. The per-CR OpenBao path
+// is scoped by BOTH Namespace and Name (adminAppCredentialRemoteKeyFor), so either
+// axis alone would distinguish them — using both is the realistic deployment shape.
+func TestIntegration_MultiControlPlane_DistinctAdminCredentialPaths(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	// Two isolated namespaces (namespace-per-CR with GenerateName).
+	nsA := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-mcp-a-"}}
+	nsB := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-mcp-b-"}}
+	g.Expect(c.Create(ctx, nsA)).To(Succeed(), "create namespace A")
+	g.Expect(c.Create(ctx, nsB)).To(Succeed(), "create namespace B")
+
+	// Distinct names in distinct namespaces (see DECISION above).
+	cpA := integrationManagedControlPlane("cp-a", nsA.Name)
+	cpB := integrationManagedControlPlane("cp-b", nsB.Name)
+	g.Expect(c.Create(ctx, cpA)).To(Succeed(), "create ControlPlane A")
+	g.Expect(c.Create(ctx, cpB)).To(Succeed(), "create ControlPlane B")
+
+	driveControlPlaneToAdminCredentialReady(t, ctx, c, cpA)
+	driveControlPlaneToAdminCredentialReady(t, ctx, c, cpB)
+
+	// --- Assert the admin app-credential OpenBao paths are per-CR and distinct. ---
+	psA := &esov1alpha1.PushSecret{}
+	psB := &esov1alpha1.PushSecret{}
+	g.Expect(c.Get(ctx, types.NamespacedName{
+		Namespace: childNamespace(cpA), Name: adminAppCredentialPushSecretName(cpA),
+	}, psA)).To(Succeed(), "get admin app-credential PushSecret for cp-a")
+	g.Expect(c.Get(ctx, types.NamespacedName{
+		Namespace: childNamespace(cpB), Name: adminAppCredentialPushSecretName(cpB),
+	}, psB)).To(Succeed(), "get admin app-credential PushSecret for cp-b")
+
+	g.Expect(psA.Spec.Data).NotTo(BeEmpty(), "cp-a PushSecret must declare a Data entry")
+	g.Expect(psB.Spec.Data).NotTo(BeEmpty(), "cp-b PushSecret must declare a Data entry")
+	keyA := psA.Spec.Data[0].Match.RemoteRef.RemoteKey
+	keyB := psB.Spec.Data[0].Match.RemoteRef.RemoteKey
+
+	g.Expect(keyA).To(Equal(adminAppCredentialRemoteKeyFor(cpA)),
+		"cp-a OpenBao path must be the per-CR path (CC-0112, REQ-012)")
+	g.Expect(keyB).To(Equal(adminAppCredentialRemoteKeyFor(cpB)),
+		"cp-b OpenBao path must be the per-CR path (CC-0112, REQ-012)")
+	g.Expect(keyA).NotTo(Equal(keyB), "the two ControlPlanes' admin OpenBao paths must be distinct")
+
+	// Each path is scoped by its own ControlPlane's Namespace AND Name.
+	g.Expect(keyA).To(ContainSubstring(cpA.Namespace), "cp-a path must contain cp-a's namespace")
+	g.Expect(keyA).To(ContainSubstring(cpA.Name), "cp-a path must contain cp-a's name")
+	g.Expect(keyB).To(ContainSubstring(cpB.Namespace), "cp-b path must contain cp-b's namespace")
+	g.Expect(keyB).To(ContainSubstring(cpB.Name), "cp-b path must contain cp-b's name")
+
+	// --- Assert the imported admin User CRs are per-CR and distinctly named. ---
+	userA := &orcv1alpha1.User{}
+	userB := &orcv1alpha1.User{}
+	g.Expect(c.Get(ctx, types.NamespacedName{
+		Namespace: childNamespace(cpA), Name: adminUserRef(cpA),
+	}, userA)).To(Succeed(), "get imported admin User CR for cp-a")
+	g.Expect(c.Get(ctx, types.NamespacedName{
+		Namespace: childNamespace(cpB), Name: adminUserRef(cpB),
+	}, userB)).To(Succeed(), "get imported admin User CR for cp-b")
+
+	g.Expect(userA.Name).To(Equal(adminUserRef(cpA)), "cp-a admin User CR must be named per-CR")
+	g.Expect(userB.Name).To(Equal(adminUserRef(cpB)), "cp-b admin User CR must be named per-CR")
+	g.Expect(userA.Name).NotTo(Equal(userB.Name), "the two ControlPlanes' admin User CR names must be distinct")
 }

@@ -322,7 +322,7 @@ into the KV v2 secret engine.
 
 | KV v2 Path | Secret Keys | Description |
 | --- | --- | --- |
-| `kv-v2/bootstrap/keystone-admin` | `password` | Keystone admin user password |
+| `kv-v2/bootstrap/<namespace>/<keystone>/admin` | `password` | Keystone admin user password, scoped per ControlPlane. One entry per `KORC_CONTROLPLANES` identity; the default `openstack/controlplane` seeds `kv-v2/bootstrap/openstack/controlplane-keystone/admin`. |
 | `kv-v2/infrastructure/mariadb` | `root-password` | MariaDB root password |
 | `kv-v2/openstack/keystone/db` | `username`, `password` | Keystone database credentials (username is `keystone`) |
 
@@ -334,8 +334,8 @@ host `/proc/<pid>/cmdline` process argument lists.
 
 **Security:** Generated passwords are never echoed to stdout or stderr and never
 appear as command-line arguments visible to host process listings. The script
-outputs only status messages (e.g., `Writing kv-v2/bootstrap/keystone-admin...` or
-`Skipping kv-v2/bootstrap/keystone-admin (already exists)`).
+outputs only status messages (e.g., `Writing kv-v2/bootstrap/openstack/controlplane-keystone/admin...` or
+`Skipping kv-v2/bootstrap/openstack/controlplane-keystone/admin (already exists)`).
 
 **Idempotency:** Before writing each secret, the script checks `bao kv get` for the
 path. If the secret already exists, the write is skipped to prevent overwriting
@@ -391,7 +391,7 @@ All secrets are stored under the `kv-v2/` mount point (KV version 2 engine).
 
 | Path | Keys | Provisioned By | Consumed By |
 | --- | --- | --- | --- |
-| `kv-v2/bootstrap/keystone-admin` | `password` | `write-bootstrap-secrets.sh` | ExternalSecret `keystone-admin` |
+| `kv-v2/bootstrap/<namespace>/<keystone>/admin` | `password` | `write-bootstrap-secrets.sh` | ExternalSecret `keystone-admin` |
 | `kv-v2/infrastructure/mariadb` | `root-password` | `write-bootstrap-secrets.sh` | ExternalSecret `mariadb-root-password` |
 | `kv-v2/openstack/keystone/db` | `username`, `password` | `write-bootstrap-secrets.sh` | ExternalSecret `keystone-db` |
 
@@ -403,7 +403,7 @@ Kubernetes.
 
 | ExternalSecret | Namespace | Remote Path | Remote Property | K8s Secret Name | K8s Secret Key |
 | --- | --- | --- | --- | --- | --- |
-| `keystone-admin` | `openstack` | `bootstrap/keystone-admin` | `password` | `keystone-admin-credentials` | `password` |
+| `keystone-admin` | `openstack` | `bootstrap/openstack/controlplane-keystone/admin` | `password` | `keystone-admin-credentials` | `password` |
 | `keystone-db` | `openstack` | `openstack/keystone/db` | `username`, `password` | `keystone-db-credentials` | `username`, `password` |
 | `mariadb-root-password` | `openstack` | `infrastructure/mariadb` | `root-password` | `mariadb-root-password` | `password` |
 

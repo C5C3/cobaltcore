@@ -8,6 +8,9 @@
 # kubernetes/management auth mount.
 # Feature: CC-0009
 
+# CC-0112: the per-CR bootstrap admin password now lives at
+# `bootstrap/{namespace}/{name}/admin`. The trailing `*` already matches that
+# extra depth, so this read grant covers the new shape with no widening needed.
 path "kv-v2/data/bootstrap/*" {
   capabilities = ["read"]
 }
@@ -31,6 +34,12 @@ path "kv-v2/data/infrastructure/*" {
 # is bound alongside eso-management on the management cluster's auth role.
 # The separation preserves the audit invariant that a leaked management-cluster
 # ESO token on eso-management alone cannot write to OpenBao (CC-0083).
+#
+# CC-0112 verification: the per-CR paths are now namespace+name-scoped —
+# `openstack/keystone/{namespace}/{name}/{admin/app-credential,fernet-keys,
+# credential-keys}`. The trailing `*` wildcard already matches any remaining
+# depth, so it covers these new shapes with no widening required; this policy
+# stays read-only.
 path "kv-v2/data/openstack/keystone/*" {
   capabilities = ["read"]
 }

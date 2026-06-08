@@ -90,7 +90,7 @@ staging Secret <ks>-admin-password-rotation
 push-source Secret <ks>-admin-password-next   (operator-owned)
   │  PushSecret <ks>-admin-password-backup mirrors it
   ▼
-OpenBao  bootstrap/keystone-admin
+OpenBao  bootstrap/<ns>/<ks>/admin   (per-CR path)
   │  ESO keystone-admin ExternalSecret syncs it
   ▼
 admin Secret <admin-secret>
@@ -106,7 +106,7 @@ The resources, by name:
 | CronJob | `<ks>-admin-password-rotate` | Mints a fresh password on `schedule` and PATCHes it onto the staging Secret. Mounts only the rotation script; never runs `keystone-manage`. |
 | Staging Secret | `<ks>-admin-password-rotation` | Drop box the CronJob writes; the only Secret the CronJob SA may patch. |
 | Push-source Secret | `<ks>-admin-password-next` | Operator-owned. The operator commits the validated password here; the PushSecret selects it. |
-| PushSecret | `<ks>-admin-password-backup` | Mirrors the push-source Secret to OpenBao `bootstrap/keystone-admin`. |
+| PushSecret | `<ks>-admin-password-backup` | Mirrors the push-source Secret to OpenBao `bootstrap/<ns>/<ks>/admin` (per-CR path). |
 | RBAC trio | `<ks>-admin-password-rotate` (ServiceAccount, Role, RoleBinding) | The CronJob's split-RBAC identity. |
 | Script ConfigMap | `<ks>-admin-password-rotate-script` (content-hash suffixed) | Immutable mount of `admin_password_rotate.sh`. |
 
@@ -123,18 +123,18 @@ Two safety properties are worth calling out:
 > Secret actually holds a valid password (non-empty, at least the minimum length).
 > Before the first rotation completes the push-source Secret is empty, so the
 > operator does not push — it would otherwise overwrite the seeded
-> `bootstrap/keystone-admin` value with nothing.
+> `bootstrap/<ns>/<ks>/admin` value with nothing.
 
 > **ESO-managed source path.** The PushSecret can only write
-> `bootstrap/keystone-admin` if that OpenBao path carries the custom-metadata
+> `bootstrap/<ns>/<ks>/admin` if that OpenBao path carries the custom-metadata
 > marker `managed-by=external-secrets`. The ESO Vault/OpenBao provider refuses to
 > overwrite a path it does not own and fails the PushSecret with `secret not
 > managed by external-secrets`. The standard bootstrap
 > (`deploy/openbao/bootstrap/write-bootstrap-secrets.sh`) stamps the marker when it
 > seeds the path, and re-running it adopts a path written by an older bootstrap
-> that predates this marker. If you seed `bootstrap/keystone-admin` by hand, set
+> that predates this marker. If you seed `bootstrap/<ns>/<ks>/admin` by hand, set
 > the marker too:
-> `bao kv metadata put -custom-metadata=managed-by=external-secrets kv-v2/bootstrap/keystone-admin`.
+> `bao kv metadata put -custom-metadata=managed-by=external-secrets kv-v2/bootstrap/<ns>/<ks>/admin`.
 
 For the full sub-reconciler contract (validation rules, event reasons, the
 clobber-safe gate, RBAC shape) see
@@ -209,7 +209,7 @@ LAST SEEN   TYPE     REASON               OBJECT          MESSAGE
 ### 3.4 Confirm the OpenBao value changed and ESO synced it
 
 The PushSecret mirrors the push-source Secret into OpenBao at
-`bootstrap/keystone-admin`, and the `keystone-admin` ExternalSecret projects it
+`bootstrap/<ns>/<ks>/admin`, and the `keystone-admin` ExternalSecret projects it
 back into the admin Secret `<admin-secret>`. Use the manual guide's
 force-sync + fingerprint technique to confirm the admin Secret carries the new
 value: see
@@ -253,16 +253,23 @@ never clobbers the credential the running Keystone is using mid-flight.
 
 ---
 
-## 4. Single-CR precondition
+## 4. Per-CR path isolation
 
-Model B hardcodes the OpenBao RemoteKey to the flat path
-`bootstrap/keystone-admin`. It therefore assumes a **single**
-Model-B-enabled Keystone CR per cluster, sharing that one OpenBao object with the
-`keystone-admin` ExternalSecret.
+Model B scopes the OpenBao RemoteKey **per Keystone CR** to
+`bootstrap/<ns>/<ks>/admin`, where `<ns>`/`<ks>` are the
+Keystone CR's namespace and name. Each Model-B-enabled Keystone CR therefore
+writes its admin password to its **own** OpenBao object, and the matching
+`keystone-admin` ExternalSecret reads that same per-CR path. Two Model-B-enabled
+Keystone CRs in the same cluster no longer share one OpenBao object — they cannot
+clobber each other's rotations, so scheduled rotation can be enabled on multiple
+Keystone CRs concurrently.
 
-> **Precondition.** Do not enable `passwordRotation` on more than one Keystone CR
-> in the same cluster. Two enabled CRs would both push to the same
-> `bootstrap/keystone-admin` object and clobber each other's rotations.
+> **Path in lockstep.** The `keystone-admin` ExternalSecret's `remoteRef.key` must
+> match the per-CR path of the Keystone CR whose rotation feeds it. The bootstrap
+> seed (`deploy/openbao/bootstrap/write-bootstrap-secrets.sh`) seeds
+> `bootstrap/<ns>/<ks>/admin` for each ControlPlane identity in
+> `KORC_CONTROLPLANES` (default `openstack/controlplane`, whose projected Keystone
+> CR is `controlplane-keystone`, i.e. `bootstrap/openstack/controlplane-keystone/admin`).
 
 ---
 
@@ -294,7 +301,7 @@ Secrets, the RBAC trio, the PushSecret, and the script ConfigMap — and reports
 
 > **Safety note.** Disabling does **not** remove the last-pushed password from
 > OpenBao. The PushSecret uses `DeletionPolicy: None`, so the value already in
-> `bootstrap/keystone-admin` stays put when the PushSecret is deleted. Disabling
+> `bootstrap/<ns>/<ks>/admin` stays put when the PushSecret is deleted. Disabling
 > rotation can never lock the admin out of Keystone.
 
 ---

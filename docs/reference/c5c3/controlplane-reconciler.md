@@ -525,10 +525,13 @@ OpenBao:
   materialise — the c5c3 PushSecret then overwrites it with the minted credential.
 - **PushSecret to OpenBao.** `secrets.EnsurePushSecret` (idempotent; only Updates
   on a `DeepEqual` diff so ESO is not woken to re-push an unchanged credential)
-  builds the PushSecret to `openbao-cluster-store` at remote key
-  `openstack/keystone/admin/app-credential` with **`DeletionPolicy: None`** — the
-  admin credential is a shared bootstrap secret, so deleting the PushSecret on
-  ControlPlane teardown leaves the last-pushed credential intact in OpenBao.
+  builds the PushSecret to `openbao-cluster-store` at the per-ControlPlane remote
+  key `openstack/keystone/{cp.Namespace}/{cp.Name}/admin/app-credential`
+  (`adminAppCredentialRemoteKeyFor`) with **`DeletionPolicy: None`** — the
+  admin credential is a per-ControlPlane persistent bootstrap secret, so deleting
+  the PushSecret on ControlPlane teardown (or when rotation is disabled) leaves the
+  last-pushed credential intact in OpenBao at that CR's own path, so re-adoption
+  works and the admin is never locked out.
 
 | Path | Status | Reason | Notes |
 | --- | --- | --- | --- |
@@ -591,7 +594,11 @@ mint logic. Its model:
   ControlPlanes in the CredentialRotation's **own** namespace and requires
   exactly one. Zero → `Ready=False` reason `NoControlPlane` with a short requeue;
   multiple → `Ready=False` reason `AmbiguousControlPlane` with **no** requeue (an
-  arbitrary pick could rotate the wrong credential).
+  arbitrary pick could rotate the wrong credential). The one-ControlPlane-per-namespace
+  contract is now enforced at admission by the ControlPlane validating webhook
+  (`validateUniqueInNamespace`), so the `AmbiguousControlPlane` branch is
+  **defense-in-depth**: it is retained as a safety fallback but is unreachable while
+  the webhook is active.
 - **Bootstrap is idempotent.** With `spec.bootstrap`, an already-existing AC is a
   no-op success (`BootstrapComplete`); a missing AC waits (`WaitingForBootstrap`)
   for the ControlPlane reconciler to mint it.
@@ -606,7 +613,7 @@ mint logic. Its model:
 | --- | --- | --- | --- |
 | target not `adminApplicationCredential` | False | `UnsupportedTarget` | no requeue |
 | no ControlPlane in namespace | False | `NoControlPlane` | requeue 10s |
-| multiple ControlPlanes | False | `AmbiguousControlPlane` | no requeue |
+| multiple ControlPlanes | False | `AmbiguousControlPlane` | no requeue; defense-in-depth — unreachable while the one-per-namespace webhook is active |
 | ControlPlane List errors | False | `ControlPlaneListError` | no requeue |
 | bootstrap, AC exists | True | `BootstrapComplete` | no-op success |
 | bootstrap, AC absent | False | `WaitingForBootstrap` | requeue 10s |
@@ -638,8 +645,8 @@ K-ORC writes the minted credential into the operator-owned Secret
    {controlplane.Name}-admin-app-credential   (Resource.SecretRef target)
         │
         ▼  (reconcileAdminCredential, gated on KORCReady + clouds.yaml ES)
-PushSecret  →  OpenBao kv  openstack/keystone/admin/app-credential
-   (DeletionPolicy: None — shared bootstrap secret survives teardown)
+PushSecret  →  OpenBao kv  openstack/keystone/{cp.Namespace}/{cp.Name}/admin/app-credential
+   (DeletionPolicy: None — per-ControlPlane bootstrap secret survives teardown)
         │
         ▼
 ExternalSecret  →  {control-plane ns}/k-orc-clouds-yaml  (the clouds.yaml gate;
@@ -657,6 +664,42 @@ the annotation (which guarantees a mismatch). The admin-password Secret watch
 (see [Secret Field Indexer](#secret-field-indexer)) wakes the ControlPlane the
 moment the password rotates so the chain converges without waiting for the next
 periodic requeue.
+
+---
+
+## Multi-instance
+
+The ControlPlane reconciler scopes every admin / K-ORC credential it owns to
+the individual ControlPlane CR, so multiple control planes can coexist in a single
+cluster without sharing OpenBao state.
+
+- **One ControlPlane per namespace (admission-enforced).** The ControlPlane
+  validating webhook's `validateUniqueInNamespace` check runs in
+  `ValidateCreate` **only** (not `ValidateUpdate`): it lists ControlPlanes in the
+  object's namespace and returns `field.Forbidden` naming the incumbent if one
+  already exists. The cluster therefore admits **exactly one** ControlPlane per
+  namespace. This is what makes the CredentialRotation reconciler's
+  `AmbiguousControlPlane` branch defense-in-depth (see
+  [CredentialRotation reconciler](#credentialrotation-reconciler)).
+- **Per-CR OpenBao path for the admin AC.** The admin application credential is
+  pushed to the per-ControlPlane key
+  `openstack/keystone/{cp.Namespace}/{cp.Name}/admin/app-credential`
+  (`adminAppCredentialRemoteKeyFor`), so two ControlPlanes never write to the same
+  OpenBao object. The K-ORC admin `User` CR is named `{cp.Name}-user-admin` (its
+  Kubernetes `metadata.name`), while the **OpenStack** username it imports stays
+  `admin` (set via the import `Filter.Name`) — the K8s-name and the OpenStack-name
+  are deliberately split so the per-CR Kubernetes object is unique while the
+  OpenStack identity is unchanged.
+- **Running multiple control planes.** Because the webhook caps a namespace at one
+  ControlPlane and the OpenBao paths are keyed by `{namespace}/{name}`, operating
+  several control planes means deploying each into its **own** namespace. Each gets
+  a disjoint OpenBao prefix
+  (`openstack/keystone/{namespace}/{name}/admin/app-credential`), disjoint child CRs
+  in its own namespace, and an independent rotation lifecycle — no two control
+  planes can clobber one another's credentials.
+
+See [Migration: legacy flat paths → per-ControlPlane paths](#migration-legacy-flat-paths--per-controlplane-paths)
+for moving an existing single-instance cluster onto the per-CR layout.
 
 ---
 
@@ -711,8 +754,10 @@ invariants are enforced by the `credential_invariant_test.go` checks
 
 The `PushSecret`'s `DeletionPolicy: None` is the one deliberate exception to the
 GC cascade: tearing down a ControlPlane removes the PushSecret CR but leaves the
-last-pushed credential in OpenBao, so a fresh control plane (or a consumer that
-already depends on the shared bootstrap secret) is not locked out mid-rotation.
+last-pushed credential in OpenBao at this ControlPlane's own per-CR path
+(`openstack/keystone/{cp.Namespace}/{cp.Name}/admin/app-credential`), so a
+re-created control plane in the same namespace re-adopts that per-ControlPlane
+bootstrap secret rather than being locked out mid-rotation.
 
 ---
 
@@ -865,6 +910,87 @@ operators/c5c3/
     │   └── collectors.go                        c5c3_operator_* duration/error vectors
     └── testutil/                                c5c3 envtest setup helpers
 ```
+
+## Migration: legacy flat paths → per-ControlPlane paths
+
+Earlier releases wrote the admin / K-ORC credentials to cluster-global,
+flat OpenBao paths that assumed a single control plane per cluster. The operator
+now writes every credential family onto a per-CR path keyed by the owning
+ControlPlane's (or projected Keystone CR's) `{namespace}/{name}`, so multiple
+control planes (one per
+namespace; see [Multi-instance](#multi-instance)) never collide in OpenBao. This is
+a one-time operator runbook to migrate an **existing** cluster; new clusters need
+no migration.
+
+The new `RemoteKey` lands the moment the operator is upgraded — the next reconcile
+of each CR emits the per-CR path — so re-apply the OpenBao ACLs **first or
+concurrently** with the operator upgrade. Without the updated policies ESO returns
+`403` on the backup/push and the corresponding Ready conditions flip `False`
+(`AdminCredentialReady` for the admin AC; `PasswordRotationReady` for the Model-B
+admin password; `FernetKeysReady` / `CredentialKeysReady` for the signing keys).
+
+**Path mapping (legacy → per-CR):**
+
+| Credential family | Legacy flat path | Per-CR path |
+| --- | --- | --- |
+| Admin application credential (K-ORC) | `openstack/keystone/admin/app-credential` | `openstack/keystone/{namespace}/{name}/admin/app-credential` |
+| Admin bootstrap password (Model B) | `bootstrap/keystone-admin` | `bootstrap/{namespace}/{name}/admin` |
+| Fernet / credential keys (boundary-4) | `openstack/keystone/{name}/{fernet,credential}-keys` | `openstack/keystone/{namespace}/{name}/{fernet,credential}-keys` |
+
+For the admin AC the `{namespace}/{name}` is the **ControlPlane** CR's
+(`adminAppCredentialRemoteKeyFor`); for the admin password and the Fernet /
+credential keys it is the projected **Keystone** CR's (`{cp.Name}-keystone`). The
+Fernet / credential move adds the namespace segment **on top of** the prior
+flat→per-name migration (see the keystone reconciler's
+[Migration note: legacy flat paths](../keystone/keystone-reconciler.md#migration-note-legacy-flat-paths));
+this change only adds the leading `{namespace}/` segment.
+
+**One-time copy (preserve the last-pushed value so nothing is locked out):**
+
+```sh
+# admin application credential (per ControlPlane <ns>/<cp>)
+bao kv get kv-v2/openstack/keystone/admin/app-credential
+bao kv put kv-v2/openstack/keystone/<ns>/<cp>/admin/app-credential clouds.yaml=@-
+# admin bootstrap password (per Keystone CR <ns>/<name>, name = <cp>-keystone)
+bao kv get kv-v2/bootstrap/keystone-admin
+bao kv put kv-v2/bootstrap/<ns>/<name>/admin password=<value>
+# fernet / credential keys (per Keystone CR <ns>/<name>)
+bao kv get kv-v2/openstack/keystone/<name>/fernet-keys
+bao kv put kv-v2/openstack/keystone/<ns>/<name>/fernet-keys value=<value>
+bao kv get kv-v2/openstack/keystone/<name>/credential-keys
+bao kv put kv-v2/openstack/keystone/<ns>/<name>/credential-keys value=<value>
+```
+
+**Re-apply the OpenBao ACLs.** Re-run
+`deploy/openbao/bootstrap/setup-policies.sh` (the kind/dev path; also invoked by
+`hack/deploy-infra.sh`), or for production clusters managed outside the bootstrap
+flow apply the updated policy files directly with `bao policy write …`:
+
+| Policy file | Grants write to |
+| --- | --- |
+| `push-app-credentials.hcl` | the per-CR admin AC path `…/keystone/+/+/admin/app-credential` |
+| `push-keystone-admin.hcl` | the per-CR admin-password path `bootstrap/+/+/admin` |
+| `push-keystone-keys.hcl` | the per-CR `…/keystone/+/+/{fernet,credential}-keys` paths |
+
+Until the matching policy is re-applied, ESO's push to the new path returns `403`
+and the credential's Ready condition stays `False`.
+
+**Orphaned but harmless.** After migration the legacy flat paths are **orphaned but
+harmless**: the live control plane no longer reads or refreshes them, no live
+PushSecret references them, and they are otherwise inert. Operators who want a clean
+OpenBao state can purge them once the per-CR paths are confirmed populated and Ready:
+
+```sh
+bao kv metadata delete kv-v2/openstack/keystone/admin/app-credential
+bao kv metadata delete kv-v2/bootstrap/keystone-admin
+bao kv metadata delete kv-v2/openstack/keystone/<name>/fernet-keys
+bao kv metadata delete kv-v2/openstack/keystone/<name>/credential-keys
+```
+
+`metadata delete` removes the current version and all historical versions at the
+path — the canonical KV-v2 purge and the right inverse of the now-superseded write.
+(The Fernet / credential families were previously migrated flat→per-name in an
+earlier release, and the boundary-4 change layers the namespace segment on top.)
 
 ## Architecture references
 

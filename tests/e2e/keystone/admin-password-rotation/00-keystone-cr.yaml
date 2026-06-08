@@ -20,17 +20,19 @@
 # ExternalSecret never satisfies that gate, so the CR would never reach Ready.
 # The ESO path is therefore the only one that exercises the real contract.
 #
-# Why a DEDICATED OpenBao path (bootstrap/keystone-adminpw) and NOT the shared
-# bootstrap/keystone-admin: every other parallel Keystone CR reads
-# bootstrap/keystone-admin, so rotating that value would re-bootstrap every
-# referencing CR and make concurrent suites observe a mid-flight admin-password
-# change. A per-suite path scopes the rotation to THIS CR only. The
-# eso-management OpenBao policy already grants read on kv-v2/data/bootstrap/*
-# (deploy/openbao/policies/eso-management.hcl), so no new policy is required.
-# The path is seeded with a known initial password by chainsaw-test.yaml step 1
-# (re-seeded every run, so a leftover from a prior run is overwritten); it is
-# treated as a persistent bootstrap secret, mirroring bootstrap/keystone-admin
-# in deploy/openbao/bootstrap/write-bootstrap-secrets.sh.
+# Why a DEDICATED OpenBao path (bootstrap/keystone-adminpw) and NOT a per-CR
+# admin path the deploy-infra seed owns: this suite WRITES its rotation source,
+# so giving it a self-seeded, self-owned path keeps the rotation scoped to THIS
+# CR and avoids racing the deploy-infra seed or any other CR's admin password.
+# (Since CC-0112 every production admin password lives at its own per-CR path
+# bootstrap/{namespace}/{keystone}/admin, so there is no longer a shared admin
+# object to collide on — but a dedicated, test-owned path is still the cleanest
+# rotation source.) The eso-management OpenBao policy already grants read on
+# kv-v2/data/bootstrap/* (deploy/openbao/policies/eso-management.hcl), so no new
+# policy is required. The path is seeded with a known initial password by
+# chainsaw-test.yaml step 1 (re-seeded every run, so a leftover from a prior run
+# is overwritten); it is treated as a persistent bootstrap secret, mirroring how
+# write-bootstrap-secrets.sh seeds the per-CR admin paths.
 #
 # refreshInterval is short so step 3's rotated value reaches the Secret within
 # one ESO tick — ESO does not watch OpenBao for changes, it re-reads the source

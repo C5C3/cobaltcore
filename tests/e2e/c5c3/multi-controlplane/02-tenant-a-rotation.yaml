@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# CredentialRotation fixture that rotates ONLY tenant-a's admin application
+# credential for the multi-controlplane E2E test (CC-0112, REQ-012).
+#
+# The CredentialRotation reconciler resolves its target ControlPlane in its OWN
+# namespace (one-CP-per-namespace; r.List(..., client.InNamespace(cr.Namespace))
+# in reconcile_credentialrotation.go), so this CR — living in `tenant-a` — rotates
+# controlplane-a and CANNOT touch controlplane-b in `tenant-b`. That blast-radius
+# scoping is exactly what the test asserts: tenant-b's credential, OpenBao
+# material, and K-ORC AC must be unaffected by this rotation.
+#
+# reMint:true forces a fresh mint even though the current credential is still
+# valid (the test makes no password change), so the rotation is observable as a
+# change in controlplane-a's status.adminApplicationCredential.id.
+apiVersion: c5c3.io/v1alpha1
+kind: CredentialRotation
+metadata:
+  name: rotate-controlplane-a-admin
+  namespace: tenant-a
+spec:
+  target: adminApplicationCredential
+  reMint: true

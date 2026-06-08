@@ -34,8 +34,8 @@ The admin password is not stored on the Keystone CR. It flows through three hops
 
 | Actor | Writes to | Reads from |
 | --- | --- | --- |
-| Operator/secrets-tooling | OpenBao path `kv-v2/bootstrap/keystone-admin` (key `password`) | — |
-| External Secrets Operator (ESO) | The admin Secret `<admin-secret>` (key `password`, `creationPolicy: Owner`) | OpenBao path `bootstrap/keystone-admin`, property `password` |
+| Operator/secrets-tooling | OpenBao path `kv-v2/bootstrap/<ns>/<ks>/admin` (key `password`) | — |
+| External Secrets Operator (ESO) | The admin Secret `<admin-secret>` (key `password`, `creationPolicy: Owner`) | OpenBao path `bootstrap/<ns>/<ks>/admin`, property `password` |
 | Keystone operator | The `{ks}-bootstrap` Job's pod template | The admin Secret `<admin-secret>` (key `password`) |
 
 On every reconcile the operator reads the `password` key of the admin Secret,
@@ -59,18 +59,23 @@ so an ESO write triggers a reconcile with **no CR edit**. During the re-run
 
 ## 1. Write the new password to OpenBao
 
-The admin password is sourced from OpenBao at `kv-v2/bootstrap/keystone-admin`
+The admin password is sourced from OpenBao at `kv-v2/bootstrap/<ns>/<ks>/admin`
 (key `password`). Write the new value there:
 
 ```bash
-bao kv put kv-v2/bootstrap/keystone-admin password=<new-password>
+bao kv put kv-v2/bootstrap/<ns>/<ks>/admin password=<new-password>
 ```
 
-> **Path convention.** This is the path the ESO `keystone-admin` ExternalSecret
-> reads (`remoteRef.key: bootstrap/keystone-admin`, `property: password`) and
-> the path `deploy/openbao/bootstrap/write-bootstrap-secrets.sh` seeds. If your
-> deployment uses a different KV mount or path, substitute it here and in step 2's
-> ExternalSecret name accordingly.
+> **Path convention (per-CR).** The admin-password path is
+> scoped per Keystone CR as `bootstrap/<ns>/<ks>/admin`, so two
+> Model-B-enabled Keystone CRs never collide on a shared OpenBao object. This is
+> the path the ESO `keystone-admin` ExternalSecret reads
+> (`remoteRef.key: bootstrap/<ns>/<ks>/admin`, `property: password`) and the path
+> `deploy/openbao/bootstrap/write-bootstrap-secrets.sh` seeds — for the default
+> Quick Start CR `controlplane-keystone` in `openstack`, that is
+> `bootstrap/openstack/controlplane-keystone/admin`. If your deployment uses a
+> different KV mount or path, substitute it here and in step 2's ExternalSecret
+> name accordingly.
 
 Nothing happens in the cluster yet — OpenBao now holds the new value, but the
 admin Secret still carries the old one until ESO syncs.
@@ -238,7 +243,7 @@ kubectl -n <ns> get externalsecret keystone-admin \
 ### Remediate
 
 1. Fix the source. Ensure the OpenBao path holds a non-empty `password`
-   (`bao kv get kv-v2/bootstrap/keystone-admin`), then re-sync ESO as in step 2.
+   (`bao kv get kv-v2/bootstrap/<ns>/<ks>/admin`), then re-sync ESO as in step 2.
 2. Once ESO repopulates the admin Secret, the operator's pending requeue (or a
    fresh `secretToKeystoneMapper` event from the Secret write) re-runs bootstrap
    automatically; `BootstrapReady` returns to `True`/`BootstrapComplete`. No CR

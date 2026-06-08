@@ -268,6 +268,31 @@ func TestRotation_NoControlPlaneReadyFalse(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal("NoControlPlane"))
 }
 
+// TestResolveControlPlane_AmbiguousIsDefenseInDepth verifies that when two
+// ControlPlanes coexist in a namespace (a state the ControlPlane validating
+// webhook now prevents on CREATE — CC-0112, REQ-010), the CredentialRotation
+// reconciler fails safe with Ready=False reason "AmbiguousControlPlane" rather
+// than silently picking one. This branch is defense-in-depth for CRs that
+// predate the webhook guard or callers that bypass it.
+func TestResolveControlPlane_AmbiguousIsDefenseInDepth(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp1 := korcControlPlane()
+	cp2 := korcControlPlane()
+	cp2.Name = cp1.Name + "-second" // same namespace, distinct name => ambiguous
+	cp2.UID = types.UID("cp-uid-second")
+
+	cr := credentialRotation()
+	cr.Spec.ReMint = true
+
+	got, _ := runRotationReconcile(t, cp1, cp2, cr)
+
+	cond := rotationReadyCondition(got)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("AmbiguousControlPlane"))
+}
+
 // --- Scheduled fields accepted but loop not run ---
 
 func TestRotation_ScheduledFieldsAcceptedNoError(t *testing.T) {

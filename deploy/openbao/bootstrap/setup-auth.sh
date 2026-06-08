@@ -96,9 +96,10 @@ main() {
       # CC-0083: back up rotated fernet-keys / credential-keys to OpenBao.
       token_policies+=",push-keystone-keys"
       # CC-0109 (REQ-008): write the operator-rotated admin password to the
-      # shared bootstrap/keystone-admin path (Model B scheduled rotation).
-      # eso-management stays read-only; write capability lives only in the
-      # narrowly-scoped push-keystone-admin policy.
+      # per-ControlPlane bootstrap/{namespace}/{keystone}/admin path (Model B
+      # scheduled rotation; per-CR since CC-0112, REQ-002). eso-management stays
+      # read-only; write capability lives only in the narrowly-scoped
+      # push-keystone-admin policy.
       token_policies+=",push-keystone-admin"
       # CC-0110 (REQ-011): the c5c3-operator mirrors the minted admin Application
       # Credential clouds.yaml to OpenBao via a PushSecret through the

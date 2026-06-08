@@ -17,12 +17,15 @@
 # Secrets — even with all required keys — leave the CR stuck at
 # SecretsReady=False/WaitingForDBCredentials and never reach Ready=True. The
 # ExternalSecrets pull from the same OpenBao paths the in-cluster
-# `openstack` namespace uses (`bootstrap/keystone-admin` and
-# `openstack/keystone/db`), reusing the canonical `keystone` MariaDB user
-# that brownfield-database (tests/e2e/keystone/brownfield-database) also
-# uses; the `eso-management` policy
-# (deploy/openbao/policies/eso-management.hcl) already grants read access to
-# both paths, so no new OpenBao policy work is required.
+# `openstack` namespace uses: the per-CR admin password at
+# `bootstrap/openstack/controlplane-keystone/admin` (the CC-0112 per-CR path the
+# deploy-infra seed writes; the legacy flat `bootstrap/keystone-admin` is no
+# longer seeded) and the canonical `keystone` MariaDB user at
+# `openstack/keystone/db` that brownfield-database
+# (tests/e2e/keystone/brownfield-database) also uses; the `eso-management` policy
+# (deploy/openbao/policies/eso-management.hcl) grants read access to both paths
+# via its `kv-v2/data/bootstrap/*` and `kv-v2/data/openstack/keystone/*`
+# wildcards, so no new OpenBao policy work is required.
 ---
 apiVersion: v1
 kind: Namespace
@@ -48,7 +51,7 @@ spec:
   data:
   - secretKey: password
     remoteRef:
-      key: bootstrap/keystone-admin
+      key: bootstrap/openstack/controlplane-keystone/admin
       property: password
 ---
 apiVersion: external-secrets.io/v1

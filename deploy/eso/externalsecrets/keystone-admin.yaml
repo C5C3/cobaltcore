@@ -3,10 +3,21 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # ExternalSecret for the Keystone admin credentials.
-# Pulls the admin password from the OpenBao path "bootstrap/keystone-admin"
-# and materialises it as a Kubernetes Secret named "keystone-admin" in the
-# openstack namespace.
-# Feature: CC-0009
+# Pulls the admin password from the per-ControlPlane OpenBao path
+# "bootstrap/openstack/controlplane-keystone/admin" and materialises it as a
+# Kubernetes Secret named "keystone-admin" in the openstack namespace.
+#
+# CC-0112 (REQ-011): the admin-password path is now scoped per Keystone CR
+# (bootstrap/{namespace}/{keystone}/admin) so two Model-B-enabled Keystone CRs
+# never collide on the cluster-global OpenBao backend. The identity below is the
+# default ControlPlane Quick Start's projected Keystone: ControlPlane
+# "controlplane" in namespace "openstack" projects the Keystone CR
+# "controlplane-keystone" (keystoneName = "{controlplane}-keystone"), which the
+# keystone-operator's Model B rotation PushSecret
+# (reconcile_passwordrotation.go) and deploy/openbao/bootstrap/
+# write-bootstrap-secrets.sh both target. Keep this key in lockstep with the
+# CONTROLPLANE_NAME used by `make deploy-infra` (default "controlplane").
+# Feature: CC-0009, CC-0112
 ---
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
@@ -24,5 +35,5 @@ spec:
   data:
     - secretKey: password
       remoteRef:
-        key: bootstrap/keystone-admin
+        key: bootstrap/openstack/controlplane-keystone/admin
         property: password

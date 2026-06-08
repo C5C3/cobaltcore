@@ -60,25 +60,41 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 3: Assert per-CR OpenBao kv-v2 isolation (CC-0093, REQ-005) ─────
+  # ── Step 3: Assert per-CR OpenBao kv-v2 isolation (CC-0093/REQ-005, CC-0112/REQ-007) ─
   # CC-0093 parameterizes the OpenBao RemoteKey per Keystone CR so that
   # concurrent CRs push their fernet-keys / credential-keys to distinct
-  # kv-v2 paths instead of colliding on a single shared path. This step
-  # exercises that contract end-to-end: after both CRs reach Ready, their
-  # PushSecrets must have synced to the four CR-scoped paths
-  #   kv-v2/openstack/keystone/keystone-concurrent-a/fernet-keys
-  #   kv-v2/openstack/keystone/keystone-concurrent-a/credential-keys
-  #   kv-v2/openstack/keystone/keystone-concurrent-b/fernet-keys
-  #   kv-v2/openstack/keystone/keystone-concurrent-b/credential-keys
+  # kv-v2 paths instead of colliding on a single shared path. CC-0112
+  # (boundary 4, REQ-007) further inserts the Keystone CR's NAMESPACE as a
+  # path segment ahead of the CR name, so the operator RemoteKey is now
+  #   openstack/keystone/{keystone.Namespace}/{keystone.Name}/<material>
+  # (read back through the kv-v2 mount as kv-v2/openstack/keystone/<ns>/<name>/…).
+  # This step exercises that contract end-to-end: after both CRs reach
+  # Ready, their PushSecrets must have synced to the four CR-scoped paths
+  #   kv-v2/openstack/keystone/openstack/keystone-concurrent-a/fernet-keys
+  #   kv-v2/openstack/keystone/openstack/keystone-concurrent-a/credential-keys
+  #   kv-v2/openstack/keystone/openstack/keystone-concurrent-b/fernet-keys
+  #   kv-v2/openstack/keystone/openstack/keystone-concurrent-b/credential-keys
   # proving the RemoteKey templating is actually writing under
-  # <cr-name>/<material>. We additionally assert the legacy flat paths
-  #   kv-v2/openstack/keystone/fernet-keys
-  #   kv-v2/openstack/keystone/credential-keys
-  # do NOT exist. This is a regression guard: if the per-CR RemoteKey
-  # template in the PushSecret is ever reverted to a hard-coded string,
-  # both CRs would race to write the flat paths and silently overwrite
-  # each other's key material. Seeing those paths reappear here fails the
-  # test loudly before the bug ships.
+  # <namespace>/<cr-name>/<material>. We additionally assert these now-absent
+  # paths:
+  #   - the pre-CC-0093 flat paths
+  #       kv-v2/openstack/keystone/fernet-keys
+  #       kv-v2/openstack/keystone/credential-keys
+  #   - the superseded CC-0093 non-namespace per-CR paths
+  #       kv-v2/openstack/keystone/keystone-concurrent-a/fernet-keys
+  #       kv-v2/openstack/keystone/keystone-concurrent-a/credential-keys
+  #       kv-v2/openstack/keystone/keystone-concurrent-b/fernet-keys
+  #       kv-v2/openstack/keystone/keystone-concurrent-b/credential-keys
+  # do NOT exist. This is a regression guard with two failure modes:
+  #   1. A revert of the per-CR RemoteKey template to a hard-coded string
+  #      makes both CRs race to write the flat paths and silently overwrite
+  #      each other's key material (the original CC-0093 hazard).
+  #   2. A revert from the CC-0112 namespace-segmented shape back to the
+  #      CC-0093 non-namespace shape is the exact regression boundary 4 must
+  #      catch; asserting the intermediate non-namespace per-CR paths are
+  #      absent makes the guard precise about which revert occurred.
+  # Seeing any of those superseded paths reappear here fails the test
+  # loudly before the bug ships.
   #
   # PushSecret sync is eventually-consistent; poll every 3 s for up to
   # 60 s (20 iterations) and exit 0 on the first sweep where all four
@@ -119,10 +135,10 @@ spec:
             all_clear=1
             missing=""
             leaked=""
-            for path in "kv-v2/openstack/keystone/keystone-concurrent-a/fernet-keys" \
-                        "kv-v2/openstack/keystone/keystone-concurrent-a/credential-keys" \
-                        "kv-v2/openstack/keystone/keystone-concurrent-b/fernet-keys" \
-                        "kv-v2/openstack/keystone/keystone-concurrent-b/credential-keys"; do
+            for path in "kv-v2/openstack/keystone/openstack/keystone-concurrent-a/fernet-keys" \
+                        "kv-v2/openstack/keystone/openstack/keystone-concurrent-a/credential-keys" \
+                        "kv-v2/openstack/keystone/openstack/keystone-concurrent-b/fernet-keys" \
+                        "kv-v2/openstack/keystone/openstack/keystone-concurrent-b/credential-keys"; do
               echo "=== bao kv get ${path} (expect present) ==="
               out=$(kubectl exec -n "${BAO_NS}" "${POD}" -- \
                 env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" \
@@ -138,8 +154,17 @@ spec:
                 echo "OK: ${path} is present in OpenBao"
               fi
             done
+            # Expect-absent set guards against two regressions (see step header):
+            #   - the pre-CC-0093 flat paths (shared-path collision hazard)
+            #   - the superseded CC-0093 non-namespace per-CR paths, whose
+            #     reappearance means a revert from the CC-0112 namespace-
+            #     segmented shape back to the CC-0093 shape (REQ-007).
             for path in "kv-v2/openstack/keystone/fernet-keys" \
-                        "kv-v2/openstack/keystone/credential-keys"; do
+                        "kv-v2/openstack/keystone/credential-keys" \
+                        "kv-v2/openstack/keystone/keystone-concurrent-a/fernet-keys" \
+                        "kv-v2/openstack/keystone/keystone-concurrent-a/credential-keys" \
+                        "kv-v2/openstack/keystone/keystone-concurrent-b/fernet-keys" \
+                        "kv-v2/openstack/keystone/keystone-concurrent-b/credential-keys"; do
               echo "=== bao kv get ${path} (expect not-found) ==="
               out=$(kubectl exec -n "${BAO_NS}" "${POD}" -- \
                 env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" \
@@ -148,7 +173,7 @@ spec:
               echo "${out}"
               echo "exit=${get_rc}"
               if [ "${get_rc}" -eq 0 ]; then
-                echo "ERROR: ${path} present (legacy flat path leaked — RemoteKey regression)"
+                echo "ERROR: ${path} present (superseded path leaked — RemoteKey regression)"
                 leaked="${leaked} ${path}"
                 all_clear=0
               else
@@ -163,12 +188,12 @@ spec:
 
           # Timeout: name each still-wrong path on stderr so chainsaw's
           # failure surface identifies exactly which kv-v2 path regressed
-          # (CC-0093, REQ-005).
+          # (CC-0093/REQ-005, CC-0112/REQ-007).
           for path in ${missing}; do
             echo "ERROR: ${path} missing after 60s (PushSecret did not sync to per-CR path)" >&2
           done
           for path in ${leaked}; do
-            echo "ERROR: ${path} present after 60s (legacy flat path leaked — RemoteKey regression)" >&2
+            echo "ERROR: ${path} present after 60s (superseded path leaked — RemoteKey regression)" >&2
           done
           exit 1
     catch:

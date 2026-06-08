@@ -426,14 +426,16 @@ func credentialRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapNam
 
 // credentialKeysPushSecret builds the PushSecret CR that backs up credential keys to OpenBao.
 //
-// The RemoteKey embeds keystone.Name as a path segment
-// (kv-v2/openstack/keystone/{keystone.Name}/credential-keys) so two Keystone
-// CRs in the same namespace never share a backing OpenBao object (CC-0093,
-// REQ-002).
+// The RemoteKey embeds both keystone.Namespace and keystone.Name as path
+// segments (kv-v2/openstack/keystone/{keystone.Namespace}/{keystone.Name}/credential-keys)
+// so two Keystone CRs sharing a Name in different namespaces never share a
+// backing OpenBao object (CC-0093, REQ-002; namespace segment added in CC-0112,
+// REQ-004).
 //
 // DeletionPolicy=Delete wires the backup PushSecret into the OpenBao finalizer
 // flow: when the keystone.openstack.c5c3.io/openbao-finalizer handler deletes
-// this PushSecret, ESO purges the remote kv-v2/openstack/keystone/{keystone.Name}/credential-keys
+// this PushSecret, ESO purges the remote
+// kv-v2/openstack/keystone/{keystone.Namespace}/{keystone.Name}/credential-keys
 // path before letting the PushSecret object be garbage-collected (CC-0079,
 // REQ-008).
 func credentialKeysPushSecret(keystone *keystonev1alpha1.Keystone) *esov1alpha1.PushSecret {
@@ -456,7 +458,10 @@ func credentialKeysPushSecret(keystone *keystonev1alpha1.Keystone) *esov1alpha1.
 			Data: []esov1alpha1.PushSecretData{{
 				Match: esov1alpha1.PushSecretMatch{
 					RemoteRef: esov1alpha1.PushSecretRemoteRef{
-						RemoteKey: "openstack/keystone/" + keystone.Name + "/credential-keys",
+						// DECISION: boundary 4 (CC-0112, REQ-004) — chose option (a), a keystone.Namespace
+						// path segment, so two Keystone CRs with the same Name in different namespaces
+						// resolve to distinct OpenBao leaves. Reviewer: please verify.
+						RemoteKey: "openstack/keystone/" + keystone.Namespace + "/" + keystone.Name + "/credential-keys",
 					},
 				},
 			}},

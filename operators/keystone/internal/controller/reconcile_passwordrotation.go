@@ -236,10 +236,10 @@ func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
 	}
 
 	// 8. Clobber-safe PushSecret (REQ-007, REQ-011, REQ-014): only mirror the
-	//    push-source Secret to the shared OpenBao path once it actually holds a
+	//    push-source Secret to the per-CR OpenBao path once it actually holds a
 	//    valid password. Before the first rotation completes the push-source
-	//    Secret is empty; pushing it would overwrite the seeded
-	//    bootstrap/keystone-admin value with nothing.
+	//    Secret is empty; pushing it would overwrite the seeded per-CR
+	//    bootstrap/{namespace}/{name}/admin value with nothing (CC-0112).
 	if r.adminPasswordPushSourceReady(ctx, keystone, minLength) {
 		ps := adminPasswordPushSecret(keystone)
 		if err := secrets.EnsurePushSecret(ctx, r.Client, r.Scheme, keystone, ps); err != nil {
@@ -262,7 +262,8 @@ func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
 // deletes tolerate NotFound so the teardown is idempotent and safe to run on a
 // CR that never enabled rotation. The PushSecret uses DeletionPolicy=None (see
 // adminPasswordPushSecret), so deleting it here leaves the last-pushed password
-// intact in OpenBao — disabling rotation must never lock the admin out.
+// intact in OpenBao at the per-CR path — disabling rotation must never lock the
+// admin out.
 func (r *KeystoneReconciler) teardownPasswordRotation(ctx context.Context, keystone *keystonev1alpha1.Keystone) error {
 	if err := deleteCronJob(ctx, r.Client, keystone.Namespace, adminPasswordRotateCronJobName(keystone)); err != nil {
 		return fmt.Errorf("deleting admin password rotation CronJob: %w", err)
@@ -550,10 +551,10 @@ func (r *KeystoneReconciler) applyAdminPasswordRotation(
 }
 
 // adminPasswordPushSourceReady reports whether the push-source Secret holds a
-// valid password (CC-0109, REQ-007). Used to gate the PushSecret so the shared
-// OpenBao bootstrap/keystone-admin value is never overwritten with an empty
-// payload before the first rotation completes. Any read error or invalid
-// payload is treated as "not ready" (best-effort gate).
+// valid password (CC-0109, REQ-007). Used to gate the PushSecret so the per-CR
+// OpenBao bootstrap/{namespace}/{name}/admin value is never overwritten with an
+// empty payload before the first rotation completes (CC-0112). Any read error or
+// invalid payload is treated as "not ready" (best-effort gate).
 func (r *KeystoneReconciler) adminPasswordPushSourceReady(ctx context.Context, keystone *keystonev1alpha1.Keystone, minLength int) bool {
 	var pushSource corev1.Secret
 	if err := r.Get(ctx, types.NamespacedName{
@@ -566,16 +567,16 @@ func (r *KeystoneReconciler) adminPasswordPushSourceReady(ctx context.Context, k
 }
 
 // adminPasswordPushSecret builds the PushSecret that mirrors the operator-owned
-// push-source Secret to OpenBao at the flat, single-CR path
-// bootstrap/keystone-admin (CC-0109, REQ-007, REQ-014). The RemoteKey is
-// hardcoded (not CR-scoped): Model B assumes a single Model-B-enabled Keystone
-// CR per cluster sharing the bootstrap/keystone-admin object with the
-// keystone-admin ExternalSecret (REQ-014, boundary 8, option a).
+// push-source Secret to OpenBao at the per-CR path
+// bootstrap/{keystone.Namespace}/{keystone.Name}/admin (CC-0112, REQ-002). The
+// RemoteKey embeds both the CR namespace and name as path segments so two
+// Model-B-enabled Keystone CRs never collide on a shared OpenBao object; the
+// matching keystone-admin ExternalSecret reads the same per-CR path.
 //
 // DECISION: DeletionPolicy=None — unspecified by REQ-007; chose None (not the
-// fernet PushSecret's Delete) because bootstrap/keystone-admin is a shared,
-// persistent bootstrap secret that the keystone-admin ExternalSecret and the
-// OpenBao seed both depend on. Disabling rotation deletes this PushSecret
+// fernet PushSecret's Delete) because the admin bootstrap path is a persistent
+// bootstrap secret that the keystone-admin ExternalSecret and the OpenBao seed
+// both depend on. Disabling rotation deletes this PushSecret
 // (teardownPasswordRotation); DeletionPolicy=None keeps the last-pushed password
 // in OpenBao so the admin is never locked out. Reviewer: please verify this
 // matches intent.
@@ -600,7 +601,7 @@ func adminPasswordPushSecret(keystone *keystonev1alpha1.Keystone) *esov1alpha1.P
 				Match: esov1alpha1.PushSecretMatch{
 					SecretKey: adminPasswordSecretKey,
 					RemoteRef: esov1alpha1.PushSecretRemoteRef{
-						RemoteKey: "bootstrap/keystone-admin",
+						RemoteKey: fmt.Sprintf("bootstrap/%s/%s/admin", keystone.Namespace, keystone.Name),
 						Property:  adminPasswordSecretKey,
 					},
 				},

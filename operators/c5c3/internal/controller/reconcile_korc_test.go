@@ -225,8 +225,8 @@ func TestReconcileKORC_OwnerRefAndCloudCredsAndManagementPolicy(t *testing.T) {
 
 	// SecretRef points at the operator-owned minted-credential Secret.
 	g.Expect(string(ac.Spec.Resource.SecretRef)).To(Equal(adminAppCredentialSecretName(cp)))
-	// UserRef derived from the CloudName (DECISION).
-	g.Expect(string(ac.Spec.Resource.UserRef)).To(Equal("admin"))
+	// UserRef is the cp.Name-scoped K-ORC User name (CC-0112, REQ-003).
+	g.Expect(string(ac.Spec.Resource.UserRef)).To(Equal("cp-user-admin"))
 }
 
 func TestReconcileKORC_PasswordHashAnnotationStamped(t *testing.T) {
@@ -371,8 +371,8 @@ func TestReconcileAdminCredential_GatedOnKORC(t *testing.T) {
 // TestReconcileAdminCredential_FreshClusterWithoutCloudsYamlSeedDoesNotPush is
 // the NON-MASKING bootstrap test (CC-0110, FC4/TE9). It reproduces a FRESH
 // cluster: KORC has minted the AC, but the k-orc-clouds-yaml ExternalSecret is
-// absent (its OpenBao path openstack/keystone/admin/app-credential is empty
-// until deploy/openbao/bootstrap/write-bootstrap-secrets.sh seeds a
+// absent (its per-CR OpenBao path openstack/keystone/{ns}/{name}/admin/app-credential
+// is empty until deploy/openbao/bootstrap/write-bootstrap-secrets.sh seeds a
 // password-based bootstrap clouds.yaml). It asserts the gate holds AND, crucially,
 // that NO PushSecret is created — proving the OpenBao path is never written while
 // the clouds.yaml is unseeded. This is exactly the circular dependency the
@@ -399,8 +399,8 @@ func TestReconcileAdminCredential_FreshClusterWithoutCloudsYamlSeedDoesNotPush(t
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal("WaitingForCloudsYaml"))
 
-	// The push that writes openstack/keystone/admin/app-credential to OpenBao must
-	// NOT have happened — the OpenBao path stays empty, which is precisely why a
+	// The push that writes the per-CR openstack/keystone/{ns}/{name}/admin/app-credential
+	// path to OpenBao must NOT have happened — the path stays empty, which is precisely why a
 	// fresh cluster needs the bootstrap seed to break the cycle.
 	ps := &esov1alpha1.PushSecret{}
 	err = c.Get(context.Background(), types.NamespacedName{
@@ -482,8 +482,7 @@ func TestReconcileAdminCredential_PushSecretBuiltAndReady(t *testing.T) {
 	g.Expect(ps.Spec.SecretStoreRefs[0].Name).To(Equal(openBaoClusterStoreName))
 	g.Expect(ps.Spec.Selector.Secret.Name).To(Equal(adminAppCredentialSecretName(cp)))
 	g.Expect(ps.Spec.Data).To(HaveLen(1))
-	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal(adminAppCredentialRemoteKey))
-	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal("openstack/keystone/admin/app-credential"))
+	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal(adminAppCredentialRemoteKeyFor(cp)))
 
 	// The operator-owned Secret now carries the assembled app-credential clouds.yaml
 	// (id from cp.Status, secret from the preserved "value") for the OpenBao push.
@@ -495,6 +494,56 @@ func TestReconcileAdminCredential_PushSecretBuiltAndReady(t *testing.T) {
 	g.Expect(sec.Data).To(HaveKey("clouds.yaml"))
 	g.Expect(string(sec.Data["clouds.yaml"])).To(ContainSubstring("application_credential_id"))
 	g.Expect(string(sec.Data["clouds.yaml"])).To(ContainSubstring("test-ac-id"))
+}
+
+// TestAdminAppCredentialRemoteKeyFor_EmbedsNamespaceAndName locks in the per-CR
+// OpenBao path (CC-0112, REQ-001): the RemoteKey is scoped by both the
+// ControlPlane's Namespace and Name so two ControlPlanes never clobber each
+// other's admin credential on the cluster-global OpenBao backend, and neither
+// reuses the legacy flat single-AC path.
+func TestAdminAppCredentialRemoteKeyFor_EmbedsNamespaceAndName(t *testing.T) {
+	g := NewWithT(t)
+
+	const legacyFlatKey = "openstack/keystone/admin/app-credential"
+
+	cases := []struct {
+		name      string
+		namespace string
+		cpName    string
+		want      string
+	}{
+		{
+			name:      "default control plane",
+			namespace: "openstack",
+			cpName:    "controlplane",
+			want:      "openstack/keystone/openstack/controlplane/admin/app-credential",
+		},
+		{
+			name:      "second tenant control plane",
+			namespace: "tenant-b",
+			cpName:    "cp-b",
+			want:      "openstack/keystone/tenant-b/cp-b/admin/app-credential",
+		},
+	}
+
+	keys := make([]string, 0, len(cases))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			cp := &c5c3v1alpha1.ControlPlane{
+				ObjectMeta: metav1.ObjectMeta{Name: tc.cpName, Namespace: tc.namespace},
+			}
+			got := adminAppCredentialRemoteKeyFor(cp)
+			g.Expect(got).To(Equal(tc.want))
+			g.Expect(got).NotTo(Equal(legacyFlatKey),
+				"the per-CR key must not collapse back to the legacy flat path")
+		})
+		keys = append(keys, tc.want)
+	}
+
+	// Two distinct ControlPlanes must produce distinct OpenBao paths.
+	g.Expect(keys[0]).NotTo(Equal(keys[1]),
+		"two ControlPlanes must not share a RemoteKey")
 }
 
 func TestReconcileAdminCredential_PushSecretClobberSafeNoChurn(t *testing.T) {
@@ -1098,6 +1147,9 @@ func TestEnsureKORCAdminImports_CreatesUnmanagedUserAndDomain(t *testing.T) {
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
 		Name: adminUserRef(cp), Namespace: childNamespace(cp),
 	}, &user)).To(Succeed())
+	// The User CR name is cp.Name-scoped (CC-0112, REQ-003) so two ControlPlanes
+	// in one namespace produce distinct User objects.
+	g.Expect(user.Name).To(Equal(cp.Name + "-user-admin"))
 	g.Expect(user.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyUnmanaged))
 	g.Expect(user.Spec.Import).NotTo(BeNil())
 	g.Expect(user.Spec.Import.Filter).NotTo(BeNil())
@@ -1106,6 +1158,21 @@ func TestEnsureKORCAdminImports_CreatesUnmanagedUserAndDomain(t *testing.T) {
 	g.Expect(user.Spec.Import.Filter.DomainRef).NotTo(BeNil())
 	g.Expect(string(*user.Spec.Import.Filter.DomainRef)).To(Equal(adminDomainRef(cp)))
 	g.Expect(user.OwnerReferences).To(HaveLen(1))
+}
+
+// TestAdminUserRef_IsControlPlaneScoped locks in that the K-ORC User CR name the
+// admin ApplicationCredential references is scoped by cp.Name (CC-0112, REQ-003),
+// mirroring adminDomainRef, so two ControlPlanes never collide on a shared "admin"
+// User name — and that it no longer returns the bare OpenStack username.
+func TestAdminUserRef_IsControlPlaneScoped(t *testing.T) {
+	g := NewWithT(t)
+	cp := &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "controlplane", Namespace: "openstack"},
+	}
+	g.Expect(adminUserRef(cp)).To(Equal(cp.Name + "-user-admin"))
+	g.Expect(adminUserRef(cp)).To(Equal("controlplane-user-admin"))
+	g.Expect(adminUserRef(cp)).NotTo(Equal("admin"),
+		"the User ref must be cp.Name-scoped, not the bare OpenStack username")
 }
 
 // TestReconcileKORC_CreatesAppCredentialSecretWithValue verifies that reconcileKORC

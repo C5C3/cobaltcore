@@ -4,13 +4,28 @@
 
 # ExternalSecret(s) for the K-ORC admin Application Credential clouds.yaml.
 #
-# Both ExternalSecrets pull the admin clouds.yaml from the OpenBao path
-# "openstack/keystone/admin/app-credential" (store-relative to the kv-v2 mount)
-# and materialise it as the Kubernetes Secret "k-orc-clouds-yaml". On a fresh
-# cluster that OpenBao path is SEEDED with a password-based bootstrap clouds.yaml
-# by deploy/openbao/bootstrap/write-bootstrap-secrets.sh (CC-0110, REQ-024); once
+# Both ExternalSecrets pull the admin clouds.yaml from the per-ControlPlane
+# OpenBao path "openstack/keystone/openstack/controlplane/admin/app-credential"
+# (store-relative to the kv-v2 mount) and materialise it as the Kubernetes Secret
+# "k-orc-clouds-yaml". On a fresh cluster that OpenBao path is SEEDED with a
+# password-based bootstrap clouds.yaml by
+# deploy/openbao/bootstrap/write-bootstrap-secrets.sh (CC-0110, REQ-024); once
 # the c5c3-operator mints the admin Application Credential its PushSecret
 # overwrites the path with the App-Cred-based clouds.yaml.
+#
+# CC-0112 (REQ-011): the admin Application Credential path is now scoped per
+# ControlPlane (openstack/keystone/{namespace}/{name}/admin/app-credential, see
+# adminAppCredentialRemoteKeyFor in reconcile_korc.go) so two ControlPlanes never
+# clobber each other's admin credential on the cluster-global OpenBao backend.
+# The identity below is the default ControlPlane Quick Start's CR: ControlPlane
+# "controlplane" in namespace "openstack" (deploy/kind/controlplane/
+# controlplane.yaml).
+#
+# This static, single-identity remoteRef.key is a deployment shim:
+# https://github.com/.../issues/412 supersedes it with operator-owned per-CR
+# templating that renders one k-orc-clouds-yaml ExternalSecret per ControlPlane
+# automatically. Until then, bringing up a non-default ControlPlane requires
+# editing this key (and CONTROLPLANE_NAME in `make deploy-infra`) in lockstep.
 #
 # CC-0110, C1 (co-location): the c5c3-operator creates the K-ORC
 # ApplicationCredential/Service/Endpoint CRs in the ControlPlane's OWN namespace
@@ -46,7 +61,7 @@ spec:
   data:
     - secretKey: clouds.yaml
       remoteRef:
-        key: openstack/keystone/admin/app-credential
+        key: openstack/keystone/openstack/controlplane/admin/app-credential
         property: clouds.yaml
 ---
 # Copy in orc-system for K-ORC's global default clouds.yaml mount.
@@ -66,5 +81,5 @@ spec:
   data:
     - secretKey: clouds.yaml
       remoteRef:
-        key: openstack/keystone/admin/app-credential
+        key: openstack/keystone/openstack/controlplane/admin/app-credential
         property: clouds.yaml

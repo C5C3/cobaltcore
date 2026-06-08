@@ -198,7 +198,11 @@ type controlPlaneCondition struct {
 // resolveControlPlane finds the single ControlPlane in the CredentialRotation's
 // namespace. On success it returns the ControlPlane and a zero condition; on a
 // zero/multiple-match it returns a nil ControlPlane plus the result+condition the
-// caller should persist (see the DECISION on Reconcile).
+// caller should persist (see the DECISION on Reconcile). The multiple-match case
+// is defense-in-depth: the ControlPlane validating webhook now enforces one
+// ControlPlane per namespace on CREATE (CC-0112, REQ-010), so it should be
+// unreachable in practice and only fires for CRs that predate the guard or
+// callers that bypass the webhook.
 func (r *CredentialRotationReconciler) resolveControlPlane(
 	ctx context.Context, cr *c5c3v1alpha1.CredentialRotation,
 ) (*c5c3v1alpha1.ControlPlane, ctrl.Result, controlPlaneCondition) {
@@ -221,6 +225,13 @@ func (r *CredentialRotationReconciler) resolveControlPlane(
 			message: fmt.Sprintf("no ControlPlane found in namespace %q", cr.Namespace),
 		}
 	default:
+		// AmbiguousControlPlane is defense-in-depth (CC-0112, REQ-010): the
+		// ControlPlane validating webhook enforces one ControlPlane per namespace
+		// on CREATE (operators/c5c3/api/v1alpha1/controlplane_webhook.go), so a
+		// namespace should never hold two. This branch remains as an explicit,
+		// safe failure for CRs created before that guard shipped or callers that
+		// bypass the webhook — it fails the rotation rather than silently picking
+		// cps.Items[0].
 		return nil, ctrl.Result{}, controlPlaneCondition{
 			status:  metav1.ConditionFalse,
 			reason:  "AmbiguousControlPlane",

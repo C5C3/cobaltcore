@@ -15,33 +15,29 @@
 # into the admin Secret; and the bootstrap sub-reconciler re-runs to cut the
 # Keystone admin credential over to the new value (chainsaw-test.yaml step 4).
 #
-# DECISION: [whether this suite reads a DEDICATED OpenBao path (like CC-0108) or
-# the SHARED bootstrap/keystone-admin path] — Chose the SHARED
-# bootstrap/keystone-admin path because the Model B PushSecret hardcodes
-# RemoteKey: bootstrap/keystone-admin (single-CR assumption — REQ-014, boundary
-# 8, option a; see the DECISION comment on adminPasswordPushSecret in
+# DECISION: [which OpenBao path this suite's admin ExternalSecret reads] — read
+# the per-CR path bootstrap/openstack/keystone-adminpw-sched/admin, because since
+# CC-0112 the Model B PushSecret derives its RemoteKey from the CR identity as
+# bootstrap/{namespace}/{name}/admin (see adminPasswordPushSecret in
 # operators/keystone/internal/controller/reconcile_passwordrotation.go). The
 # operator's backup PushSecret therefore writes the rotated password to
-# bootstrap/keystone-admin regardless of CR name, so this suite's dedicated admin
-# ExternalSecret MUST read from that SAME shared path for the evidence chain to
+# bootstrap/openstack/keystone-adminpw-sched/admin for THIS CR, so this suite's
+# admin ExternalSecret MUST read that same per-CR path for the evidence chain to
 # close (OpenBao change → ESO → admin Secret → re-bootstrap). Reviewer: please
-# verify this matches the hardcoded RemoteKey in reconcile_passwordrotation.go.
+# verify this matches the RemoteKey formula in reconcile_passwordrotation.go.
 #
-# Consequence of the shared path: rotating bootstrap/keystone-admin re-bootstraps
-# EVERY Keystone CR that reads it (the production keystone-admin ExternalSecret
-# in deploy/eso/externalsecrets/keystone-admin.yaml reads the same path). This
-# suite must therefore be the SOLE WRITER of that value while it runs:
-# chainsaw-test.yaml sets `concurrent: false` on the Test so it does not run
-# alongside other suites, and re-seeds bootstrap/keystone-admin with a known
-# initial password at the start for cross-run determinism. Unlike CC-0108 — which
-# used a dedicated bootstrap/keystone-adminpw path and so was parallel-safe — this
-# suite cannot be parallel-safe because the rotation target is shared.
+# Consequence of the per-CR path: rotating it re-bootstraps ONLY this CR. No
+# other Keystone CR — nor the production keystone-admin ExternalSecret in
+# deploy/eso/externalsecrets/keystone-admin.yaml (which reads its own per-CR
+# path) — observes the change. The suite is therefore parallel-safe and runs in
+# the execution.parallel:4 pool like its sibling admin-password-rotation suite
+# (CC-0108); chainsaw-test.yaml re-seeds this per-CR path with a known initial
+# password at the start for cross-run determinism.
 #
-# Why a DEDICATED CR/DB/admin Secret despite the shared OpenBao source: the
-# Keystone instance, its database, and the materialised admin Secret are all
-# per-suite so this test owns its own Deployment, bootstrap Job, and rotation
-# resources without colliding on names in the shared `openstack` namespace. Only
-# the OpenBao SOURCE object is shared (it has to be — see DECISION above).
+# Every resource this suite owns is per-CR: the Keystone instance, its database,
+# the materialised admin Secret, AND (since CC-0112) the OpenBao source object.
+# So this test owns its own Deployment, bootstrap Job, rotation resources, and
+# OpenBao path without colliding on names in the shared `openstack` namespace.
 #
 # refreshInterval is short so the rotated value reaches the admin Secret within
 # one ESO tick — ESO does not watch OpenBao for changes, it re-reads the source
@@ -64,10 +60,11 @@ spec:
   data:
     - secretKey: password
       remoteRef:
-        # SHARED path — see the DECISION block above. The Model B backup
-        # PushSecret writes the rotated password here (hardcoded RemoteKey), so
-        # this ExternalSecret must read the same object to observe the rotation.
-        key: bootstrap/keystone-admin
+        # Per-CR path — see the DECISION block above. Since CC-0112 the Model B
+        # backup PushSecret writes the rotated password to
+        # bootstrap/{namespace}/{name}/admin, so this ExternalSecret must read the
+        # same per-CR object to observe the rotation.
+        key: bootstrap/openstack/keystone-adminpw-sched/admin
         property: password
 ---
 apiVersion: keystone.openstack.c5c3.io/v1alpha1

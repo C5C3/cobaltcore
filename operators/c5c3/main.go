@@ -79,6 +79,9 @@ func main() {
 				return err
 			}
 			if webhooks {
+				// DECISION (CC-0112, REQ-010): Client must be non-nil for the
+				// one-ControlPlane-per-namespace ValidateCreate check; mgr.GetClient()
+				// satisfies it (a client.Reader implementing List).
 				if err := (&c5c3v1alpha1.ControlPlaneWebhook{Client: mgr.GetClient()}).SetupWebhookWithManager(mgr); err != nil {
 					return err
 				}

@@ -11,14 +11,22 @@ path "kv-v2/data/openstack/*/app-credential" {
   capabilities = ["create", "update", "read"]
 }
 
-# CC-0110, REQ-024 — narrow, single-leaf grant for the c5c3-operator's admin
-# Application Credential PushSecret. The operator mints ONE restricted admin AC
-# per cluster and mirrors it to the flat path below via the openbao-cluster-store
-# (KV-v2). This is a LITERAL leaf, deliberately NOT a trailing "*" or "+" glob:
-# the existing kv-v2/data/openstack/*/app-credential grant above matches only a
+# CC-0112 — per-ControlPlane grant for the c5c3-operator's admin Application
+# Credential PushSecret. The operator mints ONE restricted admin AC PER
+# ControlPlane and mirrors it to that ControlPlane's CR-scoped KV-v2 path via the
+# openbao-cluster-store. The path is therefore per-ControlPlane, shaped
+# `openstack/keystone/{namespace}/{name}/admin/app-credential`; the two `+/+`
+# segments below are the ControlPlane's namespace and name (in that order).
+#
+# The two `+/+` globs are used (rather than a literal leaf or a trailing "*")
+# precisely because the namespace and name segments vary per ControlPlane: a
+# literal leaf could not cover every ControlPlane's path, while a `+` matches
+# exactly one segment so the grant still ends at the literal
+# `/admin/app-credential` leaf — it admits no deeper or sibling paths. The
+# existing kv-v2/data/openstack/*/app-credential grant above matches only a
 # SINGLE mid-segment (openstack/<svc>/app-credential) and so does NOT cover the
-# two-segment openstack/keystone/admin/app-credential — hence this explicit path
-# rather than widening the glob above.
+# four-segment openstack/keystone/{namespace}/{name}/admin/app-credential shape —
+# hence these explicit `+/+` paths.
 #
 # READ is already granted cluster-wide for this subtree by the eso-management
 # policy's trailing glob (kv-v2/data/openstack/keystone/* — see eso-management.hcl);
@@ -29,12 +37,12 @@ path "kv-v2/data/openstack/*/app-credential" {
 # (managed-by=external-secrets, used by DeleteSecret ownership checks). A data-only
 # grant 403s on the metadata PUT and the PushSecret never reaches Ready — same
 # rationale documented in push-keystone-admin.hcl. The grant stays scoped to the
-# single literal admin AC leaf, adding no blast radius beyond this one credential.
+# per-CR admin AC leaf, adding no blast radius beyond admin app-credentials.
 # Reviewer: please verify.
-path "kv-v2/data/openstack/keystone/admin/app-credential" {
+path "kv-v2/data/openstack/keystone/+/+/admin/app-credential" {
   capabilities = ["create", "update", "read"]
 }
 
-path "kv-v2/metadata/openstack/keystone/admin/app-credential" {
+path "kv-v2/metadata/openstack/keystone/+/+/admin/app-credential" {
   capabilities = ["create", "update", "read"]
 }

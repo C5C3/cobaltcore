@@ -13,34 +13,34 @@
 #     the push-source Secret (<cr>-admin-password-next), deletes staging, and
 #     emits AdminPasswordRotated (REQ-007).
 #   - The backup PushSecret (<cr>-admin-password-backup) mirrors the push-source
-#     Secret to the shared OpenBao path bootstrap/keystone-admin (REQ-007,
-#     REQ-014); ESO (refreshInterval: 10s) projects it back into the admin Secret
-#     (<cr>-admin-password); the operator's secretToKeystoneMapper observes the
-#     change and re-runs the idempotent bootstrap Job with the new
-#     forge.c5c3.io/admin-password-hash; BootstrapReady returns to True and the
-#     new password authenticates (201) while the old one is rejected (401).
+#     Secret to the per-CR OpenBao path bootstrap/<namespace>/<cr>/admin
+#     (REQ-007, REQ-014, CC-0112); ESO (refreshInterval: 10s) projects it back
+#     into the admin Secret (<cr>-admin-password); the operator's
+#     secretToKeystoneMapper observes the change and re-runs the idempotent
+#     bootstrap Job with the new forge.c5c3.io/admin-password-hash; BootstrapReady
+#     returns to True and the new password authenticates (201) while the old one
+#     is rejected (401).
 #   - Disabling rotation tears down every Model B resource and reports
 #     PasswordRotationReady=True / RotationDisabled (REQ-002).
 #
-# SOLE-WRITER / concurrent: false — this suite re-seeds and then rotates the
-# SHARED OpenBao path bootstrap/keystone-admin (the Model B PushSecret hardcodes
-# that RemoteKey; see the DECISION block in 00-keystone-cr.yaml). Rotating it
-# re-bootstraps every Keystone CR that reads it, so this Test must NOT run
-# alongside other suites. `concurrent: false` excludes it from the
-# execution.parallel:4 pool in tests/e2e/chainsaw-config.yaml.
+# Parallel-safe — since CC-0112 the Model B PushSecret writes to the per-CR path
+# bootstrap/{namespace}/{name}/admin (here
+# bootstrap/openstack/keystone-adminpw-sched/admin; see adminPasswordPushSecret
+# in reconcile_passwordrotation.go), so this suite re-seeds and rotates an
+# OpenBao object that no other CR — nor the production keystone-admin
+# ExternalSecret — reads. It therefore runs in the execution.parallel:4 pool like
+# its sibling admin-password-rotation suite (CC-0108); see the DECISION block in
+# 00-keystone-cr.yaml.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
   name: keystone-admin-password-scheduled-rotation
 spec:
   namespace: openstack
-  # REQUIRED — see SOLE-WRITER note above. This suite mutates the shared
-  # bootstrap/keystone-admin OpenBao value, so it cannot run concurrently.
-  concurrent: false
   timeouts:
     assert: 5m
   steps:
-  # ── Step 1: Seed the SHARED OpenBao path, then apply CR + ExternalSecret ─
+  # ── Step 1: Seed the per-CR OpenBao path, then apply CR + ExternalSecret ─
   - name: seed-and-apply
     try:
     - script:
@@ -49,24 +49,26 @@ spec:
         content: |
           set -euo pipefail
 
-          # Seed the SHARED bootstrap/keystone-admin path with a known initial
-          # admin password BEFORE the ExternalSecret is applied, so ESO's first
-          # sync materialises a deterministic value (the bootstrap Job then seeds
-          # the Keystone admin credential with it). Re-seeded unconditionally
-          # every run, so a leftover rotated value from a prior run is
-          # overwritten. OpenBao access mirrors
+          # Seed the per-CR bootstrap/openstack/keystone-adminpw-sched/admin path
+          # with a known initial admin password BEFORE the ExternalSecret is
+          # applied, so ESO's first sync materialises a deterministic value (the
+          # bootstrap Job then seeds the Keystone admin credential with it).
+          # Re-seeded unconditionally every run, so a leftover rotated value from
+          # a prior run is overwritten. OpenBao access mirrors
           # tests/e2e/keystone/admin-password-rotation step 1.
           #
-          # IMPORTANT SIDE-EFFECT: this writes the SHARED bootstrap/keystone-admin
-          # object — the same object the production keystone-admin ExternalSecret
-          # and every Model-B-enabled CR read. That is precisely why this suite is
-          # `concurrent: false` (sole writer). See the DECISION block in
-          # 00-keystone-cr.yaml.
+          # Since CC-0112 the Model B backup PushSecret writes to the per-CR path
+          # bootstrap/{namespace}/{name}/admin (reconcile_passwordrotation.go), so
+          # this object is private to keystone-adminpw-sched — neither another CR
+          # nor the production keystone-admin ExternalSecret reads it. That
+          # isolation is why this suite is parallel-safe; see the DECISION block
+          # in 00-keystone-cr.yaml.
           BAO_NS="openbao-system"
           POD="openbao-0"
           SECRET="openbao-init-keys"
           BAO_ADDR="https://127.0.0.1:8200"
           VAULT_CACERT="/openbao/tls/ca.crt"
+          BAO_PATH="kv-v2/bootstrap/openstack/keystone-adminpw-sched/admin"
 
           BAO_TOKEN=$(kubectl get secret "${SECRET}" -n "${BAO_NS}" \
             -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
@@ -81,7 +83,7 @@ spec:
           kubectl exec -n "${BAO_NS}" "${POD}" -- \
             env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" \
                 VAULT_CACERT="${VAULT_CACERT}" \
-            bao kv put kv-v2/bootstrap/keystone-admin \
+            bao kv put "${BAO_PATH}" \
               password="initial-admin-password-cc0109"
 
           # Mark the path managed-by=external-secrets so the Model B backup
@@ -100,8 +102,8 @@ spec:
                 VAULT_CACERT="${VAULT_CACERT}" \
             bao kv metadata put \
               -custom-metadata=managed-by=external-secrets \
-              kv-v2/bootstrap/keystone-admin
-          echo "OK: seeded OpenBao bootstrap/keystone-admin with initial password"
+              "${BAO_PATH}"
+          echo "OK: seeded OpenBao bootstrap/openstack/keystone-adminpw-sched/admin with initial password"
     - apply:
         file: 00-keystone-cr.yaml
   # ── Step 2: Wait for Ready=True ────────────────────────────────────────
@@ -252,6 +254,7 @@ spec:
           BAO_SECRET="openbao-init-keys"
           BAO_ADDR="https://127.0.0.1:8200"
           VAULT_CACERT="/openbao/tls/ca.crt"
+          BAO_PATH="kv-v2/bootstrap/openstack/keystone-adminpw-sched/admin"
           BAO_TOKEN=$(kubectl get secret "$BAO_SECRET" -n "$BAO_NS" \
             -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
           if [ -z "$BAO_TOKEN" ] || [ "$BAO_TOKEN" = "null" ]; then
@@ -262,11 +265,11 @@ spec:
             kubectl exec -n "$BAO_NS" "$BAO_POD" -- \
               env BAO_ADDR="$BAO_ADDR" BAO_TOKEN="$BAO_TOKEN" \
                   VAULT_CACERT="$VAULT_CACERT" \
-              bao kv get -field=password kv-v2/bootstrap/keystone-admin
+              bao kv get -field=password "$BAO_PATH"
           }
           BEFORE_BAO=$(bao_password)
           if [ -z "$BEFORE_BAO" ]; then
-            echo "ERROR: OpenBao bootstrap/keystone-admin has no password value before rotation"
+            echo "ERROR: OpenBao bootstrap/openstack/keystone-adminpw-sched/admin has no password value before rotation"
             exit 1
           fi
           echo "OK: captured pre-rotation OpenBao value"
@@ -310,8 +313,9 @@ spec:
           NEW_HASH=$(printf '%s' "$NEW_PASS" | sha256sum | cut -d' ' -f1)
 
           # The PushSecret mirrors the push-source Secret to OpenBao. Poll until
-          # bootstrap/keystone-admin changes from the seeded initial value —
-          # proves the push-source → PushSecret → OpenBao hop (REQ-007, REQ-014).
+          # bootstrap/openstack/keystone-adminpw-sched/admin changes from the
+          # seeded initial value — proves the push-source → PushSecret → OpenBao
+          # hop (REQ-007, REQ-014).
           AFTER_BAO="$BEFORE_BAO"
           for _ in $(seq 1 60); do
             AFTER_BAO=$(bao_password)
@@ -319,10 +323,10 @@ spec:
             sleep 2
           done
           if [ -z "$AFTER_BAO" ] || [ "$AFTER_BAO" = "$BEFORE_BAO" ]; then
-            echo "ERROR: OpenBao bootstrap/keystone-admin did not change after rotation (PushSecret mirror failed)"
+            echo "ERROR: OpenBao bootstrap/openstack/keystone-adminpw-sched/admin did not change after rotation (PushSecret mirror failed)"
             exit 1
           fi
-          echo "OK: PushSecret mirrored rotated password to OpenBao bootstrap/keystone-admin"
+          echo "OK: PushSecret mirrored rotated password to OpenBao bootstrap/openstack/keystone-adminpw-sched/admin"
 
           # ESO (refreshInterval: 10s) re-reads OpenBao and projects the new value
           # into the admin Secret. Poll until the admin Secret `password` changes
@@ -468,7 +472,8 @@ spec:
           # The operator controller log is the authoritative source for a stuck
           # apply/commit (validateRotationOutput / applyRotationOutput), and the
           # OpenBao log is the authoritative source for a PushSecret 403 against
-          # bootstrap/keystone-admin — neither is captured by the $NAMESPACE pod
+          # bootstrap/openstack/keystone-adminpw-sched/admin — neither is captured
+          # by the $NAMESPACE pod
           # dumps above (CC-0109, CC-0083). The keystone-operator namespace
           # differs between deployment paths: under Flux (CC-0105) it runs in
           # keystone-system, while the CI E2E helm install lands it in

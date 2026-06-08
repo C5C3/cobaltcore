@@ -415,13 +415,13 @@ func TestReconcileCredentialKeys_PushSecretReferencesCorrectSecret(t *testing.T)
 	g.Expect(ps.Spec.SecretStoreRefs[0].Kind).To(Equal("ClusterSecretStore"))
 	g.Expect(ps.Spec.SecretStoreRefs[0].Name).To(Equal("openbao-cluster-store"))
 	g.Expect(ps.Spec.Data).To(HaveLen(1))
-	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal("openstack/keystone/test-keystone/credential-keys"))
+	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal("openstack/keystone/default/test-keystone/credential-keys"))
 }
 
 // TestCredentialKeysPushSecret_RemoteKeyIsCRScoped pins REQ-002 (CC-0093):
-// every Keystone CR must get a RemoteKey containing its own Name as a path
-// segment, so two CRs in the same namespace never collide on one shared KV-v2
-// path.
+// every Keystone CR must get a RemoteKey containing its namespace and Name as
+// path segments (namespace segment added in CC-0112, REQ-004), so two CRs never
+// collide on one shared KV-v2 path.
 func TestCredentialKeysPushSecret_RemoteKeyIsCRScoped(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -437,8 +437,8 @@ func TestCredentialKeysPushSecret_RemoteKeyIsCRScoped(t *testing.T) {
 
 		g.Expect(ps.Spec.Data).To(HaveLen(1))
 		got := ps.Spec.Data[0].Match.RemoteRef.RemoteKey
-		want := "openstack/keystone/" + name + "/credential-keys"
-		g.Expect(got).To(Equal(want), "RemoteKey must embed CR name for %q", name)
+		want := "openstack/keystone/" + ks.Namespace + "/" + name + "/credential-keys"
+		g.Expect(got).To(Equal(want), "RemoteKey must embed CR namespace and name for %q", name)
 		g.Expect(got).NotTo(Equal("openstack/keystone/credential-keys"), "must not fall back to legacy flat path")
 
 		if prev, dup := seen[got]; dup {
@@ -446,6 +446,29 @@ func TestCredentialKeysPushSecret_RemoteKeyIsCRScoped(t *testing.T) {
 		}
 		seen[got] = name
 	}
+}
+
+// TestCredentialKeysPushSecret_RemoteKeyIsNamespaceAndNameScoped pins CC-0112
+// (REQ-004): the credential RemoteKey embeds both the CR namespace and name, so
+// two Keystone CRs sharing a Name in different namespaces resolve to distinct
+// OpenBao leaves and never collide on a shared KV-v2 path.
+func TestCredentialKeysPushSecret_RemoteKeyIsNamespaceAndNameScoped(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ksA := &keystonev1alpha1.Keystone{
+		ObjectMeta: metav1.ObjectMeta{Name: "keystone", Namespace: "openstack"},
+	}
+	ksB := &keystonev1alpha1.Keystone{
+		ObjectMeta: metav1.ObjectMeta{Name: "keystone", Namespace: "tenant-b"},
+	}
+
+	keyA := credentialKeysPushSecret(ksA).Spec.Data[0].Match.RemoteRef.RemoteKey
+	keyB := credentialKeysPushSecret(ksB).Spec.Data[0].Match.RemoteRef.RemoteKey
+
+	g.Expect(keyA).To(Equal("openstack/keystone/openstack/keystone/credential-keys"))
+	g.Expect(keyB).To(Equal("openstack/keystone/tenant-b/keystone/credential-keys"))
+	g.Expect(keyA).NotTo(Equal(keyB),
+		"same-named CRs in different namespaces must produce distinct RemoteKeys (CC-0112)")
 }
 
 // TestCredentialKeysPushSecret_PreservesDeletionPolicyAndStoreRef pins that

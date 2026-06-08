@@ -115,7 +115,7 @@ spec:
                       PasswordRotation optionally enables scheduled rotation of the admin
                       password (CC-0109). Nil (the default) leaves the feature off and the
                       sub-reconciler is a clean no-op. See PasswordRotationSpec for the opt-in
-                      and single-CR semantics.
+                      and per-CR semantics.
                     properties:
                       enabled:
                         default: false

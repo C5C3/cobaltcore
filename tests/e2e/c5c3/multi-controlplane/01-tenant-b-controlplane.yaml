@@ -1,0 +1,68 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Tenant-B ControlPlane CR fixture for the multi-controlplane E2E test
+# (CC-0112, REQ-012). It owns namespace `tenant-b` and the single ControlPlane
+# `controlplane-b` in it.
+#
+# CC-0112 scopes the minted admin application credential per-ControlPlane: the
+# c5c3-operator mirrors this CR's admin AC to
+#   openstack/keystone/tenant-b/controlplane-b/admin/app-credential
+# (read back via `bao kv get` as the kv-v2 path
+#   kv-v2/openstack/keystone/tenant-b/controlplane-b/admin/app-credential).
+# It is distinct on BOTH namespace and name from tenant-a's path
+# (00-tenant-a-controlplane.yaml), so neither ControlPlane can clobber the
+# other's admin credential on the cluster-global OpenBao backend. This is the
+# "untouched tenant" in the rotation-isolation assertion: rotating tenant-a's
+# admin AC must leave THIS CR's credential, OpenBao material, and K-ORC AC
+# unchanged.
+#
+# DECISION (CC-0112, REQ-012): one ControlPlane per namespace is enforced by the
+# validating webhook (CC-0112, task 3.1), so this CR carries its own Namespace.
+# The per-tenant prerequisite wiring (admin password Secret + managed infra) is
+# the same documented fast-follow as tenant-a — see the DECISION block in
+# 00-tenant-a-controlplane.yaml. Behind the presence guard this test SKIPs when
+# the stack/prerequisites are absent.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tenant-b
+---
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: controlplane-b
+  namespace: tenant-b
+spec:
+  openStackRelease: "2025.2"
+  region: RegionOne
+  infrastructure:
+    database:
+      clusterRef:
+        name: openstack-db
+      database: keystone
+      secretRef:
+        name: keystone-db
+    cache:
+      clusterRef:
+        name: openstack-memcached
+      backend: dogpile.cache.pymemcache
+      replicas: 3
+  services:
+    keystone:
+      replicas: 3
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+        secretName: k-orc-clouds-yaml
+      passwordSecretRef:
+        name: keystone-admin
+        key: password
+      applicationCredential:
+        # restricted:true keeps the admin AC least-privilege (REQ-013) and
+        # projects to K-ORC's spec.resource.unrestricted=false.
+        restricted: true
+        rotation:
+          mode: PasswordDriven

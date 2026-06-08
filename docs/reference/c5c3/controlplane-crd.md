@@ -319,7 +319,7 @@ authenticates as.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `cloudName` | `string` | Yes | — | The entry in `clouds.yaml` K-ORC authenticates as. Also used by the reconciler as the conventional K-ORC `User` reference name (defaulting to `admin` when empty) and projected onto the catalog `Service`/`Endpoint` CRs. |
-| `secretName` | `string` | No | `"k-orc-clouds-yaml"` | Name of the Secret holding the `clouds.yaml` document. Defaulted to `k-orc-clouds-yaml` by **both** the `+kubebuilder:default` marker and the defaulting webhook. |
+| `secretName` | `string` | No | `"k-orc-clouds-yaml"` | Name of the Secret holding the `clouds.yaml` document. Defaulted to `k-orc-clouds-yaml` by **both** the `+kubebuilder:default` marker and the defaulting webhook. The Secret is namespace-local to the ControlPlane's child namespace; because the operator enforces one ControlPlane per namespace, the shared default name does not collide across control planes. |
 
 ---
 
@@ -420,6 +420,17 @@ Reports the observed readiness of a single projected service CR.
 ### AdminApplicationCredentialStatus
 
 Reports the observed state of the K-ORC admin application credential.
+
+> **Multi-instance — per-ControlPlane OpenBao path.** The minted admin
+> application credential is mirrored to OpenBao at the **per-ControlPlane** path
+> `openstack/keystone/{namespace}/{name}/admin/app-credential` (for the default
+> deployment identity `openstack/controlplane`, this is
+> `openstack/keystone/openstack/controlplane/admin/app-credential`), replacing the
+> earlier flat path shared across control planes. Because the validating webhook
+> permits exactly one ControlPlane per namespace, these per-CR paths are disjoint
+> across namespaces by construction. See the
+> [ControlPlane Reconciler reference](./controlplane-reconciler.md) for the full
+> OpenBao layout and the migration from the legacy flat path.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |

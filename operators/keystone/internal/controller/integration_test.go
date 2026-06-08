@@ -3818,16 +3818,24 @@ func TestIntegration_StrategyOverrideAppliedToDeployment(t *testing.T) {
 }
 
 // TestIntegrationKeystone_PushSecretRemoteKeyIsPerCR verifies that two
-// Keystone CRs in the same namespace produce two backup PushSecrets with
-// distinct, per-CR-scoped RemoteKey values for both fernet-keys
-// (CC-0093, REQ-001) and credential-keys (CC-0093, REQ-002) materials.
+// distinct Keystone CRs produce two backup PushSecrets with disjoint,
+// fully-segmented RemoteKey values for the fernet-keys (CC-0093, REQ-001)
+// and credential-keys (CC-0093, REQ-002) materials and for the Model B
+// bootstrap/admin password material (CC-0112, REQ-002).
 //
-// Regression guard: before CC-0093, both PushSecrets wrote to the shared
-// path openstack/keystone/<material>, causing concurrent two-CR
-// deployments in the same namespace to race on the remote kv-v2 store.
-// The table-driven form keeps per-CR assertions for every key material in
-// one place so adding a new material (or changing the path layout)
-// requires a single edit (sourcery-review-1).
+// Two CR-distinctness axes are exercised for every material:
+//   - same namespace, DIFFERENT name (the original CC-0093 guard) — the
+//     {name} path segment is what makes the RemoteKeys disjoint; and
+//   - SAME name, DIFFERENT namespace (CC-0112, REQ-004/REQ-002) — names are
+//     identical, so disjointness comes entirely from the {namespace} path
+//     segment. This proves the namespace segment is load-bearing and that two
+//     same-named Keystones in different namespaces never collide on the remote
+//     kv-v2 store.
+//
+// Regression guard: before CC-0093, the fernet/credential PushSecrets wrote to
+// the shared path openstack/keystone/<material>; before CC-0112 the per-CR
+// paths still omitted the namespace segment, so two same-named CRs in
+// different namespaces would race on the remote kv-v2 store.
 func TestIntegrationKeystone_PushSecretRemoteKeyIsPerCR(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 
@@ -3841,60 +3849,194 @@ func TestIntegrationKeystone_PushSecretRemoteKeyIsPerCR(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.material, func(t *testing.T) {
-			g := NewGomegaWithT(t)
-
 			c, ctx, _ := setupEnvTestWithController(t)
 
-			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
-				GenerateName: "test-per-cr-" + tc.material + "-",
-			}}
-			g.Expect(c.Create(ctx, ns)).To(Succeed())
+			// Axis 1 — same namespace, different name (original CC-0093 guard):
+			// the {name} segment makes the two RemoteKeys disjoint.
+			t.Run("same-namespace/different-name", func(t *testing.T) {
+				assertFernetCredentialRemoteKeysDisjoint(
+					t, ctx, c, tc.material, tc.requirement,
+					"keystone-a", "keystone-b", false /* differentNamespaces */)
+			})
 
-			createPrerequisites(t, ctx, c, ns.Name)
-
-			// kA and kB intentionally share the namespace-scoped keystone-db and
-			// keystone-admin Secret refs created by createPrerequisites: this test
-			// asserts PushSecret RemoteKey distinctness (CC-0093, REQ-001 for
-			// fernet / REQ-002 for credential), not isolation of the read-only
-			// credential Secrets.
-			kA := integrationBrownfieldKeystone("keystone-a", ns.Name)
-			kB := integrationBrownfieldKeystone("keystone-b", ns.Name)
-			g.Expect(c.Create(ctx, kA)).To(Succeed())
-			g.Expect(c.Create(ctx, kB)).To(Succeed())
-
-			driveFullReconciliation(t, ctx, c, kA.Name, ns.Name)
-			driveFullReconciliation(t, ctx, c, kB.Name, ns.Name)
-
-			psA := &esov1alpha1.PushSecret{}
-			psB := &esov1alpha1.PushSecret{}
-			nameA := kA.Name + "-" + tc.material + "-backup"
-			nameB := kB.Name + "-" + tc.material + "-backup"
-			g.Eventually(func() error {
-				return c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: nameA}, psA)
-			}, eventuallyTimeout).Should(Succeed())
-			g.Eventually(func() error {
-				return c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: nameB}, psB)
-			}, eventuallyTimeout).Should(Succeed())
-
-			g.Expect(psA.Spec.Data).ToNot(BeEmpty())
-			g.Expect(psB.Spec.Data).ToNot(BeEmpty())
-
-			keyA := psA.Spec.Data[0].Match.RemoteRef.RemoteKey
-			keyB := psB.Spec.Data[0].Match.RemoteRef.RemoteKey
-
-			wantA := "openstack/keystone/" + kA.Name + "/" + tc.material
-			wantB := "openstack/keystone/" + kB.Name + "/" + tc.material
-
-			g.Expect(keyA).To(Equal(wantA),
-				kA.Name+" RemoteKey must embed CR name ("+tc.requirement+")")
-			g.Expect(keyB).To(Equal(wantB),
-				kB.Name+" RemoteKey must embed CR name ("+tc.requirement+")")
-			g.Expect(keyA).ToNot(Equal(keyB),
-				"RemoteKeys must be distinct per-CR to prevent concurrent write collision")
-			g.Expect(keyA).To(ContainSubstring(kA.Name))
-			g.Expect(keyB).To(ContainSubstring(kB.Name))
+			// Axis 2 — same name, different namespace (CC-0112, REQ-004): with
+			// identical names, disjointness comes solely from the {namespace}
+			// path segment.
+			t.Run("same-name/different-namespace", func(t *testing.T) {
+				assertFernetCredentialRemoteKeysDisjoint(
+					t, ctx, c, tc.material, "REQ-004",
+					"keystone-shared", "keystone-shared", true /* differentNamespaces */)
+			})
 		})
 	}
+
+	// bootstrap/admin (Model B) — same name, different namespace (CC-0112,
+	// REQ-002). The admin-password backup PushSecret is Model B only and
+	// clobber-safe, so it must be driven through the rotation apply flow.
+	t.Run("bootstrap-admin/same-name/different-namespace", func(t *testing.T) {
+		assertBootstrapAdminRemoteKeysDisjoint(t)
+	})
+}
+
+// assertFernetCredentialRemoteKeysDisjoint creates two brownfield Keystone CRs
+// (kA, kB), drives each to a full reconciliation, reads the per-material backup
+// PushSecret ({name}-{material}-backup) for each, and asserts the two
+// openstack/keystone/{namespace}/{name}/{material} RemoteKeys are disjoint and
+// per-CR (CC-0093 / CC-0112, REQ-004). When differentNamespaces is false the two
+// CRs share one namespace and disjointness is driven by the {name} segment; when
+// true each CR lives in its own GenerateName namespace (with its own
+// createPrerequisites) and disjointness is driven by the {namespace} segment —
+// every RemoteKey must then still contain its own namespace.
+func assertFernetCredentialRemoteKeysDisjoint(
+	t *testing.T,
+	ctx context.Context,
+	c client.Client,
+	material, requirement string,
+	nameA, nameB string,
+	differentNamespaces bool,
+) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	makeNamespace := func() string {
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+			GenerateName: "test-per-cr-" + material + "-",
+		}}
+		g.Expect(c.Create(ctx, ns)).To(Succeed())
+		createPrerequisites(t, ctx, c, ns.Name)
+		return ns.Name
+	}
+
+	nsA := makeNamespace()
+	nsB := nsA
+	if differentNamespaces {
+		nsB = makeNamespace()
+	}
+
+	// In the shared-namespace axis kA and kB intentionally reuse the
+	// namespace-scoped keystone-db and keystone-admin Secret refs created by
+	// createPrerequisites: this asserts PushSecret RemoteKey distinctness, not
+	// isolation of the read-only credential Secrets.
+	kA := integrationBrownfieldKeystone(nameA, nsA)
+	kB := integrationBrownfieldKeystone(nameB, nsB)
+	g.Expect(c.Create(ctx, kA)).To(Succeed())
+	g.Expect(c.Create(ctx, kB)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, kA.Name, kA.Namespace)
+	driveFullReconciliation(t, ctx, c, kB.Name, kB.Namespace)
+
+	psA := &esov1alpha1.PushSecret{}
+	psB := &esov1alpha1.PushSecret{}
+	pushSecretName := func(ks *keystonev1alpha1.Keystone) string {
+		return ks.Name + "-" + material + "-backup"
+	}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: kA.Namespace, Name: pushSecretName(kA)}, psA)
+	}, eventuallyTimeout, pollInterval).Should(Succeed())
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: kB.Namespace, Name: pushSecretName(kB)}, psB)
+	}, eventuallyTimeout, pollInterval).Should(Succeed())
+
+	g.Expect(psA.Spec.Data).ToNot(BeEmpty())
+	g.Expect(psB.Spec.Data).ToNot(BeEmpty())
+
+	keyA := psA.Spec.Data[0].Match.RemoteRef.RemoteKey
+	keyB := psB.Spec.Data[0].Match.RemoteRef.RemoteKey
+
+	wantA := "openstack/keystone/" + kA.Namespace + "/" + kA.Name + "/" + material
+	wantB := "openstack/keystone/" + kB.Namespace + "/" + kB.Name + "/" + material
+
+	g.Expect(keyA).To(Equal(wantA),
+		kA.Name+" RemoteKey must embed namespace and CR name ("+requirement+")")
+	g.Expect(keyB).To(Equal(wantB),
+		kB.Name+" RemoteKey must embed namespace and CR name ("+requirement+")")
+	g.Expect(keyA).ToNot(Equal(keyB),
+		"RemoteKeys must be disjoint per-CR to prevent concurrent write collision")
+
+	// Whichever axis distinguishes the two CRs, both segments must be present
+	// in each RemoteKey; for the same-name/different-namespace axis the
+	// {namespace} segment is the sole source of disjointness (CC-0112, REQ-004).
+	g.Expect(keyA).To(ContainSubstring(kA.Namespace))
+	g.Expect(keyA).To(ContainSubstring(kA.Name))
+	g.Expect(keyB).To(ContainSubstring(kB.Namespace))
+	g.Expect(keyB).To(ContainSubstring(kB.Name))
+}
+
+// assertBootstrapAdminRemoteKeysDisjoint brings up two SAME-name Model B
+// Keystones in two DIFFERENT namespaces, drives the scheduled admin-password
+// rotation apply flow in each so the clobber-safe bootstrap/admin backup
+// PushSecret is ensured, then asserts the two
+// bootstrap/{namespace}/{name}/admin RemoteKeys are per-CR and disjoint with
+// the {namespace} segment as the sole source of disjointness (CC-0112, REQ-002).
+//
+// The bootstrap/admin PushSecret is withheld until the push-source Secret holds
+// a valid (>=32-byte) password, so each CR must be driven through the same
+// staging/commit sequence as TestIntegration_PasswordRotation_ApplyCommitsAndPushes.
+func assertBootstrapAdminRemoteKeysDisjoint(t *testing.T) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	const sharedName = "keystone-shared"
+
+	// driveAdminPasswordBackup stands up one Model B Keystone named sharedName
+	// in its own namespace, drives the rotation apply flow, and returns the
+	// RemoteKey of the resulting bootstrap/admin backup PushSecret.
+	driveAdminPasswordBackup := func() (string, string) {
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+			GenerateName: "test-per-cr-bootstrap-admin-",
+		}}
+		g.Expect(c.Create(ctx, ns)).To(Succeed())
+		createPrerequisites(t, ctx, c, ns.Name)
+
+		ks := integrationBrownfieldKeystoneWithPasswordRotation(sharedName, ns.Name, "0 0 1 * *")
+		g.Expect(c.Create(ctx, ks)).To(Succeed())
+		driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+		// Simulate the CronJob run: stage a fresh >=32-byte password + completion
+		// annotation so the operator commits it onto the push-source Secret and,
+		// once that holds a valid password, ensures the clobber-safe PushSecret
+		// (mirrors TestIntegration_PasswordRotation_ApplyCommitsAndPushes).
+		const newPassword = "rotated-admin-password-0123456789abcdef" // 39 bytes >= 32 minimum
+		stagingKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name + "-admin-password-rotation"}
+		g.Expect(cronJobStrategicMergePatch(ctx, c, stagingKey, map[string][]byte{
+			adminPasswordSecretKey: []byte(newPassword),
+		})).To(Succeed(), "stage CronJob rotation output onto the staging Secret (CC-0109, REQ-007)")
+
+		pushSourceKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name + "-admin-password-next"}
+		g.Eventually(func(ig Gomega) {
+			got := &corev1.Secret{}
+			ig.Expect(c.Get(ctx, pushSourceKey, got)).To(Succeed())
+			ig.Expect(got.Data).To(HaveKeyWithValue(adminPasswordSecretKey, []byte(newPassword)))
+			ig.Expect(got.Annotations).To(HaveKey(RotationCompletedAnnotation))
+		}, eventuallyTimeout, pollInterval).Should(Succeed(),
+			"push-source Secret should receive the rotated password and completion annotation (CC-0109, REQ-007)")
+
+		pushSecretKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name + "-admin-password-backup"}
+		ps := &esov1alpha1.PushSecret{}
+		g.Eventually(func() error {
+			return c.Get(ctx, pushSecretKey, ps)
+		}, eventuallyTimeout, pollInterval).Should(Succeed(),
+			"bootstrap/admin PushSecret should be ensured once the push-source holds a valid password (CC-0109, REQ-007)")
+		g.Expect(ps.Spec.Data).To(HaveLen(1))
+
+		key := ps.Spec.Data[0].Match.RemoteRef.RemoteKey
+		g.Expect(key).To(Equal(fmt.Sprintf("bootstrap/%s/%s/admin", ks.Namespace, ks.Name)),
+			"RemoteKey must be the per-CR OpenBao path bootstrap/{namespace}/{name}/admin (CC-0112, REQ-002)")
+		return key, ns.Name
+	}
+
+	keyA, nsA := driveAdminPasswordBackup()
+	keyB, nsB := driveAdminPasswordBackup()
+
+	g.Expect(nsA).ToNot(Equal(nsB), "the two same-name Keystones must live in different namespaces")
+	g.Expect(keyA).To(ContainSubstring(nsA),
+		"each bootstrap/admin RemoteKey must embed its own namespace (CC-0112, REQ-002)")
+	g.Expect(keyB).To(ContainSubstring(nsB),
+		"each bootstrap/admin RemoteKey must embed its own namespace (CC-0112, REQ-002)")
+	g.Expect(keyA).ToNot(Equal(keyB),
+		"bootstrap/admin RemoteKeys for two same-name CRs must be disjoint via the namespace segment (CC-0112, REQ-002)")
 }
 
 // --- CC-0095: Sub-resource rename to bare CR name (REQ-003, REQ-004) ---
@@ -4582,7 +4724,7 @@ func TestIntegration_PasswordRotation_SuspendTruePreservesSiblings(t *testing.T)
 // annotation onto the staging Secret; the reconciler commits the password onto
 // the push-source Secret, deletes staging, emits AdminPasswordRotated, and — now
 // that the push-source holds a valid password — ensures the clobber-safe
-// PushSecret targeting the flat single-CR OpenBao path.
+// PushSecret targeting the per-CR OpenBao path (CC-0112, REQ-002).
 func TestIntegration_PasswordRotation_ApplyCommitsAndPushes(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -4610,8 +4752,8 @@ func TestIntegration_PasswordRotation_ApplyCommitsAndPushes(t *testing.T) {
 	g.Expect(pushSource.Data).To(BeEmpty(), "push-source Secret Data should start empty (CC-0109, REQ-007)")
 
 	// Clobber-safe gate: no PushSecret while the push-source is empty, so the
-	// shared bootstrap/keystone-admin OpenBao value is never overwritten with an
-	// empty payload (CC-0109, REQ-011, REQ-014).
+	// per-CR bootstrap/{namespace}/{name}/admin OpenBao value is never overwritten
+	// with an empty payload (CC-0109, REQ-011, REQ-014; per-CR path in CC-0112).
 	pushSecretKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-admin-password-backup"}
 	g.Consistently(func() bool {
 		return apierrors.IsNotFound(c.Get(ctx, pushSecretKey, &esov1alpha1.PushSecret{}))
@@ -4656,8 +4798,9 @@ func TestIntegration_PasswordRotation_ApplyCommitsAndPushes(t *testing.T) {
 	eventuallyFindKeystoneEvent(t, ctx, c, ks, "AdminPasswordRotated", corev1.EventTypeNormal)
 
 	// With a valid push-source password, the clobber-safe PushSecret is ensured,
-	// selecting the push-source Secret and targeting the flat single-CR OpenBao
-	// path bootstrap/keystone-admin (CC-0109, REQ-007, REQ-014).
+	// selecting the push-source Secret and targeting the per-CR OpenBao path
+	// bootstrap/{namespace}/{name}/admin (CC-0109, REQ-007, REQ-014; per-CR
+	// scoping added in CC-0112, REQ-002).
 	ps := &esov1alpha1.PushSecret{}
 	g.Eventually(func() error {
 		return c.Get(ctx, pushSecretKey, ps)
@@ -4666,8 +4809,8 @@ func TestIntegration_PasswordRotation_ApplyCommitsAndPushes(t *testing.T) {
 	g.Expect(ps.Spec.Selector.Secret).NotTo(BeNil())
 	g.Expect(ps.Spec.Selector.Secret.Name).To(Equal("test-keystone-admin-password-next"))
 	g.Expect(ps.Spec.Data).To(HaveLen(1))
-	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal("bootstrap/keystone-admin"),
-		"RemoteKey must be the flat, single-CR OpenBao path (CC-0109, REQ-014)")
+	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal(fmt.Sprintf("bootstrap/%s/%s/admin", ks.Namespace, ks.Name)),
+		"RemoteKey must be the per-CR OpenBao path bootstrap/{namespace}/{name}/admin (CC-0112, REQ-002)")
 }
 
 // TestIntegration_PasswordRotation_DisableTearsDownAllResources verifies the

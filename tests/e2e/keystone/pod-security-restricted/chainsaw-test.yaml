@@ -36,9 +36,11 @@
 #     operators/keystone/internal/controller/reconcile_secrets.go, so
 #     a plain Secret with all required keys still leaves the CR stuck at
 #     SecretsReady=False/WaitingForDBCredentials. The ExternalSecrets pull
-#     from the same OpenBao paths (`bootstrap/keystone-admin`,
-#     `openstack/keystone/db`) the cluster's `openstack` namespace already
-#     uses; the `eso-management` policy
+#     from the same OpenBao paths the cluster's `openstack` namespace already
+#     uses: the per-CR admin password at
+#     `bootstrap/openstack/controlplane-keystone/admin` (CC-0112; the legacy
+#     flat `bootstrap/keystone-admin` is no longer seeded) and the keystone DB
+#     credentials at `openstack/keystone/db`; the `eso-management` policy
 #     (deploy/openbao/policies/eso-management.hcl) covers both paths so no
 #     new OpenBao policy work is required (REQ-003).
 #

@@ -12,6 +12,8 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
@@ -278,5 +280,60 @@ func TestValidateDelete_AlwaysAllowed(t *testing.T) {
 	w := &ControlPlaneWebhook{}
 
 	_, err := w.ValidateDelete(context.Background(), &ControlPlane{})
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// --- One-ControlPlane-per-namespace tests (CC-0112, REQ-010) ---
+
+// webhookScheme builds a runtime.Scheme with the c5c3 API types registered, for
+// the fake client backing the one-ControlPlane-per-namespace tests.
+func webhookScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	s := runtime.NewScheme()
+	g.Expect(AddToScheme(s)).To(Succeed())
+	return s
+}
+
+// TestValidateCreate_RejectsSecondControlPlaneInNamespace verifies the
+// one-ControlPlane-per-namespace contract: a CREATE is Forbidden when another
+// ControlPlane already exists in the same namespace (CC-0112, REQ-010).
+func TestValidateCreate_RejectsSecondControlPlaneInNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	existing := validControlPlane()
+	existing.Name = "incumbent"
+	existing.Namespace = "tenant-a"
+	c := fake.NewClientBuilder().WithScheme(webhookScheme(t)).WithObjects(existing).Build()
+	w := &ControlPlaneWebhook{Client: c}
+
+	second := validControlPlane()
+	second.Name = "newcomer"
+	second.Namespace = "tenant-a"
+
+	_, err := w.ValidateCreate(context.Background(), second)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("incumbent"))
+	g.Expect(err.Error()).To(ContainSubstring("tenant-a"))
+}
+
+// TestValidateCreate_AllowsFirstControlPlane_AndUpdate verifies the first CREATE
+// in an empty namespace is allowed, and that UPDATE never trips the
+// one-per-namespace check even though the CR is present (CC-0112, REQ-010).
+func TestValidateCreate_AllowsFirstControlPlane_AndUpdate(t *testing.T) {
+	g := NewGomegaWithT(t)
+	c := fake.NewClientBuilder().WithScheme(webhookScheme(t)).Build()
+	w := &ControlPlaneWebhook{Client: c}
+
+	first := validControlPlane()
+	first.Name = "first"
+	first.Namespace = "tenant-b"
+	_, err := w.ValidateCreate(context.Background(), first)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cWith := fake.NewClientBuilder().WithScheme(webhookScheme(t)).WithObjects(first).Build()
+	wWith := &ControlPlaneWebhook{Client: cWith}
+	updated := first.DeepCopy()
+	updated.Spec.OpenStackRelease = "2026.1"
+	_, err = wWith.ValidateUpdate(context.Background(), first, updated)
 	g.Expect(err).NotTo(HaveOccurred())
 }

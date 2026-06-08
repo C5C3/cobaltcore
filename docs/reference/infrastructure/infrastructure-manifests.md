@@ -684,8 +684,15 @@ materialising the Kubernetes Secret `k-orc-clouds-yaml` from the same OpenBao ke
 | `openstack` (control-plane) | **C1 co-location** — the c5c3-operator creates the K-ORC `ApplicationCredential`/`Service`/`Endpoint` CRs in the control-plane namespace, and K-ORC resolves each CR's `CloudCredentialsRef` Secret in that *same* namespace, so the admin clouds.yaml must live here for K-ORC to authenticate. This is the copy the `AdminCredentialReady` gate waits on. |
 | `orc-system` | The copy K-ORC mounts as its global default `clouds.yaml` (off the credential critical path — see the [K-ORC section](#k-orc-openstack-resource-controller)). |
 
-Both read the OpenBao key `openstack/keystone/admin/app-credential` (property
-`clouds.yaml`, store-relative to the KV-v2 mount). On a fresh cluster that key is
+Both read the per-ControlPlane OpenBao key
+`openstack/keystone/{namespace}/{name}/admin/app-credential` (property
+`clouds.yaml`, store-relative to the KV-v2 mount) — keyed by the ControlPlane's
+namespace and name so each CR owns an isolated admin-credential path.
+For the default deployment identity (ControlPlane `openstack/controlplane`) this
+resolves to `openstack/keystone/openstack/controlplane/admin/app-credential`, and
+both ExternalSecrets currently read that single per-CR default key as a static
+single-identity deployment shim — operator-owned per-CR ExternalSecret templating
+is a follow-up (#412). On a fresh cluster that key is
 seeded with a password-based bootstrap clouds.yaml by
 `deploy/openbao/bootstrap/write-bootstrap-secrets.sh` so the
 ExternalSecrets can materialise before any credential is minted; once the
@@ -694,18 +701,27 @@ key with the App-Cred-based clouds.yaml.
 
 **OpenBao policy** — `deploy/openbao/policies/push-app-credentials.hcl`
 
-This policy grants the write path for the admin credential PushSecret. The pre-existing mid-path grant `kv-v2/data/openstack/*/app-credential`
+This policy grants the write path for each ControlPlane's admin credential
+PushSecret. Because the admin credential path is keyed per
+ControlPlane (`openstack/keystone/{namespace}/{name}/admin/app-credential`), the
+grants template the namespace and name as two `+/+` segments. The pre-existing
+mid-path grant `kv-v2/data/openstack/*/app-credential`
 matches only a single mid-segment (`openstack/<svc>/app-credential`) and therefore does
-**not** cover the two-segment `openstack/keystone/admin/app-credential`. Rather than
-widening that glob, the policy adds two narrow, single-leaf grants:
+**not** cover the four-segment per-CR shape. Rather than
+widening that glob, the policy adds two per-ControlPlane `+/+` grants:
 
 | Path | Capabilities | Purpose |
 | --- | --- | --- |
-| `kv-v2/data/openstack/keystone/admin/app-credential` | `create`, `update`, `read` | Write the admin Application Credential `clouds.yaml` data leaf |
-| `kv-v2/metadata/openstack/keystone/admin/app-credential` | `create`, `update`, `read` | Allow ESO's Vault provider to write `custom_metadata` on the KV-v2 PushSecret (a data-only grant 403s on the metadata PUT and the PushSecret never reaches Ready) |
+| `kv-v2/data/openstack/keystone/+/+/admin/app-credential` | `create`, `update`, `read` | Write each ControlPlane's admin Application Credential `clouds.yaml` data leaf (the two `+` segments are its namespace and name) |
+| `kv-v2/metadata/openstack/keystone/+/+/admin/app-credential` | `create`, `update`, `read` | Allow ESO's Vault provider to write `custom_metadata` on the KV-v2 PushSecret (a data-only grant 403s on the metadata PUT and the PushSecret never reaches Ready) |
 
-Both grants stay scoped to the single literal admin-credential leaf, adding no blast
-radius beyond this one credential. For the mTLS transport gate and the
+A `+` matches exactly one path segment, so even though the namespace and name vary
+per ControlPlane the grant still terminates at the literal `/admin/app-credential`
+leaf and admits no deeper or sibling paths. Read coverage needs no widening:
+eso-management's read-only `kv-v2/data/openstack/keystone/*` trailing wildcard
+already covers every per-CR `+/+/admin/app-credential` leaf. Both grants stay
+scoped to the per-ControlPlane `+/+` admin-credential leaves, adding no blast
+radius beyond admin app-credentials. For the mTLS transport gate and the
 `openbao-cluster-store` auth path these manifests ride on, see
 [OpenBao Bootstrap Procedure](./openbao-bootstrap.md).
 

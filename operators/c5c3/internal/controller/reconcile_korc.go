@@ -52,10 +52,15 @@ const adminAppCredentialNameSuffix = "-admin-app-credential" //nolint:gosec // G
 // push source for the OpenBao PushSecret (CC-0110, REQ-010, REQ-011).
 const adminAppCredentialSecretSuffix = "-admin-app-credential" //nolint:gosec // G101 false positive: Secret name suffix, not a credential.
 
-// adminAppCredentialRemoteKey is the flat OpenBao path the minted admin
-// application credential is mirrored to (CC-0110, REQ-011). A single admin AC
-// per cluster shares this object, matching the K-ORC clouds.yaml consumer.
-const adminAppCredentialRemoteKey = "openstack/keystone/admin/app-credential"
+// adminAppCredentialRemoteKeyFor returns the per-ControlPlane OpenBao path the
+// minted admin application credential is mirrored to (CC-0112, REQ-001). The
+// path is scoped by both the ControlPlane's Namespace and Name so two
+// ControlPlanes never clobber each other's admin credential on the cluster-
+// global OpenBao backend. The matching read consumer (the per-CR k-orc
+// clouds.yaml ExternalSecret) targets the same key.
+func adminAppCredentialRemoteKeyFor(cp *c5c3v1alpha1.ControlPlane) string {
+	return fmt.Sprintf("openstack/keystone/%s/%s/admin/app-credential", cp.Namespace, cp.Name)
+}
 
 // adminPasswordHashAnnotation stamps the SHA-256 of the admin password the
 // application credential was last minted against onto the owned AC CR (CC-0110,
@@ -657,17 +662,18 @@ func (r *ControlPlaneReconciler) regenerateAppCredentialSecretValue(ctx context.
 	return nil
 }
 
-// adminUserRef derives the name of the K-ORC User CR the admin application
-// credential is associated with. AdminCredentialSpec has no UserRef field, but
-// K-ORC's ApplicationCredentialResourceSpec.UserRef is REQUIRED, so we derive it
-// from the CloudName the admin authenticates as (defaulting to "admin"). The
-// matching User CR is provisioned by ensureKORCAdminImports as an unmanaged
-// import, so the reference always resolves.
+// adminUserRef returns the Kubernetes metadata.name of the imported K-ORC User
+// CR the admin application credential is associated with. AdminCredentialSpec has
+// no UserRef field, but K-ORC's ApplicationCredentialResourceSpec.UserRef is
+// REQUIRED, so we derive a deterministic name scoped by cp.Name (mirroring
+// adminDomainRef) — this way two ControlPlanes in one namespace produce DISTINCT
+// User objects rather than colliding on a shared name (CC-0112, REQ-003). The
+// inner OpenStack username the import resolves to is still "admin": it is set
+// independently via Spec.Import.Filter.Name = OpenStackName(korcAdminUsername) in
+// ensureKORCAdminImports. The matching User CR is provisioned there as an
+// unmanaged import, so the reference always resolves.
 func adminUserRef(cp *c5c3v1alpha1.ControlPlane) string {
-	if name := cp.Spec.KORC.AdminCredential.CloudCredentialsRef.CloudName; name != "" {
-		return name
-	}
-	return "admin"
+	return fmt.Sprintf("%s-user-admin", cp.Name)
 }
 
 // korcAdminUsername / korcAdminDomainName identify the OpenStack admin user and
@@ -1056,8 +1062,10 @@ func pushSecretReady(ps *esov1alpha1.PushSecret) bool {
 }
 
 // adminAppCredentialPushSecret builds the PushSecret that mirrors the minted
-// admin application-credential Secret to OpenBao at the flat, single-AC path
-// openstack/keystone/admin/app-credential (CC-0110, REQ-011).
+// admin application-credential Secret to OpenBao at the per-ControlPlane path
+// openstack/keystone/{cp.Namespace}/{cp.Name}/admin/app-credential
+// (CC-0112, REQ-001), scoping the credential so two ControlPlanes never clobber
+// each other's admin credential on the cluster-global OpenBao backend.
 //
 // DECISION (DeletionPolicy): None — the admin application credential is a shared
 // bootstrap secret other consumers may depend on; deleting the PushSecret (e.g.
@@ -1083,7 +1091,7 @@ func adminAppCredentialPushSecret(cp *c5c3v1alpha1.ControlPlane) *esov1alpha1.Pu
 			Data: []esov1alpha1.PushSecretData{{
 				Match: esov1alpha1.PushSecretMatch{
 					RemoteRef: esov1alpha1.PushSecretRemoteRef{
-						RemoteKey: adminAppCredentialRemoteKey,
+						RemoteKey: adminAppCredentialRemoteKeyFor(cp),
 					},
 				},
 			}},

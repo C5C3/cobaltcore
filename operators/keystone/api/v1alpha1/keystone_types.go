@@ -400,11 +400,9 @@ type FederationSpec struct {
 // +kubebuilder:default markers below remain as defense-in-depth for callers that
 // bypass the webhook (e.g. envtest without the defaulter wired up).
 //
-// Model B assumes a single Model-B-enabled Keystone CR per cluster (REQ-014,
-// boundary 8, option a): the push path is the single flat OpenBao key
-// bootstrap/keystone-admin shared with the hardcoded keystone-admin
-// ExternalSecret. Enabling rotation on more than one CR would clobber that
-// shared object.
+// The admin-password backup is scoped per Keystone CR: the push path is the
+// per-CR OpenBao key bootstrap/{namespace}/{name}/admin (CC-0112, REQ-002), so
+// enabling rotation on multiple CRs no longer collides on a shared object.
 type PasswordRotationSpec struct {
 	// Enabled turns on scheduled admin-password rotation. Default false: the
 	// feature is opt-in, and disabling it tears down every Model B resource.
@@ -456,7 +454,7 @@ type BootstrapSpec struct {
 	// PasswordRotation optionally enables scheduled rotation of the admin
 	// password (CC-0109). Nil (the default) leaves the feature off and the
 	// sub-reconciler is a clean no-op. See PasswordRotationSpec for the opt-in
-	// and single-CR semantics.
+	// and per-CR semantics.
 	// +optional
 	PasswordRotation *PasswordRotationSpec `json:"passwordRotation,omitempty"`
 }

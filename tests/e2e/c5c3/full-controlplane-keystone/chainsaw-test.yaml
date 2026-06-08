@@ -230,6 +230,17 @@ spec:
           # CloudCredentialsRef against), not the orc-system copy. Assert the
           # gate-relevant CP_NS ExternalSecret/Secret first, then confirm the
           # orc-system copy K-ORC's globalCloudConfig mounts also materialised.
+          # CC-0112, REQ-013: the minted admin application credential now
+          # round-trips through the PER-CR OpenBao path
+          #   openstack/keystone/openstack/controlplane-keystone/admin/app-credential
+          # (openstack/keystone/{cp.Namespace}/{cp.Name}/admin/app-credential),
+          # not the former cluster-global openstack/keystone/admin/app-credential,
+          # so two ControlPlanes never clobber each other's credential. The
+          # PushSecret-name binding ("${CP_NAME}-admin-app-credential-backup")
+          # is a K8s resource name and is unchanged. The PushSecret/ExternalSecret
+          # Ready conditions below and the `openstack token issue` step in Link 7b
+          # transitively verify the per-CR path: the credential is readable back
+          # from exactly that key and authenticates end-to-end.
           wait_ready_condition pushsecret "${PUSH_SECRET}" "${CP_NS}" 300
           wait_ready_condition externalsecret "${CLOUDS_SECRET}" "${CP_NS}" 300
           kubectl get secret "${CLOUDS_SECRET}" -n "${CP_NS}" >/dev/null

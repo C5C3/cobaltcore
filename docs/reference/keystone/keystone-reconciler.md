@@ -837,8 +837,8 @@ PushSecret CRs (both in the Keystone's namespace):
 
 | PushSecret | API Group | KV-v2 Path (OpenBao) |
 | --- | --- | --- |
-| `{keystone.Name}-fernet-keys-backup` | `external-secrets.io` | `kv-v2/data/openstack/keystone/{keystone.Name}/fernet-keys` |
-| `{keystone.Name}-credential-keys-backup` | `external-secrets.io` | `kv-v2/data/openstack/keystone/{keystone.Name}/credential-keys` |
+| `{keystone.Name}-fernet-keys-backup` | `external-secrets.io` | `kv-v2/data/openstack/keystone/{keystone.Namespace}/{keystone.Name}/fernet-keys` |
+| `{keystone.Name}-credential-keys-backup` | `external-secrets.io` | `kv-v2/data/openstack/keystone/{keystone.Namespace}/{keystone.Name}/credential-keys` |
 
 The names are produced by `openBaoBackupPushSecretNames(keystone)` so that
 adding a third backup target in the future is a one-line change. Both
@@ -854,20 +854,29 @@ built-in Kubernetes garbage collector via owner references — see
 [Owned Resources](#owned-resources).
 
 > **Path scoping:** Both KV-v2 paths are per-CR-scoped via
-> `openstack/keystone/{keystone.Name}/<leaf>` (where `<leaf>` is `fernet-keys`
-> or `credential-keys`), so multiple Keystone CRs in the same namespace write
-> to disjoint paths and cannot collide. See
+> `openstack/keystone/{keystone.Namespace}/{keystone.Name}/<leaf>` (where `<leaf>`
+> is `fernet-keys` or `credential-keys`), so multiple Keystone CRs — in the same
+> namespace or across namespaces — write to disjoint paths and cannot collide. The
+> leading `{keystone.Namespace}` segment was the most recent addition, layered on
+> top of an earlier per-name scoping. See
 > [Migration note: legacy flat paths](#migration-note-legacy-flat-paths)
 > for upgrade behaviour and recommended cleanup of orphaned legacy paths.
 
 ### Migration note: legacy flat paths
 
-Earlier, both backup PushSecrets wrote to the cluster-global, flat
-KV-v2 paths `kv-v2/openstack/keystone/fernet-keys` and
-`kv-v2/openstack/keystone/credential-keys`. The operator now writes to the
-per-CR-scoped paths
-`kv-v2/openstack/keystone/{keystone.Name}/fernet-keys` and
-`kv-v2/openstack/keystone/{keystone.Name}/credential-keys`.
+The KV-v2 path layout for these backups has evolved in two steps:
+
+1. **Flat → per-name.** Originally both backup PushSecrets wrote to
+   the cluster-global, flat KV-v2 paths `kv-v2/openstack/keystone/fernet-keys`
+   and `kv-v2/openstack/keystone/credential-keys`. A first migration scoped them
+   per CR by adding the CR-name segment:
+   `kv-v2/openstack/keystone/{keystone.Name}/fernet-keys` and
+   `…/{keystone.Name}/credential-keys`.
+2. **Per-name → namespace+name.** A later migration added
+   the leading namespace segment so the paths are unique across namespaces as
+   well as within one. The operator now writes to
+   `kv-v2/openstack/keystone/{keystone.Namespace}/{keystone.Name}/fernet-keys`
+   and `…/{keystone.Namespace}/{keystone.Name}/credential-keys`.
 
 The RemoteKey change lands the moment the Keystone operator is upgraded —
 the next reconcile of each Keystone CR emits the new path. For existing
@@ -881,32 +890,62 @@ is re-run; for production clusters managed outside the bootstrap flow the
 equivalent is a single `bao policy write push-keystone-keys …` against the
 updated HCL file.
 
-The legacy flat paths are **orphaned but harmless** after upgrade:
-the live Keystone control plane reads its Fernet and credential keys from
-the local Kubernetes `Secret` (`{name}-fernet-keys`, `{name}-credential-keys`),
-not from the OpenBao backup. The OpenBao copy is a disaster-recovery
-artefact only; the legacy entries simply stop being refreshed, never get
-deleted by `DeletionPolicy=Delete` (no live PushSecret references them
-anymore), and are otherwise inert.
+The superseded paths (both the original flat paths **and** the
+per-name paths that lacked the namespace segment) are **orphaned but
+harmless** after upgrade: the live Keystone control plane reads its Fernet
+and credential keys from the local Kubernetes `Secret`
+(`{name}-fernet-keys`, `{name}-credential-keys`), not from the OpenBao
+backup. The OpenBao copy is a disaster-recovery artefact only; the legacy
+entries simply stop being refreshed, never get deleted by
+`DeletionPolicy=Delete` (no live PushSecret references them anymore), and
+are otherwise inert.
 
-Operators who want a clean OpenBao state can purge the legacy entries
-manually after upgrade:
+Operators who want a clean OpenBao state can purge the superseded entries
+manually after upgrade — both the original flat paths and the
+per-name (namespace-less) paths:
 
 ```sh
+# original flat paths
 bao kv metadata delete kv-v2/openstack/keystone/fernet-keys
 bao kv metadata delete kv-v2/openstack/keystone/credential-keys
+# per-name paths that lacked the namespace segment
+bao kv metadata delete kv-v2/openstack/keystone/<name>/fernet-keys
+bao kv metadata delete kv-v2/openstack/keystone/<name>/credential-keys
 ```
 
 `metadata delete` removes both the current version and all historical
 versions of the secret at that path; this is the canonical KV-v2 purge
 operation and the right inverse of the now-superseded write.
 
+#### Admin-password path migration (Model B)
+
+The Model-B admin-password PushSecret moves onto the same
+per-CR layout. The flat `bootstrap/keystone-admin` object becomes the per-CR
+`bootstrap/{keystone.Namespace}/{keystone.Name}/admin`. As above, the new
+RemoteKey lands on operator upgrade, so the matching ACL
+(`deploy/openbao/policies/push-keystone-admin.hcl`) must be re-applied first or
+concurrently — re-run `deploy/openbao/bootstrap/setup-policies.sh` or
+`bao policy write push-keystone-admin …` — otherwise ESO returns `403` on the
+push and `PasswordRotationReady` flips to `False`. The legacy
+`bootstrap/keystone-admin` object is **orphaned but harmless** after migration
+and can be purged once the per-CR path is populated and Ready:
+
+```sh
+bao kv metadata delete kv-v2/bootstrap/keystone-admin
+```
+
+For the end-to-end, multi-credential operator runbook (admin application
+credential + admin password + Fernet/credential keys, with the one-time copy
+commands and the full ACL re-apply set), see the c5c3 controlplane reconciler's
+[Migration: legacy flat paths → per-ControlPlane paths](../c5c3/controlplane-reconciler.md#migration-legacy-flat-paths--per-controlplane-paths).
+
 ### DeletionPolicy=Delete Wiring Through ESO
 
 The Keystone operator has no OpenBao credentials and does not talk to the
 OpenBao API directly. Remote purge of the KV-v2 path is delegated to ESO
 via the PushSecret field `Spec.DeletionPolicy`. The `RemoteKey` follows the
-per-CR layout `openstack/keystone/{keystone.Name}/<leaf>`,
+per-CR layout `openstack/keystone/{keystone.Namespace}/{keystone.Name}/<leaf>`
+(scoped by the CR's namespace and name),
 so each Keystone CR writes to its own KV-v2 prefix:
 
 ```go
@@ -920,7 +959,7 @@ Spec: esov1alpha1.PushSecretSpec{
     Data: []esov1alpha1.PushSecretData{{
         Match: esov1alpha1.PushSecretMatch{
             RemoteRef: esov1alpha1.PushSecretRemoteRef{
-                RemoteKey: fmt.Sprintf("openstack/keystone/%s/fernet-keys", keystone.Name),
+                RemoteKey: fmt.Sprintf("openstack/keystone/%s/%s/fernet-keys", keystone.Namespace, keystone.Name),
             },
         },
     }},
@@ -1123,7 +1162,7 @@ before ESO has installed its own cleanup finalizer, the API server
 immediately garbage-collects the PushSecret object, and ESO never observes
 the `DeletionTimestamp` — so `DeletionPolicy=Delete` never runs and the
 referenced kv-v2 path is orphaned in OpenBao. The observed stuck path now
-takes the per-CR form `kv-v2/openstack/keystone/{name}/fernet-keys`;
+takes the per-CR form `kv-v2/openstack/keystone/{namespace}/{name}/fernet-keys`;
 this was originally seen in CI run 24842115250 against the
 now-legacy flat path
 `kv-v2/openstack/keystone/fernet-keys`. The race itself is path-shape
@@ -1462,7 +1501,7 @@ and disaster recovery backup to OpenBao.
 4. **Ensure rotation CronJob** — Create or update `{name}-fernet-rotate` CronJob
    with the schedule from `spec.fernet.rotationSchedule`.
 5. **Ensure PushSecret** — Create or update `{name}-fernet-keys-backup` PushSecret
-   targeting `kv-v2/data/openstack/keystone/{name}/fernet-keys` in the `openbao`
+   targeting `kv-v2/data/openstack/keystone/{namespace}/{name}/fernet-keys` in the `openbao`
    ClusterSecretStore.
 
 **Key Generation:**
@@ -1499,7 +1538,7 @@ and disaster recovery backup to OpenBao.
 | Name | `{name}-fernet-keys-backup` |
 | Store | `ClusterSecretStore/openbao` |
 | Source Secret | `{name}-fernet-keys` |
-| Remote Key | `kv-v2/data/openstack/keystone/{name}/fernet-keys` |
+| Remote Key | `kv-v2/data/openstack/keystone/{namespace}/{name}/fernet-keys` |
 
 **Condition Contract:**
 
@@ -1633,7 +1672,7 @@ with credential migration, and disaster recovery backup to OpenBao.
 4. **Ensure rotation CronJob** — Create or update `{name}-credential-rotate` CronJob
    with the schedule from `spec.credentialKeys.rotationSchedule`.
 5. **Ensure PushSecret** — Create or update `{name}-credential-keys-backup` PushSecret
-   targeting `kv-v2/data/openstack/keystone/{name}/credential-keys` in the `openbao`
+   targeting `kv-v2/data/openstack/keystone/{namespace}/{name}/credential-keys` in the `openbao`
    ClusterSecretStore.
 
 **Key Generation:**
@@ -1675,7 +1714,7 @@ with credential migration, and disaster recovery backup to OpenBao.
 | Name | `{name}-credential-keys-backup` |
 | Store | `ClusterSecretStore/openbao` |
 | Source Secret | `{name}-credential-keys` |
-| Remote Key | `kv-v2/data/openstack/keystone/{name}/credential-keys` |
+| Remote Key | `kv-v2/data/openstack/keystone/{namespace}/{name}/credential-keys` |
 
 **Condition Contract:**
 
@@ -2649,10 +2688,11 @@ configuration.
 
 **Purpose:** Drive Model B scheduled admin-password rotation. A CronJob mints a fresh strong password and PATCHes it onto a
 staging Secret; the operator validates and commits it onto an operator-owned
-push-source Secret; a PushSecret mirrors that to OpenBao at the flat path
-`bootstrap/keystone-admin`; External Secrets Operator (ESO) then syncs it back
-into the admin Secret and [`reconcileBootstrap`](#reconcilebootstrap) re-runs
-`keystone-manage bootstrap` (admin-password-hash gate) to apply it.
+push-source Secret; a PushSecret mirrors that to OpenBao at the per-CR path
+`bootstrap/{keystone.Namespace}/{keystone.Name}/admin`; External Secrets
+Operator (ESO) then syncs it back into the admin Secret and
+[`reconcileBootstrap`](#reconcilebootstrap) re-runs `keystone-manage bootstrap`
+(admin-password-hash gate) to apply it.
 
 Two lifecycle paths:
 
@@ -2701,8 +2741,8 @@ Two lifecycle paths:
 8. **Clobber-safe PushSecret** — only ensure `adminPasswordPushSecret` once
    `adminPasswordPushSourceReady` reports the push-source Secret holds a valid
    password (≥ minLength). Before the first rotation completes the push-source is
-   empty, and pushing it would overwrite the seeded `bootstrap/keystone-admin`
-   value with nothing.
+   empty, and pushing it would overwrite the seeded per-CR
+   `bootstrap/{keystone.Namespace}/{keystone.Name}/admin` value with nothing.
 9. **Report ready** — sets `PasswordRotationReady=True` with reason
    `PasswordRotationConfigured` ("Admin password rotation CronJob is
    configured").
@@ -2738,16 +2778,17 @@ push-source Secret (see the RBAC split below).
 | Name | `{name}-admin-password-backup` |
 | Store | `ClusterSecretStore/openbao-cluster-store` |
 | Source Secret | `{name}-admin-password-next` (push-source) |
-| Remote Key | `bootstrap/keystone-admin` (hardcoded flat path — single-CR assumption, boundary 8) |
+| Remote Key | `bootstrap/{keystone.Namespace}/{keystone.Name}/admin` (per-CR path) |
 | Property | `password` |
 | DeletionPolicy | `None` |
 
-The `RemoteKey` is hardcoded (not CR-scoped): Model B assumes a single
-Model-B-enabled Keystone CR per cluster sharing the `bootstrap/keystone-admin`
-object with the keystone-admin ExternalSecret. `DeletionPolicy=None` is chosen
-because `bootstrap/keystone-admin` is a shared, persistent bootstrap secret;
-keeping the last-pushed password in OpenBao when rotation is disabled (the
-teardown path deletes this PushSecret) means the admin is never locked out.
+The `RemoteKey` is CR-scoped to `bootstrap/{keystone.Namespace}/{keystone.Name}/admin`,
+so each Model-B-enabled Keystone CR writes its admin password to
+its own OpenBao object and multiple Keystone CRs never collide on a shared
+`bootstrap/keystone-admin` key. `DeletionPolicy=None` is chosen because this is a
+per-Keystone-CR **persistent** bootstrap secret: keeping the last-pushed password in
+OpenBao on teardown (or when rotation is disabled — the teardown path deletes this
+PushSecret) means re-adoption works and the admin is never locked out.
 
 **Condition Contract:**
 
@@ -2837,7 +2878,7 @@ rotation-age gauge can refresh on every reconcile.
 
 **Downstream consumer.** [`reconcileBootstrap`](#reconcilebootstrap) is the
 consumer of the rotated password: once ESO syncs the new value from
-`bootstrap/keystone-admin` into the admin Secret, the bootstrap reconciler's
+`bootstrap/{keystone.Namespace}/{keystone.Name}/admin` into the admin Secret, the bootstrap reconciler's
 `forge.c5c3.io/admin-password-hash` gate re-runs the idempotent bootstrap Job to
 apply it. See the [Labels and Annotations](#labels-and-annotations) entries for
 `forge.c5c3.io/rotation-target` (value `admin-password` for the staging Secret),

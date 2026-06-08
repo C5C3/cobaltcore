@@ -15,18 +15,23 @@
 # OpenBao — write capability lives only in this narrowly-scoped policy
 # (CC-0083). Pattern source: deploy/openbao/policies/push-keystone-keys.hcl.
 #
-# Scope — boundary 8, option (a): a single FLAT, literal path. The production
-# sink for this credential is OpenBao itself (not an in-cluster Secret): a
-# value written here round-trips through ESO into the keystone-admin Secret
-# and drives a cluster-wide admin re-bootstrap. The grant is therefore the two
-# exact leaves below and deliberately does NOT use a trailing `*` wildcard or
-# a `+` single-segment glob over the bootstrap subtree. eso-management already
-# grants read on `kv-v2/data/bootstrap/*` (every bootstrap secret, including
-# this one); a write wildcard here would let a compromised ESO controller
-# overwrite ANY other bootstrap secret (e.g. database root credentials),
-# escalating a single-credential rotation grant into write access over the
-# whole bootstrap subtree. Because the path is cluster-global, at most one
-# Model-B-enabled Keystone CR may exist per cluster (documented precondition).
+# Scope — boundary 8 (CC-0112): a per-CR path shaped
+# `bootstrap/{namespace}/{name}/admin`, granted via a two-segment `+/+` glob.
+# The production sink for this credential is OpenBao itself (not an in-cluster
+# Secret): a value written here round-trips through ESO into the keystone-admin
+# Secret and drives that CR's admin re-bootstrap. The grant is therefore the two
+# `+/+`-globbed leaves below and deliberately does NOT use a trailing `*`
+# wildcard over the bootstrap subtree. eso-management already grants read on
+# `kv-v2/data/bootstrap/*` (every bootstrap secret, including these); a write
+# `*` wildcard here would let a compromised ESO controller overwrite ANY other
+# bootstrap secret (e.g. database root credentials), escalating a single-
+# credential rotation grant into write access over the whole bootstrap subtree.
+# By contrast `bootstrap/+/+/admin` only matches paths shaped
+# `bootstrap/<seg>/<seg>/admin`, so a compromised ESO token still CANNOT
+# overwrite unrelated bootstrap secrets such as database-root credentials —
+# those do not live under the `/admin` two-segment-glob shape. This is precisely
+# why the grant is a bounded `+/+/admin` glob and NOT a trailing `*` over
+# `bootstrap/*`.
 #
 # ESO's Vault/OpenBao provider writes to BOTH the data and the metadata
 # endpoint on every PushSecret for KV v2: it stamps `custom_metadata:
@@ -42,19 +47,21 @@
 # (operators/keystone/internal/controller/reconcile_passwordrotation.go), so ESO
 # never issues a DELETE against OpenBao when the PushSecret is torn down — the
 # last-pushed admin password is deliberately left intact at
-# bootstrap/keystone-admin so disabling rotation can never lock the admin out.
+# bootstrap/{namespace}/{name}/admin so disabling rotation can never lock the
+# admin out.
 # The capability is kept (rather than dropped) so re-binding this policy under a
 # future DeletionPolicy=Delete would not silently 403 on teardown; because the
-# grant stays scoped to the two exact admin leaves, `delete` adds no blast
-# radius beyond the very credential this policy already lets the holder write.
+# grant stays scoped to the per-CR `bootstrap/{namespace}/{name}/admin` leaf,
+# `delete` adds no blast radius beyond the very credentials this policy already
+# lets the holder write.
 #
 # `read` is retained for PushSecret pre-flight reads and policy-portability,
 # matching the convention in push-keystone-keys.hcl.
 # Feature: CC-0109
-path "kv-v2/data/bootstrap/keystone-admin" {
+path "kv-v2/data/bootstrap/+/+/admin" {
   capabilities = ["create", "update", "read", "delete"]
 }
 
-path "kv-v2/metadata/bootstrap/keystone-admin" {
+path "kv-v2/metadata/bootstrap/+/+/admin" {
   capabilities = ["create", "update", "read", "delete"]
 }

@@ -6,6 +6,7 @@ package v1alpha1
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"time"
 
@@ -40,9 +41,8 @@ const (
 var controlPlaneReleaseRegexp = regexp.MustCompile(`^\d{4}\.\d$`)
 
 // ControlPlaneWebhook implements defaulting and validation webhooks for the
-// ControlPlane CRD (CC-0110). Client is injected at startup for any future
-// cluster-scoped lookups; it is currently unused by validate() but kept to
-// mirror the KeystoneWebhook shape and to avoid a signature change later.
+// ControlPlane CRD (CC-0110). Client is injected at startup and used by
+// ValidateCreate to enforce one ControlPlane per namespace (CC-0112, REQ-010).
 // +kubebuilder:object:generate=false
 type ControlPlaneWebhook struct {
 	Client client.Reader
@@ -100,8 +100,20 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 }
 
 // ValidateCreate implements admission.Validator[*ControlPlane] (CC-0110, REQ-006).
-func (w *ControlPlaneWebhook) ValidateCreate(_ context.Context, obj *ControlPlane) (admission.Warnings, error) {
-	return nil, w.validate(obj)
+// CC-0112, REQ-010 — DECISION boundary 6 = option (a): in addition to the spec
+// checks in validate(), a CREATE is rejected when another ControlPlane already
+// exists in the same namespace. The per-CR OpenBao credential paths (admin AC,
+// bootstrap admin password, fernet/credential keys) are scoped by namespace+name
+// and the CredentialRotation reconciler resolves its target by listing
+// ControlPlanes in the namespace and expecting exactly one; enforcing
+// one-ControlPlane-per-namespace at admission keeps that resolution unambiguous.
+// The check runs only on CREATE (not UPDATE) so an existing CR stays mutable.
+// Reviewer: please verify boundary 6 = option (a).
+func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPlane) (admission.Warnings, error) {
+	if err := w.validate(obj); err != nil {
+		return nil, err
+	}
+	return nil, w.validateUniqueInNamespace(ctx, obj)
 }
 
 // ValidateUpdate implements admission.Validator[*ControlPlane] (CC-0110, REQ-006).
@@ -190,4 +202,38 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) error {
 		)
 	}
 	return nil
+}
+
+// validateUniqueInNamespace enforces the one-ControlPlane-per-namespace contract
+// (CC-0112, REQ-010). It lists existing ControlPlanes in the new object's
+// namespace; any pre-existing CR (len >= 1, since the object under admission is
+// not yet persisted) makes this CREATE a Forbidden error naming the incumbent.
+//
+// DECISION: when w.Client is nil (spec-level unit tests that construct a bare
+// &ControlPlaneWebhook{}, or any caller that did not inject a client) the check
+// is skipped rather than panicking. Production and envtest wiring always inject
+// mgr.GetClient() (operators/c5c3/main.go, integration_test.go), so the guard
+// never trips at runtime; it only keeps the spec-validation unit tests
+// client-free. Reviewer: please verify.
+func (w *ControlPlaneWebhook) validateUniqueInNamespace(ctx context.Context, obj *ControlPlane) error {
+	if w.Client == nil {
+		return nil
+	}
+	var existing ControlPlaneList
+	if err := w.Client.List(ctx, &existing, client.InNamespace(obj.Namespace)); err != nil {
+		return apierrors.NewInternalError(
+			fmt.Errorf("listing ControlPlanes in namespace %q to enforce one-per-namespace: %w", obj.Namespace, err))
+	}
+	if len(existing.Items) == 0 {
+		return nil
+	}
+	return apierrors.NewInvalid(
+		schema.GroupKind{Group: GroupVersion.Group, Kind: "ControlPlane"},
+		obj.Name,
+		field.ErrorList{field.Forbidden(
+			field.NewPath("metadata", "namespace"),
+			fmt.Sprintf("only one ControlPlane is permitted per namespace; %q already exists in namespace %q (CC-0112)",
+				existing.Items[0].Name, obj.Namespace),
+		)},
+	)
 }
